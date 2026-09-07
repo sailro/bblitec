@@ -45,6 +45,7 @@ import {
 } from "./promises.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
+import { pickedMeshHandleCpp } from "./properties.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type {
@@ -320,7 +321,7 @@ export class ExpressionLowerer {
             if (asserted.kind === "picked-node") {
                 return {
                     kind: "mesh",
-                    cpp: `bbl::picked_mesh(${asserted.cpp})`,
+                    cpp: pickedMeshHandleCpp(this.context, asserted, expression),
                     ...(asserted.engineCpp
                         ? { engineCpp: asserted.engineCpp }
                         : {}),

@@ -22,6 +22,7 @@ import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor
 export interface ResourceLoopContext extends PositiveIntegerContext {
     readonly checker: ts.TypeChecker;
     readonly symbols: CompilerSymbols;
+    canvasSizeProperty(expression: ts.Expression): "width" | "height" | undefined;
     constArrayLiteral(expression: ts.Expression): ts.ArrayLiteralExpression | undefined;
     knownCollectionCardinality(expression: ts.Expression): number | undefined;
 }
@@ -158,16 +159,38 @@ export function requiresStaticDataIteration(
     let required = false;
     walkReachedLoopNodes(context, statement, (node) => {
         if (required) return false;
+        // Canvas extents have native reads; writes still belong to their
+        // normal DOM/retained-canvas lowering and cannot use this exemption.
+        if (writesThroughTrackedRoot(node, (target) => {
+            const member = unwrapExpression(target);
+            const symbol = ts.isPropertyAccessExpression(member)
+                ? context.checker.getSymbolAtLocation(member.name) : undefined;
+            return symbol !== undefined && declaredInDomLibrary(symbol);
+        })) {
+            required = true;
+            return false;
+        }
         const symbol = ts.isPropertyAccessExpression(node)
             ? context.checker.getSymbolAtLocation(node.name)
             : ts.isCallExpression(node) && ts.isIdentifier(node.expression)
                 ? context.checker.getSymbolAtLocation(node.expression)
                 : undefined;
-        if (symbol && declaredInDomLibrary(symbol)) {
+        if (symbol && declaredInDomLibrary(symbol) &&
+            !(ts.isPropertyAccessExpression(node) && context.canvasSizeProperty(node))) {
             required = true;
             return false;
         }
-        if (ts.isAwaitExpression(node) || ts.isYieldExpression(node)) {
+        // Readback intrinsics return their resolved native value after waiting
+        // for submitted work. Their await does not create a frame continuation
+        // or a generation-owned resource. Still walk the call's arguments.
+        const awaited = ts.isAwaitExpression(node) ? unwrapExpression(node.expression) : undefined;
+        const awaitedCallee = awaited && ts.isCallExpression(awaited)
+            ? unwrapExpression(awaited.expression) : undefined;
+        const awaitedIntrinsic = awaitedCallee && ts.isIdentifier(awaitedCallee)
+            ? context.symbols.importedName(awaitedCallee) : undefined;
+        if ((ts.isAwaitExpression(node) &&
+                !(awaitedIntrinsic && runtimeOnlyIntrinsics.has(awaitedIntrinsic))) ||
+            ts.isYieldExpression(node)) {
             required = true;
             return false;
         }

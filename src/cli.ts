@@ -12,7 +12,7 @@ import {
 import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
-    composeDeformDetailedMeshPickingShader,
+    composeDeformPickingShaders,
     composeDetailedMeshPickingShader,
     composeMeshPickingShader,
     composeThinInstancePickingShader,
@@ -1181,34 +1181,14 @@ async function main(): Promise<void> {
                   ? {
                         detailed:
                             await composeDetailedMeshPickingShader(),
-                        // And its deforming arm where the scene's assets
-                        // put a live pose on a candidate: the pin reaches
-                        // `deform-picking-projection.js` from exactly that
-                        // condition, so a scene with nothing to deform
-                        // composes neither the module nor the pipeline.
-                        // The pinned palette is the second half of the
-                        // condition rather than a second condition: the
-                        // projection samples `boneSampler`, which is the
-                        // per-bone texture a composed skeleton variant
-                        // publishes, and a scene deforming through the
-                        // transcribed 64-matrix block has no such texture
-                        // to sample.
-                        ...(gpuDeformation && pinnedSkeletonPalette
-                            ? {
-                                  deform:
-                                      await composeDeformDetailedMeshPickingShader(
-                                          morphStorage,
-                                      ),
-                                  // The arm that composition picked,
-                                  // carried so the runtime sizes its bind
-                                  // group to this shader rather than to
-                                  // BBLITE_GPU_MORPH_STORAGE, which is a
-                                  // wider disjunction.
-                                  deformMorph: morphStorage,
-                              }
-                            : {}),
                     }
                   : {}),
+              deform: await composeDeformPickingShaders({
+                  meshFeatures: renderableMeshFeatures,
+                  skeleton: gpuDeformation && pinnedSkeletonPalette,
+                  morph: morphStorage,
+                  detailed: result.manifest.features.includes("picking:detailed"),
+              }),
               ...(result.manifest.features.includes("loader:splat")
                   ? { cloud: await composeCloudPickingShader() }
                   : {}),

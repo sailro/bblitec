@@ -66,6 +66,7 @@ export interface MeshIntrinsicContext
     recordSceneMeshMaterial: AssignmentContext["recordSceneMeshMaterial"];
     compileBoxOptions(
         expression: ts.Expression,
+        precision?: "float" | "double",
     ): [string, string, string];
     compileGroundOptions(
         expression: ts.Expression,
@@ -2011,46 +2012,45 @@ export function compileMeshIntrinsic(
             );
         }
 
+        case "createBoxData":
         case "createSphereData": {
             context.expectArgumentCount(call, 0, 1);
-            const options = call.arguments[0]
+            const box = importedName === "createBoxData";
+            const options = box
+                ? call.arguments[0]
+                    ? context.compileBoxOptions(call.arguments[0], "double")
+                    : ["1.0", "1.0", "1.0"]
+                : call.arguments[0]
                 ? context.compileSphereOptions(
                       call.arguments[0],
                   )
                 : ["32u", "1.0", "1.0", "1.0"];
             const temporary =
                 context.allocateTemporaryCppName(
-                    "sphere_data",
+                    box ? "box_data" : "sphere_data",
                 );
             context.emit(
-                `bbl::SphereMeshData ${temporary} = bbl::create_sphere_data(` +
-                    `bbl::SphereOptions{${options.join(", ")}});`,
+                `bbl::MeshData ${temporary} = ` + (box
+                    ? `bbl::create_box_data(${options.join(", ")});`
+                    : `bbl::create_sphere_data(bbl::SphereOptions{${options.join(", ")}});`),
             );
-            context.reachFeature("mesh:sphere", call);
+            context.reachFeature(box ? "mesh:box" : "mesh:sphere", call);
+            context.reachJsData();
+            // A data result owns JavaScript typed arrays. Materialize each
+            // stream once so aliases of a returned property share storage.
+            const recordProperties: Record<string, Value> = {};
+            for (const field of ["positions", "normals", "uvs", "indices"] as const) {
+                const cpp = context.allocateTemporaryCppName(field);
+                const indices = field === "indices";
+                context.emit(`bbl::js::${indices ? "U32Array" : "F32Array"} ${cpp} = std::move(${temporary}.${field});`);
+                recordProperties[field] = { kind: "data", cpp,
+                    dataType: { kind: indices ? "u32array" : "f32array" } };
+            }
             return {
                 kind: "record",
                 cpp: "",
                 recordProperties: {
-                    positions: {
-                        kind: "data",
-                        cpp: `${temporary}.positions`,
-                        dataType: { kind: "f32array" },
-                    },
-                    normals: {
-                        kind: "data",
-                        cpp: `${temporary}.normals`,
-                        dataType: { kind: "f32array" },
-                    },
-                    uvs: {
-                        kind: "data",
-                        cpp: `${temporary}.uvs`,
-                        dataType: { kind: "f32array" },
-                    },
-                    indices: {
-                        kind: "data",
-                        cpp: `${temporary}.indices`,
-                        dataType: { kind: "u32array" },
-                    },
+                    ...recordProperties,
                     vertexCount: {
                         kind: "number",
                         cpp: `static_cast<double>(${temporary}.vertex_count)`,

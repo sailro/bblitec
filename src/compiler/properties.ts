@@ -729,6 +729,13 @@ export const propertyRules: readonly PropertyRule[] = [
     dataType: { kind: "boolean" },
     field: "hit",
   },
+  ...(["bu", "bv"] as const).map((field): PropertyRead => ({
+    owner: "picking-info",
+    property: field,
+    value: "data",
+    dataType: { kind: "number" },
+    field,
+  })),
   {
     // Upstream `pickedMesh` is the node object itself, and both kinds
     // that can be hit carry a name. This port keeps meshes and clouds
@@ -748,7 +755,6 @@ export const propertyRules: readonly PropertyRule[] = [
     value: "data",
     dataType: { kind: "string" },
     helper: "bbl::picked_node_name",
-    helperTakesEngine: true,
   },
   {
     owner: "picking-info",
@@ -1065,6 +1071,9 @@ export function readProperty(
       ? { textureStorage: rule.textureStorage }
       : {}),
     ...(engineCpp ? { engineCpp } : {}),
+    ...(rule.value === "picked-node" && owner.pickingEngineKnown
+      ? { pickingEngineKnown: true as const }
+      : {}),
     ...(rule.carriesScenePbrMaterial &&
     owner.scenePbrMaterialIndex !== undefined
       ? {
@@ -1145,4 +1154,21 @@ export function readProperty(
     return read("");
   }
   return read(owner.cpp);
+}
+
+/** A bare MeshHandle can carry only the entry's statically known engine.
+ * Its lexical aliases may have different emitted names.
+ * Data-transported picking results instead own a checked engine association;
+ * dropping that carrier would lose both provenance and lifetime checks. */
+export function pickedMeshHandleCpp(
+  context: Pick<PropertyContext, "fail">,
+  value: Value,
+  site: ts.Node,
+): string {
+  if (!value.engineCpp || !value.pickingEngineKnown) {
+    context.fail(site,
+      "A data-transported PickingInfo cannot become a bare Mesh handle; " +
+      "read pickedMesh.name or getPickedNormal from the result so its checked engine owner travels with it.");
+  }
+  return `bbl::picked_mesh(${value.cpp})`;
 }

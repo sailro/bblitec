@@ -13,9 +13,11 @@ type Fail = (node: ts.Node, message: string) => never;
  *
  * Most resources below are trivially copyable ids. A pixels texture is the
  * pin's value-shaped CPU upload record; it is also safe to copy into a cache,
- * and remains a texture when read back out.
+ * and remains a texture when read back out. Scene and picking-result values
+ * instead copy a shared identity, retaining their source object through data.
  */
 export type HandleKind =
+  | "picking-info"
   | "offscreen-canvas"
   | "mesh"
   | "animation-group"
@@ -50,6 +52,7 @@ export type HandleKind =
   | "navigation-obstacle";
 
 const handleCppTypes: Record<HandleKind, string> = {
+  "picking-info": "bbl::PickingInfo",
   "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
   mesh: "bbl::MeshHandle",
   "animation-group": "bbl::AnimationGroupHandle",
@@ -91,6 +94,7 @@ export function isHandleKind(kind: string): kind is HandleKind {
 
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
+  PickingInfo: "picking-info",
   Mesh: "mesh",
   AnimationGroup: "animation-group",
   BillboardSpriteHandle: "billboard-sprite",

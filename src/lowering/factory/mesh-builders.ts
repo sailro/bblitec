@@ -194,6 +194,7 @@ export class MeshBuilderLowerer {
             // Per-builder rather than shared, so one builder's `getPos`
             // cannot answer for another builder's.
             extra: {
+                statements?: readonly ts.Statement[];
                 calls?: ReadonlyMap<
                     string,
                     (args: readonly string[]) => string
@@ -289,7 +290,7 @@ export class MeshBuilderLowerer {
                     // NAME, which must move -- so a bare identifier is
                     // exactly the case that does.
                     return cppIdentifierPattern.test(value)
-                        ? `std::move(${value})`
+                        ? `mesh_data_buffer(std::move(${value}))`
                         : value;
                 });
                 const vertexCount = members.has("vertexCount")
@@ -337,7 +338,7 @@ export class MeshBuilderLowerer {
                 booleanAnd: true,
                 maybeUnusedConst: true,
             });
-            return declaration.body.statements
+            return (extra.statements ?? declaration.body.statements)
                 .flatMap((statement) =>
                     lowerer.statement(statement, "    "),
                 )
@@ -1433,6 +1434,46 @@ MeshHandle create_torus_knot(Engine& engine, TorusKnotOptions options) {
             "Box dimension selection",
         );
 
+        // The source intrinsic resolves the number/object options before
+        // entering this body. Keep the pin's allocation, sign expansion,
+        // copies and counts as its own translated statements.
+        let boxDataFactory = "";
+        if (features.includes("mesh:box")) {
+            this.context.assertStatementInventory(box, box.body!.statements,
+                "createBoxData", "only the option head is specialized",
+                ["variable statement", "if statement", "variable statement", "for statement", "return statement"]);
+            const optionBranch = box.body!.statements[1]!;
+            if (!ts.isIfStatement(optionBranch) || !optionBranch.elseStatement) {
+                this.context.contractError(optionBranch, "Expected the box number/object option branches.");
+            }
+            this.context.assertExpressionShape(box.parameters[0]!.initializer!, "1", "default box size");
+            this.context.assertExpressionShape(optionBranch.expression, 'typeof options === "number"', "box option type");
+            this.context.expectShapeCount(optionBranch.thenStatement, "dimensions = [options, options, options]", "numeric box dimensions");
+            this.context.expectShapeCount(optionBranch.elseStatement, "dimensions = [width, height, depth]", "object box dimensions");
+            const copies = new Map<string, (args: readonly string[]) => string>();
+            for (const [name, type, values] of [
+                ["BOX_NORMALS", "float", boxNormals.values],
+                ["BOX_UVS", "float", boxUvs.values],
+                ["BOX_INDICES", "std::uint32_t", boxIndices.values],
+            ] as const) {
+                copies.set(`${name}.slice`, (args) => {
+                    if (args.length) this.context.contractError(box, "Box table copies must include every lane.");
+                    return `std::vector<${type}>{${values.map((value) => type === "float"
+                        ? this.context.floatLiteral(value) : `${value}u`).join(", ")}}`;
+                });
+            }
+            const body = lowerPinnedMeshBuilder(boxFile, box,
+                new Map([["dimensions", "dimensions"], ["BOX_POSITION_SIGNS", "signs"]]),
+                new Map([["dimensions", "f64-buffer"], ["BOX_POSITION_SIGNS", "u32"]]),
+                true, { statements: box.body!.statements.slice(2), calls: copies });
+            boxDataFactory = `MeshData create_box_data(double width, double height, double depth) {
+    const std::array<double, 3> dimensions{width, height, depth};
+    constexpr std::array<std::uint32_t, ${boxSignWords.length}> signs{${boxSignWords.map((value) => `${value}u`).join(", ")}};
+${body}
+}
+`;
+        }
+
         for (const [name, expected] of [
             ["width", "opts.width ?? 1"],
             ["height", "opts.height ?? 1"],
@@ -2412,6 +2453,7 @@ void set_thin_instance_colors(
         // converting a list arrives with its include, and one that stops
         // does not leave a dead one behind.
         const usesJsData = [
+            boxDataFactory,
             heightmapBody,
             discFactory,
             cylinderFactory,
@@ -2450,7 +2492,7 @@ void set_thin_instance_colors(
             modulePath,
             symbolName: [
                 "createBox,createGround,createPlane,createSphere",
-                "createSphereData,createMorphTargets",
+                "createBoxData,createSphereData,createMorphTargets",
                 "setMorphTargetWeights,createTorus,createMeshFromData",
                 ...(disc ? ["createDisc"] : []),
                 ...(cylinder ? ["createCylinder"] : []),
@@ -2464,7 +2506,7 @@ void set_thin_instance_colors(
                 modulePath,
                 [
                     "createBox, createGround, createPlane, createSphere",
-                    "createSphereData, createMorphTargets",
+                    "createBoxData, createSphereData, createMorphTargets",
                     "setMorphTargetWeights, createTorus, createMeshFromData",
                     ...(disc ? ["createDisc"] : []),
                     ...(cylinder ? ["createCylinder"] : []),
@@ -2555,18 +2597,24 @@ ${boxAddFaceCalls}
     return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
-// The common return shape of the three pinned typed-array builders. Their
+// The common return shape of the pinned typed-array builders. Their
 // bodies below are translated from the pinned AST by PinnedNumericLowerer;
 // this record is only the native carrier used to pack those arrays into the
 // runtime's interleaved ModelVertex representation.
-struct PinnedMeshData {
-    std::vector<float> positions;
-    std::vector<float> normals;
-    std::vector<float> uvs;
-    std::vector<std::uint32_t> indices;
-    std::uint32_t vertex_count = 0;
-    std::uint32_t index_count = 0;
-};
+using PinnedMeshData = MeshData;
+
+// A literal-sized pinned allocation lowers to std::array; a dynamic one
+// lowers to std::vector. Both return the same owned mesh-data buffer.
+template <typename T>
+static std::vector<T> mesh_data_buffer(std::vector<T>&& values) {
+    return std::move(values);
+}
+template <typename T, std::size_t N>
+static std::vector<T> mesh_data_buffer(std::array<T, N>&& values) {
+    return {values.begin(), values.end()};
+}
+
+${boxDataFactory}
 
 static PinnedMeshData pinned_create_flat_ground_data(
     GroundOptions options) {
@@ -2741,16 +2789,8 @@ static ModelGeometry build_sphere_geometry(SphereOptions options) {
     return geometry;
 }
 
-SphereMeshData create_sphere_data(SphereOptions options) {
-    PinnedMeshData data = pinned_create_sphere_data(options);
-    SphereMeshData result;
-    result.positions = std::move(data.positions);
-    result.normals = std::move(data.normals);
-    result.uvs = std::move(data.uvs);
-    result.indices = std::move(data.indices);
-    result.vertex_count = data.vertex_count;
-    result.index_count = data.index_count;
-    return result;
+MeshData create_sphere_data(SphereOptions options) {
+    return pinned_create_sphere_data(options);
 }
 
 MeshHandle create_sphere(Engine& engine, SphereOptions options) {
@@ -2809,7 +2849,9 @@ void attach_morph_target(
         Vec3{});
     std::vector<Vec3> normal_deltas(
         count,
-        Vec3{});
+        // A missing normal stream leaves positive zero in the pin's F32
+        // payload; the shared X mirror must recover that same zero sign.
+        Vec3{-0.0f, 0.0f, 0.0f});
     for (
         std::size_t index = 0;
         index < count;
@@ -2846,6 +2888,7 @@ void attach_morph_target(
         1,
         std::vector<Vec3>(count, Vec3{}));
     record.gpu_deformation = true;
+    record.scene_morph_targets = true;
     record.morph_weights = {};
     record.morph_weights[0] = weight;
     record.morph_storage_weights = {weight};

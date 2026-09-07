@@ -45,6 +45,7 @@ import {
 } from "./mesh.js";
 import {
     compilePickingIntrinsic,
+    runtimeOnlyPickingIntrinsics,
     type PickingIntrinsicContext,
 } from "./picking.js";
 import {
@@ -127,6 +128,7 @@ export interface IntrinsicContext
  */
 export const runtimeOnlyIntrinsics: ReadonlySet<string> = new Set([
     ...runtimeOnlyClusteredLightIntrinsics,
+    ...runtimeOnlyPickingIntrinsics,
 ]);
 
 /** Repeated data work still uses its normal lowerer to record stream facts. */

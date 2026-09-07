@@ -50,7 +50,7 @@ import {
     expandRuntimeMeshFeatureSets,
     pinnedVatMeshFeatures,
     pinnedInstanceColorBit,
-    pinnedMeshFeaturesFromPrimitive,
+    pinnedSceneMeshFeatures,
     pinnedReceiveShadowsBit,
     pinnedThinInstancesBit,
 } from "./pinned-mesh-features.js";
@@ -486,33 +486,7 @@ export async function composeScenePipeline({
     const appendSceneMesh = async (index: number): Promise<void> => {
         const mesh = result.manifest.sceneMeshes[index]!;
         sceneMeshRows[index] = renderableMeshFeatures.length;
-        if (mesh.kind === "from-data") {
-            // The recorded streams, walked exactly the way a glTF primitive
-            // is: normals are a required argument, so the flat-normal arm is
-            // unreachable from this builder.
-            renderableMeshFeatures.push(
-                await pinnedMeshFeaturesFromPrimitive(
-                    {
-                        attributes: {
-                            POSITION: 0,
-                            NORMAL: 0,
-                            TEXCOORD_0: 0,
-                            ...(mesh.hasUv2 ? { TEXCOORD_1: 0 } : {}),
-                            ...(mesh.hasTangents ? { TANGENT: 0 } : {}),
-                            ...(mesh.hasColors ? { COLOR_0: 0 } : {}),
-                        },
-                    },
-                    // `mesh.skeleton` is not an attribute of a primitive
-                    // but a property of the mesh, which is why the pin
-                    // reads it from the mesh in `_computeMeshFeatures` and
-                    // this walk takes it as the same option the glTF
-                    // primitive walk passes from its node's `skin`.
-                    { skinned: mesh.skinned === true },
-                ),
-            );
-            return;
-        }
-        renderableMeshFeatures.push(await proceduralRenderableFeatures());
+        renderableMeshFeatures.push(await pinnedSceneMeshFeatures(mesh));
     };
     for (let loadCount = 0; loadCount <= gltfAssets.length; loadCount += 1) {
         for (const index of sceneMeshesByLoadCount.get(loadCount) ?? []) {

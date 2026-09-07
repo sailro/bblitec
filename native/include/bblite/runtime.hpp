@@ -736,7 +736,10 @@ struct PickDetailReadback {
  * `subMeshId` and `thinInstanceIndex` belong to pipelines this port does
  * not reach and remain outside this record.
  */
-struct PickingInfo {
+struct Engine;
+struct PickingInfoState {
+    Engine* engine = nullptr;
+    std::weak_ptr<const int> engine_lifetime;
     bool hit = false;
     /**
      * WHICH node was hit. Upstream `pickedMesh` is a live reference and
@@ -778,6 +781,77 @@ struct PickingInfo {
     std::optional<PickDetailReadback> detail{};
 };
 
+/** Copies retain the same JavaScript result; each default construction is fresh.
+ * Numeric/point payloads remain readable after engine teardown, while queries
+ * through a picked mesh require the original engine wrapper to remain alive. */
+struct PickingInfo {
+    std::shared_ptr<PickingInfoState> state;
+    bool& hit;
+    PickedNodeKind& picked_kind;
+    std::uint32_t& picked_index;
+    std::uint32_t& picked_range_offset;
+    std::optional<std::array<double, 3>>& picked_point;
+    double& face_id;
+    double& bu;
+    double& bv;
+    std::optional<PickRay>& ray;
+    std::optional<std::array<double, 3>>& picked_normal;
+    std::optional<std::array<double, 3>>& picked_normal_world;
+    std::optional<std::array<double, 3>>& picked_face_normal;
+    std::optional<std::array<double, 3>>& picked_face_normal_world;
+    bool& normals_invalid;
+    std::optional<PickDetailReadback>& detail;
+
+    PickingInfo() : PickingInfo(std::make_shared<PickingInfoState>()) {}
+    PickingInfo(const PickingInfo& other) : PickingInfo(other.state) {}
+    PickingInfo(PickingInfo&& other) noexcept : PickingInfo(std::move(other.state)) {}
+    PickingInfo& operator=(const PickingInfo& other) {
+        if (this != &other) {
+            this->~PickingInfo();
+            new (this) PickingInfo(other);
+        }
+        return *this;
+    }
+    PickingInfo& operator=(PickingInfo&& other) noexcept {
+        if (this != &other) {
+            this->~PickingInfo();
+            new (this) PickingInfo(std::move(other));
+        }
+        return *this;
+    }
+    [[nodiscard]] bool operator==(const PickingInfo& other) const noexcept {
+        return state == other.state;
+    }
+    void bind_engine(Engine& engine);
+
+private:
+    explicit PickingInfo(std::shared_ptr<PickingInfoState> shared)
+        : state(std::move(shared)),
+          hit(state->hit),
+          picked_kind(state->picked_kind),
+          picked_index(state->picked_index),
+          picked_range_offset(state->picked_range_offset),
+          picked_point(state->picked_point),
+          face_id(state->face_id),
+          bu(state->bu),
+          bv(state->bv),
+          ray(state->ray),
+          picked_normal(state->picked_normal),
+          picked_normal_world(state->picked_normal_world),
+          picked_face_normal(state->picked_face_normal),
+          picked_face_normal_world(state->picked_face_normal_world),
+          normals_invalid(state->normals_invalid),
+          detail(state->detail) {}
+};
+
+[[nodiscard]] inline Engine& picking_engine(const PickingInfo& info) {
+    if (!info.state->engine || info.state->engine_lifetime.expired()) {
+        throw std::runtime_error(
+            "PickingInfo mesh queries require the original live engine; "
+            "queries after engine destruction or relocation are unsupported.");
+    }
+    return *info.state->engine;
+}
 
 /**
  * The picker's own state. The GPU resources it owns live with the renderer
@@ -2164,6 +2238,8 @@ struct MeshRecord {
      * local. Both readers are in `pal_gpu_shared.hpp`.
      */
     bool scene_skeleton = false;
+    /** Scene-authored morph deltas and vertices share native local space. */
+    bool scene_morph_targets = false;
     bool has_vertex_alpha = false;
     /**
      * `mesh.vat`. Set by `attachVat`, which also drops the live skeleton --
@@ -4158,7 +4234,32 @@ struct AnimationFrameRequest {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(state); }
 };
 
+/** A borrowed owner's address is valid only during this wrapper's lifetime.
+ * Moving the owner invalidates its old borrows; later operations obtain a new
+ * token for the new address. Construction itself allocates nothing. */
+class OwnerLifetime {
+public:
+    OwnerLifetime() = default;
+    OwnerLifetime(const OwnerLifetime&) {}
+    OwnerLifetime(OwnerLifetime&& other) noexcept { other.token_.reset(); }
+    OwnerLifetime& operator=(const OwnerLifetime& other) {
+        if (this != &other) token_.reset();
+        return *this;
+    }
+    OwnerLifetime& operator=(OwnerLifetime&& other) noexcept {
+        if (this != &other) { token_.reset(); other.token_.reset(); }
+        return *this;
+    }
+    [[nodiscard]] std::weak_ptr<const int> token() {
+        if (!token_) token_ = std::make_shared<const int>(0);
+        return token_;
+    }
+private:
+    std::shared_ptr<const int> token_;
+};
+
 struct Engine {
+    OwnerLifetime lifetime;
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
 #endif
@@ -4463,6 +4564,11 @@ inline void cancel_animation_frame(Engine& engine, std::size_t id) {
     const auto matches = [id](const AnimationFrameRequest& request) { return request.state->id == id; };
     std::erase_if(engine.animation_frame_once_callbacks, matches);
     std::erase_if(engine.post_render_animation_frame_once_callbacks, matches);
+}
+
+inline void PickingInfo::bind_engine(Engine& engine) {
+    state->engine = &engine;
+    state->engine_lifetime = engine.lifetime.token();
 }
 
 /** Copy a typed-array view into an engine-owned GPU storage record. */
@@ -5044,7 +5150,7 @@ struct SphereOptions {
     double diameter_z;
 };
 
-struct SphereMeshData {
+struct MeshData {
     std::vector<float> positions;
     std::vector<float> normals;
     std::vector<float> uvs;
@@ -5287,7 +5393,8 @@ MeshHandle create_ground_from_height_map(
     const char* height_map);
 MeshHandle create_plane(Engine& engine, PlaneOptions options);
 MeshHandle create_sphere(Engine& engine, SphereOptions options);
-SphereMeshData create_sphere_data(SphereOptions options);
+MeshData create_box_data(double width, double height, double depth);
+MeshData create_sphere_data(SphereOptions options);
 void attach_morph_target(
     Engine& engine,
     MeshHandle mesh,
@@ -6977,6 +7084,7 @@ GpuPickerHandle create_gpu_picker(Scene& scene);
 [[nodiscard]] std::string picked_node_name(
     const Engine& engine,
     const PickingInfo& info);
+[[nodiscard]] std::string picked_node_name(const PickingInfo& info);
 /** A picked scene node asserted to the pinned `Mesh` type. */
 [[nodiscard]] MeshHandle picked_mesh(const PickingInfo& info);
 /** The basic pick's nullable world point in the plain-data model. */
@@ -7021,6 +7129,9 @@ void enable_detailed_picking(Engine& engine, GpuPickerHandle picker);
     const Engine& engine,
     const PickingInfo& info,
     bool use_world_coordinates);
+[[nodiscard]] js::Nullable<js::Tuple<3>> picked_normal(
+    const PickingInfo& info,
+    bool use_world_coordinates);
 /** `disposePicker(picker)`. */
 void dispose_picker(Engine& engine, GpuPickerHandle picker);
 /**
@@ -7050,3 +7161,10 @@ void run_timeout_callbacks(Engine& engine);
 void run_interval_callbacks(Engine& engine);
 
 } // namespace bbl
+
+template <>
+struct std::hash<bbl::PickingInfo> {
+    [[nodiscard]] std::size_t operator()(const bbl::PickingInfo& info) const noexcept {
+        return std::hash<const void*>{}(info.state.get());
+    }
+};

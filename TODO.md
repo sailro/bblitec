@@ -126,6 +126,11 @@ implementation, follow the sizing/capture workflow in
   readable-present-copy blit paths before consolidating SDL presentation.
 - [ ] Avoid full detailed-pick CPU-array copies while preserving scene-facing
   typed-array semantics. Supply an internal borrowed/read-only geometry view.
+- [ ] Add a bone-palette version covering scene skeleton publication, glTF
+  animation and bone-control writes, then share dirty upload checks between
+  visible draws and picking. Repeated skinned picks currently upload unchanged
+  palettes; transform versions do not cover every pose writer. Validate an
+  immediate pose write followed by a pick before skipping any upload.
 - [ ] Remove double compilation/copies of optional vertex streams and place
   mesh/material compatibility validation at composition, including task
   material overrides.
@@ -149,7 +154,7 @@ implementation, follow the sizing/capture workflow in
 | Cameras | Explicit off-center orthographic bounds, disable/restore behavior and wider environment combinations. Camera upperRadiusLimit sizing is implemented; add an observing gate rather than reimplement it. Geospatial controls attach but every input arm refuses: the pin's frame integrator resets through chained assignments and null stores that the pinned numeric lowerer has no arm for, and drag-pan, zoom-to-cursor, pinch and fly-to additionally need a picking ray off the inverse view-projection. |
 | Imported hierarchy | Full root clone/rotation/scaling, imported light/camera descendants and morph clone weights. Give imported roots a consistent native node representation and preserve clone-of-clone outer transforms. A clone of a loaded mesh that sets its own position adds the loader's baked node transform instead of replacing it, measured at 15.992 MAD on a clone-and-place probe and reproduced with glTF alone. |
 | Rotation | Replace separate Euler/quaternion lanes with the pinned proxy model; lower quaternion-to-Euler conversion and measure mixed writes. |
-| Direct morph | Multiple targets and one shared weights object attached to several meshes. Scene-code morph targets under a PBR material compose no morph variant and render the bind pose without refusing: a scene-authored mesh's feature word comes from a synthetic primitive carrying no targets, and PBR's runtime mesh bits carry only thin-instance arms. Standard has the arm. Refusing precisely needs the material-family lane below. |
+| Direct morph | Multiple targets, one shared weights object attached to several meshes, replacement with independently retained detached resources, runtime attachment variants and native-coordinate thin-instance streams. Definite scene-code attachments compose Standard and PBR morph variants with local vertices and live world matrices; second attachments to a scene mesh and the remaining attachment/instancing combinations refuse. |
 | PBR | Remaining metallic-reflectance options, textured environment rotation, local cubemap blending and unimplemented asset extension fields. |
 | Standard UV | Lightmap legacyFlipV and rebuild semantics beyond the reached live offset and texture transforms. |
 | Textures | Remaining depth/geometry texture-view assignments and explicit per-texture encoding paths; do not conflate supported colour views with other aspects. |
@@ -159,7 +164,7 @@ implementation, follow the sizing/capture workflow in
 | Effects | Wider binding descriptors/textures, custom vertex and renderer update callbacks, disposal and unregister operations. |
 | Sprites | Coverage gamma, handle-object methods, append-atlas forms and mixed-family transparent depth ordering. Atlas-from-frames is already implemented. |
 | Billboards | Cutout, floating-origin and mixed splat contributors in picking; preserve one registration-ordered contributor list. |
-| Picking | Raw skeletons, morph-only/basic deformation, thin-instance/VAT ids, filter/discard/ignore, remaining PickingInfo fields/nullable returns and multiple clouds. Basic/detailed picking and getPickedNormal are implemented. |
+| Picking | Eight-influence skinning, deformed thin-instance/VAT ids, filter/discard/ignore, remaining PickingInfo fields and multiple clouds. Basic/detailed regular skeleton, morph-only and combined projections are implemented; nullable results retain identity and checked engine ownership through supported data paths. |
 | Splats | Shared splatsData buffer identity, Float32Array-over-ArrayBuffer views, live updateData/upload/versioning and per-cloud plugin sets. `TypedArray<T>` owns a `shared_ptr<vector<T>>` with no buffer, offset or length, and `U8Array` is the only view class; its owning conversion carries typed arrays into vector entry points across generated scenes, so a Float32Array view is a runtime-wide change. |
 | Shadows | Thin-instance CSM caster bounds, unsupported generator options/live receive toggles, task-camera facade and caster-specific composition. Recheck morph-bound numeric width and CSM array sizes against pinned declarations. |
 | Lines | Runtime-computed point lists, createLines/dashed lines, colour updates, material compare and per-instance colour setters outside the reached slice. |
@@ -208,7 +213,7 @@ and shutdown on both backends. Run instructions are in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 18 numbered scenes unregistered. Helper
+The current registry leaves these 17 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -218,7 +223,6 @@ modules without a numbered scene entry are not integration candidates.
 | 47 | Physics viewer, heightfield and switch-assigned mesh handling |
 | 49 | A `createCapsule` builder, a mesh parented to a mesh, `shapeProximity`/`shapeCast` over Bullet closest-point and convex-sweep entry points, and a conditional mixing a picked node with null. Four contracts. |
 | 104, 105 | Structural hierarchy guards/owner grouping and character controller |
-| 114 | A PBR morph arm for scene-code geometry, `createBoxData` as a data result, nullable `PickingInfo`, barycentric reads, and the pin's morph-only and basic deform-picking arms on both backends. Five contracts. |
 | 121 | Splat rows as a scene-readable buffer and live `updateData` re-upload in both PALs, over a typed array that is a view rather than an owner. Five contracts; the view change is runtime-wide, not scene-local. |
 | 149 | Delegating `blockLoader` (the pin's `loadNodeBlockEmitterWithGeometry`, where the port accepts a local closed switch), live node-material input handles, loaded-material reads, runtime per-material node construction, and the geometry `LOCAL_POSITION` attachment, which needs a bound local-normal lane and a real node world. Five contracts. |
 | 164 | GPU device-loss lifecycle |

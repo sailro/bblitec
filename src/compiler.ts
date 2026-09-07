@@ -4091,8 +4091,19 @@ class Compiler
             });
             return;
         }
-        if (value.kind === "data" && value.dataType?.kind === "tuple") {
-            const temporary = this.bindDataTuple(value, value.dataType.arity);
+        // A runtime index into a static numeric table leaves one table
+        // dimension. Its native row is the same Tuple<N> used by data tuples.
+        const tupleArity = value.dataType?.kind === "tuple"
+            ? value.dataType.arity
+            : value.dataType?.kind === "table" && value.dataType.dimensions.length === 1
+              ? value.dataType.dimensions[0]
+              : undefined;
+        if (value.kind === "data" && tupleArity !== undefined) {
+            if (bindings.length > tupleArity) {
+                this.fail(declaration.name,
+                    `Tuple has ${tupleArity} elements, destructuring expects ${bindings.length}.`);
+            }
+            const temporary = this.bindDataTuple(value, tupleArity);
             bindings.forEach((element, index) => {
                 bindElement(element, {
                     kind: "number",
@@ -9989,8 +10000,9 @@ class Compiler
 
     public compileBoxOptions(
         expression: ts.Expression,
+        precision?: "float" | "double",
     ): [string, string, string] {
-        return compileBoxOptions(this, expression);
+        return compileBoxOptions(this, expression, precision);
     }
 
     public compileRenderTargetOptions(
@@ -19226,22 +19238,29 @@ class Compiler
     }
 
     /**
-     * `mesh.skeleton = ...` on a scene-code mesh.
+     * A definite skeleton or morph attachment on a scene-code mesh.
      *
-     * The pin's `_computeMeshFeatures` reads the mesh's own `skeleton`
-     * property for MSH_HAS_SKELETON, which is a per-mesh row of the
-     * material variant key. A glTF primitive answers it from its node's
-     * `skin`; a scene-code mesh has no primitive, so the assignment
-     * records it here and `appendSceneMesh` reads it back.
+     * The pin's `_computeMeshFeatures` reads these mesh properties for
+     * the material variant key. Record them beside the scene-created
+     * mesh's streams so composition executes that same predicate.
      */
-    public recordSceneMeshSkinned(meshIndex: number): void {
+    public recordSceneMeshDeformation(
+        meshIndex: number,
+        property: "skinned" | "morphTargets",
+        site: ts.Node,
+    ): void {
         const mesh = this.sceneMeshes[meshIndex];
         if (!mesh) {
             throw new Error(
-                `Scene mesh ${meshIndex} was not recorded before its skeleton assignment.`,
+                `Scene mesh ${meshIndex} was not recorded before its ${property} assignment.`,
             );
         }
-        mesh.skinned = true;
+        if (property === "morphTargets" && mesh.morphTargets) {
+            this.fail(site,
+                "Replacing a direct morph target attachment is not supported; " +
+                "updates to detached morph resources require independent storage.");
+        }
+        mesh[property] = true;
     }
 
     public recordShadowCasters(

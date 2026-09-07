@@ -12,6 +12,7 @@
  * loader reads them from too.
  */
 import type { JsonObject } from "./gltf-document.js";
+import type { SceneMeshManifest } from "./compiler/types.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 interface MeshFeatureBits {
@@ -28,6 +29,36 @@ interface MeshFeatureBits {
 }
 
 let bits: Promise<MeshFeatureBits> | undefined;
+
+/** The scene-created mesh shape the pin's own feature predicate reads. */
+interface SceneFeatureMesh {
+    _gpu: { tangentBuffer: boolean; colorBuffer: boolean; uv2Buffer: boolean };
+    skeleton: object | null;
+    morphTargets: object | null;
+}
+
+/**
+ * Scene factories have no glTF primitive. Run `_computeMeshFeatures` on
+ * their recorded streams and definite attachments, including procedural
+ * meshes whose stream profile is fixed but whose deformation is authored.
+ */
+export async function pinnedSceneMeshFeatures(mesh: SceneMeshManifest): Promise<number> {
+    if (mesh.morphTargets && mesh.thinInstances) {
+        throw new Error("Direct morph targets combined with thin instances require a native-coordinate instance stream; that combination is not lowered.");
+    }
+    const pin = await importPinnedModule<{
+        _computeMeshFeatures(mesh: SceneFeatureMesh): number;
+    }>("material/mesh-features.js");
+    return pin._computeMeshFeatures({
+        _gpu: {
+            tangentBuffer: mesh.hasTangents === true,
+            colorBuffer: mesh.hasColors === true,
+            uv2Buffer: mesh.hasUv2 === true,
+        },
+        skeleton: mesh.skinned ? {} : null,
+        morphTargets: mesh.morphTargets ? {} : null,
+    });
+}
 
 async function meshFeatureBits(): Promise<MeshFeatureBits> {
     bits ??= importPinnedModule<MeshFeatureBits>("material/mesh-features.js");

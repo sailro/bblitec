@@ -290,6 +290,11 @@ thin instances and transform mutations are supported within their intrinsic
 option sets. Runtime geometry/source arrays follow the data model; builder
 presence does not imply every option or update form.
 
+`createBoxData` accepts a numeric size or a literal options object with size,
+width, height and depth. It and `createSphereData` return mutable typed arrays;
+aliases of a returned stream share its storage, and separate calls own separate
+buffers. Box dimensions remain doubles until the pinned Float32 position store.
+
 Proved fixed-composition counted/for-of loops over supported primitive and
 Standard-material construction emit native loops while retaining creation-order
 composition records. Runtime-safe mesh, Standard and ShaderMaterial construction
@@ -413,6 +418,12 @@ GPU skinning, morph/storage morph, baked vertex animation and dynamic
 thin-instance pools are supported. The glTF skin path retains four influences
 when an asset supplies eight, recorded as an adaptation. Direct morph factories
 have a narrower target/shared-weight surface than loaded glTF morphs.
+Definite scene-code morph attachments compose Standard and PBR storage
+variants and keep local vertices beside the live mesh world. Each scene mesh
+accepts one direct morph attachment; replacing it, including through an alias,
+refuses because detached morph resources do not retain independent storage.
+Conditional or post-start attachments and direct morphs combined with thin
+instances refuse. Updating the attached resource's weights remains supported.
 Scene-authored skeletons retain their joint/weight arrays and live bone palettes.
 Standard materials require `enableStandardSkeleton`; both backends upload the
 palette for the pinned skinned vertex stage.
@@ -434,12 +445,28 @@ coverage gamma and several picking combinations remain incomplete.
 
 ## Picking
 
-GPU picking supports the basic and detailed pipelines, mesh/cloud identities,
-sampled picked points and the reached skinned detailed-deformation arms.
-Billboard picking has a bounded contributor path. Detailed support does not
-yet cover every morph-only/basic deformation combination, scene-authored
-skeleton, filter/ignore/discard option, thin instance/VAT id or result property.
-Viewport and unsupported multi-contributor cases refuse at their boundary.
+GPU picking supports the basic and detailed pipelines, mesh/cloud identities
+and sampled picked points. Regular meshes select the pin's four-influence
+skeleton, morph-only or combined projection per mesh in both modes. The
+projection synchronizes pending pose writes before submitting the pick and
+reads the visible draw's bone texture and morph storage. Scene-authored poses
+keep their live mesh world transform. Billboard picking
+has a bounded contributor path. Filter/ignore/discard options, deformed thin
+instances, VAT ids and remaining result properties are incomplete. Deformed
+thin-instance picks, viewport and unsupported multi-contributor cases refuse
+at their boundary.
+
+`PickingInfo` retains one result identity through nullable helper returns,
+records, arrays and Map/Set keys. The reached `hit`, `bu` and `bv` scalar
+fields share writes between aliases; point reads and picked-node/normal
+queries keep the existing property surface. Queries use the result's original
+engine, including after helper/container transport. Destroying or moving that
+engine makes subsequent mesh-name and normal queries throw; result payload
+reads remain available. This checked lifetime boundary does not retain native
+engines or meshes beyond their owner. Converting a transported result to a
+bare `Mesh` handle refuses because that handle cannot carry the checked owner;
+existing direct picks with a statically known entry engine retain their casts.
+Picked-point reads keep the existing tuple snapshot behavior.
 
 ## Display gizmos
 

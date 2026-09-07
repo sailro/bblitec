@@ -39,6 +39,9 @@
 #endif
 #if BBLITE_HAS_PICKING
 #include <bblite/upstream/picking_math.hpp>
+#if BBLITE_DEFORM_PICKING
+#include <bblite/upstream/picking_projection.hpp>
+#endif
 #endif
 // The render plan is generated only for scenes that register a
 // SceneContext; a sprite-only scene has none, and reaches this header for
@@ -589,6 +592,49 @@ inline std::array<float, 16> draw_world(
     return outer_draw_world(base, record);
 #endif
 }
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/** World after scene-authored deformation of an unbaked local stream. */
+inline std::array<float, 16> scene_deformation_draw_world(
+    const MeshRecord& record,
+    [[maybe_unused]] const Scene& scene,
+    const Engine& engine) {
+#if BBLITE_FLOATING_ORIGIN
+    return draw_world(std::array<float, 16>{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    }, record, scene, engine);
+#else
+    // Bypass draw_world's gpu_world_transform branch: this already is the
+    // complete hierarchy world, so that branch would compose it twice.
+    return outer_draw_world(upstream::mesh_world_matrix(engine, record), record);
+#endif
+}
+
+/** The world that accompanies a live palette/storage pose in either pass. */
+inline std::array<float, 16> deformed_draw_world(
+    bool skeleton_draw, const MeshRecord& record,
+    const Scene& scene, const Engine& engine) {
+    if ((skeleton_draw && record.scene_skeleton) ||
+        (!skeleton_draw && record.bone_matrices.empty() && record.scene_morph_targets)) {
+        return scene_deformation_draw_world(record, scene, engine);
+    }
+    // The loader folds node world into its joint palettes. A morph-only
+    // animated node carries that world in its single palette entry instead.
+    if (!skeleton_draw && !record.bone_matrices.empty()) {
+        return draw_world(record.bone_matrices[0], record, scene, engine);
+    }
+    return draw_world(std::array<float, 16>{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    }, record, scene, engine);
+}
+
+#endif
 
 #if BBLITE_GPU_INSTANCING
 /**
@@ -1467,8 +1513,8 @@ inline std::vector<GpuVertex> transformed_vertices(
     // far-from-origin translation into float32 before the eye-relative
     // subtraction could recover the remainder -- which is the whole point
     // of the mode.
-    // A scene-authored skeleton keeps local vertices for the third such
-    // reason: the pin skins in mesh-local space and composes
+    // Scene-authored deformation keeps local vertices too: the pin morphs
+    // and skins in mesh-local space and composes
     // `finalWorld = mesh.world * influence`, so baking the record's
     // transform here would apply it before the bones instead of after
     // them. A glTF skin needs no entry in this list -- the loader already
@@ -1478,7 +1524,7 @@ inline std::vector<GpuVertex> transformed_vertices(
         identity_transform;
 #else
         mesh.thin_instanced || mesh.gpu_world_transform ||
-                mesh.scene_skeleton
+                mesh.scene_skeleton || mesh.scene_morph_targets
             ? identity_transform
             : mesh;
 #endif
@@ -1842,52 +1888,30 @@ inline std::array<float, 16> shader_draw_world(
 
 #if BBLITE_HAS_PICKING
 #if BBLITE_DEFORM_PICKING
-/**
- * Whether a pick candidate draws through the pin's deform vertex
- * projection instead of the affine one.
- *
- * Upstream `getDeformPickingProjection` answers for a mesh carrying a
- * live skeleton or morph targets, and the arm this port composes is the
- * SKINNED one -- so the predicate is the skin, not the deformation. An
- * animated mesh with no skin still reaches the deformation path here (the
- * loader publishes its own world as a one-entry palette), but its
- * vertices carry a zero weight quad, so the pin's blend would collapse it
- * to nothing; that mesh keeps the affine projection and its own live
- * world, which is the same pairing `pinned_draw_conventions` calls
- * `world_from_palette`.
- *
- * Stated once because two answers depend on it and must not disagree:
- * which pipeline draws the candidate, and which matrix the detailed
- * solve transforms its rest normal by.
- */
-inline bool pick_mesh_deforms(const MeshRecord& mesh) {
-    // `getDeformPickingProjection` opens with `if (mesh.vat) return null;`
-    // and this is that line. A baked mesh keeps `skinned` -- the loader
-    // writes it for the bake's own first-skinned search -- and keeps the
-    // palette the pose pass stopped updating, because the pose pass
-    // `continue`s on `has_vat` BEFORE it clears the matrices. Without this
-    // arm a VAT build with detailed picking would draw a baked mesh through
-    // the deform pipeline against that stale palette, and read a node world
-    // nothing had refreshed.
+/** Match the pin's skeleton/morph projection key for this live candidate. */
+inline int pick_mesh_projection(const Engine& engine, const MeshRecord& mesh) {
 #if BBLITE_VAT
-    if (mesh.has_vat) return false;
+    // The pin deliberately declines VAT before inspecting skeleton or morph.
+    if (mesh.has_vat) return -1;
 #endif
-    // SKINNED, not merely deforming. The pin's `projectionFor` reaches
-    // five arms -- skin4 and skin8, each with and without morph, plus
-    // noskin-morph -- and this port composes exactly ONE per scene: a
-    // skin4 arm, since the mock mesh the composition hands the pin has no
-    // second joint buffer. A scene needing skin8 refuses. The reason it
-    // is a skinned arm at all is that the
-    // composition gate reads the pinned SKELETON bit -- so a mesh whose
-    // only deformation is morph targets takes the affine pipeline and is
-    // picked at its un-morphed pose, where the pin would use its
-    // `noskin-morph` arm. No registered scene puts a morph-only mesh in
-    // front of a detailed pick, and composing an arm nothing reaches is
-    // what this port does not do; the gap is stated here and in TODO.md
-    // rather than filled speculatively.
-    return mesh.skinned && mesh.pinned_bone_palette &&
-        !mesh.bone_matrices.empty();
+    const bool skeleton = mesh.skinned;
+    // Attachment is geometry identity, independent of missing defaults or
+    // all-zero animated weights. The visible storage path uses this same
+    // transported target set when it allocates the projection's buffers.
+    const bool morph = mesh.scene_morph_targets || (mesh.gpu_deformation &&
+        !engine.geometries.at(mesh.geometry).morph_positions.empty());
+    if (!skeleton && !morph) return -1;
+    if (skeleton && !mesh.pinned_bone_palette) {
+        throw std::runtime_error("deformation picking requires the pinned bone palette transport");
+    }
+    for (std::size_t index = 0; index < upstream::pick_deform_variants.size(); ++index) {
+        const auto& variant = upstream::pick_deform_variants[index];
+        if (variant.skeleton == skeleton && variant.morph == morph) return static_cast<int>(index);
+    }
+    throw std::runtime_error("pick candidate reached an uncomposed deformation projection");
 }
+
+
 #endif
 
 /** One mesh the pick pass will draw: its plan item and its uniform block. */
@@ -1900,8 +1924,8 @@ struct PickMeshCandidate {
     std::uint32_t instance_count = 1;
 #endif
 #if BBLITE_DEFORM_PICKING
-    /** `pick_mesh_deforms` for this candidate's mesh. */
-    bool deform = false;
+    /** Index in the generated projection table; -1 is the affine pipeline. */
+    int deform = -1;
 #endif
 };
 
@@ -1943,13 +1967,7 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
     std::size_t gpu_mesh_count,
     const HasGeometry& has_geometry,
     std::vector<PickRange>& ranges,
-    std::uint32_t& next_id,
-    // Whether THIS pass is the detailed one. The deform pipeline exists
-    // only there, so only there does the palette carry the world; a basic
-    // pick in the same build still draws through the affine pipeline and
-    // must keep the world that pipeline expects. Per-picker and runtime,
-    // which is why it is a parameter rather than a define.
-    [[maybe_unused]] bool detailed) {
+    std::uint32_t& next_id) {
     std::vector<PickMeshCandidate> candidates;
     for (std::size_t item_index = 0;
          item_index < render_plan.items.size() &&
@@ -1981,7 +1999,12 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
             0.0f, 0.0f, 1.0f, 0.0f,
             0.0f, 0.0f, 0.0f, 1.0f};
 #if BBLITE_DEFORM_PICKING
-        candidate.deform = pick_mesh_deforms(pick_mesh);
+        candidate.deform = pick_mesh_projection(engine, pick_mesh);
+#if BBLITE_GPU_INSTANCING
+        if (candidate.thin && candidate.deform >= 0) {
+            throw std::runtime_error("thin-instance deformation picking is not supported");
+        }
+#endif
 #endif
         candidate.uniforms.world =
 #if BBLITE_GPU_INSTANCING
@@ -1990,21 +2013,9 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
             :
 #endif
 #if BBLITE_DEFORM_PICKING
-            // The skinned arm's own convention, which is the render
-            // path's: the loader's palette is the mirror-conjugated
-            // `jointWorld * IBM` against the MIRRORED vertex buffer this
-            // pass already binds, so `mesh.world * influence` needs the
-            // identity here for the same reason
-            // `pinned_draw_world(skeleton_draw)` does -- the palette
-            // carries the world on both sides and a second copy would
-            // apply it twice. A BASIC pick takes none of this: it has no
-            // palette to read, so it draws the bind pose through the
-            // affine pipeline exactly as it did before deform picking
-            // existed. That is a pre-existing limit of the basic pass --
-            // upstream hands its projection to that pipeline too, and this
-            // port composes only the detailed arm -- and it is recorded in
-            // the picking contract rather than papered over here.
-            (detailed && candidate.deform) ? identity_world :
+            candidate.deform >= 0
+            ? deformed_draw_world(pick_mesh.skinned, pick_mesh, scene, engine)
+            :
 #endif
             pick_mesh.gpu_world_transform
             ? shader_draw_world(engine, pick_mesh)
@@ -2060,7 +2071,9 @@ inline void finish_detailed_pick(
         // identity for one -- and the pin transforms the REST normal by
         // `mesh.worldMatrix`, which is that node world and not the skin.
         // The pose pass keeps it for exactly this read.
-        pick_mesh_deforms(hit_mesh) ? hit_mesh.deform_node_world :
+        pick_mesh_projection(engine, hit_mesh) >= 0 &&
+                !hit_mesh.scene_skeleton && !hit_mesh.scene_morph_targets
+            ? hit_mesh.deform_node_world :
 #endif
         upstream::mesh_world_matrix(engine, hit_mesh);
     detail.world_baked = !hit_mesh.gpu_world_transform
@@ -2070,7 +2083,7 @@ inline void finish_detailed_pick(
         // the varying is already the rest position the solve wants and
         // un-baking it through a matrix it never carried is what turned
         // the barycentric weights into 36 and -16.
-        && !pick_mesh_deforms(hit_mesh)
+        && pick_mesh_projection(engine, hit_mesh) < 0
 #endif
         ;
     info.detail = detail;
@@ -2480,25 +2493,8 @@ inline std::array<float, 16> pinned_draw_world(
     const MeshRecord& record,
     const Scene& scene,
     const Engine& engine) {
-    if (skeleton_draw) {
-        // Both arms are the pin's own `finalWorld = mesh.world *
-        // influence`; what differs is which half carries the mesh world.
-        // The glTF pose pass folds `invMeshWorld` into every palette entry
-        // and leaves the record at rest, so its `mesh.world` is the
-        // identity. A scene that wrote its own bone matrices folded
-        // nothing, so its `mesh.world` is the record's live world -- read
-        // here rather than baked, because the scene may move the mesh
-        // between frames while the palette stays the bones alone.
-        return draw_world(
-            record.scene_skeleton
-                ? upstream::mesh_world_matrix(engine, record)
-                : pinned_identity_world(),
-            record,
-            scene,
-            engine);
-    }
-    if (world_from_palette) {
-        return draw_world(record.bone_matrices[0], record, scene, engine);
+    if (skeleton_draw || world_from_palette || record.scene_morph_targets) {
+        return deformed_draw_world(skeleton_draw, record, scene, engine);
     }
     if (record.gpu_world_transform) {
         // `pinned_convention_vertices` applies the Babylon X mirror to the
@@ -3384,8 +3380,8 @@ inline upstream::MeshUniforms pinned_mesh_block(
  *
  * The pin packs the mesh's world matrix, `receiveShadows ? 1 : 0` in the
  * shadow lane, and the same light selection every family uses. The world is
- * the identity because our vertices are baked with it, exactly as the
- * Standard family's are.
+ * the identity for baked vertices. Scene-authored morphs keep local vertices
+ * and deltas, so their block carries the live world after deformation.
  *
  * The shadow lane is a VALUE here where it is a composition key for the
  * other two families: `node-shadow.ts` mixes each light's factor by it
@@ -3397,18 +3393,11 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     const Engine& engine,
     std::uint32_t mesh_index) {
     upstream::NodeMeshUniforms block{};
-    // The identity is the BAKE's answer, not a constant: this port bakes a
-    // node mesh's TRS into its vertices, so the world carries nothing --
-    // unless the floating-origin frame kept them local, which is exactly
-    // what `draw_world` decides for every family alike.
-    block.world = draw_world(
-        pinned_identity_world(),
-        engine.meshes[mesh_index],
-        scene,
-        engine);
-    if (
-        mesh_index < engine.meshes.size() &&
-        engine.meshes[mesh_index].receives_shadows) {
+    const MeshRecord& record = engine.meshes[mesh_index];
+    block.world = record.scene_morph_targets
+        ? scene_deformation_draw_world(record, scene, engine)
+        : draw_world(pinned_identity_world(), record, scene, engine);
+    if (record.receives_shadows) {
         block.receivesShadow[0] = 1.0f;
     }
     // `writeAttributeFlags`: the block's three spare lanes carry whether
@@ -3418,16 +3407,13 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     // they are unconditional, because a module that does not declare the
     // block never reads the lanes and every mesh block is packed by this
     // one function.
-    if (mesh_index < engine.meshes.size()) {
-        const MeshRecord& record = engine.meshes[mesh_index];
-        if (record.geometry < engine.geometries.size()) {
-            const ModelGeometry& geometry =
-                engine.geometries[record.geometry];
-            block.receivesShadow[1] = geometry.has_uvs ? 1.0f : 0.0f;
-            block.receivesShadow[2] = geometry.has_tangents ? 1.0f : 0.0f;
-            block.receivesShadow[3] =
-                geometry.has_vertex_colors ? 1.0f : 0.0f;
-        }
+    if (record.geometry < engine.geometries.size()) {
+        const ModelGeometry& geometry =
+            engine.geometries[record.geometry];
+        block.receivesShadow[1] = geometry.has_uvs ? 1.0f : 0.0f;
+        block.receivesShadow[2] = geometry.has_tangents ? 1.0f : 0.0f;
+        block.receivesShadow[3] =
+            geometry.has_vertex_colors ? 1.0f : 0.0f;
     }
     pinned_mesh_light_selection(scene, engine, mesh_index, block);
     return block;
@@ -3801,7 +3787,7 @@ inline PinnedDrawConventions pinned_draw_conventions(
     return PinnedDrawConventions{
         skeleton_draw,
         world_from_palette,
-        skeleton_draw || vat_draw || world_from_palette,
+        skeleton_draw || vat_draw || world_from_palette || record.scene_morph_targets,
         vat_draw,
         skeleton_draw || vat_draw,
     };
@@ -4098,6 +4084,9 @@ inline std::array<float, 16> standard_draw_world(
     bool uses_local_position,
     const Scene& scene,
     const Engine& engine) {
+    if (record.scene_morph_targets) {
+        return scene_deformation_draw_world(record, scene, engine);
+    }
 #if BBLITE_GPU_INSTANCING
     if (pinned_record_instanced(record)) {
         return instance_parent_draw_world(record, scene, engine);

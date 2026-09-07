@@ -1444,56 +1444,27 @@ function capabilityRows(
             ["render_capabilities.hpp"],
         ),
         checkedRow(
-            "BBLITE_DEFORM_PICKING",
-            "capability",
-            emit.pickingShaders?.deform !== undefined,
-            // ONE reason, and deliberately so: `activation` above combines
-            // parts by DISJUNCTION -- any recorded reason activates the
-            // row -- and this gate is a conjunction of three. Splitting it
-            // into three parts makes the row claim itself active whenever
-            // any one holds, which is how it first failed. The cross-check
-            // is therefore weak here by construction; the three inputs are
-            // named in the provenance below so a reader can still see
-            // them.
-            [
-                [
-                    emit.pickingShaders?.deform !== undefined,
-                    "a detailed pick draws a live pose through the pin's " +
-                        "deform vertex projection",
-                ],
-            ],
-            "no detailed pick over a mesh whose pose the pin's own " +
-                "per-bone palette texture carries",
-            "src/picking/deform-picking-projection.ts: upstream lazily " +
-                "imports that module only when a pick candidate carries a " +
-                "skeleton or morph targets, so a scene with nothing to " +
-                "deform composes neither the module nor the pipeline. The " +
-                "generation gate is that condition's three inputs -- a " +
-                "detailed pick, an animated asset, and the composed " +
-                "skeleton variant that publishes the palette the " +
-                "projection samples",
-            ["render_capabilities.hpp", "deployed shaders"],
+            "BBLITE_DEFORM_PICKING", "capability",
+            (emit.pickingShaders?.deform?.length ?? 0) > 0,
+            [[(emit.pickingShaders?.deform?.length ?? 0) > 0,
+                "a GPU pick composes at least one live skeleton or morph projection"]],
+            "no GPU pick reaches a transported skeleton or morph pose",
+            "src/picking/deform-picking-projection.ts: the pin selects a regular " +
+                "projection per candidate for both basic and detailed picking. " +
+                "Skeleton arms require the composed palette transport; morph-only " +
+                "arms declare the storage pair without a palette.",
+            ["render_capabilities.hpp", "variant table", "deployed shaders"],
         ),
         checkedRow(
-            "BBLITE_DEFORM_PICKING_MORPH",
-            "capability",
-            emit.pickingShaders?.deformMorph ?? false,
-            [
-                [
-                    emit.pickingShaders?.deformMorph ?? false,
-                    "the composed deform projection is the pin's morph arm",
-                ],
-            ],
-            "the composed deform projection samples the bone palette alone",
-            "src/picking/deform-picking-projection.ts projectionFor: the " +
-                "morph arm declares two storage bindings beside the palette " +
-                "and the nomorph arm declares the palette alone, so a " +
-                "backend that sizes its bind group from anything but the " +
-                "arm actually composed mismatches the shader it deployed. " +
-                "Recorded separately from BBLITE_GPU_MORPH_STORAGE, which " +
-                "is a wider disjunction taking a node-material variant's " +
-                "morph bindings too",
-            ["render_capabilities.hpp"],
+            "BBLITE_DEFORM_PICKING_MORPH", "capability",
+            emit.pickingShaders?.deform?.some((variant) => variant.morph) ?? false,
+            [[emit.pickingShaders?.deform?.some((variant) => variant.morph) ?? false,
+                "a composed deformation projection reads morph storage"]],
+            "no composed deformation projection reads morph storage",
+            "src/picking/deform-picking-projection.ts: each projection declares " +
+                "its own bone and morph bindings; picking_projection.hpp carries " +
+                "that layout independently of the wider GPU_MORPH_STORAGE gate.",
+            ["render_capabilities.hpp", "variant table"],
         ),
         checkedRow(
             "BBLITE_VAT",

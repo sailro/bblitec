@@ -800,10 +800,13 @@ struct DawnState : DawnDevice {
 #if BBLITE_DEFORM_PICKING
     /** The same module with the pin's deform vertex projection spliced
      *  into `vs`, and the two groups that projection declares. */
-    WGPURenderPipeline pick_deform_pipeline = nullptr;
+    struct PickDeformProgram {
+        std::array<WGPURenderPipeline, 2> pipelines{};
+        WGPUBindGroupLayout layout = nullptr;
+    };
+    std::array<PickDeformProgram, upstream::pick_deform_variants.size()> pick_deform_programs{};
     WGPUBindGroupLayout pick_deform_empty_layout = nullptr;
     WGPUBindGroup pick_deform_empty_group = nullptr;
-    WGPUBindGroupLayout pick_deform_layout = nullptr;
 #endif
     WGPUBindGroupLayout pick_scene_layout = nullptr;
     WGPUBindGroupLayout pick_mesh_layout = nullptr;
@@ -1652,17 +1655,17 @@ struct DawnState : DawnDevice {
         }
 #endif
 #if BBLITE_DEFORM_PICKING
-        if (pick_deform_pipeline) {
-            wgpuRenderPipelineRelease(pick_deform_pipeline);
+        for (auto& program : pick_deform_programs) {
+            for (auto pipeline : program.pipelines) {
+                if (pipeline) wgpuRenderPipelineRelease(pipeline);
+            }
+            if (program.layout) wgpuBindGroupLayoutRelease(program.layout);
         }
         if (pick_deform_empty_group) {
             wgpuBindGroupRelease(pick_deform_empty_group);
         }
         if (pick_deform_empty_layout) {
             wgpuBindGroupLayoutRelease(pick_deform_empty_layout);
-        }
-        if (pick_deform_layout) {
-            wgpuBindGroupLayoutRelease(pick_deform_layout);
         }
 #endif
         if (pick_scene_layout) wgpuBindGroupLayoutRelease(pick_scene_layout);
@@ -4157,6 +4160,20 @@ PinnedResource pinned_resource_for(
     return PinnedResource{};
 }
 
+#endif
+
+#if BBLITE_GPU_MORPH_STORAGE
+/** Publish the same dirty pose before a visible draw or a same-turn pick. */
+void sync_morph_weights(
+    DawnState& state, DawnMesh& mesh,
+    const ModelGeometry& geometry,
+    const MeshRecord& record) {
+    if (!mesh.owns_morph_buffers || mesh.morph_weights_version == record.morph_weights_version) return;
+    const std::vector<float> weights = morph_weight_values(geometry, record);
+    wgpuQueueWriteBuffer(state.queue, mesh.morph_weights, 16,
+        weights.data(), weights.size() * sizeof(float));
+    mesh.morph_weights_version = record.morph_weights_version;
+}
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
@@ -9560,15 +9577,18 @@ inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
     WGPUBindGroupLayout mesh_layout,
     const char* stem_vertex,
     const char* stem_fragment,
-    std::uint32_t target_count) {
+    std::uint32_t target_count,
+    WGPUBindGroupLayout empty_layout = nullptr,
+    WGPUBindGroupLayout deform_layout = nullptr,
+    [[maybe_unused]] bool skeleton = false) {
     WGPUShaderModule vertex = load_wgsl_module(device, stem_vertex);
     WGPUShaderModule fragment = load_wgsl_module(device, stem_fragment);
 
-    const std::array<WGPUBindGroupLayout, 2> groups{
-        scene_layout, mesh_layout};
+    const std::array<WGPUBindGroupLayout, 4> groups{
+        scene_layout, mesh_layout, empty_layout, deform_layout};
     WGPUPipelineLayoutDescriptor layout_descriptor =
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    layout_descriptor.bindGroupLayoutCount = groups.size();
+    layout_descriptor.bindGroupLayoutCount = deform_layout ? 4u : 2u;
     layout_descriptor.bindGroupLayouts = groups.data();
     WGPUPipelineLayout pipeline_layout =
         wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
@@ -9576,15 +9596,23 @@ inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
 
     // The renderer's interleaved stream read at its own pitch: the pin
     // binds a position-only buffer, and these are the same numbers.
-    WGPUVertexAttribute position{};
-    position.shaderLocation = 0;
-    position.offset = 0;
-    position.format = WGPUVertexFormat_Float32x3;
+    std::array<WGPUVertexAttribute, 3> attributes{};
+    attributes[0].shaderLocation = 0;
+    attributes[0].offset = 0;
+    attributes[0].format = WGPUVertexFormat_Float32x3;
+#if BBLITE_GPU_DEFORMATION && (BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON))
+    attributes[1].shaderLocation = 1;
+    attributes[1].offset = offsetof(GpuVertex, joint_indices);
+    attributes[1].format = WGPUVertexFormat_Uint32x4;
+    attributes[2].shaderLocation = 2;
+    attributes[2].offset = offsetof(GpuVertex, weights);
+    attributes[2].format = WGPUVertexFormat_Float32x4;
+#endif
     WGPUVertexBufferLayout vertex_layout{};
     vertex_layout.arrayStride = sizeof(GpuVertex);
     vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layout.attributeCount = 1;
-    vertex_layout.attributes = &position;
+    vertex_layout.attributeCount = skeleton ? 3u : 1u;
+    vertex_layout.attributes = attributes.data();
 
     std::array<WGPUColorTargetState, pick_color_targets> targets{};
     fill_dawn_pick_targets(targets);
@@ -9647,33 +9675,26 @@ inline WGPUBindGroupLayout create_dawn_pick_empty_layout(
 
 /** The projection's own group: the bone palette, then the morph pair. */
 inline WGPUBindGroupLayout create_dawn_pick_deform_layout(
-    WGPUDevice device) {
-    // As many entries as the COMPOSED arm declares. The pin builds two
-    // projections: the morph one samples the palette and both storage
-    // buffers, and the `nomorph` one declares the palette alone. Composing
-    // the second while declaring three here would mismatch the layout --
-    // SDL is data-driven off the shader's own reflection sidecar and got
-    // this right for free, which is why only Dawn needed saying.
-    //
-    // The define is the one that records WHICH ARM WAS COMPOSED, not
-    // BBLITE_GPU_MORPH_STORAGE: that one is a wider disjunction taking a
-    // node-material variant's morph bindings too, and a scene with those
-    // but no scene or asset targets composes `nomorph` while it says one.
+    WGPUDevice device, const upstream::PickDeformVariant& variant) {
     std::array<WGPUBindGroupLayoutEntry, 3> entries{};
-    const std::size_t entry_count = BBLITE_DEFORM_PICKING_MORPH ? 3u : 1u;
-    for (WGPUBindGroupLayoutEntry& entry : entries) {
+    std::size_t entry_count = 0;
+    const auto append = [&]() -> WGPUBindGroupLayoutEntry& {
+        auto& entry = entries[entry_count];
         entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        entry.binding = static_cast<std::uint32_t>(entry_count++);
         entry.visibility = WGPUShaderStage_Vertex;
+        return entry;
+    };
+    if (variant.skeleton) {
+        auto& entry = append();
+        entry.texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
+        entry.texture.viewDimension = WGPUTextureViewDimension_2D;
     }
-    entries[0].binding = 0;
-    entries[0].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
-    entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
-#if BBLITE_DEFORM_PICKING_MORPH
-    entries[1].binding = 1;
-    entries[1].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-    entries[2].binding = 2;
-    entries[2].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-#endif
+    if (variant.morph) {
+        append().buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+        append().buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+    }
+
     WGPUBindGroupLayoutDescriptor descriptor =
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = static_cast<std::uint32_t>(entry_count);
@@ -9684,91 +9705,7 @@ inline WGPUBindGroupLayout create_dawn_pick_deform_layout(
     return layout;
 }
 
-/**
- * The detailed pick pipeline whose vertex stage is the pin's deform
- * projection. Everything but the stage, the extra groups and the two skin
- * attributes is the affine pipeline's, including the fragment: the
- * projection reaches only `vs`, so the deployed module carries one stage
- * and the fragment comes from the plain detailed one.
- */
-inline WGPURenderPipeline create_dawn_pick_deform_pipeline(
-    WGPUDevice device,
-    WGPUBindGroupLayout scene_layout,
-    WGPUBindGroupLayout mesh_layout,
-    WGPUBindGroupLayout empty_layout,
-    WGPUBindGroupLayout deform_layout) {
-    WGPUShaderModule vertex =
-        load_wgsl_module(device, "picking-detailed-deform.vert");
-    WGPUShaderModule fragment =
-        load_wgsl_module(device, "picking-detailed.frag");
 
-    const std::array<WGPUBindGroupLayout, 4> groups{
-        scene_layout, mesh_layout, empty_layout, deform_layout};
-    WGPUPipelineLayoutDescriptor layout_descriptor =
-        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    layout_descriptor.bindGroupLayoutCount = groups.size();
-    layout_descriptor.bindGroupLayouts = groups.data();
-    WGPUPipelineLayout pipeline_layout =
-        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
-    if (!pipeline_layout) dawn_error("pick deform pipeline layout");
-
-    // The pin declares a stream per skin attribute beside its
-    // position-only buffer; this port reads all three out of the one
-    // interleaved `GpuVertex`, as the affine pipeline already reads the
-    // position. `joint_indices` is the integer lane the pin's own stage
-    // takes -- the float pair beside it is the transcribed stage's.
-    std::array<WGPUVertexAttribute, 3> attributes{};
-    attributes[0].shaderLocation = 0;
-    attributes[0].offset = 0;
-    attributes[0].format = WGPUVertexFormat_Float32x3;
-    attributes[1].shaderLocation = 1;
-    attributes[1].offset = offsetof(GpuVertex, joint_indices);
-    attributes[1].format = WGPUVertexFormat_Uint32x4;
-    attributes[2].shaderLocation = 2;
-    attributes[2].offset = offsetof(GpuVertex, weights);
-    attributes[2].format = WGPUVertexFormat_Float32x4;
-    WGPUVertexBufferLayout vertex_layout{};
-    vertex_layout.arrayStride = sizeof(GpuVertex);
-    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layout.attributeCount =
-        static_cast<std::uint32_t>(attributes.size());
-    vertex_layout.attributes = attributes.data();
-
-    std::array<WGPUColorTargetState, pick_color_targets> targets{};
-    fill_dawn_pick_targets(targets);
-
-    WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
-    fragment_state.module = fragment;
-    fragment_state.entryPoint = string_view("fs");
-    fragment_state.targetCount = pick_color_targets;
-    fragment_state.targets = targets.data();
-
-    WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth.format = WGPUTextureFormat_Depth24Plus;
-    depth.depthCompare = WGPUCompareFunction_Greater;
-    depth.depthWriteEnabled = WGPUOptionalBool_True;
-
-    WGPURenderPipelineDescriptor descriptor =
-        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = pipeline_layout;
-    descriptor.vertex.module = vertex;
-    descriptor.vertex.entryPoint = string_view("vs");
-    descriptor.vertex.bufferCount = 1;
-    descriptor.vertex.buffers = &vertex_layout;
-    descriptor.fragment = &fragment_state;
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.cullMode = WGPUCullMode_None;
-    descriptor.depthStencil = &depth;
-    descriptor.multisample.count = 1;
-
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(device, &descriptor);
-    wgpuPipelineLayoutRelease(pipeline_layout);
-    wgpuShaderModuleRelease(vertex);
-    wgpuShaderModuleRelease(fragment);
-    if (!pipeline) dawn_error("pick deform render pipeline");
-    return pipeline;
-}
 #endif
 
 #if BBLITE_HAS_SPLATS
@@ -11733,14 +11670,20 @@ SceneRun run_dawn_engine(Engine& engine) {
             if (!state.pick_deform_empty_group) {
                 dawn_error("pick deform empty bind group");
             }
-            state.pick_deform_layout =
-                create_dawn_pick_deform_layout(state.device);
-            state.pick_deform_pipeline = create_dawn_pick_deform_pipeline(
-                state.device,
-                state.pick_scene_layout,
-                state.pick_mesh_layout,
-                state.pick_deform_empty_layout,
-                state.pick_deform_layout);
+            for (std::size_t index = 0; index < upstream::pick_deform_variants.size(); ++index) {
+                const auto& variant = upstream::pick_deform_variants[index];
+                auto& program = state.pick_deform_programs[index];
+                program.layout = create_dawn_pick_deform_layout(state.device, variant);
+                for (std::size_t mode = 0; mode < 2; ++mode) {
+                    const char* stem = mode == 0 ? variant.vertex : variant.detailed_vertex;
+                    if (!stem) continue;
+                    program.pipelines[mode] = create_dawn_pick_mesh_pipeline(
+                        state.device, state.pick_scene_layout, state.pick_mesh_layout,
+                        stem, mode == 0 ? "picking.frag" : "picking-detailed.frag",
+                        mode == 0 ? 2u : 3u, state.pick_deform_empty_layout,
+                        program.layout, variant.skeleton);
+                }
+            }
 #endif
             WGPUBufferDescriptor scene_buffer =
                 WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -11794,12 +11737,20 @@ SceneRun run_dawn_engine(Engine& engine) {
                     return mesh.vertices && mesh.indices;
                 },
                 ranges,
-                next_id,
-                // Whether THIS pass is the detailed one; see the SDL twin.
-#if BBLITE_HAS_DETAILED_PICKING
-                detailed);
-#else
-                false);
+                next_id);
+#if BBLITE_DEFORM_PICKING
+        for (const auto& candidate : candidates) {
+            if (candidate.deform < 0) continue;
+            const auto& item = render_plan.items[candidate.item_index];
+            const auto& record = engine.meshes[item.mesh.value];
+            auto& gpu = pick_meshes[candidate.item_index];
+#if BBLITE_GPU_MORPH_STORAGE
+            sync_morph_weights(state, gpu, engine.geometries[item.geometry], record);
+#endif
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+            if (record.skinned) write_pinned_bone_texture(state, gpu, record);
+#endif
+        }
 #endif
         blocks.reserve(candidates.size());
         for (const PickMeshCandidate& candidate : candidates) {
@@ -12063,7 +12014,12 @@ SceneRun run_dawn_engine(Engine& engine) {
         // pin builds its own the same way, from the pose the frame has
         // already uploaded.
         std::vector<WGPUBindGroup> deform_groups(blocks.size(), nullptr);
-        bool deform_bound = false;
+        int deform_bound = -1;
+        const std::size_t deform_mode =
+#if BBLITE_HAS_DETAILED_PICKING
+            detailed ? 1u :
+#endif
+            0u;
 #endif
         for (std::size_t index = 0; index < blocks.size(); ++index) {
             const DawnMesh& mesh =
@@ -12111,44 +12067,54 @@ SceneRun run_dawn_engine(Engine& engine) {
                     pass, 0, state.pick_scene_group, 0, nullptr);
                 regular_pick_pipeline_bound = true;
 #if BBLITE_DEFORM_PICKING
-                deform_bound = false;
+                deform_bound = -1;
 #endif
             }
 #endif
 #if BBLITE_DEFORM_PICKING
-            const bool deform_draw = detailed && candidates[index].deform;
+            const int deform_draw = candidates[index].deform;
+            const auto* deform_program = deform_draw >= 0
+                ? &state.pick_deform_programs[static_cast<std::size_t>(deform_draw)] : nullptr;
             if (deform_draw != deform_bound) {
                 deform_bound = deform_draw;
-                wgpuRenderPassEncoderSetPipeline(
-                    pass,
-                    deform_draw ? state.pick_deform_pipeline
-                                : state.pick_detailed_pipeline);
-                wgpuRenderPassEncoderSetBindGroup(
-                    pass, 0, state.pick_scene_group, 0, nullptr);
+                wgpuRenderPassEncoderSetPipeline(pass,
+                    deform_program ? deform_program->pipelines[deform_mode] :
+#if BBLITE_HAS_DETAILED_PICKING
+                    detailed ? state.pick_detailed_pipeline :
+#endif
+                    state.pick_mesh_pipeline);
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
             }
-            if (deform_draw) {
-                // Filled to match the composed arm, exactly as the
-                // layout above is: a build with no morph storage composed
-                // the pin's `nomorph` projection, whose group is the bone
-                // palette alone, and never created the two buffers.
+            if (deform_program) {
+                const auto& variant = upstream::pick_deform_variants[static_cast<std::size_t>(deform_draw)];
                 std::array<WGPUBindGroupEntry, 3> entries{};
-                const std::size_t entry_count =
-                    BBLITE_DEFORM_PICKING_MORPH ? 3u : 1u;
-                for (WGPUBindGroupEntry& entry : entries) {
+                std::size_t entry_count = 0;
+                bool pose_bound = true;
+                const auto append = [&]() -> WGPUBindGroupEntry& {
+                    auto& entry = entries[entry_count];
                     entry = WGPU_BIND_GROUP_ENTRY_INIT;
+                    entry.binding = static_cast<std::uint32_t>(entry_count++);
+                    return entry;
+                };
+                if (variant.skeleton) {
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+                    auto& entry = append();
+                    entry.textureView = mesh.pinned_bone_view;
+                    pose_bound = entry.textureView != nullptr;
+#else
+                    dawn_error("deformation pick has no bone palette transport");
+#endif
                 }
-                entries[0].binding = 0;
-                entries[0].textureView = mesh.pinned_bone_view;
-                bool pose_bound = entries[0].textureView != nullptr;
 #if BBLITE_DEFORM_PICKING_MORPH
-                entries[1].binding = 1;
-                entries[1].buffer = mesh.morph_deltas;
-                entries[1].size = WGPU_WHOLE_SIZE;
-                entries[2].binding = 2;
-                entries[2].buffer = mesh.morph_weights;
-                entries[2].size = WGPU_WHOLE_SIZE;
-                pose_bound = pose_bound && entries[1].buffer != nullptr &&
-                    entries[2].buffer != nullptr;
+                if (variant.morph) {
+                    auto& deltas = append();
+                    deltas.buffer = mesh.morph_deltas;
+                    deltas.size = WGPU_WHOLE_SIZE;
+                    auto& weights = append();
+                    weights.buffer = mesh.morph_weights;
+                    weights.size = WGPU_WHOLE_SIZE;
+                    pose_bound = pose_bound && deltas.buffer != nullptr && weights.buffer != nullptr;
+                }
 #endif
                 if (!pose_bound) {
                     dawn_error(
@@ -12157,7 +12123,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 }
                 WGPUBindGroupDescriptor group =
                     WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-                group.layout = state.pick_deform_layout;
+                group.layout = deform_program->layout;
                 group.entryCount =
                     static_cast<std::uint32_t>(entry_count);
                 group.entries = entries.data();
@@ -12795,26 +12761,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 mesh.gpu_deformation &&
                 !engine.geometries[item.geometry].flat_normals) {
 #if BBLITE_GPU_MORPH_STORAGE
-                if (
-                    dawn_mesh.owns_morph_buffers &&
-                    dawn_mesh.morph_weights_version !=
-                        mesh.morph_weights_version) {
-                    // The shared value packer behind the blob's
-                    // constant header; this backend rewrites just
-                    // the weight span.
-                    const std::vector<float> weights =
-                        morph_weight_values(
-                            engine.geometries[item.geometry],
-                            mesh);
-                    wgpuQueueWriteBuffer(
-                        state.queue,
-                        dawn_mesh.morph_weights,
-                        16,
-                        weights.data(),
-                        weights.size() * sizeof(float));
-                    dawn_mesh.morph_weights_version =
-                        mesh.morph_weights_version;
-                }
+                sync_morph_weights(state, dawn_mesh, engine.geometries[item.geometry], mesh);
 #endif
                 dawn_mesh.transform_version =
                     mesh.transform_version;

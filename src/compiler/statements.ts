@@ -538,7 +538,7 @@ export class StatementLowerer {
 
     private preferNativeDataIteration(
         context: StatementLoweringContext,
-        statement: ts.ForOfStatement,
+        statement: ts.IterationStatement,
         iterations: number,
     ): boolean {
         if (iterations < 2 || context.requiresStaticDataIteration(statement.statement)) return false;
@@ -2030,11 +2030,12 @@ export class StatementLowerer {
         }
         if (
             !requiresStaticIteration &&
-            this.exceedsDataStaticIndexNest(
-                context,
-                statement.statement,
-                iterations,
-            )
+            (this.preferNativeDataIteration(context, statement, iterations) ||
+                this.exceedsDataStaticIndexNest(
+                    context,
+                    statement.statement,
+                    iterations,
+                ))
         ) {
             return false;
         }
@@ -2052,17 +2053,6 @@ export class StatementLowerer {
                 },
             );
         };
-        if (
-            !requiresStaticIteration &&
-            this.exceedsStaticUnrollBudget(iterations)
-        ) {
-            this.emitBudgetedUniformIterations(
-                context,
-                iterations,
-                (at) => emitIndexIteration(start + at),
-            );
-            return true;
-        }
         this.withStaticUnrollProduct(iterations, () => {
             for (
                 let offset = 0;

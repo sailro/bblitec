@@ -1,0 +1,883 @@
+{
+  "scene": "scene114",
+  "sourcePath": "corpus/babylon-lite/lab/lite/src/lite/scene114.ts",
+  "pinnedSourceVersion": "64710b56f9dfe175d919c635812f84c8872d467c",
+  "sourceSha256": "879093cd0639b8b54bb0a7b8373796e8b6d16ae2f860a3a57acd354d867aecd4",
+  "canonicalModuleSha256": "e8563a3883963aa78474bcf48f62e9baa508deab3a166cc4fa558d2cf8b95061",
+  "diagnosticModuleSha256": "632e664d2758e5a11970ebc84338cc643dd633bd70a85e3563a46fabeeb1c2fa",
+  "search": "",
+  "referenceFrame": null,
+  "captureTimeSeconds": null,
+  "viewport": {
+    "width": 1280,
+    "height": 720,
+    "deviceScaleFactor": 1
+  },
+  "upstreamLiteToBabylonMaxMad": 0.1,
+  "nativeHardRequirement": "MAD < 0.5; choose tighter gates after measurement",
+  "referencePngSha256": "614f8fe7203b1a0160083662a716c36a90ac5151b35caab72e471ae49ade55d5",
+  "first": {
+    "hits": {
+      "morphGpuHit": "scene114-morph-target",
+      "morphDetailedHit": "scene114-morph-target",
+      "skeletonGpuHit": "scene114-skeleton-target",
+      "skeletonDetailedHit": "scene114-skeleton-target"
+    },
+    "picks": {
+      "morphGpu": {
+        "hit": true,
+        "name": "scene114-morph-target",
+        "point": [
+          -0.65968429954155,
+          0.6624690010195872,
+          1.3608736762610116e-7
+        ],
+        "faceId": -1,
+        "bu": 0,
+        "bv": 0,
+        "normal": null
+      },
+      "morphDetailed": {
+        "hit": true,
+        "name": "scene114-morph-target",
+        "point": [
+          -0.36525364407775257,
+          0.6624690010195872,
+          1.3608736762610116e-7
+        ],
+        "faceId": 1,
+        "bu": 0.23644890045305367,
+        "bv": 0.20423809887471436,
+        "normal": [
+          0,
+          0,
+          -1
+        ]
+      },
+      "skeletonGpu": {
+        "hit": true,
+        "name": "scene114-skeleton-target",
+        "point": [
+          1.6221532803028809,
+          -0.08280862512744849,
+          1.3608736762610116e-7
+        ],
+        "faceId": -1,
+        "bu": 0,
+        "bv": 0,
+        "normal": null
+      },
+      "skeletonDetailed": {
+        "hit": true,
+        "name": "scene114-skeleton-target",
+        "point": [
+          1.9165839357666787,
+          -0.08280862512744849,
+          1.3608736762610116e-7
+        ],
+        "faceId": 1,
+        "bu": 0.13348472912831666,
+        "bv": 0.5514490674523059,
+        "normal": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "camera": {
+      "alpha": -1.5707963267948966,
+      "beta": 1.5707963267948966,
+      "radius": 5.5,
+      "target": [
+        0.15,
+        0,
+        0
+      ],
+      "fov": 0.72
+    },
+    "meshes": [
+      {
+        "index": 0,
+        "name": "scene114-morph-target",
+        "position": [
+          -1.65,
+          0.42,
+          0
+        ],
+        "scaling": [
+          1,
+          1,
+          1
+        ],
+        "morphWeights": [
+          1
+        ]
+      },
+      {
+        "index": 1,
+        "name": "scene114-skeleton-target",
+        "position": [
+          0.72,
+          -0.42,
+          0
+        ],
+        "scaling": [
+          1,
+          1,
+          1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 2,
+        "name": "scene114-morph-bind-ghost",
+        "position": [
+          -1.65,
+          0.42,
+          0.16
+        ],
+        "scaling": [
+          1,
+          1,
+          1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 3,
+        "name": "scene114-morph-displacement-rail-a",
+        "position": [
+          -0.98,
+          1.05,
+          -0.08
+        ],
+        "scaling": [
+          1.16,
+          0.025,
+          0.025
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 4,
+        "name": "scene114-morph-displacement-rail-b",
+        "position": [
+          -0.98,
+          0.84,
+          -0.08
+        ],
+        "scaling": [
+          1.16,
+          0.025,
+          0.025
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 5,
+        "name": "scene114-morph-arrow-tip",
+        "position": [
+          -0.36,
+          0.945,
+          -0.08
+        ],
+        "scaling": [
+          0.13,
+          0.13,
+          0.035
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 6,
+        "name": "scene114-skeleton-bind-ghost",
+        "position": [
+          0.72,
+          -0.42,
+          0.16
+        ],
+        "scaling": [
+          1,
+          1,
+          1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 7,
+        "name": "scene114-root-bone-rail",
+        "position": [
+          0.17,
+          -0.42,
+          -0.08
+        ],
+        "scaling": [
+          0.035,
+          1.05,
+          0.035
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 8,
+        "name": "scene114-shift-bone-rail",
+        "position": [
+          2.72,
+          -0.42,
+          -0.08
+        ],
+        "scaling": [
+          0.035,
+          1.05,
+          0.035
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 9,
+        "name": "scene114-skeleton-bone-shift-rail",
+        "position": [
+          1.445,
+          0.18,
+          -0.08
+        ],
+        "scaling": [
+          2.55,
+          0.025,
+          0.025
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 10,
+        "name": "scene114-skeleton-bone-shift-tip",
+        "position": [
+          2.76,
+          0.18,
+          -0.08
+        ],
+        "scaling": [
+          0.12,
+          0.12,
+          0.035
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 11,
+        "name": "scene114-root-influence-bottom",
+        "position": [
+          0.17,
+          -0.88,
+          -0.12
+        ],
+        "scaling": [
+          0.1,
+          0.1,
+          0.1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 12,
+        "name": "scene114-root-influence-top",
+        "position": [
+          0.17,
+          0.04,
+          -0.12
+        ],
+        "scaling": [
+          0.1,
+          0.1,
+          0.1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 13,
+        "name": "scene114-shift-influence-bottom",
+        "position": [
+          2.72,
+          -0.88,
+          -0.12
+        ],
+        "scaling": [
+          0.1,
+          0.1,
+          0.1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 14,
+        "name": "scene114-shift-influence-top",
+        "position": [
+          2.72,
+          0.04,
+          -0.12
+        ],
+        "scaling": [
+          0.1,
+          0.1,
+          0.1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 15,
+        "name": "scene114-morph-gpu-marker",
+        "position": [
+          -0.65968429954155,
+          0.6624690010195872,
+          -0.08999986391263237
+        ],
+        "scaling": [
+          0.14,
+          0.14,
+          0.14
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 16,
+        "name": "scene114-morph-detailed-marker",
+        "position": [
+          -0.36525364407775257,
+          0.6624690010195872,
+          -0.07999986391263238
+        ],
+        "scaling": [
+          0.10655142303171375,
+          0.10429666692123,
+          0.12915191004705623
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 17,
+        "name": "scene114-skeleton-gpu-marker",
+        "position": [
+          1.6221532803028809,
+          -0.08280862512744849,
+          -0.08999986391263237
+        ],
+        "scaling": [
+          0.14,
+          0.14,
+          0.14
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 18,
+        "name": "scene114-skeleton-detailed-marker",
+        "position": [
+          1.9165839357666787,
+          -0.08280862512744849,
+          -0.07999986391263238
+        ],
+        "scaling": [
+          0.09934393103898216,
+          0.1286014347216614,
+          0.11205463423935641
+        ],
+        "morphWeights": null
+      }
+    ],
+    "clientSize": [
+      1280,
+      720
+    ]
+  },
+  "idle": {
+    "hits": {
+      "morphGpuHit": "scene114-morph-target",
+      "morphDetailedHit": "scene114-morph-target",
+      "skeletonGpuHit": "scene114-skeleton-target",
+      "skeletonDetailedHit": "scene114-skeleton-target"
+    },
+    "picks": {
+      "morphGpu": {
+        "hit": true,
+        "name": "scene114-morph-target",
+        "point": [
+          -0.65968429954155,
+          0.6624690010195872,
+          1.3608736762610116e-7
+        ],
+        "faceId": -1,
+        "bu": 0,
+        "bv": 0,
+        "normal": null
+      },
+      "morphDetailed": {
+        "hit": true,
+        "name": "scene114-morph-target",
+        "point": [
+          -0.36525364407775257,
+          0.6624690010195872,
+          1.3608736762610116e-7
+        ],
+        "faceId": 1,
+        "bu": 0.23644890045305367,
+        "bv": 0.20423809887471436,
+        "normal": [
+          0,
+          0,
+          -1
+        ]
+      },
+      "skeletonGpu": {
+        "hit": true,
+        "name": "scene114-skeleton-target",
+        "point": [
+          1.6221532803028809,
+          -0.08280862512744849,
+          1.3608736762610116e-7
+        ],
+        "faceId": -1,
+        "bu": 0,
+        "bv": 0,
+        "normal": null
+      },
+      "skeletonDetailed": {
+        "hit": true,
+        "name": "scene114-skeleton-target",
+        "point": [
+          1.9165839357666787,
+          -0.08280862512744849,
+          1.3608736762610116e-7
+        ],
+        "faceId": 1,
+        "bu": 0.13348472912831666,
+        "bv": 0.5514490674523059,
+        "normal": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    "camera": {
+      "alpha": -1.5707963267948966,
+      "beta": 1.5707963267948966,
+      "radius": 5.5,
+      "target": [
+        0.15,
+        0,
+        0
+      ],
+      "fov": 0.72
+    },
+    "meshes": [
+      {
+        "index": 0,
+        "name": "scene114-morph-target",
+        "position": [
+          -1.65,
+          0.42,
+          0
+        ],
+        "scaling": [
+          1,
+          1,
+          1
+        ],
+        "morphWeights": [
+          1
+        ]
+      },
+      {
+        "index": 1,
+        "name": "scene114-skeleton-target",
+        "position": [
+          0.72,
+          -0.42,
+          0
+        ],
+        "scaling": [
+          1,
+          1,
+          1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 2,
+        "name": "scene114-morph-bind-ghost",
+        "position": [
+          -1.65,
+          0.42,
+          0.16
+        ],
+        "scaling": [
+          1,
+          1,
+          1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 3,
+        "name": "scene114-morph-displacement-rail-a",
+        "position": [
+          -0.98,
+          1.05,
+          -0.08
+        ],
+        "scaling": [
+          1.16,
+          0.025,
+          0.025
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 4,
+        "name": "scene114-morph-displacement-rail-b",
+        "position": [
+          -0.98,
+          0.84,
+          -0.08
+        ],
+        "scaling": [
+          1.16,
+          0.025,
+          0.025
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 5,
+        "name": "scene114-morph-arrow-tip",
+        "position": [
+          -0.36,
+          0.945,
+          -0.08
+        ],
+        "scaling": [
+          0.13,
+          0.13,
+          0.035
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 6,
+        "name": "scene114-skeleton-bind-ghost",
+        "position": [
+          0.72,
+          -0.42,
+          0.16
+        ],
+        "scaling": [
+          1,
+          1,
+          1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 7,
+        "name": "scene114-root-bone-rail",
+        "position": [
+          0.17,
+          -0.42,
+          -0.08
+        ],
+        "scaling": [
+          0.035,
+          1.05,
+          0.035
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 8,
+        "name": "scene114-shift-bone-rail",
+        "position": [
+          2.72,
+          -0.42,
+          -0.08
+        ],
+        "scaling": [
+          0.035,
+          1.05,
+          0.035
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 9,
+        "name": "scene114-skeleton-bone-shift-rail",
+        "position": [
+          1.445,
+          0.18,
+          -0.08
+        ],
+        "scaling": [
+          2.55,
+          0.025,
+          0.025
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 10,
+        "name": "scene114-skeleton-bone-shift-tip",
+        "position": [
+          2.76,
+          0.18,
+          -0.08
+        ],
+        "scaling": [
+          0.12,
+          0.12,
+          0.035
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 11,
+        "name": "scene114-root-influence-bottom",
+        "position": [
+          0.17,
+          -0.88,
+          -0.12
+        ],
+        "scaling": [
+          0.1,
+          0.1,
+          0.1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 12,
+        "name": "scene114-root-influence-top",
+        "position": [
+          0.17,
+          0.04,
+          -0.12
+        ],
+        "scaling": [
+          0.1,
+          0.1,
+          0.1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 13,
+        "name": "scene114-shift-influence-bottom",
+        "position": [
+          2.72,
+          -0.88,
+          -0.12
+        ],
+        "scaling": [
+          0.1,
+          0.1,
+          0.1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 14,
+        "name": "scene114-shift-influence-top",
+        "position": [
+          2.72,
+          0.04,
+          -0.12
+        ],
+        "scaling": [
+          0.1,
+          0.1,
+          0.1
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 15,
+        "name": "scene114-morph-gpu-marker",
+        "position": [
+          -0.65968429954155,
+          0.6624690010195872,
+          -0.08999986391263237
+        ],
+        "scaling": [
+          0.14,
+          0.14,
+          0.14
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 16,
+        "name": "scene114-morph-detailed-marker",
+        "position": [
+          -0.36525364407775257,
+          0.6624690010195872,
+          -0.07999986391263238
+        ],
+        "scaling": [
+          0.10655142303171375,
+          0.10429666692123,
+          0.12915191004705623
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 17,
+        "name": "scene114-skeleton-gpu-marker",
+        "position": [
+          1.6221532803028809,
+          -0.08280862512744849,
+          -0.08999986391263237
+        ],
+        "scaling": [
+          0.14,
+          0.14,
+          0.14
+        ],
+        "morphWeights": null
+      },
+      {
+        "index": 18,
+        "name": "scene114-skeleton-detailed-marker",
+        "position": [
+          1.9165839357666787,
+          -0.08280862512744849,
+          -0.07999986391263238
+        ],
+        "scaling": [
+          0.09934393103898216,
+          0.1286014347216614,
+          0.11205463423935641
+        ],
+        "morphWeights": null
+      }
+    ],
+    "clientSize": [
+      1280,
+      720
+    ]
+  },
+  "sensitivity": [
+    {
+      "index": 15,
+      "name": "scene114-morph-gpu-marker",
+      "full": {
+        "totalPixels": 921600,
+        "exactMatch": 920773,
+        "within1": 920773,
+        "within3": 920773,
+        "within5": 920773,
+        "mad": 0.10965169270833365,
+        "maxDiff": 216
+      },
+      "foreground": {
+        "totalPixels": 921600,
+        "exactMatch": 137764,
+        "within1": 137764,
+        "within3": 137764,
+        "within5": 137764,
+        "mad": 0.7291599021581509,
+        "maxDiff": 216,
+        "regionPixels": 138591
+      },
+      "positionError": 100.66246900101959
+    },
+    {
+      "index": 16,
+      "name": "scene114-morph-detailed-marker",
+      "full": {
+        "totalPixels": 921600,
+        "exactMatch": 921123,
+        "within1": 921123,
+        "within3": 921123,
+        "within5": 921123,
+        "mad": 0.031496672453703696,
+        "maxDiff": 213
+      },
+      "foreground": {
+        "totalPixels": 921600,
+        "exactMatch": 138114,
+        "within1": 138114,
+        "within3": 138114,
+        "within5": 138114,
+        "mad": 0.20944601982331698,
+        "maxDiff": 213,
+        "regionPixels": 138591
+      },
+      "positionError": 100.66246900101959
+    },
+    {
+      "index": 17,
+      "name": "scene114-skeleton-gpu-marker",
+      "full": {
+        "totalPixels": 921600,
+        "exactMatch": 920748,
+        "within1": 920748,
+        "within3": 920748,
+        "within5": 920748,
+        "mad": 0.042945240162036956,
+        "maxDiff": 120
+      },
+      "foreground": {
+        "totalPixels": 921600,
+        "exactMatch": 137739,
+        "within1": 137739,
+        "within3": 137739,
+        "within5": 137739,
+        "mad": 0.28557650448682276,
+        "maxDiff": 120,
+        "regionPixels": 138591
+      },
+      "positionError": 99.91719137487254
+    },
+    {
+      "index": 18,
+      "name": "scene114-skeleton-detailed-marker",
+      "full": {
+        "totalPixels": 921600,
+        "exactMatch": 921006,
+        "within1": 921006,
+        "within3": 921006,
+        "within5": 921006,
+        "mad": 0.06867730034722225,
+        "maxDiff": 154
+      },
+      "foreground": {
+        "totalPixels": 921600,
+        "exactMatch": 137997,
+        "within1": 137997,
+        "within3": 137997,
+        "within5": 137997,
+        "mad": 0.4566891067962568,
+        "maxDiff": 154,
+        "regionPixels": 138591
+      },
+      "positionError": 99.91719137487254
+    }
+  ],
+  "diagnosticToCanonical": {
+    "totalPixels": 921600,
+    "exactMatch": 921600,
+    "within1": 921600,
+    "within3": 921600,
+    "within5": 921600,
+    "mad": 0,
+    "maxDiff": 0
+  },
+  "idleImageDifference": {
+    "totalPixels": 921600,
+    "exactMatch": 921600,
+    "within1": 921600,
+    "within3": 921600,
+    "within5": 921600,
+    "mad": 0,
+    "maxDiff": 0
+  }
+}

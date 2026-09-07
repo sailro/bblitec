@@ -1,14 +1,45 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
-// The nest-aware unroll budget (`MAX_STATIC_UNROLL_PRODUCT`) and the two
-// capture-and-fold arms over it: the static handle table for a
-// generation-known tuple `for...of`, and the identical-body repeat loop for
-// a nested static index loop. Both arms run every iteration exactly as the
-// unrolled emission does — the generation-time effects are the AOT model —
-// and fold only the emitted text. These fixtures stay below the separate
-// compilation-wide hard limit.
+// The nest-aware unroll budget (`MAX_STATIC_UNROLL_PRODUCT`) and the
+// handle-table capture-and-fold arm retain generation-owned effects. Plain
+// numeric data nests can instead execute entirely at runtime; the same
+// body-cost policy serves counted and for-of loops. These fixtures stay below
+// the separate compilation-wide hard limit and observe every resulting value.
+
+function countedDataNest(bounds: readonly [number, number, number], element: string, expected: readonly number[]): string {
+    return `
+        import { createEngine } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const data: number[] = [];
+            for (let x = 0; x < ${bounds[0]}; x++) {
+                for (let y = 0; y < ${bounds[1]}; y++) {
+                    for (let z = 0; z < ${bounds[2]}; z++) {
+                        data.push(${element});
+                    }
+                }
+            }
+            const expected: number[] = ${JSON.stringify(expected)};
+            if (data.length !== expected.length) {
+                throw new Error("Numeric nest changed its result count or order");
+            }
+            for (let index = 0; index < expected.length; index++) {
+                if (data[index] !== expected[index]) throw new Error("Numeric nest changed an ordered result");
+            }
+        }
+    `;
+}
+
+const uniformNest = countedDataNest([16, 16, 4], "1", Array<number>(1024).fill(1));
+const indexedNest = countedDataNest([8, 8, 8], "x * 100 + y * 10 + z",
+    Array.from({ length: 512 }, (_, index) =>
+        Math.floor(index / 64) * 100 + (Math.floor(index / 8) % 8) * 10 + index % 8));
 
 /** A scene growing a tuple of bound box handles, with a caller-shaped tail. */
 function meshTupleScene(count: number, tail: string): string {
@@ -165,37 +196,11 @@ test("a body whose emission differs per element keeps its unrolled bytes", () =>
     );
 });
 
-test("a nested static index loop past the product budget folds an identical body", () => {
-    const result = compileSource(`
-        import { createEngine } from "@babylonjs/lite";
-
-        async function main() {
-            const engine = await createEngine({});
-            const data: number[] = [];
-            for (let i = 0; i < 16; i++) {
-                for (let j = 0; j < 16; j++) {
-                    for (let k = 0; k < 4; k++) {
-                        data.push(1);
-                    }
-                }
-            }
-            if (data.length === 0) {
-                throw new Error("empty");
-            }
-        }
-    `);
-
-    // 16 x 16 outer unrolls survive (each within the product budget); the
-    // innermost 4 iterations of an index-independent body collapse to one
-    // repeat loop per enclosing cell: 256 emitted pushes, not 1024.
-    assert.match(
-        result.cpp,
-        /for \(int v_bblite_repeat_index_\d+ = 0; v_bblite_repeat_index_\d+ < 4; \+\+v_bblite_repeat_index_\d+\) \{/,
-    );
-    assert.equal(
-        result.cpp.match(/push_back\(1\.0\);/g)?.length,
-        256,
-    );
+test("a uniform numeric nest uses one native body before static expansion", () => {
+    const result = compileSource(uniformNest);
+    assert.equal(result.cpp.match(/for \(;/g)?.length, 4); // three construction loops and the result observer
+    assert.equal(result.cpp.match(/push_back\(1\.0\);/g)?.length, 1);
+    assert.doesNotMatch(result.cpp, /v_bblite_repeat_index_/);
 });
 
 test("a large data-only static nest keeps its outer loop native", () => {
@@ -255,37 +260,30 @@ test("small data loops nested under a native loop remain native", () => {
     assert.equal(result.cpp.match(/push_back\(1\.0\);/g)?.length, 1);
 });
 
-test("a nested index body folding its indices into constants stays unrolled", () => {
-    const result = compileSource(`
-        import { createEngine } from "@babylonjs/lite";
-
-        async function main() {
-            const engine = await createEngine({});
-            const data: number[] = [];
-            for (let x = 0; x < 8; x++) {
-                for (let y = 0; y < 8; y++) {
-                    for (let z = 0; z < 8; z++) {
-                        data.push(x * 100 + y * 10 + z);
-                    }
-                }
-            }
-            if (data.length === 0) {
-                throw new Error("empty");
-            }
-        }
-    `);
-
-    // scene165's shape: the innermost product (512) exceeds the budget but
-    // every capture carries its own per-iteration constants, so nothing
-    // folds and the 512 unrolled bodies emit exactly as before.
+test("a numeric nest computes each ordered index value in its native loops", () => {
+    const result = compileSource(indexedNest);
     assert.doesNotMatch(result.cpp, /v_bblite_repeat_index_/);
-    assert.equal(result.cpp.match(/push_back\(/g)?.length, 512);
-    assert.match(
-        result.cpp,
-        /push_back\(\(\(\(0\.0 \* 100\.0\) \+ \(0\.0 \* 10\.0\)\) \+ 0\.0\)\);/,
-    );
-    assert.match(
-        result.cpp,
-        /push_back\(\(\(\(7\.0 \* 100\.0\) \+ \(7\.0 \* 10\.0\)\) \+ 7\.0\)\);/,
-    );
+    assert.equal(result.cpp.match(/for \(;/g)?.length, 4); // three construction loops and the result observer
+    assert.equal(result.cpp.match(/push_back\(/g)?.length, 1);
+});
+
+const nativeTools = optionalNativeFixtureTools(false);
+test("native numeric nests preserve all 1024 uniform and 512 indexed values in order", { skip: !nativeTools }, () => {
+    const output = resolve("artifacts/static-unroll-data-check");
+    mkdirSync(output, { recursive: true });
+    const source = join(output, "check.cpp");
+    const executable = join(output, "check.exe");
+    writeFileSync(source, `
+        #define main uniform_nest
+        ${compileSource(uniformNest).cpp}
+        #undef main
+        #define main indexed_nest
+        ${compileSource(indexedNest).cpp}
+        #undef main
+        namespace bbl { Engine create_engine(EngineOptions options) { Engine engine; engine.options = options; return engine; } }
+        int main() { return uniform_nest() || indexed_nest(); }
+    `);
+    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2", "/Gy",
+        "/I", "native/include", `/Fo:${output}\\`, `/Fe:${executable}`, source, "/link", "/OPT:REF"]);
+    execFileSync(executable, { stdio: "pipe" });
 });
