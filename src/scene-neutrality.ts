@@ -53,6 +53,7 @@ import { join } from "node:path";
  * | 231 | SDL_GPU | differ, worst MAD 0.000005, max 1 | byte-identical |
  * | 231 | Dawn | differ under concurrent captures, worst MAD 0.000004, max 1 | byte-identical |
  * | 302 | Dawn | differ under mixed GPU load, worst MAD 0.000004, max 1 | byte-identical |
+ * | 302 | SDL_GPU | differ under mixed GPU load, worst MAD 0.000012, max 1 | byte-identical |
  *
  * Scene 128 joined on 2026-08-27, found the way an entry should be: a
  * neutrality run over a change that could not reach it reported a moved
@@ -126,8 +127,10 @@ import { join } from "node:path";
  * Two twenty-run groups alongside scene 120's SDL_GPU stability workload
  * reproduced three varying re-runs, worst MAD 3.98e-6 and max 1. All forty
  * matched one-sample controls under that same load are byte-identical.
- * Only Dawn has this measured repeatability exception; image gates and
- * the source/golden remain unchanged.
+ * A later sweep also moved SDL_GPU by 5.79e-6 full MAD. Two twenty-run SDL
+ * groups alongside scene 120's Dawn workload reproduced 24 varying re-runs,
+ * worst MAD 1.19e-5 and max 1; all forty matched one-sample controls are
+ * byte-identical. Image gates and the source/golden remain unchanged.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
@@ -146,7 +149,7 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene129", new Set(["dawn", "sdl_gpu"])],
     ["scene226", new Set(["dawn", "sdl_gpu"])],
     ["scene231", new Set(["dawn", "sdl_gpu"])],
-    ["scene302", new Set(["dawn"])],
+    ["scene302", new Set(["dawn", "sdl_gpu"])],
 ]);
 
 /**
