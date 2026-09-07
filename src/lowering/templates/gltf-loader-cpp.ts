@@ -5,7 +5,7 @@ import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
-import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MATERIAL_EXTENSION_PAYLOAD } from "../../gltf-document.js";
+import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MATERIAL_EXTENSION_PAYLOAD, GLTF_SOURCE_ALBEDO_IDENTITIES } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
@@ -1510,16 +1510,17 @@ MaterialHandle load_material(
     // the factor-baked 1x1 fallback. Renderer image presence is not source
     // property presence.
     material.has_public_base_color_texture = true;
-    auto source_base = std::make_shared<std::vector<double>>(
-        std::initializer_list<double>{1, 1, 1, 1});
+    std::vector<double> source_base{1, 1, 1, 1};
     material.emissive_factor = ${materialDefaults.emissiveFactor.identity};
     material.specular_aa = true;
     if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {
         const JsonObject& pbr = pbr_value->as_object();
-        const std::vector<float> base = float_array(optional(pbr, "${materialDefaults.baseColorFactorKey}"));
-        const auto source_factor = double_array(optional(pbr, "${materialDefaults.baseColorFactorKey}"));
-        if (source_factor.size() == 4) *source_base = source_factor;
-        if (base.size() == 4) material.base_color_factor = Color4{base[0], base[1], base[2], base[3]};
+        auto source_factor = double_array(optional(pbr, "${materialDefaults.baseColorFactorKey}"));
+        if (source_factor.size() == 4) {
+            source_base = std::move(source_factor);
+            material.base_color_factor = Color4{static_cast<float>(source_base[0]),
+                static_cast<float>(source_base[1]), static_cast<float>(source_base[2]), static_cast<float>(source_base[3])};
+        }
         material.metallic_factor = float_or(pbr, "${materialDefaults.metallicFactor.key}", ${materialDefaults.metallicFactor.literal});
         material.roughness_factor = float_or(pbr, "${materialDefaults.roughnessFactor.key}", ${materialDefaults.roughnessFactor.literal});
         const ts::JsonValue* base_color_texture =
@@ -1594,8 +1595,8 @@ MaterialHandle load_material(
     }
     // The pointer feature seeds its public array even without a pbr block.
     if (animated_base_color || gltf_has_base_color_factor(
-        material.base_color_texture.has_image(), *source_base)) {
-        material.source_base_color_factor = source_base;
+        material.base_color_texture.has_image(), source_base)) {
+        material.source_base_color_factor = std::make_shared<std::vector<double>>(std::move(source_base));
     }
     const ts::JsonValue* normal_texture =
         optional(material_json, "normalTexture");
@@ -2322,7 +2323,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
 ${sourceTextureReads ? `
     // Association IDs come from the pin's image cache and Texture2D wrappers
     // at packaging. Each load allocates fresh public producer identities.
-    const auto& source_albedo = required(document, "__bblitecSourceAlbedoIdentities").as_object();
+    const auto& source_albedo = required(document, "${GLTF_SOURCE_ALBEDO_IDENTITIES}").as_object();
     const auto& source_associations = required(source_albedo, "materials").as_array();
     const auto& source_fallbacks = required(source_albedo, "fallbackTexels").as_object();
     if (source_associations.size() != material_json.size() + 1) {

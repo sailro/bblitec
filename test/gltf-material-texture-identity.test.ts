@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gltfSourceAlbedoIdentities, packageSourceAlbedoIdentities, GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-material-texture-identity.js";
-import type { JsonObject } from "../src/gltf-document.js";
+import { gltfSourceAlbedoIdentities, packageSourceAlbedoIdentities } from "../src/gltf-material-texture-identity.js";
+import { GLTF_SOURCE_ALBEDO_IDENTITIES, type JsonObject } from "../src/gltf-document.js";
 
 function textured(index = 0, texCoord = 0): JsonObject {
     return {pbrMetallicRoughness: {baseColorTexture: {index, texCoord}}};

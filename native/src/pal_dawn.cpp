@@ -10077,7 +10077,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         frame_options,
         "Dawn",
         /*supports_single_sample=*/true,
-        /*supports_copy_task=*/false);
+        /*supports_copy_task=*/true);
     // Keep every planned wrapper alive through event dispatch. A UI callback
     // may replace the root or finish registering an awaited auxiliary scene;
     // either change rebuilds the backend before stale plans are used again.
@@ -16239,6 +16239,8 @@ SceneRun run_dawn_engine(Engine& engine) {
             }
 #endif
             const CopyTaskOptions& copy = task.copy;
+            if (frame_options.skip_copy_task(copy)) continue;
+            const bool force_full_viewport = frame_options.full_copy_viewport(copy);
             if (
                 copy.resolve_target.value != invalid_handle &&
                 copy.target.value == invalid_handle) {
@@ -16330,7 +16332,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     0.0f, 1.0f);
                 wgpuRenderPassEncoderSetScissorRect(blit_pass,
                     surface_pane->x, surface_pane->y, surface_pane->width, surface_pane->height);
-            } else if (copy.has_viewport) {
+            } else if (copy.has_viewport && !force_full_viewport) {
 #if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
                 const PixelViewport pixel_viewport =
                     upstream::resolve_copy_viewport(

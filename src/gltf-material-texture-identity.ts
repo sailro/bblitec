@@ -1,11 +1,9 @@
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { asRecords, asStrings, type JsonObject } from "./gltf-document.js";
+import { asRecords, asStrings, GLTF_SOURCE_ALBEDO_IDENTITIES, type JsonObject } from "./gltf-document.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
 import { importPinnedModule, importPinnedModuleWithExports, pinnedLibraryRoot, pinnedModuleUrl } from "./pinned-shader-composer.js";
-
-export const GLTF_SOURCE_ALBEDO_IDENTITIES = "__bblitecSourceAlbedoIdentities";
 
 interface TextureObservation { image?: number; fallback?: number[] }
 interface TextureCarrier { texture: object }

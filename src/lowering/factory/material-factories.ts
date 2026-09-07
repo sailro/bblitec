@@ -152,14 +152,9 @@ NodeMaterialTexture node_material_texture(
 NodeMaterialTexture node_material_texture(
     std::string name,
     const SolidTexture& texture) {
-    FileTexture normalized;
-    normalized.data = solid_texture_data(texture);
-    normalized.identity = texture.identity;
-    normalized.width = 1;
-    normalized.height = 1;
     return node_material_texture(
         std::move(name),
-        std::move(normalized));
+        retained_solid_texture(texture));
 }
 
 NodeMaterialTexture node_material_texture(

@@ -459,13 +459,11 @@ test("normalizes a solid node texture to the pinned 1x1 file contract", () => {
     );
     assert.match(shared, /data\.sampler\.max_lod = 0\.0f;/);
 
-    // ...and that the node slot reaches it rather than carrying its own
-    // copy. The FileTexture wrapper's own 1x1 extent stays here, because
-    // that is the node factory's shape and not the texture data's.
+    // The node slot uses the same retained FileTexture adapter as other sinks.
     const source = factories.lowerNodeMaterialFactory().source;
     assert.match(
         source,
-        /const SolidTexture& texture\) \{\s*FileTexture normalized;\s*normalized\.data = solid_texture_data\(texture\);/,
+        /const SolidTexture& texture\) \{\s*return node_material_texture\(\s*std::move\(name\),\s*retained_solid_texture\(texture\)\);/,
     );
     assert.match(
         source,

@@ -3,12 +3,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
 import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
 
 test("native glTF albedo hydration preserves associations, fallback objects and per-load lifetimes", { skip: !tools }, () => {
-    const template = readFileSync("src/lowering/templates/gltf-loader-cpp.ts", "utf8");
+    const template = readFileSync("src/lowering/templates/gltf-loader-cpp.ts", "utf8")
+        .replaceAll("${GLTF_SOURCE_ALBEDO_IDENTITIES}", GLTF_SOURCE_ALBEDO_IDENTITIES);
     const start = template.indexOf("    const auto& source_albedo =");
     const lambda = template.indexOf("    const auto retain_source_albedo =", start);
     assert(start >= 0 && lambda > start);

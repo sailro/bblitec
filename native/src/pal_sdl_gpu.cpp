@@ -7152,8 +7152,6 @@ SceneRun run_gpu_engine(Engine& engine) {
     const std::string id_buffer_path = frame_options.id_buffer_path;
     const std::string cluster_buffer_path =
         frame_options.cluster_buffer_path;
-    const std::string& copy_task_filter =
-        frame_options.copy_task_filter;
     SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
 #if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
     init_flags |= SDL_INIT_GAMEPAD;
@@ -12280,19 +12278,8 @@ SceneRun run_gpu_engine(Engine& engine) {
                     }
 #endif
                     const CopyTaskOptions& copy = task.copy;
-                    const bool filtered_copy =
-                        copy.has_viewport &&
-                        copy.name.find("-impostor-") !=
-                            std::string::npos;
-                    if (
-                        !copy_task_filter.empty() &&
-                        filtered_copy &&
-                        copy.name != copy_task_filter) {
-                        continue;
-                    }
-                    const bool force_full_viewport =
-                        !copy_task_filter.empty() &&
-                        copy.name == copy_task_filter;
+                    if (frame_options.skip_copy_task(copy)) continue;
+                    const bool force_full_viewport = frame_options.full_copy_viewport(copy);
                     if (
                         copy.resolve_target.value != invalid_handle &&
                         copy.target.value == invalid_handle) {

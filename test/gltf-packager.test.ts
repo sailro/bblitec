@@ -8,7 +8,7 @@ import test from "node:test";
 import { specializeGltf } from "../src/asset-specializer.js";
 import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
 import { packageGltf } from "../src/gltf-packager.js";
-import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-material-texture-identity.js";
+import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import { buildGlb, readGlbFixture } from "./glb-fixture.js";
 

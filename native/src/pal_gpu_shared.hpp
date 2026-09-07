@@ -2653,9 +2653,11 @@ inline constexpr std::size_t no_node_geometry_variant = npos;
 
 inline bool node_uses_local_attributes(std::size_t geometry_variant) {
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-    return geometry_variant != no_node_geometry_variant &&
-        upstream::node_geometry_variants.at(geometry_variant)
-            .uses_local_attributes;
+    if (geometry_variant == no_node_geometry_variant) return false;
+    if (geometry_variant >= upstream::node_geometry_variants.size()) {
+        throw std::out_of_range("Invalid node geometry view.");
+    }
+    return true;
 #else
     (void)geometry_variant;
     return false;
@@ -3426,10 +3428,11 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     bool uses_local_attributes = false) {
     upstream::NodeMeshUniforms block{};
     const MeshRecord& record = engine.meshes[mesh_index];
-    block.world = record.scene_morph_targets
-        ? scene_deformation_draw_world(record, scene, engine)
-        : draw_world(pinned_identity_world(), record, scene, engine);
-    if (uses_local_attributes) {
+    if (!uses_local_attributes) {
+        block.world = record.scene_morph_targets
+            ? scene_deformation_draw_world(record, scene, engine)
+            : draw_world(pinned_identity_world(), record, scene, engine);
+    } else {
         const ModelGeometry& geometry = engine.geometries.at(record.geometry);
         if (geometry.vertex_space == VertexSpace::local) {
             block.world = scene_deformation_draw_world(record, scene, engine);
@@ -4544,6 +4547,15 @@ struct FrameOptions {
     // A double, as `BBLITE_FRAME_DELTA_MS` is written and as the browser's
     // frame timestamps are; see `FrameClock::advance`.
     double frame_delta_ms = 0.0;
+
+    [[nodiscard]] bool skip_copy_task(const CopyTaskOptions& copy) const {
+        return !copy_task_filter.empty() && copy.has_viewport &&
+            copy.name.find("-impostor-") != std::string::npos &&
+            copy.name != copy_task_filter;
+    }
+    [[nodiscard]] bool full_copy_viewport(const CopyTaskOptions& copy) const {
+        return !copy_task_filter.empty() && copy.name == copy_task_filter;
+    }
 
     /** Frames to run: a benchmark adds its warmup to the request. */
     [[nodiscard]] long frame_budget() const {
