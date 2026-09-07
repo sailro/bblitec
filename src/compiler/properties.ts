@@ -1085,8 +1085,9 @@ export function readProperty(
         "addThinInstance first.",
     );
   }
-  const parent = expression.parent;
-  const simpleWriteTarget = parent && ts.isBinaryExpression(parent) && parent.left === expression &&
+  const originalExpression = ts.getOriginalNode(expression);
+  const parent = originalExpression.parent;
+  const simpleWriteTarget = parent && ts.isBinaryExpression(parent) && parent.left === originalExpression &&
     parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
   if (rule.feature && !(rule.feature === "material:source-texture-read" && simpleWriteTarget)) {
     context.reachFeature(rule.feature, expression);

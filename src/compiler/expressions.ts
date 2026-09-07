@@ -812,7 +812,12 @@ export class ExpressionLowerer {
                         key.staticString,
                     );
                 ts.setTextRange(property, unwrapped);
+                ts.setOriginalNode(property, unwrapped);
                 ts.setTextRange(
+                    property.name,
+                    unwrapped.argumentExpression,
+                );
+                ts.setOriginalNode(
                     property.name,
                     unwrapped.argumentExpression,
                 );

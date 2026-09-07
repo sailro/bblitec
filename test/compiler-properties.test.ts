@@ -13,6 +13,19 @@ import { compileSource } from "../src/compiler.js";
 import { type DataType, passesByReferenceKind } from "../src/compiler/data-types.js";
 import { propertyRules } from "../src/compiler/properties.js";
 
+test("computed material reads retain source provenance without turning writes into reads", () => {
+    const prefix = `import {createEngine,createStandardMaterial,createSolidTexture2D} from "@babylonjs/lite";
+async function main() {
+    const engine=await createEngine({});
+    const material=createStandardMaterial();
+    const field="diffuseTexture";
+    material.diffuseTexture=createSolidTexture2D(engine,1,1,1,1);`;
+    const write = compileSource(`${prefix}\n}`);
+    assert.ok(!write.manifest.features.includes("material:source-texture-read"));
+    const read = compileSource(`${prefix}\n    const held=material[field];\n}`);
+    assert.equal(read.manifest.featureSites["material:source-texture-read"], "input.ts:7");
+});
+
 /** A scene with an ArcRotateCamera, which most reads hang off. */
 function sceneWithCamera(
     body: string,
