@@ -2,17 +2,19 @@
 #include <iostream>
 
 namespace bbl {
-int picking_calls = 0;
+std::vector<std::array<double,2>> picking_queries;
 Engine create_engine(EngineOptions options) {
     Engine engine;
     engine.options = options;
     if (options.title == "Babylon Lite Native") engine.options.title="first";
     engine.meshes.emplace_back();
     engine.meshes.back().name = engine.options.title;
-    engine.pick_hook = [](GpuPickerHandle, double x, double) {
-        ++picking_calls;
+    engine.canvas_client_width = 1280;
+    engine.canvas_client_height = 720;
+    engine.pick_hook = [](GpuPickerHandle, double x, double y) {
+        picking_queries.push_back({x,y});
         PickingInfo info;
-        if (x == 0) return info;
+        if (!((x == 160 && y == 60) || (x == 1 && y == 0))) return info;
         info.hit = true;
         info.picked_kind = PickedNodeKind::mesh;
         info.picked_index = 0;
@@ -43,7 +45,16 @@ template<class F> void expired(F read) {
 int main() {
     using namespace bbl;
     assert(generated_scene_main()==0);
-    assert(picking_calls==10); // two successful searches, one miss, one repeat
+    std::size_t query = 0;
+    // Three early returns on the second row, one complete inclusive miss.
+    for (int count : {20,20,221,20}) {
+        for (int index = 0; index < count; ++index) {
+            assert((picking_queries.at(query++) == std::array<double,2>{
+                static_cast<double>((index % 17) * 80),
+                static_cast<double>((index / 17) * 60)}));
+        }
+    }
+    assert(picking_queries.size() == query);
     {
         Engine first=create_engine({"first",1280,720});
         Engine second=create_engine({"second",1280,720});

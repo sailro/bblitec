@@ -14,27 +14,30 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 function program(twoEngines=false):string { return `
 import {createEngine,createSceneContext,createGpuPicker,pickAsync,disposePicker,getPickedNormal,
  type SceneContext,type PickingInfo} from "@babylonjs/lite";
-async function find(scene:SceneContext,name:string):Promise<PickingInfo|null> {
+async function find(scene:SceneContext,canvas:HTMLCanvasElement,name:string):Promise<PickingInfo|null> {
  const picker=createGpuPicker(scene);
- for(let x=0;x<4;x++) {
-  const info=await pickAsync(picker,x,0);
-  if(info.hit && info.pickedMesh?.name===name) {disposePicker(picker);return info;}
+ for(let y=0;y<=12;y++) {
+  for(let x=0;x<=16;x++) {
+   const info=await pickAsync(picker,canvas.clientWidth*x/16,canvas.clientHeight*y/12);
+   if(info.hit && info.pickedMesh?.name===name) {disposePicker(picker);return info;}
+  }
  }
  disposePicker(picker);
  return null;
 }
 function normalY(info:PickingInfo):number {return getPickedNormal(info)?.[1] ?? -1;}
 async function main() {
+ const canvas=document.getElementById("renderCanvas") as HTMLCanvasElement;
  const firstEngine=await createEngine({title:"first"});
  const firstScene=createSceneContext(firstEngine);
  const secondEngine=${twoEngines?'await createEngine({title:"second"})':'firstEngine'};
  const secondScene=createSceneContext(secondEngine);
- const first=await find(firstScene,"first");
- const second=await find(secondScene,"${twoEngines?'second':'first'}");
- const miss=await find(firstScene,"absent");
+ const first=await find(firstScene,canvas,"first");
+ const second=await find(secondScene,canvas,"${twoEngines?'second':'first'}");
+ const miss=await find(firstScene,canvas,"absent");
  if(!first?.hit || !second?.hit || miss!==null) throw new Error("nullable early return");
  const alias=first;
- const again=await find(firstScene,"first");
+ const again=await find(firstScene,canvas,"first");
  if(alias!==first || again===first) throw new Error("result identity");
  const rows:PickingInfo[]=[first,second];
  const record:{pick:PickingInfo|null}={pick:second};
@@ -64,8 +67,12 @@ test("nullable picking results reuse data returns and preserve the unchanged sce
     assert.match(result.cpp, /Nullable<bbl::PickingInfo>/);
     assert.match(result.cpp, /return std::nullopt/);
     assert.match(result.cpp, /picked_normal\([^,]+, false\)/);
+    assert.equal(result.cpp.match(/bbl::gpu_pick\(/g)?.length, 4);
+    assert.equal(result.cpp.match(/for \(;/g)?.length, 8);
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene114.ts";
-    assert.doesNotThrow(() => compileSource(readFileSync(fileName, "utf8"), { fileName }));
+    const unchanged = compileSource(readFileSync(fileName, "utf8"), { fileName });
+    assert.equal(unchanged.cpp.match(/bbl::gpu_pick\(/g)?.length, 4);
+    assert.equal(unchanged.manifest.sceneMeshes.length, 19);
     for (const access of ["if(info.subMeshId>0) throw new Error(\"subMeshId\")", "info.pickedMesh = null", "info.pickedPoint = [3,2,1]"]) {
         assert.throws(() => compileSource(`import {createEngine,createSceneContext,createGpuPicker,pickAsync} from "@babylonjs/lite";
             async function main(){const e=await createEngine({});const s=createSceneContext(e);const p=createGpuPicker(s);const info=await pickAsync(p,0,0);${access};}`), /Unsupported|not supported/);
@@ -107,16 +114,21 @@ test("pinned result identity, nullable helpers and engine provenance satisfy the
         _cpuIndices:new Uint32Array([0,1,2]),worldMatrix:identity} });
     const createSceneContext = (engine:Host) => ({engine});
     const createGpuPicker = (scene:{engine:Host}) => ({scene});
-    const pickAsync = async (picker:{scene:{engine:Host}},x:number) => {
+    const queries: number[][] = [];
+    const pickAsync = async (picker:{scene:{engine:Host}},x:number,y:number) => {
+        queries.push([x,y]);
         const info=createEmptyPickingInfo();
-        if(x===0)return info;
+        if(x!==160 || y!==60)return info;
         // Only GPU readback is a seam. The result/default factory and normal
         // helper are the installed pin, and the source assertions are shared.
         Object.assign(info,{hit:true,pickedMesh:picker.scene.engine.mesh,pickedPoint:[1,2,3],faceId:0,bu:1/3,bv:1/7});
         return info;
     };
-    const run = new Function("createEngine","createSceneContext","createGpuPicker","pickAsync","disposePicker","getPickedNormal",`${javascript}\nreturn main();`);
-    await run(createEngine,createSceneContext,createGpuPicker,pickAsync,()=>{},pin.getPickedNormal);
+    const run = new Function("createEngine","createSceneContext","createGpuPicker","pickAsync","disposePicker","getPickedNormal","document",`${javascript}\nreturn main();`);
+    await run(createEngine,createSceneContext,createGpuPicker,pickAsync,()=>{},pin.getPickedNormal,
+        {getElementById:()=>({clientWidth:1280,clientHeight:720})});
+    assert.deepEqual(queries,[20,20,221,20].flatMap(count=>
+        Array.from({length:count},(_,index)=>[(index%17)*80,Math.floor(index/17)*60])));
 });
 
 const tools=optionalNativeFixtureTools(false);

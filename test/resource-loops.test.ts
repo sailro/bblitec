@@ -77,6 +77,20 @@ test("inclusive nested resource loops retain compact construction cardinality", 
     assert.equal(result.cpp.match(/for \(;/g)?.length, 2);
 });
 
+test("a runtime await still specializes resources reached through its arguments", () => {
+    const result = compileSource(scene(`
+        const picker = createGpuPicker(scene);
+        for (let i = 0; i <= 39; i++) {
+            await readback(picker, createSphere(engine, { segments: i + 3 }).position.x, 0);
+        }
+    `, `
+        import { createGpuPicker, pickAsync as readback } from "@babylonjs/lite";
+    `));
+    assert.equal(result.cpp.match(/bbl::gpu_pick\(/g)?.length, 40);
+    assert.equal(result.cpp.match(/bbl::create_sphere\(/g)?.length, 40);
+    assert.equal(result.manifest.sceneMeshes.length, 40);
+});
+
 test("an inlined numeric result retains static count and evaluated helper effects", () => {
     const result = compileSource(scene(`
         let calls = 0;
