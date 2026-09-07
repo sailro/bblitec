@@ -51,6 +51,7 @@ import { join } from "node:path";
  * | 129 | Dawn | differ, worst MAD 0.000772, max 3 | byte-identical |
  * | 129 | SDL_GPU | differ, worst MAD 0.000118, max 2 | byte-identical |
  * | 231 | SDL_GPU | differ, worst MAD 0.000005, max 1 | byte-identical |
+ * | 231 | Dawn | differ under concurrent captures, worst MAD 0.000004, max 1 | byte-identical |
  *
  * Scene 128 joined on 2026-08-27, found the way an entry should be: a
  * neutrality run over a change that could not reach it reported a moved
@@ -112,8 +113,11 @@ import { join } from "node:path";
  * Scene 231's SDL_GPU entry was measured on 2026-09-07 before the next
  * integration sweep: two of four re-runs moved, with worst MAD 5.1e-6 and
  * max channel difference 1; all five one-sample runs are byte-identical.
- * Dawn was stable in both five-run controls and has no entry. The source,
- * reference and image thresholds are unchanged.
+ * Dawn's serial five-run controls were stable, but the full sweep moved
+ * its full MAD by 1.4e-5. Four concurrent stability groups, each with five
+ * runs of the same binary, reproduced a smaller run-to-run band: all four
+ * groups varied, worst MAD 3.6e-6 and max 1. All twenty one-sample controls
+ * are byte-identical. The source, reference and thresholds are unchanged.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
@@ -131,7 +135,7 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene128", new Set(["dawn", "sdl_gpu"])],
     ["scene129", new Set(["dawn", "sdl_gpu"])],
     ["scene226", new Set(["dawn", "sdl_gpu"])],
-    ["scene231", new Set(["sdl_gpu"])],
+    ["scene231", new Set(["dawn", "sdl_gpu"])],
 ]);
 
 /**

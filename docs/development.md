@@ -217,8 +217,8 @@ Ninja logs and modeling the existing worker queue gave:
 
 The longest scene was at registry position 263; its latest commands totaled
 415.920 s, including 382.751 s for its main translation unit. The model predicts
-a 298.813 s (41.8%) reduction by starting that work early. This is a model, not a
-second measured sweep: compiler contention, memory pressure, configuration time
+a 298.813 s (41.8%) reduction by starting that work early. Compiler contention,
+memory pressure, configuration time
 and the next dirty-file set can change the result. Ordering by rebuild cost can
 be less useful for a warm run; unknown scenes get early feedback but can defer
 known expensive work when most history is missing. No rebuild was forced for
@@ -226,6 +226,14 @@ this experiment. The checkpoint log is
 `artifacts/scene-checkpoint-4/full-sweep.log`; reproduce the read-only model with
 `node tools/model-build-scheduling.mjs <workspace-with-builds> 32` after building
 `dist/`. Its JSON includes each input log digest and modeled start/end times.
+
+The next full-header sweep measured 601.3 s for 272 native scenes with the
+same 32-by-1 budget, about 16% below the preceding 716.2 s stage. The longest
+scene started immediately, but its main translation unit grew from the retained
+382.751 s sample to 570.720 s. The observed saving is smaller than the model's:
+command durations did not remain fixed across these runs. Preserve both timing
+and workload context when comparing concurrency choices. Evidence is under
+`artifacts/scene-checkpoint-5/`, including the input-log model and process snapshots.
 
 ## Minimal-size shipping builds
 
