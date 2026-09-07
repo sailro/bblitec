@@ -148,6 +148,7 @@ its cause.
 | 150 | <img src="images/scenes/scene150.png" alt="Scene 150 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Position Animation |
 | 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Transform Animation |
 | 152 | <img src="images/scenes/scene152.png" alt="Scene 152 rendering" width="160"> | 0.010 / 0.281 | 0.010 / 0.281 | Managed Animation Groups |
+| 153 | <img src="images/scenes/scene153.png" alt="Scene 153 rendering" width="160"> | 0.000 / 0.028 | 0.000 / 0.028 | Autonomous Canvas Animation |
 | 154 | <img src="images/scenes/scene154.png" alt="Scene 154 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | STEP Time Animation |
 | 155 | <img src="images/scenes/scene155.png" alt="Scene 155 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Weighted Property Blending |
 | 156 | <img src="images/scenes/scene156.png" alt="Scene 156 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Manual Cross-Fade Animation |

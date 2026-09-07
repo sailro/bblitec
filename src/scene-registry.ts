@@ -1190,6 +1190,25 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene153",
+        name: "Scene 153 - Autonomous Canvas Animation",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene153.ts",
+        title: "Babylon Lite Native - Autonomous Canvas Animation",
+        parity: {
+            // The authored query seeks the plain-data target before drawing.
+            referenceSearch: "?seekTime=1",
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "2",
+                BBLITE_MAX_FRAMES: "3",
+                BBLITE_FRAME_DELTA_MS: "16",
+            },
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.1,
+            backgroundColor: [31, 36, 51],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene157",
         name: "Scene 157 - Weighted Skeleton Blending",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene157.ts",

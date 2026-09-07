@@ -208,7 +208,7 @@ and shutdown on both backends. Run instructions are in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 19 numbered scenes unregistered. Helper
+The current registry leaves these 18 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -221,7 +221,6 @@ modules without a numbered scene entry are not integration candidates.
 | 114 | A PBR morph arm for scene-code geometry, `createBoxData` as a data result, nullable `PickingInfo`, barycentric reads, and the pin's morph-only and basic deform-picking arms on both backends. Five contracts. |
 | 121 | Splat rows as a scene-readable buffer and live `updateData` re-upload in both PALs, over a typed array that is a view rather than an owner. Five contracts; the view change is runtime-wide, not scene-local. |
 | 149 | Delegating `blockLoader` (the pin's `loadNodeBlockEmitterWithGeometry`, where the port accepts a local closed switch), live node-material input handles, loaded-material reads, runtime per-material node construction, and the geometry `LOCAL_POSITION` attachment, which needs a bound local-normal lane and a real node world. Five contracts. |
-| 153 | Canvas2D-only driver, fillRect, plain-data animation targets and update loop |
 | 164 | GPU device-loss lifecycle |
 | 180 | The text subsystem plus live text controls and input. It reads `textarea.value` and re-layouts on `input`, so nothing folds: `layoutText` shapes through a vendored pure-JS shaper, and matching its glyph ids, advances and kerning natively is a re-derivation, not a port. It also needs the standalone text renderer path with no scene or camera, a dynamically imported weight-offset call and eight live DOM controls. |
 | 181 | The same text subsystem and live input as 180. |
