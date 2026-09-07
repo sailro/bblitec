@@ -33,6 +33,10 @@
     {
       "summary": "Represent recorded local material fields through the shared packet-backed extension-writer descriptor and UBO coverage machinery.",
       "applied": true
+    },
+    {
+      "summary": "Reuse compileKnownValueForSink for already evaluated class records, avoiding duplicate resource factories during typed projection.",
+      "applied": true
     }
   ]
 }
