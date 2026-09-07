@@ -3,6 +3,7 @@ import { downloadCachedResource } from "./asset-download-cache.js";
 import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
 import { packageMaterialExtensions } from "./gltf-material-extension-payload.js";
+import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
 import {
     GLB_BINARY_CHUNK,
     GLB_JSON_CHUNK,
@@ -385,6 +386,7 @@ function ktx2SamplerIndex(document: JsonRecord, mipCount: number): number {
 export async function packageGltf(
     source: string,
     baseDirectory: string,
+    sourceTextureReads = false,
 ): Promise<Uint8Array> {
     const remote = /^https?:\/\//i.test(source);
     const rootResource = remote
@@ -394,6 +396,7 @@ export async function packageGltf(
     const document = parsedGlb?.document ?? asRecord(
         JSON.parse(new TextDecoder().decode(rootResource.bytes)),
     );
+    if (sourceTextureReads) await packageSourceAlbedoIdentities(document);
     const resourceDirectory = remote
         ? baseDirectory
         : dirname(resolve(baseDirectory, source));

@@ -78,6 +78,8 @@ export interface GltfLoaderOptions {
     /** Node geometry views bind the source NORMAL attribute beside a real
      * world matrix, so retain it before the native bake/mirror/normalize. */
     retainLocalNormals?: boolean;
+    /** Scene code reads the original public albedo Texture2D producer. */
+    sourceTextureReads?: boolean;
     nonTrianglePrimitives?: boolean;
     /**
      * The asset carries Gaussian-splat clouds: packaging ran the pinned

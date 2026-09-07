@@ -251,6 +251,7 @@ async function materializeAsset(
     inputPath: string,
     outputPath: string,
     assetPayloads: ReadonlyMap<string, string>,
+    sourceTextureReads = false,
 ): Promise<MaterializedAssetFacts | undefined> {
     const inlineSource = assetPayloads.get(asset.source);
     if (
@@ -305,7 +306,7 @@ async function materializeAsset(
         writeFileSync(
             destination,
             await resolveGeometryExtensions(
-                await packageGltf(source, dirname(inputPath)),
+                await packageGltf(source, dirname(inputPath), sourceTextureReads),
                 source,
             ),
         );
@@ -622,6 +623,7 @@ async function main(): Promise<void> {
                 inputPath,
                 outputPath,
                 result.assetPayloads,
+                result.manifest.features.includes("material:source-texture-read"),
             ),
         ),
     );
@@ -822,6 +824,7 @@ async function main(): Promise<void> {
                 inputPath,
                 outputPath,
                 result.assetPayloads,
+                result.manifest.features.includes("material:source-texture-read"),
             );
         }
     }

@@ -135,6 +135,13 @@ packaged source-texture associations when these reads are reached; a present
 texture without retained producer identity fails explicitly. The other existing
 PBR texture-slot adapters are unchanged.
 
+glTF albedo associations execute the pin's image cache, sampler activation,
+material builder and texture wrappers during packaging, with inert image/GPU
+transport. Native loads allocate fresh identities from those associations and
+retain the actual fallback texels. Core image/factor producers, sampled wrappers
+and UV2 clones are covered; material extensions, texture transforms and BasisU
+producers currently refuse when public albedo texture reads are reached.
+
 Numeric color reads currently require one static scene registration. Later
 material-group construction, rebuilds and whole color replacement after
 registration refuse because separate group UBO snapshots are not represented.

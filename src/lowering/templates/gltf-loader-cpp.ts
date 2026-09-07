@@ -265,6 +265,7 @@ export function gltfLoaderCpp(
         pinnedSkeletonPalette = false,
         dynamicThinInstances = false,
         retainLocalNormals = false,
+        sourceTextureReads = false,
         nonTrianglePrimitives = false,
         gaussianSplats = false,
         animationMask = false,
@@ -2318,6 +2319,36 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     }
     std::vector<MaterialHandle> materials;
     materials.reserve(material_json.size());
+${sourceTextureReads ? `
+    // Association IDs come from the pin's image cache and Texture2D wrappers
+    // at packaging. Each load allocates fresh public producer identities.
+    const auto& source_albedo = required(document, "__bblitecSourceAlbedoIdentities").as_object();
+    const auto& source_associations = required(source_albedo, "materials").as_array();
+    const auto& source_fallbacks = required(source_albedo, "fallbackTexels").as_object();
+    if (source_associations.size() != material_json.size() + 1) {
+        throw std::runtime_error("Invalid glTF albedo association count.");
+    }
+    std::unordered_map<std::size_t, std::uint64_t> source_texture_identities;
+    const auto retain_source_albedo = [&](MaterialHandle handle, std::size_t material_index) {
+        const auto association = unsigned_value(source_associations.at(material_index));
+        auto [identity, inserted] = source_texture_identities.try_emplace(association, 0);
+        if (inserted) identity->second = engine.next_file_texture_identity++;
+        auto texture = material_texture(engine, handle, MaterialTextureSlot::base_color);
+        texture.identity = identity->second;
+        if (const auto* fallback = optional(source_fallbacks, std::to_string(association))) {
+            const auto& lanes = fallback->as_array();
+            if (lanes.size() != 4) throw std::runtime_error("Invalid glTF albedo fallback texel.");
+            texture.data.bytes.clear();
+            for (const auto& lane : lanes) {
+                const auto byte = unsigned_value(lane);
+                if (byte > 255) throw std::runtime_error("Invalid glTF albedo fallback byte.");
+                texture.data.bytes.push_back(static_cast<std::uint8_t>(byte));
+            }
+            texture.width = texture.data.rgba_width = 1;
+            texture.height = texture.data.rgba_height = 1;
+        }
+        engine.materials.at(handle.value).source_albedo_texture = std::move(texture);
+    };` : ""}
     const std::vector<bool> animated_base_color =
         collect_animated_base_color(document, material_json.size());
     for (std::size_t index = 0; index < material_json.size(); ++index) {
@@ -2325,6 +2356,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             engine, material_json[index].as_object(), buffer, container, views,
             image_json, texture_json, sampler_json,
             animated_base_color[index]));
+${sourceTextureReads ? `        retain_source_albedo(materials.back(), index);` : ""}
     }
 
     std::vector<int> parents(node_json.size(), -1);
@@ -2912,6 +2944,7 @@ ${nonTrianglePrimitives
                     engine, JsonObject{}, buffer, container, views,
                     image_json, texture_json, sampler_json,
                     false));
+${sourceTextureReads ? `                retain_source_albedo(materials.back(), material_json.size());` : ""}
             }
             const bool clockwise_front_face =
                 determinant < 0.0 &&

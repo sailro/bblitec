@@ -1364,6 +1364,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 "upstream/src/gltf_loader.cpp",
                 gltf.lowerLoaderAdapter({
                     retainLocalNormals: nodeGeometryViewList.length > 0,
+                    sourceTextureReads: features.includes("material:source-texture-read"),
                     animationBlending: features.includes(
                         "animation:gltf-blending",
                     ),

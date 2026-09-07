@@ -304,22 +304,32 @@ const augmentedModules = new Map<string, Promise<unknown>>();
 export async function importPinnedModuleWithExports<T>(
     relativePath: string,
     extraExports: readonly string[],
+    redirects: ReadonlyMap<string, string> = new Map(),
 ): Promise<T> {
     // Node dedupes the `data:` import, but not the read, the rewrite and the
     // base64 that build its URL — and a scene composing several post-process
     // stages asks for the same module once per stage.
-    const key = `${relativePath}|${extraExports.join(",")}`;
+    const key = `${relativePath}|${extraExports.join(",")}|${JSON.stringify([...redirects])}`;
     const cached = augmentedModules.get(key);
     if (cached) {
         return (await cached) as T;
     }
-    const modulePath = join(pinnedLibraryRoot(), relativePath);
-    const anchored = anchorPinnedSpecifiers(modulePath);
     const loading = import(
-        javascriptModuleUrl(`${anchored}\nexport { ${extraExports.join(", ")} };\n`)
+        pinnedModuleUrl(relativePath, extraExports, redirects)
     );
     augmentedModules.set(key, loading);
     return (await loading) as T;
+}
+
+/** Pinned code with explicit transport redirects, retaining its async control flow. */
+export function pinnedModuleUrl(
+    relativePath: string,
+    extraExports: readonly string[] = [],
+    redirects: ReadonlyMap<string, string> = new Map(),
+): string {
+    const anchored = anchorPinnedSpecifiers(join(pinnedLibraryRoot(), relativePath), redirects);
+    return javascriptModuleUrl(anchored +
+        (extraExports.length ? `\nexport { ${extraExports.join(", ")} };\n` : ""));
 }
 
 /**
