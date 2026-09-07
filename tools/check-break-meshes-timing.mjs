@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Full demo clock/input check. Controlled deltas exercise 60/240-fps timing;
-// live runs separately compare simulated time with actual elapsed wall time.
+// Compare the unchanged upstream demo. Its 12.5 ms step is per rendered frame;
+// controlled frame counts and live wall-time rates check distinct contracts.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, createWriteStream } from "node:fs";
@@ -71,16 +71,16 @@ for (const fps of [60, 240, null]) {
                 dynamicBodies: world._bodies.filter(body => body.motionType === 2).length,
                 samples: count === null ? samples : samples.slice(0, count) };
         }, fps === null ? null : fps * 2 + 1);
-        assert.equal(observed.sceneFixed, 0);
-        assert.equal(observed.worldFixed, 0);
+        assert.equal(observed.sceneFixed, 1000 / 60, "Do not change the BBL reference's scene clock");
+        assert.equal(observed.worldFixed, 12.5, "Do not change the BBL reference's physics clock");
         await page.screenshot({ path: resolve(output, `browser-${label}.png`) });
         return { implementation: "browser", fps,
             ...(fps === null ? summarize(observed.samples) : controlledTime(observed.samples.slice(1))),
             dynamicBodies: observed.dynamicBodies };
     });
     results.push(browser);
-    if (fps === null) assert(Math.abs(browser.simulatedPerWallSecond - 1) < 0.05, JSON.stringify(browser));
-    else assert(Math.abs(browser.seconds - 2) < 1e-5, JSON.stringify(browser));
+    assert(Math.abs(browser.seconds / browser.steps - 0.0125) < 1e-8, JSON.stringify(browser));
+    if (fps !== null) assert(Math.abs(browser.seconds - fps * 2 * 0.0125) < 1e-5, JSON.stringify(browser));
 
     for (const backend of ["sdl_gpu", "dawn"]) {
         const maxFrames = fps === null ? 900 : fps * 2 + 1;
@@ -125,14 +125,17 @@ for (const fps of [60, 240, null]) {
         assert(firstPositions.size > 100, "Missing demo physics bodies");
         const movedBodies = [...lastPositions].filter(([body, position]) => firstPositions.get(body) !== position).length;
         assert(movedBodies >= 14, `Shatter input did not move the pieces: ${movedBodies}`);
-        const measured = fps === null ? samples.slice(120, -20) : samples;
+        // The original world override also steps on frame zero. Exclude that
+        // priming frame when measuring the following two seconds of timestamps.
+        const measured = fps === null ? samples.slice(120, -20) : samples.slice(1);
         const native = { implementation: backend, fps,
             ...(fps === null ? summarize(measured) : controlledTime(measured)), movedBodies };
+        assert(Math.abs(native.seconds / native.steps - browser.seconds / browser.steps) < 1e-8, JSON.stringify(native));
         if (fps === null) {
             assert(native.wallSeconds > 1, "Live measurement was too short");
-            assert(Math.abs(native.simulatedPerWallSecond - browser.simulatedPerWallSecond) < 0.05, JSON.stringify(native));
+            assert(Math.abs(native.simulatedPerWallSecond / browser.simulatedPerWallSecond - 1) < 0.05, JSON.stringify({native,browser}));
         } else {
-            assert.equal(samples.length, fps * 2);
+            assert.equal(measured.length, fps * 2);
             assert(Math.abs(native.seconds - browser.seconds) < 1e-5, JSON.stringify({ native, browser }));
         }
         results.push(native);

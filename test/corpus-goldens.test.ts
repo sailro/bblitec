@@ -53,7 +53,7 @@ test("keeps external golden applications byte-identical to their manifests", () 
             assert.equal(
                 sha256(file.source),
                 file.sha256,
-                `${file.upstreamPath} differs from its recorded source bytes.`,
+                `${file.upstreamPath} differs from its recorded upstream bytes.`,
             );
         }
         assert.equal(

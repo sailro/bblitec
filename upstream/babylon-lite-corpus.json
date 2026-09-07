@@ -2839,11 +2839,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/break-meshes.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/break-meshes.ts",
-          "sha256": "c9ab88a82d306294cce68752e9c54f33555c5cb042992c76f0b6a243f15b557d",
-          "modification": {
-            "upstreamSha256": "62b07f18f3cc169431c2c2c21c43e5204151953f3bb8ff2cf865ee0dbeb7d743",
-            "reason": "Remove per-render-frame scene/world fixed timesteps; both browser and native use Babylon Lite variable-step physics."
-          }
+          "sha256": "62b07f18f3cc169431c2c2c21c43e5204151953f3bb8ff2cf865ee0dbeb7d743"
         },
         {
           "upstreamPath": "lab/lite/src/demos/break-mesh.ts",
