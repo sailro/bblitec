@@ -23,7 +23,9 @@ struct DawnTextRenderer {
     std::map<std::tuple<const upstream::TextPipelineInfo*, WGPUTextureFormat, WGPUTextureFormat>,
         std::shared_ptr<DawnTextPipelineLease>> pipelines;
 
-    DawnTextRenderer(WGPUDevice device, WGPUQueue queue) { owner->device = device; owner->queue = queue; }
+    DawnTextRenderer(WGPUDevice device, WGPUQueue queue, bool capture) {
+        owner->device = device; owner->queue = queue; owner->capture = TextGpuCapture(capture);
+    }
     ~DawnTextRenderer() { owner->retire(); }
     DawnTextRenderer(const DawnTextRenderer&) = delete;
     DawnTextRenderer& operator=(const DawnTextRenderer&) = delete;
@@ -49,7 +51,7 @@ struct DawnTextRenderer {
         WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
         descriptor.entryCount = entries.size(); descriptor.entries = entries.data();
         created->layout = retain_dawn_text_resource<DawnTextLayoutLease>(owner,
-            wgpuDeviceCreateBindGroupLayout(owner->device, &descriptor));
+            wgpuDeviceCreateBindGroupLayout(owner->device, &descriptor), "bind-group-layout");
         const WGPUBindGroupLayout group = created->layout->get();
         WGPUPipelineLayoutDescriptor pipeline_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
         pipeline_descriptor.bindGroupLayoutCount = 1; pipeline_descriptor.bindGroupLayouts = &group;
@@ -57,9 +59,11 @@ struct DawnTextRenderer {
             wgpuDeviceCreatePipelineLayout(owner->device, &pipeline_descriptor));
         DawnTextResourceOps ops{owner};
         auto created_quad = std::make_shared<DawnTextBuffer>(ops.create_buffer(WGPUBufferUsage_Vertex,
-            sizeof(upstream::text_quad_corners)));
+            sizeof(upstream::text_quad_corners), "quad"));
         wgpuQueueWriteBuffer(owner->queue, created_quad->lease->get(), 0,
             upstream::text_quad_corners.data(), sizeof(upstream::text_quad_corners));
+        owner->capture.write(created_quad->lease->capture_id, 0u,
+            {reinterpret_cast<const std::uint8_t*>(upstream::text_quad_corners.data()), sizeof(upstream::text_quad_corners)});
         layout = std::move(created);
         pipeline_layout = std::move(created_pipeline_layout);
         quad = std::move(created_quad);
@@ -122,7 +126,9 @@ struct DawnTextRenderer {
         DawnStageConstants vertex_constants(info.vertex_constants), fragment_constants(info.fragment_constants);
         vertex_constants.apply(descriptor.vertex); fragment_constants.apply(fragment);
         auto created = retain_dawn_text_resource<DawnTextPipelineLease>(owner,
-            wgpuDeviceCreateRenderPipeline(owner->device, &descriptor));
+            wgpuDeviceCreateRenderPipeline(owner->device, &descriptor), "pipeline");
+        if (owner->capture.enabled()) created->capture = text_pipeline_capture(info,
+            color_format == WGPUTextureFormat_BGRA8Unorm ? "bgra8unorm" : "rgba8unorm", "depth24plus-stencil8");
         pipelines.emplace(key, created);
         // The admitted source installs no variant resolver; the pin aliases it.
         return {created, created, layout, quad};

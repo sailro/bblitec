@@ -7,10 +7,22 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+#include "pal_text_capture.hpp"
 
 namespace bbl::pal {
 
 enum class TextBindingRole { uniform, curves, bands, metadata, styles };
+
+inline const char* text_binding_role_name(TextBindingRole role) {
+    switch (role) {
+        case TextBindingRole::uniform: return "uniform";
+        case TextBindingRole::curves: return "curves";
+        case TextBindingRole::bands: return "bands";
+        case TextBindingRole::metadata: return "metadata";
+        case TextBindingRole::styles: return "styles";
+    }
+    throw std::runtime_error("Unknown text resource role.");
+}
 
 inline std::uint32_t text_gpu_u32(std::size_t value) {
     if (value > std::numeric_limits<std::uint32_t>::max())

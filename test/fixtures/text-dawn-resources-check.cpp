@@ -70,6 +70,7 @@ int main() {
     auto owner = std::make_shared<DawnTextDevice>();
     owner->device = reinterpret_cast<WGPUDevice>(1);
     owner->queue = reinterpret_cast<WGPUQueue>(2);
+    owner->capture = TextGpuCapture(true);
     DawnTextResourceOps ops{owner};
     TextGpuState first, second;
     TextAtlasGpuState atlas;
@@ -100,11 +101,18 @@ int main() {
     const std::array<std::uint8_t, 128> curve_bytes{};
     ops.write_atlas_texture(atlas, TextAtlasTextureKind::curves, curve_bytes, 64, 4, 2);
     ops.write_atlas_metadata(atlas, words);
-    auto pipeline = retain_dawn_text_resource<DawnTextPipelineLease>(owner, make_resource<WGPURenderPipelineImpl>());
+    auto pipeline = retain_dawn_text_resource<DawnTextPipelineLease>(owner, make_resource<WGPURenderPipelineImpl>(), "pipeline");
+    pipeline->capture.samples = 4;
     auto quad = std::make_shared<DawnTextBuffer>(ops.create_buffer(WGPUBufferUsage_Vertex, 48));
     ops.set_quad_vertex_buffer(quad); ops.set_instance_vertex_buffer(first);
     ops.set_pipeline(pipeline); ops.set_bind_group(captured); ops.draw(6, 3, 0, 7);
     assert((draws == std::vector<std::string>{"vertex0", "vertex1", "pipeline", "group", "draw"}));
+    const auto& receipt = owner->capture.draws().at(0);
+    assert(receipt.samples == 4 && receipt.pipeline == pipeline->capture_id);
+    assert(receipt.bindings.at(2).resource == captured->uniform.lease->capture_id);
+    const auto& uniform_receipt = owner->capture.resources().at(captured->uniform.lease->capture_id - 1);
+    assert(uniform_receipt.writes.size() == 1 && uniform_receipt.written_ranges.at(0).offset == 80);
+    assert(uniform_receipt.written_ranges.at(0).bytes == 4 && uniform_receipt.uploaded_bytes.at(80) == 1);
 
     // Source disposal destroys the buffer even while a data-owned group retains it.
     auto* original = captured->styles.lease->get();

@@ -11649,7 +11649,8 @@ SceneRun run_dawn_engine(Engine& engine) {
     // covers only the background/skybox/ground half SDL_GPU builds here too.
     cpu_startup_mark("shaders-pipelines");
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-    state.text = std::make_unique<DawnTextRenderer>(state.device, state.queue);
+    state.text = std::make_unique<DawnTextRenderer>(state.device, state.queue,
+        !environment_variable("BBLITE_RENDER_CAPTURE").empty());
     DawnTextResourceOps text_ops{state.text->owner};
     const std::string text_color_format = state.frame_color_format == WGPUTextureFormat_BGRA8Unorm
         ? "bgra8unorm" : state.frame_color_format == WGPUTextureFormat_RGBA8Unorm ? "rgba8unorm"
@@ -12980,6 +12981,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         const std::array<float, 16> matrix =
             upstream::build_view_projection(camera, aspect);
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
         const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera), aspect};
         state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera : nullptr,
             static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height), text_ops);
@@ -13105,11 +13107,15 @@ SceneRun run_dawn_engine(Engine& engine) {
                 matrix,
                 static_cast<int>(width),
                 static_cast<int>(height),
-                frame);
+                frame
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+                , &state.text->owner->capture
+#endif
+                );
             captures.render_capture_saved = true;
         }
         };
-#if !defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA
+#if (!defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA) && (!defined(BBLITE_HAS_TEXT) || !BBLITE_HAS_TEXT)
         capture_render_state();
 #endif
         wgpuQueueWriteBuffer(
@@ -16249,7 +16255,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         pass_meshes = &state.meshes;
         }
 
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if (defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA) || (defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT)
         capture_render_state();
 #endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER

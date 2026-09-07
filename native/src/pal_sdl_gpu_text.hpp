@@ -12,11 +12,16 @@ struct SdlTextRenderer {
     std::shared_ptr<SdlTextDevice> owner = std::make_shared<SdlTextDevice>();
     std::shared_ptr<SdlTextBuffer> quad;
     std::shared_ptr<SdlTextSamplerLease> sampler;
+    std::shared_ptr<SdlTextLayout> layout = std::make_shared<SdlTextLayout>();
     TextScenePass scene;
     std::map<std::tuple<const upstream::TextPipelineInfo*, SDL_GPUTextureFormat, SDL_GPUTextureFormat>,
         std::shared_ptr<SdlTextPipeline>> pipelines;
 
-    explicit SdlTextRenderer(SDL_GPUDevice* device) { owner->device = device; }
+    explicit SdlTextRenderer(SDL_GPUDevice* device, bool capture) {
+        owner->device = device; owner->capture = TextGpuCapture(capture);
+        for (const auto& row : upstream::text_binding_layout)
+            layout->bindings.emplace_back(row.binding, text_binding_role(row.name));
+    }
     ~SdlTextRenderer() { owner->retire(); }
     SdlTextRenderer(const SdlTextRenderer&) = delete;
     SdlTextRenderer& operator=(const SdlTextRenderer&) = delete;
@@ -27,7 +32,9 @@ struct SdlTextRenderer {
         created->bytes = sizeof(upstream::text_quad_corners);
         created->lease = retain_sdl_text_resource<SdlTextBufferLease>(owner,
             upload_buffer(owner->device, SDL_GPU_BUFFERUSAGE_VERTEX,
-                upstream::text_quad_corners.data(), created->bytes));
+                upstream::text_quad_corners.data(), created->bytes), "quad", created->bytes);
+        owner->capture.write(created->lease->capture_id, 0u,
+            {reinterpret_cast<const std::uint8_t*>(upstream::text_quad_corners.data()), sizeof(upstream::text_quad_corners)});
         // SDL binds a sampler beside every sampled texture. Slug only uses
         // textureLoad, so this nearest sampler is never evaluated by its shader.
         SDL_GPUSamplerCreateInfo descriptor{};
@@ -44,7 +51,7 @@ struct SdlTextRenderer {
         ensure_quad();
         const auto key = std::tuple{&info, color_format, depth_format};
         if (const auto found = pipelines.find(key); found != pipelines.end())
-            return {found->second, found->second, {}, quad};
+            return {found->second, found->second, layout, quad};
         auto created = std::make_shared<SdlTextPipeline>();
         created->vertex_slots = read_pinned_stage_slots(info.vertex_shader);
         created->fragment_slots = read_pinned_stage_slots(info.fragment_shader);
@@ -100,9 +107,12 @@ struct SdlTextRenderer {
         descriptor.target_info.depth_stencil_format = depth_format;
         descriptor.target_info.has_depth_stencil_target = info.has_depth;
         created->pipeline = retain_sdl_text_resource<SdlTextPipelineLease>(owner,
-            SDL_CreateGPUGraphicsPipeline(owner->device, &descriptor));
+            SDL_CreateGPUGraphicsPipeline(owner->device, &descriptor), "pipeline");
+        if (owner->capture.enabled()) created->capture = text_pipeline_capture(info,
+            color_format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ? "bgra8unorm" : "rgba8unorm",
+            depth_format == SDL_GPU_TEXTUREFORMAT_D32_FLOAT ? "depth32float" : "depth24plus");
         pipelines.emplace(key, created);
-        return {created, created, {}, quad};
+        return {created, created, layout, quad};
     }
 };
 

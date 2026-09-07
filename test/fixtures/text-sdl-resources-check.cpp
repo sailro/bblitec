@@ -34,4 +34,16 @@ int main() {
     owner->retire();
     assert(replacement->uniform->destroyed && group->uniform->destroyed);
     assert(owner->resources.tracked_resource_count() == 0);
+
+    auto captured_owner = std::make_shared<SdlTextDevice>();
+    captured_owner->capture = TextGpuCapture(true);
+    SdlTextResourceOps captured_ops{captured_owner};
+    TextGpuState captured_gpu;
+    captured_ops.create_renderable_buffer(captured_gpu, TextBufferKind::uniform, 96);
+    captured_ops.write_renderable_buffer(captured_gpu, TextBufferKind::uniform, 80, front);
+    const auto& receipt = captured_owner->capture.resources().at(0);
+    assert(receipt.role == "uniform-shadow");
+    assert(receipt.written_ranges.at(0).offset == 80 && receipt.written_ranges.at(0).bytes == 4);
+    assert(receipt.uploaded_bytes.at(80) == 11);
+    captured_owner->retire();
 }

@@ -9483,7 +9483,8 @@ SceneRun run_gpu_engine(Engine& engine) {
             scene.material_family_mask;
 
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-        state.text = std::make_unique<SdlTextRenderer>(state.device);
+        state.text = std::make_unique<SdlTextRenderer>(state.device,
+            !environment_variable("BBLITE_RENDER_CAPTURE").empty());
         SdlTextResourceOps text_ops{state.text->owner};
         const std::string text_color_format = swapchain_format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
             ? "bgra8unorm" : swapchain_format == SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM ? "rgba8unorm"
@@ -10161,6 +10162,7 @@ SceneRun run_gpu_engine(Engine& engine) {
             const std::array<float, 16> matrix =
                 upstream::build_view_projection(camera, aspect);
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+            state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
             const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera), aspect};
             state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera : nullptr,
                 static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height), text_ops);
@@ -10244,11 +10246,15 @@ SceneRun run_gpu_engine(Engine& engine) {
                     matrix,
                     static_cast<int>(width),
                     static_cast<int>(height),
-                    frame);
+                    frame
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+                    , &state.text->owner->capture
+#endif
+                    );
                 captures.render_capture_saved = true;
             }
             };
-#if !defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA
+#if (!defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA) && (!defined(BBLITE_HAS_TEXT) || !BBLITE_HAS_TEXT)
             capture_render_state();
 #endif
             if (!scene.tasks.empty()) {
@@ -13469,6 +13475,9 @@ SceneRun run_gpu_engine(Engine& engine) {
             draw_billboards(BillboardDepthMode::transparent);
 #endif
             SDL_EndGPURenderPass(pass);
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+            capture_render_state();
+#endif
             // Held across the loop rather than declared inside it, so
             // `pass_matrix` never names a local that has gone out of scope
             // by the time the frame is done with it. Restoring the three
