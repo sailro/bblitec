@@ -26,6 +26,8 @@ export class SceneLowerer {
       transformNodes?: boolean;
       /** A retained SceneNode union reaches a TRS read or write. */
       sceneNodeTransforms?: boolean;
+      /** Retained text entities participate in scene disposal. */
+      text?: boolean;
     } = {},
   ): LoweredSource {
     const modulePath = "src/scene/scene-core.ts";
@@ -319,6 +321,25 @@ export class SceneLowerer {
         "Expected idempotent rendering-context registration.",
       );
     }
+    const registrationGuard = registerScene.body!.statements.find(ts.isIfStatement);
+    if (!registrationGuard ||
+        !this.context.expressionMatchesShape(registrationGuard.expression, "isRenderingContextRegistered(surface, ctx)")) {
+      this.context.contractError(registerScene, "Expected the scene identity guard before deferred construction.");
+    }
+    const buildCall = this.context.findNodes(registerScene,
+      (node): node is ts.CallExpression => ts.isCallExpression(node) && node.expression.getText() === "buildScene")[0];
+    if (!buildCall || registrationGuard.end >= buildCall.pos) {
+      this.context.contractError(registerScene, "Scene registration must guard identity before building or publishing.");
+    }
+    const buildScene = this.context.functionDeclaration(modulePath, "buildScene").declaration;
+    const drain = this.context.findNodes(buildScene, (node): node is ts.WhileStatement => ts.isWhileStatement(node))[0];
+    if (!drain || !ts.isBlock(drain.statement)) {
+      this.context.contractError(buildScene, "Expected the repeated deferred scene drain.");
+    }
+    this.context.assertExpressionShape(drain.expression, "ctx._deferredBuilders.length", "Deferred drain condition");
+    this.context.assertStatementInventory(drain, drain.statement.statements, "buildScene", "snapshot deferred drain", ["variable statement", "expression statement"]);
+    this.context.assertExpressionShape(this.context.variableInitializer(drain, "builders"), "ctx._deferredBuilders.splice(0)", "Deferred drain snapshot");
+    this.context.expectShapeCount(drain, "Promise.all(builders.map((b) => b()))", "Ordered deferred builder invocation");
     if (options.fog) {
       const { declaration: setFog } = this.context.functionDeclaration(
         fogModulePath,
@@ -1607,6 +1628,7 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
       header: "",
       source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${disposeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
+${options.text ? "#include <bblite/text.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
 ${options.geometryAccess || options.parenting ? "#include <bblite/js_data.hpp>" : ""}
 ${
@@ -2327,23 +2349,31 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
     engine.visibility_change_callbacks.remove(identity);
 }
 
-void register_scene(Scene& scene) {
-    require_scene_engine(scene);${managerSeek}${vatSeek}
-    for (const auto& builder : scene.deferred_builders) {
-        builder();
+void drain_scene_deferred_builders(Scene& scene) {
+    while (!scene.deferred_builders.empty()) {
+        auto builders = std::move(scene.deferred_builders);
+        scene.deferred_builders.clear();
+        for (const auto& builder : builders) {
+            builder();
+        }
     }
-    scene.deferred_builders.clear();
-    scene.material_family_mask = scene_material_families(scene);
+}
+
+void register_scene(Scene& scene) {
+    require_scene_engine(scene);
     const auto found = std::find_if(
         scene.engine->registered_scenes.begin(),
         scene.engine->registered_scenes.end(),
         [&scene](const std::shared_ptr<Scene>& registered) {
             return registered && registered->shares_identity(scene);
         });
-    if (found == scene.engine->registered_scenes.end()) {
-        scene.engine->registered_scenes.push_back(
-            std::make_shared<Scene>(scene));
-    }
+    if (found != scene.engine->registered_scenes.end()) return;${managerSeek}${vatSeek}
+    drain_scene_deferred_builders(scene);
+    scene.material_family_mask = scene_material_families(scene);
+${options.text ? `    std::stable_sort(scene.state->text_renderables.begin(), scene.state->text_renderables.end(),
+        [](const auto& a, const auto& b) { return a->order < b->order; });\n` : ""}\
+    scene.engine->registered_scenes.push_back(
+        std::make_shared<Scene>(scene));
 }
 
 void unregister_scene(Scene& scene) {
@@ -2375,6 +2405,7 @@ void dispose_scene(Scene& scene) {
     scene.billboard_systems.clear();
     scene.depth_hosted_sprite_layers.clear();
     scene.splat_meshes.clear();
+${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
     scene.before_render.clear();
     scene.animation_seekers.clear();
     scene.deferred_builders.clear();

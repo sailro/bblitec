@@ -35,6 +35,7 @@ export interface TextFontSource {
 
 interface TextAtlas<Blob> {
     curveSetId: string;
+    version: number;
     /** Full padded CPU rows, distinct from the used texel range. */
     curves: { width: number; height: number; usedTexels: number; bytes: Blob };
     bands: { width: number; height: number; usedTexels: number; bytes: Blob };
@@ -45,6 +46,8 @@ interface TextAtlas<Blob> {
 interface TextStorage<Blob> {
     width: number;
     height: number;
+    versions: { data: number; style: number; layout: number };
+    dirtyRange: { start: number; end: number };
     instances: { count: number; strideBytes: number; capacityBytes: number; bytes: Blob };
     styles: { count: number; strideBytes: number; capacityBytes: number; bytes: Blob };
     atlases: TextAtlas<Blob>[];
@@ -105,7 +108,7 @@ export function materializePinnedText(fontBytes: Uint8Array, layout?: StaticText
     });
     const result = cachedBakeSync({
         kind: "pinned-text-data",
-        version: "1",
+        version: "2",
         module: moduleIdentity(import.meta.url),
         browser: false,
         parameters: { requestSha256: textSha256(request), modules: modules.map(({ path }) => path) },
@@ -132,6 +135,7 @@ console.log(JSON.stringify(await executePinnedText(Buffer.from(request.font, 'ba
 }
 
 interface PinnedAtlas {
+    _version: number;
     _curveTexData: Float32Array; _curveTexelsUsed: number;
     _bandTexData: Float32Array; _bandTexelsUsed: number;
     _metaData: Float32Array; _slotCount: number;
@@ -147,6 +151,8 @@ export async function executePinnedText(fontBytes: Uint8Array, layout?: StaticTe
     const { createDefaultTextData } = await importPinnedModule<{
         createDefaultTextData(font: unknown, size: number, text: string, color?: readonly number[], options?: StaticTextLayout["options"]): {
             width: number; height: number;
+            _version: number; _styleVersion: number; _layoutVersion: number;
+            _dirtyStart: number; _dirtyEnd: number;
             _instances: Float32Array; _instanceCount: number;
             _styles: Float32Array; _styleCount: number;
             _groups: { _curveSetId: string; _curveSet: { _atlas: PinnedAtlas }; _groupKey: unknown; _slotStart: number; _slotCount: number; _liveCount: number }[];
@@ -182,6 +188,7 @@ export async function executePinnedText(fontBytes: Uint8Array, layout?: StaticTe
             indices.set(atlas, atlasIndex);
             atlases.push({
                 curveSetId: group._curveSetId,
+                version: atlas._version,
                 curves: texture(atlas._curveTexData, atlas._curveTexelsUsed),
                 bands: texture(atlas._bandTexData, atlas._bandTexelsUsed),
                 metadata: stream(atlas._metaData, atlas._slotCount, atlasConstants.GLYPH_METADATA_FLOATS * Float32Array.BYTES_PER_ELEMENT),
@@ -191,6 +198,8 @@ export async function executePinnedText(fontBytes: Uint8Array, layout?: StaticTe
     });
     return {
         width: data.width, height: data.height,
+        versions: {data: data._version, style: data._styleVersion, layout: data._layoutVersion},
+        dirtyRange: {start: data._dirtyStart, end: data._dirtyEnd},
         // The third instance word is packed u32. Copy its bytes, never its JS float value.
         instances: stream(data._instances, data._instanceCount, constants.TEXT_INSTANCE_BYTES),
         styles: stream(data._styles, data._styleCount, constants.TEXT_STYLE_BYTES),

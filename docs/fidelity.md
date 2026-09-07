@@ -438,6 +438,34 @@ source scenes or thresholds substitutes for this evidence. Residual classes
 and unfinished physics capabilities are tracked in TODO; published pixels
 belong in status.
 
+## Text CPU prerequisite
+
+`TextLowerer` translates observable component/bulk setters, the cached Euler
+proxy, quaternion conversion and matrix multiplication from the pinned bodies.
+Transform lanes retain JS double width; ordinary text world matrices and uniform
+stores narrow to float at the pin's allocation/write boundaries. The identity
+matrix shortcut also preserves zero signs. The three UBO updates retain their
+independent camera/world/aspect, viewport and opacity conditions. CPU fixtures
+execute the real pinned functions with recording resource seams and compare all
+written bytes, including unchanged frames and frames with no camera.
+
+Each materialized TextData has distinct mutable identity even when packaged
+blobs deduplicate. Its renderables retain the same data owner; group bind caches
+belong to that data, not to individual renderables. Renderable disposal releases
+its three buffer leases without disposing the data. TextData disposal clears
+live groups/counts while preserving width, height, packed CPU storage and version
+state; DefaultTextData additionally releases its owned atlas leases. Native
+fixtures observe the pin's lifetime, aliases, byte streams and disposal order.
+
+The deferred scene drain now checks existing registration before construction,
+consumes snapshots repeatedly, and publishes only after successful construction.
+The text adapter retains scene-owned renderables through a weak scene reference,
+preserves duplicate additions, and refuses attachment after scene disposal.
+The pin's arbitrary async builders and late-cleanup continuations are not admitted.
+Compiler renderer activation, PAL resources/draws and high precision text matrix
+storage remain prerequisites for scene adoption; CPU observations establish no
+image parity claim.
+
 ## Audio contract
 
 The platform seam is Web Audio: the pinned engine creates its graph over an

@@ -627,6 +627,19 @@ Exposure and contrast are live uniform state. The selected tone-mapping record
 participates in material composition. Transmission uses the pinned linear-frame
 and trailing image-processing contract.
 
+## Text
+
+Static `loadFont` and `createDefaultTextData` execute the pinned font parser,
+shaper and packing modules at generation. Their manifest retains exact byte
+streams, padded atlas extents, used ranges, capacities, versions and provenance.
+Dynamic layout/update calls and `createTextRenderable` still refuse at source.
+The generated text CPU prerequisite provides retained data/renderable identities,
+TRS/Euler mutations, uniform updates and deferred scene ownership, but no PAL
+draw consumer is activated. Text registration storage requires `BBLITE_HAS_TEXT`.
+Async custom deferred builders, text attachment after scene disposal, high
+precision text matrices and renderer binding/resource updates remain outside
+this prerequisite. See [fidelity](fidelity.md#text-cpu-prerequisite).
+
 ## Runtime scene mutation
 
 Supported removal, material-family append and dynamic instance updates trigger

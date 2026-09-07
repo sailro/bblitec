@@ -1253,8 +1253,7 @@ export class PinnedNumericLowerer {
             if (
                 this.scope.matrixCalls &&
                 ts.isCallExpression(initializer) &&
-                ts.isIdentifier(initializer.expression) &&
-                this.scope.matrixCalls.has(initializer.expression.text)
+                this.scope.matrixCalls.has(initializer.expression.getText(this.file))
             ) {
                 this.scope.bindings.set(name, { cpp, type: "f32" });
                 lines.push(
@@ -1348,6 +1347,17 @@ export class PinnedNumericLowerer {
         }
         const constructor = initializer.expression.text;
         const argument = initializer.arguments[0]!;
+        // Pinned uniform writers also construct a small typed tuple directly.
+        // Keep its allocation fixed and round at each authored f32 store.
+        if ((constructor === "F32" || constructor === "Float32Array") &&
+            ts.isArrayLiteralExpression(argument)) {
+            const values = argument.elements.map((element) =>
+                `static_cast<float>(${this.expression(element)})`);
+            return {
+                type: "f32",
+                declare: (name) => `std::array<float, ${values.length}> ${name}{${values.join(", ")}};`,
+            };
+        }
         // `new U8(buffer)` / `new F32(buffer)` re-view an existing byte
         // buffer; the same constructors over a COUNT allocate.
         const named = this.unwrap(argument);
