@@ -361,6 +361,61 @@ inline void bind_stage_textures(
 }
 
 /**
+ * The storage sibling of the shared `push_stage_uniforms` /
+ * `bind_stage_textures` walks: the same order, the same by-name refusal
+ * and the same slot index handed to the resolver, with the pointer list
+ * living in a caller-owned scratch (`GpuState::storage_binding_scratch`)
+ * instead of a vector allocated per non-empty stage per draw. Node-morph
+ * and shadow stages carry different slot counts, so the scratch refills
+ * to each stage's own list and only its capacity persists.
+ */
+template <typename Resolve>
+inline void resolve_stage_storage(
+    const PinnedStageSlots& slots,
+    const char* what,
+    std::vector<SDL_GPUBuffer*>& scratch,
+    Resolve resolve) {
+    scratch.clear();
+    scratch.reserve(slots.storage.size());
+    for (std::size_t slot = 0; slot < slots.storage.size(); ++slot) {
+        const std::string& name = slots.storage[slot];
+        SDL_GPUBuffer* buffer = resolve(name, slot);
+        if (!buffer) {
+            gpu_error(
+                (std::string(what) +
+                 " declares an unmapped storage buffer '" + name + "'.")
+                    .c_str());
+        }
+        scratch.push_back(buffer);
+    }
+}
+
+template <typename Resolve>
+inline void bind_stage_storage(
+    SDL_GPURenderPass* pass,
+    const PinnedStageSlots& slots,
+    bool fragment,
+    const char* what,
+    std::vector<SDL_GPUBuffer*>& scratch,
+    Resolve resolve) {
+    if (slots.storage.empty()) return;
+    resolve_stage_storage(slots, what, scratch, resolve);
+    if (fragment) {
+        SDL_BindGPUFragmentStorageBuffers(
+            pass,
+            0,
+            scratch.data(),
+            static_cast<Uint32>(scratch.size()));
+        return;
+    }
+    SDL_BindGPUVertexStorageBuffers(
+        pass,
+        0,
+        scratch.data(),
+        static_cast<Uint32>(scratch.size()));
+}
+
+/**
  * The pin's depth compare in this API's enum.
  *
  * `upstream::pinned_depth_compare` carries the value the pin declares; only

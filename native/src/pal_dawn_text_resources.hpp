@@ -78,7 +78,7 @@ struct DawnTextAtlasResources {
     DawnTextTexture curves, bands;
     DawnTextBuffer metadata;
 };
-enum class DawnTextBindingRole { uniform, curves, bands, metadata, styles };
+using DawnTextBindingRole = TextBindingRole;
 struct DawnTextBinding {
     std::uint32_t binding = 0;
     DawnTextBindingRole role = DawnTextBindingRole::uniform;
@@ -137,7 +137,7 @@ struct DawnTextResourceOps {
         auto& texture = kind == TextAtlasTextureKind::curves ? resources->curves : resources->bands;
         WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
         descriptor.dimension = WGPUTextureDimension_2D;
-        descriptor.size = WGPUExtent3D{static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(rows), 1u};
+        descriptor.size = WGPUExtent3D{text_gpu_u32(width), text_gpu_u32(rows), 1u};
         descriptor.format = WGPUTextureFormat_RGBA32Float;
         descriptor.usage = WGPUTextureUsage_CopyDst | WGPUTextureUsage_CopySrc | WGPUTextureUsage_TextureBinding;
         texture.texture = retain_dawn_text_resource<DawnTextTextureLease>(owner,
@@ -170,9 +170,9 @@ struct DawnTextResourceOps {
         WGPUTexelCopyTextureInfo target = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
         target.texture = texture.texture->get();
         WGPUTexelCopyBufferLayout layout{};
-        layout.bytesPerRow = static_cast<std::uint32_t>(bytes_per_row);
-        layout.rowsPerImage = static_cast<std::uint32_t>(rows);
-        const WGPUExtent3D extent{static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(rows), 1u};
+        layout.bytesPerRow = text_gpu_u32(bytes_per_row);
+        layout.rowsPerImage = text_gpu_u32(rows);
+        const WGPUExtent3D extent{text_gpu_u32(width), text_gpu_u32(rows), 1u};
         wgpuQueueWriteTexture(owner->queue, &target, bytes.data(), bytes.size(), &layout, &extent);
     }
 
@@ -181,7 +181,7 @@ struct DawnTextResourceOps {
         wgpuQueueWriteBuffer(owner->queue, resources->metadata.lease->get(), 0u, bytes.data(), bytes.size());
     }
 
-    std::shared_ptr<void> create_bind_group(TextGpuState& gpu, TextAtlasGpuState& atlas, const std::shared_ptr<void>& opaque_layout) {
+    std::shared_ptr<void> create_bind_group(const TextGpuState& gpu, const TextAtlasGpuState& atlas, const std::shared_ptr<void>& opaque_layout) {
         const auto resources = std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend);
         const auto textures = std::static_pointer_cast<DawnTextAtlasResources>(atlas.backend);
         const auto layout = std::static_pointer_cast<DawnTextLayout>(opaque_layout);
@@ -219,7 +219,7 @@ struct DawnTextResourceOps {
         const auto buffer = std::static_pointer_cast<DawnTextBuffer>(quad);
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0u, buffer->lease->get(), 0u, WGPU_WHOLE_SIZE);
     }
-    void set_instance_vertex_buffer(TextGpuState& gpu) {
+    void set_instance_vertex_buffer(const TextGpuState& gpu) {
         const auto resources = std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend);
         wgpuRenderPassEncoderSetVertexBuffer(pass, 1u, resources->instances.lease->get(), 0u, WGPU_WHOLE_SIZE);
     }
@@ -229,8 +229,8 @@ struct DawnTextResourceOps {
     void set_bind_group(const std::shared_ptr<void>& group) {
         wgpuRenderPassEncoderSetBindGroup(pass, 0u, std::static_pointer_cast<DawnTextGroup>(group)->group->get(), 0u, nullptr);
     }
-    void draw(std::uint32_t vertices, std::uint32_t instances, std::uint32_t first_vertex, std::uint32_t first_instance) {
-        wgpuRenderPassEncoderDraw(pass, vertices, instances, first_vertex, first_instance);
+    void draw(std::size_t vertices, std::size_t instances, std::size_t first_vertex, std::size_t first_instance) {
+        wgpuRenderPassEncoderDraw(pass, text_gpu_u32(vertices), text_gpu_u32(instances), text_gpu_u32(first_vertex), text_gpu_u32(first_instance));
     }
 };
 

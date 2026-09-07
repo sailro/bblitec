@@ -118,6 +118,12 @@ int main() {
     try { captured->styles.lease->get(); } catch (const std::runtime_error&) { refused = true; }
     assert(refused);
 
+    const auto retained_count = owner->resources.tracked_resource_count();
+    for (unsigned i = 0; i < 200; ++i) {
+        auto temporary = ops.create_buffer(WGPUBufferUsage_Vertex, 48);
+        assert(owner->resources.tracked_resource_count() == retained_count + 1);
+    }
+
     // The renderer ends while source GPU records and data groups are still alive.
     owner->retire();
     assert(owner->device == nullptr && owner->queue == nullptr);

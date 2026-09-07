@@ -41,6 +41,9 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_shared.hpp"
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#include "pal_sdl_gpu_text.hpp"
+#endif
 #if BBLITE_HAS_BILLBOARDS
 #include "pal_sdl_gpu_billboard.hpp"
 #endif
@@ -884,6 +887,9 @@ struct PinnedStageShadowRows {
 #endif
 
 struct GpuState {
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+    std::unique_ptr<SdlTextRenderer> text;
+#endif
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
     /** The clustered light field's three data textures and their sampler. */
     ClusteredLightGpu clustered;
@@ -1347,61 +1353,6 @@ void bind_shader_material_textures(
         0,
         state.shader_texture_binding_scratch.data(),
         static_cast<Uint32>(state.shader_texture_binding_scratch.size()));
-}
-
-/**
- * The storage sibling of the shared `push_stage_uniforms` /
- * `bind_stage_textures` walks: the same order, the same by-name refusal
- * and the same slot index handed to the resolver, with the pointer list
- * living in a caller-owned scratch (`GpuState::storage_binding_scratch`)
- * instead of a vector allocated per non-empty stage per draw. Node-morph
- * and shadow stages carry different slot counts, so the scratch refills
- * to each stage's own list and only its capacity persists.
- */
-template <typename Resolve>
-void resolve_stage_storage(
-    const PinnedStageSlots& slots,
-    const char* what,
-    std::vector<SDL_GPUBuffer*>& scratch,
-    Resolve resolve) {
-    scratch.clear();
-    scratch.reserve(slots.storage.size());
-    for (std::size_t slot = 0; slot < slots.storage.size(); ++slot) {
-        const std::string& name = slots.storage[slot];
-        SDL_GPUBuffer* buffer = resolve(name, slot);
-        if (!buffer) {
-            gpu_error(
-                (std::string(what) +
-                 " declares an unmapped storage buffer '" + name + "'.")
-                    .c_str());
-        }
-        scratch.push_back(buffer);
-    }
-}
-
-template <typename Resolve>
-void bind_stage_storage(
-    SDL_GPURenderPass* pass,
-    const PinnedStageSlots& slots,
-    bool fragment,
-    const char* what,
-    std::vector<SDL_GPUBuffer*>& scratch,
-    Resolve resolve) {
-    if (slots.storage.empty()) return;
-    resolve_stage_storage(slots, what, scratch, resolve);
-    if (fragment) {
-        SDL_BindGPUFragmentStorageBuffers(
-            pass,
-            0,
-            scratch.data(),
-            static_cast<Uint32>(scratch.size()));
-        return;
-    }
-    SDL_BindGPUVertexStorageBuffers(
-        pass,
-        0,
-        scratch.data(),
-        static_cast<Uint32>(scratch.size()));
 }
 
 // Geometry-task helpers shared by the PBR and Standard variant
@@ -5690,6 +5641,9 @@ void prune_shared_composed_material_textures(GpuState& state) {
 }
 
 void release(GpuState& state) {
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+    state.text.reset();
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     release_ui_sdl_resources(state);
 #endif
@@ -9528,6 +9482,19 @@ SceneRun run_gpu_engine(Engine& engine) {
         std::uint32_t synced_material_family_mask =
             scene.material_family_mask;
 
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        state.text = std::make_unique<SdlTextRenderer>(state.device);
+        SdlTextResourceOps text_ops{state.text->owner};
+        const std::string text_color_format = swapchain_format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
+            ? "bgra8unorm" : swapchain_format == SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM ? "rgba8unorm"
+            : throw std::runtime_error("Unrepresented default text color target.");
+        state.text->scene.bind(scene, state.text->owner.get(),
+            TextTargetSignature{text_color_format, gpu_sample_count_value(state.sample_count), "depth24plus-stencil8"},
+            [&](const upstream::TextPipelineInfo& info) {
+                return state.text->pipeline(info, swapchain_format, state.depth_format);
+            }, text_ops);
+        text_ops.sampler = state.text->sampler;
+#endif
         CameraRecord fallback_camera;
         CameraRecord& camera =
             scene.camera.value < engine.cameras.size()
@@ -10193,6 +10160,11 @@ SceneRun run_gpu_engine(Engine& engine) {
                     static_cast<double>(surface_extent.height));
             const std::array<float, 16> matrix =
                 upstream::build_view_projection(camera, aspect);
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+            const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera), aspect};
+            state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera : nullptr,
+                static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height), text_ops);
+#endif
             const std::array<float, 16> skybox_matrix =
                 upstream::build_skybox_view_projection(
                     camera,
@@ -13451,6 +13423,11 @@ SceneRun run_gpu_engine(Engine& engine) {
                         break;
                     case upstream::RenderStage::transparent:
                         draw_render_list(render_plan.draw_lists.transparent);
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+                        text_ops.command = command;
+                        text_ops.pass = pass;
+                        state.text->scene.draw(text_ops);
+#endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
                         if (has_scene_sprite_pass) {
                             record_scene_sprite_pass(

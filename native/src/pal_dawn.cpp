@@ -63,6 +63,9 @@
 #include "pal_dawn_effect.hpp"
 #endif
 #include "pal_gpu_shared.hpp"
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#include "pal_dawn_text.hpp"
+#endif
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
 #include "pal_temporal_shared.hpp"
 #endif
@@ -758,6 +761,9 @@ void release_variant_family(
 #endif
 
 struct DawnState : DawnDevice {
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+    std::unique_ptr<DawnTextRenderer> text;
+#endif
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
     /** The clustered light field's params buffer and three data textures. */
     DawnClusteredLights clustered;
@@ -1659,6 +1665,9 @@ struct DawnState : DawnDevice {
 #endif
 
     ~DawnState() {
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        text.reset();
+#endif
 #if BBLITE_HAS_PICKING && BBLITE_GPU_INSTANCING
         release_thin_pick_groups();
 #endif
@@ -11639,6 +11648,18 @@ SceneRun run_dawn_engine(Engine& engine) {
     // The composed variant modules load lazily in the loop, so this phase
     // covers only the background/skybox/ground half SDL_GPU builds here too.
     cpu_startup_mark("shaders-pipelines");
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+    state.text = std::make_unique<DawnTextRenderer>(state.device, state.queue);
+    DawnTextResourceOps text_ops{state.text->owner};
+    const std::string text_color_format = state.frame_color_format == WGPUTextureFormat_BGRA8Unorm
+        ? "bgra8unorm" : state.frame_color_format == WGPUTextureFormat_RGBA8Unorm ? "rgba8unorm"
+        : throw std::runtime_error("Unrepresented default text color target.");
+    state.text->scene.bind(scene, state.text->owner.get(),
+        TextTargetSignature{text_color_format, state.sample_count, "depth24plus-stencil8"},
+        [&](const upstream::TextPipelineInfo& info) {
+            return state.text->pipeline(info, state.frame_color_format, WGPUTextureFormat_Depth24PlusStencil8);
+        }, text_ops);
+#endif
 
     CameraRecord fallback_camera;
     CameraRecord& camera =
@@ -12958,6 +12979,11 @@ SceneRun run_dawn_engine(Engine& engine) {
                 static_cast<double>(surface_extent.height));
         const std::array<float, 16> matrix =
             upstream::build_view_projection(camera, aspect);
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera), aspect};
+        state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera : nullptr,
+            static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height), text_ops);
+#endif
         // The frame's own two factors, built once. A shader material may
         // declare either beside the product, the pin's splat UBO stores
         // them separately, and the billboard sort reads the view. The
@@ -14644,6 +14670,10 @@ SceneRun run_dawn_engine(Engine& engine) {
                 case upstream::RenderStage::transparent:
                     draw_render_list(
                         render_plan.draw_lists.transparent);
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+                    text_ops.pass = pass;
+                    state.text->scene.draw(text_ops);
+#endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
                     if (state.has_scene_sprite_pass) {
                         record_dawn_scene_sprite_pass(
