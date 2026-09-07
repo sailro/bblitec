@@ -1660,6 +1660,8 @@ struct RenderTargetTexture {
 struct SolidTexture {
     Color4 color{};
     std::array<std::uint8_t, 4> texel{};
+    // Solid textures enter StoredTexture's FileTexture arm; share its ID space.
+    std::uint64_t identity = 0;
 };
 
 struct PbrMaterialOptions {
@@ -5895,6 +5897,7 @@ void set_pbr_subsurface(
     float maximum_thickness,
     FileTexture thickness_texture);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
+FileTexture solid_texture_file(const SolidTexture& texture);
 FileTexture load_file_texture(
     Engine& engine,
     const std::string& path,

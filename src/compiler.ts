@@ -11139,6 +11139,12 @@ class Compiler
             if (textKind(leftValue)) leftValue = retainTextValue(this, leftValue);
             let rightValue = this.compileValue(unwrapped.right);
             if (textKind(rightValue)) rightValue = retainTextValue(this, rightValue);
+            if (leftValue.kind === "texture" && rightValue.kind === "texture") {
+                if (operator !== "==" && operator !== "!=") this.fail(unwrapped, "Texture2D values support identity comparisons.");
+                const stored = (value: Value, node: ts.Expression) =>
+                    `bbl::StoredTexture{${this.dataLowerer.compileKnownValueForSink(value, { kind: "handle", handle: "texture" }, node)}}`;
+                return `${stored(leftValue, unwrapped.left)} ${operator} ${stored(rightValue, unwrapped.right)}`;
+            }
             if (textKind(leftValue) || textKind(rightValue)) {
                 if (operator !== "==" && operator !== "!=") this.fail(unwrapped, "Text entities support strict identity comparisons.");
                 const sameKind = leftValue.kind === rightValue.kind && leftValue.textTransform === rightValue.textTransform;

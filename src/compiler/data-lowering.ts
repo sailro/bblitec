@@ -5852,21 +5852,7 @@ export class DataLowerer {
                         `Expected a ${dataType.handle} value, received ${value.kind}.`,
                     );
                 }
-                if (
-                    dataType.handle === "texture" &&
-                    !(
-                        value.textureStorage === "pixels" ||
-                        value.textureStorage === "file" ||
-                        (value.dataType?.kind === "handle" &&
-                            value.dataType.handle === "texture")
-                    )
-                ) {
-                    this.context.fail(
-                        unwrapped,
-                        "Texture2D data storage supports loadTexture2D and createTexture2DFromPixels values.",
-                    );
-                }
-                return value.cpp;
+                return this.compileKnownValueForSink(value, dataType, unwrapped);
             }
             case "arraybuffer":
             case "dataview": {
@@ -6477,6 +6463,16 @@ export class DataLowerer {
                     dataType.kind === "handle" &&
                     value.kind === dataType.handle
                 ) {
+                    if (dataType.handle === "texture") {
+                        if (value.textureStorage === "solid") {
+                            return `bbl::solid_texture_file(${value.cpp})`;
+                        }
+                        if (!(value.textureStorage === "pixels" ||
+                            value.textureStorage === "file" ||
+                            (value.dataType?.kind === "handle" && value.dataType.handle === "texture"))) {
+                            this.context.fail(node, "Texture2D data storage supports file, pixel, and solid textures.");
+                        }
+                    }
                     return value.cpp;
                 }
                 if (

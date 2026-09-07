@@ -882,7 +882,7 @@ FileTexture load_file_texture(
 }
 
 SolidTexture create_solid_texture(
-    Engine&,
+    Engine& engine,
     float r,
     float g,
     float b,
@@ -896,6 +896,7 @@ SolidTexture create_solid_texture(
             std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
     };
     SolidTexture texture;
+    texture.identity = engine.next_file_texture_identity++;
     texture.texel = {quantize(r), quantize(g), quantize(b), quantize(a)};
     texture.color = Color4{
         static_cast<float>(texture.texel[0]) / 255.0f,
@@ -904,6 +905,15 @@ SolidTexture create_solid_texture(
         static_cast<float>(texture.texel[3]) / 255.0f,
     };
     return texture;
+}
+
+FileTexture solid_texture_file(const SolidTexture& texture) {
+    FileTexture normalized;
+    normalized.data = solid_texture_data(texture);
+    normalized.width = 1;
+    normalized.height = 1;
+    normalized.identity = texture.identity;
+    return normalized;
 }
 
 } // namespace bbl
