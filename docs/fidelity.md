@@ -292,6 +292,14 @@ succeeds. Camera keys and jitter remain renderer hooks: persistent clean and
 jittered source-task UBO transport is not represented yet, so native generation
 still refuses TAA.
 
+Scene-uniform fog and environment keys describe object replacement, not equal
+field values. New scenes start with absent keys. Fresh inline fog configs get
+a new key per setter call; TAA refuses named configs and aliased color arrays
+until their live object ownership is represented. Environment loaders publish
+new keys only after texture assembly succeeds, while repeated glTF scene setup
+reuses its captured key. Image-processing and background mutations keep that
+key. Direct null fog writes and environment-object transport remain refused.
+
 A screen-space effect invalidates its temporal history on the pin's reset
 events: first allocation, owned-target reallocation, a source or depth
 texture identity change, a reset version change, the disabled-to-enabled

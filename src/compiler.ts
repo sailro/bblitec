@@ -824,6 +824,7 @@ class Compiler
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
+    private readonly sceneUniformIdentityLimitations = new Map<ts.Node, string>();
     public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = [];
     private readonly sceneMaterials = new SceneMaterialRecorder();
     private readonly sceneMaterialGltfAssetsBefore: number[] = [];
@@ -1033,6 +1034,9 @@ class Compiler
         // lowerer emits from, so a feature's sources are declared once.
         const generatedSources = reachedGeneratedSources(features);
         const cpp = this.renderCpp(features);
+        if (this.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask")) {
+            for (const [node, message] of this.sceneUniformIdentityLimitations) this.fail(node, message);
+        }
         this.staticExpansionBudget.assertWithinBudget();
         return {
             cpp,
@@ -19698,6 +19702,10 @@ class Compiler
         manifest: PostProcessCompositeManifest,
     ): void {
         this.postProcessComposites.push(manifest);
+    }
+
+    public recordSceneUniformIdentityLimitation(node: ts.Node, message: string): void {
+        this.sceneUniformIdentityLimitations.set(node, message);
     }
 
     public recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void {

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -4830,6 +4831,12 @@ inline MaterialHandle remember_scene_material(
     return material;
 }
 
+/** Stable cache keys for distinct pinned fog/environment objects, across scenes. */
+inline std::uint64_t next_scene_uniform_object_identity() {
+    static std::atomic<std::uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
 struct EnvironmentState {
     bool has_irradiance = false;
     float exposure = 1.0f;
@@ -4948,6 +4955,9 @@ struct SceneState {
     bool seeks_vat = false;
     std::vector<js::Callback<void()>> deferred_builders;
     EnvironmentState environment;
+    /** `createSceneContext`: fog is null and _envTextures is absent. */
+    std::uint64_t fog_identity = 0;
+    std::uint64_t environment_identity = 0;
     double fixed_delta_ms = 0.0;
     /** Mesh, light, or shadow changes that require renderer state rebuild. */
     std::uint64_t render_topology_version = 0;

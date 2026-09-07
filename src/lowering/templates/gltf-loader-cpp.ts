@@ -2384,9 +2384,10 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             views,
             image_json)) {
         asset.scene_setup =
-            [image_based_environment](Scene& scene) {
+            [image_based_environment, identity = next_scene_uniform_object_identity()](Scene& scene) {
             scene.environment =
                 image_based_environment;
+            scene.state->environment_identity = identity;
         };
     }${assetTransmission ? `
     // registerPbrTransmission: the pinned transmission setter installs a scene

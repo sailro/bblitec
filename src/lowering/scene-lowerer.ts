@@ -43,6 +43,13 @@ export class SceneLowerer {
       createName,
     );
     const scene = this.context.objectInitializer(declaration, "ctxLocal");
+    this.context.assertExpressionShape(
+      this.context.propertyInitializer(scene, "fog"), "null", "Pinned initial fog identity",
+    );
+    if (scene.properties.some((property) => property.name &&
+      this.context.propertyName(property.name) === "_envTextures")) {
+      this.context.contractError(scene, "Expected a new scene to have no environment texture object.");
+    }
     const clearExpression = this.context.propertyInitializer(
       scene,
       "clearColor",
@@ -1501,6 +1508,7 @@ void set_scene_fog(
     float end,
     Color3 color) {
     require_scene_engine(scene);
+    scene.state->fog_identity = next_scene_uniform_object_identity();
     scene.fog_mode = mode;
     scene.fog_density = density;
     scene.fog_start = start;
