@@ -2358,13 +2358,14 @@ void drain_scene_deferred_builders(Scene& scene) {
     while (!scene.deferred_builders.empty()) {
         auto builders = std::move(scene.deferred_builders);
         scene.deferred_builders.clear();
-        // Promise.all starts every builder in the batch before reporting a
-        // rejection. Preserve those side effects and the first failure.
+        // Array.map stops on a synchronous throw. Async wrappers instead
+        // reject, allowing every callback in this batch to run first.
         std::exception_ptr failure;
         for (const auto& builder : builders) {
             try {
                 builder();
             } catch (...) {
+                if (builder.failure_mode == SceneDeferredFailure::synchronous_throw) throw;
                 if (!failure) failure = std::current_exception();
             }
         }

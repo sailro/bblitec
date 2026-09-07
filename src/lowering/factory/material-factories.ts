@@ -5,6 +5,7 @@ import {
 } from "../../pinned-address-modes.js";
 import { LoweredSource } from "../context.js";
 import { MeshBuilderLowerer } from "./mesh-builders.js";
+import { assertAsyncSceneBuilder } from "../scene-deferred.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -85,6 +86,7 @@ export interface StandardMaterialSetters {
  */
 export class FactoryLowerer extends MeshBuilderLowerer {
     public lowerNodeMaterialFactory(): LoweredSource {
+        assertAsyncSceneBuilder(this.context, this.context.functionDeclaration("src/scene/scene-core.ts", "addToScene").declaration);
         const modulePath = "src/material/node/node-material.ts";
         const { declaration } = this.context.functionDeclaration(
             modulePath,
@@ -253,7 +255,7 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
     group->meshes.push_back(mesh);
     groups.push_back(group);
     const std::weak_ptr<SceneState> owner = scene.state;
-    scene.deferred_builders.push_back([owner, group] {
+    scene.deferred_builders.emplace_back([owner, group] {
         const auto state = owner.lock();
         if (!state || state->disposed) return;
         Engine& engine = *state->engine;
@@ -280,7 +282,7 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
             record.shader_textures = std::move(textures);
             captured.push_back(current.value);
         }
-    });
+    }, SceneDeferredFailure::promise_rejection);
 }
 
 } // namespace bbl

@@ -5042,6 +5042,21 @@ struct Surface {
     std::shared_ptr<bool> disposed = std::make_shared<bool>(false);
 };
 
+enum class SceneDeferredFailure { synchronous_throw, promise_rejection };
+
+/** Async wrappers reject after the map has invoked the rest of its batch. */
+struct SceneDeferredBuilder {
+    js::Callback<void()> callback;
+    SceneDeferredFailure failure_mode = SceneDeferredFailure::synchronous_throw;
+    template <typename F>
+        requires (!std::is_same_v<std::remove_cvref_t<F>, SceneDeferredBuilder>)
+    SceneDeferredBuilder(F&& body,
+        SceneDeferredFailure mode = SceneDeferredFailure::synchronous_throw)
+        : callback(std::forward<F>(body)), failure_mode(mode) {}
+    void operator()() const { callback(); }
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
+};
+
 /** The mutable state shared by every native copy of one SceneContext. */
 struct SceneState {
     Engine* engine = nullptr;
@@ -5098,7 +5113,7 @@ struct SceneState {
     bool seeks_animation_managers = false;
     /** The same, for the baked meshes this scene's registration reaches. */
     bool seeks_vat = false;
-    std::vector<js::Callback<void()>> deferred_builders;
+    std::vector<SceneDeferredBuilder> deferred_builders;
     std::vector<std::shared_ptr<NodeMaterialGroupState>> node_material_groups;
     EnvironmentState environment;
     /** `createSceneContext`: fog is null and _envTextures is absent. */
@@ -5167,7 +5182,7 @@ struct Scene {
     std::vector<js::Callback<void(float)>>& animation_seekers;
     bool& seeks_animation_managers;
     bool& seeks_vat;
-    std::vector<js::Callback<void()>>& deferred_builders;
+    std::vector<SceneDeferredBuilder>& deferred_builders;
     EnvironmentState& environment;
     double& fixed_delta_ms;
     std::uint64_t& render_topology_version;
