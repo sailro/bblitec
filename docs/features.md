@@ -645,8 +645,10 @@ including per-stage constants, reflected resources and vertex layouts. Initial
 renderer admission is one text-only default scene with a static FreeCamera;
 mixed draw ordering, custom tasks, camera writers/controls and high precision
 text matrices remain refused. Text registration requires `BBLITE_HAS_TEXT`.
-PAL image validation is a separate integration gate; this compiler prerequisite
-does not register a corpus scene. See [fidelity](fidelity.md#text-cpu-prerequisite).
+Both PALs draw the composed Slug shaders with packed instance/storage data and
+the pin's alpha-to-coverage or premultiplied blend state. Scene275 is registered;
+shared-data and ordinary-blend fixtures cover the other admitted binding paths.
+See [fidelity](fidelity.md#text-contract).
 
 ## Runtime scene mutation
 

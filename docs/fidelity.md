@@ -438,7 +438,7 @@ source scenes or thresholds substitutes for this evidence. Residual classes
 and unfinished physics capabilities are tracked in TODO; published pixels
 belong in status.
 
-## Text CPU prerequisite
+## Text contract
 
 `TextLowerer` translates observable component/bulk setters, the cached Euler
 proxy, quaternion conversion and matrix multiplication from the pinned bodies.
@@ -475,9 +475,29 @@ consumes snapshots repeatedly, and publishes only after successful construction.
 The text adapter retains scene-owned renderables through a weak scene reference,
 preserves duplicate additions, and refuses attachment after scene disposal.
 The pin's arbitrary async builders and late-cleanup continuations are not admitted.
-Compiler renderer activation, PAL resources/draws and high precision text matrix
-storage remain prerequisites for scene adoption; CPU observations establish no
-image parity claim.
+The PALs adapt those operations to their device APIs. Dawn retains buffer and
+texture leases in the actual bind group. SDL retains the same group ownership
+with a uniform shadow and pushes its bytes for each draw; storage and texture
+slots come from compiled reflection. Both consume the actual pinned pipeline
+descriptor and unchanged Slug WGSL. Numeric override constants remain separate
+for vertex and fragment stages; Tint specializes offline stages and Dawn
+receives the constants in its pipeline descriptor.
+
+The SDL default pass uses its selected depth-only format (`depth32float` or
+`depth24plus`) in place of the browser's `depth24plus-stencil8`; admitted text
+does not use stencil. Depth comparison and writes remain source-selected.
+`BBLITE_RENDER_CAPTURE` records successful uploads, allocated extents, written
+ranges, retained binding identities, per-draw pipeline state and SDL pushed
+uniform bytes after the captured frame's text draws. Unwritten allocation tails
+are excluded from the byte evidence.
+
+Scene275 and the shared-data/ordinary-blend controls compare those receipts
+with actual pinned browser operations, including mapped quad bytes, idle work,
+unattached-camera input and a resized canvas. Image gates apply independently
+to both backends. CPU lifecycle controls additionally cover failure
+and replacement paths that the static source admission does not expose. The
+supported source surface and remaining exclusions are in
+[features](features.md#text).
 
 ## Audio contract
 

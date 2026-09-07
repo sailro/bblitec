@@ -75,6 +75,16 @@ byte length, update version and bounds. Each `retainedDataFile` names a binary
 sidecar beside the capture JSON, preserving every source byte for comparison
 with browser `splatsData`. These are the retained CPU bytes; uploaded texture
 payloads still require the GPU capture checks described below.
+Text captures additionally include `textGpu`, recorded after the selected
+frame's actual draws. Resource IDs connect written byte ranges to each draw's
+bindings; SDL's `uniform-shadow` describes CPU storage, while
+`pushedUniformBytes` records the bytes passed to its draw. Allocation tails
+outside `writtenRanges` are not observed GPU contents. Use
+`node tools/check-scene275-input.mjs <executable> <generated-directory>
+<browser-reference-directory> [output-directory]` with the pinned browser
+operation observations to check bytes, identities, idle/input behavior and
+resize on both backends. The same checker accepts the `text-shared` and
+`text-blend` fixtures' browser observations.
 The palette comparison covers the first two matrices; read the full deformation
 dump for other bones. Expected native-only shader permutations are not errors.
 
