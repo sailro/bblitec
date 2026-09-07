@@ -511,6 +511,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
     name: ts.Identifier,
     initializer: ts.Expression,
     declared?: import("./data-types.js").DataType,
+    knownValue?: Value,
   ): Value | undefined;
   bindClassField(name: ts.Identifier, initializer: ts.Expression): void;
   emitOptionalResourceAssignment(
@@ -1322,6 +1323,7 @@ export function emitPropertyAssignment(
                 handle: "property-animation-group",
               },
             },
+            assigned,
           );
           if (bound) {
             owner.recordProperties ??= {};

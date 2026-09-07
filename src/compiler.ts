@@ -13438,11 +13438,14 @@ class Compiler
      * native storage as an initialized declaration at that assignment; a
      * resource or compile-time record returns undefined for the existing
      * one-time binding path to own.
+     * Reuse an evaluated value when assignment dispatch already resolved it,
+     * so projecting its members into typed storage cannot rerun factories.
      */
     public bindClassDataField(
         name: ts.Identifier,
         initializer: ts.Expression,
         declared?: DataType,
+        knownValue?: Value,
     ): Value | undefined {
         const dataType = declared ?? this.dataLowerer.dataTypeAt(name);
         if (!dataType || dataType.kind === "handle") {
@@ -13453,7 +13456,9 @@ class Compiler
         );
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const storage = sharedStorage ? `(*${cppName})` : cppName;
-        const cpp = this.dataLowerer.compileForSink(initializer, dataType);
+        const cpp = knownValue
+            ? this.dataLowerer.compileKnownValueForSink(knownValue, dataType, initializer)
+            : this.dataLowerer.compileForSink(initializer, dataType);
         const cppType = this.dataTypes.cppType(dataType);
         this.emit(
             sharedStorage
