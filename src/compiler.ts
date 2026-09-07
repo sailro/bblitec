@@ -19227,22 +19227,23 @@ class Compiler
     }
 
     /**
-     * `mesh.skeleton = ...` on a scene-code mesh.
+     * A definite skeleton or morph attachment on a scene-code mesh.
      *
-     * The pin's `_computeMeshFeatures` reads the mesh's own `skeleton`
-     * property for MSH_HAS_SKELETON, which is a per-mesh row of the
-     * material variant key. A glTF primitive answers it from its node's
-     * `skin`; a scene-code mesh has no primitive, so the assignment
-     * records it here and `appendSceneMesh` reads it back.
+     * The pin's `_computeMeshFeatures` reads these mesh properties for
+     * the material variant key. Record them beside the scene-created
+     * mesh's streams so composition executes that same predicate.
      */
-    public recordSceneMeshSkinned(meshIndex: number): void {
+    public recordSceneMeshDeformation(
+        meshIndex: number,
+        property: "skinned" | "morphTargets",
+    ): void {
         const mesh = this.sceneMeshes[meshIndex];
         if (!mesh) {
             throw new Error(
-                `Scene mesh ${meshIndex} was not recorded before its skeleton assignment.`,
+                `Scene mesh ${meshIndex} was not recorded before its ${property} assignment.`,
             );
         }
-        mesh.skinned = true;
+        mesh[property] = true;
     }
 
     public recordShadowCasters(

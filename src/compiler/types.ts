@@ -397,9 +397,11 @@ export interface SceneMeshManifest {
    * MSH_HAS_SKELETON. A glTF primitive answers it from its node's `skin`,
    * which is why `pinnedMeshFeaturesFromPrimitive` takes it as an option;
    * a scene-code mesh has no primitive, so the assignment records it here
-   * and the compose pipeline passes it through the same option.
+   * and the compose pipeline executes the mesh predicate on that shape.
    */
   skinned?: true;
+  /** A definite scene-code `mesh.morphTargets` attachment on this row. */
+  morphTargets?: true;
   /**
    * At least one of those streams was handed a value the data model holds
    * as `Float32Array | undefined`, so which attributes this mesh carries is

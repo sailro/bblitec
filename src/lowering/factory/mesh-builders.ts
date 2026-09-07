@@ -2849,7 +2849,9 @@ void attach_morph_target(
         Vec3{});
     std::vector<Vec3> normal_deltas(
         count,
-        Vec3{});
+        // A missing normal stream leaves positive zero in the pin's F32
+        // payload; the shared X mirror must recover that same zero sign.
+        Vec3{-0.0f, 0.0f, 0.0f});
     for (
         std::size_t index = 0;
         index < count;
@@ -2886,6 +2888,7 @@ void attach_morph_target(
         1,
         std::vector<Vec3>(count, Vec3{}));
     record.gpu_deformation = true;
+    record.scene_morph_targets = true;
     record.morph_weights = {};
     record.morph_weights[0] = weight;
     record.morph_storage_weights = {weight};

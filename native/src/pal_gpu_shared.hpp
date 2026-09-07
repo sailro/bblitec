@@ -590,6 +590,27 @@ inline std::array<float, 16> draw_world(
 #endif
 }
 
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/** World after scene-authored deformation of an unbaked local stream. */
+inline std::array<float, 16> scene_deformation_draw_world(
+    const MeshRecord& record,
+    [[maybe_unused]] const Scene& scene,
+    const Engine& engine) {
+#if BBLITE_FLOATING_ORIGIN
+    return draw_world(std::array<float, 16>{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    }, record, scene, engine);
+#else
+    // Bypass draw_world's gpu_world_transform branch: this already is the
+    // complete hierarchy world, so that branch would compose it twice.
+    return outer_draw_world(upstream::mesh_world_matrix(engine, record), record);
+#endif
+}
+#endif
+
 #if BBLITE_GPU_INSTANCING
 /**
  * The instance parent world one thin-instanced draw carries.
@@ -1467,8 +1488,8 @@ inline std::vector<GpuVertex> transformed_vertices(
     // far-from-origin translation into float32 before the eye-relative
     // subtraction could recover the remainder -- which is the whole point
     // of the mode.
-    // A scene-authored skeleton keeps local vertices for the third such
-    // reason: the pin skins in mesh-local space and composes
+    // Scene-authored deformation keeps local vertices too: the pin morphs
+    // and skins in mesh-local space and composes
     // `finalWorld = mesh.world * influence`, so baking the record's
     // transform here would apply it before the bones instead of after
     // them. A glTF skin needs no entry in this list -- the loader already
@@ -1478,7 +1499,7 @@ inline std::vector<GpuVertex> transformed_vertices(
         identity_transform;
 #else
         mesh.thin_instanced || mesh.gpu_world_transform ||
-                mesh.scene_skeleton
+                mesh.scene_skeleton || mesh.scene_morph_targets
             ? identity_transform
             : mesh;
 #endif
@@ -2489,16 +2510,22 @@ inline std::array<float, 16> pinned_draw_world(
         // nothing, so its `mesh.world` is the record's live world -- read
         // here rather than baked, because the scene may move the mesh
         // between frames while the palette stays the bones alone.
+        if (record.scene_skeleton) {
+            return scene_deformation_draw_world(record, scene, engine);
+        }
         return draw_world(
-            record.scene_skeleton
-                ? upstream::mesh_world_matrix(engine, record)
-                : pinned_identity_world(),
+            pinned_identity_world(),
             record,
             scene,
             engine);
     }
     if (world_from_palette) {
         return draw_world(record.bone_matrices[0], record, scene, engine);
+    }
+    if (record.scene_morph_targets) {
+        // Storage deltas and the ordinary native vertex buffer share the
+        // authored local coordinates. Neither takes the PBR X mirror.
+        return scene_deformation_draw_world(record, scene, engine);
     }
     if (record.gpu_world_transform) {
         // `pinned_convention_vertices` applies the Babylon X mirror to the
@@ -3801,7 +3828,7 @@ inline PinnedDrawConventions pinned_draw_conventions(
     return PinnedDrawConventions{
         skeleton_draw,
         world_from_palette,
-        skeleton_draw || vat_draw || world_from_palette,
+        skeleton_draw || vat_draw || world_from_palette || record.scene_morph_targets,
         vat_draw,
         skeleton_draw || vat_draw,
     };
@@ -4098,6 +4125,9 @@ inline std::array<float, 16> standard_draw_world(
     bool uses_local_position,
     const Scene& scene,
     const Engine& engine) {
+    if (record.scene_morph_targets) {
+        return scene_deformation_draw_world(record, scene, engine);
+    }
 #if BBLITE_GPU_INSTANCING
     if (pinned_record_instanced(record)) {
         return instance_parent_draw_world(record, scene, engine);

@@ -462,7 +462,8 @@ export interface AssignmentContext extends DeterministicRandomContext {
   recordUnknownSceneMaterialAssignment(): void;
   recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
   /** Marks a scene-code mesh as carrying a skeleton for its feature word. */
-  recordSceneMeshSkinned(meshIndex: number): void;
+  recordSceneMeshDeformation(meshIndex: number, property: "skinned" | "morphTargets"): void;
+  engineHasStarted(): boolean;
   recordToneMappingEnabledMutation(): void;
   /** The scene's node-particle program; a texture write lands on it. */
   readonly reachedNodeParticles: CompiledNodeParticles;
@@ -2045,6 +2046,9 @@ export function emitPropertyAssignment(
             "runtime loop has no variant to select.",
         );
       }
+      if (context.isRuntimeResourceConstruction() || context.engineHasStarted()) {
+        context.fail(expression, "A scene-authored skeleton attachment must be definite and precede startEngine; runtime attachment variants are not lowered.");
+      }
       const skeleton = context.compileValue(expression.right);
       context.expectKind(skeleton, "scene-skeleton", expression.right);
       context.expectSameEngine(target, skeleton, expression);
@@ -2057,7 +2061,7 @@ export function emitPropertyAssignment(
       // `_computeMeshFeatures` reads `mesh.skeleton` for MSH_HAS_SKELETON,
       // and a scene-code mesh's feature word is derived from its recorded
       // streams rather than from a glTF primitive.
-      context.recordSceneMeshSkinned(target.sceneMeshIndex);
+      context.recordSceneMeshDeformation(target.sceneMeshIndex, "skinned");
       context.reachFeature("mesh:skeleton", expression);
       return;
     }
@@ -2069,6 +2073,12 @@ export function emitPropertyAssignment(
           left.expression,
           "Direct morph targets require a compiler-created mesh.",
         );
+      }
+      if (target.sceneMeshIndex === undefined) {
+        context.fail(left.expression, "Direct morph targets need a mesh with a generation-known composition row.");
+      }
+      if (context.isRuntimeResourceConstruction() || context.engineHasStarted()) {
+        context.fail(expression, "A direct morph target attachment must be definite and precede startEngine; runtime attachment variants are not lowered.");
       }
       const morph = context.compileValue(expression.right);
       context.expectKind(morph, "morph-targets", expression.right);
@@ -2091,6 +2101,7 @@ export function emitPropertyAssignment(
           `${morph.morphTarget.weightCpp});`,
       );
       morph.morphTarget.meshCpp = target.cpp;
+      context.recordSceneMeshDeformation(target.sceneMeshIndex, "morphTargets");
       context.reachFeature("mesh:morph-targets", expression);
       return;
     }

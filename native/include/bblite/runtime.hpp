@@ -2164,6 +2164,8 @@ struct MeshRecord {
      * local. Both readers are in `pal_gpu_shared.hpp`.
      */
     bool scene_skeleton = false;
+    /** Scene-authored morph deltas and vertices share native local space. */
+    bool scene_morph_targets = false;
     bool has_vertex_alpha = false;
     /**
      * `mesh.vat`. Set by `attachVat`, which also drops the live skeleton --
