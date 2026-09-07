@@ -111,6 +111,10 @@ Use `npm run corpus:manifest -- --previous-version <version> --previous-commit
 review. `--previous-tree` selects the prior source tree (default `HEAD`).
 Run `npm run corpus:verify` after changing corpus files/manifests. It verifies
 origins independently; `--offline` identifies uncached records as unverifiable.
+An explicitly adopted local source change carries `modification.upstreamSha256`
+and a reason alongside its modified `sha256`. Verification reports the original
+upstream bytes and modified local bytes separately; the reviewed Git diff records
+the edit. Browser and native consume the same modified file.
 Recapture intentionally changed references, investigate moved pixels, then run
 the full validation sequence.
 
@@ -284,6 +288,14 @@ Native ownership and performance boundaries are in
 [backends](backends.md#offscreen-surfaces).
 
 ## Runtime switches
+
+`node tools/check-break-meshes-timing.mjs` checks the adopted Break Meshes demo
+in browser BBL, SDL_GPU and Dawn. It shatters a mesh, compares two seconds of
+controlled 60/240-fps frame deltas, then checks live simulated time against wall
+time. Controlled runs supply timestamps; they do not change the monitor refresh
+rate. Reports and captures go to `artifacts/break-meshes-timing/`. The native
+executable must already be built. `test/physics-timing.test.ts` separately compares
+constant-velocity travel in Havok and the generated native physics layer.
 
 | Variable | Purpose |
 | --- | --- |

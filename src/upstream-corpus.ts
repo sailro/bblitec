@@ -14,6 +14,10 @@ export interface CorpusFile {
      * `corpus:verify` checks the generator itself is pinned tree content
      * that names this output. */
     generatedBy?: string;
+    /** Explicitly adopted source change, shared by browser and native.
+     * sha256 pins the modified file; this separately pins the upstream base.
+     * The reviewed Git diff records the edit, rather than claiming byte identity. */
+    modification?: { upstreamSha256: string; reason: string };
     source: string;
     sha256: string;
 }

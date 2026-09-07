@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BabylonLiteCorpusManifest } from "../src/upstream-corpus.js";
 import type { ExactCorpusManifest } from "../src/verify-corpus.js";
-import { classifyCorpusChecks } from "../src/verify-corpus.js";
+import { classifyCorpusChecks, verifyChecks } from "../src/verify-corpus.js";
 
 // The classification is the decidable half of `corpus:verify`: which URL
 // answers for a row, and whether the row is an upstream-tree file, a
@@ -145,6 +149,34 @@ test("refuses an exact manifest pinned to a different commit", () => {
         () => classifyCorpusChecks(manifest, exact),
         /beef4567.*cafe0123/s,
     );
+});
+
+test("adopted files verify upstream provenance and modified local bytes separately", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblite-corpus-modification-"));
+    try {
+        const source = join(directory, "demo.ts");
+        const bytes = "startEngine(engine);\n";
+        writeFileSync(source, bytes);
+        const file = {
+            upstreamPath: "lab/lite/src/demos/demo.ts", source,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            modification: { upstreamSha256: "a".repeat(64), reason: "Use elapsed time." },
+        };
+        const catalog = { ...manifest, scenes: [], modules: [], applications: [], staged: [file] };
+        const checks = classifyCorpusChecks(catalog, { sourceVersion: manifest.sourceVersion, scenes: [] });
+        assert.equal(checks.length, 2);
+        assert.equal(checks[0]!.kind, "upstream-tree");
+        assert.equal(checks[0]!.sha256, file.modification.upstreamSha256);
+        assert.match(checks[0]!.label, /upstream base/);
+        assert.equal(checks[1]!.kind, "modified-file");
+        assert.equal((await verifyChecks([checks[1]!], true))[0]!.status, "match");
+        writeFileSync(source, bytes + "tampered();\n");
+        assert.equal((await verifyChecks([checks[1]!], true))[0]!.status, "mismatch");
+        file.modification.reason = "";
+        assert.throws(() => classifyCorpusChecks(catalog, { sourceVersion: manifest.sourceVersion, scenes: [] }), /Invalid source modification/);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
 });
 
 test("refuses a generated row whose upstreamPath names no output file", () => {

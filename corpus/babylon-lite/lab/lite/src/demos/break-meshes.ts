@@ -40,7 +40,6 @@ import {
     setParent,
     setPhysicsBodyMass,
     setPhysicsBodyMotionType,
-    setPhysicsTimestepMs,
     setPbrEmissive,
     setShadowTaskCasterMeshes,
     startEngine,
@@ -86,7 +85,6 @@ async function main(): Promise<void> {
 
     const engine = await createEngine(canvas);
     const scene = createSceneContext(engine);
-    scene.fixedDeltaMs = 1000 / 60; // fixed 60 Hz physics step
 
     // Resolve the glTF decoders + brdf LUT relative to this demo module so the
     // deployed demos site finds them under any base path.
@@ -362,11 +360,6 @@ async function main(): Promise<void> {
     // pulls the pieces down. The world auto-steps in the render loop.
     const hknp = await HavokPhysics({ locateFile: () => demoAssetUrl("./HavokPhysics.wasm", import.meta.url) });
     const world = createHavokWorld(scene, hknp, { x: 0, y: -9.8, z: 0 });
-
-    // The world advances ONE fixed step per rendered frame (scene.fixedDeltaMs), so
-    // its wall-clock speed is tied to the frame cadence. Shrink the per-frame step to
-    // slow the sim ~1.3× (8/6) — a light slow-mo that keeps the break snappy.
-    setPhysicsTimestepMs(world, (1000 / 60 / 8) * 6);
 
     // One CONVEX_HULL body per cell. The hull must span BOTH the shell (the clipped
     // boombox surface) AND its cap child (the generated orange cut-face polygons), so

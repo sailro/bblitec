@@ -268,6 +268,14 @@ work that produced their buffers.
 
 ## Physics contract
 
+Physics uses BBL's elapsed frame delta by default, with its existing 100 ms
+ceiling and explicit scene/world fixed-step overrides. A fixed override advances
+once per rendered frame; it is not a fixed-frequency scheduler. Break Meshes
+deliberately removes its upstream demo's two fixed overrides, so browser and
+native both use variable steps. The corpus manifest records the original and
+modified source hashes and the reason for this adoption. No native speed factor
+or new physics scheduler is involved.
+
 The Babylon-facing physics layer is generated; the solver is Bullet, while
 the browser uses Havok. This substitution cannot establish identical
 trajectories by construction. Backend equality localizes a difference below

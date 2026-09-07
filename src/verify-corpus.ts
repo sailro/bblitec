@@ -16,6 +16,8 @@
 // release zip carries -- so an archive is verified by content: every
 // member is hashed, one level of `.pak` nesting included, and a row
 // matches when its digest names bytes the pinned archive holds.
+// Explicit local source adoptions retain an upstream-base check and add a
+// separate local digest check. Their reviewed changes are not upstream bytes.
 //
 // It lives beside `status:verify` in the `verify-*` family rather than in
 // the unit suite because the published package ships no `lab/` sources --
@@ -42,9 +44,10 @@ export type CorpusCheckKind =
     | "upstream-tree"
     | "origin-file"
     | "archive-member"
-    | "generated-file";
+    | "generated-file"
+    | "modified-file";
 
-/** One manifest digest and the pinned bytes it must agree with. */
+/** One manifest digest and the upstream or explicitly adopted bytes it pins. */
 export interface CorpusCheck {
     /** Manifest section and upstream path, for the printed verdict. */
     label: string;
@@ -57,6 +60,8 @@ export interface CorpusCheck {
     /** generated-file only: the output filename the fetched generator
      * must name, which is what ties the pinned script to this row. */
     generatedOutputName?: string;
+    /** Local adopted bytes, verified separately from their upstream base. */
+    source?: string;
 }
 
 export interface ExactCorpusScene {
@@ -187,23 +192,41 @@ export function classifyCorpusChecks(
         );
     }
     const checks: CorpusCheck[] = [];
+    const appendFileChecks = (section: string, file: CorpusFile): void => {
+        if (file.modification === undefined) {
+            checks.push(fileCheck(section, file, manifest.sourceVersion));
+            return;
+        }
+        const { upstreamSha256, reason } = file.modification;
+        if (file.origin !== undefined || file.generatedBy !== undefined ||
+            !/^[a-f0-9]{64}$/.test(upstreamSha256) || !reason.trim() ||
+            upstreamSha256 === file.sha256) {
+            throw new Error(`Invalid source modification for ${file.source}.`);
+        }
+        checks.push(fileCheck(`${section} upstream base`, { ...file, sha256: upstreamSha256 }, manifest.sourceVersion));
+        checks.push({
+            label: `${section} modified ${file.upstreamPath} (${reason})`,
+            kind: "modified-file",
+            url: rawUpstreamUrl(manifest.sourceVersion, file.upstreamPath),
+            source: file.source,
+            sha256: file.sha256,
+        });
+    };
     for (const scene of manifest.scenes) {
-        checks.push(fileCheck("scenes", scene, manifest.sourceVersion));
+        appendFileChecks("scenes", scene);
     }
     for (const module of manifest.modules ?? []) {
-        checks.push(fileCheck("modules", module, manifest.sourceVersion));
+        appendFileChecks("modules", module);
     }
     for (const file of manifest.staged ?? []) {
-        checks.push(fileCheck("staged", file, manifest.sourceVersion));
+        appendFileChecks("staged", file);
     }
     for (const file of manifest.tooling ?? []) {
-        checks.push(fileCheck("tooling", file, manifest.sourceVersion));
+        appendFileChecks("tooling", file);
     }
     for (const application of manifest.applications) {
         for (const file of application.files) {
-            checks.push(
-                fileCheck(application.id, file, manifest.sourceVersion),
-            );
+            appendFileChecks(application.id, file);
         }
     }
     const scenePaths = new Map(
@@ -416,11 +439,20 @@ interface RowVerdict {
     detail: string;
 }
 
-async function verifyChecks(
+export async function verifyChecks(
     checks: readonly CorpusCheck[],
     offline: boolean,
 ): Promise<RowVerdict[]> {
     const verdicts: RowVerdict[] = new Array<RowVerdict>(checks.length);
+
+    for (const [index, check] of checks.entries()) {
+        if (check.kind !== "modified-file") continue;
+        if (!check.source) throw new Error(`Modified source is missing for ${check.label}.`);
+        const digest = sha256Hex(readFileSync(check.source));
+        verdicts[index] = digest === check.sha256
+            ? { check, status: "match", detail: `adopted local bytes ${check.source}; upstream base checked separately` }
+            : { check, status: "mismatch", detail: `manifest ${check.sha256}, local ${digest} (${check.source})` };
+    }
 
     const generatedRows = checks.flatMap((check, index) =>
         check.kind === "generated-file" ? [{ check, index }] : [],
@@ -482,7 +514,7 @@ async function verifyChecks(
     );
 
     const fileRows = checks.flatMap((check, index) =>
-        check.kind === "archive-member" || check.kind === "generated-file"
+        check.kind === "archive-member" || check.kind === "generated-file" || check.kind === "modified-file"
             ? []
             : [{ check, index }],
     );
@@ -620,6 +652,7 @@ async function main(): Promise<void> {
         { kind: "origin-file", title: "origin files" },
         { kind: "archive-member", title: "archive members" },
         { kind: "generated-file", title: "generated files" },
+        { kind: "modified-file", title: "adopted local files (separate upstream base checks)" },
     ];
     console.log("");
     for (const { kind, title } of kinds) {
@@ -665,9 +698,11 @@ async function main(): Promise<void> {
     const provenanceOnly = verdicts.filter(
         (row) => row.check.kind === "generated-file",
     ).length;
+    const modified = verdicts.filter((row) => row.check.kind === "modified-file").length;
     console.log(
-        `\nAll ${verdicts.length - provenanceOnly} digest row(s) match the ` +
+        `\nAll ${verdicts.length - provenanceOnly - modified} upstream digest row(s) match the ` +
             `upstream tree at ${manifest.sourceVersion} and the pinned origins` +
+            (modified > 0 ? `; ${modified} adopted local file(s) match their separate modified digests` : "") +
             (provenanceOnly > 0
                 ? `; the ${provenanceOnly} generated row(s) verify by ` +
                     "provenance only (their digests are adoption-time renders)."
