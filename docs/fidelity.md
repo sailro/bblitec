@@ -165,7 +165,9 @@ buffer back in the same input phase, at most one frame earlier than the browser'
 The pin's pointer-identity guard on release is asserted, not restated; native mouse events carry one
 pointer. Material transform reads come from the record each draw packs; a written offset shows at the
 next draw. Selectability is a per-node flag the pick filter reads; visibility writes cascade through
-the asset's node children and bump the draw-list epoch.
+the asset's node children and bump the draw-list epoch. `flowGraphRuntimes` is assigned per
+addToScene and kept past the scene's disposal, as the pin's resolved array is; `flowGraphs` is the
+document's graph list, filled at load.
 
 ## Physics contract
 

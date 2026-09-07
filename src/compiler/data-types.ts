@@ -24,6 +24,8 @@ export type HandleKind =
   | "offscreen-canvas"
   | "mesh"
   | "animation-group"
+  | "flow-graph"
+  | "flow-graph-runtime"
   | "audio-buffer"
   | "audio-context"
   | "camera"
@@ -62,6 +64,8 @@ const handleCppTypes: Record<HandleKind, string> = {
   "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
   mesh: "bbl::MeshHandle",
   "animation-group": "bbl::AnimationGroupHandle",
+  "flow-graph": "bbl::FlowGraphHandle",
+  "flow-graph-runtime": "std::shared_ptr<bbl::FlowGraphRuntime>",
   "audio-buffer": "bbl::pal::AudioBufferHandle",
   "audio-context": "bbl::pal::AudioContextHandle",
   camera: "bbl::CameraHandle",
@@ -108,6 +112,10 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   PickingInfo: "picking-info",
   Mesh: "mesh",
   AnimationGroup: "animation-group",
+  // A container's declared KHR_interactivity graphs and the runtimes
+  // addToScene attaches for them.
+  LoadedFlowGraph: "flow-graph",
+  FgRuntime: "flow-graph-runtime",
   BillboardSpriteHandle: "billboard-sprite",
   BillboardSpriteSystem: "billboard-system",
   Camera: "camera",

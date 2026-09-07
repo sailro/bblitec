@@ -20083,10 +20083,32 @@ test("reaches the flow-graph feature for an asset's runtimes and pointer picking
     assert.match(result.cpp, /bbl::enable_flow_graph_pointer_picking\(/);
 });
 
-test("refuses an asset's flow-graph runtimes as a value", () => {
-    // The pin stores a promise of its runtime records; the port keeps the
-    // graphs at generation, so only the reached slice's direct await is
-    // admitted.
+test("reads a container's flow-graph runtimes and graphs as its own collection", () => {
+    // Scene 304's two reads: the awaited runtimes guarded by `?? []`, whose
+    // length the scene reports, and the parsed graph at an index. Both
+    // are the asset record's list of what addToScene attached.
+    const result = compileSource(`
+        import { createEngine, loadGltf } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const asset = await loadGltf(engine, "model.glb");
+            const runtimes = (await asset.flowGraphRuntimes) ?? [];
+            if (runtimes.length === 0) {
+                throw new Error("no graph attached");
+            }
+            const graph = asset.flowGraphs?.[0];
+            void graph;
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /assets\[[^\]]*\]\.flow_graph_runtimes\.size\(\)/);
+    // The declared graphs are the document's own list, not the runtimes'.
+    assert.match(result.cpp, /const bbl::FlowGraphHandle [\w]+ = [\w]+ \? [\w.]*assets\[[^\]]*\]\.flow_graphs\[/);
+});
+
+test("refuses a container's runtimes read without await", () => {
+    // Upstream the member is a promise of the array; the promise object
+    // is not the list, so the read has to sit under the await.
     assert.throws(
         () =>
             compileSource(`
@@ -20094,17 +20116,20 @@ test("refuses an asset's flow-graph runtimes as a value", () => {
         async function main() {
             const engine = await createEngine({});
             const asset = await loadGltf(engine, "model.glb");
-            const pending = asset.flowGraphRuntimes;
-            void pending;
+            const runtimes = asset.flowGraphRuntimes ?? [];
+            if (runtimes.length === 0) {
+                throw new Error("no graph attached");
+            }
         }
         void main();
     `),
-        /admitted directly under await only/,
+        /is a promise of its collection; read it under await/,
     );
 });
 
-test("refuses reading an asset's flow-graph accessors", () => {
-    // Scene 304 reads the pin's runtime records; the port lowers those away.
+test("refuses a flow graph's accessors", () => {
+    // The parsed graph's accessor records stay at generation; a handle to
+    // the attached runtime is all an index yields.
     assert.throws(
         () =>
             compileSource(`
@@ -20113,10 +20138,13 @@ test("refuses reading an asset's flow-graph accessors", () => {
             const engine = await createEngine({});
             const asset = await loadGltf(engine, "model.glb");
             const graph = asset.flowGraphs?.[0];
-            void graph;
+            const offset = graph?.accessors["/materials/4/pbrMetallicRoughness/baseColorTexture/extensions/KHR_texture_transform/offset"]?.get();
+            if (offset === undefined) {
+                throw new Error("no offset");
+            }
         }
         void main();
     `),
-        /flowGraphs/,
+        /accessor records \(path-converter\.ts\) stay at generation/,
     );
 });

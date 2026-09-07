@@ -274,6 +274,48 @@ export class HandleCollections {
      * collection, and an absent one is the empty vector the loader
      * already leaves behind — the same zero iterations `?? []` produces.
      */
+    /**
+     * Whether an `await` wraps the property access the unwrap reached:
+     * inside the expression as written (`(await x.p) ?? []`) or around it
+     * (`await x.p;`). Parentheses, assertions and the `?? []` guard are
+     * stepped over; the await is what is looked for.
+     */
+    private awaitStripped(
+        expression: ts.Expression,
+        unwrapped: ts.Expression,
+    ): boolean {
+        const transparent = (
+            node: ts.Node,
+        ): node is
+            | ts.ParenthesizedExpression
+            | ts.NonNullExpression
+            | ts.AsExpression
+            | ts.TypeAssertion
+            | ts.SatisfiesExpression =>
+            ts.isParenthesizedExpression(node) ||
+            ts.isNonNullExpression(node) ||
+            ts.isAsExpression(node) ||
+            ts.isTypeAssertionExpression(node) ||
+            ts.isSatisfiesExpression(node);
+        let node: ts.Node = expression;
+        while (node !== unwrapped) {
+            if (ts.isAwaitExpression(node)) return true;
+            if (transparent(node)) {
+                node = node.expression;
+            } else if (ts.isBinaryExpression(node)) {
+                node = node.left;
+            } else {
+                break;
+            }
+        }
+        let above: ts.Node | undefined = unwrapped.parent;
+        while (above && (transparent(above) || ts.isAwaitExpression(above))) {
+            if (ts.isAwaitExpression(above)) return true;
+            above = above.parent;
+        }
+        return false;
+    }
+
     private unwrapCollectionExpression(
         expression: ts.Expression,
     ): ts.Expression {
@@ -375,10 +417,22 @@ export class HandleCollections {
         // (`animationGroups?: AnimationGroup[]`), and a scene reads one
         // through `?? []` or `?.`; the element model is the same either
         // way, so the nullable half is dropped before the index lookup.
+        // `flowGraphRuntimes` is a promise of its array (addToScene
+        // resolves it): the awaited type is the collection, and the read
+        // has to sit under the `await` the unwrap removed -- the promise
+        // object itself is not the list.
+        const declared = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(unwrapped),
+        );
+        const awaited = this.context.checker.getAwaitedType(declared) ?? declared;
+        if (awaited !== declared && !this.awaitStripped(expression, unwrapped)) {
+            this.context.fail(
+                unwrapped,
+                `'${unwrapped.name.text}' is a promise of its collection; read it under await.`,
+            );
+        }
         const elementType = this.context.checker.getIndexTypeOfType(
-            this.context.checker.getNonNullableType(
-                this.context.checker.getTypeAtLocation(unwrapped),
-            ),
+            awaited,
             ts.IndexKind.Number,
         );
         if (!elementType) {

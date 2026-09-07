@@ -281,8 +281,9 @@ stand-ins; supported targets are node visibility (cascading) and selectability a
 base-colour `KHR_texture_transform` scale/offset. Graphs attach when the asset's scene setup chains,
 fire onStart on the first before-render tick and receive onSelect from `enableFlowGraphPointerPicking`
 (primary-button tap within five pixels, GPU pick under the selectability filter). An asset with the
-extension joins the feature; awaiting `flowGraphRuntimes` is admitted. `flowGraphs` accessors, runtime
-records, `BABYLON_flow_graph` JSON, data cycles and other block types refuse.
+extension joins the feature. `flowGraphRuntimes` (awaited) reads as the container's list of attached
+runtimes and `flowGraphs` as the document's graph list: length, index and `?? []`. A graph's
+accessors, a runtime's context, `BABYLON_flow_graph` JSON, data cycles and other block types refuse.
 
 ## Display gizmos
 

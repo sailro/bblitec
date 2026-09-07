@@ -3573,6 +3573,26 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene304",
+        name: "Scene 304 - Calculator KHR_interactivity",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene304.ts",
+        title: "Babylon Lite Native - Calculator Interactivity",
+        // The Calculator demo's asset under a static camera. The gate
+        // OBSERVES the graph's onStart cascade: the display reads "00" and
+        // the minus sign is hidden, where the document's own offsets and
+        // visibility would show "81" and the sign. The scene's reads of
+        // the container's runtimes and its first graph are answered by the
+        // asset record's lists; the tap check observes the runtime list
+        // through the attach trace. MEASURED 0.001/0.004 on both backends,
+        // max 1, and within one count of each other.
+        parity: {
+            maxFullMad: 0.005,
+            maxForegroundMad: 0.01,
+            backgroundColor: [20, 23, 31],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene187",
         name: "Scene 187 - Subpixel Morphological Anti-Aliasing",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene187.ts",

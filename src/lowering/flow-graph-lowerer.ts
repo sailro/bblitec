@@ -2118,6 +2118,13 @@ export class FlowGraphLowerer {
         const materialMap = this.context.functionDeclaration(LOADER_MODULE, "buildMaterialMap").declaration;
         shape(materialMap, "mesh._gltfNodeIndex = ni", "mesh node index");
         shape(materialMap, "map[matIdx] = mesh.material", "material map");
+        // container.flowGraphRuntimes: assigned by the feature's scene
+        // setup per add, from runFlowGraphs' ordered attach-and-push.
+        const applyAsset = this.context.methodDeclaration(LOADER_MODULE, "feature.applyAsset").declaration;
+        shape(applyAsset, "container.flowGraphRuntimes = runtimes", "container runtimes assignment");
+        const run = this.context.functionDeclaration(SCENE_MODULE, "runFlowGraphs").declaration;
+        shape(run, "attachFlowGraph(scene, rt)", "run attach");
+        shape(run, "runtimes.push(rt)", "run push");
 
         const uv = this.context.functionDeclaration(PATH_CONVERTER_MODULE, "resolveMaterialUvTransform").declaration;
         shape(uv, "{ x: tex?.uScale ?? 1, y: tex?.vScale ?? 1 }", "material scale read");
@@ -2192,7 +2199,7 @@ struct FlowGraphRuntime {
                 `    {${JSON.stringify(asset)}, [](Scene& scene, AssetHandle asset) {\n${namespaces
                     .map(
                         (namespace) =>
-                            `        scene.state->flow_graphs.push_back(std::make_shared<${namespace}::Runtime>(*scene.engine, asset));`,
+                            `        attach_flow_graph(scene, std::make_shared<${namespace}::Runtime>(*scene.engine, asset));`,
                     )
                     .join("\n")}\n    }},`,
         );
@@ -2236,6 +2243,13 @@ bool flow_graph_trace_enabled() {
 ${graphs.map((graph) => graph.source).join("\n\n")}
 
 // ── The scene coordinator and the pointer bridge ─────────────────────────────
+
+// runFlowGraphs: \`attachFlowGraph(scene, rt); runtimes.push(rt);\` -- the
+// scene's list and the container's, one push each.
+void attach_flow_graph(Scene& scene, std::shared_ptr<FlowGraphRuntime> runtime) {
+    scene.engine->assets.at(runtime->asset_scope.value).flow_graph_runtimes.push_back(runtime);
+    scene.state->flow_graphs.push_back(std::move(runtime));
+}
 
 struct FlowGraphAssetGraphs {
     const char* asset;
@@ -2410,9 +2424,15 @@ void attach_flow_graphs(Scene& scene, AssetHandle asset, const std::string& asse
     }
     for (const FlowGraphAssetGraphs& entry : flow_graph_assets) {
         if (asset_name != entry.asset) continue;
+        // container.flowGraphRuntimes = runtimes: assigned per add.
+        scene.engine->assets.at(asset.value).flow_graph_runtimes.clear();
         entry.attach(scene, asset);
         if (flow_graph_trace_enabled()) {
-            std::fprintf(stderr, "[bblite trace] flow-graph attach asset=%s\\n", entry.asset);
+            std::fprintf(
+                stderr,
+                "[bblite trace] flow-graph attach asset=%s runtimes=%zu\\n",
+                entry.asset,
+                scene.engine->assets.at(asset.value).flow_graph_runtimes.size());
         }
         ensure_flow_graph_coordinator(scene);
         if (scene.state->flow_graph_pointer_refresh) refresh_flow_graph_pointer_picking(scene);

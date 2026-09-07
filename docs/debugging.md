@@ -79,7 +79,7 @@ when a missing small object or changed buffer could pass an image gate.
 | Node geometry | `check-scene149-input.mjs`: browser orbit/resize observations. Live browser resize throws error84; compare unchanged-module startup at resized dimensions. |
 | Worker windows | `check-offscreen-window.mjs`: held presses, worker progress, resize, shutdown. |
 | Physics timing | `check-break-meshes-timing.mjs`: unchanged fixed overrides and live timing. |
-| KHR_interactivity | `check-calculator-input.mjs`: press control, "7" then "x" taps at the golden pose; display digits and dispatched nodes by name on both backends. |
+| KHR_interactivity | `check-calculator-input.mjs [calculator\|scene304]`: press control, "7" then "x" taps at the scene's golden pose; display digits and dispatched nodes by name on both backends. |
 
 Scripts are under `tools/`. Scene checkers take the executable, generated
 directory and saved browser observations; see each script's usage. Build its

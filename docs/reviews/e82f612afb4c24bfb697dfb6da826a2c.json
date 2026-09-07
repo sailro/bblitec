@@ -1,0 +1,54 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Push each runtime into the container's list where it is created, through one attach helper, instead of an index window over the scene's list.",
+      "applied": true
+    },
+    {
+      "summary": "Assign the container's runtime list per addToScene and keep it past the scene's disposal, as the pin keeps its resolved array; drop the dispose-time erase.",
+      "applied": true
+    },
+    {
+      "summary": "Serve flowGraphs as the document's own graph list filled at load, under its own handle kind, instead of aliasing the runtimes.",
+      "applied": true
+    },
+    {
+      "summary": "Refuse a graph's accessors and a runtime's context through property rules stating the pin's fact, and match that refusal in the test.",
+      "applied": true
+    },
+    {
+      "summary": "Require the await where the collection resolver sees through a promise type.",
+      "applied": true
+    },
+    {
+      "summary": "Discard a property read that names no native expression by the empty-cpp rule alone.",
+      "applied": true
+    },
+    {
+      "summary": "Assert the pin's container assignment and runFlowGraphs' attach-and-push; trace the container's count at attach and assert it in the tap check.",
+      "applied": true
+    },
+    {
+      "summary": "Read the keys' nodes from the packaged glTF the executable loads, named by the generated manifest.",
+      "applied": true
+    },
+    {
+      "summary": "Take the tap settle from the registry's reference frame with a short settle for a static camera, and parse the scene argument with Object.hasOwn.",
+      "applied": true
+    },
+    {
+      "summary": "Move the corpus row from staged to scenes and add the exact-manifest row with digests derived the writer's way.",
+      "applied": true
+    },
+    {
+      "summary": "Delete the comment restating the collection table in the compiler and state what the scene 304 gate observes in the registry.",
+      "applied": true
+    }
+  ]
+}
