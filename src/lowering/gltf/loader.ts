@@ -96,6 +96,7 @@ export interface GltfLoaderOptions {
      */
     compressedImages?: boolean;
     materialSpecular?: boolean;
+    materialExtensionPayload?: boolean;
     /** The `KHR_materials_variants` name a scene selected, or "". */
     selectedMaterialVariant?: string;
     /** The scene reached `enableGltfCameras` (the `_camera` feature). */

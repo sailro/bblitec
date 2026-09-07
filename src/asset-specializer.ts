@@ -177,6 +177,8 @@ const supportedExtensions = new Set<string>([
     "KHR_materials_clearcoat",
     "KHR_materials_sheen",
     "KHR_materials_iridescence",
+    "KHR_materials_anisotropy",
+    "KHR_materials_diffuse_transmission",
     "KHR_materials_dispersion",
     "KHR_materials_ior",
     "KHR_materials_specular",
@@ -225,20 +227,6 @@ const supportedExtensions = new Set<string>([
 const metadataExtensions = new Set<string>(["KHR_xmp", "KHR_xmp_json_ld"]);
 
 /**
- * Pin-implemented extensions that do not arrive through the dynamic feature
- * registry (their modules are loader extensions dispatched elsewhere), so the
- * parsed registry cannot vouch for them; each is named explicitly because
- * ignoring it renders silently wrong. `gltf-ext-anisotropy.ts` was previously
- * caught only by the unwritten-UBO-field gate, which names a field rather
- * than the extension.
- */
-const pinOnlyExtensions = new Set<string>([
-    "KHR_materials_pbrSpecularGlossiness",
-    "KHR_materials_anisotropy",
-    "KHR_materials_diffuse_transmission",
-]);
-
-/**
  * The effective image behind a texture index, through the `EXT_texture_webp`
  * source override, mirroring the generated loader's `texture_image_index`.
  */
@@ -275,7 +263,7 @@ function refuseUnsupportedGltf(
         if (supportedExtensions.has(extension)) continue;
         if (metadataExtensions.has(extension)) continue;
         const pinModule = extensionModules.get(extension);
-        if (pinModule !== undefined || pinOnlyExtensions.has(extension)) {
+        if (pinModule !== undefined) {
             throw new Error(
                 `${assetName}: glTF extension ${extension} is implemented by ` +
                     `the pinned loader${
@@ -772,6 +760,7 @@ export interface AssetSpecializationFeatures {
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
     materialSpecular: boolean;
+    materialExtensionPayload: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -813,6 +802,7 @@ export function emitAssetSpecializations(
             animationPointerMaterials: false,
             assetTransmission: false,
             materialSpecular: false,
+            materialExtensionPayload: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -917,6 +907,8 @@ export function emitAssetSpecializations(
         ),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),
+        materialExtensionPayload: usesExtension("KHR_materials_anisotropy") ||
+            usesExtension("KHR_materials_diffuse_transmission"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
         punctualLights: usesExtension("KHR_lights_punctual"),
         clearcoat: usesExtension("KHR_materials_clearcoat"),

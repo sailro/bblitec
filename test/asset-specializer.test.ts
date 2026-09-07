@@ -281,10 +281,9 @@ test("refuses asset content the pinned loader implements and this port does not"
         // so ignoring it renders silently wrong — the refusal names it.
         // `KHR_materials_pbrSpecularGlossiness` used to sit here and is
         // lowered now, which is what removing it from the list means.
-        throwsMatching(
-            { extensionsUsed: ["KHR_materials_anisotropy"] },
-            /anisotropy/,
-        );
+        writeGlb(path, { extensionsUsed: ["KHR_materials_anisotropy", "KHR_materials_diffuse_transmission"] });
+        assert.deepEqual(specializeGltf(path, "asset.glb").extensionsUsed,
+            ["KHR_materials_anisotropy", "KHR_materials_diffuse_transmission"]);
 
         // Metadata-only extensions have no rendering effect on either side.
         writeGlb(path, { extensionsUsed: ["KHR_xmp_json_ld", "KHR_xmp"] });

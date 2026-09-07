@@ -900,6 +900,12 @@ inline const TextureData* material_slot_texture(
             return standard_material
                 ? nullptr
                 : &material.reflectance_texture;
+        case Source::anisotropy:
+            return standard_material ? nullptr : &material.anisotropy_texture;
+        case Source::translucency_color:
+            return standard_material ? nullptr : &material.translucency_color_texture;
+        case Source::translucency_intensity:
+            return standard_material ? nullptr : &material.translucency_intensity_texture;
         case Source::occlusion_uv2:
             return !standard_material && material.occlusion_texture_uv2
                 ? &material.occlusion_texture

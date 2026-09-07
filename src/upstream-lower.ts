@@ -469,6 +469,7 @@ export interface UpstreamEmitOptions {
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
     materialSpecular: boolean;
+    materialExtensionPayload: boolean;
     /** The `KHR_materials_variants` a scene selected, or "" when unreached. */
     selectedMaterialVariant: string;
     standardLights: number;
@@ -695,7 +696,10 @@ export function metallicReflectanceCapabilityDefines(
         }\n` +
         `#define BBLITE_MATERIAL_REFLECTANCE_MAP ${
             pbrBindingNames.has("reflectanceMap") ? 1 : 0
-        }`
+        }\n` +
+        `#define BBLITE_MATERIAL_ANISOTROPY_MAP ${pbrBindingNames.has("anisotropyTexture_") ? 1 : 0}\n` +
+        `#define BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP ${pbrBindingNames.has("translucencyColorTexture_") ? 1 : 0}\n` +
+        `#define BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP ${pbrBindingNames.has("translucencyIntensityTexture_") ? 1 : 0}`
     );
 }
 
@@ -1048,6 +1052,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         pbrBindingNames.has("metallicReflectanceMap"),
                     reflectanceMap:
                         pbrBindingNames.has("reflectanceMap"),
+                    anisotropyMap: pbrBindingNames.has("anisotropyTexture_"),
+                    translucencyColorMap: pbrBindingNames.has("translucencyColorTexture_"),
+                    translucencyIntensityMap: pbrBindingNames.has("translucencyIntensityTexture_"),
                     specularGlossiness: options.specularGlossiness,
                     occlusionUv2: options.occlusionUv2,
                     standardBump: options.standardBump,
@@ -1375,6 +1382,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         options.animationPointerMaterials,
                     assetTransmission: options.assetTransmission,
                     materialSpecular: options.materialSpecular,
+                    materialExtensionPayload: options.materialExtensionPayload,
                     selectedMaterialVariant:
                         options.selectedMaterialVariant,
                     gltfCameras: features.includes(
@@ -3509,6 +3517,7 @@ export function emitUpstreamGenerated(
         animationPointerMaterials: false,
         assetTransmission: false,
         materialSpecular: false,
+        materialExtensionPayload: false,
         selectedMaterialVariant: "",
         standardLights: 0,
         standardLightLists: false,

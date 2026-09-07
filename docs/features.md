@@ -319,8 +319,9 @@ frame. Reuse the pinned registration and writer rules for further variants.
 Standard, PBR and Grid materials, shader materials, supported no-colour views,
 alpha/culling state and live property writes are available. PBR layers include
 clearcoat, sheen, iridescence, anisotropy and transmission where reached by
-supported source APIs or asset extensions. Support is per entry point: direct
-anisotropy does not imply glTF `KHR_materials_anisotropy` support.
+supported source APIs or asset extensions. glTF anisotropy and diffuse
+transmission execute the pinned loader handlers during packaging, preserving
+their option objects and independent texture transforms in native records.
 Explicit PBR lightmap/Standard UV/vertex-colour opt-ins remain distinct from
 asset-driven shape.
 `enableStandardUvOffset` enables live UV-offset assignments, and vertex-alpha
@@ -360,7 +361,10 @@ changes and PBR sampler plugins remain incomplete.
 
 Property clips and glTF channels use separate runtimes with deterministic
 seeking. Supported glTF slices include TRS, skinning, morph weights and reached
-animation-pointer material/visibility targets. Track interpolation and target
+animation-pointer material/visibility targets, including texture transforms
+on the reached extension slots. The pinned resolver deliberately ignores
+metallic-roughness texture transforms; those retain their load-time values.
+Track interpolation and target
 support are independent; a property-animation option does not establish glTF
 support for the same spelling.
 

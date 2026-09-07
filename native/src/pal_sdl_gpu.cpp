@@ -250,6 +250,15 @@ struct GpuMesh {
 #if BBLITE_MATERIAL_REFLECTANCE_MAP
     SDL_GPUTexture* reflectance = nullptr;
 #endif
+#if BBLITE_MATERIAL_ANISOTROPY_MAP
+    SDL_GPUTexture* anisotropy = nullptr;
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP
+    SDL_GPUTexture* translucency_color = nullptr;
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP
+    SDL_GPUTexture* translucency_intensity = nullptr;
+#endif
 #if BBLITE_MATERIAL_SPEC_GLOSS
     SDL_GPUTexture* spec_gloss = nullptr;
 #endif
@@ -293,6 +302,15 @@ struct GpuMesh {
 #endif
 #if BBLITE_MATERIAL_REFLECTANCE_MAP
     SDL_GPUSampler* reflectance_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_ANISOTROPY_MAP
+    SDL_GPUSampler* anisotropy_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP
+    SDL_GPUSampler* translucency_color_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP
+    SDL_GPUSampler* translucency_intensity_sampler = nullptr;
 #endif
 #if BBLITE_MATERIAL_SPEC_GLOSS
     SDL_GPUSampler* spec_gloss_sampler = nullptr;
@@ -574,6 +592,18 @@ GpuMeshSlotMembers mesh_slot_members(
             return {
                 &GpuMesh::reflectance,
                 &GpuMesh::reflectance_sampler};
+#endif
+#if BBLITE_MATERIAL_ANISOTROPY_MAP
+        case Source::anisotropy:
+            return {&GpuMesh::anisotropy, &GpuMesh::anisotropy_sampler};
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP
+        case Source::translucency_color:
+            return {&GpuMesh::translucency_color, &GpuMesh::translucency_color_sampler};
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP
+        case Source::translucency_intensity:
+            return {&GpuMesh::translucency_intensity, &GpuMesh::translucency_intensity_sampler};
 #endif
 #if BBLITE_MATERIAL_SPEC_GLOSS
         case Source::spec_gloss:

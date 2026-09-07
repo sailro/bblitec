@@ -2947,6 +2947,7 @@ struct MaterialRecord {
     TextureTransform base_color_transform{};
     TextureTransform orm_transform{};
     TextureTransform occlusion_transform{};
+    bool has_occlusion_transform = false;
     TextureTransform normal_transform{};
     TextureTransform emissive_transform{};
     TextureTransform clearcoat_transform{};
@@ -2958,6 +2959,11 @@ struct MaterialRecord {
     TextureTransform iridescence_thickness_transform{};
     TextureTransform transmission_transform{};
     TextureTransform thickness_transform{};
+    TextureTransform anisotropy_transform{};
+    TextureTransform translucency_color_transform{};
+    TextureTransform translucency_intensity_transform{};
+    TextureTransform metallic_reflectance_transform{};
+    TextureTransform reflectance_transform{};
     std::uint32_t diffuse_coord_index = 0;
     std::uint32_t specular_coord_index = 0;
     std::uint32_t ambient_coord_index = 0;
@@ -3133,6 +3139,9 @@ struct MaterialRecord {
     TextureData metallic_roughness_texture;
     TextureData metallic_reflectance_texture;
     TextureData reflectance_texture;
+    TextureData anisotropy_texture;
+    TextureData translucency_color_texture;
+    TextureData translucency_intensity_texture;
     TextureData normal_texture;
     /** KHR_materials_pbrSpecularGlossiness: RGB specular, A glossiness. */
     TextureData spec_gloss_texture;

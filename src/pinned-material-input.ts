@@ -353,11 +353,6 @@ interface PinnedLoaderExecution {
  * them per material differs only for an extension a material declares without
  * the document announcing it — which no valid glTF does.
  *
- * `gltf-ext-diffuse-transmission.ts` sits in the registry between these and is
- * deliberately not run: no corpus asset declares it, and its arms have no
- * generated counterpart yet — a material reaching it should fail the compose
- * gate loudly, not compose an arm generation cannot emit.
- *
  * Spec-gloss is the one that overrides the base material rather than adding a
  * layer: it replaces the metallic-roughness workflow outright, so its result
  * lands on `baseColorTexture`, `metallicFactor`, `roughnessFactor`,
@@ -369,6 +364,7 @@ const loaderMaterialExtensionModules = [
     "loader-gltf/gltf-ext-emissive-strength.js",
     "loader-gltf/gltf-ext-sheen.js",
     "loader-gltf/gltf-ext-anisotropy.js",
+    "loader-gltf/gltf-ext-diffuse-transmission.js",
     "loader-gltf/gltf-ext-unlit.js",
     "loader-gltf/gltf-ext-spec-gloss.js",
     "loader-gltf/gltf-ext-dielectric.js",

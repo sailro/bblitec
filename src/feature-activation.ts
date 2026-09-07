@@ -1369,6 +1369,19 @@ function capabilityRows(
     const reflectanceMap = pbrBindingNames.has("reflectanceMap");
     const lightmap = pbrBindingNames.has("lmTexture");
     return [
+        ...([
+            ["BBLITE_MATERIAL_ANISOTROPY_MAP", "anisotropyTexture_", "anisotropy"],
+            ["BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP", "translucencyColorTexture_", "subsurface"],
+            ["BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP", "translucencyIntensityTexture_", "subsurface"],
+        ] as const).map(([name, binding, fragment]) => checkedRow(
+            name,
+            "capability",
+            pbrBindingNames.has(binding),
+            [[pbrBindingNames.has(binding), `a composed PBR variant binds ${binding}`]],
+            `no composed PBR variant binds ${binding}`,
+            `src/material/pbr/fragments/${fragment}-fragment.ts; the pinned glTF extension mapper and feature detection select this texture arm`,
+            ["render_capabilities.hpp", "material_texture_slots.hpp", "variant table"],
+        )),
         checkedRow(
             "BBLITE_RENDERER_TRANSMISSION",
             "capability",
@@ -1687,9 +1700,9 @@ function capabilityRows(
             metallicReflectanceMap,
             [
                 [
-                    has("material:metallic-reflectance") &&
+                    (has("material:metallic-reflectance") || spec.materialSpecular) &&
                         metallicReflectanceMap,
-                    "scene source reached material:metallic-reflectance " +
+                    "source or glTF loader reached metallic reflectance " +
                         "and a composed variant binds metallicReflectanceMap",
                 ],
             ],
@@ -1709,9 +1722,9 @@ function capabilityRows(
             reflectanceMap,
             [
                 [
-                    has("material:metallic-reflectance") &&
+                    (has("material:metallic-reflectance") || spec.materialSpecular) &&
                         reflectanceMap,
-                    "scene source reached material:metallic-reflectance " +
+                    "source or glTF loader reached metallic reflectance " +
                         "and a composed variant binds reflectanceMap",
                 ],
             ],
@@ -2354,6 +2367,16 @@ function emitOptionRows(
                 "the generated loader's reflectance fold and " +
                 "applyDielectric, so it deliberately does not activate this",
             ["loader flag", "renderer plan"],
+        ),
+        row(
+            "materialExtensionPayload",
+            "emit-option",
+            emit.materialExtensionPayload,
+            emit.materialExtensionPayload
+                ? "an asset uses anisotropy or diffuse transmission"
+                : "no asset uses anisotropy or diffuse transmission",
+            "src/loader-gltf/gltf-ext-anisotropy.ts and gltf-ext-diffuse-transmission.ts; packaging executes the pinned material mapper and retains its merged initialization",
+            ["loader flag", "fidelity.json"],
         ),
         row(
             "textureTransform",
