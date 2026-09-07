@@ -1672,6 +1672,7 @@ struct PbrMaterialOptions {
     SolidTexture base_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
     bool has_base_color_texture = false;
+    std::shared_ptr<std::vector<double>> source_base_color_factor{};
     SolidTexture orm{};
     float metallic_factor = 1.0f;
     float roughness_factor = 1.0f;
@@ -3062,6 +3063,11 @@ struct MaterialRecord {
     std::string name;
     Color3 diffuse_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
+    // Public source arrays are distinct from the packed float render fields.
+    // Null means the producer omitted the property; copies retain JS identity.
+    std::shared_ptr<std::vector<double>> source_base_color_factor{};
+    std::shared_ptr<std::vector<double>> source_diffuse_color{};
+    bool source_colors_registered = false;
     // Babylon keeps the material-wide alpha separate from the PBR base-color
     // factor. The fragment multiplies both when the factor field is composed.
     float alpha = 1.0f;
@@ -4743,6 +4749,43 @@ enum class MaterialTextureSlot : std::uint8_t {
     occlusion,
     diffuse,
 };
+
+enum class MaterialColorSlot { base_color_factor, diffuse_color };
+
+inline void project_material_source_colors(MaterialRecord& material) {
+    if (material.source_base_color_factor) {
+        const auto& source = *material.source_base_color_factor;
+        if (source.size() != 4) throw std::runtime_error("PBR baseColorFactor requires four numeric channels.");
+        material.base_color_factor = Color4{static_cast<float>(source[0]), static_cast<float>(source[1]),
+            static_cast<float>(source[2]), static_cast<float>(source[3])};
+    }
+    if (material.source_diffuse_color) {
+        const auto& source = *material.source_diffuse_color;
+        if (source.size() != 3) throw std::runtime_error("Material diffuseColor requires three numeric channels.");
+        material.diffuse_color = Color3{static_cast<float>(source[0]), static_cast<float>(source[1]), static_cast<float>(source[2])};
+    }
+}
+
+template <typename Array = js::Array<double>>
+[[nodiscard]] js::Nullable<Array> material_color(
+    const Engine& engine, MaterialHandle material, MaterialColorSlot slot) {
+    const auto& record = engine.materials.at(material.value);
+    const auto& values = slot == MaterialColorSlot::base_color_factor
+        ? record.source_base_color_factor : record.source_diffuse_color;
+    return values ? js::Nullable<Array>{Array(values)} : js::Nullable<Array>{};
+}
+
+template <typename Array>
+inline void set_material_diffuse_color(
+    Engine& engine, MaterialHandle material, const Array& values) {
+    if (values.size() != 3) {
+        throw std::runtime_error("Material diffuseColor requires three numeric channels.");
+    }
+    auto& record = engine.materials.at(material.value);
+    record.source_diffuse_color = values.retained_storage();
+    record.diffuse_color = Color3{static_cast<float>(values[0]),
+        static_cast<float>(values[1]), static_cast<float>(values[2])};
+}
 
 [[nodiscard]] inline bool material_texture_present(
     const Engine& engine,

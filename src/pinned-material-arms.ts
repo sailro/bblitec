@@ -1131,6 +1131,12 @@ export async function composeScenePbrVariants(
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
         if (material.baseColorFactor) {
             input.baseColorFactor = material.baseColorFactor;
+        } else if (material.baseColorFactorRuntime) {
+            // The pin derives this UBO field from array truthiness only.
+            // Refuse if future composition starts inspecting runtime lanes.
+            input.baseColorFactor = new Proxy<number[]>([], {
+                get(_target, key) { throw new Error(`PBR composition reads runtime baseColorFactor.${String(key)}.`); },
+            });
         }
         if (material.hasOrmTexture) input["ormTexture"] = {};
         if (material.enableSpecularAA) input.enableSpecularAA = true;
@@ -1341,7 +1347,8 @@ export async function composeScenePbrVariants(
             };
             const cacheKey = material.plugins
                 ? undefined
-                : JSON.stringify([input, composeOptions]);
+                : JSON.stringify([material.baseColorFactorRuntime
+                    ? {...input, baseColorFactor: "runtime-array"} : input, composeOptions]);
             let variant = cacheKey
                 ? compositionCache.get(cacheKey)
                 : undefined;

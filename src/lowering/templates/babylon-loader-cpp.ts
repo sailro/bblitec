@@ -216,6 +216,8 @@ MaterialHandle load_material(
     material.standard_material = true;
     material.diffuse_color =
         color3_or(source, "diffuse", Color3{1.0f, 1.0f, 1.0f});
+    material.source_diffuse_color = std::make_shared<std::vector<double>>(
+        source.value("diffuse", std::vector<double>{1, 1, 1}));
     material.specular_color =
         color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});
     material.emissive_factor =
@@ -362,6 +364,8 @@ MaterialHandle default_material(Engine& engine) {
     MaterialRecord material;
     material.standard_material = true;
     material.diffuse_color = Color3{1.0f, 1.0f, 1.0f};
+    material.source_diffuse_color = std::make_shared<std::vector<double>>(
+        std::initializer_list<double>{1, 1, 1});
     engine.materials.push_back(std::move(material));
     return MaterialHandle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};

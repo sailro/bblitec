@@ -118,6 +118,24 @@ ownership boundaries are in [architecture](architecture.md#worker-service-design
 
 ## Asset materialization
 
+Material albedo fallback reads distinguish PBR `baseColorTexture`/`baseColorFactor`
+from Standard `diffuseTexture`/`diffuseColor`. Public color arrays retain source
+identity and double precision through reads, aliases and Standard whole-array
+replacement. PBR factors supplied as owning numeric arrays keep their contents
+at runtime; composition observes only the pin's array-presence test. glTF keeps
+the original public factor only where the pinned builder or animation-pointer
+feature supplies it, including the distinction between explicit white and an
+omitted factory option.
+
+Numeric color reads currently require one static scene registration. Later
+material-group construction, rebuilds and whole color replacement after
+registration refuse because separate group UBO snapshots are not represented.
+Direct array changes remain visible to source reads without implicitly changing
+the pinned `_uboVersion`. Legacy `{r,g,b,a}`/`{r,g,b}` render adapters cannot
+co-reach numeric-array reads. Static readonly tuples cannot be retained as
+factory inputs; use an owning numeric array. Admitted factor/diffuse arrays have
+four/three channels respectively; dynamic invalid lengths fail at runtime.
+
 Reached file/remote URLs are packaged under the generated scene. glTF external
 buffers/images are embedded as needed; local application assets retain reviewed
 logical paths. Base64 data URLs decode at generation. Dynamic URLs outside a

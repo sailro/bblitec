@@ -11,6 +11,7 @@ export interface SceneIntrinsicContext
         CameraDeferralContext {
     noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     noteTemporalCameraControl(node: ts.Node): void;
+    noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always?: boolean): void;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -61,7 +62,10 @@ export function compileSceneIntrinsic(
     if (["unregisterScene", "addToScene", "removeFromScene", "addTask", "addTaskAtStart"].includes(importedName)) {
         context.noteTemporalRecordBoundary(call, `${importedName} after scene registration`);
     }
-    if (importedName === "rebuildSceneRenderables") context.noteTemporalRecordBoundary(call, importedName, "always");
+    if (importedName === "rebuildSceneRenderables") {
+        context.noteTemporalRecordBoundary(call, importedName, "always");
+        context.noteMaterialColorRenderBoundary(call, importedName, true);
+    }
     switch (importedName) {
         case "addToScene": {
             context.expectArgumentCount(call, 2, 2);
@@ -93,6 +97,9 @@ export function compileSceneIntrinsic(
                 );
             }
             context.expectSameEngine(scene, resource, call);
+            if (resource.kind !== "camera" && resource.kind !== "light") {
+                context.noteMaterialColorRenderBoundary(call, "adding material groups after registration");
+            }
             // The slot this light lands in. `scene.lights` order is what the
             // pin's shadow receiver fragment names its per-light varyings
             // and bindings by. Generators created before this call are

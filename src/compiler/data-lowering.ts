@@ -1740,7 +1740,7 @@ export class DataLowerer {
             if (
                 rightType &&
                 dataTypesEqual(
-                    rightType,
+                    this.context.dataTypes.markStoredObjectReferences(rightType),
                     left.dataType,
                 )
             ) {

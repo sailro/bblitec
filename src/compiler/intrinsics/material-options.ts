@@ -23,6 +23,7 @@ import {
     compileOptionalStaticBoolean,
     staticNumberPair,
     staticNumberValue,
+    staticTupleElements,
     validateObjectProperties,
     type ObjectValidationContext,
     type PositiveIntegerContext,
@@ -40,6 +41,7 @@ import {
     pinnedDefaultVec2Cpp,
     type PinnedMaterialDefaultName,
 } from "../../lowering/pinned-material-defaults.js";
+import { floatLiteral } from "../../cpp-literals.js";
 
 /** One pinned scalar default, in the two forms a setter resolves. */
 function pinnedScalarDefault(
@@ -57,6 +59,8 @@ export interface MaterialOptionContext
     currentGltfAssetCount(): number;
     recordSceneMaterialSlot(): number;
     compileValue(expression: ts.Expression): Value;
+    compileForDataSink(expression: ts.Expression, type: import("../data-types.js").DataType): string;
+    noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void;
     expectKind(
         value: Value,
         kind: ValueKind,
@@ -102,6 +106,7 @@ export interface CompiledPbrMaterialOptions {
     baseColor: Value;
     baseColorFactor: string;
     hasBaseColorTexture: boolean;
+    sourceBaseColorFactor: string;
     orm: Value;
     metallicFactor: string;
     roughnessFactor: string;
@@ -490,7 +495,7 @@ export function compilePbrMaterialOptions(
         context.expectKind(orm, "texture", ormExpression);
     }
     const baseColorFactor = baseColorFactorExpression
-        ? staticPbrBaseColorFactor(context, baseColorFactorExpression)
+        ? compilePbrBaseColorFactor(context, baseColorFactorExpression)
         : undefined;
     const metallic = context.objectProperty(object, "metallicFactor");
     const roughness = context.objectProperty(object, "roughnessFactor");
@@ -677,15 +682,15 @@ export function compilePbrMaterialOptions(
         : "false";
     // The resolved option values, in creation order, for the pinned
     // composer: the pin's `createPbrMaterial` is `{...props}`, so these
-    // ARE the material record its feature derivation reads. Every value
-    // above compiles from a static literal, which is why parsing the C++
-    // text back is exact.
+    // ARE the material record its feature derivation reads. Scalar options
+    // are static; an array with runtime contents carries presence separately.
     const sceneMaterialIndex = context.scenePbrMaterials.push({
         materialsBefore: context.recordSceneMaterialSlot(),
         gltfAssetsBefore: context.currentGltfAssetCount(),
         hasBaseColorTexture: true,
         hasOrmTexture: true,
-        ...(baseColorFactor ? { baseColorFactor: baseColorFactor.value } : {}),
+        ...(baseColorFactor?.value ? { baseColorFactor: baseColorFactor.value } :
+            baseColorFactor ? {baseColorFactorRuntime: true as const} : {}),
         metallicFactor: Number.parseFloat(metallicCpp),
         roughnessFactor: Number.parseFloat(roughnessCpp),
         directIntensity: Number.parseFloat(directCpp),
@@ -711,6 +716,7 @@ export function compilePbrMaterialOptions(
     return {
         baseColor,
         hasBaseColorTexture: baseColorExpression !== undefined,
+        sourceBaseColorFactor: baseColorFactor?.storageCpp ?? "{}",
         baseColorFactor:
             baseColorFactor?.cpp ??
             "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
@@ -743,26 +749,40 @@ export function compilePbrMaterialOptions(
 }
 
 /**
- * `baseColorFactor` contributes a UBO field by property presence, so the
- * composer needs the exact tuple at generation rather than only the emitted
- * C++ expression. Native keeps this tuple separate from the material-wide
- * alpha, matching the pin's two UBO inputs and their fragment multiplication.
+ * The array's presence selects a UBO field; its contents remain runtime
+ * numbers. Retain its storage and preserve static metadata when available.
+ * Legacy color objects keep their existing renderer adapter, with numeric
+ * array reads fenced because that adapter does not retain the object shape.
  */
-function staticPbrBaseColorFactor(
+function compilePbrBaseColorFactor(
     context: MaterialOptionContext,
     expression: ts.Expression,
 ): {
     cpp: string;
-    value: readonly [number, number, number, number];
+    storageCpp: string;
+    value?: readonly [number, number, number, number];
 } {
     const resolved = context.resolveStaticExpression(expression);
+    const retainedStorage = (): string =>
+        `(${context.compileForDataSink(expression, {kind: "vector", element: {kind: "number"}})}).retained_storage()`;
+    if (ts.isIdentifier(expression) && context.lookupOptional(expression)?.kind === "tuple") {
+        context.fail(expression, "A static readonly tuple cannot retain material color identity; pass an owning numeric array.");
+    }
+    const stored = staticTupleElements(context, resolved);
+    if (stored?.length === 4 && stored.every(value => value.staticNumber !== undefined && Number.isFinite(value.staticNumber))) {
+        const value = stored.map(value => value.staticNumber!) as [number, number, number, number];
+        return {
+            cpp: `bbl::Color4{${value.map(floatLiteral).join(", ")}}`, value,
+            storageCpp: retainedStorage(),
+        };
+    }
     let channels: readonly ts.Expression[] | undefined;
-    if (
-        ts.isArrayLiteralExpression(resolved) &&
-        resolved.elements.length === 4
-    ) {
+    if (ts.isArrayLiteralExpression(resolved)) {
+        if (resolved.elements.length !== 4) context.fail(expression,
+            "PBR baseColorFactor requires a four-channel numeric array.");
         channels = resolved.elements;
     } else if (ts.isObjectLiteralExpression(resolved)) {
+        context.noteMaterialColorObjectWrite(expression, "baseColorFactor");
         channels = ["r", "g", "b", "a"].map((name) => {
             const channel = context.objectProperty(resolved, name);
             if (!channel) {
@@ -775,10 +795,10 @@ function staticPbrBaseColorFactor(
         });
     }
     if (!channels) {
-        context.fail(
-            expression,
-            "PBR baseColorFactor must be a static [r, g, b, a] tuple or { r, g, b, a } object: generation composes a UBO field from its presence.",
-        );
+        return {
+            cpp: "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
+            storageCpp: retainedStorage(),
+        };
     }
     const value = channels.map((channel) =>
         staticNumberValue(context, channel),
@@ -789,14 +809,19 @@ function staticPbrBaseColorFactor(
                 channel === undefined || !Number.isFinite(channel),
         )
     ) {
-        context.fail(
-            expression,
-            "PBR baseColorFactor channels must be finite static numbers: generation composes a UBO field from the factor.",
-        );
+        if (ts.isObjectLiteralExpression(resolved)) context.fail(expression,
+            "Legacy PBR color objects require finite static channels.");
+        return {
+            cpp: "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
+            storageCpp: retainedStorage(),
+        };
     }
     const tuple = value as [number, number, number, number];
     return {
         cpp: context.compileColor4(expression),
+        storageCpp: ts.isArrayLiteralExpression(resolved)
+            ? retainedStorage()
+            : "{}",
         value: tuple,
     };
 }

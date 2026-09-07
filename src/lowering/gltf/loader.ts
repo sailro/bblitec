@@ -11,6 +11,7 @@ import {
 } from "./animation-interpolation.js";
 import { lowerGltfExtensionDefaults } from "./extension-defaults.js";
 import { lowerGltfFactorBake } from "./factor-bake.js";
+import { lowerGltfMaterialColorPresence } from "./material-color-presence.js";
 import {
     lowerIblEnvironmentScalarsCpp,
     lowerIblPolynomialCpp,
@@ -731,6 +732,15 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 "src/loader-gltf/gltf-pbr-builder.ts",
             ),
         );
+        const materialColorPresence = lowerGltfMaterialColorPresence(
+            this.context.sourceFile("src/loader-gltf/gltf-pbr-builder.ts"),
+        );
+        if (materialColorPresence !== lowerGltfMaterialColorPresence(
+            this.context.sourceFile("src/loader-gltf/gltf-pbr-builder-ext.ts"), "assemblePbrPropsExt",
+        )) {
+            throw new Error("Pinned glTF builders require distinct public material color presence adapters.");
+        }
+        factorBake.helpers += "\n" + materialColorPresence;
         const materialDefaults = lowerGltfMaterialDefaults({
             material: this.context.sourceFile(
                 "src/loader-gltf/gltf-material.ts",

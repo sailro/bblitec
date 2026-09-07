@@ -1343,6 +1343,8 @@ MaterialHandle create_pbr_material(
     material.orm_fallback = options.orm.texel;
     material.base_color_factor = options.base_color_factor;
     material.has_public_base_color_texture = options.has_base_color_texture;
+    material.source_base_color_factor = std::move(options.source_base_color_factor);
+    project_material_source_colors(material);
     material.roughness_factor = options.roughness_factor;
     material.metallic_factor = options.metallic_factor;
     material.direct_intensity = options.direct_intensity;
@@ -1905,6 +1907,8 @@ MaterialHandle create_standard_material(Engine& engine) {
     MaterialRecord material;
     material.standard_material = true;
     material.diffuse_color = ${tuple("diffuseColor")};
+    material.source_diffuse_color = std::make_shared<std::vector<double>>(
+        std::initializer_list<double>{${this.context.numericTuple(this.context.propertyInitializer(object, "diffuseColor"), file).join(", ")}});
     material.alpha = ${scalar("alpha")};
     material.specular_color = ${tuple("specularColor")};
     material.specular_power = ${scalar("specularPower")};

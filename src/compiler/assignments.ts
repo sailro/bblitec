@@ -550,6 +550,9 @@ export interface AssignmentContext extends DeterministicRandomContext {
    */
   reachFeature(feature: Feature, site: ts.Node): void;
   reachJsData(): void;
+  noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void;
+  noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
+  noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always?: boolean): void;
   /** `mesh.receiveShadows = true`, by scene-mesh index. */
   recordShadowReceiver(sceneMeshIndex: number): void;
   recordDynamicShadowReceivers(): void;
@@ -1938,6 +1941,7 @@ export function emitPropertyAssignment(
 
     if (target.kind === "mesh" && property === "material") {
       context.noteTemporalRecordBoundary(expression, "mesh material replacement after scene registration");
+      context.noteMaterialColorRenderBoundary(expression, "mesh material replacement after registration");
       requireSimpleAssignment(context, expression, "mesh material");
       const material = context.compileValue(expression.right);
       context.expectKind(material, "material", expression.right);
@@ -2399,6 +2403,24 @@ export function emitPropertyAssignment(
           `Reached ${recordField.kind} ${recordField.property} ` +
             "names a field pair with a scalar value.",
         );
+      }
+      if (recordField.kind === "material" && recordField.property === "diffuseColor") {
+        context.noteMaterialColorRenderBoundary(expression, "whole color replacement after registration");
+        if (ts.isObjectLiteralExpression(context.resolveStaticExpression(expression.right))) {
+          context.noteMaterialColorObjectWrite(expression.right, "diffuseColor");
+        } else {
+          const shape = context.resolveStaticExpression(expression.right);
+          if (ts.isIdentifier(expression.right) && context.lookupOptional(expression.right)?.kind === "tuple") {
+            context.fail(expression.right, "A static readonly tuple cannot retain material color identity; pass an owning numeric array.");
+          }
+          if (ts.isArrayLiteralExpression(shape) && shape.elements.length !== 3) context.fail(expression.right,
+            "Material diffuseColor requires a three-channel numeric array.");
+          const owner = context.allocateTemporaryCppName("material_color_owner");
+          context.emit(`const auto ${owner} = ${target.cpp};`);
+          const values = context.compileForDataSink(expression.right, {kind: "vector", element: {kind: "number"}});
+          context.emit(`bbl::set_material_diffuse_color(${context.requireEngine(target, expression)}, ${owner}, ${values});`);
+          return;
+        }
       }
       const value =
         recordField.value === "color3"

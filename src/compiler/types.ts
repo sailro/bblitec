@@ -645,6 +645,8 @@ export interface ScenePbrMaterialManifest {
    * value happens to be neutral white.
    */
   baseColorFactor?: readonly [number, number, number, number];
+  /** Present array whose contents remain runtime UBO data. */
+  baseColorFactorRuntime?: true;
   hasOrmTexture: boolean;
   metallicFactor: number;
   roughnessFactor: number;

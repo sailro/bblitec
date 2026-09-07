@@ -2381,6 +2381,18 @@ void register_scene(Scene& scene) {
         });
     if (found != scene.engine->registered_scenes.end()) return;${managerSeek}${vatSeek}
     drain_scene_deferred_builders(scene);
+    // The source builders read public material arrays when registration
+    // creates their UBOs; direct later array writes do not bump _uboVersion.
+    for (const auto mesh : scene.meshes) {
+        const auto material = scene.engine->meshes.at(mesh.value).material;
+        if (material.value < scene.engine->materials.size()) {
+            auto& record = scene.engine->materials[material.value];
+            if (!record.source_colors_registered) {
+                project_material_source_colors(record);
+                record.source_colors_registered = true;
+            }
+        }
+    }
     scene.material_family_mask = scene_material_families(scene);
 ${options.text ? `    std::stable_sort(scene.state->text_renderables.begin(), scene.state->text_renderables.end(),
         [](const auto& a, const auto& b) { return a->order < b->order; });\n` : ""}\

@@ -14,7 +14,7 @@
 // metadata rather than from a native field, and `camera.target`
 // synthesizes a three-component record. Those differ in what they *do*,
 // not in which field they name.
-import type ts from "typescript";
+import ts from "typescript";
 
 import type { DataType } from "./data-types.js";
 import type { Feature, Value, ValueKind } from "./types.js";
@@ -121,6 +121,8 @@ interface PropertyRead {
    * and binding paths consume.
    */
   dataType?: DataType;
+  /** A producer whose optional native carrier is statically known present. */
+  knownPresent?: (owner: Value) => boolean;
   /**
    * Rejects an owner this read cannot serve, returning the message.
    * Runs before anything is emitted.
@@ -608,6 +610,15 @@ export const propertyRules: readonly PropertyRule[] = [
     optionalFound: (ownerCpp, engineCpp) =>
       `bbl::material_texture_present(${engineCpp}, ${ownerCpp}, bbl::MaterialTextureSlot::base_color)`,
   },
+  ...([['baseColorFactor', 'base_color_factor'], ['diffuseColor', 'diffuse_color']] as const).map(
+    ([property, slot]): PropertyRead => ({
+      owner: "material", property, value: "data",
+      dataType: {kind: "optional", inner: {kind: "vector", element: {kind: "number"}}},
+      helper: "bbl::material_color", helperTakesEngine: true,
+      helperArgument: `bbl::MaterialColorSlot::${slot}`, helperReturnsFreshData: true,
+      ...(property === "diffuseColor" ? {knownPresent: (owner: Value) => owner.standardMaterial === true} : {}),
+    }),
+  ),
   {
     owner: "material",
     property: "diffuseTexture",
@@ -1034,6 +1045,7 @@ export interface PropertyContext {
   requireEngine(value: Value, node: ts.Node): string;
   reachFeature(feature: Feature, site: ts.Node): void;
   reachJsData(): void;
+  noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
   fail(node: ts.Node, message: string): never;
   /** Whether generation has seen a thin-instance pool set on this mesh. */
   meshHasThinInstancePool(owner: Value): boolean;
@@ -1082,6 +1094,15 @@ export function readProperty(
   if (rule.helperReturnsFreshData) {
     context.reachJsData();
   }
+  if (owner.kind === "material" && (property === "baseColorFactor" || property === "diffuseColor")) {
+    const parent = expression.parent;
+    // Assignment probing asks the property table for the LHS shape too;
+    // replacing that property does not read its previous array value.
+    if (!parent || !ts.isBinaryExpression(parent) || parent.left !== expression ||
+        parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+      context.noteMaterialColorRead(property);
+    }
+  }
   // An engine handle names itself; anything else carries the engine it
   // was created from, so the value read out of it stays resolvable.
   const engineCpp = owner.kind === "engine" ? owner.cpp : owner.engineCpp;
@@ -1089,10 +1110,12 @@ export function readProperty(
     owner.kind === "light"
       ? owner.lightIdentity?.shadowGeneratorIndex
       : owner.shadowGeneratorIndex;
+  const dataType = rule.dataType?.kind === "optional" && rule.knownPresent?.(owner)
+    ? rule.dataType.inner : rule.dataType;
   const read = (cpp: string): Value => ({
     kind: rule.value,
-    cpp,
-    ...(rule.dataType ? { dataType: rule.dataType } : {}),
+    cpp: dataType !== rule.dataType ? `(*${cpp})` : cpp,
+    ...(dataType ? {dataType} : {}),
     ...(rule.textureStorage
       ? { textureStorage: rule.textureStorage }
       : {}),

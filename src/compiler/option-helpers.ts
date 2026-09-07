@@ -510,7 +510,7 @@ export function staticNumberPair(
 }
 
 /** Read the current tuple snapshot; native writes invalidate it through aliases. */
-function staticTupleElements(
+export function staticTupleElements(
     context: PositiveIntegerContext,
     expression: ts.Expression,
 ): readonly Value[] | undefined {

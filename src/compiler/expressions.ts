@@ -286,6 +286,7 @@ export interface ExpressionContext
     ): Value | undefined;
     reachFeature(feature: Feature, site?: ts.Node): void;
     reachJsData(): void;
+    noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
     isInRuntimeIteration(): boolean;

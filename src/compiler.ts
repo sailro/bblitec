@@ -835,7 +835,8 @@ class Compiler
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
     private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
-    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text"; node: ts.Node; message: string }> = [];
+    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text" | "material-colors" | "baseColorFactor" | "diffuseColor"; node: ts.Node; message: string }> = [];
+    private readonly materialColorReads: Array<"baseColorFactor" | "diffuseColor"> = [];
     private temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
     private temporalControlAttachment: ts.Node | undefined;
@@ -1001,6 +1002,16 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        const colorAdmission = this.deferredAdmissionFailures.find(failure =>
+            (failure.capability === "baseColorFactor" || failure.capability === "diffuseColor") &&
+            this.materialColorReads.includes(failure.capability));
+        if (colorAdmission) this.fail(colorAdmission.node, colorAdmission.message);
+        if (this.materialColorReads.length) {
+            const boundary = this.deferredAdmissionFailures.find(failure => failure.capability === "material-colors");
+            if (boundary) this.fail(boundary.node, boundary.message);
+            if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
+                "Numeric material-color reads currently support one registered scene; independent material-group UBO snapshots are not represented.");
+        }
         if (this.features.has("text:renderable")) {
             const camera = this.textCameraMutation ?? this.temporalControlAttachment ?? this.untrackedTaaCameraWrites[0]?.node;
             if (camera) this.fail(camera, "Text currently requires a static camera; live camera writers and controls are not represented.");
@@ -3873,7 +3884,9 @@ class Compiler
                             ts.SyntaxKind.FirstAssignment &&
                         node.operatorToken.kind <=
                             ts.SyntaxKind.LastAssignment &&
-                        ((ts.isElementAccessExpression(node.left) &&
+                        (((ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+                            scan.containsAlias(node.right)) ||
+                          (ts.isElementAccessExpression(node.left) &&
                             scan.namesAlias(
                                 this.unwrap(node.left.expression),
                             )) ||
@@ -13582,6 +13595,7 @@ class Compiler
         const start = this.body.length;
         const cameras = this.untrackedTaaCameraWrites.length;
         const admissions = this.deferredAdmissionFailures.length;
+        const colorReads = this.materialColorReads.length;
         const registration = this.temporalSceneRegistration;
         const registeredScenes = this.temporalRegisteredScenes.length;
         const controls = this.temporalControlAttachment;
@@ -13592,6 +13606,7 @@ class Compiler
             this.body.splice(start);
             this.untrackedTaaCameraWrites.length = cameras;
             this.deferredAdmissionFailures.length = admissions;
+            this.materialColorReads.length = colorReads;
             this.temporalSceneRegistration = registration;
             this.temporalRegisteredScenes.length = registeredScenes;
             this.temporalControlAttachment = controls;
@@ -14117,6 +14132,22 @@ class Compiler
 
     public noteTemporalAdmissionFailure(node: ts.Node, message: string): void {
         this.deferredAdmissionFailures.push({ capability: "taa", node, message });
+    }
+
+    public noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void {
+        this.materialColorReads.push(property);
+    }
+
+    public noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void {
+        this.deferredAdmissionFailures.push({capability: property, node,
+            message: `Reading material.${property} requires retained numeric-array producers; the legacy color-object writer cannot preserve its source shape.`});
+    }
+
+    public noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always = false): void {
+        if (always || this.frameCallbackDepth > 0 || this.engineStartMark !== undefined || this.temporalSceneRegistration) {
+            this.deferredAdmissionFailures.push({capability: "material-colors", node,
+                message: `Numeric material-color reads do not yet represent per-group UBO snapshots for ${reason}.`});
+        }
     }
 
     public noteTemporalRecordBoundary(node: ts.Node, reason: string, mode: "runtime" | "registration" | "always" = "runtime", scene?: Value): void {

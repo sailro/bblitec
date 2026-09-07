@@ -559,6 +559,7 @@ export function compileMaterialIntrinsic(
                 baseColor,
                 baseColorFactor,
                 hasBaseColorTexture,
+                sourceBaseColorFactor,
                 orm,
                 metallicFactor,
                 roughnessFactor,
@@ -637,6 +638,7 @@ export function compileMaterialIntrinsic(
                 `.base_color = ${baseColorCpp}, ` +
                 `.base_color_factor = ${baseColorFactor}, ` +
                 `.has_base_color_texture = ${hasBaseColorTexture}, ` +
+                `.source_base_color_factor = ${sourceBaseColorFactor}, ` +
                 `.orm = ${ormCpp}, ` +
                 `.metallic_factor = ${metallicFactor}, ` +
                 `.roughness_factor = ${roughnessFactor}, ` +
