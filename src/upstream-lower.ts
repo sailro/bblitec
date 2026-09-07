@@ -2,6 +2,7 @@ import { deformPickingHeader, type DeformPickingShader } from "./pinned-picking-
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import ts from "typescript";
+import type { ShaderStageConstant } from "./shader-ir.js";
 import {
     SPLAT_CONTAINERS,
     type SplatContainerKind,
@@ -1441,7 +1442,10 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             alsoStages?: ReadonlyArray<{
                 stem: string;
                 entryPoint: string;
+                constants?: readonly ShaderStageConstant[];
             }>;
+            /** Offline specialization; the deployed WGSL remains canonical for Dawn. */
+            constants?: readonly ShaderStageConstant[];
             /**
              * The module's own entry point for its deployed stem, where
              * the family names none: a screen-space stage names its
@@ -3123,6 +3127,7 @@ ${shadow.blurFragmentWgsl}`,
                                 family,
                                 alsoStages,
                                 entryPoint,
+                                constants,
                             }) => ({
                                 output,
                                 sha256: createHash("sha256")
@@ -3136,6 +3141,7 @@ ${shadow.blurFragmentWgsl}`,
                                 ...(alsoStages
                                     ? { alsoStages }
                                     : {}),
+                                ...(constants ? { constants } : {}),
                             })),
                     },
                     null,
