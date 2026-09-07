@@ -78,12 +78,6 @@ export class PostProcessLowerer {
     private blendModes = new Map<number, readonly string[]>();
 
     public lowerTaskRecords(): LoweredSource {
-        for (const composite of this.composites) {
-            const missing = postProcessComposite(composite.intrinsic)?.unsupportedRuntime;
-            if (missing) {
-                throw new Error(`${composite.intrinsic} requires ${missing}; native execution is not represented.${this.refusalSite}`);
-            }
-        }
         const effects = this.reachedEffects();
         this.assertTaskContracts();
         for (const effect of effects) {

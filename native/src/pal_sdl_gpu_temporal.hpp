@@ -63,7 +63,6 @@ struct PreparedSdlDraw {
 };
 
 struct PreparedSdlScenePass {
-    TaskHandle task{};
     SDL_GPUColorTargetInfo target{};
     std::optional<SDL_GPUDepthStencilTargetInfo> depth{};
     std::optional<SDL_GPUViewport> viewport{};

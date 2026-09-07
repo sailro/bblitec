@@ -157,8 +157,6 @@ export interface PostProcessComposite {
     usesCamera: boolean;
     /** Required source render-task references, in native input order. */
     sourceTasks?: readonly string[];
-    /** Composition is observable, but this runtime lifecycle is not lowered yet. */
-    unsupportedRuntime?: string;
 }
 
 export const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [

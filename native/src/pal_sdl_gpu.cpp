@@ -11797,7 +11797,6 @@ SceneRun run_gpu_engine(Engine& engine) {
                         }
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
                         PreparedSdlScenePass prepared;
-                        prepared.task = handle;
                         prepared.target = target_info;
                         if (task_depth_pointer) prepared.depth = *task_depth_pointer;
                         if (source_camera && task_camera.viewport) {

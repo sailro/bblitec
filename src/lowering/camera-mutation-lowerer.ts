@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { cameraRecordField } from "../compiler/properties.js";
+import { snakeCase } from "../cpp-literals.js";
 import { LoweringContext } from "./context.js";
 import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 
@@ -151,7 +152,7 @@ ${bulkBody}
         const bindings = new Map<string, PinnedBinding>();
         bindings.set("Math.PI", { cpp: "pi_double", type: "scalar" });
         for (const property of ["inertialAlphaOffset", "inertialBetaOffset", "inertialRadiusOffset", "inertialPanningX", "inertialPanningY", "inertia", "panningInertia"]) {
-            bindings.set(`camera.${property}`, { cpp: `camera.${property.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}`, type: "scalar" });
+            bindings.set(`camera.${property}`, { cpp: `camera.${snakeCase(property)}`, type: "scalar" });
         }
         for (const access of this.context.findNodes(body, ts.isPropertyAccessExpression)) {
             const path = this.context.propertyPath(access);
@@ -159,7 +160,7 @@ ${bulkBody}
                 const field = cameraRecordField(path[1]!);
                 if (field) bindings.set(path.join("."), { cpp: `camera.${field}`, type: "scalar" });
                 else if (path[1]?.endsWith("Limit")) {
-                    const field = path[1].replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+                    const field = snakeCase(path[1]);
                     bindings.set(path.join("."), { cpp: `*camera.${field}`, type: "scalar", absentCpp: `!camera.${field}.has_value()` });
                 }
             }

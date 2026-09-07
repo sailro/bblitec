@@ -831,9 +831,8 @@ class Compiler
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
-    private readonly sceneUniformIdentityLimitations = new Map<ts.Node, string>();
     private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
-    private readonly untrackedTemporalRecords: Array<{ node: ts.Node; reason: string }> = [];
+    private readonly temporalAdmissionFailures: Array<{ node: ts.Node; message: string }> = [];
     private temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
     private temporalControlAttachment: ts.Node | undefined;
@@ -1002,8 +1001,8 @@ class Compiler
         if (this.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask")) {
             const unsupported = this.untrackedTaaCameraWrites[0];
             if (unsupported) this.fail(unsupported.node, `TAA requires tracked camera mutations: ${unsupported.reason}.`);
-            const record = this.untrackedTemporalRecords[0];
-            if (record) this.fail(record.node, `TAA task record epochs are not represented for ${record.reason}.`);
+            const admission = this.temporalAdmissionFailures[0];
+            if (admission) this.fail(admission.node, admission.message);
             for (const feature of ["camera:free", "camera:geospatial", "camera:orthographic", "loader:gltf-cameras"] as const) {
                 if (this.features.has(feature)) this.fail(this.sourceFile,
                     `TAA camera version transport does not cover '${feature}'.`);
@@ -1065,9 +1064,6 @@ class Compiler
         // lowerer emits from, so a feature's sources are declared once.
         const generatedSources = reachedGeneratedSources(features);
         const cpp = this.renderCpp(features);
-        if (this.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask")) {
-            for (const [node, message] of this.sceneUniformIdentityLimitations) this.fail(node, message);
-        }
         this.staticExpansionBudget.assertWithinBudget();
         return {
             cpp,
@@ -13514,7 +13510,7 @@ class Compiler
     ): T {
         const start = this.body.length;
         const cameras = this.untrackedTaaCameraWrites.length;
-        const records = this.untrackedTemporalRecords.length;
+        const admissions = this.temporalAdmissionFailures.length;
         const registration = this.temporalSceneRegistration;
         const registeredScenes = this.temporalRegisteredScenes.length;
         const controls = this.temporalControlAttachment;
@@ -13522,7 +13518,7 @@ class Compiler
         if (!answered(result)) {
             this.body.splice(start);
             this.untrackedTaaCameraWrites.length = cameras;
-            this.untrackedTemporalRecords.length = records;
+            this.temporalAdmissionFailures.length = admissions;
             this.temporalSceneRegistration = registration;
             this.temporalRegisteredScenes.length = registeredScenes;
             this.temporalControlAttachment = controls;
@@ -14042,17 +14038,21 @@ class Compiler
             reason: "an observable camera vector cannot be copied into a plain data aggregate" });
     }
 
+    public noteTemporalAdmissionFailure(node: ts.Node, message: string): void {
+        this.temporalAdmissionFailures.push({ node, message });
+    }
+
     public noteTemporalRecordBoundary(node: ts.Node, reason: string, mode: "runtime" | "registration" | "always" = "runtime", scene?: Value): void {
         const runtime = this.frameCallbackDepth > 0 || this.engineStartMark !== undefined;
         if (mode === "always" || runtime || (mode !== "registration" && this.temporalSceneRegistration)) {
-            this.untrackedTemporalRecords.push({ node, reason: runtime ? `runtime ${reason}` : reason });
+            this.noteTemporalAdmissionFailure(node, `TAA task record epochs are not represented for ${runtime ? `runtime ${reason}` : reason}.`);
         }
         if (mode === "registration") {
             this.temporalSceneRegistration ??= node;
             const identity = scene?.sceneTopologyState;
             if (!identity || !this.temporalRegisteredScenes.includes(identity)) {
-                if (!identity || this.temporalRegisteredScenes.length > 0) this.untrackedTemporalRecords.push({ node,
-                    reason: "TAA supports one proven registered scene until per-scene update/record ordering is represented" });
+                if (!identity || this.temporalRegisteredScenes.length > 0) this.noteTemporalAdmissionFailure(node,
+                    "TAA task record epochs are not represented for TAA supports one proven registered scene until per-scene update/record ordering is represented.");
                 this.temporalRegisteredScenes.push(identity);
             }
         }
@@ -19851,10 +19851,6 @@ class Compiler
             this.fail(site, "TAA tasks must be constructed and attached before initial scene registration; later task record epochs are not lowered.");
         }
         this.postProcessComposites.push(manifest);
-    }
-
-    public recordSceneUniformIdentityLimitation(node: ts.Node, message: string): void {
-        this.sceneUniformIdentityLimitations.set(node, message);
     }
 
     public recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void {

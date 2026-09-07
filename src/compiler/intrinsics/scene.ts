@@ -18,7 +18,7 @@ export interface SceneIntrinsicContext
     compileColor3(expression: ts.Expression): string;
     compileVec4(expression: ts.Expression): string;
     unwrap(expression: ts.Expression): ts.Expression;
-    recordSceneUniformIdentityLimitation(node: ts.Node, message: string): void;
+    noteTemporalAdmissionFailure(node: ts.Node, message: string): void;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -393,7 +393,7 @@ export function compileSceneIntrinsic(
             // alias; retained bags need their own live object carrier first.
             if (!ts.isObjectLiteralExpression(context.unwrap(call.arguments[1]!)) ||
                 !ts.isArrayLiteralExpression(context.unwrap(property("color")))) {
-                context.recordSceneUniformIdentityLimitation(call.arguments[1]!,
+                context.noteTemporalAdmissionFailure(call.arguments[1]!,
                     "TAA requires setFog to receive a fresh inline config with an inline color array; " +
                     "named or aliased fog objects do not yet retain their identity and live fields.");
             }
