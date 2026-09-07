@@ -1559,6 +1559,10 @@ inline std::vector<GpuVertex> transformed_vertices(
             mesh.gpu_deformation && geometry.flat_normals
                 ? geometry.vertices[vertex_index]
                 : vertex;
+        const Vec3& local_normal =
+            geometry.local_normals.size() == source_vertices.size()
+                ? geometry.local_normals[vertex_index]
+                : vertex.normal;
         // The pin's own vertex stage, performed here because this port bakes
         // a scene-code mesh's world into the buffer it draws: the matrix is
         // float32 exactly as `allocateMat4()` leaves it, so this multiply is
@@ -1600,9 +1604,9 @@ inline std::vector<GpuVertex> transformed_vertices(
                 vertex.color.w,
             },
             {
-                vertex.normal.x,
-                vertex.normal.y,
-                vertex.normal.z,
+                local_normal.x,
+                local_normal.y,
+                local_normal.z,
             },
 #if BBLITE_GPU_DEFORMATION
             {
@@ -2295,7 +2299,8 @@ struct PinnedVertexInput {
  */
 inline PinnedVertexInput pinned_vertex_input(
     std::string_view name,
-    bool uses_local_position) {
+    bool uses_local_position,
+    bool uses_local_normal = false) {
     const auto at = [](VertexInputLane lane, std::size_t offset) {
         return PinnedVertexInput{
             lane,
@@ -2311,7 +2316,10 @@ inline PinnedVertexInput pinned_vertex_input(
                                 : offsetof(GpuVertex, position));
     }
     if (name == "normal") {
-        return at(VertexInputLane::float3, offsetof(GpuVertex, normal));
+        return at(
+            VertexInputLane::float3,
+            uses_local_normal ? offsetof(GpuVertex, local_normal)
+                              : offsetof(GpuVertex, normal));
     }
     if (name == "tangent") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, tangent));
@@ -2430,6 +2438,16 @@ inline std::array<float, 16> pinned_identity_world() {
     };
 }
 
+/** Converts a native-convention world to the pin's raw imported lanes. */
+inline std::array<float, 16> pinned_x_mirrored_world(
+    std::array<float, 16> world) {
+    world[0] = -world[0];
+    world[1] = -world[1];
+    world[2] = -world[2];
+    world[3] = -world[3];
+    return world;
+}
+
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0
@@ -2441,16 +2459,6 @@ inline std::array<float, 16> pinned_mesh_world() {
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f,
     };
-}
-
-/** Applies the PBR root X mirror after one native-convention world. */
-inline std::array<float, 16> pinned_x_mirrored_world(
-    std::array<float, 16> world) {
-    world[0] = -world[0];
-    world[1] = -world[1];
-    world[2] = -world[2];
-    world[3] = -world[3];
-    return world;
 }
 
 #if BBLITE_GPU_INSTANCING
@@ -2642,6 +2650,17 @@ inline constexpr bool node_slot_is_caster(std::size_t) { return false; }
  *  outside the guard because every node draw site names it, and checked
  *  against the generated spelling where that exists. */
 inline constexpr std::size_t no_node_geometry_variant = npos;
+
+inline bool node_uses_local_attributes(std::size_t geometry_variant) {
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    return geometry_variant != no_node_geometry_variant &&
+        upstream::node_geometry_variants.at(geometry_variant)
+            .uses_local_attributes;
+#else
+    (void)geometry_variant;
+    return false;
+#endif
+}
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
 static_assert(
@@ -3391,12 +3410,38 @@ inline upstream::MeshUniforms pinned_mesh_block(
 inline upstream::NodeMeshUniforms node_mesh_block(
     const Scene& scene,
     const Engine& engine,
-    std::uint32_t mesh_index) {
+    std::uint32_t mesh_index,
+    bool uses_local_attributes = false) {
     upstream::NodeMeshUniforms block{};
     const MeshRecord& record = engine.meshes[mesh_index];
     block.world = record.scene_morph_targets
         ? scene_deformation_draw_world(record, scene, engine)
         : draw_world(pinned_identity_world(), record, scene, engine);
+    if (uses_local_attributes) {
+        const ModelGeometry& geometry = engine.geometries.at(record.geometry);
+        if (geometry.vertex_space == VertexSpace::local) {
+            block.world = scene_deformation_draw_world(record, scene, engine);
+        } else if (
+            geometry.vertex_space == VertexSpace::world &&
+            geometry.local_normals.size() == geometry.vertices.size() &&
+            !record.gpu_world_transform && !record.live_imported_transform &&
+            record.parent.value == invalid_handle &&
+            record.transform_parent.value == invalid_handle &&
+            record.position.x == 0.0 && record.position.y == 0.0 &&
+            record.position.z == 0.0 &&
+            record.scaling.x == 1.0 && record.scaling.y == 1.0 &&
+            record.scaling.z == 1.0 && !record.has_rotation_quaternion &&
+            record.rotation.x == 0.0 && record.rotation.y == 0.0 &&
+            record.rotation.z == 0.0) {
+            block.world = draw_world(
+                pinned_x_mirrored_world(record.instance_parent_matrix),
+                record, scene, engine);
+        } else {
+            throw std::runtime_error(
+                "Node geometry local attributes require scene-local geometry "
+                "or a static glTF world with retained source normals.");
+        }
+    }
     if (record.receives_shadows) {
         block.receivesShadow[0] = 1.0f;
     }

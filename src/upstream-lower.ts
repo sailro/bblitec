@@ -794,6 +794,12 @@ class GeneratedSourceWriter {
         // modules, and four derivations of it are four places to
         // desynchronise.
         const nodeGeometryViewList = nodeGeometryVariants(nodeVariantList);
+        if (nodeGeometryViewList.length > 0 && features.includes("loader:babylon")) {
+            throw new Error(
+                "Node geometry views require retained local vertex attributes; " +
+                "the Babylon loader does not provide that source contract.",
+            );
+        }
         // A graph can contain MorphTargetsBlock even when no currently
         // attached mesh carries targets. The pin still binds its lazily
         // created zero-target pair, so the PAL buffer lifetime must compile
@@ -1356,6 +1362,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             this.writeSource(
                 "upstream/src/gltf_loader.cpp",
                 gltf.lowerLoaderAdapter({
+                    retainLocalNormals: nodeGeometryViewList.length > 0,
                     animationBlending: features.includes(
                         "animation:gltf-blending",
                     ),

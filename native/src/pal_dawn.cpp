@@ -6614,9 +6614,10 @@ bool append_variant_attribute(
     std::string_view name,
     std::uint32_t location,
     bool uses_local_position,
-    VariantVertexAttributes& inputs) {
+    VariantVertexAttributes& inputs,
+    bool uses_local_normal = false) {
     const PinnedVertexInput input =
-        pinned_vertex_input(name, uses_local_position);
+        pinned_vertex_input(name, uses_local_position, uses_local_normal);
     if (!input.mapped) return false;
     WGPUVertexAttribute attribute{};
     attribute.shaderLocation = location;
@@ -7327,8 +7328,9 @@ WGPURenderPipeline node_variant_pipeline(
             !append_variant_attribute(
                 input.name,
                 input.location,
-                false,
-                inputs)) {
+                node_uses_local_attributes(geometry_variant),
+                inputs,
+                node_uses_local_attributes(geometry_variant))) {
             dawn_error(
                 (std::string("node variant declares an unmapped vertex ") +
                  "input '" + std::string(input.name) + "'.")
@@ -7690,29 +7692,36 @@ WGPUBindGroup build_node_draw_group(
  */
 struct NodeMeshBlockCache {
     const Scene* scene = nullptr;
-    std::vector<upstream::NodeMeshUniforms> blocks;
-    std::vector<std::uint8_t> composed;
+    struct Mode {
+        std::vector<upstream::NodeMeshUniforms> blocks;
+        std::vector<std::uint8_t> composed;
+    };
+    std::array<Mode, 2> modes;
 };
 
 const upstream::NodeMeshUniforms& node_mesh_block_for(
     NodeMeshBlockCache& cache,
     const Scene& scene,
     const Engine& engine,
-    std::uint32_t mesh_index) {
+    std::uint32_t mesh_index,
+    bool uses_local_attributes = false) {
     if (cache.scene != &scene) {
         cache.scene = &scene;
-        std::fill(cache.composed.begin(), cache.composed.end(), 0u);
+        for (auto& mode : cache.modes) {
+            std::fill(mode.composed.begin(), mode.composed.end(), std::uint8_t{0});
+        }
     }
-    if (cache.composed.size() <= mesh_index) {
-        cache.blocks.resize(mesh_index + 1u);
-        cache.composed.resize(mesh_index + 1u, 0u);
+    auto& mode = cache.modes[uses_local_attributes ? 1u : 0u];
+    if (mode.composed.size() <= mesh_index) {
+        mode.blocks.resize(mesh_index + 1u);
+        mode.composed.resize(mesh_index + 1u, 0u);
     }
-    if (!cache.composed[mesh_index]) {
-        cache.blocks[mesh_index] =
-            node_mesh_block(scene, engine, mesh_index);
-        cache.composed[mesh_index] = 1u;
+    if (!mode.composed[mesh_index]) {
+        mode.blocks[mesh_index] =
+            node_mesh_block(scene, engine, mesh_index, uses_local_attributes);
+        mode.composed[mesh_index] = 1u;
     }
-    return cache.blocks[mesh_index];
+    return mode.blocks[mesh_index];
 }
 
 /**
@@ -7773,7 +7782,8 @@ void write_node_geometry_task(
                     mesh_blocks,
                     scene,
                     engine,
-                    draw.item.mesh.value),
+                    draw.item.mesh.value,
+                    node_uses_local_attributes(geometry_variant)),
                 draw_state);
             if (!draw_state.group) {
                 draw_state.group = build_node_draw_group(

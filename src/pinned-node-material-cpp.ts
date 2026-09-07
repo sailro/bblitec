@@ -359,6 +359,8 @@ struct NodeGeometryVariantEntry {
     std::size_t geometry_params_binding;
     /** The colour targets this view's \`FragmentOutput\` writes. */
     std::size_t color_target_count;
+    /** This view consumes the pin's original position and normal lanes. */
+    bool uses_local_attributes;
 };
 
 inline constexpr std::array<
@@ -582,7 +584,7 @@ export function pinnedNodeVariantsHeader(
             `    {${variant.variantIndex}, ` +
             `${variant.composed.taskIndex}, ` +
             `${uboBindingLiteral(variant.composed.geometryParamsBinding)}, ` +
-            `${variant.composed.colorTargetCount}},`
+            `${variant.composed.colorTargetCount}, true},`
         );
     });
     const envRows = [...envResources.values()].map(

@@ -1907,9 +1907,10 @@ bool append_variant_attribute(
     std::string_view name,
     Uint32 location,
     bool uses_local_position,
-    std::vector<SDL_GPUVertexAttribute>& attributes) {
+    std::vector<SDL_GPUVertexAttribute>& attributes,
+    bool uses_local_normal = false) {
     const PinnedVertexInput input =
-        pinned_vertex_input(name, uses_local_position);
+        pinned_vertex_input(name, uses_local_position, uses_local_normal);
     if (!input.mapped) return false;
     SDL_GPUVertexAttribute attribute{};
     attribute.location = location;
@@ -3205,8 +3206,9 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
             !append_variant_attribute(
                 input.name,
                 input.location,
-                false,
-                attributes)) {
+                node_uses_local_attributes(geometry_variant),
+                attributes,
+                node_uses_local_attributes(geometry_variant))) {
             gpu_error(
                 ("node variant declares an unmapped vertex input '" +
                  std::string(input.name) + "'.")
@@ -3369,7 +3371,8 @@ void draw_node_variant(
     }
     const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
     const upstream::NodeMeshUniforms node_mesh =
-        node_mesh_block(scene, engine, draw.item.mesh.value);
+        node_mesh_block(scene, engine, draw.item.mesh.value,
+            node_uses_local_attributes(geometry_variant));
     const auto resolve = [&](
                              const std::string& block) -> PinnedStageBlock {
         if (block == "scene") {
