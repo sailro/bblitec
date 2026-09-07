@@ -43,11 +43,15 @@ export interface PickingIntrinsicContext
  * that never disposes still frees them with the renderer.
  *
  * What refuses here is everything the reached slice does not name: the
- * `filter`, `discard` and `ignore` options each select a different pinned
- * pipeline (`picking-advanced-pipeline.js`, `picking-ignore.js`), and
- * `enableDetailedPicking` adds a third attachment plus the barycentric
- * readback that `detailed-picking.js` owns. Each is its own contract, and
- * composing one from this one would be guessing.
+ * `filter` option is a scene closure over meshes that the candidate
+ * collector would have to call per mesh (the generated flow-graph bridge
+ * lowers its own predicate through the same `gpu_pick` overload; scene
+ * code's closures are not lowered), `discard` and `ignore` select a
+ * different pinned pipeline (`picking-advanced-pipeline.js`,
+ * `picking-ignore.js`), and `enableDetailedPicking` adds a third
+ * attachment plus the barycentric readback that `detailed-picking.js`
+ * owns. Each is its own contract, and composing one from this one would
+ * be guessing.
  */
 export function compilePickingIntrinsic(
     context: PickingIntrinsicContext,
@@ -82,10 +86,11 @@ export function compilePickingIntrinsic(
             if (call.arguments.length === 4) {
                 context.fail(
                     call.arguments[3]!,
-                    "pickAsync options are not lowered: `filter`, " +
-                        "`discard` and `ignore` each select a different " +
-                        "pinned picking pipeline, and the reached slice " +
-                        "passes none.",
+                    "pickAsync options are not lowered: `filter` is a " +
+                        "scene closure the candidate collector would call " +
+                        "per mesh, `discard` and `ignore` select a " +
+                        "different pinned picking pipeline, and the " +
+                        "reached slice passes none.",
                 );
             }
             const picker = context.compileValue(

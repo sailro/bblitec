@@ -21,7 +21,7 @@ Scenes 186, 227 and 228 have assessments only; implementation is unfinished.
 | 180, 181 | Live text layout/input and standalone text rendering; extend the static text contract, including controls and dynamic weight updates |
 | 186 | Independent local cubemap ownership/cube-array sampling, live PBR ORM/direct-intensity writes and tuple flattening |
 | 227, 228 | Source-level multi-canvas/swapchain creation and input ownership beyond the dedicated Worker host |
-| 304 | FlowGraph runtime and glTF interactivity |
+| 304 | Scene-side reads of the pinned flow-graph runtime records; the graph itself runs natively |
 
 ## Compiler and lowering
 
@@ -83,7 +83,7 @@ Scenes 186, 227 and 228 have assessments only; implementation is unfinished.
 | Plugins/shader materials | Wider UBO/uniform/system values, runtime plugin signatures, PBR samplers and fixed-function state |
 | Effects | Broader vertex/binding/texture descriptors, update/dispose/unregister paths |
 | Sprites/billboards | Coverage gamma, handle APIs, append-atlas forms and one registration-ordered mixed transparent/pick list |
-| Picking | Eight influences, deformed thin-instance/VAT IDs, filters/remaining result fields and multiple clouds |
+| Picking | Eight influences, deformed thin-instance/VAT IDs, scene-code filter closures, remaining result fields and multiple clouds |
 | Splats | Per-cloud plugins, mixed pick contributors and typed-buffer methods/contiguous consumers |
 | Shadows | Thin-instance CSM bounds, generator options/live receive toggles, task cameras and caster-specific composition |
 | Lines/instances | Runtime point lists, lines/dashes/color changes, fast dynamic draw count and GPU culling/LOD |

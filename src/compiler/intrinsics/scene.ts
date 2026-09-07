@@ -349,6 +349,24 @@ export function compileSceneIntrinsic(
             };
         }
 
+        // src/flow-graph/scene-flow-graph-pointer.ts: the explicit opt-in
+        // that installs the canvas press/release bridge and the GPU picker
+        // once a pointer-receiving graph is attached, and re-evaluates on
+        // every later attach. Awaited upstream because the picker is a
+        // dynamic import; the awaited value is void.
+        case "enableFlowGraphPointerPicking": {
+            context.expectArgumentCount(call, 1, 1);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            context.reachFeature("flow-graph:interactivity", call);
+            context.reachFeature("picking:gpu", call);
+            return {
+                kind: "void",
+                cpp: `bbl::enable_flow_graph_pointer_picking(${scene.cpp})`,
+                ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}),
+            };
+        }
+
         case "enableMirroredMeshes": {
             // src/mesh/enable-mirrored-meshes.ts: the opt-in that reaches
             // the winding resolution through a dynamic import, so a scene

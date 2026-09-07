@@ -179,6 +179,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["renderer:screen-space"],
     },
     {
+        source: "upstream/src/flow_graph.cpp",
+        features: ["flow-graph:interactivity"],
+    },
+    {
         source: "upstream/src/material_pbr.cpp",
         features: ["material:pbr"],
     },

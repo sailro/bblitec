@@ -272,6 +272,7 @@ export function gltfLoaderCpp(
         animationMask = false,
         animationSpeedRatio = false,
         nodeVisibility = false,
+        interactivity = false,
         animationPointer = false,
         animatedWorldBounds = false,
         animationPointerMaterials = false,
@@ -288,6 +289,9 @@ export function gltfLoaderCpp(
     // this template is a pin-derived JSON key that needs no escaping.
     const materialVariants = selectedMaterialVariant !== "";
     const selectedVariantLiteral = JSON.stringify(selectedMaterialVariant);
+    // The features that contribute scene wiring the container chains at
+    // add; the helper is emitted with its callers.
+    const chainsSceneSetup = assetTransmission || gaussianSplats || interactivity;
     const defaults = lowered.extensionDefaults;
     const materialDefaults = lowered.materialDefaults;
     const factorBake = lowered.factorBake;
@@ -411,7 +415,7 @@ std::vector<double> double_array(const ts::JsonValue* value) {
     return result;
 }
 
-${assetTransmission || gaussianSplats ? `
+${chainsSceneSetup ? `
 /**
  * Appends one feature's scene wiring to the container's.
  *
@@ -2451,7 +2455,11 @@ ${sourceTextureReads ? `        retain_source_albedo(materials.back(), index);` 
         return world[index];
     };
 
-    AssetRecord asset;
+    AssetRecord asset;${interactivity ? `
+    // KHR_interactivity's node-to-meshes table, filled by the mesh walk
+    // below; the rest of the asset's tables join it once the document is
+    // loaded (see the scene-setup chain).
+    asset.node_meshes.resize(node_json.size());` : ""}
     EnvironmentState image_based_environment;
     if (load_image_based_environment(
             image_based_environment,
@@ -3569,7 +3577,10 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                         skin_index,
                     });
             }
-            asset.meshes.push_back(MeshHandle{mesh_record_index});
+            asset.meshes.push_back(MeshHandle{mesh_record_index});${interactivity ? `
+            // mesh._gltfNodeIndex, in the same node-then-primitive walk.
+            asset.mesh_nodes.push_back(node_index);
+            asset.node_meshes[node_index].push_back(MeshHandle{mesh_record_index});` : ""}
         }
     }
     if (animated) {
@@ -5542,10 +5553,85 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             "no animations.");
     }` : ""}
     if (asset.meshes.empty()${gaussianSplats ? " && asset.gaussian_splats.empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
-${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}
+${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${interactivity ? `
+    // KHR_interactivity, selected as the pinned registry selects it: by the
+    // extension's presence (gltf-feature-registry.ts). The graphs generation
+    // parsed for this packaged file attach to the scene the container is
+    // added to (_sceneSetup), and the tables their accessors resolve
+    // against are the loaded document's (buildMaterialMap): the glTF
+    // material index each pointer names, the node children the visibility
+    // cascade walks, and the per-node visibility flag as the extension
+    // left it.
+    const ts::JsonValue* const extensions_value = optional(document, "extensions");
+    if (extensions_value && optional(extensions_value->as_object(), "KHR_interactivity")) {
+        asset.materials = materials;
+        asset.node_children.resize(node_json.size());
+        for (std::size_t index = 0; index < node_json.size(); ++index) {
+            for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children")) {
+                asset.node_children[index].push_back(unsigned_value(child));
+            }
+        }
+        ${nodeVisibility ? "asset.node_visible = node_visible;" : "asset.node_visible.assign(node_json.size(), true);"}
+        const std::string asset_name = path.substr(path.find_last_of("/\\\\") + 1);
+        chain_scene_setup(
+            asset,
+            [self = AssetHandle{static_cast<std::uint32_t>(engine.assets.size())}, asset_name](Scene& scene) {
+            attach_flow_graphs(scene, self, asset_name);
+        });
+    }` : ""}
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }
-${lowered.boneControlEntryPoints}} // namespace bbl
+${lowered.boneControlEntryPoints}${interactivity ? `
+// KHR_interactivity's accessors over this asset's tables, the pin's
+// path-converter.ts resolved against the loaded document: resolveVisibility
+// reads \`node.visible !== false\` off the per-node flag, and writes through
+// setSubtreeVisible (scene/visibility.ts) -- the cascade over the node's
+// subtree, then the epoch bump that rebuilds the draw lists when a flag
+// actually moved.
+bool gltf_node_visible(const Engine& engine, AssetHandle asset_handle, std::size_t node) {
+    const AssetRecord& asset = engine.assets.at(asset_handle.value);
+    return node < asset.node_visible.size() ? asset.node_visible[node] : true;
+}
+
+namespace {
+
+bool gltf_visibility_cascade(Engine& engine, AssetRecord& asset, std::size_t node, bool visible) {
+    bool changed = asset.node_visible[node] != visible;
+    asset.node_visible[node] = visible;
+    for (const MeshHandle mesh : asset.node_meshes[node]) {
+        engine.meshes[mesh.value].visible = visible;
+    }
+    for (const std::size_t child : asset.node_children[node]) {
+        if (gltf_visibility_cascade(engine, asset, child, visible)) changed = true;
+    }
+    return changed;
+}
+
+} // namespace
+
+void set_gltf_node_visible(Engine& engine, AssetHandle asset_handle, std::size_t node, bool visible) {
+    AssetRecord& asset = engine.assets.at(asset_handle.value);
+    if (node >= asset.node_visible.size()) {
+        throw std::runtime_error("KHR_interactivity visibility pointer names a node the asset lacks.");
+    }
+    if (gltf_visibility_cascade(engine, asset, node, visible)) ++engine.draw_list_epoch;
+}
+
+// resolveMaterialUvTransform over the glTF material index: the base-colour
+// slot of the KHR_texture_transform writer (the slot resolver above maps a
+// pointer's slot to the record's per-slot transform; base colour is the
+// one the reached graphs name). The reads take the transform's own lanes
+// (\`tex?.uScale ?? 1\`, \`tex?.uOffset ?? 0\` are the record's identity
+// defaults); a write is picked up by the next draw, which rebuilds the
+// material's UV matrix from the record.
+TextureTransform& gltf_base_color_transform(Engine& engine, AssetHandle asset_handle, std::size_t material) {
+    const AssetRecord& asset = engine.assets.at(asset_handle.value);
+    if (material >= asset.materials.size()) {
+        throw std::runtime_error("KHR_interactivity material pointer names a material the asset lacks.");
+    }
+    return engine.materials.at(asset.materials[material].value).base_color_transform;
+}
+` : ""}} // namespace bbl
 `;
 }

@@ -72,6 +72,28 @@ struct Vec3d {
     double z = 0.0;
 };
 
+// The other positional records generated units keep at JavaScript number
+// precision: a node-particle system's 2D lanes and colour, a flow graph's
+// vector sockets.
+struct Vec2d {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+struct Vec4d {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    double w = 0.0;
+};
+
+struct Color4d {
+    double r = 0.0;
+    double g = 0.0;
+    double b = 0.0;
+    double a = 0.0;
+};
+
 struct Vec2 {
     float x = 0.0f;
     float y = 0.0f;
@@ -3711,6 +3733,18 @@ struct AssetRecord {
         animation_tick_clips;
     std::function<void(Scene&)> scene_setup;
     /**
+     * `KHR_interactivity`'s view of the file, filled only when the asset
+     * carries graphs: `mesh._gltfNodeIndex` per entry of `meshes`, each
+     * node's own meshes and children, the glTF material index the pointer
+     * accessors name, and the per-node visibility flag the pinned
+     * extension materialized and the graph's setter cascades.
+     */
+    std::vector<std::size_t> mesh_nodes;
+    std::vector<std::vector<MeshHandle>> node_meshes;
+    std::vector<std::vector<std::size_t>> node_children;
+    std::vector<MaterialHandle> materials;
+    std::vector<bool> node_visible;
+    /**
      * `AssetContainer._gaussianSplats`: the clouds the pinned
      * `KHR_gaussian_splatting` feature contributed, one per GS primitive, in
      * document order. The loader builds them; `scene_setup` registers them,
@@ -4603,7 +4637,13 @@ struct Engine {
      * empty and the pick reports a miss rather than shading something
      * plausible.
      */
-    std::function<PickingInfo(GpuPickerHandle, double, double)> pick_hook;
+    /**
+     * The pin's `pickAsync` `filter` option rides the request: the shared
+     * candidate collector asks it per mesh and both backends skip their
+     * pick sources under it (`pickAsyncImpl`). Null is an unfiltered pick.
+     */
+    using PickFilter = std::function<bool(MeshHandle)>;
+    std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
@@ -5057,6 +5097,9 @@ struct SceneDeferredBuilder {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
 };
 
+/** One attached `KHR_interactivity` graph; the generated flow-graph unit defines it. */
+struct FlowGraphRuntime;
+
 /** The mutable state shared by every native copy of one SceneContext. */
 struct SceneState {
     Engine* engine = nullptr;
@@ -5104,6 +5147,16 @@ struct SceneState {
     ClusteredLightContainerHandle clustered_lights{};
     SnapshotList<js::Callback<void(float)>> before_render;
     std::vector<js::Callback<void()>> disposables;
+    /**
+     * `scene._flowGraphs` and the coordinator/pointer-bridge state the
+     * pin hangs beside it: the attached graphs, whether the per-frame
+     * drive is registered, whether `enableFlowGraphPointerPicking` armed
+     * the bridge, and the bridge's own teardown while it is installed.
+     */
+    std::vector<std::shared_ptr<FlowGraphRuntime>> flow_graphs;
+    bool flow_graph_coordinator = false;
+    bool flow_graph_pointer_refresh = false;
+    std::function<void()> flow_graph_pointer_cleanup;
     std::vector<js::Callback<void(float)>> animation_seekers;
     /**
      * Whether this scene already contributed the seeker that reaches the
@@ -7345,6 +7398,31 @@ PickingInfo gpu_pick(
     GpuPickerHandle picker,
     double x,
     double y);
+/** The same pick under the pin's `filter` option; see `Engine::PickFilter`. */
+PickingInfo gpu_pick(
+    Engine& engine,
+    GpuPickerHandle picker,
+    double x,
+    double y,
+    const Engine::PickFilter& filter);
+/**
+ * `KHR_interactivity` (the generated flow-graph unit). The loader chains
+ * `attach_flow_graphs` onto an interactive asset's scene setup, and
+ * `enableFlowGraphPointerPicking` arms the canvas bridge that turns a
+ * primary-button tap into a filtered pick and an `event/onSelect`.
+ */
+void attach_flow_graphs(Scene& scene, AssetHandle asset, const std::string& asset_name);
+void enable_flow_graph_pointer_picking(Scene& scene);
+/**
+ * An interactive asset's node and material accessors, owned by the
+ * generated glTF loader beside the tables they read: a node's visibility
+ * through the pin's subtree cascade (`scene/visibility.ts`
+ * `setSubtreeVisible`), and the base-colour texture transform a
+ * `KHR_texture_transform` pointer reads and writes (`path-converter.ts`).
+ */
+bool gltf_node_visible(const Engine& engine, AssetHandle asset, std::size_t node);
+void set_gltf_node_visible(Engine& engine, AssetHandle asset, std::size_t node, bool visible);
+TextureTransform& gltf_base_color_transform(Engine& engine, AssetHandle asset, std::size_t material);
 /**
  * `enableDetailedPicking(picker)`. Emitted with the detailed half; every
  * later pick on this picker draws the third attachment.

@@ -184,6 +184,21 @@ ${cloud}
         ]) {
             this.context.functionDeclaration(modulePath, name);
         }
+        // The `filter` option's two arms, restated by the shared candidate
+        // collector and both backends' pick passes: a mesh the predicate
+        // refuses neither answers nor occludes, and a filtered pick takes
+        // no registered pick source.
+        const impl = this.context.functionDeclaration(modulePath, "pickAsyncImpl").declaration;
+        this.context.expectShapeCount(
+            impl,
+            "mesh.pickable !== false && (!pickFilter || pickFilter(mesh))",
+            "pick candidate under the filter",
+        );
+        this.context.expectShapeCount(
+            impl,
+            "!pickFilter && scene._pickSources.length > 0",
+            "pick sources skipped under a filter",
+        );
         const mat4Invert = lowerMat4InvertCpp(this.context);
         const unprojectPoint = this.lowerUnprojectPoint();
         return {
@@ -248,17 +263,43 @@ ${detailed || pointerDrag ? this.lowerPickRay() : ""}
 // renderer installed its hook -- a scene that picks without a running
 // loop has nothing to read, and reporting a miss is what upstream does
 // when the scene has no camera.
+namespace {
+
+PickingInfo gpu_pick_through_hook(
+    Engine& engine,
+    GpuPickerHandle picker,
+    double x,
+    double y,
+    const Engine::PickFilter* filter) {
+    const GpuPickerRecord& record = picker_record(engine, picker);
+    PickingInfo info = record.disposed || !engine.pick_hook
+        ? PickingInfo{}
+        : engine.pick_hook(picker, x, y, filter);
+    info.bind_engine(engine);
+${detailed ? DETAILED_CONTINUATION : ""}    return info;
+}
+
+} // namespace
+
 PickingInfo gpu_pick(
     Engine& engine,
     GpuPickerHandle picker,
     double x,
     double y) {
-    const GpuPickerRecord& record = picker_record(engine, picker);
-    PickingInfo info = record.disposed || !engine.pick_hook
-        ? PickingInfo{}
-        : engine.pick_hook(picker, x, y);
-    info.bind_engine(engine);
-${detailed ? DETAILED_CONTINUATION : ""}    return info;
+    return gpu_pick_through_hook(engine, picker, x, y, nullptr);
+}
+
+// The pin's \`options.filter\` arm: the predicate rides the pick request,
+// applied once while the candidate list is built so ids and resolution
+// agree, and a filtered pick takes no pick source (\`pickAsyncImpl\` skips
+// \`_pickSources\` under one).
+PickingInfo gpu_pick(
+    Engine& engine,
+    GpuPickerHandle picker,
+    double x,
+    double y,
+    const Engine::PickFilter& filter) {
+    return gpu_pick_through_hook(engine, picker, x, y, &filter);
 }
 
 // The name a pick resolved to, read where the scene asks for it rather

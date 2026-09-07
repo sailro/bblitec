@@ -1971,7 +1971,8 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
     std::size_t gpu_mesh_count,
     const HasGeometry& has_geometry,
     std::vector<PickRange>& ranges,
-    std::uint32_t& next_id) {
+    std::uint32_t& next_id,
+    const Engine::PickFilter* filter = nullptr) {
     std::vector<PickMeshCandidate> candidates;
     for (std::size_t item_index = 0;
          item_index < render_plan.items.size() &&
@@ -1984,6 +1985,11 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
         // predicate is generated, and it reads the live record rather than
         // the plan's snapshot of it.
         if (!upstream::pick_candidate(engine.meshes[handle.value])) {
+            continue;
+        }
+        // The pin's `pickFilter` arm: a mesh the supplied filter refuses
+        // neither answers nor occludes, and consumes no id.
+        if (filter && !(*filter)(handle)) {
             continue;
         }
         PickMeshCandidate candidate;

@@ -2604,6 +2604,13 @@ export type Feature =
    * `renderer:post-process`.
    */
   | "renderer:screen-space"
+  /**
+   * A glTF asset carries `KHR_interactivity` graphs: the pin's flow-graph
+   * runtime, lowered per graph from its block definitions, plus the scene
+   * coordinator and the pointer bridge `enableFlowGraphPointerPicking`
+   * installs. Reached by the asset, as the pin's loader feature is.
+   */
+  | "flow-graph:interactivity"
   | "renderer:high-precision-matrix"
   | "renderer:floating-origin"
   /**

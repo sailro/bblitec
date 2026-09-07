@@ -86,6 +86,11 @@ import {
     gltfHasCompressedImages,
     gltfHasGaussianSplats,
 } from "./asset-specializer.js";
+import { gltfInteractivity, parseGlbJson } from "./gltf-document.js";
+import {
+    type FlowGraphAssetPrograms,
+    parseFlowGraphs,
+} from "./pinned-flow-graph.js";
 import {
     babylonLights,
     reachedDiffuseUv2,
@@ -709,6 +714,26 @@ async function main(): Promise<void> {
     const splatSogRotation = splatContainerRotations.get("sog");
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
+    // KHR_interactivity is the asset's feature, as the pinned loader's
+    // document predicate makes it: each interactive asset joins the
+    // feature in the per-asset join below, where its graphs are parsed
+    // through the pin; the adaptation the attach records is stated here.
+    const flowGraphs: FlowGraphAssetPrograms[] = [];
+    if (specializationFeatures.interactivity) {
+        result.manifest.adaptations.push({
+            id: "flow-graph-attach-at-add",
+            category: "async",
+            sourceSemantics:
+                "addToScene stores a promise of the interactivity runtimes on the container; the graphs attach when it resolves and start on the next frame's tick, and a pointer pick dispatches its event after the GPU readback resolves.",
+            nativeSemantics:
+                "The graphs attach inside addToScene, start on the first before-render tick as upstream does, and a tap's pick reads back synchronously so its cascade runs inside the release handler. Each block's body is evaluated over the parsed graph at generation and emitted as C++; the runtime plumbing is restated over the static graph with its pinned bodies asserted.",
+            risk: "low",
+            validation: [
+                "the calculator demo's onStart cascade at the frame-180 golden on both backends",
+                "a replayed button tap moving the display digits on both backends",
+            ],
+        });
+    }
     if (specializationFeatures.materialExtensionPayload) {
         result.manifest.adaptations.push({
             id: "packaged-gltf-material-extension-initialization",
@@ -944,6 +969,20 @@ async function main(): Promise<void> {
         // emits.
         if (gltfHasCompressedImages(assetPath)) {
             assetFeatures.push("texture:compressed" as Feature);
+        }
+        // KHR_interactivity: the pinned registry selects the feature by the
+        // extension's presence, the graphs it declares are parsed through
+        // the pin per packaged file, and the flow-graph lowering emits
+        // them. A scene that never reads the container's runtimes still
+        // runs them, so the asset joins the feature the way its punctual
+        // lights do.
+        const document = parseGlbJson(assetPath);
+        if (gltfInteractivity(document) !== undefined) {
+            flowGraphs.push({
+                asset: asset.output,
+                graphs: await parseFlowGraphs(asset.output, document),
+            });
+            assetFeatures.push("flow-graph:interactivity" as Feature);
         }
         for (const feature of assetFeatures) {
             if (!result.manifest.features.includes(feature)) {
@@ -1387,6 +1426,8 @@ async function main(): Promise<void> {
         nodeVisibility: specializationFeatures.nodeVisibility ||
             result.manifest.features.includes("mesh:visible"),
         gltfNodeVisibility: specializationFeatures.nodeVisibility,
+        gltfInteractivity: specializationFeatures.interactivity,
+        ...(flowGraphs.length > 0 ? { flowGraphs } : {}),
         spriteCustomShaders: result.manifest.spriteCustomShaders,
         effects: result.manifest.effects,
         ...(esmShadows.length > 0 ? { esmShadows } : {}),

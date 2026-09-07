@@ -8567,7 +8567,7 @@ SceneRun run_gpu_engine(Engine& engine) {
              ,
              &billboard_pick
 #endif
-        ]([[maybe_unused]] GpuPickerHandle picker, double x, double y) -> PickingInfo {
+        ]([[maybe_unused]] GpuPickerHandle picker, double x, double y, const Engine::PickFilter* filter) -> PickingInfo {
             const auto layer = picker_scene_index(engine, picker, active_registered_scenes);
             if (!layer) return PickingInfo{};
             const Scene& scene = *active_registered_scenes[*layer];
@@ -8655,7 +8655,10 @@ SceneRun run_gpu_engine(Engine& engine) {
                         return gpu.vertices && gpu.indices;
                     },
                     ranges,
-                    next_id);
+                    next_id,
+                    filter);
+            // `pickAsyncImpl` takes no pick source under a supplied filter.
+            [[maybe_unused]] const bool pick_sources = filter == nullptr;
 
 #if BBLITE_DEFORM_PICKING
             GpuBufferUploadBatch pose_uploads(state.device);
@@ -8916,6 +8919,7 @@ SceneRun run_gpu_engine(Engine& engine) {
             }
 #if BBLITE_HAS_SPLATS
             for (const SplatPass& splat : state.splat_passes) {
+                if (!pick_sources) break;
                 record_cloud_pick_draw(
                     command,
                     pass,
@@ -8938,16 +8942,18 @@ SceneRun run_gpu_engine(Engine& engine) {
 #if BBLITE_HAS_BILLBOARDS
             // The last contributor in the pin's own order: meshes own
             // 1..M, then each registered pick source's contiguous range.
-            billboard_pick.record(
-                command,
-                pass,
-                engine,
-                scene,
-                upstream::build_view_matrix(
-                    upstream::camera_world_matrix(*camera_record)),
-                scene_uniforms,
-                ranges,
-                next_id);
+            if (pick_sources) {
+                billboard_pick.record(
+                    command,
+                    pass,
+                    engine,
+                    scene,
+                    upstream::build_view_matrix(
+                        upstream::camera_world_matrix(*camera_record)),
+                    scene_uniforms,
+                    ranges,
+                    next_id);
+            }
 #endif
             SDL_EndGPURenderPass(pass);
 

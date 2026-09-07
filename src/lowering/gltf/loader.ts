@@ -94,6 +94,13 @@ export interface GltfLoaderOptions {
     /** The scene writes an AnimationGroup's speedRatio. */
     animationSpeedRatio?: boolean;
     nodeVisibility?: boolean;
+    /**
+     * An asset carries `KHR_interactivity` graphs, so the loader records
+     * the per-node tables the generated flow graph's accessors and pointer
+     * bridge read, and chains the container's flow-graph attach onto its
+     * scene setup.
+     */
+    interactivity?: boolean;
     animationPointer?: boolean;
     animatedWorldBounds?: boolean;
     animationPointerMaterials?: boolean;

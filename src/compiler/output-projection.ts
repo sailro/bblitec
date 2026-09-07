@@ -235,6 +235,7 @@ export const featureSources: Record<Feature, string[]> = {
     "renderer:geometry-output": [],
     "renderer:post-process": [],
     "renderer:screen-space": [],
+    "flow-graph:interactivity": [],
     "renderer:high-precision-matrix": [],
     "renderer:floating-origin": [],
     // Dialogs, selected-path reads, and atomic downloads are isolated in

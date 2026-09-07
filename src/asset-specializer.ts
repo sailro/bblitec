@@ -10,6 +10,7 @@ import {
     primitiveRecords,
     asString,
     asStrings,
+    gltfInteractivity,
     parseGlbJson,
     selectedVariantIndex,
     variantMaterialIndex,
@@ -52,6 +53,8 @@ interface GltfSpecialization {
         gaussianSplats: boolean;
         /** Packaging transcoded this asset's KHR_texture_basisu images. */
         compressedImages: boolean;
+        /** The document carries the `KHR_interactivity` extension, the pin's feature predicate. */
+        interactivity: boolean;
     };
 }
 
@@ -195,6 +198,14 @@ const supportedExtensions = new Set<string>([
     "EXT_lights_image_based",
     "KHR_node_visibility",
     "KHR_animation_pointer",
+    // The pin's loader selects its interactivity feature by the document
+    // predicate `extensions.KHR_interactivity`, so the registry map below
+    // never names it; generation parses the graphs through the pin and
+    // the flow-graph lowering emits them (src/pinned-flow-graph.ts).
+    "KHR_interactivity",
+    // No loader feature reads it on either side; the flow graph's pointer
+    // accessors are the only consumer, and they keep their own flag.
+    "KHR_node_selectability",
     // The mappings only take effect through `selectVariant`; until a scene
     // selects, the pin reassigns nothing and both sides draw
     // `primitive.material`.
@@ -259,6 +270,16 @@ function refuseUnsupportedGltf(
     extensionsUsed: string[],
     extensionModules: Map<string, string>,
 ): void {
+    // The same feature also accepts the Babylon editor's serialized graphs,
+    // which this port does not lower; the pin selects it by the document
+    // predicate rather than by an extension name, so it is refused here.
+    if (asObject(document.extensions)?.["BABYLON_flow_graph"] !== undefined) {
+        throw new Error(
+            `${assetName}: BABYLON_flow_graph editor JSON is run by the ` +
+                `pinned loader (flow-graph/editor-serialization.ts) and not ` +
+                `lowered by this port.`,
+        );
+    }
     for (const extension of extensionsUsed) {
         if (supportedExtensions.has(extension)) continue;
         if (metadataExtensions.has(extension)) continue;
@@ -687,6 +708,7 @@ export function specializeGltf(
             dispersionReached,
             gaussianSplats: hasGaussianSplats(document),
             compressedImages: hasCompressedImages(document),
+            interactivity: gltfInteractivity(document) !== undefined,
         },
     };
 }
@@ -782,6 +804,12 @@ export interface AssetSpecializationFeatures {
      * workflow replacement.
      */
     gaussianSplats: boolean;
+    /**
+     * Any asset carries `KHR_interactivity` graphs. The asset alone decides
+     * here too: the pinned loader feature runs the graphs whenever the
+     * container is added to a scene.
+     */
+    interactivity: boolean;
 }
 
 export function emitAssetSpecializations(
@@ -816,6 +844,7 @@ export function emitAssetSpecializations(
             eightInfluenceSkinning: false,
             gaussianSplats: false,
             compressedImages: false,
+            interactivity: false,
         };
     }
     let nextDrawId = 1;
@@ -935,6 +964,9 @@ export function emitAssetSpecializations(
         ),
         gaussianSplats: specializations.some(
             (specialization) => specialization.features.gaussianSplats,
+        ),
+        interactivity: specializations.some(
+            (specialization) => specialization.features.interactivity,
         ),
     };
 }
