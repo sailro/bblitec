@@ -57,7 +57,7 @@ test("TAA observes presentation identity separately from history order and refus
     assert.ok(result.manifest.features.includes("renderer:post-process"));
     for (const hasTarget of [true, false]) {
         const composite = await composeComposite({ ...manifest, hasTarget });
-        assert.deepEqual(composite.taa, { factor: 0.05, disableOnCameraMove: true });
+        assert.deepEqual(composite.taa, { factor: 0.05, disableOnCameraMove: true, samples: 8 });
         assert.equal(composite.outputPass, 1);
         assert.deepEqual(composite.passes.map((pass) => pass.name), [
             "bblitec-composite-blend", "bblitec-composite-present", "bblitec-composite-history-update",

@@ -1340,6 +1340,8 @@ struct TaaPostProcessState {
     bool first_update;
     double last_camera_version;
     double halton_index;
+    std::vector<float> halton{};
+    std::array<float, 16> jitter_scratch{};
 };
 
 /**
@@ -1597,6 +1599,24 @@ struct RenderTargetRecord {
     ScaleRounding scale_rounding = ScaleRounding::floor;
 };
 
+/** The pin's mixed cache tuple, named by its seven identity/value inputs. */
+struct SceneUniformCache {
+    const void* camera = nullptr;
+    std::uint64_t fog = 0;
+    double camera_key = 0.0;
+    double aspect = 0.0;
+    double exposure = 0.0;
+    double contrast = 0.0;
+    std::uint64_t environment = 0;
+};
+
+/** CPU storage survives render-task GPU resource rebuilds. */
+struct PersistentSceneUniforms {
+    SceneUniformCache cache{};
+    std::vector<float> clean{};
+    std::vector<float> drawn{};
+};
+
 struct FrameTaskRecord {
     FrameTaskKind kind = FrameTaskKind::render;
     RenderTaskOptions render;
@@ -1611,6 +1631,10 @@ struct FrameTaskRecord {
     PostProcessTaskOptions post_process;
     EffectTaskOptions effect;
     ScreenSpaceTaskOptions screen_space;
+    /** The task retains the scene passed to its factory, independent of registration. */
+    std::shared_ptr<SceneState> source_scene{};
+    /** Allocated only for a source whose retained UBO is reached by TAA. */
+    std::shared_ptr<PersistentSceneUniforms> scene_uniforms{};
 };
 
 struct RenderTargetTexture {

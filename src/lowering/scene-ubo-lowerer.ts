@@ -154,4 +154,38 @@ ${this.writeScene()}
 } // namespace bbl::upstream
 `;
     }
+
+    public storageHeader(): string {
+        const { file, declaration } = this.context.functionDeclaration(SCENE_MODULE, "createRenderTask");
+        const task = this.context.objectInitializer(declaration, "task");
+        const clean = this.context.propertyInitializer(task, "_suData");
+        const cache = this.context.propertyInitializer(task, "_sceneUboCacheKey");
+        if (!ts.isNewExpression(clean) || !ts.isIdentifier(clean.expression) || clean.expression.text !== "F32" ||
+            clean.arguments?.length !== 1 || !ts.isArrayLiteralExpression(cache) || cache.elements.length !== 0) {
+            this.context.contractError(task, "Source scene UBO scratch/cache initialization changed.");
+        }
+        const length = this.context.numericValue(clean.arguments[0]!, file);
+        const { declaration: taaFactory } = this.context.functionDeclaration(TAA_MODULE, "createTaaPostProcessTask");
+        const taa = this.context.objectInitializer(taaFactory, "task");
+        if (!this.context.expressionMatchesShape(this.context.propertyInitializer(taa, "_halton"), "generateHalton(samples)") ||
+            !this.context.expressionMatchesShape(this.context.propertyInitializer(taa, "_jitterScratch"), "new F32(16)")) {
+            this.context.contractError(taa, "TAA Halton/scratch initialization changed.");
+        }
+        return `// ${this.context.provenance(SCENE_MODULE, "createRenderTask", "task-owned scene UBO storage")}
+namespace bbl::upstream {
+inline std::shared_ptr<PersistentSceneUniforms> create_persistent_scene_uniforms() {
+    // The pin's cache starts empty. A native null camera cannot match the
+    // first non-null source camera; the writer returns before comparing null.
+    // Thus the other unwritten key lanes need no invented undefined value.
+    return std::make_shared<PersistentSceneUniforms>(PersistentSceneUniforms{
+        {}, std::vector<float>(${length}u), std::vector<float>(${length}u)});
+}
+
+inline void initialize_taa_jitter(TaaPostProcessState& state, double samples) {
+    state.halton = generate_taa_halton(samples);
+    state.jitter_scratch = {};
+}
+} // namespace bbl::upstream
+`;
+    }
 }

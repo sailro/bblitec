@@ -396,7 +396,7 @@ TaskHandle append_task(Engine& engine, FrameTaskRecord task) {
 
 TaskHandle create_render_task(
     Engine& engine,
-    Scene&,
+    Scene& scene,
     RenderTaskOptions options) {
     if (options.target.value >= engine.render_targets.size()) {
         throw std::runtime_error("Render task target is invalid.");
@@ -404,6 +404,7 @@ TaskHandle create_render_task(
     FrameTaskRecord task;
     task.kind = FrameTaskKind::render;
     task.render = std::move(options);
+    task.source_scene = scene.state;
     return append_task(engine, std::move(task));
 }
 

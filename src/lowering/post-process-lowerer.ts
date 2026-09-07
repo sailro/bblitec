@@ -24,6 +24,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { TaaPostProcessLowerer } from "./taa-post-process-lowerer.js";
+import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
 
 const TASK_MODULE = "src/frame-graph/post-process-task.ts";
 
@@ -534,6 +535,7 @@ export class PostProcessLowerer {
         if (lifecycleHeaders.size > 1) {
             throw new Error("Pinned TAA composites disagree on their retained child pass layout.");
         }
+        const sceneUbo = lifecycleHeaders.size ? new SceneUboLowerer(this.context) : undefined;
         return `#pragma once
 
 #include <bblite/runtime.hpp>
@@ -572,7 +574,8 @@ void write_post_process_uniforms(
 
 } // namespace bbl::upstream
 ${this.compositeDeclarations()}
-${[...lifecycleHeaders].join("\n")}`;
+${[...lifecycleHeaders].join("\n")}
+${sceneUbo ? `#define BBLITE_HAS_TAA 1\n${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}` : ""}`;
     }
 
     /** The pin's own switch, as the emitted table's case arms. */
@@ -909,7 +912,13 @@ ${passes.join(",\n")},
     options.output_pass = ${composite.outputPass}u;
     options.source_tasks = std::move(inputs.source_tasks);
 ${composite.taa ? `    options.taa = std::make_shared<TaaPostProcessState>(
-        upstream::create_taa_post_process_state(${dvalue(composite.taa.factor)}, ${composite.taa.disableOnCameraMove}));\n` : ""}    return create_post_process_task(engine, std::move(options));
+        upstream::create_taa_post_process_state(${dvalue(composite.taa.factor)}, ${composite.taa.disableOnCameraMove}));
+    upstream::initialize_taa_jitter(*options.taa, ${dvalue(composite.taa.samples)});
+    FrameTaskRecord& source = engine.frame_tasks.at(options.source_tasks.at(0).value);
+    if (source.kind != FrameTaskKind::render || !source.source_scene) {
+        throw std::runtime_error("TAA source must retain its original render-task scene.");
+    }
+    if (!source.scene_uniforms) source.scene_uniforms = upstream::create_persistent_scene_uniforms();\n` : ""}    return create_post_process_task(engine, std::move(options));
 }`;
     }
 
