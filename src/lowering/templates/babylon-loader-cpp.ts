@@ -216,8 +216,18 @@ MaterialHandle load_material(
     material.standard_material = true;
     material.diffuse_color =
         color3_or(source, "diffuse", Color3{1.0f, 1.0f, 1.0f});
+    // loadBabylon copies RGB into a fresh array; exports may include an
+    // unused fourth channel. Null/absent colors keep the factory default.
+    if (const auto diffuse = source.find("diffuse");
+        diffuse != source.end() && !diffuse->is_null()) {
+        if (!diffuse->is_array() || diffuse->size() < 3 ||
+            !(*diffuse)[0].is_number() || !(*diffuse)[1].is_number() || !(*diffuse)[2].is_number()) {
+            throw std::runtime_error("Babylon material diffuse requires three numeric channels.");
+        }
+    }
     material.source_diffuse_color = std::make_shared<std::vector<double>>(
-        source.value("diffuse", std::vector<double>{1, 1, 1}));
+        std::initializer_list<double>{double_at(source, "diffuse", 0, 1),
+            double_at(source, "diffuse", 1, 1), double_at(source, "diffuse", 2, 1)});
     material.specular_color =
         color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});
     material.emissive_factor =
