@@ -152,6 +152,17 @@ marker positions/scales, and first-ready/canonical/idle state. The separate
 immediately by picks without a frame between them; process and measure it as
 an ad-hoc scene on both backends.
 
+Scene121's row updates need a complete buffer check alongside image parity:
+
+```powershell
+node tools/check-scene121-input.mjs native/build-scene121-release/bblite_native.exe generated/scene121 reference/scene121/splat-observations.json reference/scene121/babylon-lite-golden.png
+```
+
+The checker compares all retained source bytes, update version and bounds at
+first ready, the canonical frame and a later idle frame. Camera input must
+change the rendered splats while preserving that state. It uses the unchanged
+source's raw SPLAT URL; scene120's similarly named converted asset differs.
+
 ## Why each tool still exists
 
 The ladder separates image comparison, captured state, asset composition,
