@@ -17874,7 +17874,7 @@ test("preserves nested one-shot animation-frame continuations", () => {
     `);
 
     assert.equal(
-        (result.cpp.match(/animation_frame_once_callbacks\.push_back/g) ?? [])
+        (result.cpp.match(/bbl::request_animation_frame\(/g) ?? [])
             .length,
         2,
     );

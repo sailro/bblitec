@@ -108,6 +108,20 @@ test("an inlined numeric result cannot fold a written parameter to its argument"
     }
 });
 
+test("inline return inference does not fold a locally defined Math method", () => {
+    const result = compileSource(scene(`
+        const data = new Float32Array([4]);
+        const Math = { round: (_value: number): number => data[0]! };
+        const steps = (engine: EngineContext, value: number): number => Math.round(value);
+        const count = steps(engine, 3);
+        for (let index = 1; index <= count; index++) createBox(engine, { size: index });
+    `));
+    // The authored bound is 4. It is read from mutable native storage, so
+    // folding the spelling Math.round(3) into three construction rows is wrong.
+    assert.match(result.cpp, /for \(; \w+ <= v_count;/);
+    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
+});
+
 const nativeTools = optionalNativeFixtureTools();
 
 const assignmentControls = [

@@ -66,6 +66,13 @@ const program = scene(`${provider}
     animateParticleSystem(system, 1);
     if (calls !== 4) throw new Error("stopped system skipped the provider");
     if (system.buffer.alive !== 0 || system.buffer.capacity !== 640) throw new Error("native buffer reads differ");
+    {
+        const Math: { random: () => number } = { random: () => 0.25 };
+        const localSaved = Math.random;
+        if (localSaved() !== 0.25 || Math.random() !== 0.25) {
+            throw new Error("own random property used the global override");
+        }
+    }
     Math.random = original;
     if (Math.random() !== 0.6270739405881613) throw new Error("built-in random state was consumed by an override");
 `, `function makeRandom(): () => number {
@@ -86,6 +93,15 @@ test("provider option aliases retain static options and source-ordered native ca
     assert.deepEqual(result.nodeParticles!.buffers, []);
     assert.match(result.cpp, /sample_node_particle_emitter/);
     assert.match(result.cpp, /set_random_override/);
+});
+
+test("an own random assignment cannot install the engine's global override", () => {
+    assert.throws(() => compileSource(scene(`${provider}
+        {
+            const Math = { random: (): number => 0.25 };
+            Math.random = (): number => 0.5;
+        }
+    `)), /Unsupported property assignment 'Math.random'/);
 });
 
 test("provider-backed systems refuse bridges and composition that would freeze native state", () => {

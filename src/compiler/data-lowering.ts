@@ -136,6 +136,7 @@ export function isNeverResized(name: ts.Identifier): boolean {
 }
 
 export interface DataLoweringContext {
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     useNativeValue(value: Value): void;
     readonly checker: ts.TypeChecker;
     lookup(identifier: ts.Identifier): Value;

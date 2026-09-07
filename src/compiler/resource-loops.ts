@@ -450,6 +450,7 @@ export function parameterizedResourceLoop(
     };
     const staticContext: PositiveIntegerContext = {
         resolveStaticExpression: resolve,
+        isDefaultLibraryIdentifier: (identifier) => context.isDefaultLibraryIdentifier(identifier),
         lookup: (identifier) => context.lookup(identifier),
         lookupOptional: (identifier) =>
             indices.has(context.symbols.valueSymbol(identifier)!)

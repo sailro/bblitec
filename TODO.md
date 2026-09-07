@@ -24,6 +24,10 @@ implementation, follow the sizing/capture workflow in
   this common contract.
 - [ ] Extend discriminated unions, numeric-literal narrowing and runtime
   definitely-assigned locals across try/finally beyond generation-only bindings.
+- [ ] Lower finally with explicit exception completion so a cleanup exception
+  replaces an active body exception. The existing C++ scope guard can terminate
+  on that double throw; engine-spanning finally therefore refuses cleanup calls,
+  accessors and explicit throws until their exception behavior is represented.
 - [ ] Carry runtime numeric width on values rather than in already-rendered
   C++ text; use the same sink conversion for inline returns and tuple lanes.
   Invalidate static parameter metadata after assignment. Compare generated

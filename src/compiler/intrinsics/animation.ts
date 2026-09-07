@@ -19,6 +19,7 @@ interface CompiledAnimationClip {
 
 export interface AnimationIntrinsicContext
     extends IntrinsicCallContext {
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     compilePropertyAnimationClip(
         nameExpression: ts.Expression,
         tracksExpression: ts.Expression,

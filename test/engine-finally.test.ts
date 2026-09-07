@@ -34,6 +34,18 @@ test("finally blocks explicitly refuse an additional suspended frame boundary", 
     )), /finally block spanning startEngine cannot also span a later frame yield/);
 });
 
+test("engine-spanning finally refuses direct and indirect cleanup exceptions", () => {
+    for (const cleanup of [
+        'throw new Error("cleanup");',
+        'const fail = (): void => { throw new Error("cleanup"); }; fail();',
+        'const fail = (): number => { throw new Error("cleanup"); }; const value = { get current(): number { return fail(); } }; cleanups += value.current;',
+        'const fail = (): number => { throw new Error("cleanup"); }; const value = { get current(): number { return fail(); } }; const key = "current"; cleanups += value[key];',
+    ]) {
+        assert.throws(() => compileSource(source.replace("cleanups++;", cleanup)),
+            /finally block spanning startEngine requires non-throwing cleanup/);
+    }
+});
+
 const nativeTools = optionalNativeFixtureTools(false);
 test("native continuation runs finally at completion and scope guards run only once", { skip: !nativeTools }, () => {
     const output = resolve("artifacts/engine-finally-check");

@@ -25,6 +25,7 @@ import { transpileForBrowser } from "../typescript-transpile.js";
 import type { DataType } from "./data-types.js";
 
 export interface DeterministicRandomContext {
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     readonly reachedNodeParticles: CompiledNodeParticles;
     /** The native name a source identifier is bound to in this scope. */
     lookup(identifier: ts.Identifier): Value;
@@ -37,12 +38,14 @@ export interface DeterministicRandomContext {
 
 /** Whether an expression is the bare `Math.random` function reference. */
 export function isDeterministicRandomRead(
+    context: Pick<DeterministicRandomContext, "isDefaultLibraryIdentifier">,
     expression: ts.Expression,
 ): boolean {
     return (
         ts.isPropertyAccessExpression(expression) &&
         ts.isIdentifier(expression.expression) &&
         expression.expression.text === "Math" &&
+        context.isDefaultLibraryIdentifier(expression.expression) &&
         expression.name.text === "random"
     );
 }
@@ -176,7 +179,7 @@ function capturedDeclarations(
             return;
         }
         if (ts.isIdentifier(node)) {
-            if (node.text === "Math") return;
+            if (node.text === "Math" && context.isDefaultLibraryIdentifier(node)) return;
             const symbol = checker.getSymbolAtLocation(node);
             if (!symbol || declared.has(symbol)) return;
             const declaration = symbol.valueDeclaration;
@@ -228,11 +231,7 @@ export function emitDeterministicRandomInstall(
     left: ts.PropertyAccessExpression,
     checker: ts.TypeChecker,
 ): boolean {
-    if (
-        !ts.isIdentifier(left.expression) ||
-        left.expression.text !== "Math" ||
-        left.name.text !== "random"
-    ) {
+    if (!isDeterministicRandomRead(context, left)) {
         return false;
     }
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {

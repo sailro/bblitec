@@ -4263,6 +4263,10 @@ struct Engine {
      */
     std::vector<std::function<void(double)>>
         animation_frame_once_callbacks;
+    std::vector<std::function<void(double)>>
+        post_render_animation_frame_once_callbacks;
+    /** The next engine RAF is already queued after this turn's render. */
+    bool animation_frame_after_render = false;
     /**
      * Application-owned RAF callbacks registered after `startEngine` has
      * resolved. The engine callback was registered first, so these run after
@@ -4398,6 +4402,14 @@ struct Engine {
     Sprite2DYSortHook sprite_y_sort_hook;
     std::uint64_t next_file_texture_identity = 1;
 };
+
+/** Select at registration time: a stored callback can run in either phase. */
+inline void request_animation_frame(Engine& engine, std::function<void(double)> callback) {
+    auto& callbacks = engine.animation_frame_after_render
+        ? engine.post_render_animation_frame_once_callbacks
+        : engine.animation_frame_once_callbacks;
+    callbacks.push_back(std::move(callback));
+}
 
 /** Copy a typed-array view into an engine-owned GPU storage record. */
 template <typename Data>

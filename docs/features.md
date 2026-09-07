@@ -203,7 +203,9 @@ not. The pinned setup/frame bodies update the world matrix and translation.
 the pinned animate-then-sync callback. Source start/stop/animate, scalar writes
 and live count/capacity reads use that same state. Native Math.random overrides
 retain their closure state and saved-function identity; a finally spanning
-startEngine runs when its continuation completes.
+startEngine runs when its continuation completes. That cleanup currently admits
+plain writes; calls, accessors and explicit throws require the exception
+completion work tracked in [TODO](../TODO.md).
 
 Provider-backed sets require definite initialization before recurring callbacks.
 Standalone provider options, mixed native/frozen sets, composed system lists,

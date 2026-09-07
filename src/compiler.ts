@@ -946,6 +946,7 @@ class Compiler
             (expression) => this.compileCondition(expression),
             (expression) => this.evaluateBrowserValue(expression),
             (expression) => this.isBrowserOnlyExpression(expression),
+            (identifier) => this.isDefaultLibraryIdentifier(identifier),
             (value, expression) =>
                 this.dataLowerer.narrowOptional(value, expression),
             (identifier) => this.lookup(identifier),
@@ -2100,7 +2101,7 @@ class Compiler
                 return (
                     root !== parent.left &&
                     (!(ts.isIdentifier(root) && this.isDefaultLibraryIdentifier(root)) ||
-                        (isDeterministicRandomRead(parent.left) && this.sourceUsesNativeParticleProvider()))
+                        (isDeterministicRandomRead(this, parent.left) && this.sourceUsesNativeParticleProvider()))
                 );
             }
             return ts.isArrayLiteralExpression(parent);
@@ -2398,7 +2399,7 @@ class Compiler
         // put the generator back after a seeded window. It names the
         // function itself rather than a value, so it emits nothing and the
         // binding exists for the restore assignment to recognize.
-        if (isDeterministicRandomRead(declaration.initializer)) {
+        if (isDeterministicRandomRead(this, declaration.initializer)) {
             const native = this.reachedNodeParticles.sets.some((set) => set.native);
             if (native) {
                 this.emit(`auto ${cppName} = bbl::js::random_function();`);
@@ -15728,11 +15729,12 @@ class Compiler
             call.arguments[0]!,
             "timestamp",
         );
-        const callbacks = !recurring
-            ? "animation_frame_once_callbacks"
-            : this.engineStartMark
-              ? "post_render_animation_frame_callbacks"
-              : "animation_frame_callbacks";
+        if (!recurring) {
+            return { kind: "void", cpp: `bbl::request_animation_frame(${engine}, ${callback})` };
+        }
+        const callbacks = this.engineStartMark
+            ? "post_render_animation_frame_callbacks"
+            : "animation_frame_callbacks";
         return {
             kind: "void",
             cpp: `${engine}.${callbacks}.push_back(${callback})`,
@@ -19677,6 +19679,25 @@ class Compiler
         if (!mark || site.catchClause) return false;
         const start = body.findIndex((line) => line.startsWith("bbl::start_engine("));
         if (start < 0) return false;
+        // The two lifetime guards can run while C++ is unwinding. A second
+        // exception would terminate rather than replace the source exception.
+        // Until finally has explicit completion lowering, admit plain cleanup
+        // writes and refuse calls/accessors whose exception effects are unknown.
+        const checkCleanup = (node: ts.Node): void => {
+            if (ts.isFunctionLike(node)) return;
+            const properties = ts.isPropertyAccessExpression(node)
+                ? [this.checker.getSymbolAtLocation(node.name)]
+                : ts.isElementAccessExpression(node)
+                    ? this.checker.getTypeAtLocation(node.expression).getProperties() : [];
+            const accessor = properties.some((property) => property?.declarations?.some(
+                (declaration) => ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration),
+            ));
+            if (ts.isThrowStatement(node) || ts.isCallExpression(node) || ts.isNewExpression(node) || accessor) {
+                this.fail(node, "A finally block spanning startEngine requires non-throwing cleanup; calls, accessors and throw are not admitted.");
+            }
+            ts.forEachChild(node, checkCleanup);
+        };
+        if (site.finallyBlock) checkCleanup(site.finallyBlock);
         if (body.slice(start + 1).some((line) =>
             line.trim() === Compiler.frameYieldRequeueMarker ||
             line.trim().startsWith(Compiler.startContinuationGatePrefix))) {

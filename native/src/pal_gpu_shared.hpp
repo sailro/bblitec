@@ -6016,6 +6016,7 @@ inline void shader_stage_block_floats(
 
 /** Give every pre-render application RAF callback this turn's one timestamp. */
 inline void run_animation_frame_callbacks(Engine& engine) {
+    engine.animation_frame_after_render = false;
     engine.animation_frame_timestamp_ms = performance_milliseconds();
     const auto persistent_callbacks = engine.animation_frame_callbacks;
     auto once_callbacks =
@@ -6126,9 +6127,15 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 inline void finish_frame(Engine& engine) {
     js::collect_at_frame_boundary();
     if (engine.stopped) return;
+    engine.animation_frame_after_render = true;
+    auto once_callbacks = std::move(engine.post_render_animation_frame_once_callbacks);
+    engine.post_render_animation_frame_once_callbacks.clear();
     if (engine.post_render_animation_frame_callbacks_armed) {
         for (const auto& callback :
              engine.post_render_animation_frame_callbacks) {
+            callback(engine.animation_frame_timestamp_ms);
+        }
+        for (const auto& callback : once_callbacks) {
             callback(engine.animation_frame_timestamp_ms);
         }
     } else {
