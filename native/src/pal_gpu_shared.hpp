@@ -3991,6 +3991,18 @@ inline StandardVariantKey standard_variant_key(
     key.features |= upstream::standard_skeleton_features(
         static_cast<std::uint32_t>(key.mesh_features));
 #endif
+#if defined(BBLITE_STANDARD_VERTEX_ALPHA)
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        key.features |= upstream::standard_color_alpha_features(
+            material.no_color || material.esm_shadow,
+            record.has_vertex_alpha,
+            upstream::standard_vertex_colors_enabled &&
+                draw.item.geometry < engine.geometries.size() &&
+                engine.geometries[draw.item.geometry].has_vertex_colors,
+            !record.instance_colors.empty());
+    }
+#endif
     key.resolved = true;
     return key;
 }

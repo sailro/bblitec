@@ -2933,8 +2933,8 @@ struct MaterialRecord {
     float ambient_level = 1.0f;
     float diffuse_u_scale = 1.0f;
     float diffuse_v_scale = 1.0f;
-    float diffuse_u_offset = 0.0f;
-    float diffuse_v_offset = 0.0f;
+    double standard_uv_offset_x = 0.0;
+    double standard_uv_offset_y = 0.0;
     float diffuse_u_offset = 0.0f;
     float diffuse_v_offset = 0.0f;
     // Per-slot glTF texture transforms. Occlusion carries its own because the

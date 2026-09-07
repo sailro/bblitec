@@ -1948,6 +1948,8 @@ ${wgsl}`,
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
                 renderer.lowerRenderPlan({
+                    standardVertexAlpha: features.includes("mesh:vertex-alpha"),
+                    standardVertexColors: features.includes("material:standard-vertex-colors"),
                     ...(options.meshProfiles ? { meshProfiles: options.meshProfiles } : {}),
                     floatingOrigin: features.includes(
                         "renderer:floating-origin",

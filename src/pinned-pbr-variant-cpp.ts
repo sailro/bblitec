@@ -2895,7 +2895,7 @@ export function pinnedStandardVariantsHeader(
         // own uninstalled null and the offset lanes fold to their defaults.
         // A scene that enables it must extend this before wave D flips over.
         ...(uvOffset
-            ? { vectorHooks: { _uvOffsetResolver: { property: "uvOffset", lanes: 2 } } }
+            ? { vectorHooks: { _uvOffsetResolver: { property: "uvOffset", lanes: 2 } }, scalarPrecision: "double" }
             : { absentHooks: ["_uvOffsetResolver"] }),
         slots: [{ name: "u", offset: 0, lanes: 4 }],
     }).join("\n");
@@ -3017,7 +3017,7 @@ using bbl::Color3;
 // (diffuse_color, specular_power, bump_level, ... are one-to-one, and
 // lightmap_level / reflection_coord_mode have no record field yet).
 struct StandardMaterialProps {
-${propsMembers.join("\n")}${uvOffset ? "\n    std::array<float, 2> uv_offset{};" : ""}
+${propsMembers.join("\n")}${uvOffset ? "\n    std::array<double, 2> uv_offset{};" : ""}
 };
 
 // src/material/standard/standard-template.ts matUniforms

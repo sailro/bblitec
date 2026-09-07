@@ -58,7 +58,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     kind: "material",
     property: "uvOffset",
     collection: "materials",
-    field: ["diffuse_u_offset", "diffuse_v_offset"],
+    field: ["standard_uv_offset_x", "standard_uv_offset_y"],
     value: "number2",
     simpleOnly: true,
   },
@@ -2350,7 +2350,7 @@ export function emitPropertyAssignment(
           );
         }
         for (const [index, field] of fields.entries()) {
-          const value = context.compileNumber(elements.elements[index]!);
+          const value = context.compileNumber(elements.elements[index]!, recordField.property === "uvOffset" ? "double" : "float");
           context.emit(
             `${record}.${field} = ` +
               `${value};`,

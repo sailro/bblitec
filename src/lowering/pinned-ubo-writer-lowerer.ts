@@ -104,6 +104,8 @@ export interface UboWriterRequest {
     absentHooks?: readonly string[];
     /** Installed resolver calls whose numeric lanes map to a record property. */
     vectorHooks?: Readonly<Record<string, { property: string; lanes: number }>>;
+    /** Preserve JavaScript numeric intermediates for writers with live f64 inputs. */
+    scalarPrecision?: "float" | "double";
 }
 
 interface WriterState {
@@ -1168,7 +1170,7 @@ function emitPlainStatement(
                         continue;
                     }
                     state.locals.add(local);
-                    lines.push(`    const float ${local} = ${source};`);
+                    lines.push(`    const ${state.request.scalarPrecision ?? "float"} ${local} = ${source};`);
                 }
                 continue;
             }
@@ -1289,8 +1291,8 @@ function emitPlainStatement(
             // single-assignment form expresses.
             lines.push(
                 state.mutatedLocals.has(name)
-                    ? `    float ${name} = ${value};`
-                    : `    const float ${name} = ${value};`,
+                    ? `    ${state.request.scalarPrecision ?? "float"} ${name} = ${value};`
+                    : `    const ${state.request.scalarPrecision ?? "float"} ${name} = ${value};`,
             );
         }
         return lines;

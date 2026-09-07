@@ -156,6 +156,8 @@ export interface PinnedStandardComposeOptions {
      * `VERTEX_ALPHA | MATERIAL_ALPHA_BLEND` the way `rebuildSingle` does.
      */
     vertexColors?: { vertexAlpha: boolean };
+    /** `mesh.hasVertexAlpha`, including an instance-colour-only mesh. */
+    vertexAlpha?: boolean;
     /**
      * Compose the pin's geometry-output MRT arm instead of the colour
      * fragment. Attachment names are the manifest's
@@ -441,6 +443,7 @@ export async function composePinnedStandardVariant(
                 VERTEX_ALPHA: number;
                 MATERIAL_ALPHA_BLEND: number;
                 ESM_SHADOW_OUTPUT: number;
+                NO_COLOR_OUTPUT: number;
                 GEOMETRY_OUTPUT: number;
             }>("material/standard/standard-flags.js"),
             importPinnedModule<{
@@ -485,14 +488,11 @@ export async function composePinnedStandardVariant(
             }>("shader/fragments/thin-instance-fragment.js"),
         ]);
     const meshFeatures = options.meshFeatures ?? 0;
-    if ((meshFeatures & meshBits.MSH_VAT) ||
-        ((meshFeatures & (meshBits.MSH_HAS_SKELETON | meshBits.MSH_HAS_SKELETON_8)) && !options.skeleton)) {
-        throw new Error(
-            "Pinned Standard skeletons are not composable yet: upstream " +
-                "reaches them through enableStandardSkeleton(), which " +
-                "registers stdSkeletonExt and rewrites mesh bits into " +
-                "HAS_SKELETON, and no reached scene enables it.",
-        );
+    if (meshFeatures & meshBits.MSH_VAT) {
+        throw new Error("Pinned Standard vertex animation textures are not supported.");
+    }
+    if ((meshFeatures & (meshBits.MSH_HAS_SKELETON | meshBits.MSH_HAS_SKELETON_8)) && !options.skeleton) {
+        throw new Error("Pinned Standard skeleton composition requires enableStandardSkeleton().");
     }
     const shadowLights = options.shadowLights ?? [];
     if (meshFeatures & meshBits.MSH_RECEIVE_SHADOWS) {
@@ -539,8 +539,10 @@ export async function composePinnedStandardVariant(
     }
     // `rebuildSingle` adds the vertex-alpha bits before the extension loop,
     // so `_frag(features, ...)` sees them exactly as it does upstream.
-    if (options.vertexColors?.vertexAlpha) {
-        features |= flags.VERTEX_ALPHA | flags.MATERIAL_ALPHA_BLEND;
+    const shadowOutput = ((features | passFeatures) & (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !== 0;
+    const colorAlphaBlend = !shadowOutput && (options.vertexAlpha ?? options.vertexColors?.vertexAlpha ?? false);
+    if (colorAlphaBlend && (options.vertexColors || (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR))) {
+        features |= flags.MATERIAL_ALPHA_BLEND | (options.vertexColors ? flags.VERTEX_ALPHA : 0);
     }
     const fragments: unknown[] = [];
     if (meshFeatures & meshBits.MSH_HAS_MORPH_TARGETS) {
@@ -560,7 +562,7 @@ export async function composePinnedStandardVariant(
         fragments.push(
             vertexColor.createStdVertexColorFragment(
                 (features & flags.HAS_DIFFUSE_TEXTURE) !== 0,
-                options.vertexColors.vertexAlpha,
+                colorAlphaBlend,
             ),
         );
     }
@@ -1927,12 +1929,17 @@ export async function composeSceneStandardVariants(
                 skeleton: input.skeleton ?? false,
                 ...vertexColors,
             });
-            if (input.vertexAlpha && vertexColors.vertexColors) {
+            const alphaFeatures = features | flags.MATERIAL_ALPHA_BLEND |
+                (vertexColors.vertexColors ? flags.VERTEX_ALPHA : 0);
+            const alphaReachable = input.vertexAlpha &&
+                (vertexColors.vertexColors || (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR));
+            if (alphaReachable) {
                 await add(material, meshFeatures,
-                    features | flags.VERTEX_ALPHA | flags.MATERIAL_ALPHA_BLEND, {
+                    alphaFeatures, {
                         fog: input.fog,
                         skeleton: input.skeleton ?? false,
-                        vertexColors: { vertexAlpha: true },
+                        ...vertexColors,
+                        vertexAlpha: true,
                     });
             }
             // Every caster view a shadow generator draws through, from
@@ -1985,6 +1992,15 @@ export async function composeSceneStandardVariants(
                     },
                     task.index,
                 );
+                if (alphaReachable) {
+                    await add(material, meshFeatures, alphaFeatures, {
+                        fog: input.fog,
+                        skeleton: input.skeleton ?? false,
+                        ...vertexColors,
+                        vertexAlpha: true,
+                        geometry: { attachments: task.attachments, emitColor: task.emitColor },
+                    }, task.index);
+                }
             }
         }
     }
@@ -2346,6 +2362,7 @@ inline const StandardPluginBinding* standard_plugin_binding_for(
 // lowered UBO writers above read.
 #include <limits>
 #include <bblite/upstream/material_texture_slots.hpp>
+${options.skeleton ? "#include <bblite/js_data.hpp>\n" : ""}\
 
 namespace bbl::upstream {
 
@@ -2461,7 +2478,7 @@ inline StandardMaterialProps standard_material_props(
     props.uv_scale = {
         material.diffuse_u_scale,
         material.diffuse_v_scale,
-    };${options.uvOffset ? "\n    props.uv_offset = {material.diffuse_u_offset, material.diffuse_v_offset};" : ""}
+    };${options.uvOffset ? "\n    props.uv_offset = {material.standard_uv_offset_x, material.standard_uv_offset_y};" : ""}
     return props;
 }
 
