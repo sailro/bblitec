@@ -469,7 +469,17 @@ export function compileDataMethodCall(
             ),
         };
     }
+    // A constructor receiver was already evaluated above. Recompiling it as
+    // a data path would repeat its argument effects; naming the result also
+    // keeps an omitted method endpoint from constructing it again for size().
+    let constructedOwner: Value | undefined;
+    if (ts.isNewExpression(ownerExpression) && dynamicOwner?.kind === "data") {
+        const receiver = lowerer.context.allocateTemporaryCppName("constructed_receiver");
+        lowerer.context.emit(`auto ${receiver} = ${dynamicOwner.cpp};`);
+        constructedOwner = { ...dynamicOwner, cpp: receiver };
+    }
     const owner =
+        constructedOwner ??
         lowerer.compileDataPath(
             callee.expression,
             writeReceiverMethods.has(method)

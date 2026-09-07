@@ -104,6 +104,16 @@ Use the runtime's JavaScript `round_js` rule for `Math.round`.
 results are half-float texture data because that is the pin's storage format.
 High-precision camera/node support does not imply every native matrix is F64.
 
+Numeric ArrayBuffer views retain shared byte storage and copy each scalar with
+`memcpy`, avoiding typed references into a byte allocation. Stores apply the
+existing JavaScript integer conversions or float narrowing; compound writes
+retain the evaluated owner and prior value before the right operand runs.
+Prefix updates return the numeric result before destination narrowing.
+Owned vector storage remains available to existing native consumers, while
+numeric buffer views explicitly refuse contiguous typed access and methods
+that have not been adapted. Native/JavaScript fixtures observe overlapping
+views, escaped backing storage, replacement, argument order and ToIndex bounds.
+
 The CPU vertex bake projects the pin's WGSL normal/tangent normalization through
 typed shader IR with float32 intermediates and division. It retains its strict
 length-above-`1e-6` gate (zero otherwise) after the baked world transform.

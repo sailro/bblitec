@@ -3244,8 +3244,7 @@ export class ExpressionLowerer {
                     ? boundRegexp
                     : regexpType.symbol?.name === "RegExp" ||
                         regexpExpression.kind ===
-                            ts.SyntaxKind.RegularExpressionLiteral ||
-                        ts.isNewExpression(regexpExpression)
+                            ts.SyntaxKind.RegularExpressionLiteral
                       ? this.compileValue(regexpExpression)
                       : undefined;
             if (regexpOwner?.kind === "regexp") {

@@ -49,19 +49,25 @@ int main(int argc, char** argv) {
     const auto handle = bbl::create_gaussian_splatting_mesh(engine, "cloud", read(path("initial")));
     auto& mesh = engine.splat_meshes[handle.value];
     auto original = bbl::splat_data(engine, handle);
+    bbl::js::F32Array original_view(original);
     require(original.data() == mesh.splats_data->data(), "getter copied bytes");
     expect_geometry(mesh, path("stage0"));
     const auto mutated = read(path("mutated"));
-    std::memcpy(original.data(), mutated.data(), mutated.size());
+    original_view.store(1, original_view.load(1) - 2.0f);
+    require(std::memcmp(original.data(), mutated.data(), mutated.size()) == 0, "numeric view mutation differs from pin");
     expect_geometry(mesh, path("stage0"));
     require(mesh.data_version == 0, "buffer write published data");
     bbl::update_splat_data(engine, handle, original);
     require(mesh.data_version == 1 && mesh.splats_data->data() == original.data(), "same-buffer update identity/version");
     expect_geometry(mesh, path("stage1"));
-    const bbl::js::ArrayBuffer replacement(read(path("replacement")));
-    bbl::update_splat_data(engine, handle, replacement);
+    const bbl::js::ArrayBuffer replacement(std::vector<std::uint8_t>(original.data(), original.data() + original.byte_length()));
+    bbl::js::F32Array replacement_view(replacement, 4);
+    replacement_view.store(7, 7.0f);
+    require(replacement_view.buffer() == replacement, "offset view lost whole backing");
+    bbl::update_splat_data(engine, handle, bbl::js::ArrayBuffer(replacement_view));
     require(mesh.data_version == 2 && mesh.splats_data->data() == replacement.data(), "replacement identity/version");
     require(original.byte_length() == mutated.size() && std::memcmp(original.data(), mutated.data(), mutated.size()) == 0, "old alias changed");
+    require(original_view.load(8) == -4.0f && replacement_view.load(7) == 7.0f, "replacement changed old numeric view");
     expect_geometry(mesh, path("stage2"));
     for (const auto length : {96u, 0u, 65u}) {
         bool caught = false;
@@ -102,5 +108,6 @@ int main(int argc, char** argv) {
     expect_geometry(mesh, path("stage4"));
     engine.splat_meshes.clear();
     require(std::memcmp(original.data(), mutated.data(), mutated.size()) == 0, "alias lost its owner");
+    require(original_view.load(1) == 0.0f && replacement_view.load(7) == 7.0f, "numeric aliases lost disposed cloud backing");
     std::cout << "splat-data-check: ok\n";
 }
