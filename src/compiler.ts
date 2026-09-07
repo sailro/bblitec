@@ -14750,16 +14750,13 @@ class Compiler
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
         const callee = this.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
-            if (callee.name.text === "getContext" && call.arguments.length === 1) {
-                const canvas = this.evaluateBrowserValue(callee.expression);
-                const context = this.evaluateBrowserValue(call.arguments[0]!);
-                if (canvas?.kind === "object" && canvas.primaryCanvas &&
-                    context?.kind === "string" && context.value === "2d") {
-                    if (this.defaultEngineCpp && !this.presentationHostCpp) {
-                        this.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
-                    }
-                    this.requirePresentationHost(call);
+            if (this.browserErasure.isPrimaryCanvas2DContextCall(
+                call, (expression) => this.evaluateBrowserValue(expression),
+            )) {
+                if (this.defaultEngineCpp && !this.presentationHostCpp) {
+                    this.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
                 }
+                this.requirePresentationHost(call);
             }
             if (this.isNativeHostUiLookup(call)) {
                 const id = this.compileStringLiteral(call.arguments[0]!);

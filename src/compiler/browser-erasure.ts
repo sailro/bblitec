@@ -558,17 +558,23 @@ export class BrowserErasure {
         return false;
     }
 
+    public isPrimaryCanvas2DContextCall(
+        call: ts.CallExpression,
+        evaluate = (expression: ts.Expression) => this.evaluateBrowserValue(expression),
+    ): boolean {
+        const callee = this.context.unwrap(call.expression);
+        if (!ts.isPropertyAccessExpression(callee) ||
+            callee.name.text !== "getContext" || call.arguments.length !== 1) return false;
+        const canvas = evaluate(callee.expression);
+        const context = evaluate(call.arguments[0]!);
+        return canvas?.kind === "object" && !!canvas.primaryCanvas &&
+            context?.kind === "string" && context.value === "2d";
+    }
+
     private isNativeUiCall(call: ts.CallExpression): boolean {
-        if (this.context.isNativeHostUiLookup(call)) return true;
+        if (this.context.isNativeHostUiLookup(call) || this.isPrimaryCanvas2DContextCall(call)) return true;
         const callee = this.context.unwrap(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return false;
-
-        if (callee.name.text === "getContext" && call.arguments.length === 1) {
-            const canvas = this.evaluateBrowserValue(callee.expression);
-            const context = this.evaluateBrowserValue(call.arguments[0]!);
-            if (canvas?.kind === "object" && canvas.primaryCanvas &&
-                context?.kind === "string" && context.value === "2d") return true;
-        }
 
         if (
             callee.name.text === "createElement" &&

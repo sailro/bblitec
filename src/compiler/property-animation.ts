@@ -118,15 +118,10 @@ export class PropertyAnimationTargetLowerer {
                 context.emit(`const auto ${captured} = ${owner.cpp};`);
                 context.emit(`if (!${captured}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`);
                 const binding = context.registerNativeBinding(captured);
-                const argument = context.allocateTemporaryCppName("property_animation_value");
-                const dataType = owner.dataType;
-                const closure = context.captureManagedClosureLines(() => {
-                    context.useNativeValue({ kind: "data", cpp: captured, dataType,
-                        nativeCaptures: [binding] });
-                    context.emit(`${captured}->${field.name} = static_cast<double>(${argument});`);
-                });
-                return `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
-                    `${renderClosure(closure, `float ${argument}`)}, ${captured}.get(), ${context.cppString(property)}}`;
+                return this.scalarTarget(context, property,
+                    { kind: "data", cpp: captured, dataType: owner.dataType,
+                      nativeCaptures: [binding] },
+                    `${captured}->${field.name}`, `${captured}.get()`);
             }
             if (owner.kind === "record" && owner.recordProperties?.[property]?.kind === "number" &&
                 !owner.recordSetters?.[property]) {
@@ -138,13 +133,8 @@ export class PropertyAnimationTargetLowerer {
                 if (!field?.sharedRecordScalar || !field.sharedStorageCpp) {
                     context.fail(node, `Property animation path '${path}' has no retained scalar storage.`);
                 }
-                const argument = context.allocateTemporaryCppName("property_animation_value");
-                const closure = context.captureManagedClosureLines(() => {
-                    context.useNativeValue(field);
-                    context.emit(`${field.cpp} = static_cast<double>(${argument});`);
-                });
-                return `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
-                    `${renderClosure(closure, `float ${argument}`)}, ${field.sharedStorageCpp}.get(), ${context.cppString(property)}}`;
+                return this.scalarTarget(context, property, field,
+                    field.cpp, `${field.sharedStorageCpp}.get()`);
             }
             const setter =
                 owner.kind === "record"
@@ -184,6 +174,22 @@ export class PropertyAnimationTargetLowerer {
             cpp: `{${bindings.join(", ")}}`,
             engineCpp: context.requireDefaultEngine(node),
         };
+    }
+
+    private scalarTarget(
+        context: PropertyAnimationTargetContext,
+        property: string,
+        retained: Value,
+        fieldCpp: string,
+        identityCpp: string,
+    ): string {
+        const argument = context.allocateTemporaryCppName("property_animation_value");
+        const closure = context.captureManagedClosureLines(() => {
+            context.useNativeValue(retained);
+            context.emit(`${fieldCpp} = static_cast<double>(${argument});`);
+        });
+        return `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
+            `${renderClosure(closure, `float ${argument}`)}, ${identityCpp}, ${context.cppString(property)}}`;
     }
 }
 
