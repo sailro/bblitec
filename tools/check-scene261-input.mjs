@@ -71,8 +71,10 @@ for (const backend of ['sdl_gpu', 'dawn']) {
             assert.equal(taa.haltonIndex, expected.haltonIndex);
             assert.equal(taa.blendFactor, expected.factor);
             assert.equal(taa.lastCameraVersion, expected.lastCameraVersion);
-            for (const key of ['clean', 'drawn']) assert.deepEqual(source[key].map(Math.fround), expected[key], `${key} differs from exact pin`);
-            assert.deepEqual(taa.halton.map(Math.fround), expected.halton);
+            // JSON numbers normalize JavaScript -0. Compare retained f32 bits,
+            // including signed zero, through exact uint32 word observations.
+            for (const key of ['cleanWords', 'drawnWords']) assert.deepEqual(source[key], expected[key], `${key} differs from exact pin`);
+            for (const key of ['haltonWords', 'jitterScratchWords']) assert.deepEqual(taa[key], expected[key], `${key} differs from exact pin`);
             for (const key of ['alpha', 'beta', 'radius']) assert.equal(capture.camera[key], expected.camera[key]);
         }
         const full = reference ? compareImages(stem + '.png', reference) : undefined;

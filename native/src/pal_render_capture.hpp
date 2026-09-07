@@ -73,6 +73,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -1731,6 +1732,12 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /** Retained temporal bytes are observed directly; capture must never repack their cache. */
 inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Engine& engine) {
+    const auto words = [&](const char* name, const auto& values) {
+        json.key(name);
+        json.begin_array();
+        for (const float value : values) json.value(std::bit_cast<std::uint32_t>(value));
+        json.end_array();
+    };
     json.begin_array();
     for (const TaskHandle handle : scene.tasks) {
         if (handle.value >= engine.frame_tasks.size()) continue;
@@ -1743,6 +1750,8 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
             json.field("name", task.render.name);
             json.field("clean", uniforms.clean.data(), uniforms.clean.size());
             json.field("drawn", uniforms.drawn.data(), uniforms.drawn.size());
+            words("cleanWords", uniforms.clean);
+            words("drawnWords", uniforms.drawn);
             json.key("cache");
             json.begin_object();
             json.field("cameraKey", uniforms.cache.camera_key);
@@ -1764,6 +1773,8 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
             json.field("haltonIndex", state.halton_index);
             json.field("halton", state.halton.data(), state.halton.size());
             json.field("jitterScratch", state.jitter_scratch.data(), state.jitter_scratch.size());
+            words("haltonWords", state.halton);
+            words("jitterScratchWords", state.jitter_scratch);
             if (!task.post_process.passes.empty() && !task.post_process.passes.front().params.empty()) {
                 json.field("blendFactor", task.post_process.passes.front().params.front());
             }

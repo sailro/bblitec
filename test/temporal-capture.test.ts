@@ -18,6 +18,7 @@ test("temporal capture observes distinct clean/drawn storage and private state w
     const source = join(directory, "check.cpp");
     writeFileSync(source, `#include <bblite/runtime.hpp>
 #include <cassert>
+#include <bit>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -63,11 +64,16 @@ int main() {
     assert.equal(records[0].taskIndex, 1);
     assert.deepEqual(records[0].clean.map(Math.fround), [1, Math.fround(.1), -0]);
     assert.deepEqual(records[0].drawn.map(Math.fround), [2, Math.fround(.2), -0]);
+    const words = (values: number[]) => Array.from(new Uint32Array(new Float32Array(values).buffer));
+    assert.deepEqual(records[0].cleanWords, words([1, .1, -0]));
+    assert.deepEqual(records[0].drawnWords, words([2, .2, -0]));
     assert.equal(records[0].cache.cameraKey, 17);
     assert.equal(records[1].taskIndex, 2);
     assert.equal(records[1].executions, 161);
     assert.equal(records[1].factor, .05);
     assert.equal(records[1].blendFactor, 1);
     assert.equal(records[1].haltonIndex, 2);
+    assert.deepEqual(records[1].haltonWords, words([.5, .25]));
+    assert.deepEqual(records[1].jitterScratchWords, Array(16).fill(0));
     assert.deepEqual(records[1].sourceTasks, [1]);
 });
