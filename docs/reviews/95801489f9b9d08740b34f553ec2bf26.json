@@ -1,0 +1,26 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Reuse pinValueToTemporary for double box-data option snapshots, removing duplicated scalar emission and two low-level context requirements.",
+      "applied": true
+    },
+    {
+      "summary": "Select a handle leaf's engine expression once instead of overwriting the default owner through object-spread ordering.",
+      "applied": true
+    },
+    {
+      "summary": "Repeated skinned picks upload unchanged bone palettes through the existing texture uploader.",
+      "applied": false,
+      "blockedBy": "No existing pose version covers scene skeleton publication, glTF animation, bone-control writes and initialization. Transform versions miss pose writers; skipping uploads without that contract would break same-turn update-to-pick visibility. Palette snapshots would add retained storage and full scans instead.",
+      "filedIn": "TODO.md: bone-palette version covering every writer and shared draw/pick dirty upload checks"
+    }
+  ],
+  "review": {
+    "base": "origin/main at 3db128b0, the user's merge of checkpoint5 PR231",
+    "scope": "Complete unchanged scene114 integration: box data, authored PBR/Standard morph activation, shared nullable PickingInfo identity and checked engine ownership, compact readback loops, per-mesh deformation picking on both PALs, registry/reference adoption, behavior checker and retained browser observations. Includes scene279 tuple-row and Racer engine-alias compatibility fixes and the direct-morph replacement refusal.",
+    "method": "Three same-model subagents independently reviewed reuse, simplification and altitude; the coordinating agent reviewed efficiency with the four available slots. Each read surrounding code and existing helpers. All four findings lists were complete before cleanup edits. Independent correctness reviews covered the prerequisites, PAL changes, alias guard and attachment refusal separately.",
+    "altitude": "No findings: pinned composition owns each reached deformation projection, shared transport owns world selection, PALs own upload/binding, and canonical mesh identity owns the replacement refusal.",
+    "validation": "Scene114 generated main.cpp, manifest.json and fidelity.json remained byte-identical after the two applied cleanups. Final tests, native behavior checks and the full sweep follow this record."
+  }
+}
