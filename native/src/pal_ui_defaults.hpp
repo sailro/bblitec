@@ -20,6 +20,23 @@ inline constexpr std::string_view ui_user_agent_css =
     "font-style:normal;line-height:1.1499;"
     "text-align:center;tab-index:auto;}\n"
     // Press/release must resolve to the button, not separate label/icon nodes.
-    "button *{focus:none;}\n";
+    "button *{focus:none;}\n"
+    // RmlUi creates unstyled scrollbar elements on overflow. In particular,
+    // an auto-width vertical scrollbar consumes the entire containing block.
+    // Give both axes density-independent geometry and a visible drag handle.
+    // Built-in scroll controls need input even though the overlay document
+    // passes through pointer events by default, just like reached buttons.
+    "scrollbarvertical{width:16dp;pointer-events:auto;}\n"
+    "scrollbarhorizontal{height:16dp;pointer-events:auto;}\n"
+    "scrollbarvertical,scrollbarhorizontal,scrollbarcorner{background-color:#80808030;}\n"
+    "scrollbarvertical slidertrack{width:16dp;}\n"
+    "scrollbarhorizontal slidertrack{height:16dp;}\n"
+    "scrollbarvertical sliderbar{width:10dp;min-height:24dp;margin:0 3dp;}\n"
+    "scrollbarhorizontal sliderbar{height:10dp;min-width:24dp;margin:3dp 0;}\n"
+    "scrollbarvertical sliderbar,scrollbarhorizontal sliderbar{background-color:#909090c0;border-radius:5dp;}\n"
+    "scrollbarvertical sliderbar:hover,scrollbarhorizontal sliderbar:hover{background-color:#a0a0a0;}\n"
+    "scrollbarvertical sliderbar:active,scrollbarhorizontal sliderbar:active{background-color:#b0b0b0;}\n"
+    "scrollbarvertical sliderarrowdec,scrollbarvertical sliderarrowinc,"
+    "scrollbarhorizontal sliderarrowdec,scrollbarhorizontal sliderarrowinc{width:0;height:0;}\n";
 
 } // namespace bbl::pal

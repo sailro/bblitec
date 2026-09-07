@@ -4128,6 +4128,8 @@ struct Engine {
     /** Logical CSS-pixel extent exposed by renderCanvas.clientWidth/Height. */
     double canvas_client_width = 1280.0;
     double canvas_client_height = 720.0;
+    /** SDL window coordinates to browser client coordinates (CSS pixels). */
+    double canvas_window_to_client_scale = 1.0;
     /**
      * `stopEngine`: the pin cancels its animation frame and clears
      * `_renderFn`, so no further frame submits. There is no
