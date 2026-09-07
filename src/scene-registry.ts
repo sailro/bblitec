@@ -1724,6 +1724,22 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene114",
+        name: "Scene 114 - Morph and Skeleton Picking",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene114.ts",
+        title: "Babylon Lite Native - Morph and Skeleton Picking",
+        parity: {
+            // The unchanged source settles four actual picks before capture.
+            // Both backends match the browser exactly at first ready and at
+            // the canonical and later idle frames; no seek or query is used.
+            nativeEnvironment: adHocCaptureEnvironment(),
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [37, 42, 54],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene115",
         name: "Scene 115 - Alien Picking at Frame 100",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene115.ts",
