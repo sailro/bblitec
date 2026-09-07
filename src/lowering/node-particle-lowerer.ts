@@ -82,7 +82,7 @@ export interface NodeParticleSystemEmit {
      * simulation is lowered from the graph and checked against the facts
      * the executed pin reported about its own build.
      */
-    live?: { graph: LiveGraph; facts: LiveSystemFacts };
+    live?: { graph: LiveGraph; facts: LiveSystemFacts; provider?: true };
 }
 
 /**
@@ -95,6 +95,7 @@ export interface NodeParticleSystemEmit {
  */
 export interface NodeParticleRegistrationEmit {
     systems: ReadonlyArray<{ set: number; system: number }>;
+    autoStart?: boolean;
 }
 
 /**

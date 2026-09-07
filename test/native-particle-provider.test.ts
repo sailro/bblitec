@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { bakeNodeParticles } from "../src/pinned-node-particle.js";
 
 function scene(body: string, helpers = ""): string {
     return `
@@ -96,6 +97,32 @@ test("resolved query primitives remain native input to imported numeric helpers"
     assert.match(result.cpp, /stepCount\(2\.0\)/);
     assert.match(result.cpp, /round_js\(\(v_\w+_seconds \* 60\.0\)\)/);
     assert.match(result.cpp, /\+= 1\.0/);
+});
+
+test("authored moving-emitter modes carry pinned build facts without freezing native steps", async () => {
+    const fileName = resolve("corpus/babylon-lite/lab/lite/src/lite/scene302.ts");
+    const source = readFileSync(fileName, "utf8");
+    for (const search of ["?seekTime=2", ""]) {
+        const result = compileSource(source, { fileName, search });
+        const program = result.nodeParticles!;
+        assert.equal(program.sets[0]!.native, true);
+        assert.deepEqual(program.steps, []);
+        assert.equal(program.registrations[0]!.autoStart, search === "");
+        const bake = await bakeNodeParticles(program);
+        assert.deepEqual(bake.systems, []);
+        assert.equal(bake.live.length, 1);
+        const live = bake.live[0]!;
+        assert.equal(live.provider, true);
+        assert.equal(live.request, undefined);
+        assert.equal(live.facts.hooks._prepareFrame, true);
+        assert.equal(live.facts.hooks._seedLocalPosition, true);
+        assert.equal(live.facts.capacity, 640);
+        assert.equal(live.facts.updateSpeed, 1 / 60);
+        assert.equal(live.facts.updateSteps, 1);
+        assert.equal(live.texture.sceneAssigned, true);
+        assert.equal(live.texture.width, 64);
+        assert.equal(live.texture.height, 64);
+    }
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
