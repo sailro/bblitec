@@ -37,6 +37,8 @@ import { join } from "node:path";
  * | 37 | SDL_GPU | differ, worst MAD 0.000059, max 1 | byte-identical |
  * | 120 | Dawn | differ | byte-identical |
  * | 120 | SDL_GPU | differ, worst MAD 0.000250, max 2 | byte-identical |
+ * | 122 | Dawn | differ, worst MAD 0.000155, max 1 | byte-identical |
+ * | 122 | SDL_GPU | differ, worst MAD 0.000274, max 1 | byte-identical |
  * | 123 | Dawn | differ, worst MAD 0.000856, max 1 | byte-identical |
  * | 123 | SDL_GPU | differ, worst MAD 0.000760, max 2 | byte-identical |
  * | 126 | Dawn | differ, worst MAD 0.001657, max 18 | byte-identical |
@@ -98,6 +100,13 @@ import { join } from "node:path";
  * family's widest: scene 126's Dawn band above is 1.7e-3 at max 18. Its
  * published rows are 0.001 against thresholds of 0.003 and 0.007, about
  * four and eight times the band.
+ *
+ * Scene 122 joined on 2026-09-07 after a neutrality comparison found a
+ * 5.3e-5 movement in its Dawn full MAD. Five consecutive runs per backend
+ * reproduce the bands above on one unchanged binary; five per backend at
+ * one sample are byte-identical. The SOG cloud therefore has the same
+ * multisample repeatability boundary as the other measured splat scenes.
+ * Its image thresholds and committed golden remain unchanged.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
@@ -107,6 +116,7 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     // collapse pose rolls 0.005--0.006 / 0.033--0.037 between runs.
     ["scene44", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
+    ["scene122", new Set(["dawn", "sdl_gpu"])],
     ["scene123", new Set(["dawn", "sdl_gpu"])],
     ["scene124", new Set(["dawn", "sdl_gpu"])],
     ["scene125", new Set(["dawn", "sdl_gpu"])],
