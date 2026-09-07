@@ -419,8 +419,11 @@ thin-instance pools are supported. The glTF skin path retains four influences
 when an asset supplies eight, recorded as an adaptation. Direct morph factories
 have a narrower target/shared-weight surface than loaded glTF morphs.
 Definite scene-code morph attachments compose Standard and PBR storage
-variants and keep local vertices beside the live mesh world. Conditional or
-post-start attachments and direct morphs combined with thin instances refuse.
+variants and keep local vertices beside the live mesh world. Each scene mesh
+accepts one direct morph attachment; replacing it, including through an alias,
+refuses because detached morph resources do not retain independent storage.
+Conditional or post-start attachments and direct morphs combined with thin
+instances refuse. Updating the attached resource's weights remains supported.
 Scene-authored skeletons retain their joint/weight arrays and live bone palettes.
 Standard materials require `enableStandardSkeleton`; both backends upload the
 palette for the pinned skinned vertex stage.

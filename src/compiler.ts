@@ -19247,12 +19247,18 @@ class Compiler
     public recordSceneMeshDeformation(
         meshIndex: number,
         property: "skinned" | "morphTargets",
+        site: ts.Node,
     ): void {
         const mesh = this.sceneMeshes[meshIndex];
         if (!mesh) {
             throw new Error(
                 `Scene mesh ${meshIndex} was not recorded before its ${property} assignment.`,
             );
+        }
+        if (property === "morphTargets" && mesh.morphTargets) {
+            this.fail(site,
+                "Replacing a direct morph target attachment is not supported; " +
+                "updates to detached morph resources require independent storage.");
         }
         mesh[property] = true;
     }

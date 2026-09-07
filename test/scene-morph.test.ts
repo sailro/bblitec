@@ -99,14 +99,13 @@ function cppDefinition(source: string, signature: string, terminator = "\n}\n"):
 
 interface PinBuffer { data: ArrayBuffer; getMappedRange(): ArrayBuffer; unmap(): void }
 interface PinMorph { deltasBuffer: PinBuffer; weightsBuffer: PinBuffer; count: number; weights: Float32Array }
+interface PinMorphModule {
+    createMorphTargets(engine: unknown, targets: { positions: Float32Array; normals: Float32Array | null }[], count: number, weights: number[]): PinMorph;
+    setMorphTargetWeights(engine: unknown, morph: PinMorph, weights: number[]): void;
+}
 
-const tools = optionalNativeFixtureTools(false);
-test("native direct morph storage matches pin bytes and keeps deformation before live world", { skip: !tools }, async () => {
-    const pin = await importPinnedModule<{
-        createMorphTargets(engine: unknown, targets: { positions: Float32Array; normals: Float32Array | null }[], count: number, weights: number[]): PinMorph;
-        setMorphTargetWeights(engine: unknown, morph: PinMorph, weights: number[]): void;
-    }>("morph/create-morph-targets.js");
-    const engine = { _device: {
+function pinMorphEngine() {
+    return { _device: {
         createBuffer({ size }: { size: number }): PinBuffer {
             const data = new ArrayBuffer(size);
             return { data, getMappedRange: () => data, unmap() {} };
@@ -115,6 +114,58 @@ test("native direct morph storage matches pin bytes and keeps deformation before
             new Uint8Array(buffer.data, offset, values.byteLength).set(new Uint8Array(values.buffer, values.byteOffset, values.byteLength));
         } },
     } };
+}
+
+test("direct morph replacement refuses the pin's independently retained detached-resource shape", async () => {
+    const pin = await importPinnedModule<PinMorphModule>("morph/create-morph-targets.js");
+    const engine = pinMorphEngine();
+    const targets = [{ positions: new Float32Array([1, 0, 0]), normals: null }];
+    const first = pin.createMorphTargets(engine, targets, 1, [0]);
+    const second = pin.createMorphTargets(engine, targets, 1, [0]);
+    const mesh = { morphTargets: first };
+    mesh.morphTargets = second;
+    pin.setMorphTargetWeights(engine, first, [1]);
+    assert.equal(first.weights[0], 1);
+    assert.equal(mesh.morphTargets.weights[0], 0);
+    assert.equal(new Float32Array(first.weightsBuffer.data, 16)[0], 1);
+    assert.equal(new Float32Array(mesh.morphTargets.weightsBuffer.data, 16)[0], 0);
+    pin.setMorphTargetWeights(engine, second, [0.5]);
+    assert.equal(new Float32Array(mesh.morphTargets.weightsBuffer.data, 16)[0], 0.5);
+
+    for (const material of ["createPbrMaterial({})", "createStandardMaterial()"]) {
+        const source = prefix.replace("createPbrMaterial, createMorphTargets", "createPbrMaterial, createStandardMaterial, createMorphTargets")
+            .replace("mesh.material = createPbrMaterial({});", `mesh.material = ${material};`);
+        for (const replacement of [
+            "mesh.morphTargets = second;",
+            "const alias = mesh; const other = alias; other.morphTargets = second;",
+        ]) {
+            const fileName = "morph-replacement.ts";
+            assert.throws(() => compileSource(`${source}${attach}
+                const second = createMorphTargets(engine, [{ positions, normals: null }], 3, [0]);
+                ${replacement}
+                setMorphTargetWeights(engine, morph, new Float32Array([1]));`, { fileName }),
+            /morph-replacement\.ts:\d+:\d+: Replacing a direct morph target attachment is not supported/);
+        }
+        const admitted = compileSource(`${source}${attach}
+            setMorphTargetWeights(engine, morph, new Float32Array([1]));
+            setMorphTargetWeights(engine, morph, new Float32Array([0]));`);
+        assert.equal(admitted.cpp.match(/bbl::attach_morph_target\(/g)?.length, 1);
+        assert.equal(admitted.cpp.match(/bbl::set_morph_target_weights\(/g)?.length, 2);
+        const separate = compileSource(`${source}${attach}
+            const other = createMeshFromData(engine, "other", positions, normals, indices);
+            other.material = mesh.material;
+            const second = createMorphTargets(engine, [{ positions, normals: null }], 3, [0]);
+            other.morphTargets = second;
+            setMorphTargetWeights(engine, morph, new Float32Array([1]));
+            setMorphTargetWeights(engine, second, new Float32Array([0.5]));`);
+        assert.equal(separate.cpp.match(/bbl::attach_morph_target\(/g)?.length, 2);
+    }
+});
+
+const tools = optionalNativeFixtureTools(false);
+test("native direct morph storage matches pin bytes and keeps deformation before live world", { skip: !tools }, async () => {
+    const pin = await importPinnedModule<PinMorphModule>("morph/create-morph-targets.js");
+    const engine = pinMorphEngine();
     const checks: string[] = [];
     const positionDeltas = new Float32Array([1.35, -0, 2.3, -4.1, 0.125, -1e-20]);
     const normalDeltas = new Float32Array([-0, 0.3, -0.2, 0.7, -0.8, 0.9]);

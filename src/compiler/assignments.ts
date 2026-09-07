@@ -462,7 +462,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
   recordUnknownSceneMaterialAssignment(): void;
   recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
   /** Marks a scene-code mesh as carrying a skeleton for its feature word. */
-  recordSceneMeshDeformation(meshIndex: number, property: "skinned" | "morphTargets"): void;
+  recordSceneMeshDeformation(meshIndex: number, property: "skinned" | "morphTargets", site: ts.Node): void;
   engineHasStarted(): boolean;
   recordToneMappingEnabledMutation(): void;
   /** The scene's node-particle program; a texture write lands on it. */
@@ -2061,7 +2061,7 @@ export function emitPropertyAssignment(
       // `_computeMeshFeatures` reads `mesh.skeleton` for MSH_HAS_SKELETON,
       // and a scene-code mesh's feature word is derived from its recorded
       // streams rather than from a glTF primitive.
-      context.recordSceneMeshDeformation(target.sceneMeshIndex, "skinned");
+      context.recordSceneMeshDeformation(target.sceneMeshIndex, "skinned", expression);
       context.reachFeature("mesh:skeleton", expression);
       return;
     }
@@ -2093,6 +2093,7 @@ export function emitPropertyAssignment(
         );
       }
       const engine = context.requireEngine(target, expression);
+      context.recordSceneMeshDeformation(target.sceneMeshIndex, "morphTargets", expression);
       context.emit(
         `bbl::attach_morph_target(${engine}, ${target.cpp}, ` +
           `${morph.morphTarget.positionsCpp}, ` +
@@ -2101,7 +2102,6 @@ export function emitPropertyAssignment(
           `${morph.morphTarget.weightCpp});`,
       );
       morph.morphTarget.meshCpp = target.cpp;
-      context.recordSceneMeshDeformation(target.sceneMeshIndex, "morphTargets");
       context.reachFeature("mesh:morph-targets", expression);
       return;
     }
