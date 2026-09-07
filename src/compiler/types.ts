@@ -1216,6 +1216,10 @@ export type ValueKind =
   | "promise"
   | "animation-clip"
   | "animation-group"
+  /** One graph a glTF container declares, read off its own list. */
+  | "flow-graph"
+  /** One attached KHR_interactivity runtime, read off its container's list. */
+  | "flow-graph-runtime"
   /**
    * The include/exclude target-name filter `createAnimationGroupMask`
    * builds. Its two fields are both compile-time -- a constant array of

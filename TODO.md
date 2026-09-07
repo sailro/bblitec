@@ -7,7 +7,7 @@ its scene.
 
 ## Unregistered numbered scenes
 
-The corpus/registry comparison leaves **13** numbered scenes unregistered.
+The corpus/registry comparison leaves **12** numbered scenes unregistered.
 Scenes 186, 227 and 228 have assessments only; implementation is unfinished.
 
 | Scene | Remaining integration |
@@ -21,7 +21,6 @@ Scenes 186, 227 and 228 have assessments only; implementation is unfinished.
 | 180, 181 | Live text layout/input and standalone text rendering; extend the static text contract, including controls and dynamic weight updates |
 | 186 | Independent local cubemap ownership/cube-array sampling, live PBR ORM/direct-intensity writes and tuple flattening |
 | 227, 228 | Source-level multi-canvas/swapchain creation and input ownership beyond the dedicated Worker host |
-| 304 | Scene-side reads of the pinned flow-graph runtime records; the graph itself runs natively |
 
 ## Compiler and lowering
 

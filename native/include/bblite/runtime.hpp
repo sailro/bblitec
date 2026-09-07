@@ -3686,6 +3686,15 @@ struct SceneSkeletonRecord {
     std::vector<MeshHandle> meshes;
 };
 
+/** One attached `KHR_interactivity` graph; the generated flow-graph unit defines it. */
+struct FlowGraphRuntime;
+
+/** One graph a glTF document declares: `container.flowGraphs[index]`. */
+struct FlowGraphHandle {
+    AssetHandle asset{};
+    std::uint32_t index = 0;
+};
+
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
     // Source traversal permutations, separate from loader-order storage.
@@ -3744,6 +3753,18 @@ struct AssetRecord {
     std::vector<std::vector<std::size_t>> node_children;
     std::vector<MaterialHandle> materials;
     std::vector<bool> node_visible;
+    /**
+     * `container.flowGraphs`: the graphs the document declares, in graph
+     * order, filled at load; the generated flow-graph unit runs them.
+     */
+    std::vector<FlowGraphHandle> flow_graphs;
+    /**
+     * `container.flowGraphRuntimes`: the runtimes the latest addToScene
+     * attached for this asset, one per graph in graph order. Assigned per
+     * add and kept past the scene's disposal, as the pin keeps its
+     * resolved array.
+     */
+    std::vector<std::shared_ptr<FlowGraphRuntime>> flow_graph_runtimes;
     /**
      * `AssetContainer._gaussianSplats`: the clouds the pinned
      * `KHR_gaussian_splatting` feature contributed, one per GS primitive, in
@@ -5096,9 +5117,6 @@ struct SceneDeferredBuilder {
     void operator()() const { callback(); }
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
 };
-
-/** One attached `KHR_interactivity` graph; the generated flow-graph unit defines it. */
-struct FlowGraphRuntime;
 
 /** The mutable state shared by every native copy of one SceneContext. */
 struct SceneState {

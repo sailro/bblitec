@@ -192,6 +192,24 @@ const handleCollections: readonly HandleCollectionRead[] = [
     temporaryLabel: "asset_animation_group",
   },
   {
+    // `container.flowGraphRuntimes`: the KHR_interactivity runtimes
+    // addToScene attached for this asset, one per graph, in graph order.
+    // Upstream a promise of the array; here the attach is synchronous, so
+    // the awaited read is the asset record's own list.
+    owner: "asset",
+    property: "flowGraphRuntimes",
+    record: ["assets", "flow_graph_runtimes"],
+    temporaryLabel: "flow_graph_runtime",
+  },
+  {
+    // `container.flowGraphs`: the graphs the document declares, parsed at
+    // load, one handle per graph in graph order.
+    owner: "asset",
+    property: "flowGraphs",
+    record: ["assets", "flow_graphs"],
+    temporaryLabel: "flow_graph",
+  },
+  {
     // `getContainerMeshes(container)` flattens the container's entity
     // hierarchy to the renderable mesh nodes. The generated loader has
     // already performed that walk into AssetRecord::meshes in the same
@@ -333,6 +351,25 @@ export function readHandleCollection(
  * between two values run to run.
  */
 export const propertyRules: readonly PropertyRule[] = [
+  // --- Flow graphs ----------------------------------------------------
+  // A container's declared graphs and attached runtimes are handles into
+  // the generated graph; the pin's records behind them stay at generation.
+  {
+    owner: "flow-graph",
+    property: "accessors",
+    unsupported:
+      "A loaded flow graph's accessor records (path-converter.ts) stay at " +
+      "generation: pointer reads and writes are lowered into the generated " +
+      "graph, and scene code reads the node or material state they target.",
+  },
+  {
+    owner: "flow-graph-runtime",
+    property: "context",
+    unsupported:
+      "A flow-graph runtime's context (its variables and slots) is the " +
+      "generated graph's own state; scene code observes the graph through " +
+      "what it drives.",
+  },
   // --- Display gizmos -------------------------------------------------
   // `gizmo.root` is the node the per-frame follow drives, and the one
   // member the reached slice reads: scene 223 places the hemispheric

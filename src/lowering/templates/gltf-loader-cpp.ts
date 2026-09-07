@@ -5563,7 +5563,15 @@ ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${intera
     // cascade walks, and the per-node visibility flag as the extension
     // left it.
     const ts::JsonValue* const extensions_value = optional(document, "extensions");
-    if (extensions_value && optional(extensions_value->as_object(), "KHR_interactivity")) {
+    if (const ts::JsonValue* const interactivity_value =
+            extensions_value ? optional(extensions_value->as_object(), "KHR_interactivity") : nullptr) {
+        // container.flowGraphs: one handle per graph the document declares,
+        // in graph order, before any scene runs them.
+        const AssetHandle self{static_cast<std::uint32_t>(engine.assets.size())};
+        std::uint32_t graph_index = 0;
+        for ([[maybe_unused]] const ts::JsonValue& graph : array_or_empty(interactivity_value->as_object(), "graphs")) {
+            asset.flow_graphs.push_back(FlowGraphHandle{self, graph_index++});
+        }
         asset.materials = materials;
         asset.node_children.resize(node_json.size());
         for (std::size_t index = 0; index < node_json.size(); ++index) {
@@ -5573,9 +5581,7 @@ ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${intera
         }
         ${nodeVisibility ? "asset.node_visible = node_visible;" : "asset.node_visible.assign(node_json.size(), true);"}
         const std::string asset_name = path.substr(path.find_last_of("/\\\\") + 1);
-        chain_scene_setup(
-            asset,
-            [self = AssetHandle{static_cast<std::uint32_t>(engine.assets.size())}, asset_name](Scene& scene) {
+        chain_scene_setup(asset, [self, asset_name](Scene& scene) {
             attach_flow_graphs(scene, self, asset_name);
         });
     }` : ""}

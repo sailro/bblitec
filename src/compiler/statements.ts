@@ -3594,10 +3594,12 @@ export class StatementLowerer {
         // `await <barrier property>` -- a read whose only meaning is the
         // wait, which this runtime satisfies by construction. Compiled
         // rather than skipped so the property still has to exist and the
-        // owner still has to be the right kind.
+        // owner still has to be the right kind; a value that names no
+        // native expression (a barrier, a container's own list) discards
+        // to nothing, as `emitDiscardedValue` discards it anywhere else.
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = context.compileValue(unwrapped);
-            if (value.kind === "void" && value.cpp.length === 0) {
+            if (value.cpp.length === 0) {
                 return;
             }
         }

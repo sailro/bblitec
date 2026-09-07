@@ -9812,35 +9812,6 @@ class Compiler
                     : {}),
             };
         }
-        // `container.flowGraphRuntimes`: the promise the pinned
-        // KHR_interactivity feature's _sceneSetup stores when addToScene
-        // runs the graphs (gltf-feature-interactivity.ts), undefined on a
-        // container without the extension. The attach is synchronous here
-        // and an interactive asset joins the feature at generation, so the
-        // read has nothing to do and nothing to carry: it is admitted
-        // where the reached slice uses it -- directly under `await`, or
-        // discarded -- and refuses as a value, since the runtimes
-        // themselves (`flowGraphs`, a runtime's context) stay at
-        // generation.
-        if (owner.kind === "asset" && property === "flowGraphRuntimes") {
-            if (!owner.asset || owner.asset.kind !== "gltf") {
-                this.fail(expression, "flowGraphRuntimes is read off a glTF container only.");
-            }
-            const use = expression.parent;
-            if (!use || !(ts.isAwaitExpression(use) || ts.isExpressionStatement(use))) {
-                this.fail(
-                    expression,
-                    "AssetContainer.flowGraphRuntimes resolves to the pin's runtime records, which the flow-graph lowering keeps at generation; the read is admitted directly under await only.",
-                );
-            }
-            return { kind: "void", cpp: "" };
-        }
-        if (owner.kind === "asset" && property === "flowGraphs") {
-            this.fail(
-                expression,
-                "AssetContainer.flowGraphs carries the parsed graphs and their accessors; the flow-graph lowering keeps them at generation and exposes no runtime handle.",
-            );
-        }
         // A container's own handle collection, read without the `?? []`
         // guard the nullish resolver already claims. Asked before the
         // failure below rather than in `readOwnerProperty`, because the
