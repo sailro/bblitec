@@ -323,6 +323,8 @@ supported source APIs or asset extensions. Support is per entry point: direct
 anisotropy does not imply glTF `KHR_materials_anisotropy` support.
 Explicit PBR lightmap/Standard UV/vertex-colour opt-ins remain distinct from
 asset-driven shape.
+`enableStandardUvOffset` enables live UV-offset assignments, and vertex-alpha
+meshes select the transparent draw bucket and matching Standard variant.
 
 Shader materials support bounded typed 2D/2D-array samplers, float/depth sample
 types and comparison mode, plus declared storage buffers and their reached
@@ -368,7 +370,9 @@ GPU skinning, morph/storage morph, baked vertex animation and dynamic
 thin-instance pools are supported. The glTF skin path retains four influences
 when an asset supplies eight, recorded as an adaptation. Direct morph factories
 have a narrower target/shared-weight surface than loaded glTF morphs.
-Scene-authored skeletons and Standard skeleton palettes remain unfinished.
+Scene-authored skeletons retain their joint/weight arrays and live bone palettes.
+Standard materials require `enableStandardSkeleton`; both backends upload the
+palette for the pinned skinned vertex stage.
 
 The reached thin-instance pool includes set/count/matrix/colour/flush,
 add/remove and count reads. GPU-culling enablement records omission of its

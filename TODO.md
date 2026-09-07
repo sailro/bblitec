@@ -204,7 +204,7 @@ and shutdown on both backends. Run instructions are in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 22 numbered scenes unregistered. Helper
+The current registry leaves these 20 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -223,8 +223,6 @@ modules without a numbered scene entry are not integration candidates.
 | 181 | The same text subsystem and live input as 180. |
 | 186 | Tuple flatten, live PBR `ormTexture`/`directIntensity` writes, and the PBR local-cubemap extension, which needs cube-array textures in both PALs and a 64 KB uniform block SDL_GPU pushes rather than binds. Three contracts, the third a subsystem. |
 | 227, 228 | Multiple surfaces and swapchains |
-| 231 | An optional out-parameter, `uvOffset`, a mesh-driven vertex-alpha transparent bucket, and the scene-authored Standard skeleton: `createSkeleton`, `mesh.skeleton`, live palette upload, `enableStandardSkeleton` and a Standard skinned draw arm in both PALs. Nine contracts; the skeleton cluster is shared with 114. |
-| 241 | glTF anisotropy and diffuse transmission with their texture arms, specular textures onto the reflectance slots, five texture-transform pointer slots, and the metallic-roughness pointer the pin ignores rather than applies. Five contracts; no other corpus asset reaches anisotropy or diffuse transmission. |
 | 261 | Composite output identity, a source render-task reference as a descriptor option, a live blend-factor writer, a per-frame task execute hook, and camera projection jitter over a persistent per-task scene UBO. Five contracts. The last two have no refusal: with only the first three, generation succeeds and the scene renders unjittered and unblended. |
 | 275 | `loadFont` and `createDefaultTextData` folded by executing the pinned shaper at generation, a text scene entity carrying the pin's deferred registration, the alpha-to-coverage text arm, the pinned Slug shader family with its overridable constant, and a text draw path in both PALs. Six contracts; the payload folds to about 1.5k floats and pinned Tint accepts both stages today, but the sixth is a new draw subsystem and the fifth would be this compiler's first overridable shader constant. |
 | 302 | A primed self-rearming frame callback, a `<=` counted-loop shape, a user function's statically-known numeric return surviving inlining, and the moving-emitter provider with its per-step world matrix. Four contracts, all generation-side. |
