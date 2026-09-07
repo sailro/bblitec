@@ -195,7 +195,6 @@ class TypedArray {
 
     [[nodiscard]] std::size_t size() const { return view_ ? view_->length : values_->size(); }
     [[nodiscard]] bool empty() const { return size() == 0; }
-    [[nodiscard]] bool is_buffer_view() const { return static_cast<bool>(view_); }
     [[nodiscard]] ArrayBuffer buffer() const { return view_ ? view_->buffer : ArrayBuffer(values_); }
     [[nodiscard]] std::size_t byte_offset() const { return view_ ? view_->offset : 0; }
     [[nodiscard]] std::size_t byte_length() const { return size() * sizeof(T); }

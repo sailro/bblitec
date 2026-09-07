@@ -1008,8 +1008,8 @@ void update_splat_data(
     }): LoweredSource {
         const symbolName = "attachParsedSplat";
         // Upstream retains every cloud's rows (`splatsData`); this port
-        // retains them where a reached call reads them back, which today is
-        // the transform bake alone. They are about half the size of the four
+        // retains them where source reaches baking, row reads or updates.
+        // They are about half the size of the four
         // float payloads again (11 MB against 22 MB on scene 120), so the
         // reach boundary is worth drawing.
         const retention = options.retainRows
