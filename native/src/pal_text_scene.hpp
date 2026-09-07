@@ -2,6 +2,7 @@
 
 #include <bblite/upstream_text.hpp>
 #include <bblite/upstream_text_gpu.hpp>
+#include <bblite/upstream/camera_change_key.hpp>
 #include "pal_text_pipeline.hpp"
 
 namespace bbl::pal {
@@ -20,6 +21,7 @@ struct TextScenePass {
     template<class Pipeline, class Ops>
     void bind(const Scene& scene, const void* device, const TextTargetSignature& target, Pipeline&& pipeline, Ops& ops) {
         for (const auto& renderable : scene.state->text_renderables) {
+            if (!target.color_format) throw std::runtime_error("Text binding requires a color target.");
             const bool depth_write = !renderable->ignore_depth;
             const auto samples = target.sample_count.value_or(1u);
             const auto& info = text_pipeline_info(samples, target.depth_format.has_value(), depth_write,

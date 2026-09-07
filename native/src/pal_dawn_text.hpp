@@ -13,6 +13,18 @@ namespace bbl::pal {
 using DawnTextShaderLease = DawnTextLease<WGPUShaderModule, wgpuShaderModuleRelease>;
 using DawnTextPipelineLayoutLease = DawnTextLease<WGPUPipelineLayout, wgpuPipelineLayoutRelease>;
 
+inline const char* dawn_text_format_name(WGPUTextureFormat format) {
+    switch (format) {
+        case WGPUTextureFormat_BGRA8Unorm: return "bgra8unorm";
+        case WGPUTextureFormat_RGBA8Unorm: return "rgba8unorm";
+        case WGPUTextureFormat_Depth24Plus: return "depth24plus";
+        case WGPUTextureFormat_Depth24PlusStencil8: return "depth24plus-stencil8";
+        case WGPUTextureFormat_Depth32Float: return "depth32float";
+        case WGPUTextureFormat_Depth32FloatStencil8: return "depth32float-stencil8";
+        default: throw std::runtime_error("Unmapped Dawn text target format.");
+    }
+}
+
 /** One device's text pipeline cache; source records retain their own leases. */
 struct DawnTextRenderer {
     std::shared_ptr<DawnTextDevice> owner = std::make_shared<DawnTextDevice>();
@@ -128,7 +140,7 @@ struct DawnTextRenderer {
         auto created = retain_dawn_text_resource<DawnTextPipelineLease>(owner,
             wgpuDeviceCreateRenderPipeline(owner->device, &descriptor), "pipeline");
         if (owner->capture.enabled()) created->capture = text_pipeline_capture(info,
-            color_format == WGPUTextureFormat_BGRA8Unorm ? "bgra8unorm" : "rgba8unorm", "depth24plus-stencil8");
+            dawn_text_format_name(color_format), info.has_depth ? dawn_text_format_name(depth_format) : "");
         pipelines.emplace(key, created);
         // The admitted source installs no variant resolver; the pin aliases it.
         return {created, created, layout, quad};

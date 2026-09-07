@@ -61,6 +61,7 @@ struct SdlTextUniform {
     std::uint64_t capture_id = 0;
     std::vector<std::uint8_t> bytes;
     bool destroyed = false;
+    ~SdlTextUniform() { retire(); }
     void retire() noexcept {
         if (!destroyed && capture_id) owner->capture.destroy(capture_id);
         destroyed = true;
@@ -89,6 +90,11 @@ struct SdlTextGroup {
     std::shared_ptr<SdlTextTextureLease> curves, bands;
     std::uint64_t capture_id = 0;
     std::vector<TextGpuBindingCapture> bindings;
+    std::shared_ptr<SdlTextDevice> owner;
+    ~SdlTextGroup() { retire(); }
+    void retire() noexcept {
+        if (capture_id) { owner->capture.destroy(capture_id); capture_id = 0; }
+    }
 };
 struct SdlTextLayout { std::vector<std::pair<std::uint32_t, TextBindingRole>> bindings; };
 struct SdlTextPipeline {
@@ -217,7 +223,9 @@ struct SdlTextResourceOps {
         result->curves = textures->curves;
         result->bands = textures->bands;
         if (owner->capture.enabled()) {
+            result->owner = owner;
             result->capture_id = owner->capture.create_resource("binding-set", 0);
+            owner->resources.track(result);
             const auto layout = std::static_pointer_cast<SdlTextLayout>(opaque_layout);
             for (const auto& [binding, role] : layout->bindings) {
                 std::uint64_t id = 0;

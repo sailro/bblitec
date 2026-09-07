@@ -8,6 +8,18 @@
 
 namespace bbl::pal {
 
+inline const char* sdl_text_format_name(SDL_GPUTextureFormat format) {
+    switch (format) {
+        case SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM: return "bgra8unorm";
+        case SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM: return "rgba8unorm";
+        case SDL_GPU_TEXTUREFORMAT_D24_UNORM: return "depth24plus";
+        case SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT: return "depth24plus-stencil8";
+        case SDL_GPU_TEXTUREFORMAT_D32_FLOAT: return "depth32float";
+        case SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT: return "depth32float-stencil8";
+        default: throw std::runtime_error("Unmapped SDL text target format.");
+    }
+}
+
 struct SdlTextRenderer {
     std::shared_ptr<SdlTextDevice> owner = std::make_shared<SdlTextDevice>();
     std::shared_ptr<SdlTextBuffer> quad;
@@ -109,8 +121,7 @@ struct SdlTextRenderer {
         created->pipeline = retain_sdl_text_resource<SdlTextPipelineLease>(owner,
             SDL_CreateGPUGraphicsPipeline(owner->device, &descriptor), "pipeline");
         if (owner->capture.enabled()) created->capture = text_pipeline_capture(info,
-            color_format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ? "bgra8unorm" : "rgba8unorm",
-            depth_format == SDL_GPU_TEXTUREFORMAT_D32_FLOAT ? "depth32float" : "depth24plus");
+            sdl_text_format_name(color_format), info.has_depth ? sdl_text_format_name(depth_format) : "");
         pipelines.emplace(key, created);
         return {created, created, layout, quad};
     }
