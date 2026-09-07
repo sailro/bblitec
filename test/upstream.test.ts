@@ -154,7 +154,7 @@ test("emits the DDS background composite only where it is reached", () => {
     // The two entry points share the world-bounds walk, computeSceneSize and
     // the DDS header, so they are one unit whose contents follow the features
     // rather than upstream's own file boundary.
-    assert.match(both.source, /void load_environment\(/);
+    assert.match(both.source, /std::shared_ptr<const EnvironmentState> load_environment\(/);
     assert.match(both.source, /void add_dds_environment_background\(/);
     assert.match(both.source, /read_dds_skybox\(scene\.environment/);
     assert.match(both.source, /scene\.environment\.enable_noise = options\.enable_noise/);
@@ -164,7 +164,7 @@ test("emits the DDS background composite only where it is reached", () => {
         loadEnvironment: false,
         ddsBackground: true,
     });
-    assert.doesNotMatch(backgroundOnly.source, /void load_environment\(/);
+    assert.doesNotMatch(backgroundOnly.source, /load_environment\(/);
     // The `.env` parser is what that function needs and nothing else here
     // does, so a background-only unit must not include its header.
     assert.doesNotMatch(backgroundOnly.source, /env_parse\.hpp/);

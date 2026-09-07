@@ -1185,7 +1185,7 @@ test("forwards DOM-compatible application input through every native loop", () =
         const loop = source(path);
         assert.match(
             loop,
-            /camera_pointer_hook = \[&\]\(const SDL_Event& event\) \{[\s\S]{0,120}handle_camera_pointer_event\(event, camera, pointer_state\);/,
+            /camera_pointer_hook = \[&\]\(const SDL_Event& event\) \{[\s\S]{0,120}dispatch_surface_camera_pointer\(engine, event, camera, pointer_state, surface_pointer_state\);/,
         );
         assert.match(
             loop,
@@ -1197,6 +1197,10 @@ test("forwards DOM-compatible application input through every native loop", () =
             /input_replay\.dispatch\(frame, [^,]+, engine\);/,
         );
     }
+    assert.match(
+        source("native/src/pal_camera_controls.hpp"),
+        /handle_camera_pointer_event\(event, primary, primary_state\);/,
+    );
     for (const path of [
         "native/src/pal_sdl_gpu_sprite.cpp",
         "native/src/pal_dawn_sprite.cpp",

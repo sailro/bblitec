@@ -20,8 +20,9 @@ Scene create_scene_context(Engine& engine) {
     scene.engine = &engine;
     return scene;
 }
-RenderTargetHandle create_render_target(Engine&, RenderTargetOptions options) {
+RenderTargetHandle create_render_target(Engine& engine, RenderTargetOptions options) {
     targets.push_back(options);
+    engine.render_targets.emplace_back();
     return {static_cast<std::uint32_t>(targets.size() - 1)};
 }
 RenderTargetHandle swapchain_render_target(Engine&) { return {100}; }

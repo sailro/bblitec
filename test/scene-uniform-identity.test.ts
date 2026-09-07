@@ -94,7 +94,7 @@ test("scene object keys observe pin defaults, fresh fog, retained glTF setup and
     const environment = new EnvironmentLowerer(context);
     writeFileSync(join(directory,"dds.cpp"), environment.lowerDdsLoaderAdapter().source);
     writeFileSync(join(directory,"hdr.cpp"), environment.lowerHdrLoaderAdapter().source);
-    const envFunction = cppFunction(environment.lowerLoaderAdapter({loadEnvironment:true,ddsBackground:false}).source, "void load_environment(");
+    const envFunction = cppFunction(environment.lowerLoaderAdapter({loadEnvironment:true,ddsBackground:false}).source, "std::shared_ptr<const EnvironmentState> load_environment(");
     const sceneSource = new SceneLowerer(context).lowerCore({fog:true}).source;
     const fogFunction = cppFunction(sceneSource, "void set_scene_fog(");
     const gltfSource = new GltfLowerer(context).lowerLoaderAdapter().source;
@@ -154,7 +154,7 @@ int main() {
     auto dds = [&] { bbl::load_dds_environment(scene, {"environment","brdf"}); };
     auto hdr = [&] { bbl::load_hdr_environment(scene, {"environment","brdf"}); };
     auto env = [&] { bbl::EnvironmentOptions options; options.environment_url="environment"; options.brdf_url="brdf";
-        bbl::load_environment(scene, options); };
+        return bbl::load_environment(scene, options); };
     auto verify = [&](auto load) {
         load(); const auto first = scene.state->environment_identity;
         load(); assert(scene.state->environment_identity != first);
@@ -168,6 +168,13 @@ int main() {
         assert(current.size() == previous.size() && std::equal(current.begin(), current.end(), previous.begin()));
     };
     verify(dds); verify(hdr); verify(env);
+    const auto retained = env();
+    const auto retained_byte = retained->specular_faces[0].bytes[124];
+    bytes[124] ^= 1;
+    const auto replacement = env();
+    assert(retained != replacement);
+    assert(retained->specular_faces[0].bytes[124] == retained_byte);
+    assert(replacement->specular_faces[0].bytes[124] != retained_byte);
     const auto committed = scene.state->environment_identity;
     bytes.pop_back(); bool failed=false;
     try { dds(); } catch(const std::runtime_error&) { failed=true; }
