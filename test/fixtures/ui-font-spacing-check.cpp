@@ -3,6 +3,7 @@
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/TextShapingContext.h>
 #include <RmlUi/Core/Factory.h>
+#include <RmlUi/Core/ElementScroll.h>
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_text.hpp"
 #include <cassert>
@@ -152,6 +153,105 @@ int main() {
     update();
     centered(*control);
     centered(*sibling);
+
+    // A centered column starts scrolling on a short/high-density viewport.
+    // An unstyled RmlUi vertical scrollbar consumes the entire panel width.
+    document->SetAttribute("style", "width:100%;height:100%;font-family:fixture;font-size:16dp;pointer-events:none;");
+    document->SetStyleSheetContainer(Rml::Factory::InstanceStyleSheetString(
+        std::string(bbl::pal::ui_user_agent_css) +
+        ".menu{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;}"
+        ".menu-panel{width:420dp;max-width:92vw;max-height:92vh;overflow:auto;display:flex;flex-direction:column;align-items:center;padding:34dp 30dp;}"
+        ".menu-title{font-size:32dp;line-height:1.05;text-align:center;margin:0 0 10dp;}"
+        ".menu-buttons{width:100%;display:flex;flex-direction:column;gap:10dp;}"
+        ".menu-item{height:48dp;flex-shrink:0;}"
+        ".menu-credit{height:180dp;flex-shrink:0;}"
+    ));
+    document->SetInnerRML(
+        "<div class='menu'><div class='menu-panel' id='menu-panel'>"
+        "<h1 class='menu-title' id='menu-title'>ANTIGRAVITY<div>RACER</div></h1>"
+        "<div class='menu-buttons' id='menu-buttons'>"
+        "<div class='menu-item'>Race (1 Player)</div><div class='menu-item'>Split-Screen (2 Players)</div>"
+        "<div class='menu-item'>Test Track</div><div class='menu-item'>Attract Mode</div>"
+        "<div class='menu-item' id='last-item'>Track Editor</div></div>"
+        "<div class='menu-credit'>Credits</div></div></div>");
+    auto* panel = document->GetElementById("menu-panel");
+    auto* buttons = document->GetElementById("menu-buttons");
+    auto* menu_title = document->GetElementById("menu-title");
+    struct Viewport { int width, height; float density; bool overflow; };
+    for (const auto view : {
+        Viewport{2560, 1440, 1.f, false}, Viewport{1280, 720, 1.f, false},
+        Viewport{1280, 720, 2.f, true}, Viewport{3840, 2300, 2.f, false},
+        Viewport{1280, 720, 2.f, true}, Viewport{640, 360, 1.f, true},
+        Viewport{2560, 1440, 1.f, false},
+    }) {
+        layout->SetDimensions({view.width, view.height});
+        layout->SetDensityIndependentPixelRatio(view.density);
+        update();
+        auto* scroll = panel->GetElementScroll();
+        const float scrollbar = scroll->GetScrollbarSize(Rml::ElementScroll::VERTICAL);
+        const float content_width = buttons->GetBox().GetSize().x / view.density;
+        std::cout << "scrollbar layout: " << view.width << 'x' << view.height
+                  << " density=" << view.density << " scrollbar=" << scrollbar
+                  << " content-width=" << content_width << std::endl;
+        assert(content_width >= 400.f && content_width <= 420.f);
+        assert(menu_title->GetBox().GetSize().y / view.density < 80.f);
+        assert(scroll->GetScrollbarSize(Rml::ElementScroll::HORIZONTAL) == 0.f);
+        assert(view.overflow ? (scrollbar > 0.f && scrollbar / view.density <= 20.f) : scrollbar == 0.f);
+        if (view.overflow) {
+            auto* vertical = scroll->GetScrollbar(Rml::ElementScroll::VERTICAL);
+            Rml::Element* thumb = nullptr;
+            for (int i = 0; i < vertical->GetNumChildren(true); ++i) {
+                if (vertical->GetChild(i)->GetTagName() == "sliderbar") thumb = vertical->GetChild(i);
+            }
+            assert(thumb);
+            const auto thumb_size = thumb->GetBox().GetSize();
+            assert(thumb_size.x > 0.f && thumb_size.x <= scrollbar && thumb_size.y > 0.f);
+            assert(thumb->GetComputedValues().background_color().alpha > 0);
+            layout->SetDefaultScrollBehavior(Rml::ScrollBehavior::Instant, 1.f);
+            const auto position = thumb->GetAbsoluteOffset(Rml::BoxArea::Content) + thumb_size * 0.5f;
+            layout->ProcessMouseMove(int(position.x), int(position.y), 0);
+            layout->ProcessMouseWheel(2.f, 0);
+            update();
+            assert(panel->GetScrollTop() > 0.f);
+            panel->SetScrollTop(0.f);
+            update();
+            layout->ProcessMouseMove(int(position.x), int(position.y), 0);
+            layout->ProcessMouseButtonDown(0, 0);
+            layout->ProcessMouseMove(int(position.x), int(position.y + 40.f * view.density), 0);
+            layout->ProcessMouseButtonUp(0, 0);
+            update();
+            assert(panel->GetScrollTop() > 0.f);
+            panel->SetScrollTop(panel->GetScrollHeight());
+            update();
+            auto* last = document->GetElementById("last-item");
+            const float last_bottom = last->GetAbsoluteOffset(Rml::BoxArea::Border).y + last->GetBox().GetSize().y;
+            assert(last_bottom <= panel->GetAbsoluteOffset(Rml::BoxArea::Padding).y + panel->GetClientHeight());
+            panel->SetScrollTop(0.f);
+        }
+    }
+
+    // Both axes reserve space, then release it when overflow disappears.
+    document->SetInnerRML("<div id='scroll-box' style='width:200dp;height:100dp;overflow:auto;'>"
+        "<div id='scroll-content' style='width:400dp;height:300dp;'></div></div>");
+    for (const float density : {1.f, 2.f}) {
+        layout->SetDensityIndependentPixelRatio(density);
+        update();
+        auto* box = document->GetElementById("scroll-box");
+        auto* scroll = box->GetElementScroll();
+        for (const auto axis : {Rml::ElementScroll::VERTICAL, Rml::ElementScroll::HORIZONTAL}) {
+            const float size = scroll->GetScrollbarSize(axis) / density;
+            assert(size > 0.f && size <= 20.f);
+        }
+        assert(box->GetClientWidth() / density >= 180.f);
+        assert(box->GetClientHeight() / density >= 80.f);
+    }
+    auto* content = document->GetElementById("scroll-content");
+    content->SetProperty("width", "100dp");
+    content->SetProperty("height", "40dp");
+    update();
+    auto* scroll = document->GetElementById("scroll-box")->GetElementScroll();
+    assert(scroll->GetScrollbarSize(Rml::ElementScroll::VERTICAL) == 0.f);
+    assert(scroll->GetScrollbarSize(Rml::ElementScroll::HORIZONTAL) == 0.f);
     Rml::Shutdown();
     std::cout << "ui-font-spacing-check: ok\n";
 }

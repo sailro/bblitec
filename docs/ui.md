@@ -36,6 +36,15 @@ Element records update in place, preserving focus, hover and capture identity.
 Borrowed event objects cannot escape their dispatch; copy owned scalar fields
 into retained state.
 
+The main engine canvas exposes drawing-buffer pixels through `width/height`
+and CSS pixels through `clientWidth/clientHeight`. CSS extents divide the
+drawable size by SDL's window display scale, matching RmlUi's density ratio.
+SDL window coordinates differ across platforms, so canvas pointer positions
+convert by pixel density divided by display scale before browser callbacks.
+Display-scale changes refresh these metrics even without a pixel resize.
+This keeps projected labels, drag positions and cursor-anchored zoom aligned
+at 100%, fractional and 200% scaling.
+
 Button descendants share their button's focus target. A press/release within
 the button activates it; release outside cancels. Conditional mousedown
 cancellation restores prior focus for that event. Cursor ownership follows
@@ -88,6 +97,15 @@ The projection supports the reviewed property surface: browser defaults for
 reached tags, platform font families/weights, fixed positioning/inset/calc,
 reached shorthands, packaged backgrounds, alpha colours, gradients, rounded
 borders, text effects and deterministic CSS animation.
+
+The default stylesheet also sizes RmlUi's generated scrollbars: both axes use
+16 density-independent pixels with visible draggable thumbs. The built-in
+controls opt into pointer input over the otherwise transparent overlay.
+RmlUi supplies no built-in scrollbar styling; an auto-width vertical scrollbar otherwise
+occupies its parent's full width when overflow begins. This can collapse a
+height-limited flex panel's children on a short window or at higher display
+scaling. The native layout fixture checks 100%/200% density, resize into and
+out of overflow, both axes, and wheel/drag access to the menu's lower controls.
 
 Stylesheet selectors are bounded: class/id, two-class and tag/class
 compounds, reviewed id/class descendants and statically proven

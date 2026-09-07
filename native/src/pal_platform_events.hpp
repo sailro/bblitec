@@ -489,15 +489,29 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
     }
 }
 
+/** Apply one SDL size/density snapshot to the browser canvas metrics. */
+inline bool update_engine_canvas_metrics(
+    Engine& engine, int width, int height,
+    double display_scale, double pixel_density) {
+    const double client_width = width / display_scale;
+    const double client_height = height / display_scale;
+    const bool changed =
+        engine.options.width != width || engine.options.height != height ||
+        engine.canvas_client_width != client_width ||
+        engine.canvas_client_height != client_height;
+    engine.options.width = width;
+    engine.options.height = height;
+    engine.canvas_client_width = client_width;
+    engine.canvas_client_height = client_height;
+    engine.canvas_window_to_client_scale = pixel_density / display_scale;
+    return changed;
+}
+
 /**
- * Keep the native drawing-buffer dimensions behind `canvas.width` and
- * `canvas.height` live.
- *
- * SDL's window-resized event reports logical window coordinates while the
- * renderer and an HTML canvas both expose backing-store pixels. Querying the
- * window here therefore also preserves the right contract on a high-density
- * display. Every native loop drains events before advancing the application,
- * so a frame triggered by maximize/restore sees the new size in its callbacks.
+ * Keep drawing-buffer pixels and CSS client extents live before callbacks.
+ * SDL window coordinates are physical pixels on Windows and logical points
+ * on macOS. Neither universally equals CSS pixels: those follow the window's
+ * display scale, just like the retained UI's density-independent pixels.
  */
 inline bool sync_engine_canvas_size(
     SDL_Window* window,
@@ -511,28 +525,18 @@ inline bool sync_engine_canvas_size(
         engine.options.height = height;
         return changed;
     }
-    int client_width = 0;
-    int client_height = 0;
     int width = 0;
     int height = 0;
     if (
         window &&
-        SDL_GetWindowSize(window, &client_width, &client_height) &&
         SDL_GetWindowSizeInPixels(window, &width, &height) &&
-        client_width > 0 &&
-        client_height > 0 &&
         width > 0 &&
         height > 0) {
-        const bool changed =
-            engine.options.width != width ||
-            engine.options.height != height ||
-            engine.canvas_client_width != client_width ||
-            engine.canvas_client_height != client_height;
-        engine.options.width = width;
-        engine.options.height = height;
-        engine.canvas_client_width = client_width;
-        engine.canvas_client_height = client_height;
-        return changed;
+        const float display_scale = SDL_GetWindowDisplayScale(window);
+        const float pixel_density = SDL_GetWindowPixelDensity(window);
+        return update_engine_canvas_metrics(engine, width, height,
+            display_scale > 0.0f ? display_scale : 1.0f,
+            pixel_density > 0.0f ? pixel_density : 1.0f);
     }
     return false;
 }
@@ -712,7 +716,8 @@ inline void handle_platform_event(
     Engine& engine) {
     if (
         event.type == SDL_EVENT_WINDOW_RESIZED ||
-        event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+        event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+        event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
         if (sync_engine_canvas_size(
                 SDL_GetWindowFromID(event.window.windowID),
                 engine)) {
@@ -755,8 +760,8 @@ inline void handle_platform_event(
         const PlatformMouseEvent mouse_event{
             .button = static_cast<double>(event.button.button - 1),
             .buttons = dom_mouse_buttons(pressed),
-            .client_x = static_cast<double>(event.button.x),
-            .client_y = static_cast<double>(event.button.y),
+            .client_x = event.button.x * engine.canvas_window_to_client_scale,
+            .client_y = event.button.y * engine.canvas_window_to_client_scale,
         };
         if (runtime_trace_enabled()) {
             std::cerr
@@ -794,8 +799,8 @@ inline void handle_platform_event(
         const PlatformMouseEvent mouse_event{
             .button = -1.0,
             .buttons = dom_mouse_buttons(tracked_mouse_buttons()),
-            .client_x = static_cast<double>(event.motion.x),
-            .client_y = static_cast<double>(event.motion.y),
+            .client_x = event.motion.x * engine.canvas_window_to_client_scale,
+            .client_y = event.motion.y * engine.canvas_window_to_client_scale,
             .movement_x = static_cast<double>(event.motion.xrel),
             .movement_y = static_cast<double>(event.motion.yrel),
         };
@@ -833,8 +838,8 @@ inline void handle_platform_event(
         dispatch_platform_wheel_event(
             engine,
             delta_y,
-            static_cast<double>(event.wheel.mouse_x),
-            static_cast<double>(event.wheel.mouse_y),
+            event.wheel.mouse_x * engine.canvas_window_to_client_scale,
+            event.wheel.mouse_y * engine.canvas_window_to_client_scale,
             dom_mouse_buttons(tracked_mouse_buttons()));
         return;
     }

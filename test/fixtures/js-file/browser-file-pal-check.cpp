@@ -158,6 +158,77 @@ int main(int argc, char** argv) {
     engine.mouse_down_callbacks.clear();
     engine.mouse_up_callbacks.clear();
 
+    // SDL's Windows and macOS coordinates differ at the same display scale.
+    // Browser label projection and pointer picking must meet at the same
+    // drawing-buffer pixel in either case, including the viewport's far half.
+    bbl::PlatformMouseEvent received{};
+    int received_events = 0;
+    const auto receive = [&](const bbl::PlatformMouseEvent& event) {
+        received = event;
+        ++received_events;
+    };
+    engine.mouse_down_callbacks.add(8u, receive);
+    engine.mouse_up_callbacks.add(9u, receive);
+    engine.mouse_move_callbacks.add(10u, receive);
+    engine.mouse_wheel_callbacks.add(11u, receive);
+    for (const double density : {1.0, 1.25, 2.0}) {
+        for (const double pixel_density : {1.0, 2.0}) {
+            bbl::pal::update_engine_canvas_metrics(engine, 1280, 720, density, pixel_density);
+            require(engine.options.width == 1280 && engine.options.height == 720,
+                "DPI does not shrink the drawing buffer");
+            require(engine.canvas_client_width == 1280 / density &&
+                engine.canvas_client_height == 720 / density, "CSS canvas extent follows display scale");
+            const double dpr = engine.options.width / engine.canvas_client_width;
+            const double label_x = 960.0 / dpr;
+            const double label_y = 540.0 / dpr;
+            require(label_x * density == 960.0 && label_y * density == 540.0,
+                "CSS label projects back to its drawing-buffer anchor");
+            const auto check_pointer = [&]() {
+                require(received.client_x == label_x && received.client_y == label_y,
+                    "SDL pointer and projected CSS label agree");
+                require(received.client_x * dpr == 960 && received.client_y * dpr == 540,
+                    "browser picking returns the drawing-buffer anchor");
+            };
+            const float x = static_cast<float>(960.0 / pixel_density);
+            const float y = static_cast<float>(540.0 / pixel_density);
+            SDL_Event event{};
+            event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            event.button.button = SDL_BUTTON_LEFT;
+            event.button.down = true;
+            event.button.x = x;
+            event.button.y = y;
+            bbl::pal::handle_platform_event(event, engine);
+            check_pointer();
+            event.type = SDL_EVENT_MOUSE_BUTTON_UP;
+            event.button.down = false;
+            bbl::pal::handle_platform_event(event, engine);
+            check_pointer();
+            event = {};
+            event.type = SDL_EVENT_MOUSE_MOTION;
+            event.motion.x = x;
+            event.motion.y = y;
+            bbl::pal::handle_platform_event(event, engine);
+            check_pointer();
+            event = {};
+            event.type = SDL_EVENT_MOUSE_WHEEL;
+            event.wheel.mouse_x = x;
+            event.wheel.mouse_y = y;
+            event.wheel.y = -1;
+            bbl::pal::handle_platform_event(event, engine);
+            check_pointer();
+            require(received.delta_y == 100, "wheel distance remains in browser pixel-mode units");
+        }
+    }
+    require(received_events == 24, "all four input kinds reach the far half of every DPI viewport");
+    require(!bbl::pal::update_engine_canvas_metrics(engine, 1280, 720, 2, 2), "unchanged metrics");
+    require(bbl::pal::update_engine_canvas_metrics(engine, 1280, 720, 1, 1),
+        "moving between DPI settings changes the CSS viewport without a pixel resize");
+    require(bbl::pal::update_engine_canvas_metrics(engine, 2560, 1440, 1, 1), "maximize updates extents");
+    engine.mouse_down_callbacks.clear();
+    engine.mouse_up_callbacks.clear();
+    engine.mouse_move_callbacks.clear();
+    engine.mouse_wheel_callbacks.clear();
+
     const bbl::pal::FileDialogOptions options{
         .title = "Open file",
         .suggested_name = "",
