@@ -50,6 +50,7 @@ import { join } from "node:path";
  * | 125 | SDL_GPU | differ, worst MAD 0.000051, max 1 | byte-identical |
  * | 129 | Dawn | differ, worst MAD 0.000772, max 3 | byte-identical |
  * | 129 | SDL_GPU | differ, worst MAD 0.000118, max 2 | byte-identical |
+ * | 231 | SDL_GPU | differ, worst MAD 0.000005, max 1 | byte-identical |
  *
  * Scene 128 joined on 2026-08-27, found the way an entry should be: a
  * neutrality run over a change that could not reach it reported a moved
@@ -107,6 +108,12 @@ import { join } from "node:path";
  * one sample are byte-identical. The SOG cloud therefore has the same
  * multisample repeatability boundary as the other measured splat scenes.
  * Its image thresholds and committed golden remain unchanged.
+ *
+ * Scene 231's SDL_GPU entry was measured on 2026-09-07 before the next
+ * integration sweep: two of four re-runs moved, with worst MAD 5.1e-6 and
+ * max channel difference 1; all five one-sample runs are byte-identical.
+ * Dawn was stable in both five-run controls and has no entry. The source,
+ * reference and image thresholds are unchanged.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
@@ -124,6 +131,7 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene128", new Set(["dawn", "sdl_gpu"])],
     ["scene129", new Set(["dawn", "sdl_gpu"])],
     ["scene226", new Set(["dawn", "sdl_gpu"])],
+    ["scene231", new Set(["sdl_gpu"])],
 ]);
 
 /**

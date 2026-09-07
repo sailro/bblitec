@@ -2509,7 +2509,8 @@ inline void set_random_override(Callback<double()> callback) {
 }
 
 [[nodiscard]] inline Callback<double()> random_function() {
-    if (random_override()) return random_override();
+    const auto& override = random_override();
+    if (override) return override;
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
     struct BuiltinRandom { Callback<double()> callback{random_builtin}; };
     return realm_scratch<BuiltinRandom>().callback;
@@ -2520,7 +2521,8 @@ inline void set_random_override(Callback<double()> callback) {
 }
 
 [[nodiscard]] inline double random_js() {
-    return random_override() ? random_override()() : random_builtin();
+    const auto& override = random_override();
+    return override ? override() : random_builtin();
 }
 
 }  // namespace bbl::js

@@ -19673,6 +19673,20 @@ class Compiler
         };
     }
 
+    /** Emit the same worker-aware cleanup for synchronous and suspended scopes. */
+    public emitFinallyGuard(cleanup: readonly string[]): string {
+        this.reachJsData();
+        const guard = this.allocateTemporaryCppName("finally");
+        this.emit(`[[maybe_unused]] auto ${guard} = bbl::js::finally([&]() {`);
+        this.increaseIndent();
+        const workerAbort = this.workerAbortCpp();
+        if (workerAbort) this.emit(`if (${workerAbort}) return;`);
+        for (const line of cleanup) this.emit(line);
+        this.decreaseIndent();
+        this.emit("});");
+        return guard;
+    }
+
     /** Keep a flat try/finally alive across the startEngine continuation. */
     public emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean {
         const mark = this.engineStartMark;
@@ -19703,15 +19717,7 @@ class Compiler
             line.trim().startsWith(Compiler.startContinuationGatePrefix))) {
             this.fail(site, "A finally block spanning startEngine cannot also span a later frame yield.");
         }
-        this.reachJsData();
-        const guard = this.allocateTemporaryCppName("finally");
-        this.emit(`auto ${guard} = bbl::js::finally([&]() {`);
-        this.increaseIndent();
-        const workerAbort = this.workerAbortCpp();
-        if (workerAbort) this.emit(`if (${workerAbort}) return;`);
-        for (const line of cleanup) this.emit(line);
-        this.decreaseIndent();
-        this.emit("});");
+        const guard = this.emitFinallyGuard(cleanup);
         for (const line of body.slice(0, start)) this.emit(line);
         mark.index = this.body.length;
         mark.indentLevel = this.indentLevel;

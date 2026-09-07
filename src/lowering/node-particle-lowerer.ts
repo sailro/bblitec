@@ -1509,14 +1509,13 @@ void sync_node_particle_billboard(
 }`
 }
 ${
-    !registered
+    !registered || native
         ? ""
         : `
 void register_node_particle_set(
     Engine& engine,
     Scene& scene,
-    int request) {${native ? `
-    if (register_native_node_particle_set(engine, scene, request)) return;` : ""}
+    int request) {
     for (const RegisteredSystem& entry : registered_systems) {
         if (entry.request != request) continue;
         const BillboardSystemHandle billboard =
@@ -1932,9 +1931,10 @@ const NativeParticleSystem& native_particle_system(int set, int system) {
     }
     throw std::runtime_error("No native particle system for this index.");
 }
+`,
+            publicFunctions: `
 ${registrations.length > 0 ? `
-bool register_native_node_particle_set(Engine& engine, Scene& scene, int request) {
-    bool found = false;
+void register_node_particle_set(Engine& engine, Scene& scene, int request) {
     for (const RegisteredSystem& entry : registered_systems) {
         if (entry.request != request) continue;
         const auto& system = native_particle_system(entry.set_index, entry.system_index);
@@ -1946,12 +1946,9 @@ bool register_native_node_particle_set(Engine& engine, Scene& scene, int request
             system->animate(ratio);
             system->sync(engine, billboard);
         });
-        found = true;
     }
-    return found;
 }
-` : ""}`,
-            publicFunctions: `
+` : ""}
 std::array<float, 16> sample_node_particle_emitter(const bbl::js::Callback<bbl::js::F32Array()>& provider) {
     const auto provided = npe_sample_provider(provider);
     std::array<float, 16> snapshot{};

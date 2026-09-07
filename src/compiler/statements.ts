@@ -120,6 +120,7 @@ export interface StatementLoweringContext {
         | "mark_mesh_dirty"
         | "mark_mesh_runtime_transform";
     captureEmittedLines(emitBody: () => void): string[];
+    emitFinallyGuard(cleanup: readonly string[]): string;
     emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean;
     nativeBindingCheckpoint(): number;
     captureHoistedLines(emitBody: () => void, beforeBody: number, site: ts.Node): string[];
@@ -1525,19 +1526,9 @@ export class StatementLowerer {
             : undefined;
         if (finallyGuard && context.emitEngineFinally(body, finallyGuard, statement)) return;
         if (finallyGuard) {
-            context.reachJsData();
             context.emit("{");
             context.increaseIndent();
-            const guard = context.allocateTemporaryCppName("finally");
-            context.emit(
-                `[[maybe_unused]] auto ${guard} = bbl::js::finally([&]() {`,
-            );
-            context.increaseIndent();
-            const workerAbort = context.workerAbortCpp();
-            if (workerAbort) context.emit(`if (${workerAbort}) return;`);
-            for (const line of finallyGuard) context.emit(line);
-            context.decreaseIndent();
-            context.emit("});");
+            context.emitFinallyGuard(finallyGuard);
         }
         for (const line of body) context.emit(line);
         if (finallyGuard) {
