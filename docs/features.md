@@ -576,9 +576,11 @@ Source-relative intermediate sizes follow resize.
 Composite output identity is observed from the pinned facade independently
 of pass order. The compiler can transport a proven source render-task handle
 through a composite descriptor, and uniform writers can read private live
-task state. TAA uses these preparation contracts, but native generation
-explicitly refuses it until its per-frame execute hook and camera projection
-jitter over the source task's persistent scene UBO are represented.
+task state. TAA's pinned execute and rebuild bodies are lowered over retained
+task state with synchronous renderer hooks; observing fixtures cover pass
+failures and reset order. Native generation still explicitly refuses TAA
+until camera projection jitter and the source task's persistent scene UBO
+are represented.
 
 ### Screen-space effects
 

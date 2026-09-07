@@ -23,6 +23,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { TaaPostProcessLowerer } from "./taa-post-process-lowerer.js";
 
 const TASK_MODULE = "src/frame-graph/post-process-task.ts";
 
@@ -528,6 +529,11 @@ export class PostProcessLowerer {
     }
 
     private header(): string {
+        const lifecycleHeaders = new Set(this.composites.filter((composite) => composite.taa !== undefined)
+            .map((composite) => new TaaPostProcessLowerer(this.context, composite).header()));
+        if (lifecycleHeaders.size > 1) {
+            throw new Error("Pinned TAA composites disagree on their retained child pass layout.");
+        }
         return `#pragma once
 
 #include <bblite/runtime.hpp>
@@ -565,7 +571,8 @@ void write_post_process_uniforms(
     float* data);
 
 } // namespace bbl::upstream
-${this.compositeDeclarations()}`;
+${this.compositeDeclarations()}
+${[...lifecycleHeaders].join("\n")}`;
     }
 
     /** The pin's own switch, as the emitted table's case arms. */
@@ -901,7 +908,8 @@ ${passes.join(",\n")},
     };
     options.output_pass = ${composite.outputPass}u;
     options.source_tasks = std::move(inputs.source_tasks);
-    return create_post_process_task(engine, std::move(options));
+${composite.taa ? `    options.taa = std::make_shared<TaaPostProcessState>(
+        upstream::create_taa_post_process_state(${dvalue(composite.taa.factor)}, ${composite.taa.disableOnCameraMove}));\n` : ""}    return create_post_process_task(engine, std::move(options));
 }`;
     }
 

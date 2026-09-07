@@ -48,7 +48,7 @@ test("TAA descriptors preserve task aliases and refuse missing or non-render sou
     assert.throws(() => compileSource(`${prefix} const taa = ${create()}; taa.factor = 0.5;`), /setter on a composite/);
 });
 
-test("TAA observes presentation identity separately from history order and refuses execution", async () => {
+test("TAA observes presentation identity separately from history order and refuses missing UBO transport", async () => {
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene261.ts";
     const result = compileSource(readFileSync(resolve(fileName), "utf8"), { fileName });
     const manifest = result.manifest.postProcessComposites[0]!;
@@ -57,6 +57,7 @@ test("TAA observes presentation identity separately from history order and refus
     assert.ok(result.manifest.features.includes("renderer:post-process"));
     for (const hasTarget of [true, false]) {
         const composite = await composeComposite({ ...manifest, hasTarget });
+        assert.deepEqual(composite.taa, { factor: 0.05, disableOnCameraMove: true });
         assert.equal(composite.outputPass, 1);
         assert.deepEqual(composite.passes.map((pass) => pass.name), [
             "bblitec-composite-blend", "bblitec-composite-present", "bblitec-composite-history-update",
@@ -73,7 +74,7 @@ test("TAA observes presentation identity separately from history order and refus
         assert.deepEqual(composite.passes[0]?.extraTextures, [{ kind: "intermediate", index: 0 }]);
         assert.throws(() => new PostProcessLowerer(new LoweringContext(), [], [composite],
             ` (reached from ${fileName}:100:17)`).lowerTaskRecords(),
-            /per-frame task execution and camera projection jitter.*scene261\.ts:100:17/);
+            /camera projection jitter over a persistent source-task scene UBO.*scene261\.ts:100:17/);
     }
 });
 

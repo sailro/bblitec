@@ -123,6 +123,8 @@ export interface ComposedComposite {
     passes: readonly ComposedCompositePass[];
     /** The observed pass owning the facade's public output, not execution order. */
     outputPass: number;
+    /** Pinned public factory state consumed by the TAA execute hook. */
+    taa?: { factor: number; disableOnCameraMove: boolean };
 }
 
 /** What the factories read off a render target while composing. */
@@ -495,7 +497,17 @@ export async function composeComposite(
             ),
         };
     });
-    return { intrinsic: request.intrinsic, intermediates, passes, outputPass: run.outputPass };
+    let taa: ComposedComposite["taa"];
+    if (request.intrinsic === "createTaaPostProcessTask") {
+        const factor: unknown = Reflect.get(run.composite, "factor");
+        const disableOnCameraMove: unknown = Reflect.get(run.composite, "disableOnCameraMove");
+        if (typeof factor !== "number" || typeof disableOnCameraMove !== "boolean") {
+            throw new Error("Pinned TAA no longer exposes its numeric factor and camera-move flag.");
+        }
+        taa = { factor, disableOnCameraMove };
+    }
+    return { intrinsic: request.intrinsic, intermediates, passes, outputPass: run.outputPass,
+        ...(taa ? { taa } : {}) };
 }
 
 /**

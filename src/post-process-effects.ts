@@ -179,7 +179,7 @@ export const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
         extraTextures: [],
         usesCamera: false,
         sourceTasks: ["sourceRenderTask"],
-        unsupportedRuntime: "per-frame task execution and camera projection jitter over a persistent source-task scene UBO",
+        unsupportedRuntime: "camera projection jitter over a persistent source-task scene UBO",
     },
     {
         intrinsic: "createDepthOfFieldPostProcessTask",

@@ -1333,6 +1333,15 @@ struct PostProcessPassOptions {
     bool uniforms_dirty = true;
 };
 
+/** Retained scalar state for the pinned TAA execute/record lifecycle. */
+struct TaaPostProcessState {
+    double factor;
+    bool disable_on_camera_move;
+    bool first_update;
+    double last_camera_version;
+    double halton_index;
+};
+
 /**
  * The task the scene added, and the passes it records.
  *
@@ -1349,6 +1358,7 @@ struct PostProcessTaskOptions {
     std::uint32_t output_pass = 0;
     RenderTargetHandle output_target{};
     std::vector<TaskHandle> source_tasks{};
+    std::shared_ptr<TaaPostProcessState> taa{};
 };
 
 /**

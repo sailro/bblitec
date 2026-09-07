@@ -284,9 +284,13 @@ pin and uniform writers from their ASTs. Composite public outputs resolve by
 observed target identity, independently of the final pass: a temporal effect
 may present before writing history. TAA's private `_factor` writer is lowered
 from the pin and starts at 1; its public `factor` is a separate value consumed
-by its execute hook. Neither that hook nor its persistent source-task camera
-jitter is represented yet, so native generation refuses TAA rather than
-running an incomplete pass list.
+by its execute hook. The complete pinned execute body updates the private
+factor, uploads it, runs blend/present/history passes, clears the first-update
+flag and then advances jitter. Its synchronous hooks preserve partial state
+when an operation fails. Rebuild resets occur only after resource recording
+succeeds. Camera keys and jitter remain renderer hooks: persistent clean and
+jittered source-task UBO transport is not represented yet, so native generation
+still refuses TAA.
 
 A screen-space effect invalidates its temporal history on the pin's reset
 events: first allocation, owned-target reallocation, a source or depth
