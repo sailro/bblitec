@@ -75,6 +75,7 @@ inline constexpr std::size_t splat_texture_count =
 struct SplatPass {
     SplatMeshHandle mesh{};
     std::uint32_t vertex_count = 0;
+    std::uint64_t data_version = 0;
 
     OwnedSdlPipeline pipeline;
     SDL_GPUBuffer* quad = nullptr;
@@ -115,7 +116,7 @@ inline SplatPass create_splat_pass(
     SDL_GPUDevice* device,
     // Mutable because pass creation CONSUMES the cloud's staging bytes:
     // it uploads the SH payloads and then releases them, which is the
-    // same reach boundary the neighbouring `rows` field draws.
+    // same reach boundary the neighbouring `splats_data` field draws.
     Engine& engine,
     SplatMeshHandle handle,
     SDL_GPUTextureFormat target_format,
@@ -271,7 +272,7 @@ inline SplatPass create_splat_pass(
             "splat harmonics");
         binding.sampler = pass.sampler;
     }
-    // Released once the GPU owns the bytes. The neighbouring `rows` field
+    // Released once the GPU owns the bytes. The neighbouring `splats_data` field
     // is reach-gated for the same reason and states it: these three
     // payloads are 17.9 MB for scene 124's cloud, larger than the rows,
     // and this is the only reader -- pass creation runs once. SWAPPED with
@@ -287,7 +288,28 @@ inline SplatPass create_splat_pass(
         static_cast<double>(record.vertex_count));
     pass.cpu_order.assign(record.vertex_count, 0u);
     pass.order_floats.assign(record.vertex_count, 0.0f);
+    pass.data_version = record.data_version;
     return pass;
+}
+
+/** Reuse the pin's existing textures when updateData commits equal-size rows.
+ * Picking calls this without sorting: the pin publishes texture writes at
+ * updateData, but its next frame owns the new depth order. */
+inline void sync_splat_data(
+    SDL_GPUDevice* device,
+    const SplatMeshRecord& record,
+    SplatPass& pass) {
+    if (pass.data_version == record.data_version) return;
+    const auto payloads = upstream::splat_texture_payloads(record);
+    for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
+        upload_2d_texture_into(device, pass.textures[slot].texture,
+            payloads[slot]->data(), payloads[slot]->size() * sizeof(float),
+            record.texture_width, record.texture_height, "splat data update");
+    }
+    // updateData resets this snapshot; let the unchanged pinned epsilon
+    // decide whether the next frame's camera/world kernel requires a sort.
+    pass.depth_transform.fill(0.0f);
+    pass.data_version = record.data_version;
 }
 
 /**
@@ -301,6 +323,7 @@ inline void upload_splat_pass(
     SplatPass& pass,
     const std::array<float, 16>& view) {
     const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
+    sync_splat_data(device, record, pass);
 
     // Composed once here for both the sort gate and the draw's uniforms,
     // exactly as the Dawn upload composes it once for both.

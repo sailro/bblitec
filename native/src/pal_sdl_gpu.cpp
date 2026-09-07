@@ -8528,6 +8528,15 @@ SceneRun run_gpu_engine(Engine& engine) {
             ensure_pick_targets(state.device, state.pick_targets);
             ensure_pick_pipelines(state);
 
+#if BBLITE_HAS_SPLATS
+            // Source updateData writes its existing textures immediately;
+            // submit those copies before opening the pick command buffer.
+            for (SplatPass& splat : state.splat_passes) {
+                sync_splat_data(state.device,
+                    engine.splat_meshes[splat.mesh.value], splat);
+            }
+#endif
+
             const PickSceneUniforms scene_uniforms =
                 build_pick_scene_uniforms(
                     view_projection, x, y, width, height);
