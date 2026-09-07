@@ -1,0 +1,7 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {"summary": "Reuse the scene registry, native executable resolver and build/payload identity checks for the full-demo timing check.", "applied": true},
+    {"summary": "Transpile the instrumented browser demo once before the frame-rate loop instead of repeating identical source reads and compilation.", "applied": true}
+  ]
+}

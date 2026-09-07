@@ -323,6 +323,16 @@ Native ownership and performance boundaries are in
 
 ## Runtime switches
 
+`node tools/check-break-meshes-timing.mjs` compares the unchanged Break Meshes
+demo in browser BBL, SDL_GPU and Dawn. It shatters a mesh, checks the original
+12.5 ms step across controlled 60/240-fps timestamps, and compares live simulation
+rates on the same display. Its reference asserts both original fixed overrides;
+removing them must fail this comparison. Reports go to
+`artifacts/break-meshes-timing/`; build the native executable first. Controlled
+timestamps do not change the display refresh rate. The separate
+`test/physics-timing.test.ts` compares Havok/native constant-velocity travel with
+both explicit fixed steps and BBL's default variable steps.
+
 | Variable | Purpose |
 | --- | --- |
 | `BBLITE_GPU_BACKEND=dawn` | Runtime choice in a dual build |

@@ -289,6 +289,26 @@ work that produced their buffers.
 
 ## Physics contract
 
+BBL uses variable frame deltas by default, with a 100 ms ceiling. With both
+`scene.fixedDeltaMs` and the world timestep at `0`, physics follows elapsed frame
+time, as described in the pinned [physics documentation](https://github.com/BabylonJS/Babylon-Lite/blob/64710b56f9dfe175d919c635812f84c8872d467c/docs/lite/architecture/42-physics.md#timestep--delta-time-propagation).
+This keeps simulation speed consistent at ordinary frame rates; different step
+sizes can still produce different collision trajectories.
+
+Explicit scene/world fixed overrides advance once per rendered frame; they do
+not create a fixed-frequency scheduler. The unchanged Break Meshes demo overrides
+its world step to 12.5 ms, so it advances 0.75 simulated seconds per wall second
+at 60 fps and 3 at 240 fps. Browser and native must preserve those same authored
+settings. A comparison against an edited browser demo cannot establish upstream
+fidelity.
+
+The pinned [headless documentation](https://github.com/BabylonJS/Babylon-Lite/blob/64710b56f9dfe175d919c635812f84c8872d467c/docs/lite/05-headless-null-engine.md#fixed-timestep--determinism)
+recommends accumulating elapsed time and consuming it in fixed steps for
+reproducible simulation. The application supplies that scheduling through
+`stepScene`; the normal rendered physics loop has no automatic accumulator.
+The documented headless prototype also lacks mesh/convex-hull collider support,
+so it cannot directly replace the rendered Break Meshes simulation.
+
 The Babylon-facing physics layer is generated; the solver is Bullet, while
 the browser uses Havok. This substitution cannot establish identical
 trajectories by construction. Backend equality localizes a difference below
