@@ -288,17 +288,37 @@ by its execute hook. The complete pinned execute body updates the private
 factor, uploads it, runs blend/present/history passes, clears the first-update
 flag and then advances jitter. Its synchronous hooks preserve partial state
 when an operation fails. Rebuild resets occur only after resource recording
-succeeds. Camera keys and jitter remain renderer hooks: persistent clean and
-jittered source-task UBO transport is not represented yet, so native generation
-still refuses TAA.
+succeeds.
+
+Each TAA source task retains its clean scene-uniform scratch, the last uploaded
+bytes and its cache key. The pinned cache compares camera identity and change
+key, effective aspect, fog/environment identity, exposure and contrast. A
+cache hit keeps the old bytes; a missing camera returns before packing or
+changing the key. Base packing zeros the entire scratch before reading
+matrices and writing universal fields. Registered fog, clip-plane and
+environment contributors run afterward; absent contributors leave zeroes,
+including eye padding and spherical-harmonic lanes. Matrix uploads narrow
+F64 values only at the pinned F32 stores. Cache writes precede packing, so a
+packing or upload failure does not roll back the key. The uploaded-byte shadow
+changes only after a successful write.
+
+Jitter derives its Halton sequence and matrix writes from the pinned bodies,
+leaving the clean scratch intact. The pin encodes source and post-process
+passes before one queue submission: a later jitter write changes the source
+uniform bytes read by that same submission. Preserving that ordering requires
+the final uploaded bytes, even for draws encoded before the write; treating
+it as next-frame-only jitter changes the image. Native CPU hooks retain their
+original order and execute once. Raw-word fixtures compare signed zero as
+well as values; backend implementation is described in
+[temporal transport](backends.md#temporal-post-process-transport).
 
 Scene-uniform fog and environment keys describe object replacement, not equal
 field values. New scenes start with absent keys. Fresh inline fog configs get
-a new key per setter call; TAA refuses named configs and aliased color arrays
-until their live object ownership is represented. Environment loaders publish
-new keys only after texture assembly succeeds, while repeated glTF scene setup
+a new key per setter call. Environment loaders publish new keys only after
+texture assembly succeeds, while repeated glTF scene setup
 reuses its captured key. Image-processing and background mutations keep that
-key. Direct null fog writes and environment-object transport remain refused.
+key. The supported source shapes and invalidation boundaries are listed in
+[features](features.md#post-process-passes).
 
 TAA camera transform versions follow the pinned setters rather than matrix
 comparison: equal scalar/component writes are silent, an away-and-back write
@@ -306,11 +326,9 @@ increments twice, and target `.set` always dirties once. The lowered limit
 hook preserves recursive clamp writes and assignment completion values;
 controls and admitted camera animation lanes use the same setters. Projection
 changes remain polled by the pin's camera key. Retained direct target aliases
-keep their original camera. Replacement/parenting, copying an observable
-target into a plain aggregate, and untracked camera producers are refused.
-Authored rebuilds, graph changes after registration and TAA creation after
-registration or frame execution are refused until task record epochs and
-earlier source UBO history are represented.
+keep their original camera. Source packing honours the render task's camera
+override; TAA's camera-change test reads its source task's scene camera, as
+the pinned execute hook does.
 
 A screen-space effect invalidates its temporal history on the pin's reset
 events: first allocation, owned-target reallocation, a source or depth

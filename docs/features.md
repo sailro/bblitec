@@ -576,18 +576,32 @@ Source-relative intermediate sizes follow resize.
 Composite output identity is observed from the pinned facade independently
 of pass order. The compiler can transport a proven source render-task handle
 through a composite descriptor, and uniform writers can read private live
-task state. TAA's pinned execute and rebuild bodies are lowered over retained
-task state with synchronous renderer hooks; observing fixtures cover pass
-failures and reset order. Its arc-camera writers retain target aliases and
-lower the pin's observable setters, limit hooks, inertia and admitted camera
-animation writes. TAA requires task construction and attachment before initial
-scene registration. It refuses later graph recording/topology changes,
-untracked camera producers, parent or target replacement, and target copies
-into plain data aggregates. Computed target stores, unlowered mutation
-operators and erased `Object.assign` calls also refuse. Native generation still explicitly refuses TAA
-until camera projection jitter and the source task's persistent scene UBO
-are represented. TAA accepts one startup control attachment; duplicate or
-recurring attachments need per-attachment inertia callback ownership.
+task state.
+
+TAA supports one scene with explicit Standard colour render tasks and reached
+post-process leaves. Source render targets require the engine colour format
+and a `depth24plus-stencil8` attachment; post-process inputs must be proven
+single-sample textures. Multiple source tasks retain distinct state and can
+select camera overrides. Implicit default scene stages, geometry/copy tasks,
+PBR/grid/node/custom/no-colour materials, shadows, backgrounds, splats,
+billboards, sprite/effect/screen-space drivers, clustered lights, transmission
+and retained UI refuse when co-reached with TAA.
+
+Task construction and attachment must precede initial scene registration.
+Later graph recording/topology changes and authored rebuilds refuse. Arc-camera
+scalar/component writes, retained direct target aliases, bulk target writes,
+limit hooks, inertia and admitted camera animation lanes are supported.
+Untracked camera producers, parent or target replacement, target copies into
+plain data aggregates, computed target stores, unlowered mutation operators
+and erased `Object.assign` calls refuse. TAA accepts one startup control
+attachment; duplicate or recurring attachments need per-attachment callback
+ownership. Fog requires fresh inline configs with inline colour arrays;
+`setEnvironmentRotation` refuses until its explicit cache invalidation is
+represented. Authored image-processing exposure/contrast writes refuse until
+their JS double cache keys survive native scalar storage. The state and ordering
+contracts are in
+[fidelity](fidelity.md#frame-graph-and-post-process-passes), with GPU transport
+in [backends](backends.md#temporal-post-process-transport).
 
 ### Screen-space effects
 
