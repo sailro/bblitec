@@ -648,6 +648,11 @@ function Get-DemotableUniformBlocks {
     param([string]$Wgsl)
 
     $names = @()
+    if ($Wgsl -match "var\s*<\s*uniform\s*>\s*localProbeData\s*:") {
+        # The pin's 64 KiB vec4/vec4-array block exceeds SDL's 16 KiB push
+        # limit even when fewer than four uniform slots are present.
+        $names += "localProbeData"
+    }
     if ($Wgsl -match "var\s*<\s*uniform\s*>\s*gp\s*:") {
         $names += "gp"
     }
@@ -1027,7 +1032,7 @@ foreach ($shaderDirectory in $shaderDirectories) {
                 # gp block has nothing demotable and refuses by name.
                 $sdlSource = $source.FullName
                 $uniformCount = (Get-HlslUniformBufferNames $pendingHlsl).Count
-                if ($uniformCount -gt 4) {
+                if ($uniformCount -gt 4 -or $wgsl -match 'var\s*<\s*uniform\s*>\s*localProbeData\s*:') {
                     $demotable = @(Get-DemotableUniformBlocks $wgsl)
                     if ($demotable.Count -gt 0) {
                         # Every demotable block moves. No composed stage in the

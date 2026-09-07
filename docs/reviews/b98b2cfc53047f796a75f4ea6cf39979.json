@@ -1,0 +1,42 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Cache pin-executed local cubemap packets through cachedBakeSync, keyed by the complete plan, environment bytes and executed module closure.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse the existing solid ORM replacement helpers and Compiler.pinValueToTemporary for copyable resource handles.",
+      "applied": true
+    },
+    {
+      "summary": "Use the existing scene-registration query and avoid repacking when probe debug state is unchanged.",
+      "applied": true
+    },
+    {
+      "summary": "Reflect each material shader pair once while deriving texture slots.",
+      "applied": true
+    },
+    {
+      "summary": "Keep one pointer state for the exclusively captured surface camera.",
+      "applied": true
+    },
+    {
+      "summary": "Remove unused recording-device fields from the local cubemap bake adapter.",
+      "applied": true
+    },
+    {
+      "summary": "Represent recorded local material fields through the shared packet-backed extension-writer descriptor and UBO coverage machinery.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse compileKnownValueForSink for already evaluated class records, avoiding duplicate resource factories during typed projection.",
+      "applied": true
+    }
+  ]
+}

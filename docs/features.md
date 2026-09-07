@@ -92,6 +92,11 @@ buffers refuse. `splatsData` is getter-only; replace rows through `updateData`.
 HDR uses pinned WebGPU GGX prefiltering at generation. DDS preserves stored specular mips and
 uses pinned harmonic derivation. Native `.env` loading uploads decoded cube data; the IBL BRDF LUT is offline.
 
+PBR local environments retain independent `.env` results. Static box/sphere projection and
+blended probe sets execute the pinned validation, grid/UBO packing and texture-copy planning.
+Configuration, debug selection and solid ORM replacement must precede scene registration;
+live probe rebuilding and ORM rebinding refuse. Direct-intensity writes remain native.
+
 ### Drawn and computed assets
 
 Bounded module producers bake atlases/pixels in Chromium. CSG uses the pinned implementation;
@@ -136,6 +141,11 @@ Registration, rendering contexts, fixed/live time, supported callbacks, timers a
 one conductor. Scene, SpriteRenderer, EffectRenderer and scene-less FrameGraphContext drivers activate
 independently. Immutable engine aliases retain identity; rebinding them or creating multiple engines
 within one entry point refuses.
+
+Reviewed host canvases can share one engine while retaining separate scene targets, clear colors,
+camera projections and pointer capture. Canvas rectangles drive allocation and resize; default scene
+graphs share the original mesh/material identities. Wider surface options and lifecycle combinations
+remain outside the validated multi-canvas contract.
 
 ## Cameras and input
 

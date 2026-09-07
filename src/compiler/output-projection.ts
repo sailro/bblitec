@@ -70,6 +70,8 @@ export const featureSources: Record<Feature, string[]> = {
     "material:pbr-gamma-albedo": [],
     "material:iridescence": [],
     "material:lightmap": [],
+    "material:local-cubemap": [],
+    "renderer:surface": [],
     "material:anisotropy": [],
     "material:metallic-reflectance": [],
     "material:tracking": [],

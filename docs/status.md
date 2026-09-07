@@ -168,6 +168,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | Iridescence Sphere |
 | 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | 0.018 / 0.016 | 0.018 / 0.016 | Iridescence Abalone |
 | 179 | <img src="images/scenes/scene179.png" alt="Scene 179 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Lights |
+| 186 | <img src="images/scenes/scene186.png" alt="Scene 186 rendering" width="160"> | 0.002 / 0.004 | 0.002 / 0.004 | Local Cubemap Blending |
 | 187 | <img src="images/scenes/scene187.png" alt="Scene 187 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | SMAA |
 | 200 | <img src="images/scenes/scene200.png" alt="Scene 200 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix Off |
 | 201 | <img src="images/scenes/scene201.png" alt="Scene 201 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix On |
@@ -195,6 +196,8 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 224 | <img src="images/scenes/scene224.png" alt="Scene 224 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bounding Box Gizmo |
 | 225 | <img src="images/scenes/scene225.png" alt="Scene 225 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Geospatial Camera; renders its pose, controls attach without input arms. |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting glTF |
+| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.160 / 0.215 | 0.160 / 0.215 | Shared Scene Surfaces |
+| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.178 / 0.159 | 0.178 / 0.159 | Independent Scene Surfaces |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |
 | 231 | <img src="images/scenes/scene231.png" alt="Scene 231 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.000 | Standard Material Deform Features |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animated Triangle |

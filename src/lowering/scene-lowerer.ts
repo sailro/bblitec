@@ -1683,6 +1683,9 @@ std::uint32_t scene_material_families(const Scene& scene) {
 Scene create_scene_context(Engine& engine) {
     Scene scene;
     scene.engine = &engine;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    scene.surface_canvas = engine.surface_canvas;
+#endif
     scene.clear_color = Color4{
         ${value(clear("r"))},
         ${value(clear("g"))},

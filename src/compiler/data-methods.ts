@@ -107,6 +107,7 @@ export const readOnlyDataMethods: ReadonlySet<string> = new Set([
     "entries",
     "every",
     "filter",
+    "flat",
     "find",
     "findIndex",
     "findLast",

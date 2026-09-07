@@ -1695,6 +1695,34 @@
             "reference": "reference/scene275/babylon-lite-golden.png",
             "referenceSha256": "2b0ae0c84297fd766d4f6be0b02849a4a4bea0e3f807e6541d3a85c9d3b5ca84",
             "moduleSha256": "055619e48f04beeb7bbd0302fb46e32d4e2efef88eb5a791524355453fc16508"
+        },
+        {
+            "id": "scene186",
+            "sourceSha256": "1bc6cc845a2fdb423a0f5c380862bbdcc53148bd1ebbe7bbb71a972999035459",
+            "reference": "reference/scene186/babylon-lite-golden.png",
+            "referenceSha256": "b6f3de61fac92bceae293fe5dd8c302386a2fb2646b0187bd598fa0dfef76146",
+            "moduleSha256": "9860160ad913483deb797bec25d53ad413f6612614d2bdb55ab2774322a2c9cd",
+            "capturedAt": "2026-09-07T20:30:36.326Z"
+        },
+        {
+            "id": "scene227",
+            "sourceSha256": "c49be020754f516f5699ac9ce67460bfb6b5b1c40fb0dd4dbe65bde44ed6ab3b",
+            "reference": "reference/scene227/babylon-lite-golden.png",
+            "referenceSha256": "c77b7341c77ed3675b81541373fb6099285ef66c308bf2a015ff7e758b86ace4",
+            "moduleSha256": "c6194ff525f76ee29bfcc769984ada718f5d7817db201d503f6602fc6f92d99f",
+            "referenceHostPage": "corpus/babylon-lite/lab/lite/scene227.html",
+            "referenceHostPageSha256": "4024501992d1a087b2617e0fb26d8c367166585ae8917d5e6ccba3817984e740",
+            "capturedAt": "2026-09-07T20:30:42.684Z"
+        },
+        {
+            "id": "scene228",
+            "sourceSha256": "d0965fff6c7ca27320b49d7d70388c2a13f8f215c018a3486c5f0e2948f72f7f",
+            "reference": "reference/scene228/babylon-lite-golden.png",
+            "referenceSha256": "4f7db70db51c6ee79cb81d700f71b8878dec2f44a19da16545c30b63a564df48",
+            "moduleSha256": "21752ac9baed1821a4e6a46d7896d240de0f6f1eb9fdff20ada0c19ddd387f05",
+            "referenceHostPage": "corpus/babylon-lite/lab/lite/scene228.html",
+            "referenceHostPageSha256": "6439bd8aee64fc1a3cd3f3ef100671af84fe88dedbd689ab62258905e77f5f3e",
+            "capturedAt": "2026-09-07T20:30:48.372Z"
         }
     ]
 }

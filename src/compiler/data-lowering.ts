@@ -4673,20 +4673,16 @@ export class DataLowerer {
         if (
             staticSource?.kind === "tuple" &&
             staticSource.tupleElements?.every(
-                (entry) =>
-                    entry.kind === "number" &&
-                    entry.staticNumber !== undefined,
+                (entry) => entry.kind === "number",
             )
         ) {
             const elements = staticSource.tupleElements.map((entry) =>
-                doubleLiteral(entry.staticNumber!),
+                this.compileKnownValueForSink(entry, { kind: "number" }, unwrapped),
             );
-            // Every lane just proved a static number, so the whole
-            // tuple is generation-known by construction.
             return this.typedArrayFromElements(
                 prefix,
                 elements,
-                true,
+                staticSource.tupleElements.every(entry => entry.staticNumber !== undefined),
             );
         }
         // A single argument that is itself an array is never the length

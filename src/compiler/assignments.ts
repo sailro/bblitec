@@ -124,6 +124,13 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     value: "number",
   },
   {
+    kind: "material",
+    property: "directIntensity",
+    collection: "materials",
+    field: "direct_intensity",
+    value: "number",
+  },
+  {
     // The pin's `uvScale: [number, number]`, which
     // `writeStandardUvTransformData` reads into the material's own UV
     // block. It is a pair of record fields because
@@ -467,6 +474,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
   /** Marks a scene-code mesh as carrying a skeleton for its feature word. */
   recordSceneMeshDeformation(meshIndex: number, property: "skinned" | "morphTargets", site: ts.Node): void;
   engineHasStarted(): boolean;
+  hasRegisteredScene(): boolean;
   recordToneMappingEnabledMutation(): void;
   /** The scene's node-particle program; a texture write lands on it. */
   readonly reachedNodeParticles: CompiledNodeParticles;
@@ -503,6 +511,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
     name: ts.Identifier,
     initializer: ts.Expression,
     declared?: import("./data-types.js").DataType,
+    knownValue?: Value,
   ): Value | undefined;
   bindClassField(name: ts.Identifier, initializer: ts.Expression): void;
   emitOptionalResourceAssignment(
@@ -1314,6 +1323,7 @@ export function emitPropertyAssignment(
                 handle: "property-animation-group",
               },
             },
+            assigned,
           );
           if (bound) {
             owner.recordProperties ??= {};
@@ -2177,6 +2187,22 @@ export function emitPropertyAssignment(
         if (folded !== undefined) target.textureUvAng = folded;
       }
       context.emit(`${owner}.${field.record} = ${rendered};`);
+      return;
+    }
+
+    if (target.kind === "material" && property === "ormTexture") {
+      requireSimpleAssignment(context, expression, "PBR ormTexture");
+      if (context.hasRegisteredScene() || context.engineHasStarted() || context.isRuntimeResourceConstruction()) {
+        context.fail(expression, "PBR ormTexture replacement requires static setup before scene registration; live texture rebinding is not represented.");
+      }
+      if (target.scenePbrMaterialIndex === undefined && !target.assetPbrMaterial) {
+        context.fail(left, "ormTexture requires a known PBR material.");
+      }
+      const texture = context.compileValue(expression.right);
+      context.expectKind(texture, "texture", expression.right);
+      context.expectSameEngine(target, texture, expression);
+      if (texture.textureStorage !== "solid") context.fail(expression.right, "PBR ormTexture replacement currently requires a solid texture.");
+      context.emit(`bbl::set_material_orm_file(${context.requireEngine(target, expression)}, ${target.cpp}, bbl::solid_texture_file(${texture.cpp}));`);
       return;
     }
 

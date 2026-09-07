@@ -1,4 +1,5 @@
 import ts from "typescript";
+import {compileLocalCubemapIntrinsic, type LocalCubemapIntrinsicContext} from "./local-cubemap.js";
 import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { enclosingLoopControl } from "../statements.js";
@@ -39,7 +40,7 @@ import type {
 } from "./material-options.js";
 
 export interface MaterialIntrinsicContext
-    extends IntrinsicCallContext,
+    extends IntrinsicCallContext, LocalCubemapIntrinsicContext,
         ObjectValidationContext,
         PositiveIntegerContext {
     engineHasStarted(): boolean;
@@ -495,6 +496,8 @@ export function compileMaterialIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    const localCubemap = compileLocalCubemapIntrinsic(context, importedName, call);
+    if (localCubemap) return localCubemap;
     switch (importedName) {
         case "isPbrMaterial": {
             context.expectArgumentCount(call, 1, 1);

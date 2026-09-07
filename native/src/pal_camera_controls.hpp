@@ -23,6 +23,11 @@ struct CameraPointerState {
     bool panning = false;
 };
 
+struct SurfaceCameraPointerState {
+    CameraPointerState pointer;
+    CameraHandle captured{};
+};
+
 // The fixed frame step this loop runs at, handed to the generated
 // free_camera_move_speed so the pin's own formula computes the per-frame
 // move scale at full precision. The cadence is the platform's fact; the
@@ -100,6 +105,41 @@ inline void handle_camera_pointer_event(
     }
 }
 
+inline void dispatch_surface_camera_pointer(
+    [[maybe_unused]] Engine& engine, const SDL_Event& event, CameraRecord& primary,
+    CameraPointerState& primary_state, SurfaceCameraPointerState& surfaces) {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (engine.surface_canvas) {
+        if (surfaces.captured.value < engine.cameras.size()) {
+            const auto index = surfaces.captured.value;
+            handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer);
+            if (!surfaces.pointer.orbiting && !surfaces.pointer.panning) surfaces.captured = {};
+            return;
+        }
+        double x = 0, y = 0;
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            x = event.button.x; y = event.button.y;
+        } else if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+            x = event.wheel.mouse_x; y = event.wheel.mouse_y;
+        } else return;
+        x *= engine.canvas_window_to_client_scale;
+        y *= engine.canvas_window_to_client_scale;
+        for (const auto& scene : engine.registered_scenes) {
+            if (!scene || !scene->surface_canvas || scene->camera.value >= engine.cameras.size()) continue;
+            const auto& rect = engine.ui_elements.at(scene->surface_canvas->value).client_rect;
+            if (x < rect.left || y < rect.top || x >= rect.left + rect.width || y >= rect.top + rect.height) continue;
+            const auto index = scene->camera.value;
+            handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer);
+            if (surfaces.pointer.orbiting || surfaces.pointer.panning) surfaces.captured = scene->camera;
+            return;
+        }
+        return;
+    }
+#endif
+    (void)surfaces;
+    handle_camera_pointer_event(event, primary, primary_state);
+}
+
 inline void update_camera(CameraRecord& camera) {
     if (!camera.controls_enabled) {
         return;
@@ -152,6 +192,20 @@ inline void update_camera(CameraRecord& camera) {
         camera.inertial_direction.y -= movement;
     }
     upstream::apply_free_camera_inertia(camera);
+}
+
+inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord& primary) {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (engine.surface_canvas) {
+        for (std::size_t i = 0; i < engine.cameras.size(); ++i) {
+            const bool attached = std::any_of(engine.registered_scenes.begin(), engine.registered_scenes.end(),
+                [i](const auto& scene) { return scene && scene->camera.value == i; });
+            if (attached) update_camera(engine.cameras[i]);
+        }
+        return;
+    }
+#endif
+    update_camera(primary);
 }
 
 } // namespace bbl::pal

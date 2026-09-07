@@ -893,6 +893,23 @@ struct GpuState {
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     NodeCaptureState node_capture;
 #endif
+#if BBLITE_LOCAL_CUBEMAP
+    struct LocalCubemap {
+        SDL_GPUDevice* device = nullptr;
+        std::shared_ptr<const LocalCubemapRecord> source;
+        SDL_GPUTexture* texture = nullptr;
+        SDL_GPUTexture* environment = nullptr;
+        SDL_GPUBuffer* uniform = nullptr;
+        SDL_GPUBuffer* grid = nullptr;
+        ~LocalCubemap() {
+            if (texture) SDL_ReleaseGPUTexture(device, texture);
+            if (environment) SDL_ReleaseGPUTexture(device, environment);
+            if (uniform) SDL_ReleaseGPUBuffer(device, uniform);
+            if (grid) SDL_ReleaseGPUBuffer(device, grid);
+        }
+    };
+    std::unordered_map<const LocalCubemapRecord*, std::unique_ptr<LocalCubemap>> local_cubemaps;
+#endif
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
     std::unique_ptr<SdlTextRenderer> text;
 #endif
@@ -2327,6 +2344,29 @@ void apply_geometry_color_targets(
  * a resource the table does not know fails by name instead of sampling
  * whatever sat at that index.
  */
+SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState& environment,
+    std::uint32_t layers, bool cube_array);
+
+#if BBLITE_LOCAL_CUBEMAP
+GpuState::LocalCubemap* ensure_local_cubemap(GpuState& state, const MaterialRecord* material) {
+    if (!material || !material->local_environment) return nullptr;
+    const auto& source = material->local_environment;
+    if (const auto found = state.local_cubemaps.find(source.get()); found != state.local_cubemaps.end()) return found->second.get();
+    auto gpu = std::make_unique<GpuState::LocalCubemap>();
+    gpu->device = state.device;
+    gpu->source = source;
+    gpu->texture = upload_environment(state.device, local_cubemap_texture(*source), source->layers, true);
+    if (source->overrides_environment) gpu->environment = upload_environment(state.device, *source->environments.at(0), 6, false);
+    gpu->uniform = upload_buffer(state.device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+        source->uniform_data.data(), source->uniform_data.size() * sizeof(std::uint32_t));
+    gpu->grid = upload_buffer(state.device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+        source->grid_data.data(), source->grid_data.size() * sizeof(std::uint32_t));
+    auto* result = gpu.get();
+    state.local_cubemaps.emplace(source.get(), std::move(gpu));
+    return result;
+}
+#endif
+
 PinnedResource pinned_resource_for(
     const GpuState& state,
     const GpuMesh& mesh,
@@ -2335,10 +2375,19 @@ PinnedResource pinned_resource_for(
     // Which stage's texture list the name came from, and its index there:
     // the pair that makes the group-2 fallback below a cached-row index.
     [[maybe_unused]] bool fragment,
-    [[maybe_unused]] std::size_t stage_slot) {
+    [[maybe_unused]] std::size_t stage_slot,
+    [[maybe_unused]] const MaterialRecord* material = nullptr) {
     const upstream::MaterialTextureSlot* slot =
         material_slot_for_binding(name);
     if (slot != nullptr) {
+#if BBLITE_LOCAL_CUBEMAP
+        if (material && material->local_environment) {
+            const auto& local = *state.local_cubemaps.at(material->local_environment.get());
+            if (slot->source == upstream::MaterialTextureSource::local_probe_cube) return {local.texture, state.sampler};
+            if (slot->source == upstream::MaterialTextureSource::environment_cube && local.source->overrides_environment)
+                return {local.environment, state.sampler};
+        }
+#endif
         if (slot->slot != upstream::material_texture_no_slot) {
             const GpuMeshSlotMembers members =
                 mesh_slot_members(slot->source);
@@ -2842,6 +2891,9 @@ void draw_pinned_variant(
     bool shadow_pass = false,
     // The generator whose map that pass writes, when it writes one.
     std::uint32_t esm_shadow_index = invalid_handle) {
+#if BBLITE_LOCAL_CUBEMAP
+    const auto* local_cubemap = ensure_local_cubemap(state, material);
+#endif
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         pinned_variant_pipeline(
@@ -2985,7 +3037,7 @@ void draw_pinned_variant(
         "pinned variant fragment",
         [&](const std::string& name, std::size_t slot) {
             const PinnedResource resource = pinned_resource_for(
-                state, mesh, name, pinned_variant, true, slot);
+                state, mesh, name, pinned_variant, true, slot, material);
             return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
@@ -3000,6 +3052,12 @@ void draw_pinned_variant(
         [&](const std::string& name,
             [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
             if (name == "gp") return geometry_params_buffer;
+#if BBLITE_LOCAL_CUBEMAP
+            if (local_cubemap) {
+                if (name == "localProbeData") return local_cubemap->uniform;
+                if (name == "localProbeGrid") return local_cubemap->grid;
+            }
+#endif
 #if BBLITE_PBR_SHADOWS
             // The receiver blocks the shader compile demoted out of the
             // uniform slots, the same way the geometry arms' gp block is:
@@ -4832,18 +4890,18 @@ SDL_GPUTexture* upload_brdf_lut(
         "upload BRDF LUT");
 }
 
-SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState& environment) {
+SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState& environment, std::uint32_t layers = 6, bool cube_array = false) {
     const bool has_environment = environment_cube_present(environment);
     const std::uint32_t width = has_environment ? environment.specular_width : 1;
     const std::uint32_t mip_count = has_environment ? environment.specular_mip_count : 1;
     SDL_GPUTextureCreateInfo texture_info{};
-    texture_info.type = SDL_GPU_TEXTURETYPE_CUBE;
+    texture_info.type = cube_array ? SDL_GPU_TEXTURETYPE_CUBE_ARRAY : SDL_GPU_TEXTURETYPE_CUBE;
     texture_info.format =
         SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
     texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
     texture_info.width = width;
     texture_info.height = width;
-    texture_info.layer_count_or_depth = 6;
+    texture_info.layer_count_or_depth = layers;
     texture_info.num_levels = mip_count;
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
@@ -4855,14 +4913,14 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
     std::vector<SDL_GPUTransferBuffer*> transfers;
     transfers.reserve(static_cast<std::size_t>(mip_count) * 6);
     for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
-        for (std::uint32_t face = 0; face < 6; ++face) {
+        for (std::uint32_t face = 0; face < layers; ++face) {
             int image_width =
                 static_cast<int>(std::max(width >> mip, 1u));
             int image_height = image_width;
             const TextureData* face_data =
                 has_environment
                     ? &environment.specular_faces[
-                          static_cast<std::size_t>(mip) * 6 + face]
+                          static_cast<std::size_t>(mip) * layers + face]
                     : nullptr;
             std::vector<std::uint16_t> decoded_half_pixels;
             const std::uint8_t* source_bytes = nullptr;
@@ -5268,7 +5326,8 @@ void create_frame_graph_textures(
     if (
         state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width &&
-        state.frame_graph_height == height) {
+        state.frame_graph_height == height &&
+        !surface_targets_changed(engine, state.render_targets, width, height)) {
         return;
     }
     release_frame_graph_textures(state);
@@ -5284,8 +5343,7 @@ void create_frame_graph_textures(
     for (std::size_t index = 0; index < engine.render_targets.size(); ++index) {
         const RenderTargetRecord& record = engine.render_targets[index];
         GpuRenderTarget& target = state.render_targets[index];
-        target.width = record.width > 0 ? record.width : width;
-        target.height = record.height > 0 ? record.height : height;
+        std::tie(target.width, target.height) = surface_target_extent(engine, record, width, height);
         // A composite's intermediate takes a fraction of whatever its
         // source resolved to. Creation order guarantees that source is
         // already sized: `create_render_target` refuses a forward reference.
@@ -6075,6 +6133,9 @@ void release(GpuState& state) {
             SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
         }
     }
+#if BBLITE_LOCAL_CUBEMAP
+    state.local_cubemaps.clear();
+#endif
     if (state.window && state.device) SDL_ReleaseWindowFromGPUDevice(state.device, state.window);
 #if BBLITE_OFFSCREEN_SURFACES
     if (state.device && !OffscreenRun::current()) SDL_DestroyGPUDevice(state.device);
@@ -9598,6 +9659,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                 ? engine.cameras[scene.camera.value]
                 : fallback_camera;
         CameraPointerState pointer_state;
+        SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
         PlatformInputReplay input_replay;
         const std::string screenshot_path = frame_options.screenshot_path;
@@ -9626,7 +9688,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         // none does in a deterministic test pass.
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
             if (hidden_test_pass) return;
-            handle_camera_pointer_event(event, camera, pointer_state);
+            dispatch_surface_camera_pointer(engine, event, camera, pointer_state, surface_pointer_state);
         };
         // One batch for the run: its transfer buffer persists across
         // frames, so a per-frame mesh mutation stages its dirty span and
@@ -10142,7 +10204,7 @@ SceneRun run_gpu_engine(Engine& engine) {
             frame_buffer_uploads.submit();
             const double uploaded =
                 cpu_profile ? monotonic_milliseconds() : 0.0;
-            update_camera(camera);
+            update_surface_cameras(engine, camera);
             trace_camera_state(camera, camera_trace_state, frame);
             upstream::sort_transparent_draws(
                 render_plan.draw_lists.transparent,

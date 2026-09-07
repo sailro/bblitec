@@ -35,6 +35,10 @@ after dead declarations disappear. Use sidecars for visibility, resource kind,
 slot order and uniform size. Large uniform blocks can become read-only storage
 in SDL-facing artifacts; Dawn keeps their original declarations and bytes.
 
+Local PBR probes bind the pin's recorded cube array, grid and material fields. Each retained probe set
+owns its GPU resources; single local environments override the cube independently per material.
+SDL always demotes the 64 KiB probe block to storage to respect its 16 KiB push-uniform limit.
+
 Dawn uses per-variant layouts. Pipeline keys include format, sample count, depth,
 blend, cull, topology and compare. Uniform ownership distinguishes draws with
 different overrides. Request limits from reached layouts; retain resources
@@ -79,6 +83,10 @@ callbacks run in the application realm. This service does not establish support
 for every multi-canvas source shape.
 
 ## Retained UI
+
+Same-engine canvas scenes render to independent targets sized from retained canvas rectangles.
+Presentation applies each page offset once. Layout changes recreate affected targets, and pointer
+capture keeps a drag with its originating camera across canvas boundaries.
 
 RmlUi emits backend-neutral geometry, texture updates, scissors, transforms and
 blur stages. Backend caches own uploads, multisample UI targets and premultiplied

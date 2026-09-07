@@ -2,6 +2,7 @@ import { deformPickingHeader, type DeformPickingShader } from "./pinned-picking-
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import ts from "typescript";
+import {lowerLocalCubemap} from "./lowering/local-cubemap-lowerer.js";
 import type { ShaderStageConstant } from "./shader-ir.js";
 import {
     SPLAT_CONTAINERS,
@@ -933,6 +934,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // How many of Babylon Lite's own composed PBR variants this scene reaches.
 // Zero for a scene with no glTF materials, which emits no variant header.
 #define BBLITE_PBR_VARIANTS ${(options.pinnedVariants ?? []).length}
+#define BBLITE_LOCAL_CUBEMAP ${features.includes("material:local-cubemap") ? 1 : 0}
 
 // The Standard family's composed variants, the same way. Zero until the
 // scene composes them, which also skips standard_variants.hpp.
@@ -2397,6 +2399,9 @@ ${composed.wgsl}`,
                 factories.lowerPbrMaterialFactory(),
                 generated,
             );
+        }
+        if (features.includes("material:local-cubemap")) {
+            this.writeSource("upstream/src/local_cubemap.cpp", lowerLocalCubemap(context), generated);
         }
         if (features.includes("material:grid")) {
             this.writeSource(

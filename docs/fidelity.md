@@ -78,6 +78,11 @@ Background geometry, cube orientation, mip policy, encoding and samplers follow
 the reached pinned path. Image processing and scene-color capture are separate
 passes; keep their source order.
 
+Local cubemap configuration is static before registration. The pin's setters, probe-grid producer,
+uniform writer and copy planner execute at generation; native ownership retains their separate
+environments and the composed fragment stays unchanged. SDL's large-uniform storage substitution
+is recorded in `static-local-cubemap-packets`.
+
 ### glTF material inputs
 
 Derive extension predicates and texture/factor choices from the loader, not

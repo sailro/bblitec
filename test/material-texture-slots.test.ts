@@ -362,7 +362,6 @@ test("an unlowered texture type is refused, not bound as a near neighbour", () =
     // non-array counterparts, and everything else through the trailing
     // `texture_` catch-all onto a 2D lane.
     for (const type of [
-        "texture_cube_array<f32>",
         "texture_2d_array<f32>",
         "texture_depth_cube",
         "texture_depth_multisampled_2d",
@@ -392,8 +391,10 @@ test("an unlowered texture type is refused, not bound as a near neighbour", () =
 });
 
 test("the reached array texture and the plain kinds still reflect", () => {
-    // The cascaded receiver's map is the one array form a composed variant
-    // reaches; the refusal above must not touch it or the plain kinds.
+    // Cascaded shadows and local environment probes retain different array dimensions.
+    assert.deepEqual(variantBindings("@fragment fn main() {}",
+        "@group(1) @binding(8) var probes : texture_cube_array<f32>;").map(({name,kind})=>[name,kind]),
+        [["probes","textureCubeArray"]]);
     const cascaded = variantBindings(
         "@fragment fn main() {}",
         "@group(1) @binding(7) var shadowMap : texture_depth_2d_array;",

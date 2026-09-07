@@ -428,6 +428,7 @@ export function parameterIsReadOnly(
         return namesParameter(node) ||
             (ts.forEachChild(node, containsAliasingParameter) ?? false);
     };
+    const parameterCanAlias = argumentCanAlias(checker.getTypeAtLocation(parameter));
     let readOnly = true;
     const visit = (node: ts.Node): void => {
         if (!readOnly) return;
@@ -435,7 +436,7 @@ export function parameterIsReadOnly(
             readOnly = false;
             return;
         }
-        if (ts.isCallExpression(node)) {
+        if (ts.isCallExpression(node) && parameterCanAlias) {
             for (const [index, argument] of node.arguments.entries()) {
                 if (!containsParameter(argument)) continue;
                 if (
@@ -1267,7 +1268,12 @@ export class UserFunctionLowerer {
         ) {
             return { kind: "browser", cpp: "" };
         }
-        return context.compileValue(argument);
+        const value = context.compileValue(argument);
+        if (value.kind === "number" && value.staticNumber === undefined && !value.parameterBinding) {
+            const staticNumber = staticNumberValue(context, argument);
+            if (staticNumber !== undefined && Number.isFinite(staticNumber)) return {...value, staticNumber};
+        }
+        return value;
     }
 
     /**

@@ -846,6 +846,7 @@ class Compiler
     private temporalControlAttachment: ts.Node | undefined;
     public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = [];
     private readonly sceneMaterials = new SceneMaterialRecorder();
+    public readonly localCubemapState: {maxCandidates?: number} = {};
     private readonly sceneMaterialGltfAssetsBefore: number[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
     private readonly shadowGenerators: Array<
@@ -928,7 +929,7 @@ class Compiler
     private presentationCanvasValue: Value | undefined;
     /** First statement after the one engine is created. */
     private engineCreationInsertion: number | undefined;
-    private nativeHostUiIdsCache: ReadonlySet<string> | undefined;
+    private nativeHostUiTagsCache: ReadonlyMap<string, string> | undefined;
     /** Explicit static surface sample count; absence means the pinned default. */
     private engineMsaaSamples: 1 | 4 | undefined;
     /** Bound only while lowering a platform visibility callback body. */
@@ -1233,6 +1234,8 @@ class Compiler
      * the immutable TypeScript module cannot observe elements owned by its
      * browser HTML host in a native process.
      */
+    private readonly pendingHostUiLookups: Value[] = [];
+
     private emitNativeHostUi(): void {
         const hostUi = this.options.nativeHostUi;
         if (!hostUi) return;
@@ -1366,25 +1369,24 @@ class Compiler
         this.body.splice(insertion, 0, ...emitted);
     }
 
-    private nativeHostUiIds(): ReadonlySet<string> {
-        if (this.nativeHostUiIdsCache) return this.nativeHostUiIdsCache;
-        const ids = new Set<string>();
+    private nativeHostUiTags(): ReadonlyMap<string, string> {
+        if (this.nativeHostUiTagsCache) return this.nativeHostUiTagsCache;
+        const tags = new Map<string, string>();
         const visit = (element: NativeHostUiElement): void => {
             const id = element.attributes?.id;
-            if (id !== undefined) ids.add(id);
+            if (id !== undefined) tags.set(id, element.tag.toLowerCase());
             for (const child of element.children ?? []) visit(child);
         };
         for (const element of this.options.nativeHostUi?.elements ?? []) {
             visit(element);
         }
-        this.nativeHostUiIdsCache = ids;
-        return ids;
+        this.nativeHostUiTagsCache = tags;
+        return tags;
     }
 
     /**
      * A host lookup becomes native only when its literal id is present in the
-     * audited companion. This deliberately excludes renderCanvas and any
-     * arbitrary page traversal from the retained UI surface.
+     * audited companion, including explicitly represented canvas elements.
      */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
         const callee = this.unwrap(call.expression);
@@ -1409,7 +1411,7 @@ class Compiler
                 : ts.isIdentifier(id)
                   ? this.lookupIdentifierValue(id)?.staticString
                   : undefined;
-        return text !== undefined && this.nativeHostUiIds().has(text);
+        return text !== undefined && this.nativeHostUiTags().has(text);
     }
 
     /**
@@ -2585,6 +2587,17 @@ class Compiler
                     ? `(*${cppName})`
                     : cppName,
             });
+            return;
+        }
+
+        const hostLookup = this.unwrap(declaration.initializer);
+        if (!this.defaultEngineCpp && !this.options.workers &&
+            ts.isCallExpression(hostLookup) && this.isNativeHostUiLookup(hostLookup)) {
+            const id = this.compileStringLiteral(hostLookup.arguments[0]!);
+            const value: Value = { kind: "ui-element", cpp: cppName, uiHostId: id,
+                uiTag: this.nativeHostUiTags().get(id)!, truthinessCpp: "true" };
+            this.pendingHostUiLookups.push(value);
+            this.defineVariable(declaration.name, value);
             return;
         }
 
@@ -12272,6 +12285,21 @@ class Compiler
         };
         const engineCpp = this.options.workers ? `(*${cppName})` : cppName;
         this.defaultEngineCpp = engineCpp;
+        for (const lookup of this.pendingHostUiLookups) {
+            lookup.engineCpp = engineCpp;
+            this.emit(`const auto ${lookup.cpp} = bbl::ui_get_element_by_id(${engineCpp}, ${this.cppString(lookup.uiHostId!)});`);
+        }
+        let surfaceCanvas = false;
+        if (!this.options.workers && [...this.nativeHostUiTags().values()].includes("canvas")) {
+            const canvas = this.compileValue(call.arguments[0]!);
+            if (canvas.kind === "ui-element") {
+                if (canvas.uiTag !== "canvas") this.fail(call.arguments[0]!, "An engine surface requires a retained canvas element.");
+                this.emit(`${engineCpp}.surface_canvas = ${canvas.cpp};`);
+                this.emit(`${engineCpp}.ui_elements[${canvas.cpp}.value].client_rect_requested = true;`);
+                surfaceCanvas = true;
+                this.reachFeature("renderer:surface", call);
+            }
+        }
         const nativeBinding = this.registerNativeBinding(cppName, !this.options.workers);
         if (this.options.workers) this.nativeBindings.set(engineCpp, nativeBinding);
         // The policy travels as reached features, which is what every other
@@ -12293,6 +12321,7 @@ class Compiler
             engineCpp,
             ...(this.options.workers ? { ownedEngineCpp: cppName } : {}),
             msaaSamples,
+            ...(surfaceCanvas ? { surfaceCanvas: true as const } : {}),
             nativeCaptures: [nativeBinding],
         };
     }
@@ -13409,11 +13438,14 @@ class Compiler
      * native storage as an initialized declaration at that assignment; a
      * resource or compile-time record returns undefined for the existing
      * one-time binding path to own.
+     * Reuse an evaluated value when assignment dispatch already resolved it,
+     * so projecting its members into typed storage cannot rerun factories.
      */
     public bindClassDataField(
         name: ts.Identifier,
         initializer: ts.Expression,
         declared?: DataType,
+        knownValue?: Value,
     ): Value | undefined {
         const dataType = declared ?? this.dataLowerer.dataTypeAt(name);
         if (!dataType || dataType.kind === "handle") {
@@ -13424,7 +13456,9 @@ class Compiler
         );
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const storage = sharedStorage ? `(*${cppName})` : cppName;
-        const cpp = this.dataLowerer.compileForSink(initializer, dataType);
+        const cpp = knownValue
+            ? this.dataLowerer.compileKnownValueForSink(knownValue, dataType, initializer)
+            : this.dataLowerer.compileForSink(initializer, dataType);
         const cppType = this.dataTypes.cppType(dataType);
         this.emit(
             sharedStorage
@@ -15069,6 +15103,8 @@ class Compiler
                         `bbl::ui_get_element_by_id(${engine}, ` +
                         `${this.cppString(id)})`,
                     engineCpp: engine,
+                    uiHostId: id,
+                    uiTag: this.nativeHostUiTags().get(id)!,
                     truthinessCpp: "true",
                 };
             }
@@ -18140,6 +18176,11 @@ class Compiler
         if (value.kind === "callback") {
             return this.materializeEscapingValue(value, label);
         }
+        if (isHandleKind(value.kind) && !value.nativeBinding) {
+            const cpp = this.allocateTemporaryCppName(label);
+            this.emit(`[[maybe_unused]] const auto ${cpp} = ${value.cpp};`);
+            return {...value, cpp, nativeBinding: true};
+        }
         if (value.kind === "record") {
             if (
                 value.dataType?.kind === "struct" &&
@@ -19960,6 +20001,8 @@ class Compiler
                         "bbl::RenderTargetOptions{scene.state->default_render_task_samples, true, true, false, 0u, 0u});",
                     "        auto resolve_target = bbl::create_render_target(engine, " +
                         "bbl::RenderTargetOptions{1u, true, false, false, 0u, 0u});",
+                    "        engine.render_targets[target.value].surface_canvas = scene.surface_canvas;",
+                    "        engine.render_targets[resolve_target.value].surface_canvas = scene.surface_canvas;",
                     "        auto render_task = bbl::create_render_task(engine, scene, " +
                         'bbl::RenderTaskOptions{"default-render-task", target, scene.clear_color, true, ' +
                         "bbl::CameraHandle{}, false, true, true, true});",
@@ -20076,6 +20119,10 @@ class Compiler
 
     public engineHasStarted(): boolean {
         return this.engineStartMark !== undefined;
+    }
+
+    public hasRegisteredScene(): boolean {
+        return this.temporalSceneRegistration !== undefined;
     }
 
     public emit(line: string): void {

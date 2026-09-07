@@ -4045,6 +4045,41 @@ test("fully initializes direct property-animation targets", () => {
     );
 });
 
+test("evaluates animation factories once when projecting a class record into typed storage", () => {
+    const result = compileSource(`
+        import {
+            createAnimationManager, createBox, createEngine,
+            createPropertyAnimationClip, createPropertyAnimationGroup,
+            stopAnimation,
+            type AnimationManager, type Mesh, type PropertyAnimationGroup,
+        } from "@babylonjs/lite";
+        class Controller {
+            private groups: Record<"jump" | "rest", PropertyAnimationGroup>;
+            constructor(manager: AnimationManager, target: Mesh) {
+                const clip = createPropertyAnimationClip("move", [{
+                    path: "position.x",
+                    keys: [{ frame: 0, value: 0 }, { frame: 1, value: 1 }],
+                }]);
+                this.groups = {
+                    rest: createPropertyAnimationGroup(manager, target, clip),
+                    jump: createPropertyAnimationGroup(manager, target, clip),
+                };
+                stopAnimation(this.groups.jump);
+            }
+        }
+        async function main() {
+            const engine = await createEngine({});
+            new Controller(createAnimationManager(), createBox(engine));
+        }
+        void main();
+    `);
+
+    // Each factory starts a playing group. Recompiling the literal during
+    // typed projection leaves an extra group playing outside the controller.
+    assert.equal((result.cpp.match(/bbl::create_property_animation_group\(/g) ?? []).length, 2);
+    assert.match(result.cpp, /bbl::stop_animation\(/);
+});
+
 test("copies spread objects and destructures reference-backed array entries", () => {
     const result = compileSource(`
         interface Row {
@@ -16151,7 +16186,7 @@ test("folds a numeric shader source factory at its reached call", () => {
     ]);
     assert.match(
         result.cpp,
-        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\([^)]*depthBias\)\);/,
+        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\(0\.0\)\);/,
     );
 });
 

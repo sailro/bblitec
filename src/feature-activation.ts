@@ -497,6 +497,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "variant table",
         ],
     },
+    "material:local-cubemap": {
+        provenance: "src/material/pbr/enable-pbr-local-cubemap.ts (executed validation, probe packing and setters)",
+        consumers: ["features.cmake", "variant table", "render_capabilities.hpp", "fidelity.json"],
+    },
+    "renderer:surface": {
+        provenance: "src/engine/surface.ts createSurface; native-architecture: retained canvas presentation in one OS window",
+        consumers: ["renderer plan", "fidelity.json"],
+    },
     "material:anisotropy": {
         provenance: "src/material/pbr/set-anisotropy.ts",
         // No capability define: the layer declares no binding and no texture
@@ -1398,6 +1406,15 @@ function capabilityRows(
     const reflectanceMap = pbrBindingNames.has("reflectanceMap");
     const lightmap = pbrBindingNames.has("lmTexture");
     return [
+        checkedRow(
+            "BBLITE_LOCAL_CUBEMAP",
+            "capability",
+            has("material:local-cubemap"),
+            [[has("material:local-cubemap"), "scene source reached material:local-cubemap"]],
+            "no scene material enables local cubemap probes",
+            "src/material/pbr/enable-pbr-local-cubemap.ts: enablePbrLocalCubemap installs the probe binding and packing state",
+            ["render_capabilities.hpp", "material_texture_slots.hpp", "variant table"],
+        ),
         ...([
             ["BBLITE_MATERIAL_ANISOTROPY_MAP", "anisotropyTexture_", "anisotropy"],
             ["BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP", "translucencyColorTexture_", "subsurface"],

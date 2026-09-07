@@ -638,7 +638,7 @@ void add_dds_environment_background(
 `
         : ""
 }${options.loadEnvironment ? `
-void load_environment(Scene& scene, EnvironmentOptions options) {
+std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, EnvironmentOptions options) {
     upstream::ParsedEnvironment parsed =
         upstream::parse_env_file(pal::read_binary_file(options.environment_url));
     EnvironmentState environment = scene.environment;
@@ -690,6 +690,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
     scene.environment.tone_mapping_enabled = true;
+    return std::make_shared<const EnvironmentState>(scene.environment);
 }
 ` : ""}
 } // namespace bbl

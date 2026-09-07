@@ -99,6 +99,36 @@ namespace bbl::pal {
  */
 inline constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
 
+#if BBLITE_LOCAL_CUBEMAP
+// Replay the pin's recorded copies over the retained source face payloads.
+// Decoding/upload uses the same path as an ordinary environment cubemap.
+inline EnvironmentState local_cubemap_texture(const LocalCubemapRecord& local) {
+    EnvironmentState result;
+    result.has_irradiance = true;
+    result.specular_width = local.width;
+    result.specular_mip_count = local.mip_count;
+    result.specular_faces.resize(static_cast<std::size_t>(local.layers) * local.mip_count);
+    std::vector<bool> copied(result.specular_faces.size(), false);
+    result.specular_rgba16f = local.environments.at(0)->specular_rgba16f;
+    for (const auto& copy : local.copies) {
+        const auto& source = *local.environments.at(copy.source);
+        if (copy.source_layer >= 6 || copy.source_mip >= source.specular_mip_count ||
+            copy.layer >= local.layers || copy.mip >= local.mip_count ||
+            copy.size != std::max(1u, source.specular_width >> copy.source_mip) ||
+            copy.size != std::max(1u, local.width >> copy.mip) ||
+            source.specular_rgba16f != result.specular_rgba16f)
+            throw std::runtime_error("Local cubemap copy does not match its source environment.");
+        const auto destination = static_cast<std::size_t>(copy.mip) * local.layers + copy.layer;
+        if (copied.at(destination)) throw std::runtime_error("Local cubemap repeats a face copy.");
+        copied[destination] = true;
+        result.specular_faces[destination] = source.specular_faces.at(static_cast<std::size_t>(copy.source_mip) * 6 + copy.source_layer);
+    }
+    if (std::find(copied.begin(), copied.end(), false) != copied.end())
+        throw std::runtime_error("Local cubemap copy plan leaves a face uninitialized.");
+    return result;
+}
+#endif
+
 /** Whether the scene set a backend planned at startup has changed. */
 inline bool registered_scene_set_changed(
     const Engine& engine,
@@ -126,59 +156,55 @@ inline bool request_renderer_restart_if_scene_set_changed(
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /**
  * Native presents every browser canvas through one operating-system window.
- * Keep the browser's independent surface ownership by assigning the primary
- * scene and every registered auxiliary-surface scene an equal horizontal
- * pane. Ordinary utility-layer scenes carry no surface canvas and continue to
- * overlay the full primary target.
+ * Retained layout supplies each canvas's actual rectangle. The scene's render
+ * targets use that canvas extent; only presentation applies its page offset.
  */
-inline std::optional<PixelViewport> scene_surface_pane(
+inline std::optional<PixelViewport> surface_canvas_pane(
     const Engine& engine,
-    const Scene& scene,
+    std::optional<UiElementHandle> surface_canvas,
     std::uint32_t target_width,
     std::uint32_t target_height) {
-    if (engine.registered_scenes.empty()) return std::nullopt;
-
-    std::size_t pane_count = 1;
-    for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
-        if (registered && registered->surface_canvas.has_value()) {
-            ++pane_count;
-        }
-    }
-    if (pane_count == 1) return std::nullopt;
-
-    std::size_t pane_index = npos;
-    const std::shared_ptr<Scene>& primary = engine.registered_scenes.front();
-    if (primary && primary->shares_identity(scene)) {
-        pane_index = 0;
-    } else if (scene.surface_canvas.has_value()) {
-        std::size_t auxiliary_index = 1;
-        for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
-            const std::shared_ptr<Scene>& registered =
-                engine.registered_scenes[i];
-            if (!registered || !registered->surface_canvas.has_value()) {
-                continue;
-            }
-            if (registered->shares_identity(scene)) {
-                pane_index = auxiliary_index;
-                break;
-            }
-            ++auxiliary_index;
-        }
-    }
-    if (pane_index == npos) return std::nullopt;
-
-    const std::uint64_t width = target_width;
-    const std::int32_t x0 = static_cast<std::int32_t>(
-        width * pane_index / pane_count);
-    const std::int32_t x1 = static_cast<std::int32_t>(
-        width * (pane_index + 1) / pane_count);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (!surface_canvas) return std::nullopt;
+    const auto canvas = surface_canvas->value;
+    if (canvas >= engine.ui_elements.size()) throw std::runtime_error("Invalid surface canvas.");
+    const auto& rect = engine.ui_elements[canvas].client_rect;
+    const double scale_x = target_width / engine.canvas_client_width;
+    const double scale_y = target_height / engine.canvas_client_height;
     return PixelViewport{
-        x0,
-        0,
-        std::max<std::int32_t>(1, x1 - x0),
-        std::max<std::int32_t>(1, static_cast<std::int32_t>(target_height)),
+        static_cast<std::int32_t>(rect.left * scale_x),
+        static_cast<std::int32_t>(rect.top * scale_y),
+        std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.width * scale_x)),
+        std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.height * scale_y)),
     };
+#else
+    (void)engine; (void)surface_canvas; (void)target_width; (void)target_height;
+    return std::nullopt;
+#endif
+}
+
+inline std::optional<PixelViewport> scene_surface_pane(
+    const Engine& engine, const Scene& scene, std::uint32_t width, std::uint32_t height) {
+    return surface_canvas_pane(engine, scene.surface_canvas, width, height);
+}
+
+inline std::pair<std::uint32_t, std::uint32_t> surface_target_extent(
+    const Engine& engine, const RenderTargetRecord& target, std::uint32_t width, std::uint32_t height) {
+    const auto pane = surface_canvas_pane(engine, target.surface_canvas, width, height);
+    return {target.width > 0 ? target.width : pane ? static_cast<std::uint32_t>(pane->width) : width,
+        target.height > 0 ? target.height : pane ? static_cast<std::uint32_t>(pane->height) : height};
+}
+
+template <typename Targets>
+inline bool surface_targets_changed(const Engine& engine, const Targets& targets,
+    std::uint32_t width, std::uint32_t height) {
+    for (std::size_t i = 0; i < engine.render_targets.size(); ++i) {
+        const auto& record = engine.render_targets[i];
+        if (!record.surface_canvas) continue;
+        const auto [expected_width, expected_height] = surface_target_extent(engine, record, width, height);
+        if (targets[i].width != expected_width || targets[i].height != expected_height) return true;
+    }
+    return false;
 }
 
 /** Target extent used when building one surface scene's projection. */
@@ -965,6 +991,7 @@ inline const TextureData* material_slot_texture(
         // Scene-owned resources carry no record field. The two VAT rows
         // are the mesh's own, like the bone palette beside them.
         case Source::environment_cube:
+        case Source::local_probe_cube:
         case Source::brdf_lut:
         case Source::scene_color:
         case Source::bone_palette:

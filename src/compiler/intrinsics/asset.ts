@@ -934,7 +934,9 @@ export function compileAssetIntrinsic(
                 context.reachFeature("background:solid-skybox", call);
             }
             return {
-                kind: "void",
+                kind: "environment-textures",
+                engineCpp: scene.engineCpp!,
+                environmentAsset,
                 cpp:
                     `bbl::load_environment(${scene.cpp}, ` +
                     `bbl::EnvironmentOptions{` +
