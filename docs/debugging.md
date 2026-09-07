@@ -70,6 +70,11 @@ Pinned mesh blocks marked `worldSource: effective-draw` include late asset-root
 transforms and resolved skin/instance conventions for the main draw lists.
 They use the backend's shared block builder; geometry/shadow pass uploads still
 require separate capture or GPU inspection.
+Retained splat source buffers appear in the `splats` section with their current
+byte length, update version and bounds. Each `retainedDataFile` names a binary
+sidecar beside the capture JSON, preserving every source byte for comparison
+with browser `splatsData`. These are the retained CPU bytes; uploaded texture
+payloads still require the GPU capture checks described below.
 The palette comparison covers the first two matrices; read the full deformation
 dump for other bones. Expected native-only shader permutations are not errors.
 

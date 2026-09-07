@@ -50,6 +50,7 @@
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #if BBLITE_HAS_SPLATS
+#include <bblite/js_data.hpp>
 #include <bblite/upstream/splat_sort.hpp>
 #endif
 #if BBLITE_HAS_BILLBOARDS
@@ -74,6 +75,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -1201,6 +1203,44 @@ inline void write_shadow_generator(
 #endif
 
 #if BBLITE_HAS_SPLATS
+/** Retained source bytes are separate from regenerated GPU texture payloads. */
+inline void write_splat_list(
+    JsonWriter& json,
+    const Scene& scene,
+    const Engine& engine,
+    const std::string& capture_path) {
+    for (const SplatMeshHandle handle : scene.splat_meshes) {
+        if (handle.value >= engine.splat_meshes.size()) continue;
+        const SplatMeshRecord& splat = engine.splat_meshes[handle.value];
+        json.begin_object();
+        json.field("index", handle.value);
+        json.field("name", splat.name);
+        json.field("vertexCount", splat.vertex_count);
+        json.field("dataVersion", splat.data_version);
+        json.field("boundMin", splat.bound_min.data(), splat.bound_min.size());
+        json.field("boundMax", splat.bound_max.data(), splat.bound_max.size());
+        if (splat.splats_data) {
+            const std::filesystem::path path(capture_path);
+            const std::string filename = path.filename().string() +
+                ".splat-" + std::to_string(handle.value) + ".bin";
+            const std::size_t size = splat.splats_data->byte_length();
+            std::ofstream bytes(path.parent_path() / filename,
+                std::ios::binary | std::ios::trunc);
+            if (size != 0) {
+                bytes.write(reinterpret_cast<const char*>(splat.splats_data->data()),
+                    static_cast<std::streamsize>(size));
+            }
+            bytes.close();
+            if (!bytes) {
+                throw std::runtime_error("Unable to write retained splat data for '" + capture_path + "'.");
+            }
+            json.field("byteLength", size);
+            json.field("retainedDataFile", filename);
+        }
+        json.end_object();
+    }
+}
+
 /**
  * The Gaussian-splat renderable lives beside the render plan rather than in
  * either mesh draw list. Capture it at that same boundary so a splat-only
@@ -1796,6 +1836,13 @@ inline void write_render_capture(
         write_mesh(json, index, engine.meshes[index], engine);
     }
     json.end_array();
+
+#if BBLITE_HAS_SPLATS
+    json.key("splats");
+    json.begin_array();
+    write_splat_list(json, scene, engine, path);
+    json.end_array();
+#endif
 
     json.key("materials");
     json.begin_array();
