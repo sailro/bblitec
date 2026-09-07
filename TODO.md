@@ -213,7 +213,7 @@ and shutdown on both backends. Run instructions are in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 15 numbered scenes unregistered. Helper
+The current registry leaves these 14 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -229,7 +229,6 @@ modules without a numbered scene entry are not integration candidates.
 | 181 | The same text subsystem and live input as 180. |
 | 186 | Tuple flatten, live PBR `ormTexture`/`directIntensity` writes, and the PBR local-cubemap extension, which needs cube-array textures in both PALs and a 64 KB uniform block SDL_GPU pushes rather than binds. Three contracts, the third a subsystem. |
 | 227, 228 | Multiple surfaces and swapchains |
-| 275 | `loadFont` and `createDefaultTextData` folded by executing the pinned shaper at generation, a text scene entity carrying the pin's deferred registration, the alpha-to-coverage text arm, the pinned Slug shader family with its overridable constant, and a text draw path in both PALs. Six contracts; the payload folds to about 1.5k floats and pinned Tint accepts both stages today, but the sixth is a new draw subsystem and the fifth would be this compiler's first overridable shader constant. |
 | 304 | FlowGraph runtimes and glTF interactivity |
 
 - [ ] Investigate the shared shark-pose residual in scenes 11/152 with a

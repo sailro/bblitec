@@ -25,6 +25,7 @@ export interface GeneratedSourceRule {
 export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     { source: "upstream/src/engine.cpp", features: [] },
     { source: "upstream/src/scene_core.cpp", features: [] },
+    { source: "upstream/src/text_data.cpp", features: ["text:data"] },
     {
         source: "upstream/src/frame_graph_resources.cpp",
         features: ["frame-graph:resources"],

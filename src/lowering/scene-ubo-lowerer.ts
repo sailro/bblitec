@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { cameraChangeKeyHeader } from "./camera-change-key-lowerer.js";
 import { LoweringContext } from "./context.js";
 import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
@@ -100,23 +101,6 @@ ${this.contributor("writeClipPlaneUbo", "write_clip_scene_uniforms")}
 ${this.contributor("writeEnvUbo", "write_environment_scene_uniforms")}
 } // namespace bbl::upstream
 `;
-    }
-
-    private cameraKey(): string {
-        return lowerPinnedFunction(this.context, "src/camera/camera.ts", "_cameraChangeKey", [
-            { pinned: "camera", kind: "record", annotation: "Camera", cpp: "camera", cppType: "Camera", mutableRecord: true },
-        ], { cppName: "scene_camera_change_key", returns: "double", templateParameters: ["class Camera"], booleanOr: true,
-            memberBindings: new Map([
-                ["camera._projFov", { cpp: "camera.projection_fov", type: "scalar" }],
-                ["camera._projNear", { cpp: "camera.projection_near", type: "scalar" }],
-                ["camera._projFar", { cpp: "camera.projection_far", type: "scalar" }],
-                ["camera._projRev", { cpp: "camera.projection_revision", type: "scalar" }],
-                ["camera.worldMatrixVersion", { cpp: "camera.world_matrix_version", type: "scalar" }],
-                ["camera.fov", { cpp: "camera.fov", type: "scalar" }],
-                ["camera.nearPlane", { cpp: "camera.near_plane", type: "scalar" }],
-                ["camera.farPlane", { cpp: "camera.far_plane", type: "scalar" }],
-            ]),
-        });
     }
 
     private writeScene(): string {
@@ -238,9 +222,8 @@ ${this.advance()}
 #include <cstdint>
 #include <optional>
 
+${cameraChangeKeyHeader(this.context)}
 namespace bbl::upstream {
-${this.cameraKey()}
-
 ${this.writeScene()}
 } // namespace bbl::upstream
 `;

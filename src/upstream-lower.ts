@@ -2,11 +2,19 @@ import { deformPickingHeader, type DeformPickingShader } from "./pinned-picking-
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import ts from "typescript";
+import type { ShaderStageConstant } from "./shader-ir.js";
 import {
     SPLAT_CONTAINERS,
     type SplatContainerKind,
 } from "./compiler/assets.js";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
+import { TextLowerer } from "./lowering/text-lowerer.js";
+import { TextGpuLowerer } from "./lowering/text-gpu-lowerer.js";
+import { cameraChangeKeyHeader } from "./lowering/camera-change-key-lowerer.js";
+import type { CompiledTextData } from "./pinned-text-data.js";
+import type { ComposedTextPipeline } from "./pinned-text-pipeline.js";
+import { textPipelineHeader, textPipelineStem } from "./pinned-text-pipeline-cpp.js";
+import { stringLiteral as cppStringLiteral } from "./cpp-literals.js";
 import { GeospatialCameraLowerer } from "./lowering/geospatial-camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
@@ -288,6 +296,8 @@ import { pinnedImageProcessingSource } from "./shader-builtins-utility.js";
  * both ends meant every new capability was declared twice.
  */
 export interface UpstreamEmitOptions {
+    textPipelines?: readonly ComposedTextPipeline[];
+    textData?: readonly CompiledTextData[];
     idDiagnostics: boolean;
     /** Static `_buildSurface` sample count selected by scene engine options. */
     msaaSamples?: 1 | 4;
@@ -723,6 +733,11 @@ class GeneratedSourceWriter {
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        if (features.includes("text:renderable")) {
+            const unsupported = features.find((feature) =>
+                /^(material:|mesh:|loader:|sprite:|particle:|animation:|background:|shadow:|light:clustered|frame-graph:|effect:|ui:|platform:workers|renderer:(frame-graph|post-process|screen-space|geometry-output|transmission|sprite|canvas|effect|high-precision-matrix|floating-origin)|camera:(arc-rotate|default|geospatial|orthographic))/.test(feature));
+            if (unsupported) throw new Error(`Text rendering with '${unsupported}' requires unrepresented merged draw ordering or camera/task transport${refusalReachedFrom(options.featureSites, unsupported)}.`);
+        }
         if (options.postProcessComposites?.some((task) => task.taa)) {
             if (options.geometryOutputTasks.length > 0 || options.assetTransmission ||
                 (options.pinnedVariants?.length ?? 0) > 0) {
@@ -1068,9 +1083,22 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 sceneNodeTransforms: features.includes("scene:node-transforms"),
                 mirroredMeshes: features.includes("mesh:mirrored"),
                 vat: features.includes("mesh:vat"),
+                text: features.includes("text:renderable"),
             }),
             generated,
         );
+        if (features.includes("text:data")) {
+            const text = new TextLowerer(context);
+            this.tree.write("upstream/include/bblite/upstream_text.hpp", text.header());
+            this.writeSource("upstream/src/text_data.cpp", {
+                modulePath: "src/text/default-text-data.ts",
+                symbolName: "createDefaultTextData",
+                header: "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl { TextData create_compiled_text_data(std::uint32_t index); }\n",
+                source: "#include <bblite/upstream_text.hpp>\n#include <bblite/pal.hpp>\nnamespace bbl {\nTextData create_compiled_text_data(std::uint32_t index) {\n    switch (index) {\n" +
+                    (options.textData ?? []).map((row) => `    case ${row.id}: return ${text.dataExpression(row, (blob) => `bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(blob.assetOutput)}))`)};`).join("\n") +
+                    "\n    default: throw std::out_of_range(\"Compiled text data index\");\n    }\n}\n}\n",
+            }, generated, "upstream/include/bblite/upstream/text_data.hpp");
+        }
         if (features.includes("frame-graph:resources")) {
             this.writeSource(
                 "upstream/src/frame_graph_resources.cpp",
@@ -1441,7 +1469,10 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             alsoStages?: ReadonlyArray<{
                 stem: string;
                 entryPoint: string;
+                constants?: readonly ShaderStageConstant[];
             }>;
+            /** Offline specialization; the deployed WGSL remains canonical for Dawn. */
+            constants?: readonly ShaderStageConstant[];
             /**
              * The module's own entry point for its deployed stem, where
              * the family names none: a screen-space stage names its
@@ -1449,6 +1480,17 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
              */
             entryPoint?: string;
         }> = [];
+        if (features.includes("text:renderable")) {
+            const pipelines = options.textPipelines ?? [];
+            this.tree.write("upstream/include/bblite/upstream_text_gpu.hpp", new TextGpuLowerer(context).header());
+            this.tree.write("upstream/include/bblite/upstream/camera_change_key.hpp", cameraChangeKeyHeader(context));
+            this.tree.write("upstream/include/bblite/upstream_text_pipeline.hpp", textPipelineHeader(pipelines));
+            for (const [index, pipeline] of pipelines.entries()) for (const stage of ["vertex", "fragment"] as const) {
+                composedShaders.push({ output: `upstream/shaders/${textPipelineStem(index, stage)}.native.wgsl`,
+                    data: pipeline.descriptor[stage].module.code, family: "screenSpace", entryPoint: pipeline.descriptor[stage].entryPoint,
+                    constants: stage === "vertex" ? pipeline.vertexConstants : pipeline.fragmentConstants });
+            }
+        }
         // The Dawn backend's utility shaders, split from the pinned modules
         // once for whichever drivers reach them.
         let dawnUtilityMemo: DawnUtilityShaders | undefined;
@@ -3123,6 +3165,7 @@ ${shadow.blurFragmentWgsl}`,
                                 family,
                                 alsoStages,
                                 entryPoint,
+                                constants,
                             }) => ({
                                 output,
                                 sha256: createHash("sha256")
@@ -3136,6 +3179,7 @@ ${shadow.blurFragmentWgsl}`,
                                 ...(alsoStages
                                     ? { alsoStages }
                                     : {}),
+                                ...(constants ? { constants } : {}),
                             })),
                     },
                     null,

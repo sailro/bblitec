@@ -1,0 +1,37 @@
+{
+  "review": {
+    "base": "origin/main at 270f24143686f64f6b5968130f17043b3a796a04 (merged PR234)",
+    "scope": "Complete scene275 integration: executed pinned font/shaping payloads, retained entities and transforms, lowered GPU lifecycle, shader override transport, both PAL resource/draw adapters, actual operation capture, browser/native controls, source admission, canonical reference, registry and documentation.",
+    "method": "Three same-model subagents independently reviewed reuse, simplification and altitude while the coordinator reviewed efficiency, using all four available slots. Each read surrounding code and existing helpers. All four findings lists completed before fixes. All five findings were applied. A subagent independently reviewed the complete cleanup delta and found no remaining issue. A supplemental independent review of the final two-file corpus/registry metadata correction completed separate passes over all four angles with no findings.",
+    "correctness": "Independent reviews covered source identity/evaluation order, deferred registration, first-owner shared data bindings, resource replacement/failure/retirement, stage constants, default-task and camera admission, actual upload/draw receipts and browser reference integrity. Early generation caught and resolved nontext transform interception. Native startup caught and resolved executable-relative payload loading. Cleanup preserves first matching capability failure, source locations, gate priority and speculative rollback.",
+    "validation": "Final full suite: 2,001 passed, zero failures/skips (100.895s runner time). Full sweep: all five stages pass, 277 native targets and 276 image gates, 1000.010s total. Every report is fresh and matches its generated stamp. Neutrality: 261 bit-identical scenes and 13 with previously measured backend variation, zero unexplained changes across the 274-scene baseline. Exact scene275 full/foreground MAD 0 on both PALs. All 24 final exact/shared-data/ordinary-blend controls use current generated stamps, remain strictly below MAD 0.5, and pass actual upload/draw/identity receipts through canonical, idle, ignored input and 960x600 resize phases. All 16 exact275/shared phases and 5 blend phases are pixel-exact; the three full-size SDL ordinary-blend phases differ in one channel by one unit on one pixel (full MAD 3.616898148148148e-7, foreground MAD 0.00002853392683901158). Ordinary scene142, TAA scene261 and scene44 pass the full sweep. Corpus verification matches 975 digest rows plus one provenance-only generated row."
+  },
+  "findings": [
+    {
+      "summary": "Share the bounded C++ fixture function extractor between text and scene uniform identity tests.",
+      "applied": true
+    },
+    {
+      "summary": "Remove the duplicate styleRecreated source-contract assertion.",
+      "applied": true
+    },
+    {
+      "summary": "Remove unused Value.textData metadata while retaining manifest text data and provenance.",
+      "applied": true
+    },
+    {
+      "summary": "Serialize each composed text pipeline once when deduplicating identical rows.",
+      "applied": true
+    },
+    {
+      "summary": "Share capability-tagged deferred admission storage and probe rollback between text and TAA.",
+      "applied": true
+    }
+  ],
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ]
+}

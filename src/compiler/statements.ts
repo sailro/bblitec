@@ -146,6 +146,7 @@ export interface StatementLoweringContext {
     ): void;
     emitAssignment(expression: ts.BinaryExpression): void;
     compileValue(expression: ts.Expression): Value;
+    compileTextMutation(expression: ts.Expression): Value | undefined;
     emitDiscardedValue(value: Value): void;
     emitAwaitExpression(expression: ts.Expression): boolean;
     compileCondition(expression: ts.Expression): string;
@@ -3234,6 +3235,8 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         expression: ts.Expression,
     ): void {
+        const text = context.compileTextMutation(expression);
+        if (text) { context.emitDiscardedValue(text); return; }
         if (context.emitAwaitExpression(expression)) return;
         const unwrapped = context.unwrap(expression);
         if (ts.isVoidExpression(unwrapped)) {

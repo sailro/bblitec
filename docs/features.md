@@ -627,6 +627,29 @@ Exposure and contrast are live uniform state. The selected tone-mapping record
 participates in material composition. Transmission uses the pinned linear-frame
 and trailing image-processing contract.
 
+## Text
+
+Static `loadFont` and `createDefaultTextData` execute the pinned font parser,
+shaper and packing modules at generation. Their manifest retains exact byte
+streams, padded atlas extents, used ranges, capacities, versions and provenance.
+Dynamic layout/update calls still refuse at source. `createTextRenderable`
+creates a retained native entity; text data and renderables preserve identity
+through aliases, containers, helpers and captured callbacks. Transform component
+and bulk writes call the pinned setters, including Euler/quaternion cache rules;
+opacity remains live. Pipeline membership, depth behavior and order must settle
+before text attachment. Late attachment/disposal, copied conditional transform
+objects, reflective writes and internal buffer mutation refuse explicitly.
+
+Compiler projection supplies the pinned GPU lifecycle and pipeline descriptors,
+including per-stage constants, reflected resources and vertex layouts. Initial
+renderer admission is one text-only default scene with a static FreeCamera;
+mixed draw ordering, custom tasks, camera writers/controls and high precision
+text matrices remain refused. Text registration requires `BBLITE_HAS_TEXT`.
+Both PALs draw the composed Slug shaders with packed instance/storage data and
+the pin's alpha-to-coverage or premultiplied blend state. Scene275 is registered;
+shared-data and ordinary-blend fixtures cover the other admitted binding paths.
+See [fidelity](fidelity.md#text-contract).
+
 ## Runtime scene mutation
 
 Supported removal, material-family append and dynamic instance updates trigger

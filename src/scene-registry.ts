@@ -2889,6 +2889,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene275",
+        name: "Scene 275 - Text Alpha-to-Coverage",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene275.ts",
+        title: "Babylon Lite Native - Text Alpha-to-Coverage",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [9, 11, 18],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene147",
         name: "Scene 147 - Circle of Confusion",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene147.ts",

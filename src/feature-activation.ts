@@ -162,6 +162,8 @@ const CMAKE: readonly FeatureActivationConsumer[] = ["features.cmake"];
  * error: a new `Feature` union member cannot land without a row here.
  */
 const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
+    "text:data": { provenance: "src/text/default-text-data.ts#createDefaultTextData", consumers: CMAKE },
+    "text:renderable": { provenance: "src/text/text-renderable.ts#createTextRenderable + addTextRenderable", consumers: CMAKE },
     "animation:gltf-groups": {
         provenance:
             "src/animation/animation-group.ts (playAnimation, pauseAnimation, " +

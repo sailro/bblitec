@@ -800,6 +800,12 @@ else()
     )
 endif()
 
+if("text:renderable" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT=0)
+endif()
+
 if("sprite:billboard" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(
         bblite_native

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneUboLowerer } from "../src/lowering/scene-ubo-lowerer.js";
+import { cameraChangeKeyHeader } from "../src/lowering/camera-change-key-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
@@ -26,6 +27,7 @@ test("pinned source cache preserves identity, projection polling, clean bytes an
     const directory = resolve("artifacts/scene-ubo-cache-check");
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "cache.hpp"), new SceneUboLowerer(new LoweringContext()).cacheHeader());
+    writeFileSync(join(directory, "camera.hpp"), cameraChangeKeyHeader(new LoweringContext()));
     const cameraA = createArcRotateCamera(-1, 1, 10, { x: 0, y: 0, z: 0 });
     const cameraB = createArcRotateCamera(-1, 1, 10, { x: 0, y: 0, z: 0 });
     const initialProjection = { fov: cameraB.fov, near: cameraB.nearPlane, far: cameraB.farPlane };
@@ -90,7 +92,9 @@ test("pinned source cache preserves identity, projection polling, clean bytes an
     sample("failed upload is not retried for identical key", "fail_write = false;", () => { failWrite = false; });
 
     const sourcePath = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(sourcePath, `#include "cache.hpp"
+    writeFileSync(sourcePath, `#include "camera.hpp"
+#include "cache.hpp"
+#include "camera.hpp"
 #include <array>
 #include <cassert>
 #include <fstream>

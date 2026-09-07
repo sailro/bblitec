@@ -438,6 +438,67 @@ source scenes or thresholds substitutes for this evidence. Residual classes
 and unfinished physics capabilities are tracked in TODO; published pixels
 belong in status.
 
+## Text contract
+
+`TextLowerer` translates observable component/bulk setters, the cached Euler
+proxy, quaternion conversion and matrix multiplication from the pinned bodies.
+Transform lanes retain JS double width; ordinary text world matrices and uniform
+stores narrow to float at the pin's allocation/write boundaries. The identity
+matrix shortcut also preserves zero signs. The three UBO updates retain their
+independent camera/world/aspect, viewport and opacity conditions. CPU fixtures
+execute the real pinned functions with recording resource seams and compare all
+written bytes, including unchanged frames and frames with no camera.
+
+Each materialized TextData has distinct mutable identity even when packaged
+blobs deduplicate. Its renderables retain the same data owner; group bind caches
+belong to that data, not to individual renderables. Renderable disposal releases
+its three buffer leases without disposing the data. TextData disposal clears
+live groups/counts while preserving width, height, packed CPU storage and version
+state; DefaultTextData additionally releases its owned atlas leases. Native
+fixtures observe the pin's lifetime, aliases, byte streams and disposal order.
+
+`TextGpuLowerer` emits the pin's resource capacity, version, group-cache and draw
+decisions through synchronous backend operations. Style synchronization precedes
+atlas/group synchronization, then instance uploads, then the existing UBO writer.
+Shared TextData retains a group's original UBO/style bindings when a second
+renderable updates it unless the pin's own invalidation conditions rebuild that
+group. Packed instance words stay bytes throughout these uploads. CPU controls
+compare resource identities, every uploaded byte, idle work, partial uploads,
+growth, failure/publication order and draw ranges against the actual pinned
+functions. They also observe text-owner alpha-to-coverage membership; effective
+pipeline coverage remains the composed pipeline's decision. Static producer
+ranges are required: these helpers do not admit dynamic source text layouts,
+late styling installation or arbitrary native payload mutation.
+
+The deferred scene drain now checks existing registration before construction,
+consumes snapshots repeatedly, and publishes only after successful construction.
+The text adapter retains scene-owned renderables through a weak scene reference,
+preserves duplicate additions, and refuses attachment after scene disposal.
+The pin's arbitrary async builders and late-cleanup continuations are not admitted.
+The PALs adapt those operations to their device APIs. Dawn retains buffer and
+texture leases in the actual bind group. SDL retains the same group ownership
+with a uniform shadow and pushes its bytes for each draw; storage and texture
+slots come from compiled reflection. Both consume the actual pinned pipeline
+descriptor and unchanged Slug WGSL. Numeric override constants remain separate
+for vertex and fragment stages; Tint specializes offline stages and Dawn
+receives the constants in its pipeline descriptor.
+
+The SDL default pass uses its selected depth-only format (`depth32float` or
+`depth24plus`) in place of the browser's `depth24plus-stencil8`; admitted text
+does not use stencil. Depth comparison and writes remain source-selected.
+`BBLITE_RENDER_CAPTURE` records successful uploads, allocated extents, written
+ranges, retained binding identities, per-draw pipeline state and SDL pushed
+uniform bytes after the captured frame's text draws. Unwritten allocation tails
+are excluded from the byte evidence.
+
+Scene275 and the shared-data/ordinary-blend controls compare those receipts
+with actual pinned browser operations, including mapped quad bytes, idle work,
+unattached-camera input and a resized canvas. Image gates apply independently
+to both backends. CPU lifecycle controls additionally cover failure
+and replacement paths that the static source admission does not expose. The
+supported source surface and remaining exclusions are in
+[features](features.md#text).
+
 ## Audio contract
 
 The platform seam is Web Audio: the pinned engine creates its graph over an

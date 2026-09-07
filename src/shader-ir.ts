@@ -9,6 +9,12 @@ import type {
 } from "./compiler/types.js";
 
 export type ShaderStage = "vertex" | "fragment";
+/** A pipeline's value for a numeric WGSL override ID, distinct from its declaration. */
+export interface ShaderStageConstant {
+    id: number;
+    value: number;
+}
+
 export type ShaderType =
     | "f32"
     | "mat4x4<f32>"

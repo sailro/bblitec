@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
 import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
 import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
 import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
@@ -281,7 +282,7 @@ export type {
     PostProcessTaskManifest,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
-import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import { isCompileTimeOnlyValue, sameCompiledValue } from "./compiler/types.js";
 import { ClosureCaptures, nativeCompanionKeys, renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./compiler/closure-captures.js";
 import {
     parameterizedResourceLoop,
@@ -301,6 +302,7 @@ import {
     isDeterministicRandomRead,
 } from "./compiler/deterministic-random.js";
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
+import type { CompiledTextData } from "./pinned-text-data.js";
 import { readFrozenParticleProperty } from "./compiler/particle-buffer.js";
 import {
     physicsEventInfoType,
@@ -767,6 +769,7 @@ class Compiler
     private readonly featureSites = new Map<Feature, string>();
     public readonly assets = new Map<string, CompileAsset>();
     public readonly assetPayloads = new Map<string, string>();
+    public readonly reachedTextData: CompiledTextData[] = [];
     /** The source-keyed record for the most recent `loadGltf` call. */
     private lastGltfContainerAsset: CompileAsset | undefined;
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
@@ -832,7 +835,7 @@ class Compiler
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
     private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
-    private readonly temporalAdmissionFailures: Array<{ node: ts.Node; message: string }> = [];
+    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text"; node: ts.Node; message: string }> = [];
     private temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
     private temporalControlAttachment: ts.Node | undefined;
@@ -998,10 +1001,18 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        if (this.features.has("text:renderable")) {
+            const camera = this.textCameraMutation ?? this.temporalControlAttachment ?? this.untrackedTaaCameraWrites[0]?.node;
+            if (camera) this.fail(camera, "Text currently requires a static camera; live camera writers and controls are not represented.");
+            if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
+                "Text currently supports one registered scene; layered text update/draw ordering is not represented.");
+            const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "text");
+            if (admission) this.fail(admission.node, admission.message);
+        }
         if (this.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask")) {
             const unsupported = this.untrackedTaaCameraWrites[0];
             if (unsupported) this.fail(unsupported.node, `TAA requires tracked camera mutations: ${unsupported.reason}.`);
-            const admission = this.temporalAdmissionFailures[0];
+            const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "taa");
             if (admission) this.fail(admission.node, admission.message);
             for (const feature of ["camera:free", "camera:geospatial", "camera:orthographic", "loader:gltf-cameras"] as const) {
                 if (this.features.has(feature)) this.fail(this.sourceFile,
@@ -1096,6 +1107,7 @@ class Compiler
                         ),
                 ),
                 nodeMaterials: this.reachedNodeMaterials,
+                ...(this.reachedTextData.length > 0 ? { textData: this.reachedTextData } : {}),
                 ...(this.reachedNodeParticles.sets.length > 0
                     ? {
                           nodeParticles: nodeParticleManifest(
@@ -1923,6 +1935,38 @@ class Compiler
 
     public emitExpressionAsStatement(expression: ts.Expression): void {
         this.statements.emitExpression(this, expression);
+    }
+
+    public compileTextMutation(expression: ts.Expression): Value | undefined {
+        return compileTextMutation(this, expression);
+    }
+
+    private textAttachmentReached = false;
+    private textCameraMutation: ts.Node | undefined;
+
+    public noteTextSceneLifecycle(node: ts.Node, message = "Text scene disposal, removal and explicit rebuilding require retained binding topology that is not represented."): void {
+        this.deferredAdmissionFailures.push({ capability: "text", node, message });
+    }
+
+    public noteTextSceneCameraAssignment(node: ts.Node): void {
+        if (this.isRuntimeResourceConstruction() || this.engineStartMark !== undefined) this.textCameraMutation ??= node;
+    }
+
+    public assertTextPipelineMutable(node: ts.Node): void {
+        if (this.isRuntimeResourceConstruction() || this.textAttachmentReached || this.engineStartMark !== undefined) {
+            this.fail(node, "Text pipeline/order changes require definite initialization before text attachment; live pipeline rebinding and list rebuilding are not represented.");
+        }
+    }
+
+    public recordTextAttachment(node: ts.Node): void {
+        if (this.isRuntimeResourceConstruction() || this.engineStartMark !== undefined) this.fail(node, "Text attachment requires definite initialization; live text list rebuilding is not represented.");
+        this.textAttachmentReached = true;
+    }
+
+    public assertTextDisposal(node: ts.Node): void {
+        if (this.textAttachmentReached || this.isRuntimeResourceConstruction() || this.engineStartMark !== undefined) {
+            this.fail(node, "Text disposal requires setup before text attachment; destroying retained draw bindings is not represented.");
+        }
     }
 
     public emitDiscardedValue(value: Value): void {
@@ -4371,6 +4415,8 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        const text = this.compileTextMutation(expression);
+        if (text) { this.emitDiscardedValue(text); return; }
         if (this.compileCameraMutation(expression)) return;
         if (emitCanvasAssignment(this, expression)) return;
         if (this.options.workers && this.emitUiPropertyAssignment(expression)) return;
@@ -8909,9 +8955,12 @@ class Compiler
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
-            value = this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
+            value = this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
         } finally {
             this.nativeDependencyStack.pop();
+        }
+        if (value.kind === "text-vector" && (ts.isConditionalExpression(this.unwrap(expression)) || ts.isBinaryExpression(this.unwrap(expression)))) {
+            this.fail(expression, "Conditional text transform objects require a runtime vector identity carrier; select the renderable before reading its transform.");
         }
         if (this.options.workers && value.kind === "boolean" && (value.cpp === "true" || value.cpp === "false")) {
             value = { ...value, staticBoolean: value.cpp === "true" };
@@ -11085,8 +11134,24 @@ class Compiler
                     "Reached callback conditions support numeric comparisons and logical operators.",
                 );
             }
-            const leftValue = this.compileValue(unwrapped.left);
-            const rightValue = this.compileValue(unwrapped.right);
+            let leftValue = this.compileValue(unwrapped.left);
+            const textKind = (value: Value) => ["text-data", "text-renderable", "text-vector"].includes(value.kind);
+            if (textKind(leftValue)) leftValue = retainTextValue(this, leftValue);
+            let rightValue = this.compileValue(unwrapped.right);
+            if (textKind(rightValue)) rightValue = retainTextValue(this, rightValue);
+            if (textKind(leftValue) || textKind(rightValue)) {
+                if (operator !== "==" && operator !== "!=") this.fail(unwrapped, "Text entities support strict identity comparisons.");
+                const sameKind = leftValue.kind === rightValue.kind && leftValue.textTransform === rightValue.textTransform;
+                return sameKind ? `${leftValue.cpp} ${operator} ${rightValue.cpp}` : operator === "==" ? "false" : "true";
+            }
+            if ([leftValue.kind, rightValue.kind].some((kind) => kind === "text-font")) {
+                const token = unwrapped.operatorToken.kind;
+                if (token !== ts.SyntaxKind.EqualsEqualsEqualsToken && token !== ts.SyntaxKind.ExclamationEqualsEqualsToken) {
+                    this.fail(unwrapped, "Static font/text data only supports strict identity comparison.");
+                }
+                const equal = sameCompiledValue(leftValue, rightValue);
+                return (token === ts.SyntaxKind.EqualsEqualsEqualsToken ? equal : !equal) ? "true" : "false";
+            }
             const staticLeft =
                 leftValue.kind === "number" && !leftValue.parameterBinding
                     ? leftValue.staticNumber
@@ -13510,18 +13575,22 @@ class Compiler
     ): T {
         const start = this.body.length;
         const cameras = this.untrackedTaaCameraWrites.length;
-        const admissions = this.temporalAdmissionFailures.length;
+        const admissions = this.deferredAdmissionFailures.length;
         const registration = this.temporalSceneRegistration;
         const registeredScenes = this.temporalRegisteredScenes.length;
         const controls = this.temporalControlAttachment;
+        const textCamera = this.textCameraMutation;
+        const textAttachment = this.textAttachmentReached;
         const result = probe();
         if (!answered(result)) {
             this.body.splice(start);
             this.untrackedTaaCameraWrites.length = cameras;
-            this.temporalAdmissionFailures.length = admissions;
+            this.deferredAdmissionFailures.length = admissions;
             this.temporalSceneRegistration = registration;
             this.temporalRegisteredScenes.length = registeredScenes;
             this.temporalControlAttachment = controls;
+            this.textCameraMutation = textCamera;
+            this.textAttachmentReached = textAttachment;
         }
         return result;
     }
@@ -14009,6 +14078,7 @@ class Compiler
         }
         const target = cameraNumberWrite(this, left);
         if (!target) return undefined;
+        this.textCameraMutation ??= left;
         noteCameraRecordWrite(this, target.camera, target.property,
             unary ? undefined : node.right, operator === "=" && !["target", "position", "up_vector"].includes(target.property));
         if (target.property === "position" || target.property === "up_vector") {
@@ -14028,6 +14098,7 @@ class Compiler
     }
 
     public noteCameraVectorSet(vector: NonNullable<Value["cameraVector"]>, site: ts.Node): void {
+        this.textCameraMutation ??= site;
         noteCameraRecordWrite(this, vector.owner, vector.field, undefined, false);
         if (vector.field !== "target") this.untrackedTaaCameraWrites.push({ node: site,
             reason: `camera.${vector.field} is not the arc camera's observable target` });
@@ -14039,7 +14110,7 @@ class Compiler
     }
 
     public noteTemporalAdmissionFailure(node: ts.Node, message: string): void {
-        this.temporalAdmissionFailures.push({ node, message });
+        this.deferredAdmissionFailures.push({ capability: "taa", node, message });
     }
 
     public noteTemporalRecordBoundary(node: ts.Node, reason: string, mode: "runtime" | "registration" | "always" = "runtime", scene?: Value): void {
@@ -17065,6 +17136,8 @@ class Compiler
             this, owner, expression.name.text, expression,
         );
         if (frozenParticleProperty) return frozenParticleProperty;
+        const textProperty = readTextProperty(this, owner, expression.name.text, expression);
+        if (textProperty) return textProperty;
         // A live pure-2D binding's bridges, and the one path scene code
         // reads through one: `bridge.system.buffer.alive`, the simulated
         // count the generated registrar keeps. `bridges` is the pin's own
@@ -17961,6 +18034,11 @@ class Compiler
      * difference is the contract rather than an accident.
      */
     public pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value {
+        if (["text-data", "text-renderable", "text-vector"].includes(value.kind)) {
+            const retained = retainTextValue(this, value);
+            this.describeNativeValue(retained);
+            return retained;
+        }
         if (value.kind === "callback") {
             return this.materializeEscapingValue(value, label);
         }

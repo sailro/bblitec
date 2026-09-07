@@ -174,16 +174,51 @@ function Get-TintCacheBase {
         [System.IO.FileInfo]$Source,
         [string]$EntryPoint,
         [bool]$PinnedBindings,
-        [bool]$IsVertex
+        [bool]$IsVertex,
+        [string]$Constants
     )
 
     $sourceHash = (Get-FileHash $Source.FullName -Algorithm SHA256).Hash
     $payload = (
         "tint:$tintIdentityHash|script:$scriptIdentityHash|" +
         "entry:$EntryPoint|pinned:$PinnedBindings|vertex:$IsVertex|" +
+        "constants:$Constants|" +
         "formats:$($tintArtifactExtensions -join ',')|wgsl:$sourceHash"
     )
     return Join-Path $cacheRoot "tint-$(Get-StringSha256 $payload)"
+}
+
+function Get-StageConstants {
+    param($Stage)
+
+    $property = $Stage.PSObject.Properties["constants"]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return ""
+    }
+    $ids = [System.Collections.Generic.HashSet[int]]::new()
+    $entries = foreach ($constant in $property.Value) {
+        foreach ($field in @("id", "value")) {
+            $number = $constant.$field
+            if ($number -isnot [long] -and $number -isnot [int] -and
+                $number -isnot [double] -and $number -isnot [decimal]) {
+                throw "Shader constant $field must be a JSON number."
+            }
+            if (-not [double]::IsFinite([double]$number)) {
+                throw "Shader constant $field must be finite."
+            }
+        }
+        $id = [double]$constant.id
+        if ($id -lt 0 -or $id -gt 65535 -or [Math]::Floor($id) -ne $id) {
+            throw "Shader constant id must be an integer in 0..65535."
+        }
+        if (-not $ids.Add([int]$id)) {
+            throw "Duplicate shader constant id $id."
+        }
+        [pscustomobject]@{ Id = [int]$id; Value = [double]$constant.value }
+    }
+    return (@($entries | Sort-Object Id | ForEach-Object {
+        "$($_.Id)=$($_.Value.ToString('R', [Globalization.CultureInfo]::InvariantCulture))"
+    }) -join ',')
 }
 
 function Test-TintCacheEntry {
@@ -538,6 +573,7 @@ function Get-ShaderComposition {
                     pinnedBindings = [bool]$module.pinnedBindings
                     stem = [string]$stage.stem
                     sourceName = $name
+                    constants = $stage.PSObject.Properties["constants"].Value
                 }
             }
         }
@@ -884,6 +920,8 @@ foreach ($shaderDirectory in $shaderDirectories) {
                 $declared = $stage.Declared
                 $isPinnedComposed = [bool]$declared.pinnedBindings
                 $entryPoint = [string]$declared.entryPoint
+                $constants = Get-StageConstants $declared
+                $overrideArgs = if ($constants) { @("--overrides", $constants) } else { @() }
                 # The Tint half is content-addressed like the DXC half: on a
                 # hit the selected Tint-derived artifacts come from the cache
                 # byte-for-byte, published through the same no-churn compare
@@ -892,7 +930,8 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     -Source $source `
                     -EntryPoint $entryPoint `
                     -PinnedBindings $isPinnedComposed `
-                    -IsVertex ($outputBase.EndsWith(".vert"))
+                    -IsVertex ($outputBase.EndsWith(".vert")) `
+                    -Constants $constants
                 if (Test-TintCacheEntry $tintCacheBase) {
                     foreach ($extension in $tintArtifactExtensions) {
                         Copy-IfDifferent "$tintCacheBase$extension" `
@@ -905,6 +944,7 @@ foreach ($shaderDirectory in $shaderDirectories) {
                 $pendingDiagnostics = "$outputBase.pending-diagnostics"
                 $reflection = & $Tint $source.FullName `
                     --entry-point $entryPoint `
+                    @overrideArgs `
                     --format hlsl `
                     --output-name $pendingHlsl `
                     --dump-inspector-bindings true 2> $pendingDiagnostics
@@ -1002,6 +1042,7 @@ foreach ($shaderDirectory in $shaderDirectories) {
                             $chosen
                         & $Tint $sdlSource `
                             --entry-point $entryPoint `
+                            @overrideArgs `
                             --format hlsl `
                             --output-name $pendingHlsl
                         if ($LASTEXITCODE -ne 0) {
@@ -1027,6 +1068,7 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     $pendingMsl = "$outputBase.pending-msl"
                     & $Tint $sdlSource `
                         --entry-point $entryPoint `
+                        @overrideArgs `
                         --format msl `
                         --output-name $pendingMsl
                     if ($LASTEXITCODE -ne 0) {

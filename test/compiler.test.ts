@@ -14932,26 +14932,23 @@ test("compiles pinned scene 213 GridMaterial options", () => {
 });
 
 test("reports unsupported Babylon Lite APIs with source locations", () => {
-    // `loadFont` stands in for the whole unreached surface: a pinned entry
-    // point this port has not lowered, named by the refusal rather than
-    // swallowed. It replaced `createCapsule` when that one shipped, which
-    // had replaced `createTorusKnot`, so if it ever ships too, pick another
-    // unreached export instead of relaxing what the refusal has to say.
+    // Dynamic text reshaping remains an unsupported pinned entry point;
+    // static font loading and initial text data now have native lowering.
     assert.throws(
         () =>
             compileSource(
-                `import { loadFont, createEngine } from "@babylonjs/lite";
+                `import { updateDefaultTextData, createEngine } from "@babylonjs/lite";
 async function main() {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
-    loadFont("/fonts/Inter.ttf");
+    updateDefaultTextData();
 }`,
                 { fileName: "unsupported.ts" },
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
             assert.match(error.message, /^unsupported\.ts:5:5:/);
-            assert.match(error.message, /loadFont/);
+            assert.match(error.message, /updateDefaultTextData/);
             return true;
         },
     );

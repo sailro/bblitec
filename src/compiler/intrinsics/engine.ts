@@ -27,6 +27,7 @@ interface CompiledGeometryTask {
 
 export interface EngineIntrinsicContext
     extends IntrinsicCallContext {
+    noteTextSceneLifecycle(node: ts.Node, message?: string): void;
     noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     emit(line: string): void;
     fail(node: ts.Node, message: string): never;
@@ -164,6 +165,7 @@ export function compileEngineIntrinsic(
                 );
             }
             const defaultRenderTask = context.compileSceneDefaultRenderTask(call.arguments[1]);
+            if (!defaultRenderTask) context.noteTextSceneLifecycle(call, "Text requires the default scene render task; empty and custom text task execution is not represented.");
             if (defaultRenderTask) context.noteTemporalRecordBoundary(call, "implicit default scene passes", "always");
             const samples = engine.msaaSamples ?? 4;
             const create = `bbl::create_scene_context(${engine.cpp})`;

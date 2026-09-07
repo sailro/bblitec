@@ -90,6 +90,7 @@ import {
     type VatIntrinsicContext,
 } from "./vat.js";
 import type { Value } from "../types.js";
+import { compileTextIntrinsic, type TextIntrinsicContext } from "./text.js";
 
 export interface IntrinsicContext
     extends AnimationIntrinsicContext,
@@ -112,6 +113,7 @@ export interface IntrinsicContext
         SpriteIntrinsicContext,
         GizmoIntrinsicContext,
         VatIntrinsicContext,
+        TextIntrinsicContext,
         EffectIntrinsicContext {}
 
 /**
@@ -152,6 +154,7 @@ type IntrinsicCompiler = (
 ) => Value | undefined;
 
 const intrinsicCompilers: readonly IntrinsicCompiler[] = [
+    compileTextIntrinsic,
     compileEngineIntrinsic,
     compileCameraIntrinsic,
     compileLightIntrinsic,

@@ -239,6 +239,7 @@ its cause.
 | 272 | <img src="images/scenes/scene272.png" alt="Scene 272 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Runtime Mesh Swap |
 | 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Runtime Material Family |
 | 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Alpha to Coverage |
+| 275 | <img src="images/scenes/scene275.png" alt="Scene 275 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Text Alpha to Coverage |
 | 276 | <img src="images/scenes/scene276.png" alt="Scene 276 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite Sheet Particles |
 | 277 | <img src="images/scenes/scene277.png" alt="Scene 277 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Attractor Update |
 | 278 | <img src="images/scenes/scene278.png" alt="Scene 278 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Line System |

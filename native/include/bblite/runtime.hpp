@@ -861,6 +861,8 @@ private:
  * scene it picks in and the slot the backend keeps its resources under.
  */
 struct SceneState;
+struct TextRenderableState;
+struct TextDataState;
 struct GpuPickerRecord {
     std::weak_ptr<SceneState> scene;
     bool disposed = false;
@@ -4939,6 +4941,10 @@ struct SceneState {
     // `loadSplat` registers the renderable on the scene it is handed, the
     // way `attachGaussianSplattingMesh` pushes into `_renderables`.
     std::vector<SplatMeshHandle> splat_meshes;
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+    /** Retained text is populated only by the reached text attachment adapter. */
+    std::vector<std::shared_ptr<TextRenderableState>> text_renderables;
+#endif
     /**
      * The clustered light field this scene was given, if it was given one.
      *
