@@ -2,6 +2,7 @@ import ts from "typescript";
 import { sanitizeCppIdentifier } from "../cpp-literals.js";
 import {
     passesByReference,
+    declaredInDomLibrary,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
@@ -9,6 +10,7 @@ import type { Value } from "./types.js";
 import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./closure-captures.js";
 import { readOnlyDataMethods, storingDataMethods } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { staticNumberValue, type PositiveIntegerContext } from "./option-helpers.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 export type SupportedFunction =
@@ -841,7 +843,7 @@ export interface UserFunctionIr {
     returnNeedsSnapshot?: boolean;
 }
 
-export interface UserFunctionContext {
+export interface UserFunctionContext extends PositiveIntegerContext {
     readonly dataTypes: DataTypeRegistry;
     useNativeValue(value: Value): void;
     compileValue(expression: ts.Expression): Value;
@@ -1509,8 +1511,11 @@ export class UserFunctionLowerer {
                     node.expression,
                 );
                 if (called) callees.add(called);
+                const calleeSymbol = this.checker.getSymbolAtLocation(node.expression);
                 if (
-                    node.expression.text === "setTimeout" &&
+                    (node.expression.text === "setTimeout" ||
+                        (node.expression.text === "requestAnimationFrame" &&
+                            calleeSymbol !== undefined && declaredInDomLibrary(calleeSymbol))) &&
                     node.arguments[0] &&
                     ts.isIdentifier(node.arguments[0])
                 ) {
@@ -2382,7 +2387,13 @@ export class UserFunctionLowerer {
                 context.emitExpressionAsStatement(ir.returnExpression);
                 return { kind: "void", cpp: "" };
             }
-            const returned = context.compileValue(ir.returnExpression);
+            let returned = context.compileValue(ir.returnExpression);
+            if (returned.kind === "number" && returned.staticNumber === undefined) {
+                const staticNumber = staticNumberValue(context, ir.returnExpression);
+                if (staticNumber !== undefined && Number.isFinite(staticNumber)) {
+                    returned = { ...returned, staticNumber };
+                }
+            }
             const label = `return_${ir.name}`;
             return {
                 // A body that wrote state outliving the frame returns an

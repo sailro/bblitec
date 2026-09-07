@@ -20,6 +20,7 @@ import { lightVectorSetter } from "./assignments.js";
 import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import {
     staticIndexLoopShape,
+    staticIndexLoopIterations,
     loopBoundMayChange,
     walkReachedLoopNodes,
     type ParameterizedResourceLoop,
@@ -1983,15 +1984,16 @@ export class StatementLowerer {
             ? context.knownCollectionCardinality(bound.expression)
             : undefined;
         const end = length.staticNumber ?? cardinality ?? staticNumberValue(context, endExpression);
+        const iterations = end === undefined ? undefined : staticIndexLoopIterations(shape, end);
         if (
             length.kind !== "number" ||
             end === undefined ||
-            !Number.isSafeInteger(end)
+            iterations === undefined
         ) {
             return false;
         }
         requiresStaticIteration ||= reachesResource && !context.isInRuntimeControlFlow() &&
-            end - start <= MAX_STATIC_INDEX_ITERATIONS;
+            iterations <= MAX_STATIC_INDEX_ITERATIONS;
         if (requiresStaticIteration &&
             loopBoundMayChange(context, statement.statement, endExpression)) {
             context.fail(
@@ -2033,10 +2035,6 @@ export class StatementLowerer {
                 "Static index-loop bodies cannot mutate the loop index.",
             );
         }
-        const iterations = Math.max(
-            0,
-            end - start,
-        );
         if (
             !requiresStaticIteration &&
             this.exceedsDataStaticIndexNest(
@@ -2074,11 +2072,11 @@ export class StatementLowerer {
         }
         this.withStaticUnrollProduct(iterations, () => {
             for (
-                let index = start;
-                index < end;
-                index += 1
+                let offset = 0;
+                offset < iterations;
+                offset += 1
             ) {
-                if (emitIndexIteration(index) === "break") break;
+                if (emitIndexIteration(start + offset) === "break") break;
             }
         });
         return true;
@@ -2107,8 +2105,8 @@ export class StatementLowerer {
                     );
                     if (ts.isNumericLiteral(resolved)) {
                         const end = Number(resolved.text);
-                        if (Number.isInteger(end) && end >= 0) {
-                            const count = Math.max(0, end - shape.start);
+                        const count = staticIndexLoopIterations(shape, end);
+                        if (count !== undefined) {
                             const nestedProduct = product * count;
                             if (
                                 nestedProduct >

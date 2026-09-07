@@ -461,7 +461,10 @@ export function staticNumberValue(
     if (ts.isIdentifier(node)) {
         // A miss, not a failure: one caller is an optional probe, and an
         // identifier this scope has no binding for is simply not a constant.
-        return context.lookupOptional(node)?.staticNumber;
+        const value = context.lookupOptional(node);
+        // Writable inline parameters have native storage. Their call-site
+        // metadata is only the initial value, not a proof about later reads.
+        return value?.parameterBinding ? undefined : value?.staticNumber;
     }
     return undefined;
 }

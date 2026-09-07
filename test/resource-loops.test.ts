@@ -51,6 +51,63 @@ test("parameterizes a 64 by 64 box grid while retaining every composition row", 
     assert.match(result.cpp, /BoxOptions\{static_cast<float>\(\(v_\w+_x \+ 1\.0\)\)/);
 });
 
+test("inclusive resource loops preserve endpoint values and empty ranges", () => {
+    for (const [start, end, expected] of [[1, 3, 3], [3, 3, 1], [3, 2, 0]] as const) {
+        const result = compileSource(scene(`
+            for (let index = ${start}; index <= ${end}; index++) {
+                const box = createBox(engine, { size: index });
+                box.position.x = index;
+                addToScene(scene, box);
+            }
+        `));
+        assert.equal(result.manifest.sceneMeshes.length, expected);
+        assert.deepEqual(
+            [...result.cpp.matchAll(/\.position\.x = (\d+)\.0;/g)].map((match) => Number(match[1])),
+            Array.from({ length: expected }, (_, index) => start + index),
+        );
+    }
+});
+
+test("inclusive nested resource loops retain compact construction cardinality", () => {
+    const result = compileSource(gridSource
+        .replace("x = 0; x < 64", "x = 1; x <= 64")
+        .replace("y = 0; y < 64", "y = 1; y <= 64"));
+    assert.equal(result.manifest.sceneMeshes.length, 4096);
+    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
+    assert.equal(result.cpp.match(/for \(;/g)?.length, 2);
+});
+
+test("an inlined numeric result retains static count and evaluated helper effects", () => {
+    const result = compileSource(scene(`
+        let calls = 0;
+        const steps = (value: number): number => {
+            calls++;
+            return Math.round(value * 60);
+        };
+        const count = steps(0.05);
+        for (let index = 1; index <= count; index++) {
+            addToScene(scene, createBox(engine, { size: index }));
+        }
+    `));
+    assert.equal(result.manifest.sceneMeshes.length, 3);
+    assert.equal(result.cpp.match(/v_calls\+\+/g)?.length, 1);
+});
+
+test("an inlined numeric result cannot fold a written parameter to its argument", () => {
+    for (const update of ["value += 1;", "value = 4;", "const values = new Float32Array([4]); value = values[0]!;"]) {
+        const result = compileSource(scene(`
+            const count = steps(engine, 3);
+            for (let index = 1; index <= count; index++) createBox(engine, { size: index });
+        `, `function steps(engine: EngineContext, value: number): number {
+            ${update}
+            return Math.round(value);
+        }`));
+        assert.match(result.cpp, /round_js\(v_\w+_value\)/);
+        assert.match(result.cpp, /for \(;/);
+        assert.doesNotMatch(result.cpp, /v_count = 3\.0;/);
+    }
+});
+
 const nativeTools = optionalNativeFixtureTools();
 
 const assignmentControls = [

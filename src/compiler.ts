@@ -11432,6 +11432,16 @@ class Compiler
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
+                const stored = this.lookupOptional(identifier);
+                const parameters = stored?.nativeCallbackParameterTypes;
+                if (stored?.kind === "callback" && stored.cpp.length > 0 &&
+                    parameters && parameters.length <= 1 &&
+                    parameters.every((type) => type?.kind === "number") &&
+                    (parameters.length === 0 || parameter)) {
+                    this.useNativeValue(stored);
+                    this.emit(`${stored.cpp}(${parameters.length === 0 ? "" : parameter});`);
+                    return;
+                }
                 const value = this.compileCallbackWithValues(
                     identifier,
                     parameter ? [{ kind: "number", cpp: parameter }] : [],
@@ -15660,7 +15670,11 @@ class Compiler
         call: ts.CallExpression,
     ): Value | undefined {
         this.expectArgumentCount(call, 1, 1);
-        const recurring = this.animationFrameCallbackRearmsItself(
+        const argument = this.unwrap(call.arguments[0]!);
+        const stored = ts.isIdentifier(argument) ? this.lookupOptional(argument) : undefined;
+        // A materialized callback retains its own requeue operation, including
+        // conditional schedules and synchronous priming calls.
+        const recurring = !(stored?.kind === "callback" && stored.cpp.length > 0) && this.animationFrameCallbackRearmsItself(
             call.arguments[0]!,
         );
         const nested = this.frameCallbackDepth > 0;
