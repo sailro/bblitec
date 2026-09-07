@@ -541,6 +541,8 @@ ${payloads
         const rowLength = this.rowLength();
         const textureSize = this.lowerTextureSize();
         const gpuConstants = this.pinnedGpuConstants();
+        this.context.expectShapeCount(declaration, "new F32(splatBuffer)",
+            "the geometry builder's whole-buffer float view");
 
         const bindings = new Map<string, PinnedBinding>([
             // The pin's parameter is an ArrayBuffer; ours is the packaged
@@ -625,6 +627,7 @@ ${payloads
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace bbl::upstream {
@@ -655,7 +658,7 @@ inline constexpr std::size_t splat_row_length = ${rowLength}u;
 
 ${gpuConstants}
 
-SplatGeometry build_splat_geometry(const std::vector<std::uint8_t>& rows);
+SplatGeometry build_splat_geometry(std::span<const std::uint8_t> rows);
 
 } // namespace bbl::upstream
 
@@ -673,6 +676,15 @@ void apply_splat_geometry(
     SplatMeshRecord& record,
     upstream::SplatGeometry& geometry);
 
+/** Shares the retained source buffer; it is not a geometry snapshot. */
+js::ArrayBuffer splat_data(const Engine& engine, SplatMeshHandle splat);
+
+/** Pinned CPU commit; runtime callers require PAL data_version refresh. */
+void update_splat_data(
+    Engine& engine,
+    SplatMeshHandle splat,
+    const js::ArrayBuffer& buffer);
+
 } // namespace bbl
 `,
             source: `// ${this.context.provenance(DATA_MODULE, symbolName)}
@@ -688,7 +700,12 @@ namespace bbl::upstream {
 
 ${textureSize}
 
-SplatGeometry build_splat_geometry(const std::vector<std::uint8_t>& rows) {
+SplatGeometry build_splat_geometry(std::span<const std::uint8_t> rows) {
+    // The pin's new F32(splatBuffer) precedes its row-count guard. A view
+    // needs complete float lanes even when its trailing bytes form no row.
+    if (rows.size() % sizeof(float) != 0u) {
+        throw std::runtime_error("Float32Array buffer byte length is not aligned.");
+    }
 ${body}
 }
 
@@ -869,6 +886,115 @@ ${body}
             .join("\n");
     }
 
+    /**
+     * The updateData CPU boundary. Geometry math is already lowered whole;
+     * the rest is a GPU/worker handoff, represented here by a successful
+     * payload commit and version. Assert its complete order so an added
+     * early exit or side effect cannot quietly disappear behind that seam.
+     */
+    private lowerDataLifecycle(): string {
+        const { file, declaration } = this.declaration(
+            SORT_MODULE_MESH, "createGaussianSplattingMesh",
+        );
+        this.context.expectShapeCount(declaration,
+            'Object.defineProperty(mesh, "splatsData", { get: () => retainedSplatsData })',
+            "the retained splat buffer getter");
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "retainedSplatsData"),
+            "parsed.data", "the initial retained splat buffer");
+        const assigned = this.context.findNodes(declaration,
+            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                this.context.expressionMatchesShape(node.left, "mesh.updateData"));
+        const update = assigned.length === 1
+            ? this.context.unwrapExpression(assigned[0]!.right) : undefined;
+        if (!update || !ts.isArrowFunction(update) || !ts.isBlock(update.body) ||
+            update.parameters.length !== 1 ||
+            !ts.isIdentifier(update.parameters[0]!.name) ||
+            update.parameters[0]!.name.text !== "newBuffer") {
+            return this.context.contractError(declaration,
+                "Expected exactly one updateData(newBuffer) body.");
+        }
+        const statements = update.body.statements;
+        const expressions = [
+            "writeTex(gs._centersTex, newGeom.centersRGBA)",
+            "writeTex(gs._covATex, newGeom.covARGBA)",
+            "writeTex(gs._covBTex, newGeom.covBRGBA)",
+            "writeTex(gs._colorsTex, newGeom.colorsRGBA)",
+            "mesh.boundMin = newGeom.boundMin.slice()",
+            "mesh.boundMax = newGeom.boundMax.slice()",
+            "mesh._worker.postMessage({ p: newGeom.positions }, [newGeom.positions.buffer])",
+            "mesh._sortDepthTransform.fill(0)",
+            "retainedSplatsData = newBuffer",
+        ];
+        this.context.assertStatementInventory(update, statements, "updateData",
+            "the CPU commit folds the ordered GPU/worker handoff",
+            ["newGeom", "count guard", "gs", "writeTex", ...expressions],
+            (statement) => {
+                if (ts.isVariableStatement(statement) && statement.declarationList.declarations.length === 1) {
+                    const variable = statement.declarationList.declarations[0]!;
+                    if (ts.isIdentifier(variable.name)) return variable.name.text;
+                }
+                if (ts.isIfStatement(statement)) return "count guard";
+                if (ts.isExpressionStatement(statement)) {
+                    return expressions.find((shape) => this.context.expressionMatchesShape(statement.expression, shape)) ?? "unknown expression";
+                }
+                return ts.SyntaxKind[statement.kind];
+            });
+        for (const [name, shape] of [["newGeom", "buildSplatGeometry(newBuffer)"], ["gs", "mesh._gs"]] as const) {
+            this.context.assertExpressionShape(
+                this.context.variableInitializer(update, name), shape, `updateData ${name}`);
+        }
+        const writer = this.context.variableInitializer(update, "writeTex");
+        this.context.assertExpressionShape(writer,
+            "(tex: GPUTexture, data: Float32Array): void => { queue.writeTexture({ texture: tex }, data.buffer, { bytesPerRow: newGeom.textureWidth * 16 }, { width: newGeom.textureWidth, height: newGeom.textureHeight }); }",
+            "updateData texture upload layout");
+        const guard = statements[1]!;
+        if (!ts.isIfStatement(guard) || guard.elseStatement || !ts.isBlock(guard.thenStatement) ||
+            guard.thenStatement.statements.length !== 1 || !ts.isThrowStatement(guard.thenStatement.statements[0]!)) {
+            return this.context.contractError(guard, "Expected the updateData count guard to throw before publishing any data.");
+        }
+        const thrown = (guard.thenStatement.statements[0] as ts.ThrowStatement).expression;
+        if (!(ts.isCallExpression(thrown) || ts.isNewExpression(thrown)) ||
+            !ts.isIdentifier(thrown.expression) || thrown.expression.text !== "Error" ||
+            thrown.arguments?.length !== 1 || !ts.isStringLiteral(thrown.arguments[0]!)) {
+            return this.context.contractError(thrown, "Expected the pinned updateData error message.");
+        }
+        const numeric = new PinnedNumericLowerer(file, {
+            bindings: new Map([
+                ["newGeom.vertexCount", { cpp: "geometry.vertexCount", type: "scalar" }],
+                ["mesh.vertexCount", { cpp: "static_cast<double>(mesh.vertex_count)", type: "scalar" }],
+            ]), calls: new Map(),
+        });
+        return `// ${this.context.provenance(SORT_MODULE_MESH, "createGaussianSplattingMesh.updateData")}
+js::ArrayBuffer splat_data(const Engine& engine, SplatMeshHandle splat) {
+    const auto& retained = engine.splat_meshes[splat.value].splats_data;
+    if (!retained) {
+        throw std::runtime_error("The splat source buffer was not retained by this scene.");
+    }
+    return *retained;
+}
+
+void update_splat_data(
+    Engine& engine,
+    SplatMeshHandle splat,
+    const js::ArrayBuffer& buffer) {
+    SplatMeshRecord& mesh = engine.splat_meshes[splat.value];
+    upstream::SplatGeometry geometry = upstream::build_splat_geometry(
+        std::span<const std::uint8_t>(buffer.data(), buffer.byte_length()));
+    if (${numeric.expression(guard.expression)}) {
+        throw std::runtime_error(${JSON.stringify(thrown.arguments[0]!.text)});
+    }
+    // Allocate the carrier before publishing: a failed build, guard or
+    // allocation leaves the old geometry, retained buffer and version intact.
+    auto retained = std::make_shared<js::ArrayBuffer>(buffer);
+    apply_splat_geometry(mesh, geometry);
+    mesh.splats_data = std::move(retained);
+    ++mesh.data_version;
+}
+`;
+    }
+
     public lowerLoader(options: {
         retainRows: boolean;
         /**
@@ -896,7 +1022,7 @@ ${body}
         // float payloads again (11 MB against 22 MB on scene 120), so the
         // reach boundary is worth drawing.
         const retention = options.retainRows
-            ? "    record.rows = std::move(rows);\n"
+            ? "    record.splats_data = std::make_shared<js::ArrayBuffer>(std::move(rows));\n"
             : "";
         const { declaration } = this.declaration(
             "src/loader-splat/load-splat.ts",
@@ -984,6 +1110,7 @@ ${body}
                     : undefined,
             )}
 #include <bblite/pal.hpp>
+${options.retainRows ? "#include <bblite/js_data.hpp>" : ""}
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/splat_geometry.hpp>
 ${harmonicsInclude}
@@ -1016,6 +1143,8 @@ void apply_splat_geometry(
     record.cov_b_rgba = std::move(geometry.covBRGBA);
     record.colors_rgba = std::move(geometry.colorsRGBA);
 }
+
+${options.retainRows ? this.lowerDataLifecycle() : ""}
 
 // createGaussianSplattingMesh: the engine half of attachParsedSplat, which
 // takes the engine rather than the scene upstream too. A glTF's
@@ -1353,23 +1482,21 @@ ${body}
 
 
     /**
-     * The two statements this port asserts instead of emitting: the copy
-     * the pinned bake opens with, and the handover it closes with.
+     * The buffer read, copy and updateData handoff. The native adapter owns
+     * those boundaries; the lowered numeric body writes only the fresh copy.
      *
      * The pin owns the retained buffer (`mesh.splatsData`) and reseats it
-     * through `updateData`, which also rebuilds the geometry. Here the
-     * caller owns the rows and rebuilds, so the emitted body writes them in
-     * place. That is the same end state only while the pin's own body still
-     * copies the retained buffer and hands exactly that copy back, so both
-     * halves are checked rather than trusted.
+     * through `updateData`, which also rebuilds the geometry. Old source
+     * aliases must survive both the copy and the replacement unchanged.
      */
     private assertBakeBufferBoundary(
         declaration: ts.FunctionDeclaration,
     ): void {
         const statements = declaration.body!.statements;
         const first = statements[0];
+        const copy = statements[1];
         const last = statements[statements.length - 1];
-        const opensWithCopy =
+        const opensWithRead =
             first !== undefined &&
             ts.isVariableStatement(first) &&
             first.declarationList.declarations.length === 1 &&
@@ -1378,21 +1505,28 @@ ${body}
                 first.declarationList.declarations[0]!.initializer!,
                 "mesh.splatsData",
             );
-        if (!opensWithCopy) {
+        if (!opensWithRead) {
             this.context.contractError(
                 declaration,
-                "Expected the bake to open by reading mesh.splatsData: the " +
-                    "emitted body rewrites the caller's rows in place, and " +
-                    "that is what makes the two the same buffer.",
+                "Expected the bake to open by reading mesh.splatsData.",
             );
         }
+        if (!copy || !ts.isVariableStatement(copy) ||
+            copy.declarationList.declarations.length !== 1 ||
+            !ts.isIdentifier(copy.declarationList.declarations[0]!.name) ||
+            copy.declarationList.declarations[0]!.name.text !== "newBuffer" ||
+            !copy.declarationList.declarations[0]!.initializer) {
+            this.context.contractError(declaration, "Expected the bake to copy its retained ArrayBuffer before writing.");
+        }
+        this.context.assertExpressionShape(copy.declarationList.declarations[0]!.initializer!,
+            "arrayBuffer.slice(0)", "the bake's retained-buffer copy");
         const closesWithHandover =
             last !== undefined &&
             ts.isExpressionStatement(last) &&
             ts.isCallExpression(last.expression) &&
             this.context.expressionMatchesShape(
-                last.expression.expression,
-                "mesh.updateData",
+                last.expression,
+                "mesh.updateData(newBuffer)",
             );
         if (!closesWithHandover) {
             this.context.contractError(
@@ -1731,9 +1865,8 @@ ${writes.join("\n")}
                 ["quatMultiply", 4],
             ]),
         });
-        // The body minus the two statements the boundary check covers: the
-        // opening copy and the closing handover.
-        const statements = declaration.body!.statements.slice(1, -1);
+        // The adapter handles the source read, copy and closing handover.
+        const statements = declaration.body!.statements.slice(2, -1);
         const body = statements
             .flatMap((statement) => lowerer.statement(statement, "    "))
             .join("\n");
@@ -1755,9 +1888,8 @@ namespace bbl::upstream {
  * Rewrites every splat row so the cloud renders identically under an
  * identity transform.
  *
- * The pin copies the retained buffer and hands the copy to \`updateData\`;
- * this rewrites the caller's rows in place and leaves the geometry rebuild
- * to the caller, which is the same end state (splat-lowerer.ts says why).
+ * The caller supplies the pin's fresh buffer copy, then hands that copy to
+ * \`update_splat_data\` after this numeric body has rewritten its rows.
  */
 void bake_splat_transform(
     std::vector<std::uint8_t>& rows,
@@ -1804,24 +1936,14 @@ void bake_current_transform_into_vertices(
     Engine& engine,
     SplatMeshHandle splat) {
     SplatMeshRecord& mesh = engine.splat_meshes[splat.value];
-    if (mesh.rows.empty()) {
-        throw std::runtime_error(
-            "bakeCurrentTransformIntoVertices needs the cloud's rows, which "
-            "the loader retains only for a scene that reaches this call.");
-    }
+    const js::ArrayBuffer original = splat_data(engine, splat);
     // \`mesh.worldMatrix\` — the same composition every other consumer of a
     // cloud's world reads, re-derived rather than cached.
     const std::array<float, 16> world = upstream::build_splat_world(mesh);
-    upstream::bake_splat_transform(mesh.rows, world);
-    // The rebuild \`updateData\` performs, including its own vertex-count
-    // guard: the pin throws rather than uploading a differently sized cloud.
-    upstream::SplatGeometry geometry =
-        upstream::build_splat_geometry(mesh.rows);
-    if (static_cast<std::uint32_t>(geometry.vertexCount) !=
-        mesh.vertex_count) {
-        throw std::runtime_error("GS vertex count mismatch");
-    }
-    apply_splat_geometry(mesh, geometry);
+    std::vector<std::uint8_t> rows(
+        original.data(), original.data() + original.byte_length());
+    upstream::bake_splat_transform(rows, world);
+    update_splat_data(engine, splat, js::ArrayBuffer(std::move(rows)));
     upstream::reset_splat_transform(mesh);
 }
 

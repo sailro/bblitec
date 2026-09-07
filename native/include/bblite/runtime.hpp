@@ -40,6 +40,7 @@ class Nullable;
 template <std::size_t N>
 class Tuple;
 class U8Array;
+class ArrayBuffer;
 class BorrowedEvent;
 }
 
@@ -2538,15 +2539,13 @@ struct SplatMeshRecord {
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     bool has_rotation_quaternion = false;
     Vec3 scaling{1.0f, 1.0f, 1.0f};
-    // The packaged 32-byte rows, retained only where a reached call reads
-    // them back. Upstream keeps them on every cloud (`splatsData`, BJS
-    // `keepInRam: true`), but the one entry point that consumes them here
-    // is the transform bake, and they are half again the size of the four
-    // float payloads above -- so the loader fills this where the scene
-    // reaches `bakeCurrentTransformIntoVertices` and leaves it empty
-    // otherwise, which is the same reach boundary every other generated
-    // capability draws.
-    std::vector<std::uint8_t> rows;
+    // Retained only when reached. The wrapper shares the source ArrayBuffer
+    // backing, so replacement leaves old aliases alive and unmodified. Its
+    // indirection keeps the data runtime out of this renderer-wide header.
+    std::shared_ptr<js::ArrayBuffer> splats_data;
+    // Successful CPU update commits only. PAL refresh hooks must consume this
+    // version before source updateData can be admitted after registration.
+    std::uint64_t data_version = 0;
     // The spherical-harmonic degree the packaged container parsed to, and
     // the payloads `attachGaussianSplattingMeshSH` packs from it -- one
     // per rgba32uint texture, in binding order after the four above.
