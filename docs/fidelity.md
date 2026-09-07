@@ -104,6 +104,16 @@ Use the runtime's JavaScript `round_js` rule for `Math.round`.
 results are half-float texture data because that is the pin's storage format.
 High-precision camera/node support does not imply every native matrix is F64.
 
+Numeric ArrayBuffer views retain shared byte storage and copy each scalar with
+`memcpy`, avoiding typed references into a byte allocation. Stores apply the
+existing JavaScript integer conversions or float narrowing; compound writes
+retain the evaluated owner and prior value before the right operand runs.
+Prefix updates return the numeric result before destination narrowing.
+Owned vector storage remains available to existing native consumers, while
+numeric buffer views explicitly refuse contiguous typed access and methods
+that have not been adapted. Native/JavaScript fixtures observe overlapping
+views, escaped backing storage, replacement, argument order and ToIndex bounds.
+
 The CPU vertex bake projects the pin's WGSL normal/tangent normalization through
 typed shader IR with float32 intermediates and division. It retains its strict
 length-above-`1e-6` gate (zero otherwise) after the baked world transform.
@@ -230,9 +240,24 @@ correct colour/depth texture-view branch and sampler.
 
 The pinned loader builds row buffers and optional harmonics. Plugin order and
 shader specialization come from the pin. Sort state, world transform and GPU
-picking must refer to the same rendered cloud. Transform baking retains the
-pin's data layout and reset semantics; live `splatsData` identity/re-upload,
-multiple plugin sets and some contributor combinations remain unfinished.
+picking must refer to the same rendered cloud. Transform baking and live row
+updates retain the pin's data layout and buffer identity. The loader retains
+rows when baking, `splatsData` or `updateData` is reached; a successful update
+publishes new geometry and a version for draw/picking refresh. Existing aliases
+retain replaced row buffers. Native buffers without a retained owner refuse
+at the update boundary; copying their wrappers cannot extend the source lifetime.
+Both PALs refresh the existing four data textures
+before the next draw or pick. An immediate pick keeps the preceding order;
+the next frame applies the pin's depth-transform sort gate to the new centres.
+The native sort remains synchronous on the render thread, as recorded in the
+generated `splat-synchronous-sort` adaptation. Multiple plugin sets and some
+contributor combinations remain unfinished.
+
+`test/fixtures/splat-update-picking.ts` observes an actual cloud hit, moves all
+rows away and immediately picks again, then restores the rows and immediately
+requires the cloud hit. Run it with `npm run scene -- parity
+test/fixtures/splat-update-picking.ts --differential --gpu-debug` after processing
+the fixture. Its runtime assertions verify update-to-pick ordering on both PALs.
 
 ### Animation and hierarchy
 

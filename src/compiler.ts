@@ -2763,15 +2763,6 @@ class Compiler
                 ...(narrowed.nativeVectorData
                     ? { nativeVectorData: true as const }
                     : {}),
-                ...(narrowed.wholeTypedArrayBackingCpp
-                    ? {
-                          wholeTypedArrayBackingCpp:
-                              narrowed.wholeTypedArrayBackingCpp,
-                          nativeCompanionCaptures: {
-                              wholeTypedArrayBackingCpp: narrowed.nativeCompanionCaptures?.wholeTypedArrayBackingCpp ?? narrowed.nativeCaptures ?? [],
-                          },
-                      }
-                    : {}),
                 ...(optionalHandle
                     ? {
                           optionalStorageCpp: boundCpp,

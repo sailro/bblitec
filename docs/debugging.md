@@ -70,6 +70,11 @@ Pinned mesh blocks marked `worldSource: effective-draw` include late asset-root
 transforms and resolved skin/instance conventions for the main draw lists.
 They use the backend's shared block builder; geometry/shadow pass uploads still
 require separate capture or GPU inspection.
+Retained splat source buffers appear in the `splats` section with their current
+byte length, update version and bounds. Each `retainedDataFile` names a binary
+sidecar beside the capture JSON, preserving every source byte for comparison
+with browser `splatsData`. These are the retained CPU bytes; uploaded texture
+payloads still require the GPU capture checks described below.
 The palette comparison covers the first two matrices; read the full deformation
 dump for other bones. Expected native-only shader permutations are not errors.
 
@@ -146,6 +151,17 @@ marker positions/scales, and first-ready/canonical/idle state. The separate
 `test/fixtures/morph-picking-standard.ts` source checks weight changes followed
 immediately by picks without a frame between them; process and measure it as
 an ad-hoc scene on both backends.
+
+Scene121's row updates need a complete buffer check alongside image parity:
+
+```powershell
+node tools/check-scene121-input.mjs native/build-scene121-release/bblite_native.exe generated/scene121 reference/scene121/splat-observations.json reference/scene121/babylon-lite-golden.png
+```
+
+The checker compares all retained source bytes, update version and bounds at
+first ready, the canonical frame and a later idle frame. Camera input must
+change the rendered splats while preserving that state. It uses the unchanged
+source's raw SPLAT URL; scene120's similarly named converted asset differs.
 
 ## Why each tool still exists
 

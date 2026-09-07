@@ -1534,7 +1534,7 @@ ${wgsl}`,
             this.writeSource(
                 "upstream/src/splat_loader.cpp",
                 splats.lowerLoader({
-                    retainRows: bakesTransform,
+                    retainRows: bakesTransform || features.includes("loader:splat-data"),
                     // The container entry points emit only where the scene
                     // reached them, on the same feature each call site does
                     // -- the definition and the call it satisfies cannot

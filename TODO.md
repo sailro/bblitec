@@ -165,7 +165,7 @@ implementation, follow the sizing/capture workflow in
 | Sprites | Coverage gamma, handle-object methods, append-atlas forms and mixed-family transparent depth ordering. Atlas-from-frames is already implemented. |
 | Billboards | Cutout, floating-origin and mixed splat contributors in picking; preserve one registration-ordered contributor list. |
 | Picking | Eight-influence skinning, deformed thin-instance/VAT ids, filter/discard/ignore, remaining PickingInfo fields and multiple clouds. Basic/detailed regular skeleton, morph-only and combined projections are implemented; nullable results retain identity and checked engine ownership through supported data paths. |
-| Splats | Shared splatsData buffer identity, Float32Array-over-ArrayBuffer views, live updateData/upload/versioning and per-cloud plugin sets. `TypedArray<T>` owns a `shared_ptr<vector<T>>` with no buffer, offset or length, and `U8Array` is the only view class; its owning conversion carries typed arrays into vector entry points across generated scenes, so a Float32Array view is a runtime-wide change. |
+| Splats | Per-cloud plugin sets and remaining picking contributor combinations. Retained splatsData/updateData buffers and byte-safe numeric ArrayBuffer views preserve aliases; view methods and native contiguous consumers remain explicitly unsupported until adapted. |
 | Shadows | Thin-instance CSM caster bounds, unsupported generator options/live receive toggles, task-camera facade and caster-specific composition. Recheck morph-bound numeric width and CSM array sizes against pinned declarations. |
 | Lines | Runtime-computed point lists, createLines/dashed lines, colour updates, material compare and per-instance colour setters outside the reached slice. |
 | Thin instances | Dynamic draw-count fast path, culling/LOD controls and actual GPU culler; measure a sufficiently large changing pool. |
@@ -213,7 +213,7 @@ and shutdown on both backends. Run instructions are in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 17 numbered scenes unregistered. Helper
+The current registry leaves these 16 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -223,7 +223,6 @@ modules without a numbered scene entry are not integration candidates.
 | 47 | Physics viewer, heightfield and switch-assigned mesh handling |
 | 49 | A `createCapsule` builder, a mesh parented to a mesh, `shapeProximity`/`shapeCast` over Bullet closest-point and convex-sweep entry points, and a conditional mixing a picked node with null. Four contracts. |
 | 104, 105 | Structural hierarchy guards/owner grouping and character controller |
-| 121 | Splat rows as a scene-readable buffer and live `updateData` re-upload in both PALs, over a typed array that is a view rather than an owner. Five contracts; the view change is runtime-wide, not scene-local. |
 | 149 | Delegating `blockLoader` (the pin's `loadNodeBlockEmitterWithGeometry`, where the port accepts a local closed switch), live node-material input handles, loaded-material reads, runtime per-material node construction, and the geometry `LOCAL_POSITION` attachment, which needs a bound local-normal lane and a real node world. Five contracts. |
 | 164 | GPU device-loss lifecycle |
 | 180 | The text subsystem plus live text controls and input. It reads `textarea.value` and re-layouts on `input`, so nothing folds: `layoutText` shapes through a vendored pure-JS shaper, and matching its glyph ids, advances and kerning natively is a re-derivation, not a port. It also needs the standalone text renderer path with no scene or camera, a dynamically imported weight-offset call and eight live DOM controls. |

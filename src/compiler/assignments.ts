@@ -547,6 +547,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
    * inventory can cite file:line.
    */
   reachFeature(feature: Feature, site: ts.Node): void;
+  reachJsData(): void;
   /** `mesh.receiveShadows = true`, by scene-mesh index. */
   recordShadowReceiver(sceneMeshIndex: number): void;
   recordDynamicShadowReceivers(): void;

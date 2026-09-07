@@ -89,6 +89,7 @@ inline constexpr std::size_t dawn_splat_binding_count =
 struct DawnSplatPass {
     SplatMeshHandle mesh{};
     std::uint32_t vertex_count = 0;
+    std::uint64_t data_version = 0;
 
     WGPURenderPipeline pipeline = nullptr;
     WGPUBindGroupLayout layout = nullptr;
@@ -114,8 +115,27 @@ struct DawnSplatPass {
     std::array<float, 4> depth_transform{};
 };
 
+/** Queue the pin's complete 16-byte texels into an existing data texture. */
+inline void write_dawn_splat_texture(
+    WGPUQueue queue,
+    WGPUTexture texture,
+    const void* texels,
+    std::size_t byte_size,
+    std::uint32_t width,
+    std::uint32_t height) {
+    WGPUTexelCopyTextureInfo destination =
+        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.bytesPerRow = width * 4u * 4u;
+    layout.rowsPerImage = height;
+    const WGPUExtent3D size{width, height, 1};
+    wgpuQueueWriteTexture(
+        queue, &destination, texels, byte_size, &layout, &size);
+}
+
 /**
- * One data texture, uploaded once.
+ * One data texture, allocated and uploaded at creation.
  *
  * Sixteen bytes per texel either way -- four floats for a payload the stage
  * samples, four packed unsigned words for one it `textureLoad`s -- so the
@@ -137,15 +157,7 @@ inline WGPUTexture upload_dawn_splat_texture(
     descriptor.size = WGPUExtent3D{width, height, 1};
     WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
     if (!texture) dawn_error("wgpuDeviceCreateTexture splat data");
-    WGPUTexelCopyTextureInfo destination =
-        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    destination.texture = texture;
-    WGPUTexelCopyBufferLayout layout{};
-    layout.bytesPerRow = width * 4u * 4u;
-    layout.rowsPerImage = height;
-    const WGPUExtent3D size{width, height, 1};
-    wgpuQueueWriteTexture(
-        queue, &destination, texels, byte_size, &layout, &size);
+    write_dawn_splat_texture(queue, texture, texels, byte_size, width, height);
     return texture;
 }
 
@@ -366,7 +378,7 @@ inline DawnSplatPass create_dawn_splat_pass(
             record.texture_height);
         view_of(slot);
     }
-    // Released once the GPU owns the bytes. The neighbouring `rows` field
+    // Released once the GPU owns the bytes. The neighbouring `splats_data` field
     // is reach-gated for the same reason and states it: these three
     // payloads are 17.9 MB for scene 124's cloud, larger than the rows,
     // and this is the only reader -- pass creation runs once. SWAPPED with
@@ -439,7 +451,25 @@ inline DawnSplatPass create_dawn_splat_pass(
         static_cast<double>(record.vertex_count));
     pass.cpu_order.assign(record.vertex_count, 0u);
     pass.order_floats.assign(record.vertex_count, 0.0f);
+    pass.data_version = record.data_version;
     return pass;
+}
+
+/** Publish changed float payloads without replacing views, bindings or SH.
+ * Picking calls this without the frame-owned depth sort. */
+inline void sync_dawn_splat_data(
+    WGPUQueue queue,
+    const SplatMeshRecord& record,
+    DawnSplatPass& pass) {
+    if (pass.data_version == record.data_version) return;
+    const auto payloads = upstream::splat_texture_payloads(record);
+    for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
+        write_dawn_splat_texture(queue, pass.textures[slot],
+            payloads[slot]->data(), payloads[slot]->size() * sizeof(float),
+            record.texture_width, record.texture_height);
+    }
+    pass.depth_transform.fill(0.0f);
+    pass.data_version = record.data_version;
 }
 
 /**
@@ -464,6 +494,7 @@ inline void upload_dawn_splat_pass(
     double width,
     double height) {
     const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
+    sync_dawn_splat_data(queue, record, pass);
     const std::array<float, 16> world = upstream::build_splat_world(record);
 
     if (upstream::splat_sort_dirty(world, view, pass.depth_transform)) {

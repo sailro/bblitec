@@ -1529,6 +1529,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene121",
+        name: "Scene 121 - Gaussian Splatting Data Updates",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene121.ts",
+        title: "Babylon Lite Native - Gaussian Splatting Data Updates",
+        parity: {
+            // No query or seek: the source updates 30,000 rows after its first
+            // sort. At frame 181 both backends measure below 0.001 full and
+            // 0.007 foreground MAD. The input checker also compares every
+            // retained byte at first ready, canonical, idle and orbit frames.
+            nativeEnvironment: adHocCaptureEnvironment(),
+            maxFullMad: 0.005,
+            maxForegroundMad: 0.05,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene122",
         name: "Scene 122 - Gaussian Splatting SOG",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene122.ts",

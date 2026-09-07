@@ -1369,7 +1369,12 @@ test("shares large texture payloads and preserves tuple reference identity", () 
     assert.match(data, /std::shared_ptr<std::vector<T>> values_/);
     assert.match(
         data,
-        /ArrayBuffer\(const TypedArray<T>& values\)[\s\S]{0,160}external_owner_\(values\.storage\(\)\)/,
+        /ArrayBuffer\(const TypedArray<T>& values\)\s*: ArrayBuffer\(values\.buffer\(\)\)/,
+    );
+    assert.match(data, /return view_ \? view_->buffer : ArrayBuffer\(values_\);/);
+    assert.match(
+        data,
+        /ArrayBuffer\(const std::shared_ptr<std::vector<T>>& values\)\s*: external_owner_\(values\)/,
     );
 });
 

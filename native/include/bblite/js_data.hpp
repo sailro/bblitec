@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -36,86 +37,9 @@
 
 namespace bbl::js {
 
-/**
- * A numeric JavaScript TypedArray.
- *
- * JavaScript copies an object reference when a typed array is assigned,
- * captured, returned, or stored in another object.  A plain std::vector
- * copied its elements instead, which separated a Uint8Array(buffer) view
- * from later writes through another reference to the source typed array.
- * Keep the vector allocation behind a shared handle so every native wrapper
- * continues to name the same fixed-length backing store.
- */
-template <typename T>
-class TypedArray {
-  public:
-    using value_type = T;
-    using iterator = typename std::vector<T>::iterator;
-    using const_iterator = typename std::vector<T>::const_iterator;
-
-    TypedArray()
-        : values_(std::make_shared<std::vector<T>>()) {}
-    explicit TypedArray(std::size_t count)
-        : values_(std::make_shared<std::vector<T>>(count)) {}
-    TypedArray(std::size_t count, const T& value)
-        : values_(std::make_shared<std::vector<T>>(count, value)) {}
-    TypedArray(std::initializer_list<T> values)
-        : values_(std::make_shared<std::vector<T>>(values)) {}
-    // Native mesh-data producers own vectors. Crossing into JavaScript data
-    // takes a snapshot (or transfers a temporary), then aliases share it.
-    TypedArray(std::vector<T> values)
-        : values_(std::make_shared<std::vector<T>>(std::move(values))) {}
-    template <typename Iterator>
-    TypedArray(Iterator first, Iterator last)
-        : values_(std::make_shared<std::vector<T>>(first, last)) {}
-
-    [[nodiscard]] std::size_t size() const { return values_->size(); }
-    [[nodiscard]] bool empty() const { return values_->empty(); }
-    [[nodiscard]] T* data() { return values_->data(); }
-    [[nodiscard]] const T* data() const { return values_->data(); }
-    [[nodiscard]] iterator begin() { return values_->begin(); }
-    [[nodiscard]] iterator end() { return values_->end(); }
-    [[nodiscard]] const_iterator begin() const { return values_->begin(); }
-    [[nodiscard]] const_iterator end() const { return values_->end(); }
-    [[nodiscard]] const_iterator cbegin() const { return values_->cbegin(); }
-    [[nodiscard]] const_iterator cend() const { return values_->cend(); }
-    [[nodiscard]] T& operator[](std::size_t index) { return (*values_)[index]; }
-    [[nodiscard]] const T& operator[](std::size_t index) const {
-        return (*values_)[index];
-    }
-    [[nodiscard]] T& at(std::size_t index) { return values_->at(index); }
-    [[nodiscard]] const T& at(std::size_t index) const {
-        return values_->at(index);
-    }
-    [[nodiscard]] T& front() { return values_->front(); }
-    [[nodiscard]] const T& front() const { return values_->front(); }
-    [[nodiscard]] T& back() { return values_->back(); }
-    [[nodiscard]] const T& back() const { return values_->back(); }
-
-    void reserve(std::size_t count) { values_->reserve(count); }
-    void resize(std::size_t count) { values_->resize(count); }
-    void resize(std::size_t count, const T& value) {
-        values_->resize(count, value);
-    }
-    void clear() { values_->clear(); }
-    void push_back(const T& value) { values_->push_back(value); }
-    void push_back(T&& value) { values_->push_back(std::move(value)); }
-
-    [[nodiscard]] operator std::vector<T>&() { return *values_; }
-    [[nodiscard]] operator const std::vector<T>&() const { return *values_; }
-    [[nodiscard]] const std::shared_ptr<std::vector<T>>& storage() const {
-        return values_;
-    }
-
-    [[nodiscard]] friend bool operator==(
-        const TypedArray& left,
-        const TypedArray& right) {
-        return *left.values_ == *right.values_;
-    }
-
-  private:
-    std::shared_ptr<std::vector<T>> values_;
-};
+template <typename T> class TypedArray;
+template <typename Values> class TypedArraySlot;
+template <typename T> [[nodiscard]] T numeric_store_value(double value);
 
 /** Runs a JavaScript finally block on every exit from its native scope. */
 template <typename F>
@@ -161,10 +85,14 @@ class ArrayBuffer {
     template <typename T>
         requires std::is_trivially_copyable_v<T>
     explicit ArrayBuffer(const TypedArray<T>& values)
-        : external_owner_(values.storage()),
+        : ArrayBuffer(values.buffer()) {}
+    template <typename T>
+        requires std::is_trivially_copyable_v<T>
+    explicit ArrayBuffer(const std::shared_ptr<std::vector<T>>& values)
+        : external_owner_(values),
           external_data_(reinterpret_cast<std::uint8_t*>(
-              const_cast<T*>(values.data()))),
-          external_length_(values.size() * sizeof(T)) {}
+              values->data())),
+          external_length_(values->size() * sizeof(T)) {}
     template <typename T>
         requires std::is_trivially_copyable_v<T>
     explicit ArrayBuffer(std::vector<T>& values)
@@ -200,6 +128,16 @@ class ArrayBuffer {
     [[nodiscard]] const std::shared_ptr<std::vector<std::uint8_t>>& storage() const {
         return bytes_;
     }
+    [[nodiscard]] bool retains_storage() const { return bytes_ || external_owner_; }
+    [[nodiscard]] const void* identity() const {
+        return bytes_ ? static_cast<const void*>(bytes_.get()) : external_owner_.get();
+    }
+    [[nodiscard]] friend bool operator==(const ArrayBuffer& left, const ArrayBuffer& right) {
+        if (!left.retains_storage() || !right.retains_storage()) {
+            throw std::runtime_error("Borrowed ArrayBuffer identity is not represented.");
+        }
+        return left.identity() == right.identity();
+    }
 
   private:
     std::shared_ptr<std::vector<std::uint8_t>> bytes_;
@@ -207,6 +145,178 @@ class ArrayBuffer {
     std::uint8_t* external_data_ = nullptr;
     std::size_t external_length_ = 0;
 };
+
+/** ToIndex for numeric buffer-view arguments; validate after truncation. */
+[[nodiscard]] inline std::size_t buffer_view_index(double value) {
+    const double integer = std::isnan(value) ? 0.0 : std::trunc(value);
+    if (integer < 0.0 || integer > 9007199254740991.0 ||
+        integer >= static_cast<double>(std::numeric_limits<std::size_t>::max())) {
+        throw std::runtime_error("TypedArray offset or length is outside ToIndex range.");
+    }
+    return static_cast<std::size_t>(integer);
+}
+
+/** Numeric arrays share object identity when assigned, captured or returned.
+ * Owned storage preserves the existing native vector arm. A source buffer
+ * view instead retains bytes and uses scalar copies: no T object, pointer or
+ * reference is invented inside a byte vector's allocation. */
+template <typename T>
+class TypedArray {
+  public:
+    using value_type = T;
+    using iterator = typename std::vector<T>::iterator;
+    using const_iterator = typename std::vector<T>::const_iterator;
+
+    TypedArray() : values_(std::make_shared<std::vector<T>>()) {}
+    explicit TypedArray(std::size_t count) : values_(std::make_shared<std::vector<T>>(count)) {}
+    TypedArray(std::size_t count, const T& value) : values_(std::make_shared<std::vector<T>>(count, value)) {}
+    TypedArray(std::initializer_list<T> values) : values_(std::make_shared<std::vector<T>>(values)) {}
+    TypedArray(std::vector<T> values) : values_(std::make_shared<std::vector<T>>(std::move(values))) {}
+    template <typename Iterator>
+    TypedArray(Iterator first, Iterator last) : values_(std::make_shared<std::vector<T>>(first, last)) {}
+    explicit TypedArray(const ArrayBuffer& buffer, double byte_offset = 0.0,
+        std::optional<double> length = std::nullopt) {
+        if (!buffer.retains_storage()) {
+            throw std::runtime_error("Numeric TypedArray views require retained ArrayBuffer storage.");
+        }
+        const std::size_t offset = buffer_view_index(byte_offset);
+        const std::optional<std::size_t> count = length
+            ? std::optional<std::size_t>{buffer_view_index(*length)} : std::nullopt;
+        if (offset % sizeof(T) != 0 || offset > buffer.byte_length()) {
+            throw std::runtime_error("TypedArray byte offset is unaligned or exceeds ArrayBuffer.");
+        }
+        const std::size_t available = buffer.byte_length() - offset;
+        if ((!count && available % sizeof(T) != 0) ||
+            (count && *count > available / sizeof(T))) {
+            throw std::runtime_error("TypedArray length is unaligned or exceeds ArrayBuffer.");
+        }
+        view_ = std::make_shared<BufferView>(buffer, offset, count.value_or(available / sizeof(T)));
+    }
+
+    [[nodiscard]] std::size_t size() const { return view_ ? view_->length : values_->size(); }
+    [[nodiscard]] bool empty() const { return size() == 0; }
+    [[nodiscard]] ArrayBuffer buffer() const { return view_ ? view_->buffer : ArrayBuffer(values_); }
+    [[nodiscard]] std::size_t byte_offset() const { return view_ ? view_->offset : 0; }
+    [[nodiscard]] std::size_t byte_length() const { return size() * sizeof(T); }
+    [[nodiscard]] const void* identity() const {
+        return view_ ? static_cast<const void*>(view_.get()) : static_cast<const void*>(values_.get());
+    }
+    [[nodiscard]] friend bool operator==(const TypedArray& left, const TypedArray& right) {
+        return left.identity() == right.identity();
+    }
+
+    [[nodiscard]] T load(std::size_t index) const {
+        if (!view_) return (*values_)[index];
+        if (index >= view_->length) throw std::runtime_error("TypedArray view read exceeds its length.");
+        T result;
+        std::memcpy(&result, view_->buffer.data() + view_->offset + index * sizeof(T), sizeof(T));
+        return result;
+    }
+    void store(std::size_t index, T value) {
+        if (!view_) { (*values_)[index] = value; return; }
+        if (index >= view_->length) throw std::runtime_error("TypedArray view write exceeds its length.");
+        std::memcpy(view_->buffer.data() + view_->offset + index * sizeof(T), &value, sizeof(T));
+    }
+    [[nodiscard]] TypedArraySlot<TypedArray> slot(std::size_t index);
+
+    [[nodiscard]] T* data() { return owned().data(); }
+    [[nodiscard]] const T* data() const { return owned().data(); }
+    [[nodiscard]] iterator begin() { return owned().begin(); }
+    [[nodiscard]] iterator end() { return owned().end(); }
+    [[nodiscard]] const_iterator begin() const { return owned().begin(); }
+    [[nodiscard]] const_iterator end() const { return owned().end(); }
+    [[nodiscard]] const_iterator cbegin() const { return owned().cbegin(); }
+    [[nodiscard]] const_iterator cend() const { return owned().cend(); }
+    [[nodiscard]] T& operator[](std::size_t index) { return owned()[index]; }
+    [[nodiscard]] const T& operator[](std::size_t index) const { return owned()[index]; }
+    [[nodiscard]] T& at(std::size_t index) { return owned().at(index); }
+    [[nodiscard]] const T& at(std::size_t index) const { return owned().at(index); }
+    [[nodiscard]] T& front() { return owned().front(); }
+    [[nodiscard]] const T& front() const { return owned().front(); }
+    [[nodiscard]] T& back() { return owned().back(); }
+    [[nodiscard]] const T& back() const { return owned().back(); }
+    void reserve(std::size_t count) { owned().reserve(count); }
+    void resize(std::size_t count) { owned().resize(count); }
+    void resize(std::size_t count, const T& value) { owned().resize(count, value); }
+    void clear() { owned().clear(); }
+    void push_back(const T& value) { owned().push_back(value); }
+    void push_back(T&& value) { owned().push_back(std::move(value)); }
+    [[nodiscard]] operator std::vector<T>&() { return owned(); }
+    [[nodiscard]] operator const std::vector<T>&() const { return owned(); }
+    [[nodiscard]] const std::shared_ptr<std::vector<T>>& storage() const {
+        static_cast<void>(owned());
+        return values_;
+    }
+
+  private:
+    struct BufferView {
+        ArrayBuffer buffer;
+        std::size_t offset;
+        std::size_t length;
+    };
+    [[nodiscard]] std::vector<T>& owned() const {
+        if (view_) {
+            throw std::runtime_error("Numeric TypedArray buffer views do not support this contiguous native access or method.");
+        }
+        return *values_;
+    }
+    std::shared_ptr<std::vector<T>> values_;
+    std::shared_ptr<BufferView> view_;
+};
+
+/** A source element reference retains its evaluated view even if the RHS
+ * reassigns the array binding. The compiler supplies the JS store conversion. */
+template <typename Values>
+class TypedArraySlot {
+  public:
+    using value_type = typename Values::value_type;
+    TypedArraySlot(Values owner, std::size_t index) : owner_(std::move(owner)), index_(index) {}
+    TypedArraySlot(const TypedArraySlot&) = default;
+    [[nodiscard]] operator value_type() const { return owner_.load(index_); }
+    TypedArraySlot& operator=(value_type value) { owner_.store(index_, value); return *this; }
+    TypedArraySlot& operator=(const TypedArraySlot& source) { return *this = static_cast<value_type>(source); }
+    double operator++() { return increment(1.0, true); }
+    double operator--() { return increment(-1.0, true); }
+    double operator++(int) { return increment(1.0, false); }
+    double operator--(int) { return increment(-1.0, false); }
+  private:
+    double increment(double delta, bool prefix) {
+        const double previous = static_cast<double>(owner_.load(index_));
+        const double next = previous + delta;
+        owner_.store(index_, numeric_store_value<value_type>(next));
+        return prefix ? next : previous;
+    }
+    Values owner_;
+    std::size_t index_;
+};
+template <typename T>
+[[nodiscard]] TypedArraySlot<TypedArray<T>> TypedArray<T>::slot(std::size_t index) { return {*this, index}; }
+
+template <typename Values>
+[[nodiscard]] decltype(auto) typed_array_load(const Values& values, std::size_t index) {
+    if constexpr (requires { values.load(index); }) return values.load(index);
+    else return values[index];
+}
+template <typename Values>
+[[nodiscard]] decltype(auto) typed_array_slot(Values& values, std::size_t index) {
+    if constexpr (requires { values.slot(index); }) return values.slot(index);
+    else return values[index];
+}
+template <typename Values>
+[[nodiscard]] std::size_t typed_array_byte_offset(const Values& values) {
+    if constexpr (requires { values.byte_offset(); }) return values.byte_offset();
+    else return 0;
+}
+
+/** Retain object identity before an index expression invokes source code. */
+template <typename Values>
+[[nodiscard]] Values retain_typed_array_owner(const Values& values) {
+    if constexpr (requires (Values& owner) { owner.slot(std::size_t{}); }) {
+        return values;
+    } else {
+        throw std::runtime_error("An effectful numeric index requires retained typed-array storage, not a borrowed native vector.");
+    }
+}
 
 /**
  * A JavaScript object reference: the plain-data records a scene declares
@@ -387,6 +497,13 @@ class U8Array {
     [[nodiscard]] const std::uint8_t& operator[](std::size_t index) const {
         return data()[index];
     }
+    [[nodiscard]] std::uint8_t load(std::size_t index) const { return data()[index]; }
+    void store(std::size_t index, std::uint8_t value) { data()[index] = value; }
+    [[nodiscard]] TypedArraySlot<U8Array> slot(std::size_t index);
+    [[nodiscard]] const void* identity() const { return identity_.get(); }
+    [[nodiscard]] friend bool operator==(const U8Array& left, const U8Array& right) {
+        return left.identity() == right.identity();
+    }
     [[nodiscard]] ArrayBuffer buffer() const { return buffer_; }
     [[nodiscard]] std::size_t byte_offset() const { return offset_; }
     [[nodiscard]] std::size_t byte_length() const { return length_; }
@@ -408,7 +525,9 @@ class U8Array {
     ArrayBuffer buffer_;
     std::size_t offset_ = 0;
     std::size_t length_ = 0;
+    std::shared_ptr<char> identity_ = std::make_shared<char>();
 };
+inline TypedArraySlot<U8Array> U8Array::slot(std::size_t index) { return {*this, index}; }
 
 /** A DataView over shared ArrayBuffer storage. */
 class DataView {
@@ -2084,6 +2203,15 @@ template <typename Values>
     }
     return values[static_cast<std::size_t>(index)];
 }
+template <typename T>
+[[nodiscard]] inline T array_index_checked(const TypedArray<T>& values, double index, const char* site) {
+    if (!array_has_index(values, index)) throw_index_error(site, "read", index, values.size());
+    return values.load(static_cast<std::size_t>(index));
+}
+template <typename T>
+[[nodiscard]] inline T array_index_checked(TypedArray<T>& values, double index, const char* site) {
+    return array_index_checked(std::as_const(values), index, site);
+}
 
 /**
  * The store form of `array_index_checked` for fixed-length storage
@@ -2100,6 +2228,15 @@ template <typename Values>
         throw_index_error(site, "write", index, values.size());
     }
     return values[static_cast<std::size_t>(index)];
+}
+template <typename T>
+[[nodiscard]] inline TypedArraySlot<TypedArray<T>> array_store_checked(TypedArray<T>& values, double index, const char* site) {
+    if (!array_has_index(values, index)) throw_index_error(site, "write", index, values.size());
+    return values.slot(static_cast<std::size_t>(index));
+}
+[[nodiscard]] inline TypedArraySlot<U8Array> array_store_checked(U8Array& values, double index, const char* site) {
+    if (!array_has_index(values, index)) throw_index_error(site, "write", index, values.size());
+    return values.slot(static_cast<std::size_t>(index));
 }
 
 /**
@@ -2320,6 +2457,15 @@ template <typename Left, typename Right>
 
 [[nodiscard]] inline std::uint8_t to_uint8(double value) {
     return static_cast<std::uint8_t>(to_uint32(value));
+}
+template <typename T>
+[[nodiscard]] T numeric_store_value(double value) {
+    if constexpr (std::is_floating_point_v<T>) return static_cast<T>(value);
+    else if constexpr (std::is_same_v<T, std::uint8_t>) return to_uint8(value);
+    else if constexpr (std::is_same_v<T, std::uint16_t>) return to_uint16(value);
+    else if constexpr (std::is_same_v<T, std::int16_t>) return to_int16(value);
+    else if constexpr (std::is_same_v<T, std::uint32_t>) return to_uint32(value);
+    else { static_assert(std::is_same_v<T, std::int32_t>); return to_int32(value); }
 }
 
 [[nodiscard]] inline U8Array u8_array_sized(double count) {

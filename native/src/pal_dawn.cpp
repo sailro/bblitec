@@ -11910,7 +11910,10 @@ SceneRun run_dawn_engine(Engine& engine) {
                 "Picking more than one Gaussian cloud needs a per-cloud "
                 "id buffer; the reached slice loads one.");
         }
-        for (const DawnSplatPass& splat : state.splat_passes) {
+        for (DawnSplatPass& splat : state.splat_passes) {
+            // Refresh data before encoding, retaining the last frame's order.
+            sync_dawn_splat_data(state.queue,
+                engine.splat_meshes[splat.mesh.value], splat);
             std::array<float, 16> shear{};
             compute_cloud_pick_matrix(shear, x, y, width, height);
             wgpuQueueWriteBuffer(

@@ -129,6 +129,7 @@ its cause.
 | 117 | <img src="images/scenes/scene117.png" alt="Scene 117 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 2D Sprite Picking |
 | 118 | <img src="images/scenes/scene118.png" alt="Scene 118 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprite Picking |
 | 120 | <img src="images/scenes/scene120.png" alt="Scene 120 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting |
+| 121 | <img src="images/scenes/scene121.png" alt="Scene 121 rendering" width="160"> | 0.001 / 0.007 | 0.001 / 0.006 | Gaussian Splatting Data Updates |
 | 122 | <img src="images/scenes/scene122.png" alt="Scene 122 rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | Gaussian Splatting SOG |
 | 123 | <img src="images/scenes/scene123.png" alt="Scene 123 rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | Gaussian Splatting SPZ |
 | 124 | <img src="images/scenes/scene124.png" alt="Scene 124 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.003 | Compressed PLY Gaussian Splatting |

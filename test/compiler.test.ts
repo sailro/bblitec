@@ -2061,15 +2061,15 @@ test("proves const typed-array lengths for static stores and checks runtime ones
     `);
 
     // The const binding of a fixed-size construction proves the static
-    // store in bounds, so it keeps the raw fast path.
+    // store in bounds, so the retained slot skips the dynamic bounds check.
     assert.match(
         result.cpp,
-        /v_lane\[bbl::js::array_index\(3\.0\)\] = static_cast<float>\(0\.5\);/,
+        /auto&& (v_bblite_typed_slot_\d+) = bbl::js::typed_array_slot\(v_lane, bbl::js::array_index\(3\.0\)\);\s+\1 = static_cast<float>\(0\.5\);/,
     );
     // The counter-driven store cannot be proven and is checked.
     assert.match(
         result.cpp,
-        /bbl::js::array_store_checked\(v_lane, v_w, "[^"]+:\d+:\d+"\) = /,
+        /auto&& (v_bblite_typed_slot_\d+) = bbl::js::array_store_checked\(v_lane, v_w, "[^"]+:\d+:\d+"\);\s+\1 = /,
     );
 });
 
@@ -2749,7 +2749,7 @@ test("keeps immediate class callback parameters compile-time", () => {
 
     assert.doesNotMatch(result.cpp, /std::function|bbl::js::Callback/);
     assert.equal(
-        (result.cpp.match(/v_values\[bbl::js::array_index/g) ?? []).length,
+        (result.cpp.match(/typed_array_load\(v_values, bbl::js::array_index/g) ?? []).length,
         4,
     );
 });
@@ -3872,7 +3872,7 @@ test("writes through a data struct returned by a reached call", () => {
 
     assert.match(
         result.cpp,
-        /array_store_checked\([^\n]+2\.0[^\n]+\) = bbl::js::to_uint8\(7\.0\)/,
+        /auto&& (v_bblite_typed_slot_\d+) = bbl::js::array_store_checked\([^\n]+2\.0[^\n]+\);\s+\1 = bbl::js::to_uint8\(7\.0\)/,
     );
     assert.equal(
         (result.cpp.match(/const auto bbl_fn_fn\d+_result/g) ?? []).length,
@@ -4680,18 +4680,18 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
     );
     // `data` comes from a call, so its length is not statically known
     // and even static indices are checked; the literal-constructed
-    // arrays below prove their lengths and stay raw.
+    // arrays below prove their lengths and skip dynamic bounds checks.
     assert.match(
         result.cpp,
         /double v_first = static_cast<double>\(bbl::js::array_index_checked\(v_data, 0\.0, "[^"]+"\)\);/,
     );
     assert.match(
         result.cpp,
-        /bbl::js::array_store_checked\(v_data, 1\.0, "[^"]+"\) = static_cast<float>\(2\.5\);/,
+        /auto&& (v_bblite_typed_slot_\d+) = bbl::js::array_store_checked\(v_data, 1\.0, "[^"]+"\);\s+\1 = static_cast<float>\(2\.5\);/,
     );
     assert.match(
         result.cpp,
-        /v_indices\[bbl::js::array_index\(0\.0\)\] = bbl::js::to_uint32\(7\.0\);/,
+        /auto&& (v_bblite_typed_slot_\d+) = bbl::js::typed_array_slot\(v_indices, bbl::js::array_index\(0\.0\)\);\s+\1 = bbl::js::to_uint32\(7\.0\);/,
     );
     assert.match(
         result.cpp,
@@ -4704,7 +4704,7 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
     );
     assert.match(
         result.cpp,
-        /v_signed\[bbl::js::array_index\(0\.0\)\] = bbl::js::to_int32\(4294967295\.0\);/,
+        /auto&& (v_bblite_typed_slot_\d+) = bbl::js::typed_array_slot\(v_signed, bbl::js::array_index\(0\.0\)\);\s+\1 = bbl::js::to_int32\(4294967295\.0\);/,
     );
     assert.match(
         result.cpp,
@@ -4712,7 +4712,7 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
     );
     assert.match(
         result.cpp,
-        /v_signedShorts\[bbl::js::array_index\(0\.0\)\] = bbl::js::to_int16\(65535\.0\);/,
+        /auto&& (v_bblite_typed_slot_\d+) = bbl::js::typed_array_slot\(v_signedShorts, bbl::js::array_index\(0\.0\)\);\s+\1 = bbl::js::to_int16\(65535\.0\);/,
     );
 });
 
@@ -4736,11 +4736,11 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::js::U8Array\(v_buffer, bbl::js::array_index\(1\.0\)\)/,
+        /const auto (v_bblite_view_buffer_\d+) = v_buffer;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+bbl::js::U8Array v_tail = bbl::js::U8Array\(\1, bbl::js::buffer_view_index\(\2\)\);/,
     );
     assert.match(
         result.cpp,
-        /bbl::js::U8Array\(v_buffer, bbl::js::array_index\(1\.0\), bbl::js::array_index\(1\.0\)\)\.slice/,
+        /auto (v_bblite_constructed_receiver_\d+) = bbl::js::U8Array\([^\n]+\);\s+bbl::js::U8Array v_middle = \1\.slice\([^\n]+\1\.size\(\)/,
     );
 });
 
@@ -4771,7 +4771,7 @@ test("rebinds optional typed arrays from fresh constructors", () => {
 
     assert.match(
         result.cpp,
-        /v_bytes = bbl::js::Nullable<bbl::js::U8Array>\{bbl::js::u8_array_sized\(4\.0\)\.slice/,
+        /auto (v_bblite_constructed_receiver_\d+) = bbl::js::u8_array_sized\(4\.0\);\s+v_bytes = bbl::js::Nullable<bbl::js::U8Array>\{\1\.slice/,
     );
     assert.match(
         result.cpp,
@@ -19709,12 +19709,12 @@ test("retains a whole typed-array buffer behind an escaping byte view", () => {
         void main();
     `);
 
-    const history = result.cpp.match(/bbl::js::F32Array (v_fn\d+_history) =/);
-    assert.ok(history);
+    const bytes = result.cpp.match(/bbl::js::U8Array (v_fn\d+_bytes) =/);
+    assert.ok(bytes);
     assert.match(
         result.cpp,
         new RegExp(
-            `bbl::update_storage_buffer\\([^;]+, ${history[1]}, 0\\.0f\\)`,
+            `bbl::update_storage_buffer\\([^;]+, ${bytes[1]}, 0\\.0f\\)`,
         ),
     );
 });

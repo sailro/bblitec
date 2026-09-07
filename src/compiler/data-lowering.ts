@@ -1958,20 +1958,12 @@ export class DataLowerer {
                     kind: "data",
                     cpp: `bbl::js::ArrayBuffer(${owner.cpp})`,
                     dataType: { kind: "arraybuffer" },
-                    wholeTypedArrayBackingCpp: owner.cpp,
-                    nativeCompanionCaptures: {
-                        wholeTypedArrayBackingCpp: owner.nativeCaptures ?? [],
-                    },
                 };
             }
             if (property === "byteOffset") {
-                // Native non-U8 typed arrays are fixed-length vectors rather
-                // than offset views. Every supported producer owns its whole
-                // backing buffer, so its byte offset is exactly zero.
                 return {
                     kind: "number",
-                    cpp: "0.0",
-                    staticNumber: 0,
+                    cpp: `static_cast<double>(bbl::js::typed_array_byte_offset(${owner.cpp}))`,
                     dataType: { kind: "number" },
                 };
             }
@@ -2194,14 +2186,29 @@ export class DataLowerer {
             );
         }
         const ownedRead = owner.freshData && mode === "read" && dataType.kind !== "string";
+        // Index calls, getters and mutations can replace the array binding.
+        // Scalar arithmetic over locals cannot, so ordinary counted accesses
+        // need no extra wrapper copy before their index is evaluated.
+        const indexCanRunCode = (node: ts.Node): boolean =>
+            ts.isCallExpression(node) || ts.isNewExpression(node) ||
+            ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
+            ts.isPostfixUnaryExpression(node) ||
+            (ts.isPrefixUnaryExpression(node) &&
+                (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) ||
+            (ts.isBinaryExpression(node) &&
+                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            !!ts.forEachChild(node, indexCanRunCode);
+        const typedIndexRunsCode = isTypedArrayType(dataType) && indexCanRunCode(access.argumentExpression);
+        const retainedIndexOwner = ownedRead || typedIndexRunsCode;
         let index = "";
         const compileIndex = (): void => {
             index = this.context.compileNumber(access.argumentExpression, "double");
         };
-        const indexLines = ownedRead
+        const indexLines = retainedIndexOwner
             ? this.context.captureEmittedLines(compileIndex)
             : (compileIndex(), []);
-        const indexedOwner = ownedRead
+        const indexedOwner = retainedIndexOwner
             ? this.context.allocateTemporaryCppName("indexed_owner")
             : owner.cpp;
         this.context.reachJsData();
@@ -2247,18 +2254,21 @@ export class DataLowerer {
                     ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
                     : `bbl::js::array_index_write_checked(${owner.cpp}, ${index}, ${site()})`
                 : proven
-                  ? `${indexedOwner}[${nativeIndex}]`
+                  ? isTypedArrayType(dataType)
+                    ? `bbl::js::typed_array_${mode === "write" ? "slot" : "load"}(${indexedOwner}, ${nativeIndex})`
+                    : `${indexedOwner}[${nativeIndex}]`
                   : mode === "write" &&
                       (isTypedArrayType(dataType) ||
                           dataType.kind === "tuple")
-                    ? `bbl::js::array_store_checked(${owner.cpp}, ${index}, ${site()})`
+                    ? `bbl::js::array_store_checked(${indexedOwner}, ${index}, ${site()})`
                     : `bbl::js::array_index_checked(${indexedOwner}, ${index}, ${site()})`;
-        // A fresh container is a native rvalue. Keep its owning wrapper alive
-        // for the checked read, and return the element by value so no reference
-        // escapes that wrapper. The expression stays behind its source guard;
-        // index preparation follows the owner evaluation, as in JavaScript.
-        const indexed = ownedRead
-            ? `([&]() { auto ${indexedOwner} = ${owner.cpp};\n` +
+        // Keep fresh containers and retained typed-array owners alive until
+        // the index finishes. Numeric writes return a slot that owns its view;
+        // reads return values. This expression stays behind its source guard.
+        const retainedOwner = typedIndexRunsCode
+            ? `bbl::js::retain_typed_array_owner(${owner.cpp})` : owner.cpp;
+        const indexed = retainedIndexOwner
+            ? `([&]() { auto ${indexedOwner} = ${retainedOwner};\n` +
                 indexLines.map(line => `    ${line}\n`).join("") +
                 `    return ${element}; }())`
             : element;
@@ -4531,49 +4541,57 @@ export class DataLowerer {
                     };
                 }
             }
-            const source = this.compileDataPath(unwrapped, "read") ??
-                this.context.compileValue(unwrapped);
-            if (source.dataType?.kind === "arraybuffer") {
-                const arguments_ = expression.arguments ?? [];
-                if (arguments_.length > 3) {
-                    this.context.fail(
-                        expression,
-                        "new Uint8Array over an ArrayBuffer expects an optional byte offset and length.",
-                    );
-                }
-                const offset = arguments_[1]
-                    ? `, bbl::js::array_index(${this.context.compileNumber(arguments_[1], "double")})`
-                    : "";
-                const length = arguments_[2]
-                    ? `, bbl::js::array_index(${this.context.compileNumber(arguments_[2], "double")})`
-                    : "";
-                return {
-                    kind: "data",
-                    cpp: `bbl::js::U8Array(${source.cpp}${offset}${length})`,
-                    dataType,
-                    ...((expression.arguments?.length ?? 0) === 1 &&
-                    source.wholeTypedArrayBackingCpp
-                        ? {
-                              wholeTypedArrayBackingCpp:
-                                  source.wholeTypedArrayBackingCpp,
-                              nativeCompanionCaptures: {
-                                  wholeTypedArrayBackingCpp: source.nativeCompanionCaptures?.wholeTypedArrayBackingCpp ?? source.nativeCaptures ?? [],
-                              },
-                          }
-                        : {}),
-                };
+        }
+        const sourceType = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(unwrapped), unwrapped);
+        // Generic typed-array parameters expose ArrayBufferLike in lib.d.ts,
+        // while a reached native array carries only an ordinary ArrayBuffer.
+        // Resolve that value before selecting the overload. A non-buffer
+        // probe must discard emissions so length/sequence arguments run once.
+        const source = this.context.probeEmission(() => {
+            const value = this.compileDataPath(unwrapped, "read") ??
+                (sourceType?.kind === "arraybuffer"
+                    ? this.context.compileValue(unwrapped) : undefined);
+            return value?.dataType?.kind === "arraybuffer" ? value : undefined;
+        });
+        if (source) {
+            const arguments_ = expression.arguments ?? [];
+            if (arguments_.length > 3) {
+                this.context.fail(
+                    expression,
+                    `new ${name} over an ArrayBuffer expects an optional byte offset and length.`,
+                );
             }
+            // Constructor arguments evaluate left-to-right, including an
+            // owner or numeric expression that changes another binding.
+            const buffer = this.context.allocateTemporaryCppName("view_buffer");
+            this.context.emit(`const auto ${buffer} = ${source.cpp};`);
+            const numericArgument = (argument: ts.Expression): string => {
+                const value = this.context.compileNumber(argument, "double");
+                const temporary = this.context.allocateTemporaryCppName("view_index");
+                this.context.emit(`const double ${temporary} = ${value};`);
+                return name === "Uint8Array" ? `bbl::js::buffer_view_index(${temporary})` : temporary;
+            };
+            const offset = arguments_[1]
+                ? `, ${numericArgument(arguments_[1])}`
+                : "";
+            const length = arguments_[2]
+                ? `, ${numericArgument(arguments_[2])}`
+                : "";
+            return {
+                kind: "data",
+                cpp: `${this.context.dataTypes.cppType(dataType)}(${buffer}${offset}${length})`,
+                dataType,
+            };
         }
         if ((expression.arguments?.length ?? 0) > 1) {
             this.context.fail(
                 expression,
-                `new ${name} supports at most one argument unless Uint8Array views an ArrayBuffer.`,
+                `new ${name} supports at most one argument unless it views an ArrayBuffer.`,
             );
         }
-        const converted = this.typedArrayFromSource(
-            prefix,
-            unwrapped,
-        );
+        const converted = this.context.probeEmission(() =>
+            this.typedArrayFromSource(prefix, unwrapped));
         if (converted !== undefined) {
             return { kind: "data", cpp: converted, dataType };
         }
@@ -7415,16 +7433,11 @@ export class DataLowerer {
                 target.dataType.inner.kind === "string" ||
                 target.dataType.inner.kind === "enum" ||
                 target.dataType.inner.kind === "handle" ||
-                // U8Array is a shared ArrayBuffer view. Copying the wrapper
-                // preserves JavaScript identity for constructor and helper
-                // results alike.
-                target.dataType.inner.kind === "u8array" ||
+                // Owned typed arrays and byte-backed views both copy shared
+                // wrappers, including a view returned by a helper.
+                isTypedArrayType(target.dataType.inner) ||
                 ((target.dataType.inner.kind === "map" ||
                     target.dataType.inner.kind === "set") &&
-                    ts.isNewExpression(
-                        this.context.unwrap(expression.right),
-                    )) ||
-                (isTypedArrayType(target.dataType.inner) &&
                     ts.isNewExpression(
                         this.context.unwrap(expression.right),
                     )) ||
@@ -7450,6 +7463,7 @@ export class DataLowerer {
             kind !== "enum" &&
             kind !== "handle" &&
             kind !== "function" &&
+            !isTypedArrayType(target.dataType) &&
             // JsonValue copies its array/object storage by shared pointer, so
             // assigning a freshly parsed dynamic document preserves the
             // JavaScript object identity of that value rather than deep-copying
@@ -7820,6 +7834,16 @@ export class DataLowerer {
             return false;
         }
         if (target.kind === "number") {
+            let targetCpp = target.cpp;
+            let previous = target.cpp;
+            if (target.dataStore) {
+                targetCpp = this.context.allocateTemporaryCppName("typed_slot");
+                this.context.emit(`auto&& ${targetCpp} = ${target.cpp};`);
+                if (operator !== "=") {
+                    previous = this.context.allocateTemporaryCppName("typed_previous");
+                    this.context.emit(`const double ${previous} = static_cast<double>(${targetCpp});`);
+                }
+            }
             const right = this.context.compileNumber(
                 expression.right,
                 "double",
@@ -7834,21 +7858,22 @@ export class DataLowerer {
                 [">>>=", "shift_right_unsigned"],
             ]).get(operator);
             const assigned = helper
-                ? `bbl::js::${helper}(${target.cpp}, ${right})`
+                ? `bbl::js::${helper}(${previous}, ${right})`
                 : undefined;
             if (helper) {
                 this.context.reachJsData();
             }
             if (target.dataStore) {
-                if (operator !== "=" && !assigned) {
+                const arithmetic = new Map([["+=", "+"], ["-=", "-"], ["*=", "*"], ["/=", "/"]]).get(operator);
+                if (operator !== "=" && !assigned && !arithmetic) {
                     this.context.fail(
                         expression,
-                        "Typed-array elements support plain and bitwise compound assignment only.",
+                        "This typed-array compound assignment is not supported.",
                     );
                 }
-                const stored = assigned ?? right;
+                const stored = assigned ?? (arithmetic ? `(${previous} ${arithmetic} ${right})` : right);
                 this.context.emit(
-                    `${target.cpp} = ${typedArrayStoreExpression(target.dataStore, stored)};`,
+                    `${targetCpp} = ${typedArrayStoreExpression(target.dataStore, stored)};`,
                 );
                 invalidateRootRecordSnapshot();
                 return true;

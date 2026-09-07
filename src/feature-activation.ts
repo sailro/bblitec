@@ -413,6 +413,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "#bakeCurrentTransformIntoVertices",
         consumers: CMAKE,
     },
+    "loader:splat-data": {
+        provenance:
+            "src/mesh/GaussianSplatting/gaussian-splatting-mesh.ts" +
+            "#createGaussianSplattingMesh (splatsData getter + updateData)",
+        consumers: CMAKE,
+    },
     "loader:splat-sog": {
         provenance:
             "src/loader-splat/load-sog.ts#loadSOG + " +

@@ -67,7 +67,7 @@ selected at both generated-source and dependency boundaries. See
 | Closures | Supported stored callbacks, shared outer cells, timer/RAF and API-owned retained callbacks; function identity where represented |
 | Classes | Local fields, constructor/parameter properties, methods/accessors and demanded shared instances; stored subclass dispatch remains unsupported |
 | Data | Typed records, nullable values, arrays, insertion-ordered Map/Set, tuples, destructuring, spreads and bounded static records |
-| Binary data | ArrayBuffer, DataView, reached typed-array constructors, indexing, fill/set/copyWithin/slice |
+| Binary data | ArrayBuffer, DataView, reached typed-array constructors and indexing; fill/set/copyWithin/slice on supported owned storage |
 | Numeric/string | Reached runtime Math, including JavaScript `Math.round`, deterministic random, string operations and coercions |
 | JSON | Generated stringify codecs and dynamic parsed values with source-level shape checks; unsupported replacers/cyclic serialization refuse |
 | Exceptions | `throw`, bounded catch handling and finally cleanup; catch bindings must satisfy the compiler's supported/erased binding rules |
@@ -80,6 +80,18 @@ selected at both generated-source and dependency boundaries. See
 Pinned readonly literal enum exports remain values in native arrays. Physics
 motion and prestep arguments validate against the pin's parameter types before
 converting to native enums.
+
+Numeric typed arrays can view a retained ArrayBuffer with an optional numeric
+byte offset and element count. Indexed reads, writes and updates share bytes
+across element types; `buffer`, `byteOffset`, `byteLength` and array identity
+retain their source meaning through assignment, callbacks and return values.
+Offsets/counts use ToIndex after truncation, then alignment and bounds checks.
+Explicit nonnumeric constructor arguments refuse. Numeric buffer views refuse
+methods and native consumers requiring contiguous typed storage, including
+iteration, copying constructors, fill, set, slice and copyWithin; numeric
+subarray remains unsupported. Owned typed arrays retain their existing APIs.
+Effectful indices over internal borrowed native vectors refuse until those
+producers supply a retained source array; scalar indices keep their existing path.
 
 Scene-facing `mat4Invert` reuses the pinned inverse and returns nullable fresh
 Float32 storage. Singular matrices return null; Float64 inputs and high-precision
@@ -126,6 +138,19 @@ KTX2 routes execute the pinned browser transcoder during generation, packaging
 the resulting container. The selected compression target is fixed for the
 validated device family. Native upload checks device support. Texture
 `invertY`, encoding and sampler choices retain their own contracts.
+
+### Gaussian splat row updates
+
+Reading `splatsData` or calling `updateData(ArrayBuffer)` retains the cloud's
+shared source rows. Numeric views can edit those bytes before an update;
+replacing the buffer preserves aliases to the old rows. The update uses the
+pinned geometry builder, rejects incompatible counts before committing, and
+publishes a version consumed by both PALs and cloud picking. The receiver must
+be a present splat handle, and the buffer must own or retain its storage.
+Borrowed native-vector buffers refuse before publishing any cloud state.
+Unused row APIs carry no retained source buffer.
+`splatsData` is a getter-only property; assigning to it is refused. Replace its
+buffer through `updateData`.
 
 ### Environment compilation
 
