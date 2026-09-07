@@ -24,6 +24,11 @@ async function main() {
     const shared=createPbrMaterial({baseColorTexture:solid});
     const distinct=createPbrMaterial({baseColorTexture:createSolidTexture2D(engine,.25,.5,.75,1)});
     const first=resolveAlbedo(engine,pbr);
+    const byMaterial=new Map<Material,Texture2D>();
+    byMaterial.set(pbr,first);
+    byMaterial.set(shared,solid);
+    byMaterial.set(pbr,solid);
+    if(byMaterial.size!==2 || byMaterial.get(pbr)!==solid || byMaterial.has(distinct)) throw new Error("material map identity");
     const held:Texture2D[]=[first,resolveAlbedo(engine,shared)];
     if(first!==solid || held[1]!==solid || first===resolveAlbedo(engine,distinct)) throw new Error("source/cross-material identity");
     const standard=createStandardMaterial();

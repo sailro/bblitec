@@ -320,6 +320,8 @@ struct MeshHandle {
 
 struct MaterialHandle {
     std::uint32_t value = invalid_handle;
+
+    [[nodiscard]] bool operator==(const MaterialHandle&) const = default;
 };
 
 /** One GPU-readable byte buffer created by the shader-material API. */

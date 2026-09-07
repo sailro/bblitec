@@ -2338,12 +2338,13 @@ ${sourceTextureReads ? `
         if (const auto* fallback = optional(source_fallbacks, std::to_string(association))) {
             const auto& lanes = fallback->as_array();
             if (lanes.size() != 4) throw std::runtime_error("Invalid glTF albedo fallback texel.");
-            texture.data.bytes.clear();
-            for (const auto& lane : lanes) {
-                const auto byte = unsigned_value(lane);
+            std::vector<std::uint8_t> texel(4);
+            for (std::size_t lane = 0; lane < texel.size(); ++lane) {
+                const auto byte = unsigned_value(lanes[lane]);
                 if (byte > 255) throw std::runtime_error("Invalid glTF albedo fallback byte.");
-                texture.data.bytes.push_back(static_cast<std::uint8_t>(byte));
+                texel[lane] = static_cast<std::uint8_t>(byte);
             }
+            texture.data.bytes = std::move(texel);
             texture.width = texture.data.rgba_width = 1;
             texture.height = texture.data.rgba_height = 1;
         }
