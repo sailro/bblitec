@@ -1968,6 +1968,11 @@ export class PinnedNumericLowerer {
             ) {
                 this.fail(unwrapped, "store through a read-only view");
             }
+            // A fixed heterogeneous cell can map to a native record field.
+            // Only an explicitly mutable binding names a store destination;
+            // ordinary exact read bindings may be constants or expressions.
+            const exact = this.scope.bindings.get(unwrapped.getText(this.file));
+            if (exact?.mutable) return exact.cpp;
             // Assigning past a list's end EXTENDS it in JavaScript, and the
             // pinned ribbon fills `us[p]` without sizing `us` first. A
             // fixed-size buffer cannot grow and is indexed directly; a list
