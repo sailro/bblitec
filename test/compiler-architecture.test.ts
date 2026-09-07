@@ -892,10 +892,10 @@ test("keeps Scene53's reached direct sprite bucket after opaque meshes", () => {
             backend,
             /RenderStage::opaque:[\s\S]{0,120}draw_render_list\(render_plan\.draw_lists\.opaque\);[\s\S]{0,520}Sprite2DDepthMode::test_write/,
         );
-        assert.match(
-            backend,
-            /RenderStage::transparent:[\s\S]{0,180}draw_render_list\([\s\S]{0,80}render_plan\.draw_lists\.transparent\);[\s\S]{0,520}Sprite2DDepthMode::test/,
-        );
+        const transparentStage = backend.match(/case upstream::RenderStage::transparent:([\s\S]*?)\bbreak;/)?.[1];
+        assert(transparentStage, "Missing default transparent stage");
+        assert.match(transparentStage,
+            /draw_render_list\(\s*render_plan\.draw_lists\.transparent\);[\s\S]*Sprite2DDepthMode::test/);
     }
 });
 
