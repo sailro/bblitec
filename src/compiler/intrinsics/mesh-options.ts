@@ -34,6 +34,8 @@ export interface MeshOptionContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    allocateTemporaryCppName(label: string): string;
+    emit(line: string): void;
 }
 
 /**
@@ -63,8 +65,19 @@ export const SPHERE_OPTION_NAMES = [
 export function compileBoxOptions(
     context: MeshOptionContext,
     expression: ts.Expression,
+    precision: "float" | "double" = "float",
 ): [string, string, string] {
     const unwrapped = context.unwrap(expression);
+    // Data factories receive JS numbers before their array stores narrow.
+    // Snapshot those arguments once: a scalar size fans out to three axes,
+    // and object fields evaluate in source order before defaults are read.
+    const number = (value: ts.Expression): string => {
+        const cpp = context.compileNumber(value, precision);
+        if (precision === "float") return cpp;
+        const snapshot = context.allocateTemporaryCppName("box_dimension");
+        context.emit(`const double ${snapshot} = ${cpp};`);
+        return snapshot;
+    };
     if (ts.isObjectLiteralExpression(unwrapped)) {
         validateObjectProperties(
             context,
@@ -72,20 +85,33 @@ export function compileBoxOptions(
             BOX_OPTION_NAMES,
             "Box options support size, width, height, and depth.",
         );
+        if (precision === "double") {
+            const values = new Map<string, string>();
+            for (const property of unwrapped.properties) {
+                if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
+                    context.fail(property, "Box data options require named numeric fields.");
+                }
+                const name = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
+                    ? property.name.text : context.fail(property, "Box data options require named numeric fields.");
+                values.set(name, number(ts.isPropertyAssignment(property) ? property.initializer : property.name));
+            }
+            const size = values.get("size") ?? "1.0";
+            return [values.get("width") ?? size, values.get("height") ?? size, values.get("depth") ?? size];
+        }
         const size = context.objectProperty(unwrapped, "size");
         const width = context.objectProperty(unwrapped, "width");
         const height = context.objectProperty(unwrapped, "height");
         const depth = context.objectProperty(unwrapped, "depth");
         const compiledSize = size
-            ? context.compileNumber(size)
+            ? context.compileNumber(size, precision)
             : "1.0f";
         return [
-            width ? context.compileNumber(width) : compiledSize,
-            height ? context.compileNumber(height) : compiledSize,
-            depth ? context.compileNumber(depth) : compiledSize,
+            width ? context.compileNumber(width, precision) : compiledSize,
+            height ? context.compileNumber(height, precision) : compiledSize,
+            depth ? context.compileNumber(depth, precision) : compiledSize,
         ];
     }
-    const size = context.compileNumber(unwrapped);
+    const size = number(unwrapped);
     return [size, size, size];
 }
 

@@ -290,6 +290,11 @@ thin instances and transform mutations are supported within their intrinsic
 option sets. Runtime geometry/source arrays follow the data model; builder
 presence does not imply every option or update form.
 
+`createBoxData` accepts a numeric size or a literal options object with size,
+width, height and depth. It and `createSphereData` return mutable typed arrays;
+aliases of a returned stream share its storage, and separate calls own separate
+buffers. Box dimensions remain doubles until the pinned Float32 position store.
+
 Proved fixed-composition counted/for-of loops over supported primitive and
 Standard-material construction emit native loops while retaining creation-order
 composition records. Runtime-safe mesh, Standard and ShaderMaterial construction

@@ -131,7 +131,7 @@ test("the simulation loop keeps the pin's creation order and emission count", as
     ].map((slot) => createNew.indexOf(`${slot}(state, i)`));
     assert.ok(order.every((index, position) => index > (order[position - 1] ?? -1)));
     // `emission >> 0` is ECMAScript ToInt32, not a C++ cast.
-    assert.match(source, /bbl::js::to_int32\(emission\) >> \(bbl::js::to_int32\(0\.0\) & 31\)/);
+    assert.match(source, /bbl::js::shift_right\(emission, 0\.0\)/);
     // Absent hooks fold away rather than emitting a null test.
     assert.doesNotMatch(source, /_prepareFrame|_emitRateGetter|_writeColorDead/);
     // The two update steps in graph order: colour before position.

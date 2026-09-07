@@ -5044,7 +5044,7 @@ struct SphereOptions {
     double diameter_z;
 };
 
-struct SphereMeshData {
+struct MeshData {
     std::vector<float> positions;
     std::vector<float> normals;
     std::vector<float> uvs;
@@ -5287,7 +5287,8 @@ MeshHandle create_ground_from_height_map(
     const char* height_map);
 MeshHandle create_plane(Engine& engine, PlaneOptions options);
 MeshHandle create_sphere(Engine& engine, SphereOptions options);
-SphereMeshData create_sphere_data(SphereOptions options);
+MeshData create_box_data(double width, double height, double depth);
+MeshData create_sphere_data(SphereOptions options);
 void attach_morph_target(
     Engine& engine,
     MeshHandle mesh,

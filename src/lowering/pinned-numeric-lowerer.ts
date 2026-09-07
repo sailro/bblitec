@@ -2877,9 +2877,8 @@ export class PinnedNumericLowerer {
             // integer; the shift count is masked to five bits as ECMAScript
             // masks it.
             return (
-                `static_cast<double>(bbl::js::to_int32(` +
-                `${this.expression(node.left)}) >> ` +
-                `(bbl::js::to_int32(${this.expression(node.right)}) & 31))`
+                `bbl::js::shift_right(${this.expression(node.left)}, ` +
+                `${this.expression(node.right)})`
             );
         }
         if (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
@@ -2909,6 +2908,8 @@ export class PinnedNumericLowerer {
             );
         }
         switch (node.operatorToken.kind) {
+            case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+                return `bbl::js::shift_right_unsigned(${this.expression(node.left)}, ${this.expression(node.right)})`;
             case ts.SyntaxKind.QuestionQuestionToken: {
                 // The pin resolves an absent optional read with its own
                 // default, so the right side IS the default -- read from the

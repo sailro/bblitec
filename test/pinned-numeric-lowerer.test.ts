@@ -310,7 +310,7 @@ test("lowers the pin's signed shift as ToInt32 arithmetic", () => {
     ]);
     assert.match(
         emitted,
-        /bbl::js::to_int32\(emission\) >> \(bbl::js::to_int32\(0\.0\) & 31\)/,
+        /bbl::js::shift_right\(emission, 0\.0\)/,
     );
 });
 

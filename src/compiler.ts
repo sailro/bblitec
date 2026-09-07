@@ -9989,8 +9989,9 @@ class Compiler
 
     public compileBoxOptions(
         expression: ts.Expression,
+        precision?: "float" | "double",
     ): [string, string, string] {
-        return compileBoxOptions(this, expression);
+        return compileBoxOptions(this, expression, precision);
     }
 
     public compileRenderTargetOptions(
