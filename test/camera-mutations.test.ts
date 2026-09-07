@@ -258,7 +258,7 @@ test("TAA refuses lost camera ownership and late construction while preserving o
         addTask,addTaskAtStart,rebuildSceneRenderables,registerSceneWithShadowSupport,attachControl} from "babylon-lite";
         const engine=await createEngine({}); const scene=createSceneContext(engine,{defaultRenderTask:false});
         const camera=createArcRotateCamera(0,1,5,{x:0,y:0,z:0}); scene.camera=camera;
-        const rt=createRenderTarget({format:engine.format,size:engine,samples:1});
+        const rt=createRenderTarget({format:engine.format,dFormat:"depth24plus-stencil8",size:engine,samples:1});
         const source=createRenderTask({rt},engine,scene);`;
     const taa = `const taa=createTaaPostProcessTask({sourceTexture:rt,sourceRenderTask:source,targetTexture:engine.scRT},engine,scene);`;
     for (const body of [

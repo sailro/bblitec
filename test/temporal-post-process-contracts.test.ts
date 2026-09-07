@@ -15,7 +15,7 @@ import { createEngine, createSceneContext, createRenderTarget, createRenderTask,
     createTaaPostProcessTask, createBlackAndWhitePostProcessTask } from "babylon-lite";
 const engine = await createEngine({});
 const scene = createSceneContext(engine, { defaultRenderTask: false });
-const source = createRenderTarget({ format: engine.format, samples: 1, size: engine });
+const source = createRenderTarget({ format: engine.format, dFormat: "depth24plus-stencil8", samples: 1, size: engine });
 const sourceTask = createRenderTask({ rt: source }, engine, scene);
 `;
 const create = (sourceTask = "sourceTask") => `createTaaPostProcessTask({
@@ -48,7 +48,7 @@ test("TAA descriptors preserve task aliases and refuse missing or non-render sou
     assert.throws(() => compileSource(`${prefix} const taa = ${create()}; taa.factor = 0.5;`), /setter on a composite/);
 });
 
-test("TAA observes presentation identity separately from history order and refuses missing UBO transport", async () => {
+test("TAA observes presentation identity separately from history order and retains UBO transport", async () => {
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene261.ts";
     const result = compileSource(readFileSync(resolve(fileName), "utf8"), { fileName });
     const manifest = result.manifest.postProcessComposites[0]!;
@@ -72,9 +72,10 @@ test("TAA observes presentation identity separately from history order and refus
         ]);
         assert.deepEqual(composite.passes.map((pass) => pass.params), [[1], [], []]);
         assert.deepEqual(composite.passes[0]?.extraTextures, [{ kind: "intermediate", index: 0 }]);
-        assert.throws(() => new PostProcessLowerer(new LoweringContext(), [], [composite],
-            ` (reached from ${fileName}:100:17)`).lowerTaskRecords(),
-            /camera projection jitter over a persistent source-task scene UBO.*scene261\.ts:100:17/);
+        const native = new PostProcessLowerer(new LoweringContext(), [], [composite]).lowerTaskRecords();
+        assert.match(native.source, /create_taa_post_process_state/);
+        assert.match(native.source, /initialize_taa_jitter/);
+        assert.match(native.source, /options.output_pass = 1u/);
     }
 });
 

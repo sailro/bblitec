@@ -196,6 +196,10 @@ export function compilePostProcessCompositeOptions(
     }
     const source = context.compileValue(sourceExpression);
     context.expectKind(source, "render-target", sourceExpression);
+    if (!source.renderTargetSignature || source.renderTargetSignature.samples !== 1) {
+        context.noteTemporalRecordBoundary(sourceExpression,
+            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state", "always");
+    }
 
     const target = optionalRenderTarget(context, object, "targetTexture");
 

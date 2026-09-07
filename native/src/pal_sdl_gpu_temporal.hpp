@@ -62,6 +62,15 @@ struct PreparedSdlDraw {
     Uint32 instance_count = 1;
 };
 
+struct PreparedSdlScenePass {
+    TaskHandle task{};
+    SDL_GPUColorTargetInfo target{};
+    std::optional<SDL_GPUDepthStencilTargetInfo> depth{};
+    std::optional<SDL_GPUViewport> viewport{};
+    std::optional<SDL_Rect> scissor{};
+    std::vector<PreparedSdlDraw> draws{};
+};
+
 inline void encode_sdl_prepared_draw(
     SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pass, const PreparedSdlDraw& draw) {
     SDL_BindGPUGraphicsPipeline(pass, draw.pipeline);
@@ -80,6 +89,14 @@ inline void encode_sdl_prepared_draw(
     SDL_BindGPUVertexBuffers(pass, 0, draw.vertex_buffers.data(), static_cast<Uint32>(draw.vertex_buffers.size()));
     SDL_BindGPUIndexBuffer(pass, &draw.indices, SDL_GPU_INDEXELEMENTSIZE_32BIT);
     SDL_DrawGPUIndexedPrimitives(pass, draw.index_count, draw.instance_count, 0, 0, 0);
+}
+
+inline void encode_sdl_prepared_scene(SDL_GPUCommandBuffer* command, const PreparedSdlScenePass& scene) {
+    auto* pass = SDL_BeginGPURenderPass(command, &scene.target, 1, scene.depth ? &*scene.depth : nullptr);
+    if (scene.viewport) SDL_SetGPUViewport(pass, &*scene.viewport);
+    if (scene.scissor) SDL_SetGPUScissor(pass, &*scene.scissor);
+    for (const auto& draw : scene.draws) encode_sdl_prepared_draw(command, pass, draw);
+    SDL_EndGPURenderPass(pass);
 }
 
 } // namespace bbl::pal

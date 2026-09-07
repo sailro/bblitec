@@ -27,6 +27,7 @@ interface CompiledGeometryTask {
 
 export interface EngineIntrinsicContext
     extends IntrinsicCallContext {
+    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     emit(line: string): void;
     fail(node: ts.Node, message: string): never;
     expectSameEngine(
@@ -163,6 +164,7 @@ export function compileEngineIntrinsic(
                 );
             }
             const defaultRenderTask = context.compileSceneDefaultRenderTask(call.arguments[1]);
+            if (defaultRenderTask) context.noteTemporalRecordBoundary(call, "implicit default scene passes", "always");
             const samples = engine.msaaSamples ?? 4;
             const create = `bbl::create_scene_context(${engine.cpp})`;
             return {
@@ -237,6 +239,7 @@ export function compileEngineIntrinsic(
                 kind: "render-target",
                 cpp: `bbl::create_render_target(${engine}, ${options.cpp})`,
                 engineCpp: engine,
+                renderTargetSignature: options.signature,
             };
         }
 
@@ -260,6 +263,7 @@ export function compileEngineIntrinsic(
                     `bbl::create_render_target_texture(` +
                     `${engine.cpp}, ${options.cpp})`,
                 renderTextureSource: "render-target",
+                renderTargetSignature: options.signature,
                 // `rtt.ts` hands back the colour attachment when the
                 // descriptor declared one and the depth attachment
                 // otherwise, so a colourless target's texture samples
@@ -304,6 +308,7 @@ export function compileEngineIntrinsic(
         }
 
         case "createGeometryRendererTask": {
+            context.noteTemporalRecordBoundary(call, "geometry-output task preparation", "always");
             context.expectArgumentCount(call, 3, 3);
             const engine =
                 context.compileValue(call.arguments[1]!);
@@ -341,6 +346,7 @@ export function compileEngineIntrinsic(
         }
 
         case "createCopyToTextureTask": {
+            context.noteTemporalRecordBoundary(call, "copy task preparation", "always");
             context.expectArgumentCount(call, 3, 3);
             const engine =
                 context.compileValue(call.arguments[1]!);

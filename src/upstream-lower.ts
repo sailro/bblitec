@@ -723,6 +723,13 @@ class GeneratedSourceWriter {
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        if (options.postProcessComposites?.some((task) => task.taa)) {
+            if (options.geometryOutputTasks.length > 0 || options.assetTransmission ||
+                (options.pinnedVariants?.length ?? 0) > 0) {
+                throw new Error("TAA source preparation does not yet cover geometry-output or imported PBR passes." +
+                    refusalReachedFrom(options.featureSites, "renderer:post-process"));
+            }
+        }
         // Which programs a node-particle system draws is the pin's answer
         // twice over: the blend mode comes from the graph's own SystemBlock
         // (so from the bake), and how many passes that mode draws comes from

@@ -63,6 +63,9 @@
 #include "pal_dawn_effect.hpp"
 #endif
 #include "pal_gpu_shared.hpp"
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#include "pal_temporal_shared.hpp"
+#endif
 #include "pal_owned_gpu_record.hpp"
 #include "pal_render_capture.hpp"
 
@@ -607,6 +610,17 @@ struct DawnPostProcessTask {
     std::size_t program = npos;
     WGPUBindGroup group = nullptr;
     WGPUBuffer uniforms = nullptr;
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+    bool temporal_recorded = false;
+#endif
+};
+
+struct PreparedDawnPostProcessPass {
+    WGPUTextureView output = nullptr;
+    WGPURenderPipeline pipeline = nullptr;
+    WGPUBindGroup group = nullptr;
+    bool presents = false, clear = false;
+    std::optional<PixelViewport> viewport{};
 };
 #endif
 
@@ -900,6 +914,11 @@ struct DawnState : DawnDevice {
     std::vector<std::vector<DawnPostProcessTask>> post_process_tasks;
     /** The distinct programs those passes draw with. */
     std::vector<DawnPostProcessProgram> post_process_programs;
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+    WGPUTexture temporal_presented = nullptr;
+    WGPUTextureView temporal_presented_view = nullptr;
+    WGPUBindGroup temporal_presented_group = nullptr;
+#endif
 #endif
 #if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
     /** The distinct producer/resolve stages the screen-space tasks draw. */
@@ -1375,6 +1394,14 @@ struct DawnState : DawnDevice {
             program = {};
         }
         post_process_programs.clear();
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+        if (temporal_presented_group) wgpuBindGroupRelease(temporal_presented_group);
+        if (temporal_presented_view) wgpuTextureViewRelease(temporal_presented_view);
+        if (temporal_presented) wgpuTextureRelease(temporal_presented);
+        temporal_presented_group = nullptr;
+        temporal_presented_view = nullptr;
+        temporal_presented = nullptr;
+#endif
 #endif
 #if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
         // A stage's bind group names the attachments the graph just
@@ -3961,6 +3988,17 @@ WGPUBindGroup task_pinned_frame_group(
         "render task frame", lights);
 }
 
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+void restore_temporal_source_buffer(DawnState& state, FrameTaskRecord& source, DawnRenderTask& gpu) {
+    if (!source.scene_uniforms) source.scene_uniforms = upstream::create_persistent_scene_uniforms();
+    if (!gpu.pinned_scene_uniforms) {
+        const auto& bytes = source.scene_uniforms->drawn;
+        gpu.pinned_scene_uniforms = create_buffer(state, WGPUBufferUsage_Uniform,
+            bytes.data(), bytes.size() * sizeof(float));
+    }
+}
+#endif
+
 /**
  * Group 0 for one swapchain overlay layer: its own scene block AND its own
  * lights, because a layer is a second scene rather than a second camera on
@@ -5966,7 +6004,7 @@ void write_standard_draw_blocks(
  * selector keys on the task index — so the per-variant map cannot mix
  * two tasks' groups.
  */
-void write_standard_geometry_task(
+[[maybe_unused]] void write_standard_geometry_task(
     DawnState& state,
     const Scene& scene,
     const Engine& engine,
@@ -8128,6 +8166,59 @@ WGPURenderPipeline blit_pipeline_for(
     return pipeline;
 }
 
+WGPUBindGroup blit_group_for(DawnState& state, WGPURenderPipeline pipeline, WGPUTextureView source) {
+    const auto layout = wgpuRenderPipelineGetBindGroupLayout(pipeline, 2);
+    std::array<WGPUBindGroupEntry, 2> entries{};
+    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].textureView = source;
+    entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[1].binding = 1;
+    entries[1].sampler = state.clamp_sampler;
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = layout;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    const auto group = wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    wgpuBindGroupLayoutRelease(layout);
+    return group;
+}
+
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+void retain_temporal_presentation(DawnState& state, WGPUCommandEncoder encoder,
+    WGPUTexture surface, std::uint32_t width, std::uint32_t height) {
+    if (!state.temporal_presented) {
+        state.temporal_presented = create_frame_texture(state, state.surface_format, 1u, width, height,
+            WGPUTextureUsage_CopyDst | WGPUTextureUsage_TextureBinding);
+        state.temporal_presented_view = wgpuTextureCreateView(state.temporal_presented, nullptr);
+        state.temporal_presented_group = blit_group_for(state,
+            blit_pipeline_for(state, state.surface_format, 1u), state.temporal_presented_view);
+    }
+    WGPUTexelCopyTextureInfo source{};
+    source.texture = surface;
+    WGPUTexelCopyTextureInfo target{};
+    target.texture = state.temporal_presented;
+    const WGPUExtent3D extent{width, height, 1u};
+    wgpuCommandEncoderCopyTextureToTexture(encoder, &source, &target, &extent);
+}
+
+void present_stopped_temporal_frame(DawnState& state, WGPUCommandEncoder encoder, WGPUTextureView surface) {
+    WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    attachment.view = surface;
+    attachment.loadOp = WGPULoadOp_Clear;
+    attachment.storeOp = WGPUStoreOp_Store;
+    WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    descriptor.colorAttachmentCount = 1;
+    descriptor.colorAttachments = &attachment;
+    const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    wgpuRenderPassEncoderSetPipeline(pass, blit_pipeline_for(state, state.surface_format, 1u));
+    wgpuRenderPassEncoderSetBindGroup(pass, 2u, state.temporal_presented_group, 0u, nullptr);
+    wgpuRenderPassEncoderDraw(pass, 3u, 1u, 0u, 0u);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+}
+#endif
+
 DawnMeshBindings& bindings_for(
     DawnState& state,
     DawnMesh& mesh,
@@ -9091,17 +9182,31 @@ std::size_t post_process_program(
  * WebGPU lets a surface texture be a colour attachment, so no readable copy
  * stands between the pass and the present.
  */
+void write_dawn_post_process_uniforms(DawnState& state, Engine& engine, TaskHandle handle,
+    std::size_t index, std::uint32_t width, std::uint32_t height, bool force = false) {
+    auto& pass = engine.frame_tasks[handle.value].post_process.passes[index];
+    auto& gpu = state.post_process_tasks[handle.value][index];
+    if (!gpu.uniforms || (!force && !pass.uniforms_dirty)) return;
+    const auto& program = state.post_process_programs[gpu.program];
+    const auto extent = resolve_post_process_extent(engine.render_targets[pass.output_target.value],
+        state.render_targets, pass, width, height);
+    std::vector<float> data(program.uniform_size / sizeof(float), 0.0f);
+    upstream::write_post_process_uniforms(engine, pass, extent.output_width, extent.output_height,
+        extent.source_width, extent.source_height, data.data());
+    wgpuQueueWriteBuffer(state.queue, gpu.uniforms, 0, data.data(), program.uniform_size);
+    pass.uniforms_dirty = false;
+}
+
 template <typename SourceTextureView>
-void record_post_process_pass(
+PreparedDawnPostProcessPass prepare_dawn_post_process_pass(
     DawnState& state,
     Engine& engine,
     TaskHandle handle,
-    WGPUCommandEncoder encoder,
-    WGPUTextureView surface_view,
     std::uint32_t width,
     std::uint32_t height,
     std::size_t index,
-    SourceTextureView source_texture_view) {
+    SourceTextureView source_texture_view,
+    bool write_uniforms = true) {
     PostProcessPassOptions& pass =
         engine.frame_tasks[handle.value].post_process.passes[index];
     const upstream::PostProcessShaderInfo& info =
@@ -9121,8 +9226,6 @@ void record_post_process_pass(
         height);
     const std::uint32_t output_width = extent.output_width;
     const std::uint32_t output_height = extent.output_height;
-    const std::uint32_t source_width = extent.source_width;
-    const std::uint32_t source_height = extent.source_height;
     if (gpu.program == npos) {
         gpu.program = post_process_program(
             state,
@@ -9194,30 +9297,25 @@ void record_post_process_pass(
     }
     const DawnPostProcessProgram& program =
         state.post_process_programs[gpu.program];
-    if (gpu.uniforms && pass.uniforms_dirty) {
-        std::vector<float> data(program.uniform_size / 4u, 0.0f);
-        upstream::write_post_process_uniforms(
-            engine,
-            pass,
-            output_width,
-            output_height,
-            source_width,
-            source_height,
-            data.data());
-        wgpuQueueWriteBuffer(
-            state.queue,
-            gpu.uniforms,
-            0,
-            data.data(),
-            program.uniform_size);
-        pass.uniforms_dirty = false;
-    }
+    if (write_uniforms) write_dawn_post_process_uniforms(state, engine, handle, index, width, height);
+    PreparedDawnPostProcessPass prepared;
+    prepared.output = output.color_view;
+    prepared.pipeline = program.pipeline;
+    prepared.group = gpu.group;
+    prepared.presents = output_record.swapchain;
+    prepared.clear = pass.clear;
+    if (pass.has_viewport) prepared.viewport = upstream::resolve_post_process_viewport(pass.viewport, output_width, output_height);
+    return prepared;
+}
+
+void encode_dawn_post_process_pass(WGPUCommandEncoder encoder, WGPUTextureView surface_view,
+    const PreparedDawnPostProcessPass& prepared) {
     WGPURenderPassColorAttachment attachment =
         WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    attachment.view = output_record.swapchain
+    attachment.view = prepared.presents
         ? surface_view
-        : output.color_view;
-    attachment.loadOp = pass.clear
+        : prepared.output;
+    attachment.loadOp = prepared.clear
         ? WGPULoadOp_Clear
         : WGPULoadOp_Load;
     attachment.storeOp = WGPUStoreOp_Store;
@@ -9229,12 +9327,8 @@ void record_post_process_pass(
         wgpuCommandEncoderBeginRenderPass(
             encoder,
             &pass_descriptor);
-    if (pass.has_viewport) {
-        const PixelViewport rectangle =
-            upstream::resolve_post_process_viewport(
-                pass.viewport,
-                output_width,
-                output_height);
+    if (prepared.viewport) {
+        const PixelViewport& rectangle = *prepared.viewport;
         wgpuRenderPassEncoderSetViewport(
             post_pass,
             static_cast<float>(rectangle.x),
@@ -9250,16 +9344,25 @@ void record_post_process_pass(
             static_cast<std::uint32_t>(rectangle.width),
             static_cast<std::uint32_t>(rectangle.height));
     }
-    wgpuRenderPassEncoderSetPipeline(post_pass, program.pipeline);
+    wgpuRenderPassEncoderSetPipeline(post_pass, prepared.pipeline);
     wgpuRenderPassEncoderSetBindGroup(
         post_pass,
         0,
-        gpu.group,
+        prepared.group,
         0,
         nullptr);
     wgpuRenderPassEncoderDraw(post_pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(post_pass);
     wgpuRenderPassEncoderRelease(post_pass);
+}
+
+template <typename SourceTextureView>
+void record_post_process_pass(DawnState& state, Engine& engine, TaskHandle handle,
+    WGPUCommandEncoder encoder, WGPUTextureView surface_view, std::uint32_t width,
+    std::uint32_t height, std::size_t index, SourceTextureView source_texture_view) {
+    const auto prepared = prepare_dawn_post_process_pass(state, engine, handle, width, height,
+        index, source_texture_view);
+    encode_dawn_post_process_pass(encoder, surface_view, prepared);
 }
 #endif
 
@@ -12961,9 +13064,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         const bool capture_ready =
             frame >= screenshot_frame && !topology_updated &&
             captures.drains_resolved();
-        // Written from the same plan, camera and matrix the uploads
-        // below read, so the two backends' captures are comparable to
-        // each other as well as to the browser's.
+        const auto capture_render_state = [&] {
         if (
             capture_ready &&
             !captures.render_capture_saved &&
@@ -12981,6 +13082,10 @@ SceneRun run_dawn_engine(Engine& engine) {
                 frame);
             captures.render_capture_saved = true;
         }
+        };
+#if !defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA
+        capture_render_state();
+#endif
         wgpuQueueWriteBuffer(
             state.queue,
             state.view_projection,
@@ -13360,6 +13465,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     }
                 }
             };
+#if !defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA
         write_material_uniforms(
             render_plan.draw_lists.opaque, frame_pass_matrices);
         write_material_uniforms(
@@ -13420,6 +13526,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             pass_scene = &scene;
             pass_meshes = &state.meshes;
         }
+#endif
         if (state.skybox_enabled) {
             const std::array<float, 16> skybox_view_projection =
                 upstream::build_skybox_view_projection(
@@ -13511,6 +13618,9 @@ SceneRun run_dawn_engine(Engine& engine) {
         }
 #endif
         if (!scene.tasks.empty()) {
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            if (!engine.stopped) create_frame_graph_textures(state, engine, width, height);
+#else
             create_frame_graph_textures(state, engine, width, height);
 #if BBLITE_SHADOW_RECEIVERS
             // Which generators have had their casters' pass-independent
@@ -13824,6 +13934,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             }
             pass_scene = &scene;
             pass_meshes = &state.meshes;
+#endif
         }
 
         const double written =
@@ -14758,6 +14869,23 @@ SceneRun run_dawn_engine(Engine& engine) {
                 geometry.sampled_views[attachment_index],
             };
         };
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+        if (!engine.stopped) {
+            for (const auto& registered : engine.registered_scenes) {
+                for (const TaskHandle handle : registered->tasks) {
+                    auto& task = engine.frame_tasks.at(handle.value);
+                    if (!task.post_process.taa) continue;
+                    auto& first = state.post_process_tasks.at(handle.value).at(0);
+                    if (first.temporal_recorded) continue;
+                    upstream::record_taa_post_process(*task.post_process.taa, [&] {
+                        for (std::size_t child = 0; child < task.post_process.passes.size(); ++child) {
+                            (void)prepare_dawn_post_process_pass(state, engine, handle, width, height, child, source_texture_view);
+                        }
+                    });
+                    first.temporal_recorded = true;
+                }
+            }
+#endif
         for (std::size_t graph_layer = 0;
              graph_layer < engine.registered_scenes.size(); ++graph_layer) {
         const Scene& graph_scene = *engine.registered_scenes[graph_layer];
@@ -14770,8 +14898,13 @@ SceneRun run_dawn_engine(Engine& engine) {
                 throw std::runtime_error(
                     "Scene frame task handle is invalid.");
             }
-            const FrameTaskRecord& task =
+            FrameTaskRecord& task =
                 engine.frame_tasks[handle.value];
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            if (task.kind != FrameTaskKind::render && task.kind != FrameTaskKind::post_process) {
+                throw std::runtime_error("Temporal submission requires an admitted frame-task execution adapter.");
+            }
+#endif
             if (task.kind == FrameTaskKind::render) {
                 if (
                     task.render.target.value >=
@@ -14788,6 +14921,46 @@ SceneRun run_dawn_engine(Engine& engine) {
                 const std::uint32_t samples = target_record.swapchain
                     ? 1u
                     : task_sample_count(state, target_record.samples);
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                if (task.source_scene != graph_scene.state || task.render.scene_stages ||
+                    task.render.shadow_generator.value != invalid_handle || !target.color ||
+                    target.color_format != state.surface_format) {
+                    throw std::runtime_error("Temporal source requires an admitted Standard color pass in its owning scene.");
+                }
+                CameraRecord* source_camera = task.render.has_camera
+                    ? &engine.cameras.at(task.render.camera.value)
+                    : task.source_scene->camera.value < engine.cameras.size()
+                        ? &engine.cameras[task.source_scene->camera.value] : nullptr;
+                const auto& task_camera = source_camera ? *source_camera : camera;
+                const auto graph_extent = scene_surface_extent(engine, graph_scene, width, height);
+                restore_temporal_source_buffer(state, task, render_task);
+                WGPUBuffer lights = graph_layer == 0 ? nullptr : state.overlay_frames[graph_layer - 1].lights_uniforms;
+                task_pinned_frame_group(state, render_task, lights);
+                prepare_temporal_scene_uniforms(task, engine, source_camera, target.width, target.height,
+                    graph_extent.width, graph_extent.height, [&](const float* data, std::size_t bytes) {
+                        wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0, data, bytes);
+                    });
+                const double task_aspect = task.render.canvas_size
+                    ? upstream::effective_aspect_ratio(task_camera, graph_extent.width, graph_extent.height)
+                    : upstream::effective_aspect_ratio(task_camera, target.width, target.height);
+                const auto task_matrix = upstream::build_view_projection(task_camera, task_aspect);
+                const auto task_view = upstream::build_view_matrix(upstream::camera_world_matrix(task_camera));
+                const auto task_projection = upstream::build_scene_projection(task_camera, task_aspect);
+                const auto task_eye = shader_camera_position(graph_scene, engine, task_camera);
+                ShaderPassMatrices matrices{task_matrix.data(), &task_view, &task_projection};
+                matrices.camera_position = &task_eye;
+                wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0, task_matrix.data(), sizeof(task_matrix));
+                for (const auto* list : {&render_task.draw_lists.opaque, &render_task.draw_lists.transparent}) {
+                    for (const auto& draw : list->commands) {
+                        if (draw.item.material_kind != upstream::RenderMaterialKind::standard) {
+                            throw std::runtime_error("Temporal source requires an admitted material preparation adapter.");
+                        }
+                    }
+                }
+                write_material_uniforms(render_task.draw_lists.opaque, matrices);
+                write_material_uniforms(render_task.draw_lists.transparent, matrices);
+                if (source_camera) upstream::sort_transparent_draws(render_task.draw_lists.transparent, engine, task_camera);
+#endif
 #if BBLITE_SHADOW_RECEIVERS
                 if (
                     task.render.shadow_generator.value <
@@ -15138,6 +15311,14 @@ SceneRun run_dawn_engine(Engine& engine) {
                         encoder,
                         &pass_descriptor);
                 WGPURenderPipeline bound_pipeline = nullptr;
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                if (source_camera && task_camera.viewport) {
+                    const auto rectangle = upstream::resolve_camera_viewport(task_camera, target.width, target.height);
+                    wgpuRenderPassEncoderSetViewport(task_pass, static_cast<float>(rectangle.x), static_cast<float>(rectangle.y),
+                        static_cast<float>(rectangle.width), static_cast<float>(rectangle.height), 0.0f, 1.0f);
+                    wgpuRenderPassEncoderSetScissorRect(task_pass, rectangle.x, rectangle.y, rectangle.width, rectangle.height);
+                }
+#endif
 #if BBLITE_HAS_BILLBOARDS
                 const auto draw_task_billboards =
                     [&](BillboardDepthMode mode) {
@@ -15799,6 +15980,45 @@ SceneRun run_dawn_engine(Engine& engine) {
 #endif
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
             if (task.kind == FrameTaskKind::post_process) {
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                const auto execute_pass = [&](std::size_t child, bool write_uniforms) {
+                    auto prepared = prepare_dawn_post_process_pass(state, engine, handle, width, height,
+                        child, source_texture_view, write_uniforms);
+                    encode_dawn_post_process_pass(encoder, surface_view, prepared);
+                    if (prepared.presents) {
+                        frame_graph_presented = true;
+                    }
+                    return upstream::post_process_leaf_draw_count();
+                };
+                if (task.post_process.taa) {
+                    auto& taa = *task.post_process.taa;
+                    const auto source_handle = task.post_process.source_tasks.at(0);
+                    auto& source = engine.frame_tasks.at(source_handle.value);
+                    auto& gpu_source = state.render_tasks.at(source_handle.value);
+                    if (!source.source_scene) throw std::runtime_error("Temporal source has no retained scene.");
+                    restore_temporal_source_buffer(state, source, gpu_source);
+                    CameraRecord* source_camera = source.source_scene->camera.value < engine.cameras.size()
+                        ? &engine.cameras[source.source_scene->camera.value] : nullptr;
+                    [[maybe_unused]] const double draws = upstream::execute_taa_post_process(taa,
+                        task.post_process.passes.at(0).params[0], source_camera,
+                        [](CameraRecord* value) { return upstream::scene_camera_change_key(*value); },
+                        [&](std::size_t child) { write_dawn_post_process_uniforms(state, engine, handle, child, width, height, true); },
+                        [&](std::size_t child) -> std::optional<double> { return execute_pass(child, false); },
+                        [&](TaaPostProcessState& value) {
+                            const auto& blend = task.post_process.passes.at(0);
+                            const auto extent = resolve_post_process_extent(engine.render_targets.at(blend.output_target.value),
+                                state.render_targets, blend, width, height);
+                            advance_temporal_jitter(value, *source.scene_uniforms, extent.source_width, extent.source_height,
+                                [&](std::size_t offset, const float* data, std::size_t bytes) {
+                                    wgpuQueueWriteBuffer(state.queue, gpu_source.pinned_scene_uniforms, offset, data, bytes);
+                                });
+                        });
+                    ++taa.execution_count;
+                } else {
+                    for (std::size_t child = 0; child < task.post_process.passes.size(); ++child) execute_pass(child, true);
+                }
+                continue;
+#endif
                 // A composite records the chain its own factory built; a
                 // plain effect is the same loop over one.
                 for (
@@ -15960,26 +16180,7 @@ SceneRun run_dawn_engine(Engine& engine) {
 #endif
             }
             {
-                WGPUBindGroupLayout blit_layout =
-                    wgpuRenderPipelineGetBindGroupLayout(
-                        blit_pipeline,
-                        2);
-                std::array<WGPUBindGroupEntry, 2> blit_entries{};
-                blit_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-                blit_entries[0].binding = 0;
-                blit_entries[0].textureView = source_view;
-                blit_entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-                blit_entries[1].binding = 1;
-                blit_entries[1].sampler = state.clamp_sampler;
-                WGPUBindGroupDescriptor blit_descriptor =
-                    WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-                blit_descriptor.layout = blit_layout;
-                blit_descriptor.entryCount = blit_entries.size();
-                blit_descriptor.entries = blit_entries.data();
-                WGPUBindGroup blit_group = wgpuDeviceCreateBindGroup(
-                    state.device,
-                    &blit_descriptor);
-                wgpuBindGroupLayoutRelease(blit_layout);
+                WGPUBindGroup blit_group = blit_group_for(state, blit_pipeline, source_view);
                 wgpuRenderPassEncoderSetBindGroup(
                     blit_pass,
                     2,
@@ -16007,10 +16208,20 @@ SceneRun run_dawn_engine(Engine& engine) {
             }
         }
         }
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            if (frame_graph_presented) retain_temporal_presentation(state, encoder, surface_texture.texture, width, height);
+        } else if (state.temporal_presented) {
+            present_stopped_temporal_frame(state, encoder, surface_view);
+            frame_graph_presented = true;
+        }
+#endif
         pass_scene = &scene;
         pass_meshes = &state.meshes;
         }
 
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+        capture_render_state();
+#endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         // The scene context records first. Registered sprite contexts then
         // load and blend over the final surface in registration order, after

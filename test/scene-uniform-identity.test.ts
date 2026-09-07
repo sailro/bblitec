@@ -13,7 +13,7 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const literal = `{mode: 0, density: .1, start: 0, end: 10, color: [.2, .3, .4]}`;
-const taa = `const target = createRenderTarget({size: engine, samples: 1});
+const taa = `const target = createRenderTarget({format: engine.format, dFormat: "depth24plus-stencil8", size: engine, samples: 1});
     const source = createRenderTask({name: "source", rt: target}, engine, scene);
     const effect = createTaaPostProcessTask({sourceTexture: target, sourceRenderTask: source}, engine, scene);`;
 function program(body: string): string {

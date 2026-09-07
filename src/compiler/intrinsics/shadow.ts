@@ -17,7 +17,7 @@ export interface ShadowIntrinsicContext
     extends IntrinsicCallContext,
         ObjectValidationContext,
         PositiveIntegerContext {
-    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
+    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -642,7 +642,7 @@ export function compileShadowIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(call.arguments[0]!);
             context.expectKind(scene, "scene", call.arguments[0]!);
-            context.noteTemporalRecordBoundary(call, importedName, "registration");
+            context.noteTemporalRecordBoundary(call, importedName, "registration", scene);
             context.reachFeature("shadow:task", call);
             context.reachFeature("frame-graph:resources", call);
             // The pin's shadow task is a frame-graph task unshifted ahead of

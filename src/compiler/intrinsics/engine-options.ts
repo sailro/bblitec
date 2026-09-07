@@ -26,6 +26,7 @@ import {
 
 export interface EngineOptionContext
     extends PositiveIntegerContext {
+    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     readonly symbols: CompilerSymbols;
     readonly geometryOutputTasks: readonly GeometryOutputTaskManifest[];
     unwrap(expression: ts.Expression): ts.Expression;
@@ -70,6 +71,7 @@ export interface EngineOptionContext
 export interface CompiledRenderTargetOptions {
     cpp: string;
     hasColor: boolean;
+    signature: NonNullable<Value["renderTargetSignature"]>;
 }
 
 export function compileRenderTargetOptions(
@@ -113,9 +115,17 @@ export function compileRenderTargetOptions(
             context.expectKind(surface, "engine", unwrappedSize);
         }
     }
+    const sampleCount = samples ? compilePositiveInteger(context, samples) : "1u";
+    const format = colorFormat && context.unwrap(colorFormat);
+    const surfaceFormat = !!format && ts.isPropertyAccessExpression(format) && format.name.text === "format" &&
+        ts.isIdentifier(format.expression) && context.compileValue(format.expression).kind === "engine";
+    const depth = depthFormat && context.unwrap(depthFormat);
     return {
-        cpp: `bbl::RenderTargetOptions{${samples ? compilePositiveInteger(context, samples) : "1u"}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`,
+        cpp: `bbl::RenderTargetOptions{${sampleCount}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`,
         hasColor: colorFormat !== undefined,
+        signature: { surfaceFormat, hasColor: colorFormat !== undefined,
+            ...(depth && ts.isStringLiteral(depth) ? { depthFormat: depth.text } : {}),
+            samples: Number.parseInt(sampleCount) },
     };
 }
 
@@ -137,6 +147,11 @@ export function compileRenderTaskOptions(
     }
     const target = context.compileValue(targetExpression);
     context.expectKind(target, "render-target", targetExpression);
+    const signature = target.renderTargetSignature;
+    if (!signature?.surfaceFormat || !signature.hasColor || signature.depthFormat !== "depth24plus-stencil8") {
+        context.noteTemporalRecordBoundary(expression,
+            "TAA source preparation requires the engine color format and depth24plus-stencil8 attachment", "always");
+    }
     // The single-sample target an MSAA colour attachment resolves into. The
     // pin ignores it when `rt` is single-sample rather than refusing it, so
     // this carries the handle and lets the backend apply the same rule.
@@ -473,10 +488,15 @@ export function compileTextureReference(
     if (!expression) {
         context.fail(object, `Frame-graph task requires ${property}.`);
     }
+    const value = context.compileValue(expression);
+    if (!value.renderTargetSignature || value.renderTargetSignature.samples !== 1) {
+        context.noteTemporalRecordBoundary(expression,
+            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state", "always");
+    }
     return compileRenderTextureValue(
         context,
         expression,
-        context.compileValue(expression),
+        value,
         `Frame-graph ${property}`,
         { sampling },
     );

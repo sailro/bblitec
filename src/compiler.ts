@@ -835,6 +835,7 @@ class Compiler
     private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
     private readonly untrackedTemporalRecords: Array<{ node: ts.Node; reason: string }> = [];
     private temporalSceneRegistration: ts.Node | undefined;
+    private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
     private temporalControlAttachment: ts.Node | undefined;
     public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = [];
     private readonly sceneMaterials = new SceneMaterialRecorder();
@@ -1006,6 +1007,15 @@ class Compiler
             for (const feature of ["camera:free", "camera:geospatial", "camera:orthographic", "loader:gltf-cameras"] as const) {
                 if (this.features.has(feature)) this.fail(this.sourceFile,
                     `TAA camera version transport does not cover '${feature}'.`);
+            }
+            for (const feature of this.features) {
+                if (["material:pbr", "material:grid", "material:node", "material:shader", "material:plugin-index", "material:no-color-view",
+                    "light:clustered", "renderer:transmission", "renderer:effect", "renderer:effect-task",
+                    "renderer:screen-space", "renderer:sprite", "renderer:frame-graph", "ui:rml", "loader:splat",
+                    "sprite:billboard"].includes(feature) || feature.startsWith("background:") || feature.startsWith("shadow:")) {
+                    this.fail(this.sourceFile, `TAA source preparation does not yet cover '${feature}'` +
+                        ` (reached at ${this.featureSites.get(feature)}).`);
+                }
             }
         }
         if (this.reachedNodeParticles.nativeProvider &&
@@ -13506,6 +13516,7 @@ class Compiler
         const cameras = this.untrackedTaaCameraWrites.length;
         const records = this.untrackedTemporalRecords.length;
         const registration = this.temporalSceneRegistration;
+        const registeredScenes = this.temporalRegisteredScenes.length;
         const controls = this.temporalControlAttachment;
         const result = probe();
         if (!answered(result)) {
@@ -13513,6 +13524,7 @@ class Compiler
             this.untrackedTaaCameraWrites.length = cameras;
             this.untrackedTemporalRecords.length = records;
             this.temporalSceneRegistration = registration;
+            this.temporalRegisteredScenes.length = registeredScenes;
             this.temporalControlAttachment = controls;
         }
         return result;
@@ -14030,12 +14042,20 @@ class Compiler
             reason: "an observable camera vector cannot be copied into a plain data aggregate" });
     }
 
-    public noteTemporalRecordBoundary(node: ts.Node, reason: string, mode: "runtime" | "registration" | "always" = "runtime"): void {
+    public noteTemporalRecordBoundary(node: ts.Node, reason: string, mode: "runtime" | "registration" | "always" = "runtime", scene?: Value): void {
         const runtime = this.frameCallbackDepth > 0 || this.engineStartMark !== undefined;
         if (mode === "always" || runtime || (mode !== "registration" && this.temporalSceneRegistration)) {
             this.untrackedTemporalRecords.push({ node, reason: runtime ? `runtime ${reason}` : reason });
         }
-        if (mode === "registration") this.temporalSceneRegistration ??= node;
+        if (mode === "registration") {
+            this.temporalSceneRegistration ??= node;
+            const identity = scene?.sceneTopologyState;
+            if (!identity || !this.temporalRegisteredScenes.includes(identity)) {
+                if (!identity || this.temporalRegisteredScenes.length > 0) this.untrackedTemporalRecords.push({ node,
+                    reason: "TAA supports one proven registered scene until per-scene update/record ordering is represented" });
+                this.temporalRegisteredScenes.push(identity);
+            }
+        }
     }
 
     public noteTemporalCameraControl(node: ts.Node): void {

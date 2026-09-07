@@ -9,7 +9,7 @@ import {
 export interface SceneIntrinsicContext
     extends IntrinsicCallContext,
         CameraDeferralContext {
-    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
+    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     noteTemporalCameraControl(node: ts.Node): void;
     compileNumber(
         expression: ts.Expression,
@@ -245,7 +245,7 @@ export function compileSceneIntrinsic(
                 "frame-graph-context",
                 call.arguments[0]!,
             );
-            context.noteTemporalRecordBoundary(call, importedName, "registration");
+            context.noteTemporalRecordBoundary(call, importedName, "registration", frameGraph);
             return {
                 kind: "void",
                 cpp: `bbl::register_frame_graph_context(${frameGraph.cpp})`,
@@ -454,7 +454,7 @@ export function compileSceneIntrinsic(
                 "scene",
                 call.arguments[0]!,
             );
-            context.noteTemporalRecordBoundary(call, importedName, "registration");
+            context.noteTemporalRecordBoundary(call, importedName, "registration", scene);
             return {
                 kind: "void",
                 cpp: `bbl::register_scene(${scene.cpp})`,
