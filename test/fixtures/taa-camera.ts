@@ -16,7 +16,7 @@ async function main() {
     camera.nearPlane = .1;
     camera.farPlane = 100;
     scene.camera = camera;
-    attachControl(camera, canvas);
+    attachControl(camera, canvas, scene);
     addToScene(scene, createHemisphericLight([0, 1, 0]));
     const box = createBox(engine, 2);
     const material = createStandardMaterial();
