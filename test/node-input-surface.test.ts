@@ -68,6 +68,21 @@ test("node inputs retain owners through maps, helpers and repeated closed graph 
     assert.match(result.cpp, /for \(/);
     assert.match(result.cpp, /set_node_input_texture/);
     assert.match(result.cpp, /node_material_inputs/);
+    // A graph first reached inside the runtime loop has the same profile
+    // semantics as a graph also constructed before that loop.
+    const firstReach = compileSource(prefix.slice(0, prefix.indexOf("const material =")) + `
+        const counts = new Float32Array([2]);
+        const owners: NodeMaterial[] = [];
+        for (let i = 0; i < counts[0]!; ++i) {
+            const next = await parseNodeMaterialFromSnippet(engine, "", {
+                json: SCENE149_NME_JSON, blockLoader: loadNodeBlockEmitterWithGeometry });
+            next.inputs.albedo!.texture = texture;
+            owners.push(next);
+        }
+        if (owners[0] === owners[1]) throw new Error("first graph owner merged");
+    `);
+    assert.equal(firstReach.manifest.nodeMaterials.length, 1);
+    assert.equal(firstReach.manifest.runtimeMaterialProfiles?.length, 1);
 });
 
 const tools = optionalNativeFixtureTools(false);

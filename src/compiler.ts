@@ -913,6 +913,7 @@ class Compiler
     private readonly runtimeMaterialProfiles = new Set<number>();
     private runtimeMeshProfileCount = 0;
     private readonly runtimeShaderProfiles = new Set<number>();
+    private readonly runtimeNodeProfiles = new Set<number>();
     private reachedPlainSpriteLayer = false;
     /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
     private reachedPureSpriteVertex = false;
@@ -9889,6 +9890,7 @@ class Compiler
             this.isRuntimeResourceConstruction();
         const firstMaterial = this.sceneMaterials.count;
         const firstShader = this.reachedShaderPrograms.length;
+        const firstNode = this.reachedNodeMaterials.length;
         const value = compileRegisteredIntrinsic(this, importedName, call);
         if (!profile || !value) return value;
         for (let index = firstMaterial; index < this.sceneMaterials.count; ++index) {
@@ -9896,6 +9898,9 @@ class Compiler
         }
         for (let index = firstShader; index < this.reachedShaderPrograms.length; ++index) {
             this.runtimeShaderProfiles.add(index);
+        }
+        for (let index = firstNode; index < this.reachedNodeMaterials.length; ++index) {
+            this.runtimeNodeProfiles.add(index);
         }
         if (value.kind === "mesh" && value.sceneMeshIndex !== undefined) {
             const index = value.sceneMeshIndex;
@@ -13969,7 +13974,7 @@ class Compiler
             // ordinals. Closed-directory discovery can happen inside a loop.
             this.currentGltfAssetCount(),
             this.reachedShaderPrograms.length - this.runtimeShaderProfiles.size,
-            this.reachedNodeMaterials.length,
+            this.reachedNodeMaterials.length - this.runtimeNodeProfiles.size,
             this.reachedEffects_.length,
             this.geometryOutputTasks.length,
             this.postProcessTasks.length,
