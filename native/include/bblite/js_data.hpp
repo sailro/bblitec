@@ -126,10 +126,16 @@ class Finally {
     Finally& operator=(const Finally&) = delete;
     Finally(Finally&&) = delete;
     Finally& operator=(Finally&&) = delete;
-    ~Finally() noexcept(noexcept(action_())) { action_(); }
+    ~Finally() noexcept(noexcept(action_())) { run(); }
+    void run() noexcept(noexcept(action_())) {
+        if (!pending_) return;
+        pending_ = false;
+        action_();
+    }
 
   private:
     F action_;
+    bool pending_ = true;
 };
 
 template <typename F>
@@ -2476,13 +2482,45 @@ inline void seed_random(std::uint32_t seed) {
     random_state() = seed;
 }
 
-[[nodiscard]] inline double random_js() {
+// A source assignment replaces the function object, not the built-in
+// generator's state. Saving this callback preserves an override's closure
+// identity; an empty callback denotes the built-in generator.
+inline Callback<double()>& random_override() {
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    struct RandomOverride { Callback<double()> callback; };
+    return realm_scratch<RandomOverride>().callback;
+#else
+    static Callback<double()> callback;
+    return callback;
+#endif
+}
+
+inline void set_random_override(Callback<double()> callback) {
+    random_override() = std::move(callback);
+}
+
+[[nodiscard]] inline double random_builtin() {
     std::uint32_t& state = random_state();
     state += 0x6D2B79F5u;
     std::uint32_t t = state;
     t = (t ^ (t >> 15)) * (t | 1u);
     t ^= t + (t ^ (t >> 7)) * (t | 61u);
     return static_cast<double>((t ^ (t >> 14))) / 4294967296.0;
+}
+
+[[nodiscard]] inline Callback<double()> random_function() {
+    if (random_override()) return random_override();
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    struct BuiltinRandom { Callback<double()> callback{random_builtin}; };
+    return realm_scratch<BuiltinRandom>().callback;
+#else
+    static Callback<double()> builtin{random_builtin};
+    return builtin;
+#endif
+}
+
+[[nodiscard]] inline double random_js() {
+    return random_override() ? random_override()() : random_builtin();
 }
 
 }  // namespace bbl::js

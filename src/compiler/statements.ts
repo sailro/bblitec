@@ -120,6 +120,7 @@ export interface StatementLoweringContext {
         | "mark_mesh_dirty"
         | "mark_mesh_runtime_transform";
     captureEmittedLines(emitBody: () => void): string[];
+    emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean;
     nativeBindingCheckpoint(): number;
     captureHoistedLines(emitBody: () => void, beforeBody: number, site: ts.Node): string[];
     /**
@@ -1522,6 +1523,7 @@ export class StatementLowerer {
         const finallyGuard = capturedFinally.length
             ? capturedFinally
             : undefined;
+        if (finallyGuard && context.emitEngineFinally(body, finallyGuard, statement)) return;
         if (finallyGuard) {
             context.reachJsData();
             context.emit("{");

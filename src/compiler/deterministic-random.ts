@@ -19,6 +19,7 @@
 import ts from "typescript";
 import type { CompiledNodeParticles, Value } from "./types.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
+import type { DataType } from "./data-types.js";
 
 export interface DeterministicRandomContext {
     readonly reachedNodeParticles: CompiledNodeParticles;
@@ -26,6 +27,8 @@ export interface DeterministicRandomContext {
     lookup(identifier: ts.Identifier): Value;
     /** Mark an emitted local whose only reader moved to generation. */
     markEmittedLocalUnused(cppName: string, site: ts.Node): void;
+    compileForDataSink(expression: ts.Expression, type: DataType): string;
+    emit(line: string): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -234,6 +237,19 @@ export function emitDeterministicRandomInstall(
             expression,
             "Math.random is replaced by an arrow function or not at all.",
         );
+    }
+    if (context.reachedNodeParticles.sets.some((set) => set.native)) {
+        if (context.reachedNodeParticles.sets.some((set) => !set.native)) {
+            context.fail(expression, "A Math.random override cannot span native and generation-only particle systems.");
+        }
+        const saved = ts.isIdentifier(expression.right) ? context.lookup(expression.right) : undefined;
+        const callback = saved?.kind === "js-random"
+            ? saved.cpp || "bbl::js::Callback<double()>{}"
+            : context.compileForDataSink(expression.right, {
+                kind: "function", parameters: [], result: { kind: "number" },
+            });
+        context.emit(`bbl::js::set_random_override(${callback});`);
+        return true;
     }
     // `Math.random = original`: the scene closing the seeded window it
     // opened. The driver restores the generator it saved, so pinned code

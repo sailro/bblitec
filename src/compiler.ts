@@ -1945,6 +1945,10 @@ class Compiler
         call: ts.CallExpression,
     ): number | undefined {
         const callee = this.unwrap(call.expression);
+        if (ts.isIdentifier(callee) &&
+            this.symbols.importedName(callee) === "withNodeParticleEmitterProvider") {
+            return 0;
+        }
         if (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "addEventListener" &&
@@ -1983,6 +1987,29 @@ class Compiler
             !!symbol &&
             (this.sharedClosureSymbolsFor(target)?.has(symbol) ?? false)
         );
+    }
+
+    private nativeParticleProviderUse: boolean | undefined;
+
+    /** Closure ownership is decided before the first resource is emitted. */
+    private sourceUsesNativeParticleProvider(): boolean {
+        if (this.nativeParticleProviderUse !== undefined) return this.nativeParticleProviderUse;
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (ts.isCallExpression(node)) {
+                const callee = this.unwrap(node.expression);
+                if (ts.isIdentifier(callee) && this.symbols.importedName(callee) === "withNodeParticleEmitterProvider") {
+                    found = true;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const file of this.program.getSourceFiles()) {
+            if (!file.isDeclarationFile) visit(file);
+        }
+        return this.nativeParticleProviderUse = found;
     }
 
     /**
@@ -2068,7 +2095,8 @@ class Compiler
                 }
                 return (
                     root !== parent.left &&
-                    !(ts.isIdentifier(root) && this.isDefaultLibraryIdentifier(root))
+                    (!(ts.isIdentifier(root) && this.isDefaultLibraryIdentifier(root)) ||
+                        (isDeterministicRandomRead(parent.left) && this.sourceUsesNativeParticleProvider()))
                 );
             }
             return ts.isArrayLiteralExpression(parent);
@@ -2367,10 +2395,16 @@ class Compiler
         // function itself rather than a value, so it emits nothing and the
         // binding exists for the restore assignment to recognize.
         if (isDeterministicRandomRead(declaration.initializer)) {
-            this.defineVariable(declaration.name, {
-                kind: "js-random",
-                cpp: "",
-            });
+            const native = this.reachedNodeParticles.sets.some((set) => set.native);
+            if (native) {
+                this.emit(`auto ${cppName} = bbl::js::random_function();`);
+                this.defineVariable(declaration.name, {
+                    kind: "callback", cpp: cppName,
+                    nativeCallbackParameterTypes: [], nativeCallbackReturnType: { kind: "number" },
+                });
+            } else {
+                this.defineVariable(declaration.name, { kind: "js-random", cpp: "" });
+            }
             return;
         }
 
@@ -10392,9 +10426,13 @@ class Compiler
                 return true;
             }
         }
-        const hasBrowserInput = call.arguments.some((argument) =>
-            this.isBrowserOnlyExpression(argument),
-        );
+        const hasBrowserInput = call.arguments.some((argument) => {
+            if (!this.isBrowserOnlyExpression(argument)) return false;
+            const value = this.evaluateBrowserValue(argument);
+            // A query-resolved primitive is ordinary input to a helper,
+            // including helpers in modules with no Babylon imports.
+            return !value || !["number", "boolean", "string", "null"].includes(value.kind);
+        });
         const returnsVoid = (observableResult.flags & ts.TypeFlags.Void) !== 0;
         if (
             !hasBrowserInput ||
@@ -19627,6 +19665,40 @@ class Compiler
             node,
             indentLevel: this.indentLevel,
         };
+    }
+
+    /** Keep a flat try/finally alive across the startEngine continuation. */
+    public emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean {
+        const mark = this.engineStartMark;
+        if (!mark || site.catchClause) return false;
+        const start = body.findIndex((line) => line.startsWith("bbl::start_engine("));
+        if (start < 0) return false;
+        if (body.slice(start + 1).some((line) =>
+            line.trim() === Compiler.frameYieldRequeueMarker ||
+            line.trim().startsWith(Compiler.startContinuationGatePrefix))) {
+            this.fail(site, "A finally block spanning startEngine cannot also span a later frame yield.");
+        }
+        this.reachJsData();
+        const guard = this.allocateTemporaryCppName("finally");
+        this.emit(`auto ${guard} = bbl::js::finally([&]() {`);
+        this.increaseIndent();
+        const workerAbort = this.workerAbortCpp();
+        if (workerAbort) this.emit(`if (${workerAbort}) return;`);
+        for (const line of cleanup) this.emit(line);
+        this.decreaseIndent();
+        this.emit("});");
+        for (const line of body.slice(0, start)) this.emit(line);
+        mark.index = this.body.length;
+        mark.indentLevel = this.indentLevel;
+        this.emit(body[start]!);
+        // The outer guard covers setup/start failures. The continuation
+        // guard finishes cleanup on its own normal, return or exception
+        // completion, while the outer guard remains safe to destroy later.
+        const completion = this.allocateTemporaryCppName("finally_completion");
+        this.emit(`auto ${completion} = bbl::js::finally([&]() { ${guard}.run(); });`);
+        for (const line of body.slice(start + 1)) this.emit(line);
+        this.emit(`${completion}.run();`);
+        return true;
     }
 
     /**

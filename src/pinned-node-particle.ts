@@ -198,6 +198,8 @@ export interface NodeParticleSetRequest {
     builder: NodeParticleBuilder;
     emitter: readonly [number, number, number];
     textureBaseUrl?: string;
+    /** Provider-backed systems execute source steps and frame updates natively. */
+    native?: true;
     /** The scene's camera when the build ran, when it had one. */
     camera?: NodeParticleCamera;
     /**

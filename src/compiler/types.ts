@@ -1742,6 +1742,13 @@ export interface Value {
    * Any mutation generation cannot enumerate clears it.
    */
   staticElements?: Value[];
+  /** The sampled provider options retain callback identity and their initial matrix. */
+  nodeParticleProvider?: {
+    callbackCpp: string;
+    initialMatrixCpp: string;
+    emitter: readonly [number, number, number];
+    textureBaseUrl?: string;
+  };
   /** Root binding whose static element snapshot this parameter alias shares. */
   staticElementsOwner?: Value;
   /** Shared by aliases even after their generation-known elements are withdrawn. */

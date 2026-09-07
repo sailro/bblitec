@@ -666,6 +666,10 @@ function emitNodeParticleScalarAssignment(
       "This particle system did not come from a built " + "node-particle set.",
     );
   }
+  if (context.reachedNodeParticles.sets[set]?.native) {
+    context.emit(`bbl::upstream::set_native_node_particle_scalar(${set}, ${system}, "${property}", ${context.compileNumber(expression.right, "double")});`);
+    return;
+  }
   requireParticleBakeWritable(context, { set, system }, expression);
   const value = staticNumberValue(context, expression.right);
   if (value === undefined) {

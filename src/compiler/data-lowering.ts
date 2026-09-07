@@ -527,6 +527,7 @@ export class DataLowerer {
         if (
             value.kind !== "data" ||
             value.dataType?.kind === "vector" ||
+            (value.dataType !== undefined && isTypedArrayType(value.dataType)) ||
             (value.dataType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(
                     value.dataType.name,
@@ -5110,6 +5111,9 @@ export class DataLowerer {
                     );
                 }
                 const value = this.context.compileValue(unwrapped);
+                if (value.kind === "callback") {
+                    return this.compileKnownValueForSink(value, dataType, unwrapped);
+                }
                 if (
                     value.kind === "data" &&
                     value.dataType &&

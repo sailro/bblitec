@@ -720,7 +720,16 @@ export class BrowserErasure {
                 return { kind: "number", value: 1 };
             }
             const bound = this.context.lookupOptional(unwrapped);
-            if (bound !== undefined) return bound.browserValue;
+            if (bound !== undefined) {
+                if (bound.browserValue !== undefined) return bound.browserValue;
+                // Inlining can bind a module constant before a browser
+                // helper evaluates it. Its native binding still carries
+                // the same immutable value; mutable parameters do not.
+                if (!bound.parameterBinding && bound.staticNumber !== undefined) {
+                    return { kind: "number", value: bound.staticNumber };
+                }
+                return undefined;
+            }
             // Not a name this scope binds. A module-level `const` is
             // generation-known and answers here too: a physics scene reads
             // the step its capture is pinned at as
