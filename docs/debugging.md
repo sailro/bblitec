@@ -92,6 +92,13 @@ mesh uniform uploads or pushes. Resource IDs join the upload receipts to draws;
 SDL has no native bind-group object, so its group ID is zero. Byte ranges outside
 `writtenRanges` remain unobserved. Full geometry uploads can make these captures
 large, so enable this for binding checks rather than every image measurement.
+`tools/check-scene149-transport.mjs` joins the saved canonical browser identity
+and upload observations to both native captures. It verifies source texture
+partitions, every selected geometry attribute/index byte and per-view bindings.
+It requires current generated stamps by default. Signed-zero world-matrix
+differences are reported separately from bit identity; any numerically different
+world lane fails. `--allow-stale` is only for inspecting earlier diagnostic
+captures and explicitly marks their stale provenance.
 The palette comparison covers the first two matrices; read the full deformation
 dump for other bones. Expected native-only shader permutations are not errors.
 

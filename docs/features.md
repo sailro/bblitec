@@ -449,10 +449,10 @@ Uniform input state is otherwise frozen. A graph reached by a geometry-renderer
 task also composes the pin's geometry view — a third module per (graph, task),
 emitted from the graph's own `GeometryTextureOutputBlock` terminal with its own
 vertex inputs, texture pairs and uniform block — and both backends draw it into
-the task's attachments. That view carries no morph targets, environment or
-shadow lights, no trailing colour attachment, and no LOCAL_POSITION attachment
-(the lane reads the pin's local position attribute, which this port has baked
-into the vertex); each is refused by name. Wider input mutation remains
+the task's attachments. Geometry views retain original POSITION, NORMAL and UV
+lanes, source indices and the per-view world matrix. LOCAL_POSITION outputs read
+those original positions. Morph targets, environment or shadow lights and a
+trailing colour attachment remain refused by name. Wider input mutation remains
 unfinished.
 
 Imported node geometry currently requires static, tightly packed FLOAT
@@ -461,6 +461,13 @@ strided attribute views, imported deformation/instancing and source transform
 mutation or cloning are refused. Ordinary accessor byte offsets remain valid;
 unused strided views do not affect admission. Proven scene-authored mesh
 transforms keep their existing behavior alongside imported geometry.
+
+Scene149 exercises 79 distinct node material owners and 285 meshes in a color
+view and two geometry views with seven and four attachments. Its canonical
+full-image and foreground gates are 0.02 on each backend. Camera orbit is
+compared with actual browser pointer input. Native resize is compared with a
+fresh browser startup at the new size: the pinned browser's live resize fails
+with error 84 when its resolve target retains the old dimensions.
 
 ### Material plugins
 
