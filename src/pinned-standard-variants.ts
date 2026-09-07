@@ -2148,11 +2148,37 @@ const standardBuiltinBindings: readonly StandardBuiltinBinding[] = [
 
 /** Every WGSL name the composed Standard variants declare for themselves. */
 export function standardBuiltinBindingNames(): ReadonlySet<string> {
+    const bindings = [...standardBuiltinBindings,
+        standardSkeletonBinding(new LoweringContext(sharedUpstreamStore()))];
     return new Set(
-        standardBuiltinBindings.flatMap(
+        bindings.flatMap(
             (binding) => [binding.texture, binding.sampler],
-        ),
+        ).filter((name) => name.length > 0),
     );
+}
+
+/** The shared skeleton fragment declares a vertex-stage textureLoad palette. */
+function standardSkeletonBinding(context: LoweringContext): StandardBuiltinBinding {
+    const fragment = context.functionDeclaration(
+        "src/shader/fragments/skeleton-fragment.ts", "createSkeletonFragment",
+    ).declaration;
+    const declarations = context.findNodes(fragment, (node): node is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(node) && context.propertyName(node.name) === "_vertexBindings");
+    const bindings = declarations[0]?.initializer;
+    if (declarations.length !== 1 || !bindings || !ts.isArrayLiteralExpression(bindings)) {
+        throw new Error("Pinned skeleton fragment must declare one vertex binding array.");
+    }
+    const entry = bindings.elements[0];
+    if (bindings.elements.length !== 1 || !entry || !ts.isObjectLiteralExpression(entry)) {
+        throw new Error("Pinned skeleton fragment must declare one palette binding.");
+    }
+    const name = entry.properties.find((property): property is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(property) && context.propertyName(property.name) === "_name");
+    if (!name || !ts.isStringLiteral(name.initializer)) {
+        throw new Error("Pinned skeleton palette binding must have a literal name.");
+    }
+    return { texture: name.initializer.text, sampler: "", source: "bone_palette",
+        reflectionCube: false, origin: ["skeleton-fragment.ts; textureLoad reads the live palette."] };
 }
 
 /** `standard_binding_resources`' rows, rendered from the list above. */
@@ -2255,20 +2281,7 @@ inline bool standard_variant_skeleton(const StandardVariantEntry& variant) {
     return (variant.features & ${flag("HAS_SKELETON")}u) != 0u;
 }
 `;
-        const fragment = context.functionDeclaration("src/shader/fragments/skeleton-fragment.ts", "createSkeletonFragment").declaration;
-        let boneName: string | undefined;
-        const visit = (node: ts.Node): void => {
-            if (ts.isPropertyAssignment(node) && node.name.getText() === "_vertexBindings" && ts.isArrayLiteralExpression(node.initializer)) {
-                const entry = node.initializer.elements[0];
-                if (node.initializer.elements.length !== 1 || !entry || !ts.isObjectLiteralExpression(entry)) throw new Error("Pinned skeleton binding shape changed.");
-                const name = entry.properties.find((property) => ts.isPropertyAssignment(property) && property.name.getText() === "_name");
-                if (name && ts.isPropertyAssignment(name) && ts.isStringLiteral(name.initializer)) boneName = name.initializer.text;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(fragment);
-        if (!boneName) throw new Error("Pinned skeleton fragment declares no palette binding.");
-        builtinBindings.push({ texture: boneName, sampler: "", source: "bone_palette", reflectionCube: false, origin: ["skeleton-fragment.ts; textureLoad reads the live palette."] });
+        builtinBindings.push(standardSkeletonBinding(context));
     }
     const derivation = lowerStandardFeatureDerivation(
         context,

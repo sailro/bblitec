@@ -6,6 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerStandardMeshAlpha } from "../src/lowering/standard-mesh-alpha.js";
+import { lowerStandardUvTransformWriter } from "../src/lowering/standard-uv-transform-lowerer.js";
 import { pinnedSharedVariantDecls, pinnedStandardVariantsHeader } from "../src/pinned-pbr-variant-cpp.js";
 import { composePinnedStandardVariant, pinnedStandardVariantManifestEntry } from "../src/pinned-standard-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -129,6 +130,67 @@ test("Standard vertex-alpha decisions distinguish meshes, shadows, and instance 
 #include <bblite/js_data.hpp>
 #include <cassert>
 ${lowerStandardMeshAlpha(context, true)}
+int main() { ${checks.join("\n")} }
+`);
+});
+
+test("Standard texture transforms retain live material offsets and the pinned UV2 exemption", { skip: !nativeTools }, async () => {
+    const { stdUvTransformExt } = await importPinnedModule<{
+        stdUvTransformExt: { _bind(material: unknown, entries: unknown[], binding: number, mesh: unknown, scene: unknown): number };
+    }>("material/standard/fragments/std-uv-transform-fragment.js");
+    const context = new LoweringContext();
+    const channels = ["diffuseTexture", "_bumpTexture", "_specularTexture", "_ambientTexture", "_opacityTexture"];
+    const lowered = lowerStandardUvTransformWriter(context, {
+        presence: Object.fromEntries(channels.map((name) => [name, "true"])),
+        coordIndex: { diffuseCoordIndex: "material.diffuse_coord_index" },
+    });
+    const checks: string[] = [];
+    for (const offset of [[0, 0], [0.13, 0.07], [1 / 3, -1 / 7]]) {
+        for (const invertY of [false, true]) for (const coordIndex of [0, 1]) {
+            const texture = { uScale: 1.3, vScale: 0.7, uOffset: 0.17, vOffset: -0.11, uAng: 0.4, invertY };
+            const material = { uvScale: [2, 0.5], uvOffset: offset,
+                diffuseCoordIndex: coordIndex,
+                ...Object.fromEntries(channels.map((name) => [name, texture])) };
+            let expected = new Uint32Array();
+            const scene = { surface: { engine: { _device: {
+                createBuffer: () => ({}),
+                queue: { writeBuffer: (_buffer: unknown, _offset: number, bytes: ArrayBuffer, start: number, length: number) => {
+                    expected = new Uint32Array(bytes.slice(start, start + length));
+                } },
+            } } } };
+            const entries: unknown[] = [];
+            assert.equal(stdUvTransformExt._bind(material, entries, 0, null, scene), 1);
+            assert.equal(expected.length, lowered.floatCount);
+            checks.push(`{
+                bbl::MaterialRecord material{};
+                material.standard_uv_offset_x = ${offset[0]};
+                material.standard_uv_offset_y = ${offset[1]};
+                material.diffuse_coord_index = ${coordIndex};
+                bbl::TextureData texture{};
+                texture.uv_transform = {1.3, 0.7, 0.17, -0.11, 0.4};
+                texture.uv_invert_y = ${invertY};
+                material.base_color_texture = texture;
+                material.bump_texture = texture;
+                material.specular_texture = texture;
+                material.ambient_texture = texture;
+                material.opacity_texture = texture;
+                bbl::upstream::StandardMaterialProps props{{2.0f, 0.5f}};
+                bbl::upstream::StandardUvTxUniforms actual{};
+                bbl::upstream::write_std_uv_transform_data(material, props, actual);
+                const std::array<std::uint32_t, ${expected.length}> expected{${[...expected].map((v) => `${v}u`).join(", ")}};
+                for (std::size_t lane = 0; lane < expected.size(); ++lane)
+                    assert(std::bit_cast<std::uint32_t>(actual.data[lane]) == expected[lane]);
+            }`);
+        }
+    }
+    runNative("uv-transform-offset", `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <bit>
+#include <cassert>
+namespace bbl::upstream {
+struct StandardMaterialProps { std::array<float, 2> uv_scale; };
+${lowered.source}
+}
 int main() { ${checks.join("\n")} }
 `);
 });

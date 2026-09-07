@@ -2890,10 +2890,8 @@ export function pinnedStandardVariantsHeader(
             },
             ...(uvOffset ? { uvOffset: { 0: "material.uv_offset[0]", 1: "material.uv_offset[1]" } } : {}),
         },
-        // `enableStandardUvOffset()` is the pin's opt-in for a per-material
-        // UV offset; no reached scene calls it, so the resolver is the pin's
-        // own uninstalled null and the offset lanes fold to their defaults.
-        // A scene that enables it must extend this before wave D flips over.
+        // The pin installs its per-material offset resolver only after the
+        // scene calls enableStandardUvOffset; otherwise the hook is null.
         ...(uvOffset
             ? { vectorHooks: { _uvOffsetResolver: { property: "uvOffset", lanes: 2 } }, scalarPrecision: "double" }
             : { absentHooks: ["_uvOffsetResolver"] }),

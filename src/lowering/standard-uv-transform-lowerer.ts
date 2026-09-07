@@ -334,15 +334,15 @@ ${channelBody}
 //
 // The pin's loop runs over its own CHANNELS table, whose rows are fixed, so
 // generation unrolls it and folds the two per-row constants each call site
-// carries. \`material.uvOffset\` is the pin's optional per-material offset,
-// which \`enableStandardUvOffset()\` installs and no reached scene calls, so
-// both components read their \`?? 0\` arm here exactly as they do upstream.
+// carries. This extension reads material offsets directly; the base Standard
+// writer's optional resolver is a separate opt-in. Absent offsets have the
+// pin's zero defaults in the material record.
 inline void write_std_uv_transform_data(
     const bbl::MaterialRecord& material,
     const StandardMaterialProps& props,
     StandardUvTxUniforms& out) {
-    const double material_offset_x = 0.0;
-    const double material_offset_y = 0.0;
+    const double material_offset_x = material.standard_uv_offset_x;
+    const double material_offset_y = material.standard_uv_offset_y;
 ${calls.join("\n")}
 }
 `;

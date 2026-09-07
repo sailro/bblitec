@@ -556,10 +556,12 @@ test("composes the plugin's sampler declarations into the Standard fragment", as
 /** The support block with everything but the plugin bindings emptied. */
 function supportBlock(
     pluginBindings: PinnedStandardSupportOptions["pluginBindings"],
+    skeleton = false,
 ): string {
     return pinnedStandardSupportBlock(
         new LoweringContext(sharedUpstreamStore()),
         {
+            skeleton,
             selectors: [],
             uvTransform: false,
             plugins: pluginBindings !== undefined,
@@ -842,6 +844,7 @@ test("refuses a plugin declaring one of the pin's own Standard binding names", (
     for (const declaration of [
         `{ texture: "dT", sampler: "oneS" }`,
         `{ texture: "oneT", sampler: "dS" }`,
+        `{ texture: "boneSampler", sampler: "oneS" }`,
     ]) {
         for (const diffuse of ["", "material.diffuseTexture = tint;"]) {
             const message = refusal(
@@ -875,14 +878,14 @@ test("reads the refused built-in names from the generated binding table", () => 
     // One list, two consumers: the emitted `standard_binding_resources`
     // rows and the fold's refusal. A second spelling is how the two would
     // disagree about what a composed variant already declares.
-    const header = supportBlock(undefined);
+    const header = supportBlock(undefined, true);
     for (const name of standardBuiltinBindingNames()) {
         assert.ok(
             header.includes(`"${name}"`),
             `${name} is a row of the generated table`,
         );
     }
-    assert.equal(standardBuiltinBindingNames().size, 16);
+    assert.equal(standardBuiltinBindingNames().size, 17);
 });
 
 test("refuses two plugins on one material declaring the same names", () => {
