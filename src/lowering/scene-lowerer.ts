@@ -1645,6 +1645,7 @@ ${
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -2356,9 +2357,17 @@ void drain_scene_deferred_builders(Scene& scene) {
     while (!scene.deferred_builders.empty()) {
         auto builders = std::move(scene.deferred_builders);
         scene.deferred_builders.clear();
+        // Promise.all starts every builder in the batch before reporting a
+        // rejection. Preserve those side effects and the first failure.
+        std::exception_ptr failure;
         for (const auto& builder : builders) {
-            builder();
+            try {
+                builder();
+            } catch (...) {
+                if (!failure) failure = std::current_exception();
+            }
         }
+        if (failure) std::rethrow_exception(failure);
     }
 }
 
