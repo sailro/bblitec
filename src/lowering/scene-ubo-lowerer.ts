@@ -6,10 +6,101 @@ import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 
 const TAA_MODULE = "src/post-process/taa.ts";
 const SCENE_MODULE = "src/frame-graph/render-task.ts";
+const PACK_MODULE = "src/frame-graph/scene-uniforms-pack.ts";
+const EXTRAS_MODULE = "src/scene/scene-ubo-extras.ts";
+
+const copyFloats = (receiver: string, source: string, offset: string): string =>
+    `std::transform(${source}.begin(), ${source}.end(), ${receiver}.begin() + static_cast<std::size_t>(${offset}), [](auto value) { return static_cast<float>(value); })`;
 
 /** Pinned scene-uniform mutation over task-owned CPU storage and borrowed upload hooks. */
 export class SceneUboLowerer {
     constructor(private readonly context: LoweringContext) {}
+
+    private packMatrix(): string {
+        return lowerPinnedFunction(this.context, "src/math/pack-mat4-into-f32.ts", "packMat4IntoF32", [
+            { pinned: "view", kind: "mat4", annotation: "Float32Array", cpp: "data", cppType: "std::vector<float>", mutableRecord: true },
+            { pinned: "mat", kind: "mat4Const", annotation: "Mat4 | Float32Array | Float64Array", cpp: "matrix", cppType: "Matrix",
+                binding: { cpp: "matrix", type: "f64-buffer" } },
+            { pinned: "offsetFloats", kind: "number", cpp: "offset", pinnedDefault: true },
+            { pinned: "srcOffsetFloats", kind: "number", cpp: "source_offset", pinnedDefault: true },
+        ], { cppName: "pack_scene_matrix", returns: "void", templateParameters: ["class Matrix"],
+            booleanAnd: true, arrayCopy: copyFloats });
+    }
+
+    private packScene(): string {
+        return lowerPinnedFunction(this.context, PACK_MODULE, "_packSceneUniforms", [
+            { pinned: "data", kind: "mat4", annotation: "Float32Array", cpp: "data", cppType: "std::vector<float>", mutableRecord: true },
+            { pinned: "eng", kind: "record", annotation: "EngineContext", cpp: "engine", cppType: "Engine" },
+            { pinned: "scene", kind: "record", annotation: "SceneContext", cpp: "scene", cppType: "Scene" },
+            { pinned: "camera", kind: "record", annotation: "Camera", cpp: "camera", cppType: "Camera", mutableRecord: true },
+            { pinned: "aspect", kind: "number", cpp: "aspect" },
+        ], { cppName: "pack_scene_uniforms", returns: "void",
+            templateParameters: ["class Engine", "class Scene", "class Camera", "class ViewProjection", "class View", "class World"],
+            leadingParameters: ["ViewProjection&& get_view_projection", "View&& get_view", "World&& camera_world"],
+            calls: new Map([
+                ["getViewProjectionMatrix", (args) => `get_view_projection(${args.join(", ")})`],
+                ["getViewMatrix", (args) => `get_view(${args.join(", ")})`],
+                ["packMat4IntoF32", (args) => `pack_scene_matrix(${args.join(", ")})`],
+            ]),
+            callShapes: new Map([["getViewProjectionMatrix", "f64-buffer"], ["getViewMatrix", "f64-buffer"]]),
+            methods: new Map([["fill", (receiver, args) => `std::fill(${receiver}.begin(), ${receiver}.end(), static_cast<float>(${args[0]}))`]]),
+            memberBindings: new Map<string, PinnedBinding>([
+                ["camera.worldMatrix", { cpp: "camera_world(camera)", type: "f64-buffer", materializeAlias: true }],
+                ["eng.useFloatingOrigin", { cpp: "engine.use_floating_origin", type: "bool" }],
+                ["eng.canvas.width", { cpp: "engine.width", type: "scalar" }],
+                ["eng.canvas.height", { cpp: "engine.height", type: "scalar" }],
+                ["scene._envTextures", { cpp: "scene.environment", type: "opaque", optional: {
+                    present: "scene.environment.has_value()",
+                    members: new Map([["lodGenerationScale", { cpp: "scene.environment->lod_generation_scale" }]]),
+                } }],
+                ["scene.imageProcessing", { cpp: "scene", type: "opaque" }],
+                ["scene.imageProcessing.exposure", { cpp: "scene.exposure", type: "scalar" }],
+                ["scene.imageProcessing.contrast", { cpp: "scene.contrast", type: "scalar" }],
+                ["scene.imageProcessing.toneMappingEnabled", { cpp: "scene.tone_mapping_enabled", type: "bool" }],
+            ]),
+        });
+    }
+
+    private contributor(symbol: "writeFogUbo" | "writeClipPlaneUbo" | "writeEnvUbo", cpp: string): string {
+        return lowerPinnedFunction(this.context, EXTRAS_MODULE, symbol, [
+            { pinned: "data", kind: "mat4", annotation: "Float32Array", cpp: "data", cppType: "std::vector<float>", mutableRecord: true },
+            { pinned: "scene", kind: "record", annotation: "SceneContext", cpp: "scene", cppType: "Scene" },
+        ], { cppName: cpp, returns: "void", templateParameters: ["class Scene"], arrayCopy: copyFloats,
+            memberBindings: new Map<string, PinnedBinding>([
+                ["scene.fog", { cpp: "scene.fog", type: "opaque", absentCpp: "!scene.fog.has_value()" }],
+                ...["mode", "start", "end", "density"].map((field): [string, PinnedBinding] =>
+                    [`scene.fog.${field}`, { cpp: `scene.fog->${field}`, type: "scalar" }]),
+                ["scene.fog.color", { cpp: "scene.fog->color", type: "f64-buffer" }],
+                ["scene.clipPlane", { cpp: "(*scene.clip_plane)", type: "f64-buffer", absentCpp: "!scene.clip_plane.has_value()" }],
+                ["scene", { cpp: "scene", type: "opaque", optional: {
+                    present: "scene.environment_rotation.has_value()",
+                    members: new Map([["_environmentRotation", { cpp: "(*scene.environment_rotation)" }]]),
+                } }],
+                ["scene._envTextures?.sphericalHarmonics", { cpp: "scene.environment->harmonics", type: "f32",
+                    absentCpp: "!scene.environment.has_value() || !scene.environment->has_harmonics" }],
+            ]),
+        });
+    }
+
+    public packingHeader(): string {
+        return `#pragma once
+#include <algorithm>
+#include <cstddef>
+#include <vector>
+
+namespace bbl::upstream {
+${this.packMatrix()}
+
+${this.packScene()}
+
+${this.contributor("writeFogUbo", "write_fog_scene_uniforms")}
+
+${this.contributor("writeClipPlaneUbo", "write_clip_scene_uniforms")}
+
+${this.contributor("writeEnvUbo", "write_environment_scene_uniforms")}
+} // namespace bbl::upstream
+`;
+    }
 
     private cameraKey(): string {
         return lowerPinnedFunction(this.context, "src/camera/camera.ts", "_cameraChangeKey", [
