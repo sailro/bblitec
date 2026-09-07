@@ -240,9 +240,12 @@ correct colour/depth texture-view branch and sampler.
 
 The pinned loader builds row buffers and optional harmonics. Plugin order and
 shader specialization come from the pin. Sort state, world transform and GPU
-picking must refer to the same rendered cloud. Transform baking retains the
-pin's data layout and reset semantics; live `splatsData` identity/re-upload,
-multiple plugin sets and some contributor combinations remain unfinished.
+picking must refer to the same rendered cloud. Transform baking and live row
+updates retain the pin's data layout and buffer identity. The loader retains
+rows when baking, `splatsData` or `updateData` is reached; a successful update
+publishes new geometry and a version for draw/picking refresh. Existing aliases
+retain replaced row buffers. Multiple plugin sets and some contributor
+combinations remain unfinished.
 
 ### Animation and hierarchy
 

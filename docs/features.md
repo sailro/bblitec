@@ -139,6 +139,15 @@ the resulting container. The selected compression target is fixed for the
 validated device family. Native upload checks device support. Texture
 `invertY`, encoding and sampler choices retain their own contracts.
 
+### Gaussian splat row updates
+
+Reading `splatsData` or calling `updateData(ArrayBuffer)` retains the cloud's
+shared source rows. Numeric views can edit those bytes before an update;
+replacing the buffer preserves aliases to the old rows. The update uses the
+pinned geometry builder, rejects incompatible counts before committing, and
+publishes a version consumed by both PALs and cloud picking. The receiver must
+be a present splat handle. Unused row APIs carry no retained source buffer.
+
 ### Environment compilation
 
 HDR runs the pinned WebGPU GGX prefilter during generation. DDS preserves its

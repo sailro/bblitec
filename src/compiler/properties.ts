@@ -972,6 +972,16 @@ export const propertyRules: readonly PropertyRule[] = [
     barrier: true,
   },
   {
+    owner: "splat-mesh",
+    property: "splatsData",
+    value: "data",
+    dataType: { kind: "arraybuffer" },
+    helper: "bbl::splat_data",
+    helperTakesEngine: true,
+    feature: "loader:splat-data",
+    alwaysTruthy: true,
+  },
+  {
     // Which attachment `rtt.ts` hands back is the target's own fact,
     // decided by the format it declared; the texture read off it is
     // that attachment, so it inherits the answer rather than being

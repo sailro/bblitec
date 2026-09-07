@@ -145,7 +145,7 @@ export function compileAdaptations(
             ],
         });
     }
-    if (features.includes("loader:splat-bake")) {
+    if (features.includes("loader:splat-bake") || features.includes("loader:splat-data")) {
         adaptations.push({
             id: "splat-rows-retained-on-reach",
             category: "asset-materialization",
@@ -154,16 +154,15 @@ export function compileAdaptations(
                 "buffer as splatsData, matching BJS keepInRam: true.",
             nativeSemantics:
                 "The loader retains a shared ArrayBuffer only for a scene " +
-                "that reaches the transform bake, the admitted entry " +
-                "point that reads it back. " +
+                "that reaches transform baking, splatsData or updateData. " +
                 "The rows are about half the four float payloads again " +
                 "(11 MB against 22 MB on scene 120), so a cloud nobody " +
-                "bakes carries none of it -- the same reach boundary every " +
+                "reads or updates carries none of it -- the same reach boundary every " +
                 "other generated capability draws.",
             risk: "low",
             validation: [
                 "generated splat_loader.cpp differs by the one retention " +
-                    "line between a baking and a non-baking scene",
+                    "line between a scene reaching row data and a scene that does not",
             ],
         });
     }

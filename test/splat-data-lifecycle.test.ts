@@ -9,6 +9,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { SplatLowerer } from "../src/lowering/splat-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
+import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const meshModule = "src/mesh/GaussianSplatting/gaussian-splatting-mesh.ts";
@@ -22,7 +23,7 @@ class EditedStore extends UpstreamSourceStore {
     }
 }
 
-test("splat CPU lifecycle anchors the whole handoff and preserves source refusal", () => {
+test("splat CPU lifecycle anchors the whole handoff", () => {
     for (const edit of [
         (s: string) => s.replace("const newGeom = buildSplatGeometry(newBuffer);", "return; const newGeom = buildSplatGeometry(newBuffer);"),
         (s: string) => s.replace("mesh._sortDepthTransform.fill(0);", "mesh._sortDepthTransform.fill(1);"),
@@ -37,10 +38,25 @@ test("splat CPU lifecycle anchors the whole handoff and preserves source refusal
     const changed = new SplatLowerer(new LoweringContext(new EditedStore((s) => s.replace("GS vertex count mismatch", "changed pinned message"))))
         .lowerLoader({ retainRows: true, containers: new Map() });
     assert.match(changed.source, /throw std::runtime_error\("changed pinned message"\)/);
-    assert.throws(() => compileSource(`import {createEngine,createSceneContext,loadSplat} from "@babylonjs/lite";
-        async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);
-        const cloud=await loadSplat(scene,"https://example.com/cloud.splat");
-        const bytes=new Uint8Array(64);cloud.updateData(bytes.buffer);}`), /Unsupported|not supported/);
+});
+
+test("either public splat row API retains loader data without reaching transform baking", () => {
+    for (const [name, operation] of [
+        ["getter", "const data=cloud.splatsData; if(data.byteLength!==64) throw new Error('rows');"],
+        ["update", "const bytes=new Uint8Array(64); cloud.updateData(bytes.buffer);"],
+        ["unused", ""],
+    ] as const) {
+        const compiled = compileSource(`import {createEngine,createSceneContext,loadSplat} from "@babylonjs/lite";
+            async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);
+            const cloud=await loadSplat(scene,"https://example.com/cloud.splat"); ${operation}}`);
+        assert.equal(compiled.manifest.features.includes("loader:splat-data"), name !== "unused");
+        assert.equal(compiled.manifest.features.includes("loader:splat-bake"), false);
+        const output = resolve(`artifacts/splat-data-exposure-${name}`);
+        emitUpstreamGenerated(output, compiled.manifest.features);
+        const loader = readFileSync(join(output, "upstream/src/splat_loader.cpp"), "utf8");
+        assert.equal(loader.includes("void update_splat_data("), name !== "unused");
+        assert.equal(loader.includes("record.splats_data ="), name !== "unused");
+    }
 });
 
 interface Geometry {

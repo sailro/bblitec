@@ -3399,6 +3399,25 @@ export class ExpressionLowerer {
                 if (instance?.kind === "json-null" && optionalCall) {
                     return { kind: "void", cpp: "" };
                 }
+                if (instance?.kind === "splat-mesh" && callee.name.text === "updateData") {
+                    this.context.expectArgumentCount(call, 1, 1);
+                    if (instance.optionalFoundCpp) {
+                        this.context.fail(call, "updateData requires a present splat cloud.");
+                    }
+                    // Resolve the receiver before evaluating an argument
+                    // that may replace the source binding.
+                    const engine = this.context.requireEngine(instance, call);
+                    const cloud = this.context.allocateTemporaryCppName("splat_update_receiver");
+                    this.context.emit(`const auto ${cloud} = ${instance.cpp};`);
+                    const buffer = this.context.dataLowerer.compileForSink(
+                        call.arguments[0]!, { kind: "arraybuffer" },
+                    );
+                    this.context.reachFeature("loader:splat-data", call);
+                    return {
+                        kind: "void",
+                        cpp: `bbl::update_splat_data(${engine}, ${cloud}, ${buffer})`,
+                    };
+                }
                 const declaration = instance
                     ? this.context.classOf(instance)
                     : undefined;

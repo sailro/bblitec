@@ -6704,6 +6704,8 @@ SplatMeshHandle create_gaussian_splatting_mesh(
     std::vector<std::uint8_t> rows);
 void attach_gaussian_splatting_mesh(Scene& scene, SplatMeshHandle splat);
 SplatMeshHandle load_splat(Scene& scene, const std::string& path);
+js::ArrayBuffer splat_data(const Engine& engine, SplatMeshHandle splat);
+void update_splat_data(Engine& engine, SplatMeshHandle splat, const js::ArrayBuffer& buffer);
 // `loadSPZ` and `loadSOG`, the pin's second and third splat entry points.
 // Each container is loaded at generation exactly as `loadSplat`'s is, so what
 // is left of either here is `load_splat` plus the one lane it writes on the

@@ -55,6 +55,7 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:gltf-bone-control": [],
     "loader:splat": [],
     "loader:splat-bake": [],
+    "loader:splat-data": [],
     "loader:splat-sh": [],
     "loader:splat-sog": [],
     "loader:splat-spz": [],

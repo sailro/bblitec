@@ -676,15 +676,6 @@ void apply_splat_geometry(
     SplatMeshRecord& record,
     upstream::SplatGeometry& geometry);
 
-/** Shares the retained source buffer; it is not a geometry snapshot. */
-js::ArrayBuffer splat_data(const Engine& engine, SplatMeshHandle splat);
-
-/** Pinned CPU commit; runtime callers require PAL data_version refresh. */
-void update_splat_data(
-    Engine& engine,
-    SplatMeshHandle splat,
-    const js::ArrayBuffer& buffer);
-
 } // namespace bbl
 `,
             source: `// ${this.context.provenance(DATA_MODULE, symbolName)}
