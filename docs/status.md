@@ -51,6 +51,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 38 | <img src="images/scenes/scene38.png" alt="Scene 38 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Builder Gallery |
 | 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animated Waterfall |
 | 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Bullet on Havok's sub-steps, speculative landing and rebound; a solver delta, not a renderer-fidelity value. |
+| 41 | <img src="images/scenes/scene41.png" alt="Scene 41 rendering" width="160"> | 0.215 / 0.284 | 0.215 / 0.284 | Mesh, hull and compound bodies with retained debug overlays; Bullet/Havok free-fall solver delta. |
 | 42 | <img src="images/scenes/scene42.png" alt="Scene 42 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Clone Pre-Step |
 | 43 | <img src="images/scenes/scene43.png" alt="Scene 43 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Parametric Proximity Path |
 | 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | 0.006 / 0.037 | 0.006 / 0.037 | Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value. |

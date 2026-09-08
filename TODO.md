@@ -7,11 +7,10 @@ its scene.
 
 ## Unregistered numbered scenes
 
-The corpus/registry comparison leaves **6** numbered scenes unregistered.
+The corpus/registry comparison leaves **5** numbered scenes unregistered.
 
 | Scene | Remaining integration |
 | --- | --- |
-| 41 | Non-glTF container traversal and physics scene construction |
 | 46 | Module-scope mutable state and all six pinned constraint types; map solver differences explicitly, including LINEAR_DISTANCE |
 | 47 | Physics viewer, heightfields and switch-assigned meshes |
 | 104, 105 | Structural hierarchy/owner grouping and character controller |

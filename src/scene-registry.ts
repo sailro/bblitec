@@ -2509,6 +2509,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene41",
+        name: "Scene 41 - Physics Shape Debug Viewer",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene41.ts",
+        title: "Babylon Lite Native - Physics Shape Debug Viewer",
+        parity: {
+            referenceSearch: "?captureFrame=10",
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "20" },
+            maxFullMad: 0.3,
+            maxForegroundMad: 0.4,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene42",
         name: "Scene 42 - Physics Clone Pre-Step",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene42.ts",
