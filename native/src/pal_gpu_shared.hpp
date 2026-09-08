@@ -1041,10 +1041,11 @@ inline bool material_slot_srgb(
             // The slot's encoding is its TEXTURE's, which upstream stores as
             // the `Texture2D`'s own format: the record carries it for the
             // image and the fallback texel alike, so an image is not assumed
-            // to be sRGB because it is an image. Standard uploads linear
-            // whatever the record says.
-            return !standard_material &&
-                (material == nullptr || material->base_color_srgb);
+            // to be sRGB because it is an image. A transferred texture keeps
+            // the same encoding when a Standard diffuse slot takes it.
+            return standard_material
+                ? material != nullptr && material->diffuse_texture_srgb
+                : material == nullptr || material->base_color_srgb;
     }
     return false;
 }

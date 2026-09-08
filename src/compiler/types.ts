@@ -1890,7 +1890,7 @@ export interface Value {
    */
   classHoistedAssignment?: ts.BinaryExpression;
   /** The concrete native texture record produced by a texture factory. */
-  textureStorage?: "file" | "pixels" | "solid" | "render";
+  textureStorage?: "file" | "pixels" | "solid" | "render" | "stored";
   /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
   csmReceiverGeneratorIndex?: number;
   textureFile?: {

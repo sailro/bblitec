@@ -6271,6 +6271,18 @@ void set_standard_diffuse_file_texture(
     Engine& engine,
     MaterialHandle material,
     const FileTexture& texture);
+inline void set_standard_diffuse_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const StoredTexture& texture) {
+    std::visit([&](const auto& source) {
+        if constexpr (std::is_same_v<std::decay_t<decltype(source)>, FileTexture>) {
+            set_standard_diffuse_file_texture(engine, material, source);
+        } else {
+            set_standard_diffuse_pixels_texture(engine, material, source);
+        }
+    }, texture);
+}
 void enable_material_uv_transform(
     Engine& engine,
     MaterialHandle material);

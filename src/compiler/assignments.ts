@@ -2241,6 +2241,15 @@ export function emitPropertyAssignment(
       if (target.standardMaterialInput) {
         target.standardMaterialInput.diffuseTexture = {};
       }
+      if (texture.kind === "texture" && texture.textureStorage === "stored") {
+        context.expectSameEngine(target, texture, expression);
+        context.reachFeature("material:standard-diffuse-file-texture", expression);
+        context.reachFeature("material:standard-diffuse-pixels-texture", expression);
+        context.emit(
+          `bbl::set_standard_diffuse_texture(${context.requireEngine(target, expression)}, ${target.cpp}, ${texture.cpp});`,
+        );
+        return;
+      }
       // A `createTexture2DFromPixels` texture is the second source
       // this slot takes. It is a C++ value rather than a handle, so
       // the record takes a copy and the local is recorded as spent:
@@ -2265,14 +2274,6 @@ export function emitPropertyAssignment(
       // sampler, the upload flip and the texture-object `invertY`
       // the Standard UV block reads are all the texture's own.
       if (texture.kind === "texture" && texture.textureFile) {
-        if (texture.textureFile.srgb) {
-          context.fail(
-            expression.right,
-            "A Standard diffuse slot uploads through the " +
-              "family's own encoding, which is linear; an " +
-              "sRGB texture in it is not lowered.",
-          );
-        }
         context.reachFeature(
           "material:standard-diffuse-file-texture",
           expression,
