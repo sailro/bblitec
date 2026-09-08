@@ -26,7 +26,7 @@ export const shaderPipelineModule =
     "src/material/shader/shader-pipeline.ts";
 
 /** A reached `defines` entry, in the pin's own `ShaderDefine` shape. */
-export interface PinnedShaderDefine {
+interface PinnedShaderDefine {
     readonly name: string;
     readonly value: boolean | number;
 }
