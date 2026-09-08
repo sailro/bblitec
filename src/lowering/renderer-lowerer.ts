@@ -896,9 +896,7 @@ export class RendererLowerer {
             },
         );
         const floatLiteral = (value: number): string =>
-            Number.isInteger(value)
-                ? `${value}.0f`
-                : `${value}f`;
+            this.context.floatLiteral(value);
         const stageBlockLiteral = (block: {
             present: boolean;
             systemMatrices: readonly string[];

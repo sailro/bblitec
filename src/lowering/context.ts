@@ -1,4 +1,8 @@
 import ts from "typescript";
+import {
+    propertyNameText,
+    unwrapExpression as unwrapSyntaxWrappers,
+} from "../compiler/syntax.js";
 import { UpstreamSourceStore } from "../upstream-source.js";
 import {
     doubleLiteral as cppDoubleLiteral,
@@ -95,28 +99,12 @@ export function elementIndexText(target: ts.Expression): string | undefined {
 
 /** The name a property is declared under, where it is a plain name or literal. */
 export function propertyName(name: ts.PropertyName): string | undefined {
-    if (
-        ts.isIdentifier(name) ||
-        ts.isStringLiteral(name) ||
-        ts.isNumericLiteral(name)
-    ) {
-        return name.text;
-    }
-    return undefined;
+    return propertyNameText(name);
 }
 
-/** The expression under every `as`, `<T>`, `(...)` and `!` the pin wraps it in. */
+/** The expression under every `as`, `<T>`, `(...)`, `!` and `satisfies` the pin wraps it in. */
 export function unwrapExpression(expression: ts.Expression): ts.Expression {
-    let current = expression;
-    while (
-        ts.isAsExpression(current) ||
-        ts.isTypeAssertionExpression(current) ||
-        ts.isParenthesizedExpression(current) ||
-        ts.isNonNullExpression(current)
-    ) {
-        current = current.expression;
-    }
-    return current;
+    return unwrapSyntaxWrappers(expression);
 }
 
 /**

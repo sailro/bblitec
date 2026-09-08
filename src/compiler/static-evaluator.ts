@@ -507,8 +507,8 @@ export class StaticEvaluator {
                 return `-std::numeric_limits<${type}>::infinity()`;
             }
             return precision === "float"
-                ? this.floatLiteral(browserValue.value)
-                : this.doubleLiteral(browserValue.value);
+                ? cppFloatLiteral(browserValue.value)
+                : cppDoubleLiteral(browserValue.value);
         }
         if (ts.isNumericLiteral(unwrapped)) {
             const value = Number(unwrapped.text);
@@ -519,8 +519,8 @@ export class StaticEvaluator {
                 );
             }
             return precision === "float"
-                ? this.floatLiteral(value)
-                : this.doubleLiteral(value);
+                ? cppFloatLiteral(value)
+                : cppDoubleLiteral(value);
         }
         if (
             ts.isIdentifier(unwrapped) &&
@@ -719,7 +719,7 @@ export class StaticEvaluator {
         if (constant?.floatCpp !== undefined) {
             return precision === "float"
                 ? constant.floatCpp
-                : this.doubleLiteral(constant.value);
+                : cppDoubleLiteral(constant.value);
         }
         const mathCall = mathMemberCall(unwrapped, this.isDefaultLibraryIdentifier);
         const sqrt = mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
@@ -1655,11 +1655,4 @@ export class StaticEvaluator {
         }
     }
 
-    private floatLiteral(value: number): string {
-        return cppFloatLiteral(value);
-    }
-
-    private doubleLiteral(value: number): string {
-        return cppDoubleLiteral(value);
-    }
 }
