@@ -387,6 +387,7 @@ const meshFactories: ReadonlyMap<string, readonly string[]> = new Map([
 export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> = new Set([
     ...meshFactories.keys(),
     "createMeshFromData",
+    "cloneTransformNode",
     "createStandardMaterial",
     "createShaderMaterial",
     "parseNodeMaterialFromSnippet",
