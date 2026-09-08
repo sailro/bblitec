@@ -172,7 +172,8 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | Iridescence Sphere |
 | 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | 0.018 / 0.016 | 0.018 / 0.016 | Iridescence Abalone |
 | 179 | <img src="images/scenes/scene179.png" alt="Scene 179 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Lights |
-| 181 | <img src="images/scenes/scene181.png" alt="Scene 181 rendering" width="160"> | 0.021 / 0.399 | 0.021 / 0.399 | Live Text Editor |
+| 180 | <img src="images/scenes/scene180.png" alt="Scene 180 rendering" width="160"> | 0.020 / 0.455 | 0.020 / 0.455 | Standalone Text Renderer |
+| 181 | <img src="images/scenes/scene181.png" alt="Scene 181 rendering" width="160"> | 0.002 / 0.028 | 0.002 / 0.028 | Live Text Editor |
 | 186 | <img src="images/scenes/scene186.png" alt="Scene 186 rendering" width="160"> | 0.002 / 0.004 | 0.002 / 0.004 | Local Cubemap Blending |
 | 187 | <img src="images/scenes/scene187.png" alt="Scene 187 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | SMAA |
 | 200 | <img src="images/scenes/scene200.png" alt="Scene 200 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix Off |
@@ -201,8 +202,8 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 224 | <img src="images/scenes/scene224.png" alt="Scene 224 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bounding Box Gizmo |
 | 225 | <img src="images/scenes/scene225.png" alt="Scene 225 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Geospatial Camera; renders its pose, controls attach without input arms. |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting glTF |
-| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.160 / 0.215 | 0.160 / 0.215 | Shared Scene Surfaces |
-| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.178 / 0.159 | 0.178 / 0.159 | Independent Scene Surfaces |
+| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.017 / 0.001 | 0.018 / 0.001 | Shared Scene Surfaces |
+| 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.013 / 0.014 | 0.013 / 0.014 | Independent Scene Surfaces |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |
 | 231 | <img src="images/scenes/scene231.png" alt="Scene 231 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.000 | Standard Material Deform Features |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animated Triangle |
@@ -280,7 +281,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 | NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Live pure-2D node particles; sprite atlas; pointer-following emitter. |
 | Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.373 / 0.455 | 0.372 / 0.453 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.002, Dawn 0.000 / 0.000. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.016 / 0.016 | 0.014 / 0.014 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
-| Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | $\color{#1a7f37}{\textsf{0.215}} / \color{#9a6700}{\textsf{0.981}}$ | $\color{#1a7f37}{\textsf{0.215}} / \color{#9a6700}{\textsf{0.981}}$ | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only MAD: 0.000 / 0.002 on both backends. |
+| Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | $\color{#1a7f37}{\textsf{0.197}} / \color{#9a6700}{\textsf{0.896}}$ | $\color{#1a7f37}{\textsf{0.197}} / \color{#9a6700}{\textsf{0.896}}$ | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only MAD: 0.000 / 0.002 on both backends. |
 
 ## Project-owned differential gates
 

@@ -43,6 +43,14 @@ export function compileAdaptations(
     features: Feature[],
 ): CompileAdaptation[] {
     const adaptations: CompileAdaptation[] = [];
+    if(features.includes("renderer:text")) {
+        adaptations.push({
+            id:"native-standalone-text-bundles",category:"platform",risk:"medium",
+            sourceSemantics:"Standalone text layers render in stable order through per-layer WebGPU bundles; target size, transforms, palette and glyph edits update their retained resources.",
+            nativeSemantics:"Pinned AST lowers placement, uploads and bundle invalidation. Both PALs replay retained immutable command lists; SDL has no native bundle object. Bundles retain the exact buffer and binding leases recorded by the source.",
+            validation:["text-renderer-lifecycle source/native command and byte differential","scene180 baseline and control captures on both backends"],
+        });
+    }
     if (features.includes("text:layout")) {
         adaptations.push({
             id: "native-live-text-shaping", category: "platform", risk: "medium",

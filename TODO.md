@@ -7,13 +7,12 @@ its scene.
 
 ## Unregistered numbered scenes
 
-The corpus/registry comparison leaves **4** numbered scenes unregistered.
+The corpus/registry comparison leaves **3** numbered scenes unregistered.
 
 | Scene | Remaining integration |
 | --- | --- |
 | 46 | Module-scope mutable state and all six pinned constraint types; map solver differences explicitly, including LINEAR_DISTANCE |
 | 104, 105 | Structural hierarchy/owner grouping and character controller |
-| 180 | Standalone text renderer/layer, range controls, dynamic color and weight updates |
 
 ## Compiler and lowering
 

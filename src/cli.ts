@@ -102,7 +102,7 @@ import {
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
-import { composeDefaultTextPipelines } from "./pinned-text-pipeline-cpp.js";
+import { composeDefaultTextPipelines, composeStandaloneTextPipelines } from "./pinned-text-pipeline-cpp.js";
 import { holdDistLock } from "./dist-lock.js";
 import {
     composeSplatModule,
@@ -1382,6 +1382,7 @@ async function main(): Promise<void> {
     }
     const emitOptions: UpstreamEmitOptions = {
         ...(result.manifest.features.includes("text:renderable") ? { textPipelines: await composeDefaultTextPipelines() } : {}),
+        ...(result.manifest.features.includes("renderer:text") ? { textPipelines: await composeStandaloneTextPipelines(result.manifest.features.includes("text:weight")) } : {}),
         ...(result.manifest.textData ? { textData: result.manifest.textData } : {}),
         idDiagnostics: options.idDiagnostics,
         ...(result.manifest.engineMsaaSamples !== undefined

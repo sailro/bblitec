@@ -400,7 +400,9 @@ uses the pinned linear-frame and trailing image-processing contract.
 
 Static font loading/default layout run the pinned parser, shaper and packer at generation. Runtime strings
 and `updateDefaultTextData` retain the packaged font, layout options, single run, palette and live dimensions.
-Font size/options/color are static; explicit live color arguments and arbitrary run edits refuse.
+Font size/options are static. A retained single-run spread can replace defaultColor; the opt-in
+`setFontWeightOffset` accepts a retained run or numeric index and preserves source clamping and group identity.
+Explicit live color arguments and arbitrary run edits refuse.
 Text data/renderables retain identity through aliases/helpers/containers. Transform setters and opacity are
 live; pipeline membership, depth and order settle before attachment. Late attachment/disposal, conditional
 transform copies, reflective/internal-buffer writes and high-precision matrices refuse.
@@ -408,6 +410,10 @@ transform copies, reflective/internal-buffer writes and high-precision matrices 
 Rendering activates `BBLITE_HAS_TEXT` and supports one text-only default scene with a static FreeCamera or
 ArcRotate camera controls. Mixed ordering, custom tasks and other camera writes refuse. Both PALs use composed Slug shaders,
 packed resources and pinned alpha-to-coverage or premultiplied blending; shared data retains its group-cache behavior.
+
+Standalone TextRenderer layers support affine pixel placement, opacity, coverage gamma, visibility,
+ordering and shared text data on both backends. Source bundle invalidation and a depthless single-sample
+pass are retained. Layer data replacement, arbitrary renderer mutation and mixed renderer families refuse.
 
 ## Runtime scene mutation
 

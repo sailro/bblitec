@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { composeTextPipeline } from "../src/pinned-text-pipeline.js";
+import { composeStandaloneTextPipelines,textPipelineHeader } from "../src/pinned-text-pipeline-cpp.js";
 
 test("text pipeline composition retains pin shaders, packed instance layout and target-dependent A2C", async () => {
     const { composeSlugShader } = await importPinnedModule<{
@@ -52,4 +53,17 @@ test("text pipeline composition retains pin shaders, packed instance layout and 
     const noDepth = await composeTextPipeline({ format: "rgba16float", sampleCount: 1, depthWrite: false, alphaToCoverage: true });
     assert.equal(noDepth.descriptor.depthStencil, undefined);
     assert.equal(noDepth.descriptor.fragment.targets[0]!.format, "rgba16float");
+});
+
+test("standalone text weights compose the pinned incremental shader and preserve the base descriptor",async()=>{
+    const plain=await composeStandaloneTextPipelines(false),weighted=await composeStandaloneTextPipelines(true);
+    assert.equal(plain.length,1);assert.equal(weighted.length,2);assert.deepEqual(weighted[0],plain[0]);
+    const {WEIGHT_SHADER_FRAGMENT}=await importPinnedModule<{WEIGHT_SHADER_FRAGMENT:unknown}>("text/shaders/weight-shader-fragment.js");
+    const {composeSlugShader}=await importPinnedModule<{composeSlugShader(fragment:unknown):{_vert:string;_frag:string}}>("text/shaders/slug-shader.js");
+    const expected=composeSlugShader(WEIGHT_SHADER_FRAGMENT),actual=weighted[1]!;
+    assert.equal(actual.descriptor.vertex.module.code,expected._vert);assert.equal(actual.descriptor.fragment.module.code,expected._frag);
+    assert.equal(actual.weighted,true);assert.equal(actual.descriptor.depthStencil,undefined);
+    assert.equal(actual.descriptor.multisample.count,1);assert.deepEqual(actual.descriptor.layout,plain[0]!.descriptor.layout);
+    assert.match(textPipelineHeader(weighted),/1u, false, false, false, true/);
+    assert.deepEqual(await composeStandaloneTextPipelines(false),plain,"opt-in composition restores the previous resolver");
 });

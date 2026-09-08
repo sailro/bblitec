@@ -5,7 +5,7 @@ import { readAssetBytesSync } from "../asset-bytes-sync.js";
 import { compileStaticNumber, type PositiveIntegerContext } from "../option-helpers.js";
 import type { CompileAsset, ResolvedCompileOptions, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { pinnedHandleKind } from "../data-types.js";
+import { pinnedHandleKind, type DataType } from "../data-types.js";
 import { retainTextValue } from "../text-surface.js";
 
 export interface TextIntrinsicContext extends IntrinsicCallContext, PositiveIntegerContext {
@@ -21,6 +21,8 @@ export interface TextIntrinsicContext extends IntrinsicCallContext, PositiveInte
     pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
     compileNumber(expression: ts.Expression, precision?: "float" | "double"): string;
     compileBoolean(expression: ts.Expression): string;
+    compileForDataSink(expression: ts.Expression, dataType: DataType): string;
+    compileColor4(expression: ts.Expression): string;
     readonly checker: ts.TypeChecker;
     assertTextPipelineMutable(node: ts.Node): void;
     recordTextAttachment(node: ts.Node): void;
@@ -29,6 +31,99 @@ export interface TextIntrinsicContext extends IntrinsicCallContext, PositiveInte
 }
 
 export function compileTextIntrinsic(context: TextIntrinsicContext, name: string, call: ts.CallExpression): Value | undefined {
+    if (name === "setFontWeightOffset") {
+        context.expectArgumentCount(call,3,3);
+        const data=context.compileValue(call.arguments[0]!);
+        context.expectKind(data,"text-data",call.arguments[0]!);
+        const owner=retainTextValue(context,data);
+        const run=context.allocateTemporaryCppName("text_run_ref");
+        context.emit(`const auto ${run}=${context.compileForDataSink(call.arguments[1]!,{kind:"handle",handle:"text-run-ref"})};`);
+        const offset=context.compileNumber(call.arguments[2]!,"double");
+        promoteLiveTextData(context);
+        context.reachFeature("text:layout",call);context.reachFeature("text:weight",call);
+        return {kind:"void",cpp:`bbl::set_font_weight_offset(${owner.cpp},${run},${offset})`};
+    }
+    if (name === "updateTextData") {
+        context.expectArgumentCount(call,2,2);
+        const data = context.compileValue(call.arguments[0]!);
+        context.expectKind(data,"text-data",call.arguments[0]!);
+        const owner = retainTextValue(context,data);
+        let operation: string | undefined, previous: Value | undefined, run: string | undefined;
+        for (const [name, expression] of textOptionEntries(context,call.arguments[1])) {
+            if (name === "update") operation = context.compileStaticString(expression);
+            else if (name === "previous") {
+                const value=context.compileValue(expression);
+                context.expectKind(value,"text-run",expression);
+                previous=retainTextValue(context,value);
+            } else if (name === "run") {
+                const record=context.unwrap(expression);
+                if (!ts.isObjectLiteralExpression(record) || record.properties.length !== 2 ||
+                    !ts.isSpreadAssignment(record.properties[0]!) || !ts.isPropertyAssignment(record.properties[1]!) ||
+                    record.properties[1]!.name.getText() !== "defaultColor")
+                    context.fail(expression,"Text run replacement requires a retained run spread followed by defaultColor.");
+                const source=context.compileValue(record.properties[0]!.expression);
+                context.expectKind(source,"text-run",record.properties[0]!);
+                const retained=retainTextValue(context,source);
+                const color=context.compileForDataSink(record.properties[1]!.initializer,{kind:"tuple",arity:4});
+                const name=context.allocateTemporaryCppName("text_run");
+                context.emit(`auto ${name}=bbl::clone_text_run(${retained.cpp}, ${color});`);
+                run=name;
+            } else context.fail(expression,`Text data update property '${name}' is not represented.`);
+        }
+        if (operation !== "replaceRun" || !previous || !run) context.fail(call,"Text data updates currently require replaceRun with a retained previous run and color replacement.");
+        promoteLiveTextData(context);
+        context.reachFeature("text:layout",call);
+        return {kind:"void",cpp:`bbl::replace_default_text_run(${owner.cpp}, ${previous.cpp}, ${run})`};
+    }
+    if (name === "createTextLayer") {
+        context.expectArgumentCount(call, 1, 2);
+        const data = context.compileValue(call.arguments[0]!);
+        context.expectKind(data, "text-data", call.arguments[0]!);
+        const owner = retainTextValue(context, data);
+        const options = context.allocateTemporaryCppName("text_layer_options");
+        context.emit(`bbl::TextLayerOptions ${options};`);
+        for (const [field, value] of textOptionEntries(context, call.arguments[1])) {
+            const native = ({ positionPx: "position_px", rotationRad: "rotation_rad", coverageGamma: "coverage_gamma" } as Record<string,string>)[field] ?? field;
+            if (field === "positionPx") {
+                const components = textOptionEntries(context, value);
+                if (components.length !== 2 || !components.every(([name]) => name === "x" || name === "y") || new Set(components.map(([name]) => name)).size !== 2)
+                    context.fail(value, "Text layer position requires x and y components.");
+                for (const [axis, component] of components) context.emit(`${options}.${native}.${axis} = ${context.compileNumber(component, "double")};`);
+            } else if (["rotationRad", "scale", "order", "opacity", "coverageGamma", "visible"].includes(field)) {
+                context.emit(`${options}.${native} = ${field === "visible" ? context.compileBoolean(value) : context.compileNumber(value, "double")};`);
+            } else context.fail(value, `Text layer option '${field}' is not represented.`);
+        }
+        context.reachFeature("text:data", call);
+        context.reachFeature("renderer:text", call);
+        return { kind: "text-layer", cpp: `bbl::create_text_layer(${owner.cpp}, ${options})`, dataType: { kind: "handle", handle: "text-layer" } };
+    }
+    if (name === "createTextRenderer") {
+        context.expectArgumentCount(call, 2, 2);
+        const engine = context.compileValue(call.arguments[0]!);
+        context.expectKind(engine, "engine", call.arguments[0]!);
+        const options = context.allocateTemporaryCppName("text_renderer_options");
+        context.emit(`bbl::TextRendererOptions ${options};`);
+        let hasLayers = false;
+        for (const [field, value] of textOptionEntries(context, call.arguments[1])) {
+            if (field === "layers") {
+                context.emit(`${options}.layers = bbl::js::array_to_vector(${context.compileForDataSink(value, {kind:"vector",element:{kind:"handle",handle:"text-layer"}})});`);
+                hasLayers = true;
+            } else if (field === "clear") context.emit(`${options}.clear = ${context.compileBoolean(value)};`);
+            else if (field === "clearValue") context.emit(`${options}.clear_value = ${context.compileColor4(value)};`);
+            else context.fail(value, `Text renderer option '${field}' is not represented.`);
+        }
+        if (!hasLayers) context.fail(call, "Text renderer requires a layer array.");
+        context.reachFeature("renderer:text", call);
+        return { kind: "text-renderer", cpp: `bbl::create_text_renderer(${engine.cpp}, ${options})`, engineCpp: engine.cpp,
+            dataType: { kind: "handle", handle: "text-renderer" } };
+    }
+    if (name === "registerTextRenderer") {
+        context.expectArgumentCount(call,1,1);
+        const value = context.compileValue(call.arguments[0]!);
+        context.expectKind(value,"text-renderer",call.arguments[0]!);
+        context.reachFeature("renderer:text",call);
+        return { kind:"void", cpp:`bbl::register_text_renderer(${value.cpp})` };
+    }
     if (name === "updateDefaultTextData") {
         context.expectArgumentCount(call, 2, 3);
         const owner = context.compileValue(call.arguments[0]!);
@@ -37,12 +132,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
         const text = context.compileValue(call.arguments[1]!);
         expectTextString(context, text, call.arguments[1]!);
         if (call.arguments[2] && !omitted(context, call.arguments[2]!)) context.fail(call.arguments[2]!, "Live text color arguments are not yet represented.");
-        for (const row of context.reachedTextData) {
-            if (row.layout.live) continue;
-            const payload = context.assetPayloads.get(row.font.source) ?? row.font.source;
-            const bytes = readAssetBytesSync(payload, context.options.fileName);
-            Object.assign(row, textRow(context, bytes, { ...row.layout, live: true }, row.font, row.id));
-        }
+        promoteLiveTextData(context);
         context.reachFeature("text:layout", call);
         return { kind: "void", cpp: `bbl::update_default_text_data(${retained.cpp}, ${text.cpp})` };
     }
@@ -116,13 +206,16 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     const font = context.compileValue(call.arguments[0]!);
     context.expectKind(font, "text-font", call.arguments[0]!);
     const fontSizePx = finiteNumber(context, call.arguments[1]!, "Text font size");
-    const textValue = context.compileValue(call.arguments[2]!);
+    const textInput = context.compileValue(call.arguments[2]!);
+    const textValue = textInput.staticString === undefined
+        ? context.pinValueToTemporary(textInput,"text_content",call.arguments[2]!) : textInput;
     expectTextString(context, textValue, call.arguments[2]!);
     // A retained helper can accept any TextData owner, including one created
     // after that helper was lowered. Keep later owners eligible for live input.
     const live = textValue.staticString === undefined || context.reachedTextData.some(row => row.layout.live);
     const layout: StaticTextLayout = { fontSizePx, text: textValue.staticString ?? "", ...(live ? { live: true } : {}) };
     const color = call.arguments[3];
+    let liveColor: string | undefined;
     if (color && !omitted(context, color)) {
         const node = context.resolveStaticExpression(color);
         const retained = ts.isIdentifier(node) ? context.lookupOptional(node) : undefined;
@@ -132,6 +225,9 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
                 context.fail(color, "Static text color requires four known numeric components; mutated or dynamic arrays are not materialized.");
             }
             layout.color = elements.map((value) => value.staticNumber!);
+        } else if (ts.isCallExpression(context.unwrap(color))) {
+            liveColor = context.compileForDataSink(color, { kind: "tuple", arity: 4 });
+            layout.live = true;
         } else {
             const array = context.expectStaticArrayLiteral(color);
             if (array.elements.length !== 4) context.fail(color, "Static text color requires four numeric components.");
@@ -165,7 +261,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     context.reachedTextData.push(row);
     context.reachFeature("text:data", call);
     if (layout.live) context.reachFeature("text:layout", call);
-    return { kind: "text-data", cpp: layout.live ? `bbl::create_live_text_data(${row.id}, ${textValue.cpp})` : `bbl::create_compiled_text_data(${row.id})`,
+    return { kind: "text-data", cpp: layout.live ? `bbl::create_live_text_data(${row.id}, ${textValue.cpp}${liveColor ? `, ${liveColor}` : ""})` : `bbl::create_compiled_text_data(${row.id})`,
         dataType: { kind: "handle", handle: "text-data" } };
 }
 
@@ -173,6 +269,26 @@ function expectTextString(context: TextIntrinsicContext, value: Value, node: ts.
     if (value.kind !== "string" && !(value.kind === "data" && value.dataType?.kind === "string")) {
         context.fail(node, `Text content requires a string, received ${value.kind}.`);
     }
+}
+
+export function promoteLiveTextData(context: TextIntrinsicContext): void {
+    for (const row of context.reachedTextData) {
+        if (row.layout.live) continue;
+        const payload = context.assetPayloads.get(row.font.source) ?? row.font.source;
+        const bytes = readAssetBytesSync(payload, context.options.fileName);
+        Object.assign(row, textRow(context, bytes, { ...row.layout, live: true }, row.font, row.id));
+    }
+}
+
+function textOptionEntries(context: TextIntrinsicContext, expression?: ts.Expression): Array<readonly [string, ts.Expression]> {
+    if (!expression || omitted(context, expression)) return [];
+    const object = context.unwrap(expression);
+    if (!ts.isObjectLiteralExpression(object)) context.fail(expression, "Text options require a direct object literal.");
+    return object.properties.map(property => {
+        if (!ts.isPropertyAssignment(property) || (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name)))
+            context.fail(property, "Text options require named property assignments.");
+        return [property.name.text, property.initializer];
+    });
 }
 
 function textRow(context: TextIntrinsicContext, fontBytes: Uint8Array, layout: StaticTextLayout, font: CompiledTextData["font"], id: number): CompiledTextData {

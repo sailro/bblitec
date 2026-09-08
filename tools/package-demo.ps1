@@ -306,6 +306,9 @@ if ($uiReached) {
         throw "RmlUi license not found: $rmluiLicense. Rebuild the RmlUi library (tools/build-rmlui.ps1 -StaticRuntime)."
     }
     Copy-Item $rmluiLicense (Join-Path $licenses "RmlUi.txt")
+    foreach ($uiNotice in @("Skia", "Chromium")) {
+        Copy-Item (Join-Path $root "native\notices\$uiNotice.txt") (Join-Path $licenses "$uiNotice.txt")
+    }
 }
 if ($audioReached) {
     $labSoundDir = $cache["BBLITE_LABSOUND_DIR"]

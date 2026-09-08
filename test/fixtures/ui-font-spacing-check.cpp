@@ -6,6 +6,7 @@
 #include <RmlUi/Core/ElementScroll.h>
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_text.hpp"
+#include "pal_ui_range.hpp"
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -74,6 +75,8 @@ int main() {
     Rml::SetSystemInterface(&system);
     Rml::SetRenderInterface(&recorder);
     assert(Rml::Initialise());
+    bbl::pal::UiRangeDecoratorInstancer ranges;
+    Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &ranges);
     const auto font = bbl::pal::find_system_font("Segoe UI", 400);
     assert(font);
     assert(Rml::LoadFontFace(font->path.string(), "fixture", Rml::Style::FontStyle::Normal,

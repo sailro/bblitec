@@ -25,6 +25,9 @@
 #include "pal_platform_events.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
+#if BBLITE_HAS_TEXT_RENDERER
+#include "pal_sdl_gpu_text_renderer.hpp"
+#endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
 #include "pal_sdl_gpu_sprite.hpp"
@@ -35,7 +38,7 @@
 
 namespace bbl::pal {
 
-#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER
 
 bool run_sprite_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
@@ -44,7 +47,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
         "SDL_GPU sprites",
         /*supports_single_sample=*/true,
         /*supports_copy_task=*/false);
-    const bool canvas_only = engine.registered_sprite_renderers.empty();
+    const bool canvas_only = engine.registered_sprite_renderers.empty() && engine.registered_text_renderers.empty();
     if (canvas_only
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         && engine.primary_canvas.value >= engine.ui_elements.size()
@@ -59,6 +62,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
     SDL_GPUTexture* color = nullptr;
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
+#if BBLITE_HAS_TEXT_RENDERER
+    std::unique_ptr<SdlTextRenderer> text_renderer;
+#endif
 #if BBLITE_HAS_SPRITE_RENDERER
     std::vector<SpritePass> passes;
     std::vector<SDL_GPUTexture*> render_textures;
@@ -68,6 +74,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
     SpriteUiSdlResources ui_resources;
 #endif
     const auto release = [&]() {
+#if BBLITE_HAS_TEXT_RENDERER
+        text_renderer.reset();
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         if (device) {
             release_sprite_ui_sdl_resources(device, ui_resources);
@@ -98,6 +107,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
         device_options.gpu_debug = frame_options.gpu_debug;
         create_sdl_gpu_device(engine.options, device_options, gpu);
         const SDL_GPUTextureFormat swapchain_format = gpu.swapchain_format;
+#if BBLITE_HAS_TEXT_RENDERER
+        text_renderer=std::make_unique<SdlTextRenderer>(device,!frame_options.render_capture_path.empty());
+#endif
         // One batch for the run: its transfer buffer persists across
         // frames, so a per-frame sprite mutation stages its dirty span
         // and shares one copy-pass submission instead of paying a
@@ -215,6 +227,14 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 frame_clock,
                 frame_options.frame_delta_ms);
             const double frame_start = monotonic_milliseconds();
+#if BBLITE_HAS_TEXT_RENDERER
+            text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+            int text_width=0,text_height=0;
+            SDL_GetWindowSizeInPixels(window,&text_width,&text_height);
+            SdlStandaloneTextOps text_ops(*text_renderer,swapchain_format);
+            for(const auto& renderer:engine.registered_text_renderers)
+                update_text_renderer(*renderer,text_width,text_height,device,text_ops);
+#endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
             sync_render_textures();
@@ -264,8 +284,6 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !frame_options.screenshot_path.empty();
-            captures.maybe_write_standalone_render_capture(
-                "sdl_gpu", engine, width, height, frame);
 
             // Rendered offscreen and blitted only on a capture run,
             // because a swapchain texture cannot be read back for the
@@ -297,6 +315,10 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(command, &target, 1, nullptr);
                 SDL_EndGPURenderPass(pass);
             }
+#if BBLITE_HAS_TEXT_RENDERER
+            text_ops.command=command;text_ops.target=capture_run?color:swapchain;
+            for(const auto& renderer:engine.registered_text_renderers)record_text_renderer(*renderer,text_ops);
+#endif
 #if BBLITE_HAS_SPRITE_RENDERER
             for (std::size_t first_index = 0;
                  first_index < passes.size();) {
@@ -357,6 +379,12 @@ bool run_sprite_gpu_engine(Engine& engine) {
                     ui_frame);
             }
 #endif
+
+            captures.maybe_write_standalone_render_capture("sdl_gpu",engine,width,height,frame
+#if BBLITE_HAS_TEXT_RENDERER
+                ,&text_renderer->owner->capture
+#endif
+            );
 
             if (capture_run) {
                 SDL_GPUBlitInfo blit{};

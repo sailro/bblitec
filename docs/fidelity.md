@@ -242,6 +242,9 @@ Generation runs the pinned extractor/atlas packer over the complete font reperto
 atlas allocation and indices therefore precede input. DefaultTextData keeps its
 single run, slot reuse, dirty ranges, palette versions and live dimensions.
 
+Standalone layers retain source affine uniforms, per-layer caches and immutable bundle commands.
+Weight variants use the pinned composed shader; single-run color replacement retains the supplied tuple.
+
 Group caches belong to TextData. Shared data can retain the first renderable's
 UBO/style bindings until source invalidation rebuilds a group. Disposal releases
 the appropriate buffer/atlas leases while retained CPU data follows source

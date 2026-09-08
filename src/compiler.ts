@@ -2,7 +2,8 @@ import ts from "typescript";
 import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
-import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
+import { compileTextModuleValue, compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
+import { promoteLiveTextData } from "./compiler/intrinsics/text.js";
 import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
 import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
@@ -2033,6 +2034,11 @@ class Compiler
         if (this.isRuntimeResourceConstruction() || this.textAttachmentReached || this.engineStartMark !== undefined) {
             this.fail(node, "Text pipeline/order changes require definite initialization before text attachment; live pipeline rebinding and list rebuilding are not represented.");
         }
+    }
+
+    public promoteTextData(node: ts.Node): void {
+        promoteLiveTextData(this);
+        this.reachFeature("text:layout", node);
     }
 
     public recordTextAttachment(node: ts.Node): void {
@@ -9115,7 +9121,9 @@ class Compiler
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
-            value = this.compileNodeInputMutation(expression) ?? this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
+            const unwrapped = this.unwrap(expression);
+            const importedText = ts.isPropertyAccessExpression(unwrapped) ? compileTextModuleValue(this, unwrapped) : undefined;
+            value = importedText ?? this.compileNodeInputMutation(expression) ?? this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
         } finally {
             this.nativeDependencyStack.pop();
         }

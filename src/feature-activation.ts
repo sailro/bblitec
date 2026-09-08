@@ -165,6 +165,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "text:data": { provenance: "src/text/default-text-data.ts#createDefaultTextData", consumers: CMAKE },
     "text:layout": { provenance: "src/text/layout.ts#layoutText + src/text/default-text-data.ts#updateDefaultTextData", consumers: CMAKE },
     "text:renderable": { provenance: "src/text/text-renderable.ts#createTextRenderable + addTextRenderable", consumers: CMAKE },
+    "renderer:text": { provenance: "src/text/text-renderer.ts#createTextRenderer + registerTextRenderer", consumers: CMAKE },
+    "text:weight": { provenance: "src/text/set-font-weight-offset.ts#setFontWeightOffset", consumers: CMAKE },
     "animation:gltf-groups": {
         provenance:
             "src/animation/animation-group.ts (playAnimation, pauseAnimation, " +

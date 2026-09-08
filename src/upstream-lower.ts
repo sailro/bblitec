@@ -13,6 +13,8 @@ import { TextLowerer } from "./lowering/text-lowerer.js";
 import { TextLayoutLowerer } from "./lowering/text-layout-lowerer.js";
 import { TextDataUpdateLowerer } from "./lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "./lowering/text-gpu-lowerer.js";
+import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
+import { TextWeightLowerer } from "./lowering/text-weight-lowerer.js";
 import { cameraChangeKeyHeader } from "./lowering/camera-change-key-lowerer.js";
 import type { CompiledTextData } from "./pinned-text-data.js";
 import type { ComposedTextPipeline } from "./pinned-text-pipeline.js";
@@ -752,6 +754,10 @@ class GeneratedSourceWriter {
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        if (features.includes("renderer:text")) {
+            const unsupported = features.find(feature => /^(renderer:(scene|sprite|canvas|frame-graph)|text:renderable|camera:|mesh:|material:|sprite:)/.test(feature));
+            if (unsupported) throw new Error(`Standalone text rendering with '${unsupported}' requires unrepresented merged draw ordering${refusalReachedFrom(options.featureSites, unsupported)}.`);
+        }
         if (features.includes("text:renderable")) {
             const unsupported = features.find((feature) =>
                 /^(material:|mesh:|loader:|sprite:|particle:|animation:|background:|shadow:|light:clustered|frame-graph:|effect:|platform:workers|renderer:(frame-graph|post-process|screen-space|geometry-output|transmission|sprite|canvas|effect|high-precision-matrix|floating-origin)|camera:(default|geospatial|orthographic))/.test(feature));
@@ -1118,6 +1124,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             if (features.includes("text:layout")) {
                 this.tree.write("upstream/include/bblite/upstream_text_layout.hpp", new TextLayoutLowerer(context).header());
                 this.tree.write("upstream/include/bblite/upstream_text_update.hpp", new TextDataUpdateLowerer(context).header());
+                if(features.includes("text:weight"))this.tree.write("upstream/include/bblite/upstream_text_weight.hpp",new TextWeightLowerer(context).header());
             }
             this.writeSource("upstream/src/text_data.cpp", {
                 modulePath: "src/text/default-text-data.ts",
@@ -1515,10 +1522,11 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
              */
             entryPoint?: string;
         }> = [];
-        if (features.includes("text:renderable")) {
+        if (features.includes("text:renderable") || features.includes("renderer:text")) {
             const pipelines = options.textPipelines ?? [];
             this.tree.write("upstream/include/bblite/upstream_text_gpu.hpp", new TextGpuLowerer(context).header());
-            this.tree.write("upstream/include/bblite/upstream/camera_change_key.hpp", cameraChangeKeyHeader(context));
+            if (features.includes("text:renderable")) this.tree.write("upstream/include/bblite/upstream/camera_change_key.hpp", cameraChangeKeyHeader(context));
+            if (features.includes("renderer:text")) this.tree.write("upstream/include/bblite/upstream_text_renderer.hpp", new TextRendererLowerer(context).header());
             this.tree.write("upstream/include/bblite/upstream_text_pipeline.hpp", textPipelineHeader(pipelines));
             for (const [index, pipeline] of pipelines.entries()) for (const stage of ["vertex", "fragment"] as const) {
                 composedShaders.push({ output: `upstream/shaders/${textPipelineStem(index, stage)}.native.wgsl`,

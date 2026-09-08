@@ -90,6 +90,7 @@
 #include <cstdio>
 
 namespace bbl::pal {
+class TextGpuCapture;
 
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
 inline thread_local Engine* draw_count_engine = nullptr;
@@ -6348,7 +6349,8 @@ public:
         const Engine& engine,
         std::uint32_t width,
         std::uint32_t height,
-        long frame);
+        long frame,
+        TextGpuCapture* text_capture = nullptr);
 
     /** Whether this run was asked for any capture at all. */
     [[nodiscard]] bool requested() const {

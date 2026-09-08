@@ -1800,8 +1800,10 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
     json.end_array();
 }
 
+#endif // BBLITE_HAS_PBR_RENDERER (scene state writers)
+
 /**
- * Write the whole frame of a scene.
+ * Write captured device resources and commands.
  *
  * Called from each backend's scene frame loop at the frame the screenshot
  * is taken, so the capture describes the image that was measured rather
@@ -1936,6 +1938,7 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
 }
 #endif
 
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 inline void write_render_capture(
     const std::string& path,
     const char* backend,
@@ -2269,7 +2272,7 @@ inline void write_render_capture(
 #if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
     (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) || \
     (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) || \
-    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER)
+    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) || BBLITE_HAS_TEXT_RENDERER
 /**
  * Write the frame of a scene with no scene renderer.
  *
@@ -2290,7 +2293,8 @@ inline void write_standalone_render_capture(
     const Engine& engine,
     int width,
     int height,
-    long frame) {
+    long frame,
+    [[maybe_unused]] TextGpuCapture* text_capture) {
     (void)engine;
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
@@ -2302,6 +2306,9 @@ inline void write_standalone_render_capture(
     json.field("backend", backend);
     json.field("buildStamp", bblite_build_stamp());
     json.field("frame", static_cast<int>(frame));
+#if BBLITE_HAS_TEXT
+    if(text_capture){json.key("textGpu");write_text_gpu_capture(json,*text_capture);text_capture->stop();}
+#endif
     json.key("viewport");
     json.begin_object();
     json.field("width", width);
@@ -2353,13 +2360,14 @@ inline void write_standalone_render_capture(
 #if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
     (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) || \
     (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) || \
-    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER)
+    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) || BBLITE_HAS_TEXT_RENDERER
 inline void CaptureGate::maybe_write_standalone_render_capture(
     const char* backend,
     const Engine& engine,
     std::uint32_t width,
     std::uint32_t height,
-    long frame) {
+    long frame,
+    TextGpuCapture* text_capture) {
     if (frame < options_->screenshot_frame ||
         render_capture_saved ||
         options_->render_capture_path.empty()) {
@@ -2371,7 +2379,7 @@ inline void CaptureGate::maybe_write_standalone_render_capture(
         engine,
         static_cast<int>(width),
         static_cast<int>(height),
-        frame);
+        frame,text_capture);
     render_capture_saved = true;
 }
 #endif // standalone renderers (CaptureGate::maybe_write_standalone_render_capture)
@@ -2386,9 +2394,9 @@ inline void write_render_capture(
     const upstream::RenderPlan&, const std::array<float, 16>&, int, int, long,
     TextGpuCapture* = nullptr, NodeGpuCapture* = nullptr) {}
 #endif
-#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER || BBLITE_HAS_FRAME_GRAPH_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER || BBLITE_HAS_FRAME_GRAPH_RENDERER || BBLITE_HAS_TEXT_RENDERER
 inline void CaptureGate::maybe_write_standalone_render_capture(
-    const char*, const Engine&, std::uint32_t, std::uint32_t, long) {}
+    const char*, const Engine&, std::uint32_t, std::uint32_t, long, TextGpuCapture*) {}
 #endif
 } // namespace bbl::pal
 #endif // BBLITE_VISUAL_CAPTURE

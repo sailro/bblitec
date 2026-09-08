@@ -11,6 +11,8 @@ import { stringLiteral } from "../src/cpp-literals.js";
 import { parseDataUrl } from "../src/data-url.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
+import { TextRendererLowerer } from "../src/lowering/text-renderer-lowerer.js";
+import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { composeDefaultTextPipelines, textPipelineHeader } from "../src/pinned-text-pipeline-cpp.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
@@ -23,7 +25,8 @@ writeFileSync(resolve(directory, "Roboto-Regular.ttf"), readAssetBytesSync(resol
 const source = (body: string) => `import { createEngine,loadFont,createDefaultTextData,createTextRenderable,
     disposeTextRenderable,disposeDefaultTextData,addTextRenderable,createSceneContext,setAlphaToCoverage,getAlphaToCoverage,
     createFreeCamera,attachFreeControl,onBeforeRender,registerScene,disposeScene,unregisterScene,rebuildSceneRenderables,
-    type TextRenderable,type DefaultTextData } from "@babylonjs/lite";
+    createTextLayer,createTextRenderer,registerTextRenderer,updateTextData,
+    type TextLayer,type TextRenderable,type DefaultTextData } from "@babylonjs/lite";
 async function main(){const engine=await createEngine({});const font=await loadFont("./Roboto-Regular.ttf");${body}}`;
 const compile = (body: string) => compileSource(source(body), { fileName });
 const setup = `const data=createDefaultTextData(font,18,"Hi");const r=createTextRenderable(data);`;
@@ -75,6 +78,23 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
         { const local=createTextRenderable(data);const vector=local.position;
           retained=()=>{vector.x+=2;return vector.x;}; }
         if(retained()!==2||retained()!==4)throw new Error("escaped owner");
+        let chosenData=data;
+        function changeLayerData():number{chosenData=separate;return 3;}
+        const layer=createTextLayer(chosenData,{scale:changeLayerData(),positionPx:{x:5,y:6}});
+        if(layer.data!==data||layer.scale!==3)throw new Error("layer data before options");
+        const alternate=createTextLayer(data);
+        let chosenLayer:TextLayer=layer;
+        function changeLayer():number{chosenLayer=alternate;return 4;}
+        chosenLayer.positionPx.x+=changeLayer();
+        if(layer.positionPx.x!==9||alternate.positionPx.x!==0)throw new Error("layer receiver before RHS");
+        const layers:TextLayer[]=[layer,alternate];
+        function sameLayer(value:TextLayer):TextLayer{return value;}
+        sameLayer(layers[0]!).opacity=.25;
+        if(layer.opacity!==.25||layer===alternate)throw new Error("layer retained identity");
+        let escapedLayer:()=>number=()=>0;
+        {const local=createTextLayer(data);const position=local.positionPx;
+         escapedLayer=()=>{position.y+=7;return position.y;};}
+        if(escapedLayer()!==7||escapedLayer()!==14)throw new Error("escaped layer vector");
         disposeTextRenderable(r);
         if(r._data!==data||identity(list[0]!)!==r)throw new Error("renderable disposal identity");
         disposeDefaultTextData(data);
@@ -84,19 +104,22 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
     const textData = await importPinnedModule<Record<string, unknown>>("text/default-text-data.js");
     const renderable = await importPinnedModule<Record<string, unknown>>("text/text-renderable.js");
     const coverage = await importPinnedModule<Record<string, unknown>>("render/alpha-to-coverage.js");
+    const standalone = await importPinnedModule<Record<string, unknown>>("text/text-renderer.js");
     const font = createFontFromBuffer(Uint8Array.from(readAssetBytesSync(resolveBundledAsset("/fonts/Roboto-Regular.ttf"), fileName)).buffer);
     const js = ts.transpileModule(source(body).replace(/^import[\s\S]*?from "@babylonjs\/lite";/, "") + "\nreturn main();", {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    await new Function("createEngine", "loadFont", "createDefaultTextData", "createTextRenderable", "disposeTextRenderable", "disposeDefaultTextData", "setAlphaToCoverage", "getAlphaToCoverage", js)(
+    await new Function("createEngine", "loadFont", "createDefaultTextData", "createTextRenderable", "disposeTextRenderable", "disposeDefaultTextData", "setAlphaToCoverage", "getAlphaToCoverage", "createTextLayer", js)(
         async () => ({}), async () => font, textData.createDefaultTextData, renderable.createTextRenderable,
-        renderable.disposeTextRenderable, textData.disposeDefaultTextData, coverage.setAlphaToCoverage, coverage.getAlphaToCoverage);
+        renderable.disposeTextRenderable, textData.disposeDefaultTextData, coverage.setAlphaToCoverage, coverage.getAlphaToCoverage, standalone.createTextLayer);
     const result = compile(body);
     writeFileSync(resolve(directory, "program.hpp"), result.cpp);
     const include = resolve(directory, "bblite");
     mkdirSync(resolve(include, "upstream"), { recursive: true });
     const lowerer = new TextLowerer(new LoweringContext());
     writeFileSync(resolve(include, "upstream_text.hpp"), lowerer.header());
+    writeFileSync(resolve(include, "upstream_text_gpu.hpp"), new TextGpuLowerer(new LoweringContext()).header());
+    writeFileSync(resolve(include, "upstream_text_renderer.hpp"), new TextRendererLowerer(new LoweringContext()).header());
     writeFileSync(resolve(include, "upstream/text_data.hpp"), "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl {TextData create_compiled_text_data(std::uint32_t);}\n");
     const pipelines = await composeDefaultTextPipelines();
     writeFileSync(resolve(include, "upstream_text_pipeline.hpp"), textPipelineHeader(pipelines));
@@ -146,6 +169,12 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
         [`${setup} const scene=createSceneContext(engine);rebuildSceneRenderables(scene);`, /binding topology/],
         [`${setup} const scene=createSceneContext(engine,{defaultRenderTask:false});addTextRenderable(scene,r);await registerScene(scene);`, /default scene render task/],
         [`const scene=createSceneContext(engine,{defaultRenderTask:false});${setup}addTextRenderable(scene,r);await registerScene(scene);`, /default scene render task/],
+        [`${setup} createTextLayer(data,{positionPx:{x:1}});`, /x and y components/],
+        [`${setup} const layer=createTextLayer(data);layer.data=data;`, /read-only|replacement/],
+        [`${setup} const layer=createTextLayer(data);layer.positionPx={x:1,y:2};`, /read-only|replacement/],
+        [`${setup} createTextRenderer(engine,{clear:true});`, /requires a layer array/],
+        [`${setup} updateTextData(data,{update:"reset"});`, /require replaceRun/],
+        [`${setup} const previous=data.runs[0]!;updateTextData(data,{update:"replaceRun",previous:previous,run:{...previous}});`, /spread followed by defaultColor/],
     ] as const) assert.throws(() => compile(body), diagnostic);
 });
 

@@ -1473,6 +1473,12 @@
       "upstreamPath": "lab/lite/src/lite/scene181.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene181.ts",
       "sha256": "3a92dce31d37cac4e9b4e8fcab444d67e7b1dae72c1ba6801b0dc8f50874569e"
+    },
+    {
+      "id": "scene180",
+      "upstreamPath": "lab/lite/src/lite/scene180.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
+      "sha256": "b001d71298d739cdcf9734854b1e0b9db88f45c1b89b4c1fd4d419f343dde9e1"
     }
   ],
   "modules": [
@@ -1760,6 +1766,11 @@
       "upstreamPath": "lab/lite/scene181.html",
       "source": "corpus/babylon-lite/lab/lite/scene181.html",
       "sha256": "c5eb1e8486ce360b7c8c2faf278878aa79301d0361dfaf2e84786e5ead0ed468"
+    },
+    {
+      "upstreamPath": "lab/lite/scene180.html",
+      "source": "corpus/babylon-lite/lab/lite/scene180.html",
+      "sha256": "3e0228b08f2eaf4ca6ce80bcb33d245a613b882defc0c38e1b45cfd7859881a9"
     }
   ],
   "staged": [
@@ -1782,11 +1793,6 @@
       "upstreamPath": "lab/lite/src/lite/scene105.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene105.ts",
       "sha256": "73cfaaffd6608f65defaf93e3695b8c1ecb131852b2e3eb02c365553e88c269d"
-    },
-    {
-      "upstreamPath": "lab/lite/src/lite/scene180.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
-      "sha256": "b001d71298d739cdcf9734854b1e0b9db88f45c1b89b4c1fd4d419f343dde9e1"
     },
     {
       "upstreamPath": "lab/lite/src/lite/scene187-debug.ts",

@@ -34,6 +34,7 @@ export class TextLowerer {
             auto live = std::make_shared<bbl::TextLiveData>();
             live->font = bbl::pal::create_text_layout_font(bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(data.font.assetOutput)})));
             live->font_size = ${data.layout.fontSizePx};
+            live->initial_text = ${cppStringLiteral(data.layout.text)};
             live->options = {${options?.maxWidth ?? "std::numeric_limits<double>::infinity()"}, ${options?.lineHeight ?? 1.2}, ${cppStringLiteral(options?.align ?? "left")}, ${options?.letterSpacing ?? 0}, ${options?.tabSize ?? 4}};
             live->glyph_slots = {${data.live.glyphSlots.join(",")}};
             live->slots = {${data.live.slots.join(",")}};

@@ -1,5 +1,6 @@
 #pragma once
 #include <bblite/text.hpp>
+#include <bblite/js_data.hpp>
 #include <cstdint>
 #include <string_view>
 
@@ -27,15 +28,23 @@ struct TextLayoutResult {
     std::vector<TextPlacedGlyph> glyphs;
     double pixels_per_font_unit = 0, width = 0, height = 0;
 };
+struct TextRunState {
+    TextLayoutResult layout;
+    js::Tuple<4> color{1,1,1,1};
+    double weight = 0;
+};
 struct TextLiveData {
     std::shared_ptr<TextLayoutFont> font;
     double font_size = 0;
+    std::string initial_text;
     TextLayoutOptions options;
     std::vector<double> glyph_slots, slots, free_slots;
     std::vector<float> instances, styles;
     std::array<double, 4> color{1, 1, 1, 1};
+    double style_param = 0;
     double instance_count = 0, style_count = 0, slot_count = 0;
     double version = 0, style_version = 0, layout_version = 0, dirty_start = 0, dirty_end = 0;
+    std::shared_ptr<std::vector<TextRun>> runs = std::make_shared<std::vector<TextRun>>();
 };
 namespace pal {
 std::shared_ptr<TextLayoutFont> create_text_layout_font(std::span<const std::uint8_t> bytes);

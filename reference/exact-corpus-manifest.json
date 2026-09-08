@@ -1768,6 +1768,16 @@
             "capturedAt": "2026-09-08T05:21:34.366Z",
             "referenceHostPage": "corpus/babylon-lite/lab/lite/scene181.html",
             "referenceHostPageSha256": "c5eb1e8486ce360b7c8c2faf278878aa79301d0361dfaf2e84786e5ead0ed468"
+        },
+        {
+            "id": "scene180",
+            "sourceSha256": "b001d71298d739cdcf9734854b1e0b9db88f45c1b89b4c1fd4d419f343dde9e1",
+            "reference": "reference/scene180/babylon-lite-golden.png",
+            "referenceSha256": "a9ee2489acfae054043d5dec85e2fd5fa094ab73a11d1b5c5590efc2a4e658d0",
+            "moduleSha256": "f3fa02c8dfca325d86103a2f0472593b4b96d270a2afc81393ec9c564ddf973c",
+            "capturedAt": "2026-09-08T07:10:44.545Z",
+            "referenceHostPage": "corpus/babylon-lite/lab/lite/scene180.html",
+            "referenceHostPageSha256": "3e0228b08f2eaf4ca6ce80bcb33d245a613b882defc0c38e1b45cfd7859881a9"
         }
     ]
 }

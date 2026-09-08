@@ -2,7 +2,9 @@
 
 #include "pal_sdl_gpu_text_resources.hpp"
 #include "pal_text_pipeline.hpp"
+#if BBLITE_HAS_TEXT_RENDERABLE
 #include "pal_text_scene.hpp"
+#endif
 #include <map>
 #include <tuple>
 
@@ -25,7 +27,9 @@ struct SdlTextRenderer {
     std::shared_ptr<SdlTextBuffer> quad;
     std::shared_ptr<SdlTextSamplerLease> sampler;
     std::shared_ptr<SdlTextLayout> layout = std::make_shared<SdlTextLayout>();
+#if BBLITE_HAS_TEXT_RENDERABLE
     TextScenePass scene;
+#endif
     std::map<std::tuple<const upstream::TextPipelineInfo*, SDL_GPUTextureFormat, SDL_GPUTextureFormat>,
         std::shared_ptr<SdlTextPipeline>> pipelines;
 

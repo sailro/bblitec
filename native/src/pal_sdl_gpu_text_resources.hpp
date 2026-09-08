@@ -249,10 +249,20 @@ struct SdlTextResourceOps {
         if (owner->capture.enabled()) current_quad = buffer->lease;
     }
     void set_instance_vertex_buffer(const TextGpuState& gpu) {
+        bind_instance_buffer(std::static_pointer_cast<SdlTextRenderableResources>(gpu.backend)->instances);
+    }
+    std::shared_ptr<void> retain_instance_buffer(const TextGpuState& gpu) {
         const auto resources = std::static_pointer_cast<SdlTextRenderableResources>(gpu.backend);
-        const SDL_GPUBufferBinding binding{resources->instances.lease->get(), 0};
+        return std::make_shared<SdlTextBuffer>(resources->instances);
+    }
+    void set_instance_buffer(const std::shared_ptr<void>& buffer) {
+        const auto retained = std::static_pointer_cast<SdlTextBuffer>(buffer);
+        bind_instance_buffer(*retained);
+    }
+    void bind_instance_buffer(const SdlTextBuffer& buffer) {
+        const SDL_GPUBufferBinding binding{buffer.lease->get(), 0};
         SDL_BindGPUVertexBuffers(pass, 1u, &binding, 1u);
-        if (owner->capture.enabled()) current_instances = resources->instances.lease;
+        if (owner->capture.enabled()) current_instances = buffer.lease;
     }
     void set_pipeline(const std::shared_ptr<void>& pipeline) {
         current_pipeline = std::static_pointer_cast<SdlTextPipeline>(pipeline);

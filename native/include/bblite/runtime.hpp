@@ -886,6 +886,8 @@ private:
  */
 struct SceneState;
 struct TextRenderableState;
+struct TextLayerState;
+struct TextRendererState;
 struct TextDataState;
 struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
@@ -4750,6 +4752,7 @@ struct Engine {
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
+    std::vector<std::shared_ptr<TextRendererState>> registered_text_renderers;
     // The same list for the effect half; an effect renderer is its own
     // rendering context on the engine exactly as a sprite renderer is.
     std::vector<EffectRendererHandle> registered_effect_renderers;

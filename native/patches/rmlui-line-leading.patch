@@ -1,0 +1,46 @@
+diff --git a/Source/Core/Layout/InlineBox.cpp b/Source/Core/Layout/InlineBox.cpp
+--- a/Source/Core/Layout/InlineBox.cpp
++++ b/Source/Core/Layout/InlineBox.cpp
+@@ -2,6 +2,7 @@
+ #include "../../../Include/RmlUi/Core/Box.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
+ #include "../../../Include/RmlUi/Core/FontMetrics.h"
++#include <cmath>
+ 
+ namespace Rml {
+ 
+@@ -24,7 +25,7 @@ void InlineBoxBase::GetStrut(float& out_total_height_above, float& out_total_depth_
+ 	const FontMetrics& font_metrics = GetFontMetrics();
+ 	const float line_height = GetElement()->GetLineHeight();
+ 
+-	const float half_leading = 0.5f * (line_height - (font_metrics.ascent + font_metrics.descent));
++	const float half_leading = std::floor(0.5f * (line_height - (font_metrics.ascent + font_metrics.descent)));
+ 	out_total_height_above = font_metrics.ascent + half_leading;
+ 	out_total_depth_below = line_height - out_total_height_above;
+ }
+diff --git a/Source/Core/Elements/WidgetTextInput.cpp b/Source/Core/Elements/WidgetTextInput.cpp
+--- a/Source/Core/Elements/WidgetTextInput.cpp
++++ b/Source/Core/Elements/WidgetTextInput.cpp
+@@ -1,3 +1,4 @@
+ #include "WidgetTextInput.h"
++#include <cmath>
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/Context.h"
+@@ -1256,7 +1257,7 @@ Vector2f WidgetTextInput::FormatText(float height_constraint)
+ 	// Determine the line-height of the text element.
+ 	const float line_height = GetLineHeight();
+ 
+-	const float half_leading = 0.5f * (line_height - (font_metrics.ascent + font_metrics.descent));
++	const float half_leading = std::floor(0.5f * (line_height - (font_metrics.ascent + font_metrics.descent)));
+ 	const float top_to_baseline = font_metrics.ascent + half_leading;
+ 
+ 	// When the selection contains endlines, we expand the selection area by this width.
+@@ -1626,7 +1627,5 @@ float WidgetTextInput::GetLineHeight() const
+ {
+-	// This is rounded to improve the navigation experience in a multi-line text field. If it's not rounded then lines
+-	// may move a single pixel for every line, which looks a bit jaggedy when moving up and down.
+-	return Math::Round(parent->GetLineHeight());
++	return parent->GetLineHeight();
+ }
+ 
+ float WidgetTextInput::GetAvailableWidth() const
