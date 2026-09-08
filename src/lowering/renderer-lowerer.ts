@@ -2336,39 +2336,17 @@ std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
 ${meshTrs.composeWorldBody}    return world;
 }
 
+// The imported clone root's outer transform on the left of a mesh's world,
+// at the composition's own double width: the same pinned Euler-to-quaternion
+// and mat4ComposeInto walk the draw path narrows to f32
+// (outer_transform_matrix), multiplied through the pinned writer's F64 arm.
+// Shadow fitting and floating-origin packing share it, and both subtract an
+// eye from the result before narrowing.
 std::array<double, 16> apply_mesh_outer_transform(
     const MeshRecord& mesh,
     std::array<double, 16> world) {
-    if (
-        mesh.outer_rotation.x != 0.0f ||
-        mesh.outer_rotation.y != 0.0f ||
-        mesh.outer_rotation.z != 0.0f) {
-        const double sin_x = std::sin(static_cast<double>(mesh.outer_rotation.x));
-        const double cos_x = std::cos(static_cast<double>(mesh.outer_rotation.x));
-        const double sin_y = std::sin(static_cast<double>(mesh.outer_rotation.y));
-        const double cos_y = std::cos(static_cast<double>(mesh.outer_rotation.y));
-        const double sin_z = std::sin(static_cast<double>(mesh.outer_rotation.z));
-        const double cos_z = std::cos(static_cast<double>(mesh.outer_rotation.z));
-        for (std::size_t column = 0; column < 4; ++column) {
-            const std::size_t offset = column * 4;
-            const double x0 = world[offset];
-            const double y0 = world[offset + 1];
-            const double z0 = world[offset + 2];
-            const double x1 = x0;
-            const double y1 = y0 * cos_x - z0 * sin_x;
-            const double z1 = y0 * sin_x + z0 * cos_x;
-            const double x2 = x1 * cos_y + z1 * sin_y;
-            const double y2 = y1;
-            const double z2 = -x1 * sin_y + z1 * cos_y;
-            world[offset] = x2 * cos_z - y2 * sin_z;
-            world[offset + 1] = x2 * sin_z + y2 * cos_z;
-            world[offset + 2] = z2;
-        }
-    }
-    world[12] += static_cast<double>(mesh.outer_position.x);
-    world[13] += static_cast<double>(mesh.outer_position.y);
-    world[14] += static_cast<double>(mesh.outer_position.z);
-    return world;
+    return outer_transform_product(
+        mesh.outer_position, mesh.outer_rotation, world);
 }
 
 ${options.floatingOrigin
@@ -2497,22 +2475,17 @@ PbrUniforms build_pbr_uniforms(
             return;
         }
         const LightRecord& light = engine.lights[handle.value];
-        const Vec3 matrix_direction{
+        // Every pinned light with an orientation writes its lane as its
+        // world matrix's third column, as stored (src/light/directional-light.ts,
+        // src/light/spot-light.ts and src/light/hemispheric.ts _writeLightUbo:
+        // \`data[o] = w[8]\`): localMatrixFromDirection already normalized
+        // that column, and the pin neither renormalizes it nor substitutes
+        // the record's direction for it.
+        const Vec3 direction{
             light.local_matrix[8],
             light.local_matrix[9],
             light.local_matrix[10],
         };
-        const float matrix_length = std::sqrt(
-            matrix_direction.x * matrix_direction.x +
-            matrix_direction.y * matrix_direction.y +
-            matrix_direction.z * matrix_direction.z);
-        const Vec3 direction = matrix_length > 0.000001f
-            ? Vec3{
-                  matrix_direction.x / matrix_length,
-                  matrix_direction.y / matrix_length,
-                  matrix_direction.z / matrix_length,
-              }
-            : light.direction;
         // The kind tag this struct encodes -- 0 hemispheric, 1 point,
         // 2 directional -- is the retired transcribed fragment's own, and it
         // has no spot: that fragment is gone and every PBR draw now binds the
@@ -4953,43 +4926,10 @@ ${pinnedFogInfosPacking()}    };
             "utf8",
         );
         return {
-            vertex: rawWgslLiteral(vertexModule, "skyboxVertSrc"),
-            fragment: rawWgslLiteral(module, "skyboxFragSrc"),
+            vertex: extractPackagedStringLiteral(vertexModule, "skyboxVertSrc"),
+            fragment: extractPackagedStringLiteral(module, "skyboxFragSrc"),
             sceneUniforms: this.compiledSceneUniformsWgsl(),
             dither: readPinnedDitherWgsl(packageRoot).dither,
         };
     }
-}
-
-/**
- * Read one `const <name> = "...";` WGSL literal out of a packaged module. The
- * bundler emits these as single-line double-quoted JavaScript strings, so the
- * value is recovered by scanning to the closing quote and parsing it as JSON
- * rather than by a regex that would have to model every escape.
- */
-function rawWgslLiteral(source: string, name: string): string {
-    const marker = `const ${name} = "`;
-    const start = source.indexOf(marker);
-    if (start < 0) {
-        throw new Error(
-            `Pinned Babylon Lite WGSL literal '${name}' was not found.`,
-        );
-    }
-    let index = start + marker.length;
-    let escaped = "";
-    while (index < source.length && source[index] !== '"') {
-        if (source[index] === "\\") {
-            escaped += source[index]! + (source[index + 1] ?? "");
-            index += 2;
-            continue;
-        }
-        escaped += source[index];
-        index += 1;
-    }
-    if (index >= source.length) {
-        throw new Error(
-            `Pinned Babylon Lite WGSL literal '${name}' is unterminated.`,
-        );
-    }
-    return JSON.parse(`"${escaped}"`) as string;
 }

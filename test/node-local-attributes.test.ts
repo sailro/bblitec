@@ -73,7 +73,9 @@ test("loader retains the actual pin's nonunit and signed-zero normal upload befo
 #include <cassert>
 #include <iostream>
 using namespace bbl;
-Vec3 normalize(Vec3) { return {10, 20, 30}; }
+namespace bbl::upstream {
+Vec3 normalize_baked_direction(Vec3) { return {10, 20, 30}; }
+}
 Vec3 transform_direction(int, Vec3) { return {40, 50, 60}; }
 void read_normals(ModelGeometry& geometry, const std::vector<float>& source, bool animated, bool instanced) {
     const auto& buffer = source;

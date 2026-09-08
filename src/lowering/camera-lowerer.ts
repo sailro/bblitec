@@ -1,6 +1,14 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { CameraMutationLowerer } from "./camera-mutation-lowerer.js";
+import {
+    lowerObjectComponents,
+    lowerPinnedFunction,
+    type PinnedFunctionParameter,
+} from "./pinned-function-lowerer.js";
+import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { pinnedTrsComposition } from "./pinned-trs.js";
 
 export class CameraLowerer {
     public constructor(private readonly context: LoweringContext, private readonly trackVersions = false) {}
@@ -71,50 +79,13 @@ export class CameraLowerer {
     }
 
     /**
-     * The camera-to-world writer both factories reach, and the two
-     * constants the generated copy needs from it: the degenerate-length
-     * epsilon that decides the identity fallback, and the up vector the
-     * cross product is taken against. Reading them here is what makes the
-     * generated matrix a port rather than a transcription — if upstream
-     * moves either, generation fails instead of shading slightly wrong.
+     * The up vector both public factories look at their target against
+     * (`Vec3Up`, the constant `createArcRotateCamera` and `createFreeCamera`
+     * hand the camera-to-world writer): the record default the ArcRotate
+     * factory stores, so a banked free camera can carry the caller's own
+     * in the same slot.
      */
-    private readLookAtWorldContract(): {
-        module: string;
-        symbol: string;
-        degenerateEpsilon: number;
-        upVector: { x: number; y: number; z: number };
-    } {
-        const module = "src/math/mat4-look-at-world-lh.ts";
-        const symbol = "mat4LookAtWorldLHToRef";
-        const { file, declaration } =
-            this.context.functionDeclaration(module, symbol);
-        const epsilons = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
-            )
-            .filter(
-                (expression) =>
-                    (expression.operatorToken.kind ===
-                        ts.SyntaxKind.GreaterThanEqualsToken ||
-                        expression.operatorToken.kind ===
-                            ts.SyntaxKind.LessThanToken) &&
-                    ts.isIdentifier(expression.left) &&
-                    /^[zx]Len$/.test(expression.left.text),
-            )
-            .map((expression) =>
-                this.context.numericValue(expression.right, file),
-            );
-        if (
-            epsilons.length !== 2 ||
-            epsilons[0] !== epsilons[1]
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected one shared degenerate-length epsilon for the look-at basis.",
-            );
-        }
+    private readPinnedUpVector(): { x: number; y: number; z: number } {
         const upModule = "src/math/vec3-up.ts";
         const upFile = this.context.sourceFile(upModule);
         const upInitializer = this.context.variableInitializer(
@@ -134,15 +105,112 @@ export class CameraLowerer {
                 upFile,
             );
         return {
-            module,
-            symbol,
-            degenerateEpsilon: epsilons[0]!,
-            upVector: {
-                x: component("x"),
-                y: component("y"),
-                z: component("z"),
-            },
+            x: component("x"),
+            y: component("y"),
+            z: component("z"),
         };
+    }
+
+    /**
+     * `mat4LookAtWorldLHToRef` translated whole, at the width the camera's
+     * world is kept at. The pin's `allocateMat4()` storage is a Float32Array
+     * by default and a Float64Array once an engine asks for
+     * `useHighPrecisionMatrix`, and the translation binds `out` to the store
+     * width of whichever this scene's engine asked for: an f32 store rounds
+     * where the pin's does, and the F64 store carries the unrounded basis to
+     * the view transpose. The degenerate-length epsilons, the cross
+     * products and the identity fallback all come from the declaration.
+     */
+    private lowerLookAtWorld(highPrecisionMatrix: boolean): string {
+        const vector = (name: string): PinnedFunctionParameter => ({
+            pinned: name,
+            kind: "record",
+            cpp: name,
+            cppType: "Vec3d",
+            annotation: "Vec3",
+        });
+        return lowerPinnedFunction(
+            this.context,
+            "src/math/mat4-look-at-world-lh.ts",
+            "mat4LookAtWorldLHToRef",
+            [
+                {
+                    pinned: "out",
+                    kind: "mat4",
+                    cpp: "out",
+                    cppType: "std::array<CameraMatrixScalar, 16>",
+                    mutableRecord: true,
+                    binding: {
+                        cpp: "out",
+                        type: highPrecisionMatrix ? "f64-buffer" : "f32",
+                    },
+                },
+                vector("eye"),
+                vector("target"),
+                vector("up"),
+            ],
+            {
+                cppName: "mat4_look_at_world_lh_to_ref",
+                returns: "void",
+                calls: pinnedNumericMathCalls(),
+                memberBindings: new Map(
+                    ["eye", "target", "up"].flatMap((record) =>
+                        ["x", "y", "z"].map(
+                            (component): [string, PinnedBinding] => [
+                                `${record}.${component}`,
+                                {
+                                    cpp: `${record}.${component}`,
+                                    type: "scalar",
+                                },
+                            ],
+                        ),
+                    ),
+                ),
+            },
+        );
+    }
+
+    /**
+     * The ArcRotate's eye, translated whole from the `localEyePosition`
+     * the pinned factory declares inside itself over the record it closes
+     * over: the pole fallback, the trigonometry and the target offset all
+     * come from that declaration, with `cam` read as the native record.
+     */
+    private lowerArcRotateEye(): string {
+        const module = "src/camera/arc-rotate.ts";
+        const symbol = "localEyePosition";
+        const members = new Map<string, PinnedBinding>(
+            ["alpha", "beta", "radius", "target.x", "target.y", "target.z"].map(
+                (member): [string, PinnedBinding] => [
+                    `cam.${member}`,
+                    { cpp: `camera.${member}`, type: "scalar" },
+                ],
+            ),
+        );
+        return lowerPinnedFunction(this.context, module, symbol, [], {
+            cppName: "arc_rotate_local_eye_position",
+            enclosing: "createArcRotateCamera",
+            leadingParameters: ["const CameraRecord& camera"],
+            calls: pinnedNumericMathCalls(),
+            memberBindings: members,
+            returns: {
+                type: "Vec3d",
+                value: (lowerer, expression) =>
+                    `Vec3d{${lowerObjectComponents(
+                        this.context,
+                        lowerer,
+                        expression ??
+                            this.context.contractError(
+                                this.context.functionDeclaration(
+                                    module,
+                                    "createArcRotateCamera",
+                                ).declaration,
+                                `Expected pinned ${symbol} to return a value.`,
+                            ),
+                        ["x", "y", "z"],
+                    ).join(", ")}}`,
+            },
+        });
     }
 
     public lowerArcRotateFactory(
@@ -159,36 +227,7 @@ export class CameraLowerer {
         const positionSymbol = "getCameraPosition";
         this.context.functionDeclaration(positionModule, positionSymbol);
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
-        const poleAssignments = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
-            )
-            .filter(
-                (expression) =>
-                    expression.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isIdentifier(expression.left) &&
-                    expression.left.text === "sinB" &&
-                    ts.isNumericLiteral(expression.right),
-            );
-        if (poleAssignments.length !== 1) {
-            this.context.contractError(
-                declaration,
-                "Expected one ArcRotate pole fallback.",
-            );
-        }
-        const poleEpsilon = this.context.numericValue(
-            poleAssignments[0]!.right,
-            file,
-        );
-        const {
-            module: lookAtModule,
-            symbol: lookAtSymbol,
-            degenerateEpsilon,
-            upVector,
-        } = this.readLookAtWorldContract();
+        const upVector = this.readPinnedUpVector();
         const camera = this.context.objectInitializer(declaration, "cam");
         const number = (name: string): string =>
             this.context.doubleLiteral(
@@ -252,6 +291,8 @@ Vec3d camera_position(const CameraRecord& camera);
 
 namespace bbl::upstream {
 
+${this.lowerArcRotateEye()}
+
 Vec3d arc_rotate_eye_position(const CameraRecord& camera) {
     ${geospatial
         ? `// Two of the three pinned factories hold the eye directly:
@@ -260,78 +301,25 @@ Vec3d arc_rotate_eye_position(const CameraRecord& camera) {
     // eye from alpha/beta/radius about its target.
     if (camera.kind != CameraKind::arc_rotate) return camera.position;`
         : "if (camera.kind == CameraKind::free) return camera.position;"}
-    const double cosine_alpha = std::cos(camera.alpha);
-    const double sine_alpha = std::sin(camera.alpha);
-    const double cosine_beta = std::cos(camera.beta);
-    double sine_beta = std::sin(camera.beta);
-    if (sine_beta == 0.0) sine_beta = ${this.context.doubleLiteral(poleEpsilon)};
-    return Vec3d{
-        camera.target.x + camera.radius * cosine_alpha * sine_beta,
-        camera.target.y + camera.radius * cosine_beta,
-        camera.target.z + camera.radius * sine_alpha * sine_beta,
-    };
+    return arc_rotate_local_eye_position(camera);
 }
 
-${parentArm}// ${this.context.provenance(lookAtModule, lookAtSymbol)}
-// The camera-to-world matrix both factories write through
-// \`createWorldMatrixState\`; with no parent the world matrix *is* this
-// local one (\`src/scene/world-matrix-state.ts\` getWorldMatrix), and the
-// storage is the \`allocateMat4()\` Float32Array. So every term is
-// computed in double and stored once as float, and \`getViewMatrix\`
-// downstream reads these rounded values exactly as the pin does.
+${parentArm}${this.lowerLookAtWorld(highPrecisionMatrix)}
+
+// The camera-to-world matrix both pinned factories write through
+// \`createWorldMatrixState\` (src/camera/arc-rotate.ts cameraLocalWorldMatrix,
+// src/camera/free-camera.ts _createFreeCamera): the ArcRotate looks from
+// its composed eye and the free camera from its own position, each against
+// the up vector it was created with -- Vec3Up for both public factories,
+// the caller's for a banked free camera, which the record carries in one
+// slot. With no parent the world matrix *is* this local one
+// (\`src/scene/world-matrix-state.ts\` getWorldMatrix), and the storage is
+// the \`allocateMat4()\` array the translation above stores at, so
+// \`getViewMatrix\` downstream reads exactly what the pin stored.
 std::array<CameraMatrixScalar, 16> ${gltfCameras ? "camera_local_matrix" : "camera_world_matrix"}(const CameraRecord& camera) {
-    const Vec3d eye = arc_rotate_eye_position(camera);
     std::array<CameraMatrixScalar, 16> out{};
-    out[3] = 0;
-    out[7] = 0;
-    out[11] = 0;
-    out[12] = static_cast<CameraMatrixScalar>(eye.x);
-    out[13] = static_cast<CameraMatrixScalar>(eye.y);
-    out[14] = static_cast<CameraMatrixScalar>(eye.z);
-    out[15] = 1;
-
-    // Left-handed: +Z points from the eye towards the target.
-    double zx = camera.target.x - eye.x;
-    double zy = camera.target.y - eye.y;
-    double zz = camera.target.z - eye.z;
-    const double z_length = std::sqrt(zx * zx + zy * zy + zz * zz);
-    double xx = 0.0;
-    double xy = 0.0;
-    double xz = 0.0;
-    double x_length = 0.0;
-    if (z_length >= ${this.context.doubleLiteral(degenerateEpsilon)}) {
-        const double inverse_z = 1.0 / z_length;
-        zx *= inverse_z;
-        zy *= inverse_z;
-        zz *= inverse_z;
-        // xAxis = cross(up, zAxis). Free cameras retain the pinned Vec3Up;
-        // banked cameras carry the caller's live up vector in the same slot.
-        xx = camera.up_vector.y * zz - camera.up_vector.z * zy;
-        xy = camera.up_vector.z * zx - camera.up_vector.x * zz;
-        xz = camera.up_vector.x * zy - camera.up_vector.y * zx;
-        x_length = std::sqrt(xx * xx + xy * xy + xz * xz);
-    }
-    if (x_length < ${this.context.doubleLiteral(degenerateEpsilon)}) {
-        out[0] = 1;
-        out[5] = 1;
-        out[10] = 1;
-        return out;
-    }
-    const double inverse_x = 1.0 / x_length;
-    xx *= inverse_x;
-    xy *= inverse_x;
-    xz *= inverse_x;
-
-    out[0] = static_cast<CameraMatrixScalar>(xx);
-    out[1] = static_cast<CameraMatrixScalar>(xy);
-    out[2] = static_cast<CameraMatrixScalar>(xz);
-    // yAxis = cross(zAxis, xAxis) -- already unit, both operands are.
-    out[4] = static_cast<CameraMatrixScalar>(zy * xz - zz * xy);
-    out[5] = static_cast<CameraMatrixScalar>(zz * xx - zx * xz);
-    out[6] = static_cast<CameraMatrixScalar>(zx * xy - zy * xx);
-    out[8] = static_cast<CameraMatrixScalar>(zx);
-    out[9] = static_cast<CameraMatrixScalar>(zy);
-    out[10] = static_cast<CameraMatrixScalar>(zz);
+    mat4_look_at_world_lh_to_ref(
+        out, arc_rotate_eye_position(camera), camera.target, camera.up_vector);
     return out;
 }
 ${gltfCameras ? `
@@ -749,12 +737,14 @@ CameraHandle create_banked_free_camera(
         );
         const value = (input: number): string => this.context.floatLiteral(input);
         const dvalue = (input: number): string => this.context.doubleLiteral(input);
+        const meshTrs = pinnedTrsComposition(this.context);
         return {
             modulePath,
             symbolName,
             header: "",
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
 
 #include <algorithm>
 #include <array>
@@ -764,51 +754,24 @@ CameraHandle create_banked_free_camera(
 namespace bbl {
 namespace {
 
-Vec3 rotate_bounds_point(Vec3 point, Vec3 rotation) {
-    const float sin_x = std::sin(rotation.x);
-    const float cos_x = std::cos(rotation.x);
-    const float sin_y = std::sin(rotation.y);
-    const float cos_y = std::cos(rotation.y);
-    const float sin_z = std::sin(rotation.z);
-    const float cos_z = std::cos(rotation.z);
-    point = Vec3{point.x, point.y * cos_x - point.z * sin_x, point.y * sin_x + point.z * cos_x};
-    point = Vec3{point.x * cos_y + point.z * sin_y, point.y, -point.x * sin_y + point.z * cos_y};
-    return Vec3{
-        point.x * cos_z - point.y * sin_z,
-        point.x * sin_z + point.y * cos_z,
-        point.z,
-    };
+// src/scene/world-matrix-state.ts composeTrsLocalMatrix, translated whole:
+// the pin composes in JavaScript-number width and stores once into its
+// allocateMat4() Float32Array, so the locals here are double and the
+// narrowing is the single store loop at the end.
+std::array<float, 16> framed_local_matrix(const MeshRecord& mesh) {
+${meshTrs.composeWorldBody}    return world;
 }
 
+// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh takes each
+// object-local box through mesh.worldMatrix. The record splits that world
+// into the mesh's own TRS and an imported clone root's outer transform,
+// applied in the order the draw path applies them, each through the
+// vertex stage's own f32 multiply.
 Vec3 transform_bounds_point(Vec3 point, const MeshRecord& mesh) {
-    point = Vec3{
-        point.x * mesh.scaling.x,
-        point.y * mesh.scaling.y,
-        point.z * mesh.scaling.z,
-    };
-    point = rotate_bounds_point(point, mesh.rotation);
-    point = Vec3{
-        static_cast<float>(
-            static_cast<double>(point.x) + mesh.position.x),
-        static_cast<float>(
-            static_cast<double>(point.y) + mesh.position.y),
-        static_cast<float>(
-            static_cast<double>(point.z) + mesh.position.z),
-    };
-    point = rotate_bounds_point(point, mesh.outer_rotation);
-    // The translation is the record's double; the sum is taken at that
-    // width and stored once, as every other consumer of it does.
-    return Vec3{
-        static_cast<float>(
-            static_cast<double>(point.x) +
-            static_cast<double>(mesh.outer_position.x)),
-        static_cast<float>(
-            static_cast<double>(point.y) +
-            static_cast<double>(mesh.outer_position.y)),
-        static_cast<float>(
-            static_cast<double>(point.z) +
-            static_cast<double>(mesh.outer_position.z)),
-    };
+    return upstream::transform_position(
+        upstream::outer_transform_matrix(
+            mesh.outer_position, mesh.outer_rotation),
+        upstream::transform_position(framed_local_matrix(mesh), point));
 }
 
 void extend_bounds(Vec3 point, Vec3& minimum, Vec3& maximum) {

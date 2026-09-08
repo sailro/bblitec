@@ -6,10 +6,25 @@
  * which the pinned engine keeps as a per-mesh light set. A file whose lights
  * name neither emits this loader without the resolution.
  */
+export interface BabylonLoaderLoweredSegments {
+    /**
+     * The body of `mesh_world_matrix`: `composeTrsLocalMatrix` over the
+     * node's own TRS, emitted by `pinned-trs.ts` from the pinned
+     * `eulerToQuat` and `mat4ComposeInto` writers.
+     */
+    meshWorldComposition: string;
+    /**
+     * `bake_local_matrix`, lowered whole from
+     * `src/loader-babylon/bake-local-matrix.ts#bakeLocalMatrix`.
+     */
+    bakeLocalMatrix: string;
+}
+
 export function babylonLoaderCpp(
     provenance: string,
     cameraDerivation: string,
     submeshNameSuffix: string,
+    lowered: BabylonLoaderLoweredSegments,
     lightMeshLists = false,
     diffuseUv2 = false,
     bumpTexture = false,
@@ -27,6 +42,7 @@ export function babylonLoaderCpp(
 #include <cstdint>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -124,87 +140,50 @@ TextureData texture_data(
     return result;
 }
 
-std::array<float, 16> matrix_or_identity(
-    const Json& object,
-    const char* name) {
-    std::array<float, 16> result{
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    const auto found = object.find(name);
-    if (found == object.end() || !found->is_array()) return result;
-    for (std::size_t index = 0;
-         index < result.size() && index < found->size();
-         ++index) {
-        if ((*found)[index].is_number()) {
-            result[index] = (*found)[index].get<float>();
-        }
+${lowered.bakeLocalMatrix}
+
+// The pinned loader hands bakeLocalMatrix the node's localMatrix as the
+// JSON numbers it parsed -- doubles -- and only when the node carries one
+// (\`md.localMatrix && bakeLocalMatrix\`, load-babylon.ts). A matrix that is
+// not sixteen numbers reaches arithmetic the pin runs over \`undefined\`,
+// which is refused here instead.
+std::optional<std::array<double, 16>> local_matrix_or_absent(
+    const Json& node) {
+    const auto found = node.find("localMatrix");
+    if (found == node.end() || found->is_null()) return std::nullopt;
+    std::array<double, 16> matrix{};
+    if (!found->is_array() || found->size() != matrix.size()) {
+        throw std::runtime_error(
+            "A .babylon localMatrix must carry sixteen numbers.");
     }
-    return result;
+    for (std::size_t index = 0; index < matrix.size(); ++index) {
+        if (!(*found)[index].is_number()) {
+            throw std::runtime_error(
+                "A .babylon localMatrix must carry sixteen numbers.");
+        }
+        matrix[index] = (*found)[index].get<double>();
+    }
+    return matrix;
 }
 
-Vec3 rotate(Vec3 value, Vec3 rotation) {
-    const float sine_x = std::sin(rotation.x);
-    const float cosine_x = std::cos(rotation.x);
-    const float sine_y = std::sin(rotation.y);
-    const float cosine_y = std::cos(rotation.y);
-    const float sine_z = std::sin(rotation.z);
-    const float cosine_z = std::cos(rotation.z);
-    value = Vec3{
-        value.x,
-        value.y * cosine_x - value.z * sine_x,
-        value.y * sine_x + value.z * cosine_x,
-    };
-    value = Vec3{
-        value.x * cosine_y + value.z * sine_y,
-        value.y,
-        -value.x * sine_y + value.z * cosine_y,
-    };
-    return Vec3{
-        value.x * cosine_z - value.y * sine_z,
-        value.x * sine_z + value.y * cosine_z,
-        value.z,
-    };
-}
-
-Vec3 normalize(Vec3 value) {
-    const float length = std::sqrt(
-        value.x * value.x + value.y * value.y + value.z * value.z);
-    return length > 0.000001f
-        ? Vec3{value.x / length, value.y / length, value.z / length}
-        : Vec3{0.0f, 1.0f, 0.0f};
-}
-
-Vec3 transform_mesh_point(
-    Vec3 value,
+// src/scene/world-matrix-state.ts composeTrsLocalMatrix over the node's own
+// TRS: load-babylon.ts hands each mesh md.position/rotation/scaling, and
+// initMeshTransform (src/mesh/mesh.ts) converts the Euler triple through
+// eulerToQuat before the composition. The pin keeps that TRS as mesh.world
+// while this loader bakes it into vertex.position and records it as the
+// instance parent world for the LOCAL_POSITION variant.
+std::array<float, 16> mesh_world_matrix(
     Vec3 position,
     Vec3 rotation,
     Vec3 scaling) {
-    value = Vec3{
-        value.x * scaling.x,
-        value.y * scaling.y,
-        value.z * scaling.z,
-    };
-    value = rotate(value, rotation);
-    return Vec3{
-        value.x + position.x,
-        value.y + position.y,
-        value.z + position.z,
-    };
-}
-
-Vec3 transform_mesh_direction(
-    Vec3 value,
-    Vec3 rotation,
-    Vec3 scaling) {
-    value = Vec3{
-        value.x * scaling.x,
-        value.y * scaling.y,
-        value.z * scaling.z,
-    };
-    return normalize(rotate(value, rotation));
+    const struct {
+        Vec3 rotation;
+        Vec3 scaling;
+        Vec3 position;
+        bool has_rotation_quaternion = false;
+        Vec4 rotation_quaternion{};
+    } mesh{.rotation = rotation, .scaling = scaling, .position = position};
+${lowered.meshWorldComposition}    return world;
 }
 
 MaterialHandle load_material(
@@ -504,8 +483,22 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                 vec3_or(source, "rotation", Vec3{});
             const Vec3 mesh_scaling =
                 vec3_or(source, "scaling", Vec3{1.0f, 1.0f, 1.0f});
-            const std::array<float, 16> local_matrix =
-                matrix_or_identity(source, "localMatrix");
+            const std::array<float, 16> mesh_world =
+                mesh_world_matrix(mesh_position, mesh_rotation, mesh_scaling);
+            // The pin's \`new F32(md.positions)\` and \`new F32(md.normals)\`:
+            // the JSON numbers rounded once to the attribute width, then the
+            // pivot bake over both buffers in place.
+            std::vector<float> baked_positions(vertex_count * 3);
+            std::vector<float> baked_normals(vertex_count * 3);
+            for (std::size_t lane = 0; lane < vertex_count * 3; ++lane) {
+                baked_positions[lane] = number_at(positions, lane, 0.0f);
+                baked_normals[lane] =
+                    number_at(normals, lane, lane % 3 == 1 ? 1.0f : 0.0f);
+            }
+            if (const auto local_matrix = local_matrix_or_absent(source)) {
+                bake_local_matrix(
+                    baked_positions, baked_normals, *local_matrix);
+            }
 
             std::vector<SubMesh> submeshes;
             if (const auto values = source.find("subMeshes");
@@ -554,31 +547,28 @@ ${meshClones ? "                geometry.bind_vertices.resize(vertex_count);" : 
                 for (std::size_t index = 0;
                      index < vertex_count;
                      ++index) {
-                    const Vec3 source_position{
-                        number_at(positions, index * 3, 0.0f),
-                        number_at(positions, index * 3 + 1, 0.0f),
-                        number_at(positions, index * 3 + 2, 0.0f),
+                    // The pin's position and normal attributes: the
+                    // localMatrix-baked lanes, uploaded as they are.
+                    const Vec3 local_position{
+                        baked_positions[index * 3],
+                        baked_positions[index * 3 + 1],
+                        baked_positions[index * 3 + 2],
                     };
-                    const Vec3 local_position =
-                        upstream::transform_position(
-                            local_matrix, source_position);
-                    const Vec3 source_normal{
-                        number_at(normals, index * 3, 0.0f),
-                        number_at(normals, index * 3 + 1, 1.0f),
-                        number_at(normals, index * 3 + 2, 0.0f),
+                    const Vec3 local_normal{
+                        baked_normals[index * 3],
+                        baked_normals[index * 3 + 1],
+                        baked_normals[index * 3 + 2],
                     };
                     ModelVertex vertex;
                     vertex.local_position = local_position;
-                    vertex.position = transform_mesh_point(
-                        local_position,
-                        mesh_position,
-                        mesh_rotation,
-                        mesh_scaling);
-                    vertex.normal = transform_mesh_direction(
+                    vertex.position = upstream::transform_position(
+                        mesh_world, local_position);
+                    // standard-template.ts: \`out.vn = normalize(normalWorld
+                    // * normal)\` -- the world basis first, the vertex
+                    // stage's normalize after it.
+                    vertex.normal = upstream::normalize_baked_direction(
                         upstream::transform_direction(
-                            local_matrix, source_normal),
-                        mesh_rotation,
-                        mesh_scaling);
+                            mesh_world, local_normal));
                     if (uvs) {
                         vertex.uv = Vec2{
                             number_at(*uvs, index * 2, 0.0f),
@@ -605,7 +595,7 @@ ${meshClones ? "                geometry.bind_vertices.resize(vertex_count);" : 
                         std::max(geometry.bounds_max.z, vertex.position.z);
                     geometry.vertices[index] = vertex;
 ${meshClones ? `                    vertex.position = local_position;
-                    vertex.normal = upstream::transform_direction(local_matrix, source_normal);
+                    vertex.normal = local_normal;
                     geometry.bind_vertices[index] = vertex;` : ""}
                 }
                 geometry.indices.reserve(submesh.index_count);
@@ -655,26 +645,7 @@ ${meshClones ? "                mesh.imported_clone_trs = ImportedMeshTrs{mesh_p
                 // geometry variant binds the unbaked local lanes, so its
                 // draw needs the pin's world back: record it the way the
                 // glTF loader records every node's parent matrix.
-                {
-                    const Vec3 world_x = rotate(
-                        Vec3{mesh_scaling.x, 0.0f, 0.0f},
-                        mesh_rotation);
-                    const Vec3 world_y = rotate(
-                        Vec3{0.0f, mesh_scaling.y, 0.0f},
-                        mesh_rotation);
-                    const Vec3 world_z = rotate(
-                        Vec3{0.0f, 0.0f, mesh_scaling.z},
-                        mesh_rotation);
-                    mesh.instance_parent_matrix = {
-                        world_x.x, world_x.y, world_x.z, 0.0f,
-                        world_y.x, world_y.y, world_y.z, 0.0f,
-                        world_z.x, world_z.y, world_z.z, 0.0f,
-                        mesh_position.x,
-                        mesh_position.y,
-                        mesh_position.z,
-                        1.0f,
-                    };
-                }
+                mesh.instance_parent_matrix = mesh_world;
                 mesh.geometry = static_cast<std::uint32_t>(
                     engine.geometries.size() - 1);
                 mesh.material = material;

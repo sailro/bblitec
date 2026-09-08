@@ -386,7 +386,17 @@ test("generates property animation evaluation and seeking", () => {
     const lowered = new AnimationLowerer(
         new LoweringContext(),
     ).lowerPropertyAnimation();
-    assert.match(lowered.source, /slerp_quaternion/);
+    // The rotation path is the pinned quatSlerp/normalizeQuat4 pair
+    // translated whole -- the glTF loader's own translation -- with the
+    // double-math-float-store width the pin evaluates at, not a float
+    // restatement beside it.
+    assert.match(lowered.source, /Vec4 interpolate_quaternion\(Vec4 left, Vec4 right, double amount\)/);
+    assert.match(lowered.source, /Vec4 normalize_quaternion\(Vec4 value\)/);
+    assert.match(
+        lowered.source,
+        /return track_lanes\(upstream::interpolate_quaternion\(\s*track_quaternion\(track\.keys\[left\]\.value\),\s*track_quaternion\(track\.keys\[right\]\.value\),\s*amount\)\);/,
+    );
+    assert.doesNotMatch(lowered.source, /slerp_quaternion|std::clamp\(dot/);
     assert.match(
         lowered.source,
         /PropertyAnimationInterpolation::step/,
@@ -603,11 +613,12 @@ test("flows the pinned animation constants into the emission", () => {
     const lowered = new AnimationLowerer(
         new LoweringContext(),
     ).lowerPropertyAnimation();
-    // The near-parallel slerp threshold is extracted from the pinned
-    // quatSlerp (src/animation/evaluate.ts), and the ms->s advance
-    // factor is the reciprocal of the pinned tick's divisor
-    // (src/animation/property-animation.ts createPointerAnimationGroup).
-    assert.match(lowered.source, /if \(dot > 0\.9995f\) \{/);
+    // The near-parallel slerp threshold flows inside the translated
+    // quatSlerp (src/animation/evaluate.ts) at the pin's double width, and
+    // the ms->s advance factor is the reciprocal of the pinned tick's
+    // divisor (src/animation/property-animation.ts
+    // createPointerAnimationGroup).
+    assert.match(lowered.source, /if \(dot > 0\.9995\) \{/);
     assert.match(
         lowered.source,
         /delta_ms \* 0\.001f \* group->speed_ratio/,
@@ -873,6 +884,18 @@ test("generates GLB framing validation from upstream constants", () => {
     // RH->LH negating wrappers stay loader-local.
     assert.match(adapter.source, /upstream::transform_position\(/);
     assert.doesNotMatch(adapter.source, /transform_point_raw/);
+    // Vertex, tangent and face normals take the vertex stage's own
+    // normalize (the declared guarded CPU bake); the one loader-local
+    // normalize left is the punctual light forward's `hypot || 1`.
+    assert.match(
+        adapter.source,
+        /upstream::transform_direction\(\n\s*matrix, upstream::normalize_baked_direction\(value\)\)/,
+    );
+    assert.match(
+        adapter.source,
+        /js::or_number\(\n\s*js::hypot_js\(\{value\.x, value\.y, value\.z\}\), 1\.0\)/,
+    );
+    assert.doesNotMatch(adapter.source, /0\.000001f|Vec3\{0\.0f, 1\.0f, 0\.0f\}/);
     assert.match(
         adapter.source,
         /record\.clockwise_front_face/,
@@ -1089,15 +1112,34 @@ test("generates the Babylon loader adapter from pinned scene semantics", () => {
     assert.match(lowered.source, /engine\.reflection_cubes/);
     assert.match(lowered.source, /PrimitiveKind::babylon/);
     assert.match(lowered.source, /create_free_camera/);
-    // The pivot bake applies the world basis through the shared emitted
-    // pair, not a loader-local copy of the multiply.
+    // The pivot bake is the pinned bakeLocalMatrix translated whole over
+    // the attribute buffers, and the node TRS reaches the vertices through
+    // the pinned composition and the shared emitted world multiply pair,
+    // not a loader-local rotator or copy of the multiply.
     assert.match(
         lowered.source,
-        /upstream::transform_position\(\n\s*local_matrix, source_position\)/,
+        /void bake_local_matrix\(\n    std::vector<float>& positions,\n    std::vector<float>& normals,\n    const std::array<double, 16>& lm\)/,
     );
+    assert.match(
+        lowered.source,
+        /bake_local_matrix\(\n\s*baked_positions, baked_normals, \*local_matrix\);/,
+    );
+    assert.match(
+        lowered.source,
+        /std::array<float, 16> mesh_world_matrix\(\n    Vec3 position,\n    Vec3 rotation,\n    Vec3 scaling\)/,
+    );
+    assert.match(
+        lowered.source,
+        /upstream::transform_position\(\n\s*mesh_world, local_position\)/,
+    );
+    assert.match(
+        lowered.source,
+        /upstream::normalize_baked_direction\(\n\s*upstream::transform_direction\(\n\s*mesh_world, local_normal\)\)/,
+    );
+    assert.match(lowered.source, /mesh\.instance_parent_matrix = mesh_world;/);
     assert.doesNotMatch(
         lowered.source,
-        /Vec3 transform_point\(/,
+        /Vec3 transform_point\(|Vec3 rotate\(|Vec3 normalize\(|matrix_or_identity/,
     );
 });
 
@@ -1583,7 +1625,35 @@ test("generates ArcRotate and default camera factories from upstream constants",
     const controls = lowerer.lowerControls();
     assert.match(arc.source, /camera\.fov = 0\.8;/);
     assert.match(arc.source, /camera\.angular_sensibility = 1000\.0;/);
-    assert.match(arc.source, /sine_beta = 0\.0001;/);
+    // The eye is the pinned factory's nested localEyePosition translated
+    // whole, with the record read as the native camera; the pole fallback
+    // keeps the pin's own local name and literal.
+    assert.match(
+        arc.source,
+        /Vec3d arc_rotate_local_eye_position\(\n    const CameraRecord& camera\) \{\n    const double cosA = std::cos\(camera\.alpha\);/,
+    );
+    assert.match(arc.source, /if \(sinB == 0\.0\) \{\n        sinB = 0\.0001;\n    \}/);
+    assert.match(arc.source, /return arc_rotate_local_eye_position\(camera\);/);
+    // The camera-to-world matrix is mat4LookAtWorldLHToRef translated
+    // whole at the camera scalar width -- f32 stores by default -- and
+    // camera_world_matrix only feeds it the eye, target and up vector.
+    assert.match(
+        arc.source,
+        /void mat4_look_at_world_lh_to_ref\(\n    std::array<CameraMatrixScalar, 16>& out,\n    const Vec3d& eye,\n    const Vec3d& target,\n    const Vec3d& up\)/,
+    );
+    assert.match(arc.source, /if \(zLen >= 1e-10\) \{/);
+    assert.match(arc.source, /out\[static_cast<std::size_t>\(12\.0\)\] = static_cast<float>\(eye\.x\);/);
+    assert.match(
+        arc.source,
+        /mat4_look_at_world_lh_to_ref\(\n        out, arc_rotate_eye_position\(camera\), camera\.target, camera\.up_vector\);/,
+    );
+    assert.doesNotMatch(arc.source, /sine_beta|x_length|degenerate/);
+    // Under high-precision matrices the same translation stores at the
+    // pin's F64 width: no narrowing cast on any store.
+    const precise = lowerer.lowerArcRotateFactory(false, true);
+    assert.match(precise.header, /using CameraMatrixScalar = double;/);
+    assert.match(precise.source, /out\[static_cast<std::size_t>\(12\.0\)\] = eye\.x;/);
+    assert.doesNotMatch(precise.source, /static_cast<float>/);
     assert.match(arc.header, /arc_rotate_eye_position/);
     assert.match(arc.header, /camera_world_matrix/);
     assert.match(framing.source, /radius = diagonal \* 1\.5f/);
@@ -1777,17 +1847,17 @@ test("emits the pinned surface sample count for every scene shape", () => {
 
 test("emits the world-basis pair and pinned determinant once for every scene shape", () => {
     const header = pinnedWorldTransformHeader(new LoweringContext());
-    // The float pair, term for term the pinned vertex stage's multiply:
-    // rows read down a column-major basis column, translation only on the
-    // position arm. Inline, because the PAL and both loaders include this
-    // from separate translation units.
+    // The float pair, scalarized from the pinned vertex template's own
+    // outputs: rows read down a column-major basis column, the translation
+    // column only where the homogeneous lane is one. Inline, because the
+    // PAL and both loaders include this from separate translation units.
     assert.match(
         header,
         /inline Vec3 transform_position\(\n    const std::array<float, 16>& world,\n    Vec3 value\)/,
     );
     assert.match(
         header,
-        /world\[0\] \* value\.x \+ world\[4\] \* value\.y \+ world\[8\] \* value\.z \+\n            world\[12\]/,
+        /world\[0\] \* value\.x \+ world\[4\] \* value\.y \+ world\[8\] \* value\.z \+ world\[12\],\n        world\[1\] \* value\.x \+ world\[5\] \* value\.y \+ world\[9\] \* value\.z \+ world\[13\],\n        world\[2\] \* value\.x \+ world\[6\] \* value\.y \+ world\[10\] \* value\.z \+ world\[14\],\n    \};/,
     );
     assert.match(
         header,
@@ -1795,8 +1865,32 @@ test("emits the world-basis pair and pinned determinant once for every scene sha
     );
     assert.match(
         header,
-        /world\[2\] \* value\.x \+ world\[6\] \* value\.y \+ world\[10\] \* value\.z,\n    \};/,
+        /world\[0\] \* value\.x \+ world\[4\] \* value\.y \+ world\[8\] \* value\.z,\n        world\[1\] \* value\.x \+ world\[5\] \* value\.y \+ world\[9\] \* value\.z,\n        world\[2\] \* value\.x \+ world\[6\] \* value\.y \+ world\[10\] \* value\.z,\n    \};/,
     );
+    // The imported clone root's outer transform: the pinned TRS composition
+    // at double width, its f32 narrowing, and the pinned multiply's F64
+    // storage arm applying it on the left of a world.
+    assert.match(
+        header,
+        /inline std::array<double, 16> outer_transform_local\(\n    const Vec3& position, const Vec3& rotation\)/,
+    );
+    assert.match(
+        header,
+        /inline std::array<float, 16> outer_transform_matrix\(\n    const Vec3& position, const Vec3& rotation\) \{\n    const std::array<double, 16> local =\n        outer_transform_local\(position, rotation\);/,
+    );
+    assert.match(
+        header,
+        /template <typename MatA, typename MatB>\nvoid mat4_multiply_into_f64\(\n    std::array<double, 16>& dst,/,
+    );
+    assert.match(
+        header,
+        /dst\[static_cast<std::size_t>\(d\)\] = \(\(\(\(a0 \* b0\) \+ \(a4 \* b1\)\) \+ \(a8 \* b2\)\) \+ \(a12 \* b3\)\);/,
+    );
+    assert.match(
+        header,
+        /mat4_multiply_into_f64\(\n        product, 0, outer_transform_local\(position, rotation\), 0, world, 0\);/,
+    );
+    assert.doesNotMatch(header, /std::sin\(rotation|cos_x|sin_x/);
     // The determinant is the pin's own fold — double, expanded along the
     // first basis COLUMN (m[0], m[1], m[2] cofactors joined by +), which is
     // what makes the load-time and run-time mirror answers round alike.

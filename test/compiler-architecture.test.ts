@@ -1603,10 +1603,13 @@ test("shares parent and clone transforms with shadow caster fitting", () => {
         shadows,
         /return apply_mesh_outer_transform\(mesh, local\);/,
     );
+    // The outer transform is the pinned composition's double arm on the
+    // left of the world, never a per-column rotation restated here.
     assert.match(
         renderer,
-        /std::array<double, 16> apply_mesh_outer_transform\([\s\S]{0,2500}mesh\.outer_position\.x/,
+        /std::array<double, 16> apply_mesh_outer_transform\(\s*const MeshRecord& mesh,\s*std::array<double, 16> world\) \{\s*return outer_transform_product\(\s*mesh\.outer_position, mesh\.outer_rotation, world\);/,
     );
+    assert.doesNotMatch(renderer, /std::sin\(static_cast<double>\(mesh\.outer_rotation/);
 });
 
 test("reuploads dynamic thin-instance colors on both GPU backends", () => {
