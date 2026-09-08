@@ -26,6 +26,7 @@ import {
 } from "./browser-file.js";
 import { isNumberParserCallee, isParseFloatCallee } from "./browser-erasure.js";
 import { hasNonNullAssertion } from "./syntax.js";
+import { firstReturn } from "./loop-control.js";
 import {
     FORMATTED_MATH_FOLDS,
     mathMemberAccess,
@@ -4392,24 +4393,7 @@ export class ExpressionLowerer {
                     ts.isReturnStatement(finalStatement) &&
                     finalStatement.expression
                 ) {
-                    let earlierReturn: ts.ReturnStatement | undefined;
-                    const findEarlierReturn = (node: ts.Node): void => {
-                        if (earlierReturn) return;
-                        if (ts.isReturnStatement(node)) {
-                            earlierReturn = node;
-                            return;
-                        }
-                        if (
-                            node !== callback.body &&
-                            ts.isFunctionLike(node)
-                        ) {
-                            return;
-                        }
-                        ts.forEachChild(node, findEarlierReturn);
-                    };
-                    statements
-                        .slice(0, -1)
-                        .forEach(findEarlierReturn);
+                    const earlierReturn = firstReturn(statements.slice(0, -1));
                     if (earlierReturn) {
                         this.context.fail(
                             earlierReturn,
@@ -4423,23 +4407,7 @@ export class ExpressionLowerer {
                         finalStatement.expression,
                     );
                 }
-                let hasReturn = false;
-                const findReturn = (node: ts.Node): void => {
-                    if (hasReturn) return;
-                    if (ts.isReturnStatement(node)) {
-                        hasReturn = true;
-                        return;
-                    }
-                    if (
-                        node !== callback.body &&
-                        ts.isFunctionLike(node)
-                    ) {
-                        return;
-                    }
-                    ts.forEachChild(node, findReturn);
-                };
-                findReturn(callback.body);
-                if (hasReturn) {
+                if (firstReturn([callback.body])) {
                     this.context.fail(
                         callback.body,
                         "Destructured static tuple block callbacks do not support return statements.",

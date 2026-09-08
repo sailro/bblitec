@@ -30,6 +30,7 @@ import type { CompilerSymbols } from "./symbols.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { isUpdateExpression } from "./syntax.js";
+import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -449,52 +450,6 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
     [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
     [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
 ]);
-
-/**
- * The control statement that would leave the enclosing loop, or undefined.
- *
- * Descent stops at a nested loop and at a function-like, because a control
- * statement there binds to that one; an unqualified `break` additionally
- * binds to a nested `switch`, so descent tracks that too. `returns` adds an
- * early `return`, which leaves the loop the same way for a caller folding
- * the loop away — the statement itself comes back so such a caller can
- * refuse at it by name.
- */
-export function enclosingLoopControl(
-    statement: ts.Statement,
-    options: { returns?: boolean } = {},
-): ts.Statement | undefined {
-    let found: ts.Statement | undefined;
-    const visit = (node: ts.Node, insideSwitch: boolean): void => {
-        if (found) return;
-        if (
-            ts.isForStatement(node) ||
-            ts.isWhileStatement(node) ||
-            ts.isForOfStatement(node) ||
-            ts.isForInStatement(node) ||
-            ts.isDoStatement(node) ||
-            ts.isFunctionLike(node)
-        ) {
-            return;
-        }
-        if (ts.isBreakStatement(node)) {
-            if (!insideSwitch) found = node;
-            return;
-        }
-        if (ts.isContinueStatement(node)) {
-            found = node;
-            return;
-        }
-        if (options.returns && ts.isReturnStatement(node)) {
-            found = node;
-            return;
-        }
-        const nestedSwitch = insideSwitch || ts.isSwitchStatement(node);
-        ts.forEachChild(node, (child) => visit(child, nestedSwitch));
-    };
-    visit(statement, false);
-    return found;
-}
 
 export class StatementLowerer {
     private readonly loweredTerminators = new WeakSet<ts.Statement>();
@@ -936,31 +891,9 @@ export class StatementLowerer {
     private breaksEnclosingLoop(
         statement: ts.Statement,
     ): boolean {
-        let found = false;
-        const visit = (
-            node: ts.Node,
-            insideSwitch: boolean,
-        ): void => {
-            if (found) return;
-            if (
-                ts.isForStatement(node) ||
-                ts.isWhileStatement(node) ||
-                ts.isForOfStatement(node) ||
-                ts.isForInStatement(node) ||
-                ts.isDoStatement(node) ||
-                ts.isFunctionLike(node)
-            ) {
-                return;
-            }
-            if (ts.isBreakStatement(node)) {
-                if (!insideSwitch) found = true;
-                return;
-            }
-            const nestedSwitch = insideSwitch || ts.isSwitchStatement(node);
-            ts.forEachChild(node, (child) => visit(child, nestedSwitch));
-        };
-        visit(statement, false);
-        return found;
+        return (
+            enclosingLoopControl(statement, { continues: false }) !== undefined
+        );
     }
 
     private emitSwitch(
@@ -1190,56 +1123,22 @@ export class StatementLowerer {
     private findSwitchBoundBreak(
         statement: ts.Statement,
     ): ts.Node | undefined {
-        let found: ts.Node | undefined;
-        const visit = (node: ts.Node): void => {
-            if (found) {
-                return;
-            }
-            if (
-                ts.isForStatement(node) ||
-                ts.isWhileStatement(node) ||
-                ts.isForOfStatement(node) ||
-                ts.isForInStatement(node) ||
-                ts.isDoStatement(node) ||
-                ts.isSwitchStatement(node) ||
-                ts.isFunctionLike(node)
-            ) {
-                return;
-            }
-            if (
-                ts.isBreakStatement(node) &&
-                !node.label
-            ) {
-                found = node;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(statement);
-        return found;
+        // An unqualified break under a nested switch binds to that switch,
+        // which the shared walk expresses by not counting it there.
+        return enclosingLoopControl(statement, {
+            continues: false,
+            labeled: false,
+        });
     }
 
     /** A continue that crosses the switch and binds to an enclosing loop. */
     private findSwitchBoundContinue(
         statement: ts.Statement,
-    ): ts.ContinueStatement | undefined {
-        let found: ts.ContinueStatement | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
-                found ||
-                ts.isIterationStatement(node, false) ||
-                ts.isFunctionLike(node)
-            ) {
-                return;
-            }
-            if (ts.isContinueStatement(node) && !node.label) {
-                found = node;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(statement);
-        return found;
+    ): ts.Node | undefined {
+        return enclosingLoopControl(statement, {
+            breaks: false,
+            labeled: false,
+        });
     }
 
     private emitIf(
@@ -1323,13 +1222,8 @@ export class StatementLowerer {
                     "A break in a statically unrolled resource loop requires a generation-known condition.",
                 );
             }
-            const returns = (node: ts.Node): boolean => {
-                if (ts.isFunctionLike(node)) return false;
-                return ts.isReturnStatement(node) ||
-                    (ts.forEachChild(node, returns) ?? false);
-            };
-            if (returns(statement.thenStatement) ||
-                (statement.elseStatement && returns(statement.elseStatement))) {
+            if (firstReturn([statement.thenStatement]) ||
+                (statement.elseStatement && firstReturn([statement.elseStatement]))) {
                 context.trackResourceLoopEarlyReturn(statement.expression);
             }
         }

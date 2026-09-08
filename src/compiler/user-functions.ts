@@ -18,6 +18,7 @@ import {
     rootIdentifier,
     unwrapExpression,
 } from "./syntax.js";
+import { firstReturn } from "./loop-control.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 export type SupportedFunction =
@@ -2682,17 +2683,7 @@ export class UserFunctionLowerer {
     }
 
     private containsValueReturn(statements: readonly ts.Statement[]): boolean {
-        let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found || ts.isFunctionLike(node)) return;
-            if (ts.isReturnStatement(node) && node.expression) {
-                found = true;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        for (const statement of statements) visit(statement);
-        return found;
+        return firstReturn(statements, { valued: true }) !== undefined;
     }
 
     private valueLambdaReturnType(

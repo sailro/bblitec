@@ -9,6 +9,7 @@ import { passesByReference } from "./data-types.js";
 import type { Value } from "./types.js";
 import { sameCompiledValue } from "./types.js";
 import { parameterIsReadOnly } from "./user-functions.js";
+import { firstReturn } from "./loop-control.js";
 
 const successfulConstructorResourceKinds = new Set([
     "audio-context",
@@ -1077,16 +1078,7 @@ export class ClassLowerer {
                 );
             }
             const leading = method.body.statements.slice(0, -1);
-            let earlierValueReturn: ts.ReturnStatement | undefined;
-            const findReturn = (node: ts.Node): void => {
-                if (earlierValueReturn || ts.isFunctionLike(node)) return;
-                if (ts.isReturnStatement(node) && node.expression) {
-                    earlierValueReturn = node;
-                    return;
-                }
-                ts.forEachChild(node, findReturn);
-            };
-            leading.forEach(findReturn);
+            const earlierValueReturn = firstReturn(leading, { valued: true });
             if (earlierValueReturn) {
                 const nullableRecord =
                     this.compileGuardedNullableRecordMethod(

@@ -3,7 +3,7 @@ import { floatLiteral } from "../../cpp-literals.js";
 import {compileLocalCubemapIntrinsic, type LocalCubemapIntrinsicContext} from "./local-cubemap.js";
 import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { enclosingLoopControl } from "../statements.js";
+import { enclosingLoopControl } from "../loop-control.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
 import {
     requiredStaticColor3,
