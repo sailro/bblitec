@@ -156,10 +156,13 @@ work without deleting content caches.
 ## Build identity
 
 Measured runs check the binary's generated/native digest, deployed payload and
-CMake configuration. Generation skips unchanged inputs and writes changed bytes
-only; native edits refresh build stamps. Explicit payload overrides are
-diagnostic and bypass normal deployment checks. Size/mtime reuse checks are
-incremental-build checks, not tamper-proof verification.
+CMake configuration. Generation is keyed by the bytes of what it read (a
+checkout that rewrites unchanged files is a hit) and writes changed bytes only;
+build outputs and shader products are keyed by size and mtime; native edits
+refresh build stamps. Explicit payload overrides are diagnostic and bypass
+normal deployment checks. None of these checks is tamper-proof verification.
+`parity` refuses an executable built after a `native/CMakeLists.txt` edit until
+`process` refreshes its stamp.
 
 ## Minimal-size shipping builds
 
@@ -170,17 +173,26 @@ matching `BBLITE_SDL_DIR`/`BBLITE_DAWN_DIR`, `BBLITE_LABSOUND_DIR`,
 
 Build reached dependencies with `tools/build-sdl-min.ps1`,
 `build-dawn-min.ps1`, `build-labsound.ps1 -StaticRuntime` and
-`build-rmlui.ps1 -StaticRuntime`. SDL audio/gamepads require their enable flags;
-decoded audio needs LabSound `-EnableCodecs`; inline SVG needs RmlUi
-`-EnableSvg`. Generated features select codecs/navigation libraries.
+`build-rmlui.ps1 -StaticRuntime`. Pick the SDL install by what the scene
+reaches: `sdl-min` when it reaches neither `audio:engine` nor `input:gamepad`,
+`sdl-min-audio-gamepad` otherwise (a minimal configure warns when the install
+carries a subsystem the scene never reaches and refuses the reverse); decoded
+audio needs LabSound `-EnableCodecs`; inline SVG needs RmlUi `-EnableSvg`.
+Generated features select codecs/navigation libraries.
 `BBLITE_VISUAL_CAPTURE`/`BBLITE_AUDIO_CAPTURE` are optional in minimal builds;
 disabled runtime requests fail.
 
 Validate sprite and audio shapes with MSVC; clang-cl/PCHs can conceal narrowing
 and include issues. Package with
 `npm run package:demo -- -Scene <id> -BuildDirectory <dir>`.
-Output goes to `artifacts/releases/`; use
-`node tools/map-size-report.mjs <executable.map>` for linker attribution.
+The packager runs the staged executable for five frames from the package
+directory and refuses a package whose run does not exit cleanly.
+`native/CMakePresets.json` spells the same recipe (`min-sdl`,
+`min-sdl-audio-gamepad`, `min-dawn`) for a Visual Studio developer prompt.
+`BBLITE_PCH` stays OFF here: the precompile is a serial prefix that costs more
+than the parallel parses it saves on a wide host, and this is the one compile of
+every unit without a precompiled closure. Output goes to `artifacts/releases/`;
+use `node tools/map-size-report.mjs <executable.map>` for linker attribution.
 
 ## Updating Babylon Lite
 
