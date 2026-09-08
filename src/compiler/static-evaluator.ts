@@ -1,5 +1,6 @@
 import ts from "typescript";
 import type { Value } from "./types.js";
+import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     isDataTuple,
     tupleComponents,
@@ -715,6 +716,11 @@ export class StaticEvaluator {
         // are spelled that way; every other `Math` constant reads at
         // double width through the property arm below.
         const mathConstant = mathMemberAccess(unwrapped, this.isDefaultLibraryIdentifier);
+        const numericConstant = numberConstant(unwrapped, this.isDefaultLibraryIdentifier);
+        if (numericConstant !== undefined) {
+            const cpp = numberConstantValue(numericConstant).cpp;
+            return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
+        }
         const constant = mathConstant && MATH_CONSTANTS.get(mathConstant.name.text);
         if (constant?.floatCpp !== undefined) {
             return precision === "float"

@@ -1,0 +1,33 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Cache the unary Math fold result before testing whether it is finite.",
+      "applied": true
+    },
+    {
+      "summary": "Use a shared UTF-16 cursor for String.at and codePointAt so indexed reads avoid decoding and allocating the entire string.",
+      "applied": true
+    },
+    {
+      "summary": "Reserve Array.concat's total result capacity after evaluating its arguments, then append into one result array.",
+      "applied": true
+    },
+    {
+      "summary": "Unwrap property receivers once and combine the repeated value-expression fallback branches.",
+      "applied": true
+    },
+    {
+      "summary": "Share numeric argument evaluation and snapshot emission between array and string methods.",
+      "applied": true
+    },
+    {
+      "summary": "Centralize callback receiver rules for identity snapshots, removed entries and fact invalidation.",
+      "applied": true
+    },
+    {
+      "summary": "Route String.concat through the existing concatenation runtime and remove the superseded Number.isFinite dispatcher.",
+      "applied": true
+    }
+  ]
+}

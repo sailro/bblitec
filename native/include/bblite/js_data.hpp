@@ -680,6 +680,7 @@ class Array {
     void resize(std::size_t count) { values_->resize(count); }
     void clear() { values_->clear(); }
     iterator erase(iterator position) { return values_->erase(position); }
+    iterator erase(iterator first, iterator last) { return values_->erase(first, last); }
     template <typename Iterator>
     iterator insert(iterator position, Iterator first, Iterator last) {
         return values_->insert(position, first, last);
@@ -1181,6 +1182,10 @@ class IndexedInsertionOrdered {
     using Iterator = InsertionOrderedIterator<EntryT, false>;
     using ConstIterator = InsertionOrderedIterator<EntryT, true>;
 
+    [[nodiscard]] bool operator==(const IndexedInsertionOrdered& other) const {
+        return storage_ == other.storage_;
+    }
+
     [[nodiscard]] bool has(const KeyT& key) const {
         return find(key) != storage_->index.end();
     }
@@ -1533,6 +1538,27 @@ struct NumberPart {
 };
 
 inline void concat_append(std::string& target, std::string_view part) {
+    // New neighbors can turn two WTF-8 lone surrogates into one UTF-8
+    // scalar. Keep storage canonical so ordinary native equality agrees.
+    const auto size = target.size();
+    if (size >= 3 && part.size() >= 3 &&
+        static_cast<unsigned char>(target[size - 3]) == 0xedu &&
+        (static_cast<unsigned char>(target[size - 2]) & 0xf0u) == 0xa0u &&
+        (static_cast<unsigned char>(target[size - 1]) & 0xc0u) == 0x80u &&
+        static_cast<unsigned char>(part[0]) == 0xedu &&
+        (static_cast<unsigned char>(part[1]) & 0xf0u) == 0xb0u &&
+        (static_cast<unsigned char>(part[2]) & 0xc0u) == 0x80u) {
+        const auto high = ((static_cast<unsigned char>(target[size - 2]) & 0x0fu) << 6u) |
+            (static_cast<unsigned char>(target[size - 1]) & 0x3fu);
+        const auto low = ((static_cast<unsigned char>(part[1]) & 0x0fu) << 6u) |
+            (static_cast<unsigned char>(part[2]) & 0x3fu);
+        const auto point = 0x10000u + (high << 10u) + low;
+        target.resize(size - 3);
+        target.push_back(static_cast<char>(0xf0u | (point >> 18u)));
+        for (unsigned byte = 3; byte > 0; --byte)
+            target.push_back(static_cast<char>(0x80u | ((point >> (6u * (byte - 1u))) & 0x3fu)));
+        part.remove_prefix(3);
+    }
     target.append(part);
 }
 inline void concat_append(std::string& target, NumberPart part) {
@@ -1589,6 +1615,30 @@ template <typename... Parts>
     return value > 0.0 ? 1.0 : -1.0;
 }
 
+[[nodiscard]] inline double math_fround(double value) {
+    // Clamp overflow explicitly: an out-of-range floating conversion is
+    // undefined in C++, while JavaScript returns the corresponding infinity.
+    constexpr double overflow = 0x1.ffffffp127;
+    if (std::abs(value) >= overflow) {
+        return std::copysign(std::numeric_limits<double>::infinity(), value);
+    }
+    if (std::abs(value) > static_cast<double>(std::numeric_limits<float>::max()))
+        return std::copysign(static_cast<double>(std::numeric_limits<float>::max()), value);
+    return static_cast<double>(static_cast<float>(value));
+}
+
+[[nodiscard]] inline double math_clz32(double value) {
+    return static_cast<double>(std::countl_zero(numeric_store_value<std::uint32_t>(value)));
+}
+
+[[nodiscard]] inline bool number_is_integer(double value) {
+    return std::isfinite(value) && std::trunc(value) == value;
+}
+
+[[nodiscard]] inline bool number_is_safe_integer(double value) {
+    return number_is_integer(value) && std::abs(value) <= 9007199254740991.0;
+}
+
 /**
  * ECMA-262's relative-index rule: a negative index counts back from the
  * end, and either sign clamps into `[0, length]`. Every ranged builtin the
@@ -1599,12 +1649,13 @@ template <typename... Parts>
 [[nodiscard]] inline std::size_t relative_index(
     std::size_t length,
     double raw) {
-    const auto size = static_cast<std::ptrdiff_t>(length);
-    auto index = static_cast<std::ptrdiff_t>(std::trunc(raw));
-    if (index < 0) {
-        index = std::max<std::ptrdiff_t>(0, size + index);
-    }
-    return static_cast<std::size_t>(std::min(size, index));
+    if (std::isnan(raw)) return 0;
+    const double size = static_cast<double>(length);
+    double index = std::trunc(raw);
+    if (index < 0.0) index += size;
+    if (index <= 0.0) return 0;
+    if (index >= size) return length;
+    return static_cast<std::size_t>(index);
 }
 
 [[nodiscard]] inline std::pair<std::size_t, std::size_t>
@@ -1743,6 +1794,156 @@ relative_slice_bounds(
         : std::string{};
 }
 
+// UTF-16 indexing over native UTF-8 strings. Lone surrogates use WTF-8 so
+// slicing through a surrogate pair retains the JavaScript code unit.
+class StringCodeUnitCursor {
+  public:
+    explicit StringCodeUnitCursor(const std::string& value) : value_(value) {}
+
+    [[nodiscard]] std::optional<char16_t> next() {
+        if (trailing_) return std::exchange(trailing_, std::nullopt);
+        if (index_ == value_.size()) return {};
+        const auto lead = static_cast<unsigned char>(value_[index_++]);
+        if (lead >= 0x80u && (lead < 0xc2u || lead > 0xf4u))
+            throw std::runtime_error("Invalid UTF-8 string.");
+        std::uint32_t point = lead;
+        const unsigned count = lead < 0x80 ? 0u : lead < 0xe0 ? 1u : lead < 0xf0 ? 2u : 3u;
+        if (count) point &= (1u << (6u - count)) - 1u;
+        for (unsigned byte = 0; byte < count; ++byte) {
+            if (index_ == value_.size() || (static_cast<unsigned char>(value_[index_]) & 0xc0u) != 0x80u)
+                throw std::runtime_error("Invalid UTF-8 string.");
+            point = (point << 6u) | (static_cast<unsigned char>(value_[index_++]) & 0x3fu);
+        }
+        if ((count == 1 && point < 0x80u) || (count == 2 && point < 0x800u) ||
+            (count == 3 && point < 0x10000u) || point > 0x10ffffu)
+            throw std::runtime_error("Invalid UTF-8 string.");
+        if (point > 0xffffu) {
+            point -= 0x10000u;
+            trailing_ = static_cast<char16_t>(0xdc00u + (point & 0x3ffu));
+            return static_cast<char16_t>(0xd800u + (point >> 10u));
+        }
+        return static_cast<char16_t>(point);
+    }
+
+  private:
+    const std::string& value_;
+    std::size_t index_ = 0;
+    std::optional<char16_t> trailing_;
+};
+
+[[nodiscard]] inline std::u16string string_code_units(const std::string& value) {
+    std::u16string units;
+    StringCodeUnitCursor cursor(value);
+    while (const auto unit = cursor.next()) units.push_back(*unit);
+    return units;
+}
+
+[[nodiscard]] inline std::string string_from_code_units(const std::u16string& units) {
+    std::string result;
+    for (std::size_t index = 0; index < units.size(); ++index) {
+        std::uint32_t point = units[index];
+        if (point >= 0xd800u && point <= 0xdbffu && index + 1 < units.size() &&
+            units[index + 1] >= 0xdc00u && units[index + 1] <= 0xdfffu) {
+            point = 0x10000u + ((point - 0xd800u) << 10u) + (units[++index] - 0xdc00u);
+        }
+        if (point < 0x80u) result.push_back(static_cast<char>(point));
+        else {
+            const unsigned count = point < 0x800u ? 1u : point < 0x10000u ? 2u : 3u;
+            result.push_back(static_cast<char>((0xffu << (7u - count)) | (point >> (6u * count))));
+            for (unsigned byte = count; byte > 0; --byte)
+                result.push_back(static_cast<char>(0x80u | ((point >> (6u * (byte - 1u))) & 0x3fu)));
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] inline double string_length(const std::string& value) {
+    // A continuation byte contributes no code unit; a four-byte UTF-8
+    // sequence contributes the two code units of its surrogate pair.
+    std::size_t length = 0;
+    for (const unsigned char byte : value) {
+        if ((byte & 0xc0u) != 0x80u) length += byte >= 0xf0u ? 2u : 1u;
+    }
+    return static_cast<double>(length);
+}
+
+[[nodiscard]] inline std::string string_substring(const std::string& value, double start, double end) {
+    const auto units = string_code_units(value);
+    auto first = relative_index(units.size(), std::isnan(start) ? 0.0 : std::max(0.0, start));
+    auto last = relative_index(units.size(), std::isnan(end) ? 0.0 : std::max(0.0, end));
+    if (first > last) std::swap(first, last);
+    return string_from_code_units(units.substr(first, last - first));
+}
+
+[[nodiscard]] inline std::string string_repeat(const std::string& value, double count) {
+    count = std::isnan(count) ? 0.0 : std::trunc(count);
+    if (!std::isfinite(count) || count < 0.0) throw std::runtime_error("String.repeat count out of range.");
+    if (value.empty() || count == 0.0) return {};
+    std::string result;
+    if (count >= static_cast<double>(result.max_size() / value.size()))
+        throw std::runtime_error("String.repeat result is too large.");
+    const auto repetitions = static_cast<std::size_t>(count);
+    result.reserve(value.size() * repetitions);
+    for (std::size_t index = 0; index < repetitions; ++index) concat_append(result, value);
+    return result;
+}
+
+[[nodiscard]] inline Nullable<std::string> string_relative_at(const std::string& value, double index) {
+    index = std::isnan(index) ? 0.0 : std::trunc(index);
+    if (!std::isfinite(index)) return {};
+    if (index < 0.0) index += string_length(value);
+    if (index < 0.0) return {};
+    StringCodeUnitCursor cursor(value);
+    for (std::size_t offset = 0; const auto unit = cursor.next(); ++offset)
+        if (static_cast<double>(offset) == index) return string_from_code_units(std::u16string(1, *unit));
+    return {};
+}
+
+[[nodiscard]] inline Nullable<double> string_code_point_at(const std::string& value, double index) {
+    index = std::isnan(index) ? 0.0 : std::trunc(index);
+    if (!std::isfinite(index) || index < 0.0) return {};
+    StringCodeUnitCursor cursor(value);
+    for (std::size_t offset = 0; const auto unit = cursor.next(); ++offset) {
+        if (static_cast<double>(offset) != index) continue;
+        std::uint32_t point = *unit;
+        if (point >= 0xd800u && point <= 0xdbffu) {
+            const auto next = cursor.next();
+            if (next && *next >= 0xdc00u && *next <= 0xdfffu)
+                point = 0x10000u + ((point - 0xd800u) << 10u) + (*next - 0xdc00u);
+        }
+        return static_cast<double>(point);
+    }
+    return {};
+}
+
+[[nodiscard]] inline std::string string_replace(const std::string& value, const std::string& search,
+    const std::string& replacement, bool all) {
+    const auto input = string_code_units(value);
+    const auto pattern = string_code_units(search);
+    const auto substitute = string_code_units(replacement);
+    std::u16string result;
+    std::size_t consumed = 0, position = input.find(pattern);
+    while (position != std::u16string::npos) {
+        result.append(input, consumed, position - consumed);
+        for (std::size_t index = 0; index < substitute.size(); ++index) {
+            if (substitute[index] == u'$' && index + 1 < substitute.size()) {
+                const auto token = substitute[index + 1];
+                if (token == u'$') result += u'$';
+                else if (token == u'&') result += pattern;
+                else if (token == u'`') result.append(input, 0, position);
+                else if (token == u'\'') result.append(input, position + pattern.size());
+                else { result += substitute[index]; continue; }
+                ++index;
+            } else result += substitute[index];
+        }
+        consumed = position + pattern.size();
+        if (!all || (pattern.empty() && position == input.size())) break;
+        position = input.find(pattern, position + std::max<std::size_t>(1, pattern.size()));
+    }
+    result.append(input, consumed);
+    return string_from_code_units(result);
+}
+
 [[nodiscard]] inline double number_from_string(
     const std::string& value) {
     const char* begin = value.c_str();
@@ -1810,9 +2011,7 @@ relative_slice_bounds(
     const double wrapped = std::fmod(finite, 65536.0);
     const auto code = static_cast<std::uint16_t>(
         wrapped < 0.0 ? wrapped + 65536.0 : wrapped);
-    return std::string(
-        1,
-        static_cast<char>(code));
+    return string_from_code_units(std::u16string(1, static_cast<char16_t>(code)));
 }
 
 [[nodiscard]] inline std::string string_from_char_codes(
@@ -1820,7 +2019,7 @@ relative_slice_bounds(
     std::string result;
     result.reserve(values.size());
     for (const double value : values) {
-        result += string_from_char_code(value);
+        concat_append(result, string_from_char_code(value));
     }
     return result;
 }
@@ -1882,7 +2081,7 @@ template <typename T>
     return Array<T>(values.begin() + begin, values.begin() + end);
 }
 
-/** JavaScript Array.join for the reached string-array form. */
+/** JavaScript Array.join with an explicit element-to-string projection. */
 template <typename Range, typename Projection>
 [[nodiscard]] inline std::string array_join(
     const Range& values,
@@ -1892,9 +2091,9 @@ template <typename Range, typename Projection>
     bool first = true;
     for (const auto& value : values) {
         if (!first) {
-            result += separator;
+            concat_append(result, separator);
         }
-        result += projection(value);
+        concat_append(result, projection(value));
         first = false;
     }
     return result;
@@ -2015,8 +2214,9 @@ inline Array<T>& array_reverse(Array<T>& values) {
 // `array.fill(value)` shares one range assignment across native vectors,
 // JavaScript arrays, and typed-array views (including Uint8Array).
 template <typename Values, typename T>
-inline void array_fill(Values& values, const T& value) {
+inline Values& array_fill(Values& values, const T& value) {
     std::fill(values.begin(), values.end(), value);
+    return values;
 }
 
 /**
@@ -2026,7 +2226,7 @@ inline void array_fill(Values& values, const T& value) {
  * nothing; `relative_slice_bounds` is that rule, shared with `slice`.
  */
 template <typename Values, typename T>
-inline void array_fill_range(
+inline Values& array_fill_range(
     Values& values,
     const T& value,
     double start,
@@ -2039,6 +2239,7 @@ inline void array_fill_range(
         values.begin() + static_cast<std::ptrdiff_t>(from),
         values.begin() + static_cast<std::ptrdiff_t>(to),
         value);
+    return values;
 }
 
 /**
@@ -2052,7 +2253,7 @@ inline void array_fill_range(
  * `std::copy_backward` when the run overlaps forwards.
  */
 template <typename Values>
-inline void array_copy_within(
+inline Values& array_copy_within(
     Values& values,
     double target,
     double start,
@@ -2063,7 +2264,7 @@ inline void array_copy_within(
         start,
         end);
     const auto count = std::min(final - from, values.size() - to);
-    if (count == 0 || from == to) return;
+    if (count == 0 || from == to) return values;
     const auto begin = values.begin();
     const auto offset = [](std::size_t index) {
         return static_cast<std::ptrdiff_t>(index);
@@ -2073,15 +2274,57 @@ inline void array_copy_within(
             begin + offset(from),
             begin + offset(from + count),
             begin + offset(to));
-        return;
+        return values;
     }
     std::copy_backward(
         begin + offset(from),
         begin + offset(from + count),
         begin + offset(to + count));
+    return values;
+}
+
+template <typename Result, typename Values>
+[[nodiscard]] inline Result array_relative_at(const Values& values, double index) {
+    index = std::isnan(index) ? 0.0 : std::trunc(index);
+    if (index < 0.0) index += static_cast<double>(values.size());
+    if (index < 0.0 || index >= static_cast<double>(values.size())) return {};
+    return values[static_cast<std::size_t>(index)];
+}
+
+template <typename Values, typename T>
+[[nodiscard]] inline double array_last_index_of(const Values& values, const T& value, double from) {
+    if (values.empty()) return -1.0;
+    from = std::isnan(from) ? 0.0 : std::trunc(from);
+    if (from < 0.0) from += static_cast<double>(values.size());
+    if (from < 0.0) return -1.0;
+    const auto start = static_cast<std::size_t>(std::min(from, static_cast<double>(values.size() - 1)));
+    for (auto remaining = start + 1; remaining > 0; --remaining) {
+        if (values[remaining - 1] == value) return static_cast<double>(remaining - 1);
+    }
+    return -1.0;
+}
+
+template <typename T>
+inline Array<T> array_splice(Array<T>& values, double start, double count, std::initializer_list<T> inserted) {
+    const auto first = relative_index(values.size(), start);
+    count = std::isnan(count) ? 0.0 : std::max(0.0, std::trunc(count));
+    const auto removed = static_cast<std::size_t>(std::min(count, static_cast<double>(values.size() - first)));
+    const auto begin = values.begin() + static_cast<std::ptrdiff_t>(first);
+    const auto end = begin + static_cast<std::ptrdiff_t>(removed);
+    Array<T> result(begin, end);
+    values.erase(begin, end);
+    values.insert(values.begin() + static_cast<std::ptrdiff_t>(first), inserted);
+    return result;
 }
 
 // `new Array<T>(count).fill(value)`.
+[[nodiscard]] inline std::size_t array_from_length(double count) {
+    if (std::isnan(count) || count <= 0.0) return 0;
+    count = std::trunc(count);
+    if (count > 4294967295.0) throw std::runtime_error("Array.from length out of range.");
+    return static_cast<std::size_t>(count);
+}
+
 template <typename T>
 [[nodiscard]] inline Array<T> array_filled(double count, const T& value) {
     return Array<T>(static_cast<std::size_t>(count), value);

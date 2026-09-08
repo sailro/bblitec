@@ -6,6 +6,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 ## Compiler
 
+- [ ] Extend the remaining core-library forms in data-methods.ts/data-lowering.ts: reverse callbacks, array iterators, sparse `new Array(n)`, typed-array `subarray`, weak collections, Unicode normalization and locale collation. L; generic user TypeScript reaches these, beyond the supported forms in Features.
 - [ ] Nullable string/number truthiness emits bare `has_value()` (data-lowering.ts:8330): "" and 0 read truthy except through the localStorage flag (web-storage.ts:96). S, then sweep the 33 trees declaring `Nullable<std::string>`.
 - [ ] Each frame yield nests another `defer_start_continuation` lambda (compiler.ts:20591): scene261 nests 161, 20 trees nest 2 or more. Emit a counted requeue in the same order. M.
 - [ ] A finally spanning startEngine admits plain writes only (compiler.ts:20545-20567); lower exception completion so a cleanup exception replaces the active one instead of terminating. M; 8 trees reach finally.

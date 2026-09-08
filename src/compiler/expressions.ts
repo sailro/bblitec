@@ -13,6 +13,7 @@ import ts from "typescript";
 import {isHandleKind} from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
+import { compileNumberPredicate, numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     compileAudioDecodeAssetCall,
     compileAudioMethodCall,
@@ -549,6 +550,8 @@ export class ExpressionLowerer {
             return this.context.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const numericConstant = numberConstant(unwrapped, identifier => this.context.isDefaultLibraryIdentifier(identifier));
+            if (numericConstant !== undefined) return numberConstantValue(numericConstant);
             // A read that descends into a parsed document has no static
             // shape to consult, so it is answered before the typed data
             // path tries to give it one.
@@ -2899,6 +2902,8 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const numberPredicate = compileNumberPredicate(this.context, call);
+        if (numberPredicate) return numberPredicate;
         const worker = this.context.compileWorkerValue(call);
         if (worker) return worker;
         if (this.isNavigatorGetGamepadsCall(call)) {
@@ -3106,19 +3111,6 @@ export class ExpressionLowerer {
                             ? `bbl::js::string_from_char_code(${this.context.compileNumber(argumentAt(call, 0), "double")})`
                             : `bbl::js::string_from_char_codes({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
                     dataType: { kind: "string" },
-                };
-            }
-            if (
-                ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "Number" &&
-                callee.name.text === "isFinite" &&
-                !this.context.lookupOptional(callee.expression)
-            ) {
-                this.context.expectArgumentCount(call, 1, 1);
-                return {
-                    kind: "boolean",
-                    cpp: `std::isfinite(${this.context.compileNumber(argumentAt(call, 0), "double")})`,
-                    dataType: { kind: "boolean" },
                 };
             }
             if (callee.name.text === "toString") {

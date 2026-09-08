@@ -241,7 +241,7 @@ import {
 import { CompileError } from "./compiler/compile-error.js";
 import {
     mutatingArrayMethods,
-    storingDataMethods,
+    isStoringDataCall,
 } from "./compiler/data-methods.js";
 import type {
     CompileAsset,
@@ -2058,7 +2058,13 @@ class Compiler
     }
 
     public emitDiscardedValue(value: Value): void {
-        if (value.kind === "engine" || value.cpp.length === 0) return;
+        if (value.kind === "engine") return;
+        if (value.cpp.length === 0) {
+            for (const element of value.tupleElements ?? Object.values(value.recordProperties ?? {})) {
+                this.emitDiscardedValue(element);
+            }
+            return;
+        }
         this.emit(
             value.kind !== "void" || value.requiresExplicitDiscard
                 ? `static_cast<void>(${value.cpp});`
@@ -4119,14 +4125,8 @@ class Compiler
                     ) {
                         return true;
                     }
+                    if (isStoringDataCall(node) && node.arguments?.some(scan.containsAlias)) return true;
                     if (ts.isCallExpression(node)) {
-                        if (
-                            ts.isPropertyAccessExpression(node.expression) &&
-                            storingDataMethods.has(node.expression.name.text) &&
-                            node.arguments.some(scan.containsAlias)
-                        ) {
-                            return true;
-                        }
                         const retainedTarget = retainedNativeMutationTarget(this.symbols, node);
                         if (retainedTarget && isAlias(scan, retainedTarget)) {
                             // The retained writer mutates this object later.
@@ -15976,35 +15976,6 @@ class Compiler
                 };
             }
         }
-        // `Number.isFinite(x)` is the same predicate as the global, and a
-        // shared module writes whichever spelling reads better beside its
-        // own guard. Both settle where generation knows the number and
-        // emit the one C++ test where it does not.
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "isFinite" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Number" &&
-            this.isDefaultLibraryIdentifier(callee.expression)
-        ) {
-            this.expectArgumentCount(call, 1, 1);
-            const argument = this.compileValue(argumentAt(call, 0));
-            if (argument.staticNumber !== undefined) {
-                return {
-                    kind: "boolean",
-                    cpp: Number.isFinite(argument.staticNumber)
-                        ? "true"
-                        : "false",
-                };
-            }
-            return {
-                kind: "boolean",
-                cpp: `std::isfinite(${this.compileNumber(
-                    argumentAt(call, 0),
-                    "double",
-                )})`,
-            };
-        }
         if (
             ts.isIdentifier(callee) &&
             this.isDefaultLibraryIdentifier(callee)
@@ -17484,11 +17455,12 @@ class Compiler
         }
         if (owner.kind === "string" && expression.name.text === "length") {
             const length = owner.staticString?.length;
+            if (length === undefined) this.reachJsData();
             return {
                 kind: "number",
                 cpp:
                     length === undefined
-                        ? `static_cast<double>(${owner.cpp}.size())`
+                        ? `bbl::js::string_length(${owner.cpp})`
                         : doubleLiteral(length),
                 ...(length === undefined ? {} : { staticNumber: length }),
                 dataType: { kind: "number" },

@@ -1855,7 +1855,7 @@ test("lowers nested Array.from length allocations", () => {
 
     assert.match(
         result.cpp,
-        /const std::size_t v_bblite_array_from_count_\d+ = static_cast<std::size_t>\(2\.0\);/,
+        /const std::size_t v_bblite_array_from_count_\d+ = bbl::js::array_from_length\(2\.0\);/,
     );
     assert.match(
         result.cpp,

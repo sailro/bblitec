@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { compileMapInitializer } from "./collection-methods.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
@@ -30,6 +31,7 @@ import {
 } from "./json-bridge.js";
 import {
     compileDataMethodCall,
+    arrayCallbackReceiverPolicy,
     resizingArrayMethods,
 } from "./data-methods.js";
 import { isTrsVectorName } from "./assignments.js";
@@ -95,7 +97,8 @@ function resizedNames(file: ts.SourceFile): ReadonlySet<string> {
             if (
                 ts.isPropertyAccessExpression(node.expression) &&
                 ts.isIdentifier(node.expression.expression) &&
-                resizingArrayMethods.has(node.expression.name.text)
+                (resizingArrayMethods.has(node.expression.name.text) ||
+                    arrayCallbackReceiverPolicy(node.expression.name.text).invalidatesFacts)
             ) {
                 resized.add(node.expression.expression.text);
             }
@@ -759,16 +762,11 @@ export class DataLowerer {
             // path itself. An unchecked object-array element also carries a
             // separate existence predicate, so ask for its guarded form
             // before the ordinary direct-index path loses that information.
+            const receiver = this.context.unwrap(unwrapped.expression);
             const guardedOwner =
                 unwrapped.questionDotToken &&
-                ts.isElementAccessExpression(
-                    this.context.unwrap(unwrapped.expression),
-                )
-                    ? this.compileGuardableElementAccess(
-                          this.context.unwrap(
-                              unwrapped.expression,
-                          ) as ts.ElementAccessExpression,
-                      )
+                ts.isElementAccessExpression(receiver)
+                    ? this.compileGuardableElementAccess(receiver)
                     : undefined;
             let owner =
                 guardedOwner ??
@@ -776,16 +774,9 @@ export class DataLowerer {
                     unwrapped.expression,
                     mode,
                 ) ??
-                (ts.isCallExpression(
-                    this.context.unwrap(unwrapped.expression),
-                )
-                    ? this.context.compileValue(
-                          unwrapped.expression,
-                      )
-                    : undefined) ??
-                (ts.isElementAccessExpression(
-                    this.context.unwrap(unwrapped.expression),
-                )
+                ((ts.isCallExpression(receiver) || ts.isElementAccessExpression(receiver) ||
+                    (mode === "read" && (ts.isBinaryExpression(receiver) ||
+                        ts.isConditionalExpression(receiver))))
                     ? this.context.compileValue(
                           unwrapped.expression,
                       )
@@ -1991,7 +1982,7 @@ export class DataLowerer {
             this.context.reachJsData();
             return {
                 kind: "number",
-                cpp: `static_cast<double>(${owner.cpp}.size())`,
+                cpp: `bbl::js::string_length(${owner.cpp})`,
                 dataType: { kind: "number" },
             };
         }
@@ -3349,28 +3340,41 @@ export class DataLowerer {
             !ts.isPropertyAccessExpression(callee) ||
             !ts.isIdentifier(callee.expression) ||
             callee.expression.text !== "Array" ||
-            callee.name.text !== "from" ||
-            this.context.lookupIdentifierValue(callee.expression)
+            (callee.name.text !== "from" && callee.name.text !== "of") ||
+            !this.context.isDefaultLibraryIdentifier(callee.expression)
         ) {
             return undefined;
+        }
+        if (callee.name.text === "of") {
+            const type = this.dataTypeAt(call);
+            if (type?.kind !== "vector") this.context.fail(call, "Array.of requires a concrete array element type.");
+            this.context.reachJsData();
+            const values = call.arguments.map(argument => {
+                const value = this.compileForRetainedSink(argument, type.element, "Array.of");
+                const name = this.context.allocateTemporaryCppName("array_of_value");
+                this.context.emit(`const auto ${name} = ${value};`);
+                return name;
+            });
+            return { kind: "data", cpp: `${this.context.dataTypes.cppType(type)}{${values.join(", ")}}`, dataType: type };
         }
         if (call.arguments.length === 1) {
             const source = this.context.compileValue(argumentAt(call, 0));
             if (
                 source.kind !== "data" ||
-                source.dataType?.kind !== "vector"
+                (source.dataType?.kind !== "vector" && source.dataType?.kind !== "span" && source.dataType?.kind !== "set")
             ) {
                 this.context.fail(
                     argumentAt(call, 0),
-                    "Array.from with one argument requires a native array value.",
+                    "Array.from with one argument requires a native array or Set value.",
                 );
             }
             // The enclosing value path materializes the returned vector, so
             // this expression receives Array.from's shallow-copy identity
             // while preserving the source element order.
             return {
-                ...source,
-                freshData: true,
+                kind: "data",
+                cpp: `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(source.dataType.element)}>(${source.cpp})`,
+                dataType: { kind: "vector", element: source.dataType.element },
             };
         }
         if (call.arguments.length !== 2) {
@@ -3398,6 +3402,7 @@ export class DataLowerer {
                 "Array.from array-like object requires a length property.",
             );
         }
+        if (source.properties.length !== 1) this.context.fail(source, "Array.from length objects cannot contain additional properties.");
         const callback = this.context.unwrap(argumentAt(call, 1));
         if (
             !ts.isIdentifier(callback) &&
@@ -3442,7 +3447,7 @@ export class DataLowerer {
         const cppType = this.context.dataTypes.cppType(mappedType.element);
         this.context.reachJsData();
         this.context.emit(
-            `const std::size_t ${count} = static_cast<std::size_t>(${this.context.compileNumber(lengthProperty.initializer, "double")});`,
+            `const std::size_t ${count} = bbl::js::array_from_length(${this.context.compileNumber(lengthProperty.initializer, "double")});`,
         );
         this.context.emit(`bbl::js::Array<${cppType}> ${output};`);
         this.context.emit(`${output}.reserve(${count});`);
@@ -3451,10 +3456,14 @@ export class DataLowerer {
         );
         this.context.increaseIndent();
         this.context.pushScope(this.context.allocateBlockPrefix());
+        this.context.enterRuntimeIteration();
         try {
             const result = this.context.compileCallbackWithValues(
                 callback,
-                [],
+                [
+                    { kind: "json-null", cpp: "std::nullopt" },
+                    { kind: "number", cpp: `static_cast<double>(${index})`, dataType: { kind: "number" } },
+                ],
                 call,
             );
             const value = this.compileKnownValueForSink(
@@ -3464,6 +3473,7 @@ export class DataLowerer {
             );
             this.context.emit(`${output}.push_back(${value});`);
         } finally {
+            this.context.leaveRuntimeIteration();
             this.context.popScope();
             this.context.decreaseIndent();
         }
@@ -3515,8 +3525,8 @@ export class DataLowerer {
                 this.context,
                 argumentAt(call, 0),
             );
-            if (argument !== undefined) {
-                const folded = fold(argument);
+            const folded = argument === undefined ? undefined : fold(argument);
+            if (folded !== undefined && Number.isFinite(folded)) {
                 return {
                     kind: "number",
                     cpp: doubleLiteral(folded),
@@ -3699,9 +3709,9 @@ export class DataLowerer {
         call: ts.CallExpression,
         owner: Value,
         element: DataType,
-        method: "indexOf" | "includes",
+        method: "indexOf" | "includes" | "lastIndexOf",
     ): Value {
-        if (call.arguments.length !== 1) {
+        if (call.arguments.length !== 1 && !(method === "lastIndexOf" && call.arguments.length === 2)) {
             this.context.fail(
                 call,
                 `Array.${method} expects one argument; the fromIndex form is outside the supported subset.`,
@@ -3729,6 +3739,14 @@ export class DataLowerer {
             argumentAt(call, 0),
             element,
         );
+        if (method === "lastIndexOf") {
+            const needle = this.context.allocateTemporaryCppName("last_index_needle");
+            this.context.emit(`const auto ${needle} = ${value};`);
+            const from = call.arguments[1]
+                ? this.context.compileNumber(call.arguments[1], "double")
+                : "std::numeric_limits<double>::infinity()";
+            return this.leafValue(`bbl::js::array_last_index_of(${owner.cpp}, ${needle}, ${from})`, { kind: "number" });
+        }
         const index = `bbl::js::array_index_of(${owner.cpp}, ${value})`;
         return method === "indexOf"
             ? {
@@ -3743,6 +3761,15 @@ export class DataLowerer {
               };
     }
 
+    /** Snapshot a numeric argument before compiling the next argument's effects. */
+    public compileNumberArgument(argument: ts.Expression | undefined, fallback: string): string {
+        if (!argument) return fallback;
+        const value = this.context.compileNumber(argument, "double");
+        const name = this.context.allocateTemporaryCppName("numeric_argument");
+        this.context.emit(`const double ${name} = ${value};`);
+        return name;
+    }
+
     /** Emit the shared callback protocol for reached JavaScript array methods. */
     public emitArrayCallbackLoop(
         call: ts.CallExpression,
@@ -3753,6 +3780,7 @@ export class DataLowerer {
             | "some"
             | "every"
             | "map"
+            | "flatMap"
             | "forEach",
         narrowed: Value,
         dataType: DataType & { kind: "vector" | "span" },
@@ -3786,11 +3814,13 @@ export class DataLowerer {
             );
         }
         const label = method === "forEach" ? "for_each" : method;
+        const receiverPolicy = arrayCallbackReceiverPolicy(method);
+        if (receiverPolicy.invalidatesFacts) this.invalidateStaticElements(narrowed);
         const source =
             this.context.allocateTemporaryCppName(`${label}_source`);
         const index =
             this.context.allocateTemporaryCppName(`${label}_index`);
-        this.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
+        this.context.emit(`${receiverPolicy.snapshotIdentity ? "auto" : "auto&&"} ${source} = ${narrowed.cpp};`);
         initialize(source);
         let bound = `${source}.size()`;
         if (snapshotLength) {
@@ -3810,6 +3840,7 @@ export class DataLowerer {
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
+                if (receiverPolicy.skipRemoved) this.context.emit(`if (${index} >= ${source}.size()) continue;`);
                 const elementValue = this.leafValue(
                     `${source}[${index}]`,
                     dataType.element,
@@ -4230,7 +4261,7 @@ export class DataLowerer {
         if (
             !ts.isIdentifier(expression.expression) ||
             !["Map", "Set"].includes(expression.expression.text) ||
-            this.context.lookupIdentifierValue(expression.expression)
+            !this.context.isDefaultLibraryIdentifier(expression.expression)
         ) {
             return undefined;
         }
@@ -4269,10 +4300,7 @@ export class DataLowerer {
         const cppType = this.context.dataTypes.cppType(dataType);
         if (dataType.kind === "map") {
             if (arguments_.length !== 0) {
-                this.context.fail(
-                    expression,
-                    "new Map currently accepts the empty constructor; populate it with Map.set.",
-                );
+                return compileMapInitializer(this, expression, dataType);
             }
             return {
                 kind: "data",
