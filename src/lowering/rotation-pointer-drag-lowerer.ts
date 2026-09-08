@@ -5,6 +5,7 @@ import { lowerPinnedFunction, lowerObjectComponents } from "./pinned-function-lo
 import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { PINNED_DECOMPOSE_ROTATION } from "./pinned-mat4-decompose.js";
+import { assertRotationPointerContract } from "./rotation-pointer-contract.js";
 
 const MATH = "src/gizmo/gizmo-math.ts";
 const ROTATION = "src/gizmo/plane-rotation-gizmo.ts";
@@ -34,6 +35,13 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
     const parentQuaternion = localStatements.findIndex(statement => ts.isVariableStatement(statement) &&
         statement.declarationList.declarations[0]?.name.getText(worldLocal.file) === "pq");
     if (parentQuaternion < 0) context.contractError(worldLocal.declaration, "Expected the parent quaternion conjugation.");
+    context.assertStatementInventory(worldLocal.declaration, localStatements, "worldRotationToLocal", "the parent guard is a native seam and conjugation translates", [
+        "variable statement", "if statement", "variable statement", "variable statement", "variable statement", "return statement",
+    ]);
+    context.assertStatementShapes(worldLocal.declaration, localStatements.slice(0, parentQuaternion), `
+        const parent = node.parent;
+        if (!parent || !parent.worldMatrix) { return [dqx, dqy, dqz, dqw]; }
+    `, "rotation parent identity and absent-parent return");
     const localLowerer = new PinnedNumericLowerer(worldLocal.file, {
         calls, fixedTupleCalls: tupleCalls,
         bindings: new Map<string, PinnedBinding>([
@@ -43,26 +51,11 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
         ]), returnValue: expression => localLowerer.expression(expression!),
     });
     const factory = context.functionDeclaration(ROTATION, "createPlaneRotationGizmo");
-    let callback: ts.ArrowFunction | undefined;
-    const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node) && node.expression.getText(factory.file) === "drag.onDrag.add" &&
-            node.arguments[0] && ts.isArrowFunction(node.arguments[0])) callback = node.arguments[0];
-        ts.forEachChild(node, visit);
-    };
-    visit(factory.declaration);
-    if (!factory.declaration.getText(factory.file).includes('"setAttribute" in canvas')) {
-        context.contractError(factory.declaration, "Expected host canvas auto-registration for rotation input.");
-    }
-    if (!callback || !ts.isBlock(callback.body)) context.contractError(factory.declaration, "Missing plane rotation drag callback.");
+    const callback = assertRotationPointerContract(context, factory.declaration);
     const body = [...callback.body.statements];
     const begin = body.findIndex(statement => ts.isVariableStatement(statement) && statement.declarationList.declarations[0]?.name.getText(factory.file) === "nx");
     const end = body.findIndex(statement => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression) && statement.expression.expression.getText(factory.file) === "rq.set");
     if (begin < 0 || end <= begin) context.contractError(callback, "Missing plane rotation quaternion update.");
-    const quaternion = body.find(statement => ts.isVariableStatement(statement) &&
-        statement.declarationList.declarations[0]?.name.getText(factory.file) === "rq") as ts.VariableStatement | undefined;
-    if (quaternion?.declarationList.declarations[0]?.initializer?.getText(factory.file) !== "node.rotationQuaternion") {
-        context.contractError(callback, "Expected rotation drag to write the attached node quaternion.");
-    }
     calls.set("worldRotationToLocal", args => `drag_local_rotation(engine, ${args.join(", ")})`);
     calls.set("rq.set", args => `set_mesh_rotation_quaternion(engine, handle, Vec4{${args.map(arg => `static_cast<float>(${arg})`).join(", ")}}, true)`);
     const lowerer = new PinnedNumericLowerer(factory.file, {
