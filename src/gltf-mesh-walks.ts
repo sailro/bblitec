@@ -1,9 +1,9 @@
-import { asIndex, asObject, asStrings, GLTF_MESH_WALKS, isGaussianSplatPrimitive, type JsonObject } from "./gltf-document.js";
+import { asIndex, asObject, asString, asStrings, GLTF_MESH_WALKS, isGaussianSplatPrimitive, type JsonObject } from "./gltf-document.js";
 import { importPinnedModule, importPinnedModuleWithExports } from "./pinned-shader-composer.js";
 import { transpileCommonJs } from "./typescript-transpile.js";
 
 /** Only bodies already proven to be closed, total mesh collectors reach here. */
-export type CompiledMeshWalk = { kind: "preorder" } | { kind: "source"; parameter: string; body: string };
+export type CompiledMeshWalk = { kind: "preorder" } | { kind: "source" | "owner-map"; parameter: string; body: string };
 
 interface Mesh { _gpu: object; material: object }
 interface Node { children?: Array<Node | Mesh> }
@@ -65,10 +65,29 @@ export async function gltfMeshWalks(document: JsonObject, walks: readonly Compil
     const container = {entities: [root]};
     const indexOf = new Map(meshes.map((mesh, index) => [mesh, index]));
     return walks.map(walk => {
-        const collect: (container: {entities: Node[]}) => Mesh[] = walk.kind === "preorder"
+        const collect = walk.kind === "preorder"
             ? getContainerMeshes
-            : new Function(walk.parameter, transpileCommonJs(walk.body, "source-mesh-walk.ts")) as (container: {entities: Node[]}) => Mesh[];
-        const indices = collect(container).map(mesh => {
+            : new Function(walk.parameter, transpileCommonJs(walk.body, "source-mesh-walk.ts")) as (container: {entities: Node[]}) => Mesh[] | Map<string, Mesh[]>;
+        const result = collect(container);
+        let collected: Mesh[];
+        if (walk.kind === "owner-map") {
+            if (!(result instanceof Map)) throw new Error("Source owner walk must return a Map.");
+            collected = [];
+            for (const [name, entries] of result) {
+                if (typeof name !== "string" || !Array.isArray(entries)) throw new Error("Source owner walk requires string keys and mesh arrays.");
+                for (const mesh of entries) {
+                    const index = indexOf.get(mesh);
+                    const nodeIndex = index === undefined ? undefined : meshDatas[index]!._nodeIndex;
+                    const nativeName = nodeIndex === undefined ? undefined : asString(nodes[nodeIndex]!.name) || `gltf_node_${nodeIndex}`;
+                    if (name !== nativeName) throw new Error("Source owner walk key differs from its native node-wrapper identity.");
+                    collected.push(mesh);
+                }
+            }
+        } else {
+            if (!Array.isArray(result)) throw new Error("Source mesh walk must return a mesh array.");
+            collected = result;
+        }
+        const indices = collected.map(mesh => {
             const index = indexOf.get(mesh);
             if (index === undefined) throw new Error("Source mesh walk returned an unknown loader mesh.");
             return index;

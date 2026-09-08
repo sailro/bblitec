@@ -69,6 +69,16 @@ struct PhysicsTransform {
     std::array<double, 4> rotation{0.0, 0.0, 0.0, 1.0};
 };
 
+/** Body-local position and orthogonal frame passed to HP_Constraint_SetAnchor*. */
+struct PhysicsConstraintAnchor {
+    std::array<double, 3> pivot{};
+    std::array<double, 3> axis{};
+    std::array<double, 3> perpendicular{};
+};
+
+void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions);
+
 /**
  * The pair `HP_World_GetSpeedLimit` returns and `HP_World_SetSpeedLimit`
  * takes.
@@ -302,6 +312,12 @@ physics_world_trigger_events(PhysicsWorldHandle world);
 [[nodiscard]] PhysicsShapeHandle physics_shape_create_mesh(
     const std::vector<std::array<double, 3>>& positions,
     const std::vector<std::uint32_t>& indices);
+[[nodiscard]] PhysicsShapeHandle physics_shape_create_container();
+void physics_shape_add_child(
+    PhysicsShapeHandle container,
+    PhysicsShapeHandle child,
+    const PhysicsTransform& transform,
+    std::array<double, 3> scale);
 /** `HP_Shape_SetMaterial`, taking the pin's own array as a record. */
 void physics_shape_set_material(
     PhysicsShapeHandle shape,

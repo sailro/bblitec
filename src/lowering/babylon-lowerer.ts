@@ -15,6 +15,7 @@ export class BabylonLowerer {
         lightMeshLists = false,
         diffuseUv2 = false,
         bumpTexture = false,
+        meshClones = false,
     ): LoweredSource {
         const modulePath = "src/loader-babylon/load-babylon.ts";
         const symbolName = "loadBabylon";
@@ -172,6 +173,7 @@ export class BabylonLowerer {
                 lightMeshLists,
                 diffuseUv2,
                 bumpTexture,
+                meshClones,
             ),
         };
     }

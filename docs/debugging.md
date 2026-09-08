@@ -78,6 +78,7 @@ when a missing small object or changed buffer could pass an image gate.
 | Text | `check-scene275-input.mjs`: operation observations for scene/shared/blend fixtures. |
 | Node geometry | `check-scene149-input.mjs`: browser orbit/resize observations. Live browser resize throws error84; compare unchanged-module startup at resized dimensions. |
 | Local cubemaps | `check-scene186-input.mjs`: native camera, idle and resize captures; eight faces and four reflective ORM replacements on both backends. |
+| Live text | `check-scene181-input.mjs`: edit/clear/regrow, glyph/palette receipts, textarea/window resize, orbit and zoom on both backends. |
 | Shared-engine canvases | `check-surface-input.mjs`: scenes 227/228 left/right drags, divider-crossing capture, idle isolation and geometry after resize. |
 | Worker windows | `check-offscreen-window.mjs`: held presses, worker progress, resize, shutdown. |
 | Physics timing | `check-break-meshes-timing.mjs`: unchanged fixed overrides and live timing. |

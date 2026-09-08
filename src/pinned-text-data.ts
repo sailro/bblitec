@@ -9,6 +9,8 @@ import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 import { readUpstreamPin } from "./upstream-source.js";
 
 export interface StaticTextLayout {
+    /** Package the pinned font repertoire for later native layout updates. */
+    live?: true;
     fontSizePx: number;
     text: string;
     color?: readonly number[];
@@ -44,6 +46,7 @@ interface TextAtlas<Blob> {
 
 /** Capacity fields describe pin CPU storage, not later GPU allocation sizes. */
 interface TextStorage<Blob> {
+    live?: { glyphSlots: number[]; slots: number[]; freeSlots: number[] };
     width: number;
     height: number;
     versions: { data: number; style: number; layout: number };
@@ -135,6 +138,7 @@ console.log(JSON.stringify(await executePinnedText(Buffer.from(request.font, 'ba
 }
 
 interface PinnedAtlas {
+    _glyphSlots: Map<number, { _index: number }>;
     _version: number;
     _curveTexData: Float32Array; _curveTexelsUsed: number;
     _bandTexData: Float32Array; _bandTexelsUsed: number;
@@ -144,7 +148,7 @@ interface PinnedAtlas {
 /** Exported only for the generation child; no shaper or allocator logic is reproduced. */
 export async function executePinnedText(fontBytes: Uint8Array, layout?: StaticTextLayout): Promise<TextStorage<string> | null> {
     const { createFontFromBuffer } = await importPinnedModule<{
-        createFontFromBuffer(bytes: ArrayBuffer): unknown;
+        createFontFromBuffer(bytes: ArrayBuffer): { _font: { numGlyphs: number } };
     }>("text/font.js");
     const font = createFontFromBuffer(Uint8Array.from(fontBytes).buffer);
     if (!layout) return null;
@@ -155,12 +159,32 @@ export async function executePinnedText(fontBytes: Uint8Array, layout?: StaticTe
             _dirtyStart: number; _dirtyEnd: number;
             _instances: Float32Array; _instanceCount: number;
             _styles: Float32Array; _styleCount: number;
-            _groups: { _curveSetId: string; _curveSet: { _atlas: PinnedAtlas }; _groupKey: unknown; _slotStart: number; _slotCount: number; _liveCount: number }[];
+            _storage: unknown;
+            _curveSetId: string;
+            runs: object[];
+            _runRecords: Map<object, { _slots: number[] }>;
+            _groups: { _curveSetId: string; _curveSet: { _atlas: PinnedAtlas }; _groupKey: unknown; _slotStart: number; _slotCount: number; _liveCount: number; _freeSlots: number[] }[];
         };
     }>("text/default-text-data.js");
     const constants = await importPinnedModule<{ TEXT_INSTANCE_BYTES: number; TEXT_STYLE_BYTES: number }>("text/text-data.js");
     const atlasConstants = await importPinnedModule<{ TEX_WIDTH: number; GLYPH_METADATA_FLOATS: number }>("text/glyph-storage.js");
     const data = createDefaultTextData(font, layout.fontSizePx, layout.text, layout.color, layout.options);
+    let live: TextStorage<string>["live"];
+    if (layout.live) {
+        const { extractGlyphCurves } = await importPinnedModule<{ extractGlyphCurves(font: unknown, ids: Set<number>, curves: Map<number, unknown>): void }>("text/glyph-extraction.js");
+        const { updateGlyphStorage } = await importPinnedModule<{ updateGlyphStorage(storage: unknown, id: string, curves: Map<number, unknown>): void }>("text/glyph-storage.js");
+        const ids = new Set(Array.from({ length: font._font.numGlyphs }, (_, id) => id));
+        const curves = new Map<number, unknown>();
+        extractGlyphCurves(font, ids, curves);
+        updateGlyphStorage(data._storage, data._curveSetId, curves);
+        const group = data._groups[0];
+        if (!group || data._groups.length !== 1 || data.runs.length !== 1) throw new Error("Default text live storage requires its single initial run/group.");
+        live = {
+            glyphSlots: Array.from({ length: font._font.numGlyphs }, (_, id) => group._curveSet._atlas._glyphSlots.get(id)?._index ?? -1),
+            slots: data._runRecords.get(data.runs[0]!)!._slots,
+            freeSlots: group._freeSlots,
+        };
+    }
     if (![data.width, data.height].every((value) => Number.isFinite(value) && !Object.is(value, -0))) {
         throw new Error("Pinned text dimensions must be finite and not negative zero for static materialization.");
     }
@@ -204,5 +228,6 @@ export async function executePinnedText(fontBytes: Uint8Array, layout?: StaticTe
         instances: stream(data._instances, data._instanceCount, constants.TEXT_INSTANCE_BYTES),
         styles: stream(data._styles, data._styleCount, constants.TEXT_STYLE_BYTES),
         atlases, groups,
+        ...(live ? { live } : {}),
     };
 }

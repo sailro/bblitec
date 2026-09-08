@@ -66,7 +66,8 @@ struct TextAtlasGpuState {
     double uploaded_version = -1;
 };
 struct TextDataState {
-    std::shared_ptr<const TextDataPayload> payload;
+    std::shared_ptr<TextDataPayload> payload;
+    std::shared_ptr<struct TextLiveData> live;
     std::vector<TextDrawGroup> groups;
     std::size_t instance_count = 0;
     std::size_t style_count = 0;

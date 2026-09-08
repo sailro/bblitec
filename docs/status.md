@@ -51,10 +51,11 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 38 | <img src="images/scenes/scene38.png" alt="Scene 38 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Builder Gallery |
 | 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animated Waterfall |
 | 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Bullet on Havok's sub-steps, speculative landing and rebound; a solver delta, not a renderer-fidelity value. |
+| 41 | <img src="images/scenes/scene41.png" alt="Scene 41 rendering" width="160"> | 0.215 / 0.284 | 0.215 / 0.284 | Mesh, hull and compound bodies with retained debug overlays; Bullet/Havok free-fall solver delta. |
 | 42 | <img src="images/scenes/scene42.png" alt="Scene 42 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Clone Pre-Step |
 | 43 | <img src="images/scenes/scene43.png" alt="Scene 43 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Parametric Proximity Path |
 | 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | 0.006 / 0.037 | 0.006 / 0.037 | Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value. |
-| 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | 0.037 / 0.070 | 0.037 / 0.070 | Bullet/Havok landing hops under -1 gravity; a solver delta, not a renderer-fidelity value. |
+| 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | 0.039 / 0.074 | 0.039 / 0.074 | Bullet/Havok landing hops under -1 gravity; a solver delta, not a renderer-fidelity value. |
 | 48 | <img src="images/scenes/scene48.png" alt="Scene 48 rendering" width="160"> | 0.060 / 0.098 | 0.060 / 0.098 | Authored centres of mass under a kick, captured mid-topple; Bullet/Havok contact-instant lateral drift, not a renderer-fidelity value. |
 | 49 | <img src="images/scenes/scene49.png" alt="Scene 49 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Cylinder/capsule proximity and cast; live rotation/query, orbit and resize controls. |
 | 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Grid |
@@ -170,6 +171,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | Iridescence Sphere |
 | 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | 0.018 / 0.016 | 0.018 / 0.016 | Iridescence Abalone |
 | 179 | <img src="images/scenes/scene179.png" alt="Scene 179 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Lights |
+| 181 | <img src="images/scenes/scene181.png" alt="Scene 181 rendering" width="160"> | 0.021 / 0.399 | 0.021 / 0.399 | Live Text Editor |
 | 186 | <img src="images/scenes/scene186.png" alt="Scene 186 rendering" width="160"> | 0.002 / 0.004 | 0.002 / 0.004 | Local Cubemap Blending |
 | 187 | <img src="images/scenes/scene187.png" alt="Scene 187 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | SMAA |
 | 200 | <img src="images/scenes/scene200.png" alt="Scene 200 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix Off |

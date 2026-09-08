@@ -1764,9 +1764,8 @@ relative_slice_bounds(
         : std::numeric_limits<double>::quiet_NaN();
 }
 
-/** JavaScript `parseInt(value, 10)` for the reached decimal-string form. */
-[[nodiscard]] inline double parse_int_decimal(
-    const std::string& value) {
+/** JavaScript parseInt over a string and a validated literal radix. */
+[[nodiscard]] inline double parse_int(const std::string& value, int radix) {
     std::size_t index = 0;
     while (index < value.size() && is_ascii_whitespace(value[index])) {
         ++index;
@@ -1777,20 +1776,33 @@ relative_slice_bounds(
         negative = value[index] == '-';
         ++index;
     }
+    const bool allow_prefix = radix == 0 || radix == 16;
+    if (radix == 0) radix = 10;
+    if (allow_prefix && index + 1 < value.size() && value[index] == '0' &&
+        (value[index + 1] == 'x' || value[index + 1] == 'X')) {
+        index += 2;
+        radix = 16;
+    }
     double parsed = 0.0;
     bool found_digit = false;
-    while (
-        index < value.size() &&
-        value[index] >= '0' && value[index] <= '9') {
+    while (index < value.size()) {
+        const char character = value[index];
+        const int digit = character >= '0' && character <= '9' ? character - '0'
+            : character >= 'a' && character <= 'z' ? character - 'a' + 10
+            : character >= 'A' && character <= 'Z' ? character - 'A' + 10 : -1;
+        if (digit < 0 || digit >= radix) break;
         found_digit = true;
-        parsed = parsed * 10.0 +
-            static_cast<double>(value[index] - '0');
+        parsed = parsed * radix + digit;
         ++index;
     }
     if (!found_digit) {
         return std::numeric_limits<double>::quiet_NaN();
     }
     return negative ? -parsed : parsed;
+}
+
+[[nodiscard]] inline double parse_int_decimal(const std::string& value) {
+    return parse_int(value, 10);
 }
 
 [[nodiscard]] inline std::string string_from_char_code(double value) {

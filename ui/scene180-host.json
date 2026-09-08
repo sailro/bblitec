@@ -1,0 +1,285 @@
+{
+  "elements": [
+    {
+      "tag": "div",
+      "attributes": {
+        "id": "panel",
+        "style": "font:13px/1.4 system-ui,sans-serif;color:#e6edf3;position: absolute; top: 16px; left: 16px; z-index: 10; background: rgba(13, 17, 23, 0.88); border: 1px solid rgb(48, 54, 61); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: row; gap: 12px; align-items: stretch;"
+      },
+      "children": [
+        {
+          "tag": "textarea",
+          "attributes": {
+            "id": "textInput",
+            "spellcheck": "false",
+            "style": "width: 280px; height: 140px; background: rgb(13, 17, 23); color: rgb(230, 237, 243); border: 1px solid rgb(48, 54, 61); border-radius: 4px; padding: 6px; font: 13px / 1.4 monospace; resize: vertical; box-sizing: border-box;"
+          },
+          "text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ\nHello, TextRenderer!\nNo scene. No camera.\nJust pixels."
+        },
+        {
+          "tag": "div",
+          "attributes": {
+            "id": "sliders",
+            "style": "display: flex; flex-direction: column; gap: 10px; width: 240px; justify-content: center;"
+          },
+          "children": [
+            {
+              "tag": "div",
+              "attributes": {
+                "class": "row",
+                "style": "display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px;"
+              },
+              "children": [
+                {
+                  "tag": "label",
+                  "attributes": {
+                    "for": "rot",
+                    "style": "color: rgb(154, 164, 178);"
+                  },
+                  "text": "Rotation"
+                },
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "rot",
+                    "type": "range",
+                    "min": "-180",
+                    "max": "180",
+                    "step": "1",
+                    "value": "0",
+                    "style": "width: 100%;"
+                  },
+                  "text": ""
+                },
+                {
+                  "tag": "span",
+                  "attributes": {
+                    "class": "val",
+                    "id": "rotVal",
+                    "style": "text-align: right; font-variant-numeric: tabular-nums; color: rgb(201, 209, 217);"
+                  },
+                  "text": "0°"
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "attributes": {
+                "class": "row",
+                "style": "display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px;"
+              },
+              "children": [
+                {
+                  "tag": "label",
+                  "attributes": {
+                    "for": "opacity",
+                    "style": "color: rgb(154, 164, 178);"
+                  },
+                  "text": "Opacity"
+                },
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "opacity",
+                    "type": "range",
+                    "min": "0",
+                    "max": "1",
+                    "step": "0.01",
+                    "value": "1",
+                    "style": "width: 100%;"
+                  },
+                  "text": ""
+                },
+                {
+                  "tag": "span",
+                  "attributes": {
+                    "class": "val",
+                    "id": "opacityVal",
+                    "style": "text-align: right; font-variant-numeric: tabular-nums; color: rgb(201, 209, 217);"
+                  },
+                  "text": "1.00"
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "attributes": {
+                "class": "row",
+                "style": "display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px;"
+              },
+              "children": [
+                {
+                  "tag": "label",
+                  "attributes": {
+                    "for": "weight",
+                    "style": "color: rgb(154, 164, 178);"
+                  },
+                  "text": "Weight"
+                },
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "weight",
+                    "type": "range",
+                    "min": "0",
+                    "max": "100",
+                    "step": "1",
+                    "value": "0",
+                    "style": "width: 100%;"
+                  },
+                  "text": ""
+                },
+                {
+                  "tag": "span",
+                  "attributes": {
+                    "class": "val",
+                    "id": "weightVal",
+                    "style": "text-align: right; font-variant-numeric: tabular-nums; color: rgb(201, 209, 217);"
+                  },
+                  "text": "0"
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "attributes": {
+                "class": "row",
+                "style": "display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px;"
+              },
+              "children": [
+                {
+                  "tag": "label",
+                  "attributes": {
+                    "for": "red",
+                    "style": "color: rgb(154, 164, 178);"
+                  },
+                  "text": "Red"
+                },
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "red",
+                    "type": "range",
+                    "min": "0",
+                    "max": "1",
+                    "step": "0.01",
+                    "value": "1",
+                    "style": "width: 100%;"
+                  },
+                  "text": ""
+                },
+                {
+                  "tag": "span",
+                  "attributes": {
+                    "class": "val",
+                    "id": "redVal",
+                    "style": "text-align: right; font-variant-numeric: tabular-nums; color: rgb(201, 209, 217);"
+                  },
+                  "text": "1.00"
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "attributes": {
+                "class": "row",
+                "style": "display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px;"
+              },
+              "children": [
+                {
+                  "tag": "label",
+                  "attributes": {
+                    "for": "green",
+                    "style": "color: rgb(154, 164, 178);"
+                  },
+                  "text": "Green"
+                },
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "green",
+                    "type": "range",
+                    "min": "0",
+                    "max": "1",
+                    "step": "0.01",
+                    "value": "1",
+                    "style": "width: 100%;"
+                  },
+                  "text": ""
+                },
+                {
+                  "tag": "span",
+                  "attributes": {
+                    "class": "val",
+                    "id": "greenVal",
+                    "style": "text-align: right; font-variant-numeric: tabular-nums; color: rgb(201, 209, 217);"
+                  },
+                  "text": "1.00"
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "attributes": {
+                "class": "row",
+                "style": "display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px;"
+              },
+              "children": [
+                {
+                  "tag": "label",
+                  "attributes": {
+                    "for": "blue",
+                    "style": "color: rgb(154, 164, 178);"
+                  },
+                  "text": "Blue"
+                },
+                {
+                  "tag": "input",
+                  "attributes": {
+                    "id": "blue",
+                    "type": "range",
+                    "min": "0",
+                    "max": "1",
+                    "step": "0.01",
+                    "value": "1",
+                    "style": "width: 100%;"
+                  },
+                  "text": ""
+                },
+                {
+                  "tag": "span",
+                  "attributes": {
+                    "class": "val",
+                    "id": "blueVal",
+                    "style": "text-align: right; font-variant-numeric: tabular-nums; color: rgb(201, 209, 217);"
+                  },
+                  "text": "1.00"
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "attributes": {
+                "id": "hint",
+                "style": "font-size: 11px; color: rgb(110, 118, 129); line-height: 1.5;"
+              },
+              "children": [
+                {
+                  "tag": "span",
+                  "text": "Drag canvas to move"
+                },
+                {
+                  "tag": "br"
+                },
+                {
+                  "tag": "span",
+                  "text": "Scroll wheel to scale"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

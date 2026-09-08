@@ -12,6 +12,7 @@ export interface SceneIntrinsicContext
     compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined;
     noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     noteTemporalCameraControl(node: ts.Node): void;
+    noteTextCameraControl(node: ts.Node, camera: Value, arcRotate: boolean): void;
     noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always?: boolean): void;
     compileNumber(
         expression: ts.Expression,
@@ -293,6 +294,7 @@ export function compileSceneIntrinsic(
             );
             context.expectSameEngine(camera, scene, call);
             context.noteTemporalCameraControl(call);
+            context.noteTextCameraControl(call, camera, importedName === "attachControl");
             const deferrals = call.arguments[3]
                 ? compileCameraDeferralOptions(context, call.arguments[3]) : [];
             if (importedName === "attachFreeControl") {

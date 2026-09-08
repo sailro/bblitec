@@ -21,6 +21,12 @@ inline constexpr std::string_view ui_user_agent_css =
     "text-align:center;tab-index:auto;}\n"
     // Press/release must resolve to the button, not separate label/icon nodes.
     "button *{focus:none;}\n"
+    "input[type=range]{display:inline-block;box-sizing:content-box;width:129px;height:16px;margin:2px;padding:0;"
+    "border-width:0;tab-index:auto;pointer-events:auto;}\n"
+    "input[type=range] slidertrack{height:6px;margin:5px 0;background-color:#efefef;border-width:0;border-radius:3px;}\n"
+    "input[type=range] sliderbar{width:16px;height:16px;background-color:#0075ff;border-radius:8px;}\n"
+    "input[type=range] sliderprogress{height:6px;background-color:#0075ff;border-radius:3px;}\n"
+    "input[type=range] sliderarrowdec,input[type=range] sliderarrowinc{width:0;height:0;}\n"
     // RmlUi creates unstyled scrollbar elements on overflow. In particular,
     // an auto-width vertical scrollbar consumes the entire containing block.
     // Give both axes density-independent geometry and a visible drag handle.

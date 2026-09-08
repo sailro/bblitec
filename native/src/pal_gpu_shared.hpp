@@ -1041,10 +1041,11 @@ inline bool material_slot_srgb(
             // The slot's encoding is its TEXTURE's, which upstream stores as
             // the `Texture2D`'s own format: the record carries it for the
             // image and the fallback texel alike, so an image is not assumed
-            // to be sRGB because it is an image. Standard uploads linear
-            // whatever the record says.
-            return !standard_material &&
-                (material == nullptr || material->base_color_srgb);
+            // to be sRGB because it is an image. A transferred texture keeps
+            // the same encoding when a Standard diffuse slot takes it.
+            return standard_material
+                ? material != nullptr && material->diffuse_texture_srgb
+                : material == nullptr || material->base_color_srgb;
     }
     return false;
 }
@@ -1600,8 +1601,11 @@ inline std::vector<GpuVertex> transformed_vertices(
         std::size_t vertex_index = 0;
         vertex_index < source_vertices.size();
         ++vertex_index) {
-        const ModelVertex& vertex =
-            source_vertices[vertex_index];
+        const ModelVertex detached_vertex = mesh.detached_imported_mesh
+            ? detached_imported_vertex(mesh, geometry, vertex_index)
+            : ModelVertex{};
+        const ModelVertex& vertex = mesh.detached_imported_mesh
+            ? detached_vertex : source_vertices[vertex_index];
         const ModelVertex& normal_vertex =
             mesh.gpu_deformation && geometry.flat_normals
                 ? geometry.vertices[vertex_index]
@@ -1760,8 +1764,15 @@ inline std::vector<GpuVertex> transformed_vertices(
  *  a whole vertex buffer for every transform-only animation step. */
 inline std::vector<GpuVertex> local_vertices(
     const Engine& engine,
-    const ModelGeometry& geometry) {
+    const ModelGeometry& geometry,
+    const MeshRecord* source = nullptr) {
     static const MeshRecord identity_transform{};
+    if (source != nullptr && source->detached_imported_mesh) {
+        MeshRecord detached_transform;
+        detached_transform.primitive = source->primitive;
+        detached_transform.detached_imported_mesh = true;
+        return transformed_vertices(engine, geometry, detached_transform);
+    }
     return transformed_vertices(engine, geometry, identity_transform);
 }
 #endif
@@ -2650,6 +2661,18 @@ inline std::span<const upstream::PinnedShadowBinding> node_shadow_rows(
 }
 #endif
 
+/** Restore source winding after a loader baked a reflected node transform. */
+inline std::span<const std::uint32_t> node_source_indices(
+    const ModelGeometry& geometry,
+    std::vector<std::uint32_t>& scratch) {
+    if (!geometry.source_indices_reversed) return geometry.indices;
+    scratch = geometry.indices;
+    for (std::size_t index = 0; index < scratch.size(); index += 3) {
+        std::swap(scratch.at(index + 1), scratch.at(index + 2));
+    }
+    return scratch;
+}
+
 #if BBLITE_NODE_VARIANTS > 0
 /**
  * A node graph's two compiled views, as one index.
@@ -2715,18 +2738,6 @@ inline bool node_uses_local_attributes(std::size_t geometry_variant) {
     (void)geometry_variant;
     return false;
 #endif
-}
-
-/** The node adapter binds source indices, including after a glTF material swap. */
-inline std::span<const std::uint32_t> node_source_indices(
-    const ModelGeometry& geometry,
-    std::vector<std::uint32_t>& scratch) {
-    if (!geometry.source_indices_reversed) return geometry.indices;
-    scratch = geometry.indices;
-    for (std::size_t index = 0; index < scratch.size(); index += 3) {
-        std::swap(scratch.at(index + 1), scratch.at(index + 2));
-    }
-    return scratch;
 }
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
@@ -6197,11 +6208,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     if (engine.stopped) {
         return 0.0;
     }
-    const double delta_ms = frame_clock.advance(
-        frame_delta_ms > 0.0 ? frame_delta_ms : scene.fixed_delta_ms);
+    const double delta_ms = frame_clock.advance(frame_delta_ms);
     run_animation_frame_callbacks(engine);
+    const double scene_delta_ms = scene_callback_delta(scene, delta_ms);
     // The scene callback API is the engine's float delta.
-    const float callback_delta_ms = static_cast<float>(delta_ms);
+    const float callback_delta_ms = static_cast<float>(scene_delta_ms);
     // A callback may dispose its own scene while it is running. Snapshot the
     // dispatch list so clearing SceneState::before_render cannot destroy the
     // currently executing std::function (or invalidate the next iterator).
@@ -6217,12 +6228,13 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     const auto registered_scenes = engine.registered_scenes;
     for (const std::shared_ptr<Scene>& registered : registered_scenes) {
         if (!registered || registered->shares_identity(scene)) continue;
+        const auto registered_delta_ms = static_cast<float>(scene_callback_delta(*registered, delta_ms));
         const auto callbacks = registered->before_render;
         for (const auto& callback : callbacks) {
-            callback(callback_delta_ms);
+            callback(registered_delta_ms);
         }
     }
-    return delta_ms;
+    return scene_delta_ms;
 }
 
 /**

@@ -24,7 +24,7 @@ import {
     compileBrowserFileConstructor,
     compileBrowserFileElementAccess,
 } from "./browser-file.js";
-import { isParseFloatCallee } from "./browser-erasure.js";
+import { isNumberParserCallee, isParseFloatCallee } from "./browser-erasure.js";
 import type { ClassLowerer } from "./classes.js";
 import {
     compileCompressedJsonCall,
@@ -311,6 +311,7 @@ export class ExpressionLowerer {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        let assertedValue: Value | undefined;
         if (
             (ts.isAsExpression(expression) ||
                 ts.isTypeAssertionExpression(expression)) &&
@@ -320,6 +321,7 @@ export class ExpressionLowerer {
             )
         ) {
             const asserted = this.compileValue(expression.expression);
+            assertedValue = asserted;
             if (asserted.kind === "picked-node") {
                 return {
                     kind: "mesh",
@@ -349,11 +351,12 @@ export class ExpressionLowerer {
                 dataTypesEqual(sourceType.inner, assertedType)
             ) {
                 return this.context.dataLowerer.narrowOptional(
-                    this.compileValue(expression.expression),
+                    assertedValue ?? this.compileValue(expression.expression),
                     expression,
                 );
             }
         }
+        if (assertedValue) return assertedValue;
         const assertedNonNull =
             hasNonNullAssertion(expression);
         const unwrapped = this.context.unwrap(expression);
@@ -3766,6 +3769,25 @@ export class ExpressionLowerer {
             }
         }
 
+        if (isNumberParserCallee(callee, this.context, "parseInt")) {
+            this.context.expectArgumentCount(call, 1, 2);
+            const value = this.compileValue(call.arguments[0]!);
+            if (value.kind !== "string" && !(value.kind === "data" && value.dataType?.kind === "string")) {
+                this.context.fail(call.arguments[0]!, "Reached parseInt currently requires a string value.");
+            }
+            const radix = call.arguments[1] ? this.compileValue(call.arguments[1]) : undefined;
+            if (radix && (radix.kind !== "number" || radix.staticNumber === undefined || radix.parameterBinding ||
+                !Number.isInteger(radix.staticNumber) || (radix.staticNumber !== 0 && (radix.staticNumber < 2 || radix.staticNumber > 36)))) {
+                this.context.fail(call.arguments[1]!, "Reached parseInt requires a literal radix 0 or 2 through 36.");
+            }
+            this.context.reachJsData();
+            return {
+                kind: "number", dataType: {kind: "number"},
+                cpp: radix?.staticNumber === 10 ? `bbl::js::parse_int_decimal(${value.cpp})`
+                    : `bbl::js::parse_int(${value.cpp}, ${radix?.staticNumber ?? 0})`,
+            };
+        }
+
         if (!ts.isIdentifier(callee)) {
             const isArray = compileIsArrayOverData(
                 this.context.dataLowerer,
@@ -3826,44 +3848,6 @@ export class ExpressionLowerer {
             );
         }
 
-        if (
-            callee.text === "parseInt" &&
-            this.context.isDefaultLibraryIdentifier(callee)
-        ) {
-            this.context.expectArgumentCount(call, 1, 2);
-            if (call.arguments[1]) {
-                const radix = this.compileValue(call.arguments[1]);
-                if (
-                    radix.kind !== "number" ||
-                    radix.staticNumber !== 10 ||
-                    radix.parameterBinding
-                ) {
-                    this.context.fail(
-                        call.arguments[1],
-                        "Reached parseInt currently requires the literal radix 10.",
-                    );
-                }
-            }
-            const value = this.compileValue(call.arguments[0]!);
-            if (
-                value.kind !== "string" &&
-                !(
-                    value.kind === "data" &&
-                    value.dataType?.kind === "string"
-                )
-            ) {
-                this.context.fail(
-                    call.arguments[0]!,
-                    "Reached parseInt currently requires a string value.",
-                );
-            }
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::parse_int_decimal(${value.cpp})`,
-                dataType: { kind: "number" },
-            };
-        }
         if (
             callee.text === "Number" &&
             !this.context.lookupOptional(callee)
@@ -4000,6 +3984,8 @@ export class ExpressionLowerer {
         if (thinInstanceUpload) {
             return thinInstanceUpload;
         }
+        const ownerMap = this.context.handleCollections.compileAssetOwnerMap(call, callee);
+        if (ownerMap) return ownerMap;
         const assetNode =
             this.context.handleCollections.compileAssetDescendantNameSearch(
                 call,

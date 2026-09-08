@@ -87,7 +87,7 @@ interface PropertyRead {
   /** Presence expression for an optional value whose owner is not a handle. */
   optionalFound?: (ownerCpp: string, engineCpp?: string) => string;
   /** Concrete storage used by a Texture2D-valued native property. */
-  textureStorage?: "file";
+  textureStorage?: "file" | "stored";
   /** JavaScript object/typed-array truthiness for a retained native value. */
   alwaysTruthy?: true;
   /**
@@ -634,6 +634,7 @@ export const propertyRules: readonly PropertyRule[] = [
     owner: "material",
     property: "baseColorTexture",
     value: "texture",
+    textureStorage: "stored",
     helper: "bbl::material_source_texture",
     feature: "material:source-texture-read",
     helperTakesEngine: true,
@@ -655,6 +656,7 @@ export const propertyRules: readonly PropertyRule[] = [
     owner: "material",
     property: "diffuseTexture",
     value: "texture",
+    textureStorage: "stored",
     helper: "bbl::material_source_texture",
     feature: "material:source-texture-read",
     helperTakesEngine: true,

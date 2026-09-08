@@ -10,6 +10,8 @@ import {
 } from "./compiler/assets.js";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { TextLowerer } from "./lowering/text-lowerer.js";
+import { TextLayoutLowerer } from "./lowering/text-layout-lowerer.js";
+import { TextDataUpdateLowerer } from "./lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "./lowering/text-gpu-lowerer.js";
 import { cameraChangeKeyHeader } from "./lowering/camera-change-key-lowerer.js";
 import type { CompiledTextData } from "./pinned-text-data.js";
@@ -32,6 +34,7 @@ import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.js";
 import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
+import { physicsDebugCatalogPath, renderPhysicsDebugCatalog } from "./physics-debug-catalog.js";
 import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { PickingLowerer } from "./lowering/picking-lowerer.js";
@@ -750,7 +753,7 @@ class GeneratedSourceWriter {
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
         if (features.includes("text:renderable")) {
             const unsupported = features.find((feature) =>
-                /^(material:|mesh:|loader:|sprite:|particle:|animation:|background:|shadow:|light:clustered|frame-graph:|effect:|ui:|platform:workers|renderer:(frame-graph|post-process|screen-space|geometry-output|transmission|sprite|canvas|effect|high-precision-matrix|floating-origin)|camera:(arc-rotate|default|geospatial|orthographic))/.test(feature));
+                /^(material:|mesh:|loader:|sprite:|particle:|animation:|background:|shadow:|light:clustered|frame-graph:|effect:|platform:workers|renderer:(frame-graph|post-process|screen-space|geometry-output|transmission|sprite|canvas|effect|high-precision-matrix|floating-origin)|camera:(default|geospatial|orthographic))/.test(feature));
             if (unsupported) throw new Error(`Text rendering with '${unsupported}' requires unrepresented merged draw ordering or camera/task transport${refusalReachedFrom(options.featureSites, unsupported)}.`);
         }
         if (options.postProcessComposites?.some((task) => task.taa)) {
@@ -1114,11 +1117,15 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         if (features.includes("text:data")) {
             const text = new TextLowerer(context);
             this.tree.write("upstream/include/bblite/upstream_text.hpp", text.header());
+            if (features.includes("text:layout")) {
+                this.tree.write("upstream/include/bblite/upstream_text_layout.hpp", new TextLayoutLowerer(context).header());
+                this.tree.write("upstream/include/bblite/upstream_text_update.hpp", new TextDataUpdateLowerer(context).header());
+            }
             this.writeSource("upstream/src/text_data.cpp", {
                 modulePath: "src/text/default-text-data.ts",
                 symbolName: "createDefaultTextData",
                 header: "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl { TextData create_compiled_text_data(std::uint32_t index); }\n",
-                source: "#include <bblite/upstream_text.hpp>\n#include <bblite/pal.hpp>\nnamespace bbl {\nTextData create_compiled_text_data(std::uint32_t index) {\n    switch (index) {\n" +
+                source: "#include <bblite/upstream_text.hpp>\n#include <bblite/pal.hpp>\n" + (features.includes("text:layout") ? "#include <bblite/upstream_text_update.hpp>\n" : "") + "namespace bbl {\nTextData create_compiled_text_data(std::uint32_t index) {\n    switch (index) {\n" +
                     (options.textData ?? []).map((row) => `    case ${row.id}: return ${text.dataExpression(row, (blob) => `bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(blob.assetOutput)}))`)};`).join("\n") +
                     "\n    default: throw std::out_of_range(\"Compiled text data index\");\n    }\n}\n}\n",
             }, generated, "upstream/include/bblite/upstream/text_data.hpp");
@@ -1148,7 +1155,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             features.includes("camera:view-projection")
         ) {
             const cameraLowerer = new CameraLowerer(context,
-                options.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask"));
+                features.includes("text:renderable") || options.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask"));
             this.writeSource(
                 "upstream/src/camera_arc_rotate.cpp",
                 cameraLowerer.lowerArcRotateFactory(
@@ -1400,6 +1407,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     dynamicThinInstances: features.includes(
                         "mesh:thin-instances-dynamic",
                     ),
+                    meshClones: features.includes("mesh:clone"),
                     nonTrianglePrimitives:
                         options.nonTrianglePrimitives,
                     gaussianSplats: options.gaussianSplats,
@@ -1471,6 +1479,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     options.standardLightLists,
                     options.standardDiffuseUv2,
                     options.standardBump,
+                    features.includes("mesh:clone"),
                 ),
                 generated,
             );
@@ -2536,10 +2545,21 @@ ${composed.wgsl}`,
         if (features.includes("physics:world")) {
             this.writeSource(
                 "upstream/src/physics.cpp",
-                new PhysicsLowerer(context).lowerPhysics(features.includes("physics:queries")),
+                new PhysicsLowerer(context).lowerPhysics(
+                    features.includes("physics:queries"),
+                    features.includes("physics:container"),
+                    features.includes("physics:viewer"),
+                    features.includes("physics:constraints"),
+                ),
                 generated,
                 "upstream/include/bblite/upstream/physics.hpp",
             );
+            if (features.includes("physics:viewer")) {
+                this.writeSource(physicsDebugCatalogPath, {
+                    modulePath: "src/physics/havok.ts", symbolName: "getPhysicsBodyDebugGeometry",
+                    header: "", source: renderPhysicsDebugCatalog([]),
+                }, generated);
+            }
         }
         if (
             features.includes("mesh:tube") ||

@@ -733,6 +733,8 @@ export interface CompiledShaderProgram {
   needAlphaTesting: boolean;
   backFaceCulling: boolean;
   depthWrite: boolean;
+  /** Explicit material compare; absent uses the pinned pass convention. */
+  depthCompare?: string;
   /**
    * The pin's own `_topology`, absent where it resolves
    * `material._topology ?? "triangle-list"`. A line material is the one
@@ -1381,6 +1383,7 @@ export type ValueKind =
   | "clustered-light-container"
   | "clustered-light"
   | "physics-world"
+  | "physics-viewer"
   | "physics-aggregate"
   | "physics-body"
   | "physics-shape"
@@ -1890,7 +1893,7 @@ export interface Value {
    */
   classHoistedAssignment?: ts.BinaryExpression;
   /** The concrete native texture record produced by a texture factory. */
-  textureStorage?: "file" | "pixels" | "solid" | "render";
+  textureStorage?: "file" | "pixels" | "solid" | "render" | "stored";
   /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
   csmReceiverGeneratorIndex?: number;
   textureFile?: {
@@ -2385,6 +2388,7 @@ export interface Value {
 
 export type Feature =
   | "text:data"
+  | "text:layout"
   | "text:renderable"
   | "animation:gltf-groups"
   | "animation:property"
@@ -2490,6 +2494,7 @@ export type Feature =
   | "mesh:torus-knot"
   | "mesh:tube"
   | "mesh:parenting"
+  | "mesh:clone"
   | "mesh:geometry-access"
   | "mesh:visible"
   | "mesh:pickable"
@@ -2517,6 +2522,9 @@ export type Feature =
   | "physics:world"
   | "physics:aggregate"
   | "physics:queries"
+  | "physics:container"
+  | "physics:viewer"
+  | "physics:constraints"
   | "physics:trigger"
   | "physics:floating-origin"
   | "scene:remove"

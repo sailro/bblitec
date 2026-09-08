@@ -1,4 +1,5 @@
 #pragma once
+#include <bblite/pal_construction.hpp>
 
 // CMake selects these for each build. Direct native fixtures use the full PAL.
 #ifndef BBLITE_VISUAL_CAPTURE

@@ -22,11 +22,34 @@ export class TextLowerer {
             `{${readBlob(value.bytes)}, ${value.count}, ${value.strideBytes}, ${value.capacityBytes}}`;
         const texture = (value: CompiledTextData["atlases"][number]["curves"]) =>
             `{${readBlob(value.bytes)}, ${value.width}, ${value.height}, ${value.usedTexels}}`;
-        return `bbl::create_text_data(bbl::TextDataPayload{${data.width}, ${data.height}, ` +
+        const expression = `bbl::create_text_data(bbl::TextDataPayload{${data.width}, ${data.height}, ` +
             `${data.versions.data}, ${data.versions.style}, ${data.versions.layout}, ${data.dirtyRange.start}, ${data.dirtyRange.end}, ` +
             `${stream(data.instances)}, ${stream(data.styles)}, {` + data.atlases.map((atlas) =>
                 `{${cppStringLiteral(atlas.curveSetId)}, ${atlas.version}, ${texture(atlas.curves)}, ${texture(atlas.bands)}, ${stream(atlas.metadata)}}`).join(", ") +
             `}, {${data.groups.map((group) => `{${group.atlasIndex}, ${cppStringLiteral(group.groupKey)}, ${group.slotStart}, ${group.slotCount}, ${group.liveCount}, {}}`).join(", ")}}})`;
+        if (!data.live) return expression;
+        const options = data.layout.options;
+        return `[&] {
+            auto result = ${expression};
+            auto live = std::make_shared<bbl::TextLiveData>();
+            live->font = bbl::pal::create_text_layout_font(bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(data.font.assetOutput)})));
+            live->font_size = ${data.layout.fontSizePx};
+            live->options = {${options?.maxWidth ?? "std::numeric_limits<double>::infinity()"}, ${options?.lineHeight ?? 1.2}, ${cppStringLiteral(options?.align ?? "left")}, ${options?.letterSpacing ?? 0}, ${options?.tabSize ?? 4}};
+            live->glyph_slots = {${data.live.glyphSlots.join(",")}};
+            live->slots = {${data.live.slots.join(",")}};
+            live->free_slots = {${data.live.freeSlots.join(",")}};
+            live->color = {${(data.layout.color ?? [1,1,1,1]).join(",")}};
+            live->instances.resize(${data.instances.capacityBytes}/sizeof(float));
+            if(!result->payload->instances.bytes.empty())std::memcpy(live->instances.data(),result->payload->instances.bytes.data(),result->payload->instances.bytes.size());
+            live->styles.resize(${data.styles.capacityBytes}/sizeof(float));
+            if(!result->payload->styles.bytes.empty())std::memcpy(live->styles.data(),result->payload->styles.bytes.data(),result->payload->styles.bytes.size());
+            live->instance_count=${data.instances.count}; live->style_count=${data.styles.count};
+            live->slot_count=${data.groups[0]!.slotCount};
+            live->version=${data.versions.data}; live->style_version=${data.versions.style}; live->layout_version=${data.versions.layout};
+            live->dirty_start=${data.dirtyRange.start}; live->dirty_end=${data.dirtyRange.end};
+            result->live = std::move(live);
+            return result;
+        }()`;
     }
 
     public header(): string {
@@ -138,7 +161,7 @@ inline bool get_text_alpha_to_coverage(const TextRenderableState& r) { return r.
         return `// ${c.provenance(module, "createTextRenderable")}
 inline TextData create_text_data(TextDataPayload payload) {
     auto data = std::make_shared<TextDataState>();
-    data->payload = std::make_shared<const TextDataPayload>(std::move(payload));
+    data->payload = std::make_shared<TextDataPayload>(std::move(payload));
     data->groups = data->payload->groups;
     data->instance_count = data->payload->instances.count;
     data->style_count = data->payload->styles.count;

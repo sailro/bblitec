@@ -43,6 +43,14 @@ export function compileAdaptations(
     features: Feature[],
 ): CompileAdaptation[] {
     const adaptations: CompileAdaptation[] = [];
+    if (features.includes("text:layout")) {
+        adaptations.push({
+            id: "native-live-text-shaping", category: "platform", risk: "medium",
+            sourceSemantics: "The pinned text-shaper library shapes live text and extracts newly reached glyph curves into each DefaultTextData atlas.",
+            nativeSemantics: "HarfBuzz shapes the packaged font at native runtime; layout and numeric packing use pinned AST. Generation executes the pinned curve extractor and atlas packer over the complete font repertoire. Atlas allocation and glyph indices are materialized ahead of input; DefaultTextData retains its single run, live slot allocator, palette and dimensions.",
+            validation: ["text-layout native/pinned shaping differential", "text-data-update byte, slot and version differential", "scene181 text input, camera and resize observations on both backends"],
+        });
+    }
     if (features.includes("material:local-cubemap")) {
         adaptations.push({
             id: "static-local-cubemap-packets", category: "asset-materialization", risk: "medium",
@@ -594,6 +602,15 @@ export function compileAdaptations(
                 "regression-thin-instance-pool on both backends: a pool " +
                     "that grows, shrinks and empties draws what its count says",
             ],
+        });
+    }
+    if (features.includes("physics:viewer")) {
+        adaptations.push({
+            id: "materialized-physics-debug-geometry", category: "asset-materialization",
+            sourceSemantics: "The pinned viewer asks Havok HP_Shape_CreateDebugDisplayGeometry for the body's current shape and follows its source node each frame.",
+            nativeSemantics: "A compiler-generated startup construction entry records complete pre-solver HP_Shape inputs. A Node Havok WASM producer materializes only shape-local triangle geometry. The normal binary requires exact descriptor equality; body poses and motion stay live. Extraction refuses clocks, physics steps, renderer/input execution, external storage and observable debug membership. Unread direct instrumentation clocks are omitted; observed show/hide results and constraint overlays are not admitted.",
+            risk: "high",
+            validation: ["complete descriptor and producer drift/refusal tests", "viewer lifecycle and native constructor extraction controls", "both-backend image parity and live scene controls"],
         });
     }
     if (features.includes("physics:world")) {

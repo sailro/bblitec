@@ -6618,7 +6618,8 @@ DawnPipeline& pipeline_for(
         ? WGPUOptionalBool_False
         : WGPUOptionalBool_True;
     depth_stencil.depthCompare =
-        dawn_depth_compare(pass_depth_compare(shadow_pass));
+        dawn_depth_compare(shader_info && shader_info->depth_compare
+            ? *shader_info->depth_compare : pass_depth_compare(shadow_pass));
     // Depth-less render-task targets need attachment-compatible
     // pipelines; WebGPU validates what SDL_GPU tolerated.
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
@@ -10589,12 +10590,22 @@ SceneRun run_dawn_engine(Engine& engine) {
         [&](const upstream::RenderItem& item) {
         const ModelGeometry& geometry = engine.geometries[item.geometry];
         const MeshRecord& mesh_record = engine.meshes[item.mesh.value];
+        const bool use_source_indices = mesh_record.detached_imported_mesh
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            || item.material_kind == upstream::RenderMaterialKind::node
+#endif
+            ;
+        std::vector<std::uint32_t> source_indices;
+        if (use_source_indices && geometry.source_indices_reversed) {
+            node_source_indices(geometry, source_indices);
+        }
+        const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
         const bool shader_material =
             item.material_kind ==
             upstream::RenderMaterialKind::shader;
         const std::vector<GpuVertex> vertices =
             shader_material
-                ? local_vertices(engine, geometry)
+                ? local_vertices(engine, geometry, &mesh_record)
                 : transformed_vertices(engine, geometry, mesh_record);
         DawnMesh mesh(state);
         if (shader_material) {
@@ -10609,16 +10620,16 @@ SceneRun run_dawn_engine(Engine& engine) {
             mesh.indices = create_buffer(
                 state,
                 WGPUBufferUsage_Index,
-                geometry.indices.data(),
-                geometry.indices.size() * sizeof(std::uint32_t));
+                upload_indices.data(),
+                upload_indices.size() * sizeof(std::uint32_t));
 #else
             const SharedGeometryIdentity identity =
-                shared_geometry_identity(vertices, geometry.indices);
+                shared_geometry_identity(vertices, upload_indices);
             mesh.shared_geometry = find_shared_shader_geometry(
                 state.shared_shader_geometries,
                 identity,
                 vertices,
-                geometry.indices);
+                upload_indices);
             if (!mesh.shared_geometry) {
                 const bool keep_bytes = shared_geometry_keeps_bytes(vertices);
                 auto created = std::make_unique<DawnSharedShaderGeometry>(
@@ -10628,7 +10639,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                             ? vertices
                             : std::vector<GpuVertex>{},
                         .indices = keep_bytes
-                            ? geometry.indices
+                            ? upload_indices
                             : std::vector<std::uint32_t>{},
                     });
                 state.shared_shader_geometries.push_back(std::move(created));
@@ -10645,20 +10656,13 @@ SceneRun run_dawn_engine(Engine& engine) {
                 mesh.shared_geometry->index_buffer = create_buffer(
                     state,
                     WGPUBufferUsage_Index,
-                    geometry.indices.data(),
-                    geometry.indices.size() * sizeof(std::uint32_t));
+                    upload_indices.data(),
+                    upload_indices.size() * sizeof(std::uint32_t));
             }
             mesh.vertices = mesh.shared_geometry->vertex_buffer;
             mesh.indices = mesh.shared_geometry->index_buffer;
 #endif
         } else {
-            std::vector<std::uint32_t> source_indices;
-            std::span<const std::uint32_t> indices = geometry.indices;
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-            if (item.material_kind == upstream::RenderMaterialKind::node) {
-                indices = node_source_indices(geometry, source_indices);
-            }
-#endif
             mesh.vertices = create_buffer(
                 state,
                 WGPUBufferUsage_Vertex,
@@ -10667,11 +10671,11 @@ SceneRun run_dawn_engine(Engine& engine) {
             mesh.indices = create_buffer(
                 state,
                 WGPUBufferUsage_Index,
-                indices.data(), indices.size_bytes());
+                upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
             if (item.material_kind == upstream::RenderMaterialKind::node) {
                 state.node_capture.upload(mesh.vertices, "node-vertices", vertices.data(), vertices.size() * sizeof(GpuVertex));
-                state.node_capture.upload(mesh.indices, "node-indices", indices.data(), indices.size_bytes());
+                state.node_capture.upload(mesh.indices, "node-indices", upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
             }
 #endif
         }

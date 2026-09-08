@@ -428,6 +428,7 @@ export function lowerPinnedFunction(
         arrayCopy?: PinnedNumericScope["arrayCopy"];
         /** See `PinnedNumericScope.matrixCalls`. */
         matrixCalls?: ReadonlySet<string>;
+        nullableMatrixCalls?: ReadonlySet<string>;
         /** See `PinnedNumericScope.recordCalls`. */
         recordCalls?: ReadonlyMap<string, readonly string[]>;
         /** See `PinnedNumericScope.tupleCalls`. */
@@ -594,6 +595,7 @@ export function lowerPinnedFunctionParts(
         ...(options.methods ? { methods: options.methods } : {}),
         ...(options.arrayCopy ? { arrayCopy: options.arrayCopy } : {}),
         ...(options.matrixCalls ? { matrixCalls: options.matrixCalls } : {}),
+        ...(options.nullableMatrixCalls ? { nullableMatrixCalls: options.nullableMatrixCalls } : {}),
         ...(options.recordCalls ? { recordCalls: options.recordCalls } : {}),
         ...(options.tupleCalls ? { tupleCalls: options.tupleCalls } : {}),
         ...(options.fixedTupleCalls

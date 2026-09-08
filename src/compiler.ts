@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { framePollExecutor } from "./compiler/frame-poll.js";
+import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
 import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
@@ -1038,7 +1039,7 @@ class Compiler
                 "Numeric material-color reads currently support one registered scene; independent material-group UBO snapshots are not represented.");
         }
         if (this.features.has("text:renderable")) {
-            const camera = this.textCameraMutation ?? this.temporalControlAttachment ?? this.untrackedTaaCameraWrites[0]?.node;
+            const camera = this.textCameraMutation ?? this.untrackedTaaCameraWrites[0]?.node;
             if (camera) this.fail(camera, "Text currently requires a static camera; live camera writers and controls are not represented.");
             if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
                 "Text currently supports one registered scene; layered text update/draw ordering is not represented.");
@@ -1269,6 +1270,9 @@ class Compiler
         const emitted: string[] = [];
         const ids = new Set<string>();
         for (const rule of nativeHostUiStyleRules(hostUi)) {
+            if (Compiler.fractionalUiGridTracks(rule.style)) {
+                this.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
+            }
             const identifier = /^[A-Za-z_][A-Za-z0-9_-]*$/;
             if (!identifier.test(rule.primary)) {
                 this.failAtFile(
@@ -1329,6 +1333,10 @@ class Compiler
                 this.failAtFile(
                     `Native host UI element tag '${element.tag}' is reserved for the retained projection.`,
                 );
+            }
+            const fractionalTracks = Compiler.fractionalUiGridTracks(element.attributes?.style ?? "");
+            if (fractionalTracks && (element.text || element.children?.length !== fractionalTracks.length)) {
+                this.failAtFile("A fractional host grid requires exactly one element child per track.");
             }
             const handle = this.allocateTemporaryCppName("host_ui_element");
             emitted.push(
@@ -2005,6 +2013,10 @@ class Compiler
 
     private textAttachmentReached = false;
     private textCameraMutation: ts.Node | undefined;
+
+    public noteTextCameraControl(node: ts.Node, camera: Value, arcRotate: boolean): void {
+        if (!arcRotate || (camera.cameraKind !== undefined && camera.cameraKind !== "arc-rotate")) this.textCameraMutation ??= node;
+    }
 
     public noteTextSceneLifecycle(node: ts.Node, message = "Text scene disposal, removal and explicit rebuilding require retained binding topology that is not represented."): void {
         this.deferredAdmissionFailures.push({ capability: "text", node, message });
@@ -5344,6 +5356,7 @@ class Compiler
         "border",
         "border-color",
         "border-radius",
+        "box-sizing",
         "bottom",
         "color",
         "cursor",
@@ -5373,6 +5386,7 @@ class Compiler
         "pointer-events",
         "position",
         "right",
+        "resize",
         "text-align",
         "text-shadow",
         "top",
@@ -5497,6 +5511,7 @@ class Compiler
         );
     private static readonly UI_IMPLEMENTATION_TAGS = new Set([
         "bbl-grid-children",
+        "bbl-grid-track",
     ]);
 
     /** The gradient-text projection trigger both the audit and the
@@ -5537,6 +5552,15 @@ class Compiler
             Compiler.DISPLAY_GRID_PATTERN.test(declarations) &&
             Compiler.GRID_TEMPLATE_COLUMNS_PATTERN.test(declarations)
         );
+    }
+
+    private static fractionalUiGridTracks(declarations: string): string[] | undefined {
+        if (Compiler.uiLastStyleProperty(declarations, "display") !== "grid") return undefined;
+        const value = Compiler.uiLastStyleProperty(declarations, "grid-template-columns");
+        const tracks = value?.trim().split(/\s+/);
+        return tracks && tracks.length > 1 && tracks.some(track => track.endsWith("fr")) &&
+            tracks.every(track => /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|fr)$/.test(track) && parseFloat(track) > 0)
+            ? tracks : undefined;
     }
 
     private static normalizeUiGridJustification(
@@ -5788,6 +5812,7 @@ class Compiler
         const hasGradientBackground =
             Compiler.GRADIENT_TEXT_BACKGROUND_PATTERN.test(value);
         const projectsGrid = Compiler.projectsUiGrid(value);
+        const fractionalTracks = Compiler.fractionalUiGridTracks(value);
         const gridProjection = Compiler.uiGridProjection(value);
         const finalDisplay = Compiler.uiLastStyleProperty(value, "display")
             ?.trim()
@@ -5865,6 +5890,10 @@ class Compiler
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (property === "box-sizing" && !/^(?:content-box|border-box)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only content-box and border-box are represented");
+            }
+            if (property === "resize" && literalValue !== "vertical" && literalValue !== "none") this.uiStyleRefusal(site, property, "only vertical or none form-control resizing is represented");
             if (property === "mix-blend-mode") {
                 if (literalValue !== "difference") {
                     this.uiStyleRefusal(
@@ -5955,6 +5984,7 @@ class Compiler
                 property === "grid-template-columns" ||
                 property === "grid-template-rows"
             ) {
+                if (property === "grid-template-columns" && fractionalTracks) return;
                 if (
                     !projectsGrid ||
                     (property === "grid-template-rows" &&
@@ -5978,7 +6008,7 @@ class Compiler
             if (
                 property === "display" &&
                 /\bgrid\b/.test(literalValue) &&
-                !projectsGrid
+                !projectsGrid && !fractionalTracks
             ) {
                 this.uiStyleRefusal(
                     site,
@@ -6454,7 +6484,13 @@ class Compiler
         // full-width outer box with a centred wrapping-flex inner box. Keeping
         // those boxes separate matters: in the browser the Tetris preview's
         // background spans the panel while only its 4x4 cells are centred.
-        if (Compiler.projectsUiGrid(lowered)) {
+        const fractionalTracks = Compiler.fractionalUiGridTracks(lowered);
+        if (fractionalTracks) {
+            lowered = lowered
+                .replace(/\bdisplay\s*:\s*grid\b/gi, "display:flex")
+                .replace(/\bgrid-template-columns\s*:[^;]+;?/gi, "") +
+                `;--bbl-fr-grid-tracks:${fractionalTracks.join(" ")};`;
+        } else if (Compiler.projectsUiGrid(lowered)) {
             this.uiSawGridDeclaration = true;
             const grid = Compiler.uiGridProjection(lowered)!;
             const shrinkToTracks =
@@ -7828,6 +7864,19 @@ class Compiler
             ancestorsById: new Map(),
         };
         try {
+            for (const [id, element] of this.uiStaticElements) {
+                const tracks = this.uiStaticElementStylePropertyValues(id, "--bbl-fr-grid-tracks");
+                if ([...tracks].some(value => value !== undefined) && (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown)) {
+                    this.failAtFile("A fractional UI grid requires one stable track list in a statically known style cascade.");
+                }
+                for (const value of tracks) {
+                    if (value === undefined) continue;
+                    const count = value.trim().split(/\s+/).length;
+                    if (!element.childShapeKnown || !element.childCardinalityKnown || element.children.size !== count || element.markupChildren.length) {
+                        this.failAtFile("A fractional UI grid requires one statically known element child per track.");
+                    }
+                }
+            }
             const anyGrid =
                 this.uiSawGridDeclaration ||
                 this.uiStyleRules.some((rule) => rule.grid !== undefined) ||
@@ -8824,6 +8873,10 @@ class Compiler
         const directElement = this.uiElementValue(expression.left.expression);
         if (directElement) {
             const engine = this.requireEngine(directElement, expression.left);
+            if (property === "value" && (directElement.uiTag === "textarea" || directElement.uiTag === "input") && !directElement.uiFileInput) {
+                this.emit(`bbl::ui_set_form_value(${engine}, ${directElement.cpp}, ${this.uiStringCpp(expression.right, "Form value")});`);
+                return true;
+            }
             const browserFile = this.compileUiBrowserFileAttribute(
                 directElement,
                 engine,
@@ -9551,6 +9604,10 @@ class Compiler
         // receiver was just constructed or came out of an array.
         const owner = this.classLowerer.hydrate(rawOwner) ?? rawOwner;
         const property = expression.name.text;
+        if (owner.kind === "physics-viewer" && property === "scene") {
+            return { kind: "scene", cpp: `(${owner.cpp})->scene`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}) };
+        }
         if (owner.kind === "scene" && property === "_envTextures") {
             this.reachFeature("engine:device-recovery", expression);
             return { kind: "gpu-environment", cpp: `bbl::environment_identity(${owner.cpp})`, engineCpp: this.requireEngine(owner, expression), dataType: { kind: "handle", handle: "gpu-environment" }, impure: true };
@@ -9576,6 +9633,10 @@ class Compiler
         }
         if (owner.kind === "ui-element" && property === "dataset") {
             return { ...owner, uiDataset: true };
+        }
+        if (owner.kind === "ui-element" && property === "value" && (owner.uiTag === "textarea" || owner.uiTag === "input") && !owner.uiFileInput) {
+            return { kind: "string", cpp: `bbl::ui_get_form_value(${this.requireEngine(owner, expression)}, ${owner.cpp})`,
+                dataType: { kind: "string" }, freshData: true };
         }
         if (owner.kind === "ui-element" && owner.uiDataset) {
             const dataName = property.replace(
@@ -9994,8 +10055,7 @@ class Compiler
         }
         if (value.kind === "mesh" && value.sceneMeshIndex !== undefined) {
             const index = value.sceneMeshIndex;
-            this.sceneMeshes[index]!.runtimeInstances = true;
-            ++this.runtimeMeshProfileCount;
+            this.recordRuntimeMeshProfile(index);
             value.sceneMeshProfileIndex = index;
             delete value.sceneMeshIndex;
             value.cpp = `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
@@ -10371,6 +10431,20 @@ class Compiler
         options: ReachedLineMaterial,
     ): { name: string; id: number } {
         return reachLineMaterialProgram(this, node, options);
+    }
+
+    public reachPhysicsViewerMaterial(node: ts.Node, color: readonly [number, number, number, number]): { name: string; id: number } {
+        return reachPhysicsViewerMaterialProgram(this, node, color);
+    }
+
+    public recordRuntimeMeshProfile(index: number): void {
+        if (this.sceneMeshes[index]!.runtimeInstances) return;
+        this.sceneMeshes[index]!.runtimeInstances = true;
+        ++this.runtimeMeshProfileCount;
+    }
+
+    public guardStaticConstructionRead(operation: string): void {
+        if (this.features.has("physics:viewer")) this.emit(`bbl::pal::require_runtime_execution(${this.cppString(operation)});`);
     }
 
     public reachLinearDepthMaterial(
@@ -16278,6 +16352,7 @@ class Compiler
                 event !== "pointercancel" &&
                 event !== "lostpointercapture" &&
                 event !== "change" &&
+                event !== "input" &&
                 event !== "contextmenu"
             ) {
                 this.fail(
@@ -20603,6 +20678,13 @@ class Compiler
         if (this.presentationHostCpp && this.defaultEngineCpp !== this.presentationHostCpp) {
             this.failAtFile("A primary Canvas2D presentation host cannot also acquire a source-created GPU engine.");
         }
+        let physicsDebugConstructionBody: string[] | undefined;
+        if (features.includes("physics:viewer")) {
+            if (!this.engineStartMark || this.options.workers || this.presentationHostCpp || this.engineStartMark.indentLevel !== 2) {
+                this.failAtFile("Physics debug geometry extraction requires one top-level startEngine after the admitted construction graph.");
+            }
+            physicsDebugConstructionBody = this.body.slice(0, this.engineStartMark.index);
+        }
         this.hoistEngineContinuation();
         if (
             this.body.some(
@@ -20648,6 +20730,7 @@ class Compiler
             nativeFunctionDefinitions: this.nativeFunctionDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
             voxelFileStorageReached: this.voxelFileStorageReached,
+            ...(physicsDebugConstructionBody ? { physicsDebugConstructionBody } : {}),
             body: this.presentationHostCpp
                 ? [
                     `        auto ${this.presentationHostCpp} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,

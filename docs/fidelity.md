@@ -182,13 +182,23 @@ document's graph list, filled at load.
 
 ## Physics contract
 
+Body debug geometry is materialized by Node Havok WASM from complete HP shape constructor inputs.
+A generated startup entry extracts inputs before `startEngine`; clocks, physics steps, renderer/input execution,
+external storage and observable debug membership refuse. Only unread direct instrumentation clocks are omitted.
+Source/assets/compiler/native/tool identities and descriptors are recorded in `physics-debug-geometry.json`;
+native matching compares every descriptor field. No body poses, trajectories, frames or reference pixels are baked.
+
 The generated Babylon layer targets Bullet; the browser uses Havok.
+
+HINGE anchors and default perpendicular vectors come from the pin; Bullet supplies the hinge solver.
+Degenerate anchor axes and constraints between bodies in different worlds refuse.
 Identical trajectories are not guaranteed. Solver substitutions include substeps,
 speculative contacts, rebound reconstruction, damping/speed conversion and rest
 stabilization. The rebound rule is fitted behavior, not ported Havok internals.
 
 Default physics follows variable frame delta, capped at 100 ms. Explicit
-scene/world fixed steps advance once per rendered frame; there is no automatic
+scene/world fixed steps advance once per rendered frame, including the initial zero engine delta.
+Each scene resolves its callback delta once per update; there is no automatic
 fixed-frequency accumulator. Applications must supply fixed-step scheduling.
 Preserve authored overrides in browser/native comparisons.
 
@@ -197,6 +207,9 @@ trigger events and combine modes are explicit library boundaries. Degenerate
 boxes expand below Bullet's margin with a positive-face limitation.
 Triangle-mesh storage outlives its shapes. Static bodies use Bullet's BVH;
 dynamic bodies use GImpact with its approximate inertia over the same triangles.
+Container placement translates the pinned inverse/product/decomposition path. Bullet convex support
+instances preserve child-local offsets, rotation and nonuniform scale without mutating shared geometry.
+Container inertia uses Bullet's approximation; child material/filter/trigger differences refuse.
 Floating-origin regions are separate worlds and do not collide with one another.
 
 Convex proximity uses Bullet GJK/EPA; casts use its convex sweep. Cylinder queries use a measured rounded
@@ -217,6 +230,11 @@ and sleep traces. Remaining capabilities and residuals belong in [TODO](../TODO.
 Pinned producers shape/pack static text. Lowered transforms retain doubles until
 source float stores; uniform updates preserve their independent invalidation
 conditions. TextData retains distinct mutable identity even when blobs deduplicate.
+
+Live layout uses HarfBuzz over the packaged font and pinned AST layout/packing.
+Generation runs the pinned extractor/atlas packer over the complete font repertoire;
+atlas allocation and indices therefore precede input. DefaultTextData keeps its
+single run, slot reuse, dirty ranges, palette versions and live dimensions.
 
 Group caches belong to TextData. Shared data can retain the first renderable's
 UBO/style bindings until source invalidation rebuilds a group. Disposal releases

@@ -11,6 +11,7 @@ import { reachesShadowGenerator } from "../shadow-capabilities.js";
 
 export const featureSources: Record<Feature, string[]> = {
     "text:data": [],
+    "text:layout": ["src/pal_text_layout.cpp"],
     "text:renderable": [],
     "animation:gltf-groups": [],
     "animation:property": [],
@@ -132,6 +133,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:torus-knot": [],
     "mesh:tube": [],
     "mesh:parenting": [],
+    "mesh:clone": [],
     "mesh:geometry-access": [],
     "math:normalize-vec3": [],
     "math:mat4-invert": [],
@@ -179,6 +181,9 @@ export const featureSources: Record<Feature, string[]> = {
     "physics:world": ["src/pal_physics_bullet.cpp"],
     "physics:aggregate": [],
     "physics:queries": [],
+    "physics:container": [],
+    "physics:viewer": ["src/pal_physics_debug.cpp"],
+    "physics:constraints": [],
     // The trigger drain rides in the same generated physics module the
     // world already brings, and in the same PAL translation unit; what
     // the feature records is which pinned module a scene reached.
@@ -296,6 +301,27 @@ ${generatedSourceLines}
 `;
 }
 
+function nativeIdentifierCounts(body: readonly string[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const line of body) {
+        for (const name of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+            counts.set(name, (counts.get(name) ?? 0) + 1);
+        }
+    }
+    return counts;
+}
+
+/** Instrumentation erasure can leave a pure, unread performance.now initializer.
+ * A live clock read remains in the entry and the PAL stage guard rejects it. */
+export function constructorEntryBody(body: readonly string[]): string[] {
+    const counts = nativeIdentifierCounts(body);
+    const deadClock = /^\s*(?:\[\[maybe_unused\]\] )?(?:auto|double) ([A-Za-z_][A-Za-z0-9_]*) = bbl::pal::performance_milliseconds\(\);\s*$/;
+    return body.map(block => block.split("\n").filter(line => {
+        const match = deadClock.exec(line);
+        return !match || counts.get(match[1]!) !== 1;
+    }).join("\n"));
+}
+
 function markUnreferencedLocals(body: string[]): void {
     // Initialized locals, and the empty `std::optional<...>` storage a
     // materialized module predeclares for a nullable resource: a browser-only
@@ -309,12 +335,7 @@ function markUnreferencedLocals(body: string[]): void {
     // insertion point is the same one.
     const declaration =
         /^(\s*)((?:static )?(?:(?:auto|double) |std::optional<[^;=]*> ))([A-Za-z_][A-Za-z0-9_]*)(?: = |;)/;
-    const counts = new Map<string, number>();
-    for (const line of body) {
-        for (const name of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
-            counts.set(name, (counts.get(name) ?? 0) + 1);
-        }
-    }
+    const counts = nativeIdentifierCounts(body);
     for (const [index, block] of body.entries()) {
         // Deferred callbacks are captured as one body entry containing
         // several physical lines. Inspect each of those lines so a local
@@ -359,6 +380,8 @@ export interface MainCppProjection {
     voxelFileStorageReached: boolean;
     /** The emitted entry-body lines; the render marks unused locals in place. */
     body: string[];
+    /** The admitted entry statements before the sole top-level startEngine. */
+    physicsDebugConstructionBody?: readonly string[];
 }
 
 export function renderMainCpp(projection: MainCppProjection): string {
@@ -384,7 +407,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
         ? "#include <bblite/upstream/sprite_layer.hpp>\n"
         : "";
     const textInclude = features.includes("text:data") || features.includes("text:renderable")
-        ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n"
+        ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n" + (features.includes("text:layout") ? "#include <bblite/upstream_text_update.hpp>\n" : "")
         : "";
     const billboardInclude = features.includes(
         "sprite:billboard",
@@ -554,10 +577,27 @@ ${workerInclude}${textInclude}${jsDataInclude}${cameraMathInclude}${cameraGeospa
 #include <iostream>${throwReached ? "\n#include <stdexcept>" : ""}
 `;
     if (workerEntry) return includes + projection.workers!.declarations + "\n" + workerEntry;
-    return `${includes}${preamble}
-int main() {
+    let extraction = "";
+    if (projection.physicsDebugConstructionBody) {
+        const construction = constructorEntryBody(projection.physicsDebugConstructionBody);
+        markUnreferencedLocals(construction);
+        extraction = `\n#include <bblite/pal_physics_debug.hpp>\n#include <string_view>\n
+static void extract_physics_constructor_inputs(const char* output_path) {
+    bbl::pal::PhysicsDebugExtractionScope extraction;
+    {
+${seedRandom}${construction.join("\n")}
+    }
+    extraction.write(output_path);
+}\n`;
+    }
+    return `${includes}${preamble}${extraction}
+int main(${extraction ? "int argc, char** argv" : ""}) {
     const bbl::js::CollectOnExit collect_on_exit;
     try {
+${extraction ? `        if (argc == 3 && std::string_view(argv[1]) == "--physics-constructor-inputs") {
+            extract_physics_constructor_inputs(argv[2]);
+            return 0;
+        }\n` : ""}\
 ${projection.audioSessionReached ? "        auto bbl_audio_session = std::make_shared<bbl::pal::AudioSession>();\n" : ""}${seedRandom}${body.join("\n")}
         return 0;
     } catch (const std::exception& error) {

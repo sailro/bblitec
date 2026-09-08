@@ -1,8 +1,5 @@
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
 import ts from "typescript";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { localAssetPath } from "../../asset-source.js";
 import { materializePinnedText, textSha256, type CompiledTextData, type StaticTextLayout, type TextBlob } from "../../pinned-text-data.js";
 import { readAssetBytesSync } from "../asset-bytes-sync.js";
 import { compileStaticNumber, type PositiveIntegerContext } from "../option-helpers.js";
@@ -32,6 +29,23 @@ export interface TextIntrinsicContext extends IntrinsicCallContext, PositiveInte
 }
 
 export function compileTextIntrinsic(context: TextIntrinsicContext, name: string, call: ts.CallExpression): Value | undefined {
+    if (name === "updateDefaultTextData") {
+        context.expectArgumentCount(call, 2, 3);
+        const owner = context.compileValue(call.arguments[0]!);
+        context.expectKind(owner, "text-data", call.arguments[0]!);
+        const retained = retainTextValue(context, owner);
+        const text = context.compileValue(call.arguments[1]!);
+        expectTextString(context, text, call.arguments[1]!);
+        if (call.arguments[2] && !omitted(context, call.arguments[2]!)) context.fail(call.arguments[2]!, "Live text color arguments are not yet represented.");
+        for (const row of context.reachedTextData) {
+            if (row.layout.live) continue;
+            const payload = context.assetPayloads.get(row.font.source) ?? row.font.source;
+            const bytes = readAssetBytesSync(payload, context.options.fileName);
+            Object.assign(row, textRow(context, bytes, { ...row.layout, live: true }, row.font, row.id));
+        }
+        context.reachFeature("text:layout", call);
+        return { kind: "void", cpp: `bbl::update_default_text_data(${retained.cpp}, ${text.cpp})` };
+    }
     if (["disposeScene", "unregisterScene", "rebuildSceneRenderables"].includes(name)) context.noteTextSceneLifecycle(call);
     if ((name === "setAlphaToCoverage" || name === "getAlphaToCoverage") && call.arguments[0] &&
         pinnedHandleKind(context.checker.getTypeAtLocation(call.arguments[0])) === "text-renderable") {
@@ -91,9 +105,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
         const source = context.compileStaticString(call.arguments[0]!);
         const asset = context.registerAsset(source, "binary");
         const payload = context.assetPayloads.get(asset.source) ?? asset.source;
-        const local = localAssetPath(payload, resolve(context.options.fileName));
-        // A local font edit must invalidate both provenance and the bake in this process.
-        const bytes = local ? new Uint8Array(readFileSync(local)) : readAssetBytesSync(payload, context.options.fileName);
+        const bytes = readAssetBytesSync(payload, context.options.fileName);
         try { materializePinnedText(bytes); }
         catch (error) { context.fail(call, `Pinned font materialization failed: ${String(error)}`); }
         return { kind: "text-font", cpp: "", textFont: {
@@ -104,8 +116,12 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     const font = context.compileValue(call.arguments[0]!);
     context.expectKind(font, "text-font", call.arguments[0]!);
     const fontSizePx = finiteNumber(context, call.arguments[1]!, "Text font size");
-    const text = context.compileStaticString(call.arguments[2]!);
-    const layout: StaticTextLayout = { fontSizePx, text };
+    const textValue = context.compileValue(call.arguments[2]!);
+    expectTextString(context, textValue, call.arguments[2]!);
+    // A retained helper can accept any TextData owner, including one created
+    // after that helper was lowered. Keep later owners eligible for live input.
+    const live = textValue.staticString === undefined || context.reachedTextData.some(row => row.layout.live);
+    const layout: StaticTextLayout = { fontSizePx, text: textValue.staticString ?? "", ...(live ? { live: true } : {}) };
     const color = call.arguments[3];
     if (color && !omitted(context, color)) {
         const node = context.resolveStaticExpression(color);
@@ -143,18 +159,33 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
             } else context.fail(property, `Text layout option '${key}' is not materialized.`);
         }
     }
-    let baked;
-    try { baked = materializePinnedText(font.textFont!.bytes, layout)!; }
+    let row: CompiledTextData;
+    try { row = textRow(context, font.textFont!.bytes, layout, font.textFont!.source, context.reachedTextData.length); }
     catch (error) { context.fail(call, `Pinned text materialization failed: ${String(error)}`); }
+    context.reachedTextData.push(row);
+    context.reachFeature("text:data", call);
+    if (layout.live) context.reachFeature("text:layout", call);
+    return { kind: "text-data", cpp: layout.live ? `bbl::create_live_text_data(${row.id}, ${textValue.cpp})` : `bbl::create_compiled_text_data(${row.id})`,
+        dataType: { kind: "handle", handle: "text-data" } };
+}
+
+function expectTextString(context: TextIntrinsicContext, value: Value, node: ts.Node): void {
+    if (value.kind !== "string" && !(value.kind === "data" && value.dataType?.kind === "string")) {
+        context.fail(node, `Text content requires a string, received ${value.kind}.`);
+    }
+}
+
+function textRow(context: TextIntrinsicContext, fontBytes: Uint8Array, layout: StaticTextLayout, font: CompiledTextData["font"], id: number): CompiledTextData {
+    const baked = materializePinnedText(fontBytes, layout)!;
     const blob = (base64: string): TextBlob => {
         const bytes = Buffer.from(base64, "base64");
         const asset = context.registerAsset(`data:application/octet-stream;base64,${base64}`, "binary");
         return { assetOutput: asset.output, sha256: textSha256(bytes), byteLength: bytes.byteLength };
     };
-    const row: CompiledTextData = {
+    return {
         ...baked,
-        id: context.reachedTextData.length,
-        font: font.textFont!.source,
+        id,
+        font,
         layout,
         instances: { ...baked.instances, bytes: blob(baked.instances.bytes) },
         styles: { ...baked.styles, bytes: blob(baked.styles.bytes) },
@@ -164,10 +195,6 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
             metadata: { ...atlas.metadata, bytes: blob(atlas.metadata.bytes) },
         })),
     };
-    context.reachedTextData.push(row);
-    context.reachFeature("text:data", call);
-    return { kind: "text-data", cpp: `bbl::create_compiled_text_data(${row.id})`,
-        dataType: { kind: "handle", handle: "text-data" } };
 }
 
 /** Literal options snapshot their scalar fields in source order. Retained

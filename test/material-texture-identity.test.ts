@@ -32,10 +32,15 @@ async function main() {
     const held:Texture2D[]=[first,resolveAlbedo(engine,shared)];
     if(first!==solid || held[1]!==solid || first===resolveAlbedo(engine,distinct)) throw new Error("source/cross-material identity");
     const standard=createStandardMaterial();
+    standard.diffuseTexture=pbr.baseColorTexture!;
+    if(resolveAlbedo(engine,standard)!==solid) throw new Error("PBR to Standard identity");
     standard.diffuseTexture=solid;
     if(resolveAlbedo(engine,standard)!==solid) throw new Error("shared Standard source");
     const pixels=createTexture2DFromPixels(engine,new Uint8Array([11,22,33,255]),1,1);
     standard.diffuseTexture=pixels;
+    const transferred=createStandardMaterial();
+    transferred.diffuseTexture=standard.diffuseTexture!;
+    if(resolveAlbedo(engine,transferred)!==pixels) throw new Error("Stored pixel transfer identity");
     if(resolveAlbedo(engine,standard)!==pixels || held[0]!==solid) throw new Error("replacement retains original arm and old alias");
     const fallback=createPbrMaterial({baseColorFactor:[.25,.5,.75,1]});
     if(resolveAlbedo(engine,fallback)===resolveAlbedo(engine,fallback)) throw new Error("fresh solid fallback identity");
@@ -92,6 +97,8 @@ test("native material getters retain producer variants, replacement aliases and 
 #include <cassert>
 #include <cmath>
 namespace bbl {
+namespace upstream { enum class MaterialTextureSrgb { linear, srgb, srgb_unless_standard, base_color }; }
+${cppFunction(readFileSync("native/src/pal_gpu_shared.hpp", "utf8"), "inline bool material_slot_srgb(")}
 Engine create_engine(EngineOptions) {return {};}
 ${functions}
 PixelsTexture create_texture_2d_from_pixels(Engine& engine,const js::U8Array& pixels,double width,double height,PixelsTextureOptions options) {
@@ -112,7 +119,7 @@ int main() {
     const auto old=bbl::material_source_texture(engine,a,bbl::MaterialTextureSlot::diffuse);
     assert(std::holds_alternative<bbl::PixelsTexture>(old));
     assert(old==bbl::StoredTexture{pixels} && old==bbl::material_source_texture(engine,b,bbl::MaterialTextureSlot::diffuse));
-    bbl::FileTexture file; file.identity=42; file.srgb=false; file.width=1; file.height=1;
+    bbl::FileTexture file; file.identity=42; file.srgb=true; file.width=1; file.height=1;
     file.data.bytes=std::vector<std::uint8_t>{44,55,66,255};file.data.rgba_width=1;file.data.rgba_height=1;
     bbl::set_standard_diffuse_file_texture(engine,a,file);
     assert(bbl::material_source_texture(engine,a,bbl::MaterialTextureSlot::diffuse)==bbl::StoredTexture{file});
@@ -120,6 +127,11 @@ int main() {
     auto pbr=bbl::create_pbr_material(engine,{});
     bbl::set_material_base_color_file(engine,pbr,file);
     assert(bbl::material_source_texture(engine,pbr,bbl::MaterialTextureSlot::base_color)==bbl::StoredTexture{file});
+    bbl::set_standard_diffuse_texture(engine,b,bbl::material_source_texture(engine,pbr,bbl::MaterialTextureSlot::base_color));
+    assert(bbl::material_source_texture(engine,b,bbl::MaterialTextureSlot::diffuse)==bbl::StoredTexture{file});
+    assert(bbl::material_slot_srgb(bbl::upstream::MaterialTextureSrgb::base_color, &engine.materials[b.value], true));
+    bbl::set_standard_diffuse_texture(engine,b,old);
+    assert(!bbl::material_slot_srgb(bbl::upstream::MaterialTextureSrgb::base_color, &engine.materials[b.value], true));
     engine.materials.clear();
     assert(std::get<bbl::PixelsTexture>(old).rgba[2]==33);
 }`);

@@ -7835,7 +7835,7 @@ test("preserves compound assignments for numeric properties", () => {
         }
     `);
 
-    assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0f/);
+    assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0;/);
     assert.match(result.cpp, /\.environment\.exposure -= 0\.1f/);
     assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
     assertCameraScalarWrite(result.cpp, "alpha", /\(\w+ \+ 0\.3\)/);
@@ -8590,7 +8590,7 @@ test("resolves flex text wrappers through specificity, inline, and hover cascade
     assert.match(wrapper, /normalized_css_keyword\(resolved_display\)/);
     assert.match(
         projection,
-        /resolved_style_attribute\(handle, record, &resolved_display\)[\s\S]{0,1400}text_needs_flex_wrapper\(\s*resolved_display\)/,
+        /resolved_style_attribute\(handle, record, &resolved_display\)(?:(?!\n    void ).)*text_needs_flex_wrapper\(\s*resolved_display\)/s,
     );
 });
 
@@ -15000,9 +15000,7 @@ test("compiles pinned scene 213 GridMaterial options", () => {
     );
 });
 
-test("reports unsupported Babylon Lite APIs with source locations", () => {
-    // Dynamic text reshaping remains an unsupported pinned entry point;
-    // static font loading and initial text data now have native lowering.
+test("reports invalid Babylon Lite API arguments with source locations", () => {
     assert.throws(
         () =>
             compileSource(
@@ -15017,7 +15015,7 @@ async function main() {
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
             assert.match(error.message, /^unsupported\.ts:5:5:/);
-            assert.match(error.message, /updateDefaultTextData/);
+            assert.match(error.message, /Expected 2-3 arguments, received 0/);
             return true;
         },
     );
@@ -15802,7 +15800,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
         "texture:file",
         "renderer:scene",
     ]);
-    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
+    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0;/);
     assert.match(result.cpp, /bbl::on_before_render/);
     assert.match(result.cpp, /v_frame\+\+/);
     assert.match(result.cpp, /if \(\(!\(v_added\) && v_frame >= 20\.0\)\)/);
@@ -16856,7 +16854,7 @@ test("compiles Babylon Lite scene 7 camera target assignment", () => {
         result.cpp,
         /\.target = bbl::Vec3d\{\(-0\.025979936122894287\), 1\.6681787837296724, 0\.4591848850250244\}/,
     );
-    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
+    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0;/);
 });
 
 test("compiles Babylon Lite scene 35 camera target destructuring", () => {
@@ -16958,9 +16956,9 @@ test("parses reached decimal strings with parseInt radix 10", () => {
             compileSource(`
             import { createEngine } from "@babylonjs/lite";
             await createEngine({});
-            parseInt("ff", 16);
+            parseInt("ff", 1);
         `),
-        /literal radix 10/,
+        /literal radix 0 or 2 through 36/,
     );
 });
 

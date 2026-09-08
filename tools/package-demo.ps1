@@ -98,6 +98,7 @@ $physicsReached = $false
 $navigationReached = $false
 $uiReached = $false
 $uiSvgReached = $false
+$textLayoutReached = $false
 $audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
 $visualCapture = $cache["BBLITE_VISUAL_CAPTURE"] -ne "OFF"
 $featuresPath = Join-Path $generatedDirectory "features.cmake"
@@ -109,6 +110,7 @@ if (Test-Path $featuresPath) {
     $navigationReached = $featuresText -match '"navigation:recast"'
     $uiReached = $featuresText -match '"ui:rml"'
     $uiSvgReached = $featuresText -match '"ui:inline-svg"'
+    $textLayoutReached = $featuresText -match '"text:layout"'
     if ($featuresText -match "BBLITE_IMAGE_CODECS") {
         $pngReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"png"'
         $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
@@ -272,8 +274,11 @@ if ($physicsReached) {
 if ($navigationReached) {
     $licensePackages["recastnavigation.txt"] = "recastnavigation"
 }
-if ($uiReached) {
+if ($uiReached -or $textLayoutReached) {
     $licensePackages["FreeType.txt"] = "freetype"
+}
+if ($textLayoutReached) {
+    $licensePackages["HarfBuzz.txt"] = "harfbuzz"
 }
 if ($uiSvgReached) {
     $licensePackages["LunaSVG.txt"] = "lunasvg"

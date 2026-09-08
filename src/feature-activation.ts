@@ -163,6 +163,7 @@ const CMAKE: readonly FeatureActivationConsumer[] = ["features.cmake"];
  */
 const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "text:data": { provenance: "src/text/default-text-data.ts#createDefaultTextData", consumers: CMAKE },
+    "text:layout": { provenance: "src/text/layout.ts#layoutText + src/text/default-text-data.ts#updateDefaultTextData", consumers: CMAKE },
     "text:renderable": { provenance: "src/text/text-renderable.ts#createTextRenderable + addTextRenderable", consumers: CMAKE },
     "animation:gltf-groups": {
         provenance:
@@ -684,6 +685,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/scene/set-parent.ts",
         consumers: CMAKE,
     },
+    "mesh:clone": {
+        provenance: "src/scene/transform-node.ts#cloneMeshNode; src/mesh/mesh.ts#initMeshTransform",
+        consumers: CMAKE,
+    },
     "mesh:geometry-access": {
         provenance: "src/mesh/mesh.ts retained CPU geometry + worldMatrix",
         consumers: CMAKE,
@@ -1040,6 +1045,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "physics:queries": {
         provenance: "src/physics/havok-queries.ts shapeProximity + shapeCast",
+        consumers: CMAKE,
+    },
+    "physics:container": {
+        provenance: "src/physics/havok.ts createPhysicsShape + addPhysicsShapeChildFromParent",
+        consumers: CMAKE,
+    },
+    "physics:viewer": {
+        provenance: "src/physics/physics-viewer.ts body lifecycle + physics-debug-line-material.ts pipeline",
+        consumers: CMAKE,
+    },
+    "physics:constraints": {
+        provenance: "src/physics/havok.ts createPhysicsConstraint HINGE anchors and axis locks",
         consumers: CMAKE,
     },
     "physics:trigger": {

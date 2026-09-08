@@ -32,6 +32,7 @@ export interface ShaderMaterialProgramSource {
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;
+    depthCompare?: string;
     /**
      * The material binds the mesh's thin-instance matrices and its vertex
      * stage reads them, so the pin's own thin-instance module appends the

@@ -708,6 +708,16 @@ export class LoweringContext {
         }
     }
 
+    /** Compare the complete AST of a structurally specialized function body. */
+    public assertFunctionBodyShape(declaration: ts.FunctionDeclaration, expectedBody: string, label: string): void {
+        const expectedFile = ts.createSourceFile("body-contract.ts", `function expected() ${expectedBody}`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+        const expected = expectedFile.statements[0];
+        if (!expected || !ts.isFunctionDeclaration(expected) || !expected.body || !declaration.body)
+            throw new Error(`Invalid function body contract: ${label}.`);
+        if (this.nodeFingerprint(declaration.body) !== this.nodeFingerprint(expected.body))
+            this.contractError(declaration, `${label} changed; re-establish its complete structural specialization.`);
+    }
+
     /**
      * The first call to `calleeName`, whether the pin writes it as a bare
      * function or as a method on something.

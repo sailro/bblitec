@@ -5,6 +5,7 @@ import { availableParallelism, totalmem } from "node:os";
 import {
     cpSync,
     existsSync,
+    mkdirSync,
     readFileSync,
     readdirSync,
     renameSync,
@@ -109,6 +110,7 @@ import {
 } from "./validation-resume.js";
 import { runConcurrently } from "./run-concurrently.js";
 import { historicalBuildCostMs, orderByHistoricalCost } from "./build-scheduling.js";
+import { materializePhysicsDebugCatalog, physicsDebugCatalogPath, renderPhysicsDebugCatalog } from "./physics-debug-catalog.js";
 
 function run(
     command: string,
@@ -137,20 +139,26 @@ function runAsync(
     arguments_: string[],
     environment: NodeJS.ProcessEnv,
     capture: string[] | undefined,
+    timeoutMs?: number,
 ): Promise<void> {
     return new Promise((resolve_, reject) => {
         const child = spawn(command, arguments_, {
             stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
             env: environment,
         });
+        const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
+            child.kill();
+            reject(new Error(`${command} exceeded the ${timeoutMs} ms execution bound.`));
+        }, timeoutMs);
         child.stdout?.on("data", (chunk: Buffer) =>
             capture?.push(chunk.toString()),
         );
         child.stderr?.on("data", (chunk: Buffer) =>
             capture?.push(chunk.toString()),
         );
-        child.on("error", reject);
+        child.on("error", error => { clearTimeout(timeout); reject(error); });
         child.on("close", (status) => {
+            clearTimeout(timeout);
             if (status === 0) {
                 resolve_();
                 return;
@@ -281,6 +289,7 @@ async function compile(idOrSource: string): Promise<void> {
     if (stale.length > 1) {
         console.log(`Compiling ${stale.length} scenes, ${inFlight} at a time.`);
     }
+    const generationStartedAt = new Map<string, number>();
     await runConcurrently(
         stale,
         inFlight,
@@ -289,11 +298,52 @@ async function compile(idOrSource: string): Promise<void> {
             runBuffered({ buffer: stale.length > 1 }, async (run) => {
                 const arguments_ = compilerArguments(scene);
                 const startedAt = Date.now();
+                generationStartedAt.set(scene.id, startedAt);
                 await run(process.execPath, arguments_);
-                recordGeneration(scene, arguments_, startedAt);
+                if (!sceneUsesNativeFeature(scene, "physics:viewer")) recordGeneration(scene, arguments_, startedAt);
             }),
         { completed: "compiled" },
     );
+    // The emitted extraction entry executes only admitted startup construction.
+    // Keep native bootstrap builds serialized; the ordinary compile pool remains
+    // independent and no renderer or physics frame runs during this stage.
+    for (const scene of stale.filter(scene => sceneUsesNativeFeature(scene, "physics:viewer"))) {
+        await specializePhysicsDebugGeometry(scene);
+        recordGeneration(scene, compilerArguments(scene), generationStartedAt.get(scene.id)!);
+    }
+}
+
+async function specializePhysicsDebugGeometry(scene: SceneDefinition): Promise<void> {
+    requireDevelopmentPreflight({ browser: false, labSound: sceneUsesNativeFeature(scene, "audio:engine"),
+        rmlUi: sceneUsesNativeFeature(scene, "ui:rml"), shaders: false });
+    await buildScenes([scene]);
+    const construction = computeBuildStamp(scene.output);
+    const directory = resolve("artifacts", "physics-constructor-inputs");
+    mkdirSync(directory, { recursive: true });
+    const inputPath = join(directory, `${scene.id}.json`);
+    console.log(`physics debug geometry: extracting construction inputs for ${scene.id}.`);
+    await runAsync(defaultExecutable(scene.buildDirectory), ["--physics-constructor-inputs", inputPath], buildSetup().environment, undefined, 60_000);
+    const entries = await materializePhysicsDebugCatalog(JSON.parse(readFileSync(inputPath, "utf8")));
+    const manifestPath = join(scene.output, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { inputs: string[] };
+    const setup = buildSetup();
+    // Unlike ordinary scene generation this producer executes native shaping
+    // inputs; those sources therefore participate in generation invalidation.
+    manifest.inputs = [...new Set([...manifest.inputs, setup.cmake, ...(setup.windows ? [setup.windows.compiler] : []),
+        ...construction.inputs.filter(input => input.path.startsWith("native/")).map(input => input.path)])].sort();
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const sourceAndAssets = contentFingerprint([...manifest.inputs, join(scene.output, "assets"), "dist/.build-stamp", "package-lock.json", "upstream"]);
+    const nativeTools = { cmake: toolIdentity(setup.cmake),
+        compiler: setup.windows ? toolIdentity(setup.windows.compiler) : setup.generator,
+        generator: setup.generator, backend: setup.backend };
+    writeFileSync(join(scene.output, physicsDebugCatalogPath), renderPhysicsDebugCatalog(entries));
+    writeFileSync(join(scene.output, "physics-debug-geometry.json"), `${JSON.stringify({
+        version: 1, sourceAndAssets, nativeTools, construction, entries: entries.map(entry => ({ descriptor: entry.descriptor,
+            shapeIdentity: entry.shapeIdentity, geometry: hashEntries([JSON.stringify(entry.geometry)]),
+            positions: entry.geometry.positions.length / 3, triangles: entry.geometry.indices.length / 3 })),
+    }, null, 2)}\n`);
+    refreshBuildStamp(scene.output, { generatedInputsChanged: true });
+    console.log(`physics debug geometry: materialized ${entries.length} complete shape descriptor(s).`);
 }
 
 async function parity(
@@ -624,7 +674,7 @@ async function buildScenes(
     const { vcpkg, tools, environment, generator } = buildSetup();
     if (vcpkg) installVcpkgManifest(tools.vcpkg!, vcpkg.install, environment);
     if (selected.length === 1) {
-        await runSceneBuild(selected[0]!, undefined, false);
+        await runSceneBuild(selected[0]!, concurrencyOverride("BBLITE_SCENE_BUILD_JOBS"), false);
         return;
     }
     const { scenes: inFlight, jobsPerScene } = buildConcurrency();

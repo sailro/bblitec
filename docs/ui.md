@@ -25,6 +25,8 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | Queries | Static class query on a known complete retained subtree |
 | Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer |
 | Focus | Control/canvas focus, focus listeners, activeElement identity, button navigation |
+| Text forms | Retained input/textarea value and input callbacks; textarea editing and vertical resize |
+| Range forms | Retained value/input callbacks and native range widgets |
 | Files | Object-URL download anchors and static single-file inputs |
 
 UI receives pointer input before cameras. Consumed events do not move cameras;
@@ -87,6 +89,7 @@ track/class/id changes refuse.
 Fonts use DirectWrite/CoreText/fontconfig. Generic emoji/ZWJ shaping is limited.
 Unauthored button fonts use the generic sans default; normal line height uses
 per-face ratios, so browser glyph/size rounding can differ.
+Fixed-pitch textareas retain fractional design advances over grid-fitted glyph masks.
 
 | Maintained RmlUi patch | Purpose |
 | --- | --- |
@@ -113,7 +116,10 @@ resize messages.
 
 ## Limits
 
-- No general selectors/traversal/observers, text forms, JavaScript hover callbacks,
+Single-row inline grids support positive px/fr tracks with one element child per track.
+Runtime track replacement and implicit extra rows refuse. Form dimensions support content-box and border-box.
+
+- No general selectors/traversal/observers, full browser form semantics, JavaScript hover callbacks,
   multiple pointer identities or arbitrary events.
 - Supported inset outlines become borders; other shadows/font-variant-numeric
   can degrade. General grid and unsupported text-shadow forms refuse.

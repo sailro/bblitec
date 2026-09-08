@@ -75,6 +75,8 @@ export interface GltfLoaderOptions {
      *  primitive was loaded, so retain that primitive's local vertices for
      *  the instanced draw path instead of reusing its baked world vertices. */
     dynamicThinInstances?: boolean;
+    /** Detached mesh clones retain the source local attributes. */
+    meshClones?: boolean;
     /** Node geometry views bind the source NORMAL attribute beside a real
      * world matrix, so retain it before the native bake/mirror/normalize. */
     retainLocalNormals?: boolean;

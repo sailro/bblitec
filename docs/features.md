@@ -187,6 +187,9 @@ imported walks/cloning are represented. Position/rotation/scaling aliases retain
 Meshes can parent to meshes or transform nodes; transform nodes can parent only to transform nodes.
 Parent assignment and children-list insertion remain separate operations.
 
+Detached static imported leaves share geometry and restore local attributes. Babylon imports retain their
+initial source TRS; cloning one after transform mutation refuses. Clones can be transformed and cloned again.
+
 Bare visibility writes are live for transparent/transmissive draws. Opaque cached lists require
 `setMeshVisible` invalidation. Full imported-root cloning/rotation/scaling and arbitrary visitor effects remain incomplete.
 
@@ -311,12 +314,23 @@ update in parent coordinates. Utility layers rematch GPU resources when lazy con
 
 ## Physics
 
+HINGE constraint factories accept body-local pivots/axes and collision opt-in with discarded results.
+Joints retain their bodies, follow mass-frame changes and detach while either body is outside their world.
+
 Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/static-mesh shapes, forces,
 velocities, motion/prestep, aggregates, centre of mass, masks, collisions/triggers, raycasts and floating origin.
 Convex proximity/cast queries return local input and world target contacts, distance/fraction, trigger/mask
 filtering and cast body exclusion. Query bags and quaternions require inline objects; concave/compound proximity
 targets refuse. Dynamic triangle meshes use GImpact. Constraints, characters and heightfields remain incomplete.
 Inertia overrides and non-Y-aligned capsule/cylinder segments refuse. See [physics fidelity](fidelity.md#physics-contract).
+
+Container shapes retain child ownership and source-derived relative TRS. Convex children support finite
+nonzero scale per placement. Construction must finish before attachment; mixed child materials/masks,
+triggers and triangle-mesh children refuse.
+
+Body viewers retain show/hide/dispose, node transforms and the pinned always-depth line material.
+Debug geometry requires construction-known HP shape descriptors and a native toolchain during compilation.
+Show/hide return observations, observable startup debug membership and constraint overlays refuse.
 
 Raycasts return nullable body identity, point/normal and double distance. Trigger selection and both masks
 filter the closest eligible body. Arguments evaluate in source order; retained point objects expose changes
@@ -375,13 +389,15 @@ uses the pinned linear-frame and trailing image-processing contract.
 
 ## Text
 
-Static font loading/default layout run the pinned parser, shaper and packer at generation. Text data and
-native renderables retain identity through aliases/helpers/containers. Transform setters and opacity are
-live; pipeline membership, depth and order must settle before attachment. Dynamic layout, late attachment/
-disposal, conditional transform copies, reflective/internal-buffer writes and high-precision matrices refuse.
+Static font loading/default layout run the pinned parser, shaper and packer at generation. Runtime strings
+and `updateDefaultTextData` retain the packaged font, layout options, single run, palette and live dimensions.
+Font size/options/color are static; explicit live color arguments and arbitrary run edits refuse.
+Text data/renderables retain identity through aliases/helpers/containers. Transform setters and opacity are
+live; pipeline membership, depth and order settle before attachment. Late attachment/disposal, conditional
+transform copies, reflective/internal-buffer writes and high-precision matrices refuse.
 
-Rendering activates `BBLITE_HAS_TEXT` and supports one text-only default scene with a static FreeCamera.
-Mixed ordering, custom tasks and camera mutation/controls refuse. Both PALs use composed Slug shaders,
+Rendering activates `BBLITE_HAS_TEXT` and supports one text-only default scene with a static FreeCamera or
+ArcRotate camera controls. Mixed ordering, custom tasks and other camera writes refuse. Both PALs use composed Slug shaders,
 packed resources and pinned alpha-to-coverage or premultiplied blending; shared data retains its group-cache behavior.
 
 ## Runtime scene mutation

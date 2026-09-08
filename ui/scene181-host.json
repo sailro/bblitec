@@ -1,0 +1,13 @@
+{
+  "elements": [
+    {
+      "tag": "textarea",
+      "text": "Type here...",
+      "attributes": {
+        "id": "textInput",
+        "spellcheck": "false",
+        "style": "position:absolute;top:16px;left:16px;width:320px;height:120px;z-index:10;background:rgba(13,17,23,0.85);color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:8px;font:14px/1.4 monospace;resize:vertical;"
+      }
+    }
+  ]
+}

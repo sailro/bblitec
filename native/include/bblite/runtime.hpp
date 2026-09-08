@@ -2201,6 +2201,12 @@ struct TransformNodeRecord {
     std::uint64_t transform_version = 0;
 };
 
+struct ImportedMeshTrs {
+    Vec3 position{};
+    Vec3 rotation{};
+    Vec3 scaling{1, 1, 1};
+};
+
 struct MeshRecord {
     /**
      * The pinned Mesh name: the factory literal (`"sphere"`, `"box"`, …),
@@ -2264,6 +2270,9 @@ struct MeshRecord {
     bool gpu_world_transform = false;
     /** A static imported mesh restored to its authored local vertex stream. */
     bool live_imported_transform = false;
+    /** cloneMeshNode starts a fresh world state over the source local attributes. */
+    bool detached_imported_mesh = false;
+    std::optional<ImportedMeshTrs> imported_clone_trs;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     /**
@@ -2450,6 +2459,17 @@ struct MeshRecord {
     std::vector<float> morph_storage_weights;
     std::uint64_t morph_weights_version = 0;
 };
+
+inline ModelVertex detached_imported_vertex(const MeshRecord& mesh, const ModelGeometry& geometry, std::size_t index) {
+    ModelVertex vertex = geometry.bind_vertices.at(index);
+    vertex.position = geometry.vertices.at(index).local_position;
+    if (mesh.primitive == PrimitiveKind::gltf) {
+        vertex.normal.x = -vertex.normal.x;
+        vertex.tangent.x = -vertex.tangent.x;
+        vertex.tangent.w = -vertex.tangent.w;
+    }
+    return vertex;
+}
 
 inline void apply_mesh_bound_overrides(
     const MeshRecord& mesh,
@@ -5759,6 +5779,7 @@ Engine create_engine(EngineOptions options);
 Surface create_surface(Engine& engine, UiElementHandle canvas);
 void dispose_surface(Surface& surface);
 Scene create_scene_context(Engine& engine);
+double scene_callback_delta(const Scene& scene, double engine_delta_ms);
 Scene create_scene_context(Surface& surface);
 FrameGraphContext create_frame_graph_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
@@ -6251,6 +6272,18 @@ void set_standard_diffuse_file_texture(
     Engine& engine,
     MaterialHandle material,
     const FileTexture& texture);
+inline void set_standard_diffuse_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const StoredTexture& texture) {
+    std::visit([&](const auto& source) {
+        if constexpr (std::is_same_v<std::decay_t<decltype(source)>, FileTexture>) {
+            set_standard_diffuse_file_texture(engine, material, source);
+        } else {
+            set_standard_diffuse_pixels_texture(engine, material, source);
+        }
+    }, texture);
+}
 void enable_material_uv_transform(
     Engine& engine,
     MaterialHandle material);
