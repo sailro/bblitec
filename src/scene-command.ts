@@ -14,36 +14,42 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
+    type DifferentialReportSummary,
+    type ParityReportSummary,
+    parseParityArguments,
+    parseMemoryArguments,
+    parseStabilityArguments,
+    runSceneParity,
+    runSceneParityDifferential,
+    runMemoryReport,
+    runStabilityReport,
+} from "./parity-scene.js";
+import {
+    flagNumber,
+    parseFlags,
+    parseRgbTriple,
+} from "./tooling/flags.js";
+import {
     backendFileToken,
     canonicalBackend,
     captureMetaPath,
     captureNativePaths,
     captureSeekBracketDirectory,
     defaultCaptureDirectory,
-    defaultExecutable,
-    type DifferentialReportSummary,
-    enableGpuDebug,
-    flagNumber,
-    formatPngMeasurement,
-    measurePng,
     parityReportPath,
-    type ParityReportSummary,
-    parseFlags,
-    parseParityArguments,
-    parseRgbTriple,
-    parseMemoryArguments,
-    parseStabilityArguments,
     readCaptureMeta,
-    readSeekMeta,
     resolveBackend,
-    runSceneParity,
-    runSceneParityDifferential,
-    runMemoryReport,
-    runStabilityReport,
     seekBracketPlan,
+} from "./tooling/artifacts.js";
+import { writeReport } from "./tooling/reports.js";
+import {
+    defaultExecutable,
+    enableGpuDebug,
+    resolveNativeExecutable,
+    runMeasured,
     withEnvironment,
-    writeReport,
-} from "./parity-scene.js";
+} from "./tooling/native-run.js";
+import { formatPngMeasurement, measurePng } from "./tooling/png-measure.js";
 import {
     computeBuildStamp,
     deployedPayloads,
@@ -64,6 +70,7 @@ import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 // other subcommand — including each parity child of a matrix run — would
 // pay at startup without using (the BU-14 lazy-import split).
 import {
+    nativeCaptureStaleness,
     runNativeCapture,
     type NativeCaptureResult,
 } from "./capture-native.js";
@@ -322,7 +329,17 @@ async function specializePhysicsDebugGeometry(scene: SceneDefinition): Promise<v
     mkdirSync(directory, { recursive: true });
     const inputPath = join(directory, `${scene.id}.json`);
     console.log(`physics debug geometry: extracting construction inputs for ${scene.id}.`);
-    await runAsync(defaultExecutable(scene.buildDirectory), ["--physics-constructor-inputs", inputPath], buildSetup().environment, undefined, 60_000);
+    // The tree just built is the one whose construction inputs generation
+    // folds in: an ambient `BBLITE_NATIVE_EXE` (a diagnostic override for
+    // measuring commands) must not redirect generation to a foreign binary,
+    // so the scene's own build is named directly. The run still goes
+    // through the measured-run gate: the payload beside the executable is
+    // verified and the npm_* variables are scrubbed.
+    runMeasured(defaultExecutable(scene.buildDirectory), {
+        generatedDirectory: scene.output,
+        arguments: ["--physics-constructor-inputs", inputPath],
+        timeoutMs: 60_000,
+    });
     const entries = await materializePhysicsDebugCatalog(JSON.parse(readFileSync(inputPath, "utf8")));
     const manifestPath = join(scene.output, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { inputs: string[] };
@@ -1507,31 +1524,13 @@ async function runRenderDiff(
     }
     // One shared spelling with the native-capture writer, so reader and
     // writer cannot drift.
-    const nativePaths = captureNativePaths(captureDirectory, token);
-    let nativeCapturePath = nativePaths.capture;
-    const nativeReason = ((): string | undefined => {
-        if (!existsSync(nativeCapturePath)) return "missing";
-        // The capture embeds the stamp of the generated tree it was built
-        // from; a tree that moved since makes the capture describe a build
-        // that no longer exists.
-        try {
-            const capture = JSON.parse(
-                readFileSync(nativeCapturePath, "utf8"),
-            ) as { buildStamp?: string };
-            if (
-                capture.buildStamp !==
-                    computeBuildStamp(resolve(scene.output)).stamp
-            ) {
-                return "was captured from a different generated tree";
-            }
-        } catch {
-            return "is unreadable";
-        }
-        if (readSeekMeta(nativePaths.meta) !== wantSeek) {
-            return "was captured at a different seek (or carries no provenance)";
-        }
-        return undefined;
-    })();
+    let nativeCapturePath = captureNativePaths(captureDirectory, token).capture;
+    const nativeReason = nativeCaptureStaleness(
+        scene,
+        captureDirectory,
+        token,
+        wantSeek,
+    );
     if (recapture || nativeReason !== undefined) {
         if (!recapture && nativeReason !== "missing") {
             console.log(`Native capture ${nativeReason}; recapturing.`);
@@ -1772,7 +1771,10 @@ async function runProbeVariants(
     }
     const seek = flagNumber(parsed, "--seek", "probe-variants");
 
-    const executable = defaultExecutable(scene.buildDirectory);
+    const executable = resolveNativeExecutable(
+        undefined,
+        scene.buildDirectory,
+    );
     const deployedDirectory = join(dirname(executable), "shaders");
     if (!existsSync(deployedDirectory)) {
         throw new Error(
@@ -1846,6 +1848,7 @@ async function runProbeVariants(
     // starts from a clean deployment.
     const before = runNativeCapture(idOrSource, {
         backend: "dawn",
+        executable,
         ...(seek !== undefined ? { seekSeconds: seek } : {}),
         outputDirectory: join(probeDirectory, "before"),
     });
@@ -1866,6 +1869,7 @@ async function runProbeVariants(
             async () =>
                 runNativeCapture(idOrSource, {
                     backend: "dawn",
+                    executable,
                     ...(seek !== undefined ? { seekSeconds: seek } : {}),
                     outputDirectory: join(probeDirectory, "after"),
                 }),
@@ -2099,7 +2103,7 @@ async function runValidate(idOrSource: string): Promise<void> {
         {
             name: "verify-status",
             body: async () => {
-                const problems = verifyStatus();
+                const { problems } = verifyStatus();
                 // A single-scene validate answers for that scene's row;
                 // other rows may be legitimately unmeasured on this
                 // checkout. Both spellings the checker uses: the id
@@ -2576,8 +2580,8 @@ async function main(): Promise<void> {
                       sizes: sizes.split(",").map((value) => {
                           const numeric = Number(value);
                           if (!Number.isFinite(numeric)) {
-                              // A NaN here used to filter every buffer
-                              // out silently — the tool answered "no
+                              // A NaN would filter every buffer out
+                              // silently: the tool would answer "no
                               // buffers" to a mistyped size.
                               throw new Error(
                                   `uniforms: --size must be comma-separated numbers (got '${value}').`,

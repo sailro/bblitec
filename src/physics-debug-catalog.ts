@@ -30,7 +30,7 @@ export function physicsDebugDescriptor(value: unknown): PhysicsDebugDescriptor {
     return result;
 }
 
-export function physicsDebugShapeFromDescriptor(descriptor: PhysicsDebugDescriptor): PhysicsDebugShape {
+function physicsDebugShapeFromDescriptor(descriptor: PhysicsDebugDescriptor): PhysicsDebugShape {
     const { type, parameters: p, indices, children } = descriptor;
     const count = (length: number) => {
         if (p.length !== length || (type !== "MESH" && indices.length !== 0) || (type !== "CONTAINER" && children.length !== 0)) {

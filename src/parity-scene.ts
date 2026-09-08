@@ -7,21 +7,14 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import { fixedCaptureEnvironment } from "./capture-timing.js";
-import { PNG } from "pngjs";
 import {
     captureSuiteReference,
     captureUiEnabled,
 } from "./capture-suite-reference.js";
 import { readNativeHostUi } from "./native-host-ui.js";
 import type { RenderItemSpecialization } from "./asset-specializer.js";
-import {
-    comparePayload,
-    deployedPayloads,
-    computeBuildStamp,
-} from "./build-stamp.js";
 import {
     applicationScenes,
     isRegisteredScene,
@@ -39,6 +32,26 @@ import {
     generateIdVisualization,
     imageDimensions,
 } from "./parity.js";
+import { flagNumber, parseFlags } from "./tooling/flags.js";
+import {
+    applyGpuBackendEnvironment,
+    backendFileToken,
+    optionalBackend,
+    parityCanvasReportPath,
+    parityNativeImagePath,
+    parityReportPath,
+    resolveBackend,
+} from "./tooling/artifacts.js";
+import { readReport, writeReport } from "./tooling/reports.js";
+import {
+    enableGpuDebug,
+    resolveNativeExecutable,
+    runMeasured,
+    spawnNativeMeasured,
+    verifyBuildIdentity,
+    verifyDeployedPayload,
+    withEnvironment,
+} from "./tooling/native-run.js";
 
 /**
  * The generated manifest records the deterministic-seeded-random adaptation
@@ -133,636 +146,6 @@ export function goldenFixedFrame(
 
 interface GltfSpecialization {
     renderItems: RenderItemSpecialization[];
-}
-
-// ---------------------------------------------------------------------------
-// Shared command-line and artifact conventions
-//
-// Every scene subcommand parses its arguments through `parseFlags`, selects
-// its backend through `resolveBackend`, names its per-backend artifacts
-// through `backendFileToken`, and writes its JSON reports through
-// `writeReport`. These live here rather than per command because each of
-// them drifted when copied: four hand-rolled parsers disagreed on whether
-// an unknown flag was an error, and the same backend was spelled `gpu` in
-// parity artifacts and `sdl_gpu` in capture artifacts.
-// ---------------------------------------------------------------------------
-
-export interface FlagSpec {
-    /** Flags that take a value, e.g. `--backend dawn`. */
-    value?: readonly string[];
-    /** Flags that stand alone, e.g. `--recapture`. */
-    boolean?: readonly string[];
-    /** Alternate spellings, alias -> canonical flag. */
-    alias?: Readonly<Record<string, string>>;
-    /** How many bare (non `--`) arguments are accepted. Default none. */
-    positionals?: number;
-}
-
-export interface ParsedFlags {
-    values: Map<string, string>;
-    flags: Set<string>;
-    positionals: string[];
-}
-
-/**
- * The one strict argument parser every scene subcommand shares.
- *
- * Strict because the lenient alternative was measured in afternoons: a
- * mistyped flag that is silently dropped runs the tool with defaults and
- * produces a plausible answer to a question nobody asked
- * (`diff --recapture-reference` was a silent no-op). An unknown argument
- * is an error that names the valid set.
- */
-export function parseFlags(
-    rest: readonly string[],
-    spec: FlagSpec,
-    command: string,
-): ParsedFlags {
-    const parsed: ParsedFlags = {
-        values: new Map(),
-        flags: new Set(),
-        positionals: [],
-    };
-    const known = [
-        ...(spec.value ?? []),
-        ...(spec.boolean ?? []),
-        ...Object.keys(spec.alias ?? {}),
-    ];
-    for (let index = 0; index < rest.length; index += 1) {
-        const argument = rest[index];
-        if (argument === undefined || argument === "") continue;
-        if (!argument.startsWith("--")) {
-            if (parsed.positionals.length >= (spec.positionals ?? 0)) {
-                throw new Error(
-                    `Unexpected ${command} argument '${argument}'.`,
-                );
-            }
-            parsed.positionals.push(argument);
-            continue;
-        }
-        const name = spec.alias?.[argument] ?? argument;
-        if (spec.value?.includes(name)) {
-            const value = rest[index + 1];
-            if (value === undefined) {
-                throw new Error(
-                    `${command}: ${argument} requires a value.`,
-                );
-            }
-            index += 1;
-            parsed.values.set(name, value);
-            continue;
-        }
-        if (spec.boolean?.includes(name)) {
-            parsed.flags.add(name);
-            continue;
-        }
-        throw new Error(
-            known.length > 0
-                ? `Unknown ${command} argument '${argument}'. Valid flags: ${known.join(", ")}.`
-                : `Unknown ${command} argument '${argument}'; ${command} takes no flags.`,
-        );
-    }
-    return parsed;
-}
-
-/** A numeric flag value, rejected loudly when it does not parse. */
-export function flagNumber(
-    parsed: ParsedFlags,
-    name: string,
-    command: string,
-): number | undefined {
-    const value = parsed.values.get(name);
-    if (value === undefined) return undefined;
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) {
-        throw new Error(
-            `${command}: ${name} must be a number (got '${value}').`,
-        );
-    }
-    return numeric;
-}
-
-/**
- * Every backend a measured run can select. One list, because a command
- * that accepted a different set would be measuring something the others
- * cannot -- which is how `--backend cpu` outlived the renderer behind it.
- */
-export const NATIVE_BACKENDS = ["sdl_gpu", "dawn"] as const;
-
-/**
- * A `--backend` value in canonical spelling. Values are `sdl_gpu|dawn`;
- * `gpu` is accepted as an input alias for `sdl_gpu` because that is the
- * token the parity artifacts have always used.
- */
-export function canonicalBackend(value: string, command: string): string {
-    const canonical = value === "gpu" ? "sdl_gpu" : value;
-    if (!(NATIVE_BACKENDS as readonly string[]).includes(canonical)) {
-        throw new Error(
-            `${command}: --backend must be ${NATIVE_BACKENDS.join("|")} (got '${value}').`,
-        );
-    }
-    return canonical;
-}
-
-/**
- * The backend a run measures: an explicit `--backend` wins, the ambient
- * `BBLITE_GPU_BACKEND` variable is the fallback, SDL_GPU is the default.
- * An explicit flag that disagrees with the ambient variable says so,
- * because a run that silently ignored either one is how the wrong backend
- * used to get measured with full confidence
- * (`BBLITE_GPU_BACKEND=dawn scene -- diff` measured sdl_gpu).
- */
-export function resolveBackend(
-    explicit: string | undefined,
-    command: string,
-): string {
-    const ambient = process.env.BBLITE_GPU_BACKEND;
-    const ambientBackend =
-        ambient === undefined
-            ? undefined
-            : ambient === "dawn"
-              ? "dawn"
-              : "sdl_gpu";
-    if (explicit === undefined) {
-        return ambientBackend ?? "sdl_gpu";
-    }
-    const canonical = canonicalBackend(explicit, command);
-    if (ambientBackend !== undefined && ambientBackend !== canonical) {
-        console.warn(
-            `--backend ${canonical} overrides ambient BBLITE_GPU_BACKEND=${ambient} for this run.`,
-        );
-    }
-    return canonical;
-}
-
-/**
- * The token a backend spells in artifact *filenames*: `gpu` for SDL_GPU,
- * for continuity with the parity artifacts that predate the second
- * backend (`report-gpu.json`, `diff-map-gpu.png`); `dawn` is itself.
- * `--backend` values stay the unambiguous `sdl_gpu|dawn`.
- */
-export function backendFileToken(backend: string): string {
-    return backend === "sdl_gpu" ? "gpu" : backend;
-}
-
-/**
- * Where `scene -- capture <id>` lands unless `--capture` (or an
- * `outputDirectory` option) points elsewhere. The browser half, the
- * native half, `scene -- diff`, `scene -- uniforms` and
- * `scene -- compose` all pair through this one directory, so its
- * spelling lives here rather than at each of them.
- */
-export function defaultCaptureDirectory(sceneId: string): string {
-    return join("artifacts", "capture", sceneId);
-}
-
-/**
- * The fixed names inside a capture directory that the instrumented
- * browser capture writes and the diff/uniforms readers pair on. A reader
- * and the writer disagreeing on one of these fails as "no capture", so
- * each name is spelled once.
- */
-export function captureBuffersPath(captureDirectory: string): string {
-    return join(captureDirectory, "buffers.json");
-}
-
-export function captureDrawsPath(captureDirectory: string): string {
-    return join(captureDirectory, "draws.json");
-}
-
-export function captureShadersDirectory(captureDirectory: string): string {
-    return join(captureDirectory, "shaders");
-}
-
-/** Seek provenance for the browser capture's reuse path (`null` means
- *  captured with no seek; a missing file reads as unknown). */
-export function captureMetaPath(captureDirectory: string): string {
-    return join(captureDirectory, "capture-meta.json");
-}
-
-/**
- * The browser capture's provenance sidecar, beyond the seek: which scene
- * module was served (`suiteBrowserModuleDigest`), whether the hooked
- * render stayed byte-identical to the committed golden, and whether a
- * draw filter perturbed the capture. The instrumented capture writes it;
- * the reuse paths (`diff`, `compose`, `uniforms`) read it and refuse
- * evidence that no longer describes the current scene.
- */
-export interface CaptureMeta {
-    /** `null` = captured with no seek. */
-    seekSeconds: number | null;
-    /** sha256 of the served browser module; absent on pre-digest
-     *  captures, which reads as unknown and forces a recapture. */
-    moduleSha256?: string;
-    /**
-     * The pinned package the browser rendered through, as
-     * `<version>@<sourceVersion>`.
-     *
-     * `moduleSha256` covers the module the HARNESS serves, not the
-     * package behind it, so it does not move when only the pin does —
-     * except for the scenes whose asset URLs embed the commit. A capture
-     * taken before the 1.27.0 bump therefore read as current while
-     * holding the unminified WGSL the package used to ship, and two
-     * shader gates compared today's composition against it. Absent on a
-     * pre-pin capture, which reads as unknown and forces a recapture.
-     */
-    pin?: string;
-    /** The byte-identity verdict against the committed golden.
-     *  `"not-checked"` = no golden on disk, or a filtered capture. */
-    goldenIdentity?: "identical" | "differs" | "not-checked";
-    /** The `--skip-draw` filter the capture ran under, when any: a
-     *  filtered capture is an experiment, not reusable evidence. */
-    drawFilter?: number;
-}
-
-/**
- * Writes a capture's provenance sidecar, so a reuse path can tell
- * whether the directory describes the pose — and, for the browser half,
- * the scene module — it is about to be read as evidence. `undefined`
- * seek is recorded as `null` — captured with no seek. One writer for
- * both capture halves (the native half records the seek alone), one
- * reader family below, so the JSON shape cannot drift between them.
- */
-export function writeSeekMeta(
-    path: string,
-    seekSeconds: number | undefined,
-    extras?: Omit<CaptureMeta, "seekSeconds">,
-): void {
-    writeFileSync(
-        path,
-        `${JSON.stringify({
-            seekSeconds: seekSeconds ?? null,
-            ...extras,
-        })}\n`,
-    );
-}
-
-/**
- * Reads the full provenance sidecar back. `undefined` = no sidecar or an
- * unreadable one, which reads as unknown and forces a recapture.
- */
-export function readCaptureMeta(path: string): CaptureMeta | undefined {
-    if (!existsSync(path)) return undefined;
-    try {
-        const meta = JSON.parse(readFileSync(path, "utf8")) as CaptureMeta;
-        return { ...meta, seekSeconds: meta.seekSeconds ?? null };
-    } catch {
-        return undefined;
-    }
-}
-
-/**
- * Reads a seek-provenance sidecar back. `null` = captured with no seek;
- * `undefined` = no provenance (a pre-meta or unreadable capture), which
- * reads as unknown and forces a recapture.
- */
-export function readSeekMeta(path: string): number | null | undefined {
-    if (!existsSync(path)) return undefined;
-    try {
-        const meta = JSON.parse(readFileSync(path, "utf8")) as {
-            seekSeconds?: number | null;
-        };
-        return meta.seekSeconds ?? null;
-    } catch {
-        return undefined;
-    }
-}
-
-/** The browser capture's texture-upload record: raw texels for small
- *  uploads (bone palettes ride rgba32float rows), 4x4 samples for image
- *  copies. The writer is the instrumented capture's page script; the
- *  palette matching in `scene -- diff` is the reader. */
-export function captureTextureUploadsPath(
-    captureDirectory: string,
-): string {
-    return join(captureDirectory, "tex-uploads.json");
-}
-
-/**
- * The three files `scene -- capture <id> --native` writes for one
- * backend filename token — the render capture, the screenshot beside
- * it, and the seek-provenance sidecar — spelled once for the writer and
- * the `scene -- diff` reader, which used to keep matching
- * `native-<token>.*` literals apiece.
- */
-export function captureNativePaths(
-    captureDirectory: string,
-    token: string,
-): { capture: string; screenshot: string; meta: string } {
-    return {
-        capture: join(captureDirectory, `native-${token}.json`),
-        screenshot: join(captureDirectory, `native-${token}.png`),
-        meta: join(captureDirectory, `native-${token}.meta.json`),
-    };
-}
-
-/** Where `capture --seek-bracket` lands a ±1-frame capture, beside the
- *  exact-seek capture it brackets. */
-export function captureSeekBracketDirectory(
-    captureDirectory: string,
-    offsetFrames: -1 | 1,
-): string {
-    return join(
-        captureDirectory,
-        offsetFrames < 0 ? "seek-minus1" : "seek-plus1",
-    );
-}
-
-/**
- * The three poses `capture --seek-bracket` renders: the exact seek and
- * one frame to either side, so a residual can be judged against the
- * scale of one frame of motion instead of against intuition
- * (docs/debugging.md rung 6). Refuses a plan it cannot mean: a scene
- * with no seek has no motion to bracket, and a seek within one frame of
- * zero would clamp the minus arm to a different step than the plus arm.
- */
-export function seekBracketPlan(
-    seekSeconds: number | undefined,
-    frameRate: number,
-): {
-    seekSeconds: number;
-    frameStep: number;
-    minus: number;
-    plus: number;
-} {
-    if (seekSeconds === undefined) {
-        throw new Error(
-            "capture: --seek-bracket needs a pose to bracket — pass --seek <t> or use a scene whose registry entry pins referenceTimeSeconds.",
-        );
-    }
-    if (!Number.isFinite(frameRate) || frameRate <= 0) {
-        throw new Error(
-            `capture: --seek-bracket needs a positive frame rate (got ${frameRate}).`,
-        );
-    }
-    const frameStep = 1 / frameRate;
-    const minus = seekSeconds - frameStep;
-    if (minus < 0) {
-        throw new Error(
-            `capture: --seek-bracket at ${seekSeconds}s cannot step one frame (${frameStep.toFixed(6)}s) back past zero.`,
-        );
-    }
-    return {
-        seekSeconds,
-        frameStep,
-        minus,
-        plus: seekSeconds + frameStep,
-    };
-}
-
-/**
- * The parity artifacts a backend's run leaves in its scene's parity
- * directory, by filename token (`backendFileToken`, plus
- * `differential` for the combined report). The differential run reads
- * the per-backend reports and native images back, so writer and reader
- * spell these names through one place.
- */
-export function parityReportPath(
-    outputDirectory: string,
-    suffix: string,
-): string {
-    return resolve(outputDirectory, `report-${suffix}.json`);
-}
-
-export function parityNativeImagePath(
-    outputDirectory: string,
-    suffix: string,
-): string {
-    return resolve(outputDirectory, `native-${suffix}.png`);
-}
-
-/**
- * Point `BBLITE_GPU_BACKEND` at the resolved backend, for this process
- * and every native child it spawns. Deleting it for SDL_GPU matters as
- * much as setting it for Dawn: an ambient `dawn` would otherwise survive
- * into a run whose `--backend sdl_gpu` chose the other one.
- */
-export function applyGpuBackendEnvironment(backend: string): void {
-    if (backend === "dawn") {
-        process.env.BBLITE_GPU_BACKEND = "dawn";
-    } else {
-        delete process.env.BBLITE_GPU_BACKEND;
-    }
-}
-
-/**
- * Runs `body` with one environment variable set (or, for `undefined`,
- * deleted — deleting matters as much as setting: an ambient value would
- * otherwise survive into a run that chose otherwise), restoring the
- * previous state however the body ends. The body is awaited before the
- * restore, because restoring while spawned work is still running would
- * change the variable under it. The one copy of the save/set/restore
- * ceremony the scene tools kept re-spelling per variable.
- */
-export async function withEnvironment<T>(
-    name: string,
-    value: string | undefined,
-    body: () => Promise<T>,
-): Promise<T> {
-    const previous = process.env[name];
-    if (value === undefined) {
-        delete process.env[name];
-    } else {
-        process.env[name] = value;
-    }
-    try {
-        return await body();
-    } finally {
-        if (previous === undefined) {
-            delete process.env[name];
-        } else {
-            process.env[name] = previous;
-        }
-    }
-}
-
-/**
- * `--gpu-debug`: the backend's own validation layer, plus the SDL
- * assertion-handler defusal without which a failed render pass hangs the
- * harness waiting on a prompt instead of naming itself. Scene 116's
- * "Failed to close command list" became "Store op is RESOLVE ... but
- * texture is not multisample" in one run once it could print.
- */
-export function enableGpuDebug(): void {
-    process.env.BBLITE_GPU_DEBUG = "1";
-    process.env.SDL_ASSERT = "always_ignore";
-}
-
-/** A `--background r,g,b` value: three 0-255 integers, rejected loudly. */
-export function parseRgbTriple(
-    value: string,
-    flag: string,
-    command: string,
-): [number, number, number] {
-    const parts = value.split(",").map((part) => Number(part.trim()));
-    if (
-        parts.length !== 3 ||
-        parts.some(
-            (part) => !Number.isInteger(part) || part < 0 || part > 255,
-        )
-    ) {
-        throw new Error(
-            `${command}: ${flag} must be three 0-255 integers 'r,g,b' (got '${value}').`,
-        );
-    }
-    return [parts[0]!, parts[1]!, parts[2]!];
-}
-
-export interface PngMeasurement {
-    width: number;
-    height: number;
-    background: [number, number, number];
-    backgroundSource: "explicit" | "top-left";
-    /** Pixels whose RGB differs from the background, exactly. */
-    pixels: number;
-    /** Inclusive corners; absent when every pixel is background. */
-    bounds?: { minX: number; minY: number; maxX: number; maxY: number };
-    /** Per-channel means over the non-background pixels. */
-    mean?: { red: number; green: number; blue: number };
-}
-
-/**
- * The non-background bounding box, pixel count and per-channel means of
- * one PNG — `scene -- measure`.
- *
- * The measure-the-PNG rule as a command: the twenty-line pngjs script
- * that turned "the sprites are in the wrong place" into "exactly 7200 px
- * at (640,180)-(719,269)", coordinates that invert through a vertex
- * shader where an eyeballing never does. Background matching is exact,
- * because "exactly" is the point — native renders clear to one solid
- * color. Browser goldens dither their background by design, so measure
- * the native PNG, or expect the dithered pixels to count as content.
- */
-export function measurePng(
-    path: string,
-    background?: [number, number, number],
-): PngMeasurement {
-    const png = PNG.sync.read(readFileSync(path));
-    const data = png.data;
-    const resolved: [number, number, number] = background ?? [
-        data[0]!,
-        data[1]!,
-        data[2]!,
-    ];
-    let pixels = 0;
-    let minX = png.width;
-    let minY = png.height;
-    let maxX = -1;
-    let maxY = -1;
-    const sum = [0, 0, 0];
-    for (let y = 0; y < png.height; y += 1) {
-        for (let x = 0; x < png.width; x += 1) {
-            const index = (y * png.width + x) * 4;
-            if (
-                data[index] === resolved[0] &&
-                data[index + 1] === resolved[1] &&
-                data[index + 2] === resolved[2]
-            ) {
-                continue;
-            }
-            pixels += 1;
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
-            sum[0]! += data[index]!;
-            sum[1]! += data[index + 1]!;
-            sum[2]! += data[index + 2]!;
-        }
-    }
-    return {
-        width: png.width,
-        height: png.height,
-        background: resolved,
-        backgroundSource: background ? "explicit" : "top-left",
-        pixels,
-        ...(pixels > 0
-            ? {
-                  bounds: { minX, minY, maxX, maxY },
-                  mean: {
-                      red: sum[0]! / pixels,
-                      green: sum[1]! / pixels,
-                      blue: sum[2]! / pixels,
-                  },
-              }
-            : {}),
-    };
-}
-
-export function formatPngMeasurement(
-    path: string,
-    measurement: PngMeasurement,
-): string {
-    const lines = [
-        `${path}: ${measurement.width}x${measurement.height}, ` +
-            `background ${measurement.background.join(",")}` +
-            (measurement.backgroundSource === "top-left"
-                ? " (top-left pixel)"
-                : ""),
-    ];
-    if (!measurement.bounds || !measurement.mean) {
-        lines.push("Every pixel is the background color.");
-        return lines.join("\n");
-    }
-    const { minX, minY, maxX, maxY } = measurement.bounds;
-    lines.push(
-        `${measurement.pixels} non-background px in ` +
-            `(${minX},${minY})-(${maxX},${maxY}) ` +
-            `(${maxX - minX + 1}x${maxY - minY + 1} box)`,
-    );
-    lines.push(
-        `mean RGB over those pixels: ${measurement.mean.red.toFixed(2)}, ` +
-            `${measurement.mean.green.toFixed(2)}, ` +
-            `${measurement.mean.blue.toFixed(2)}`,
-    );
-    return lines.join("\n");
-}
-
-/**
- * Every JSON report the scene tools write goes through here, so each one
- * carries the same provenance: which tool wrote it, for which backend,
- * from which generated tree, and when. Fields are added, never renamed —
- * existing readers parse by key — and every added field is a string,
- * because `scene -- neutrality` flattens the numeric leaves of these
- * reports and a numeric timestamp would register as a moved cell.
- * Payload keys win a collision so a report's own fields never change.
- */
-export function writeReport(
-    path: string,
-    meta: {
-        tool: string;
-        backend?: string;
-        generatedDirectory?: string;
-    },
-    payload: object,
-    indent = 2,
-): void {
-    const generatedStamp = ((): string | undefined => {
-        if (!meta.generatedDirectory) return undefined;
-        try {
-            return computeBuildStamp(meta.generatedDirectory).stamp;
-        } catch {
-            return undefined;
-        }
-    })();
-    writeFileSync(
-        path,
-        `${JSON.stringify(
-            {
-                tool: meta.tool,
-                ...(meta.backend !== undefined
-                    ? { backend: meta.backend }
-                    : {}),
-                ...(generatedStamp !== undefined
-                    ? { generatedStamp }
-                    : {}),
-                writtenAt: new Date().toISOString(),
-                ...payload,
-            },
-            null,
-            indent,
-        )}\n`,
-    );
 }
 
 export interface ParityArguments {
@@ -883,157 +266,8 @@ export function parseParityArguments(rest: string[]): ParityArguments {
     return result;
 }
 
-export function defaultExecutable(buildDirectory: string): string {
-    const name = process.platform === "win32"
-        ? "bblite_native.exe"
-        : "bblite_native";
-    const candidates = [
-        resolve(buildDirectory, name),
-        resolve(buildDirectory, "Release", name),
-    ];
-    return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
-}
-
-/**
- * The native executable a measured run spawns: an explicit `--exe` wins,
- * the ambient `BBLITE_NATIVE_EXE` override is the fallback, then the
- * scene's own Release build. One resolver, because `geometry` ignored
- * both overrides for as long as each command spelled its own chain.
- */
-export function resolveNativeExecutable(
-    explicit: string | undefined,
-    buildDirectory: string,
-): string {
-    return resolve(
-        explicit ??
-            process.env.BBLITE_NATIVE_EXE ??
-            defaultExecutable(buildDirectory),
-    );
-}
-
-/**
- * Refuse a measurement taken from a stale build.
- *
- * The executable reports the digest of the sources it was compiled from,
- * and its shader and asset payload is copied beside it after every
- * successful build. Comparing both against the generated tree catches the
- * three ways a run can measure something other than the current inputs: a
- * build that never ran, a shader step that failed without stopping the
- * build, and a deployment that never happened.
- */
-export function verifyDeployedPayload(
-    executable: string,
-    generatedDirectory: string,
-): void {
-    // BBLITE_ASSET_DIR and BBLITE_GPU_SHADER_DIR redirect the runtime
-    // lookup, so the deployment beside the executable is only the payload
-    // when neither override is active.
-    const executableDirectory = resolve(executable, "..");
-    const overridden: Readonly<Record<string, string | undefined>> = {
-        shaders: process.env.BBLITE_GPU_SHADER_DIR,
-        assets: process.env.BBLITE_ASSET_DIR,
-    };
-    const payloads = deployedPayloads(
-        executableDirectory,
-        generatedDirectory,
-    ).filter((payload) => !overridden[payload.label]);
-    for (const { label, source, deployed } of payloads) {
-        const mismatches = comparePayload(source, deployed);
-        if (mismatches.length > 0) {
-            const detail = mismatches
-                .slice(0, 5)
-                .map(
-                    (mismatch) =>
-                        `${mismatch.path} (${mismatch.reason})`,
-                )
-                .join(", ");
-            throw new Error(
-                `Stale ${label} beside ${executable}: ${mismatches.length} file(s) differ from ${source} ` +
-                    `[${detail}]. Run 'scene -- process' before measuring.`,
-            );
-        }
-    }
-}
-
-export function verifyBuildIdentity(
-    executable: string,
-    generatedDirectory: string,
-    reportedStampPath: string,
-): void {
-    const expected = computeBuildStamp(generatedDirectory).stamp;
-    if (!existsSync(reportedStampPath)) {
-        throw new Error(
-            `The native executable did not report a build stamp. Rebuild it with 'scene -- process' so it carries one: ${executable}`,
-        );
-    }
-    const reported = readFileSync(
-        reportedStampPath,
-        "utf8",
-    ).trim();
-    if (reported !== expected) {
-        throw new Error(
-            `Stale native build: ${executable} was built from different sources ` +
-                `(reports ${reported.slice(0, 12)}, generated tree is ${expected.slice(0, 12)}). ` +
-                `Run 'scene -- process' before measuring.`,
-        );
-    }
-}
-
-/**
- * The one measured-run spawn: npm_* environment hygiene, the synchronous
- * child, and the exit contract, shared by the parity runner and the native
- * capture so the ceremony cannot drift between them. `dropVariables` scrubs
- * ambient variables a caller sets explicitly (the capture drops
- * `BBLITE_GPU_BACKEND` so an ambient one cannot silently pick the other
- * backend).
- */
-export function spawnNativeMeasured(
-    executable: string,
-    overrides: Record<string, string>,
-    dropVariables: readonly string[] = [],
-    captureStderr = false,
-    timeoutMs?: number,
-): string {
-    const inherited: Record<string, string> = {};
-    for (const [name, value] of Object.entries(process.env)) {
-        if (value === undefined) continue;
-        if (name.toLowerCase().startsWith("npm_")) continue;
-        if (dropVariables.includes(name)) continue;
-        inherited[name] = value;
-    }
-    const result = spawnSync(resolve(executable), [], {
-        // A report that parses the renderer's frame lines takes stderr
-        // back; every other measured run streams it to the terminal.
-        stdio: captureStderr ? ["ignore", "ignore", "pipe"] : "inherit",
-        windowsHide: true,
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-        timeout: timeoutMs,
-        env: { ...inherited, ...overrides },
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-        throw new Error(
-            `Native renderer exited with status ${result.status}.` +
-                (captureStderr ? `\n${result.stderr.slice(-2000)}` : ""),
-        );
-    }
-    return captureStderr ? result.stderr : "";
-}
-
-/** The optional `--backend` of a measuring command, canonicalized. */
-export function optionalBackend(
-    parsed: ParsedFlags,
-    command: string,
-): string | undefined {
-    const explicit = parsed.values.get("--backend");
-    return explicit === undefined
-        ? undefined
-        : canonicalBackend(explicit, command);
-}
-
 /** The frame loops print one `[mem][frame]` line every this many frames. */
-export const memoryProfileFrames = 30;
+const memoryProfileFrames = 30;
 
 export interface MemoryArguments {
     /** Frames to run; at least three samples, so the warm-up third has one. */
@@ -1272,22 +506,6 @@ export function runMemoryReport(
     }
 }
 
-/**
- * A measured capture must run through the requested screenshot frame. The
- * frame number is zero-based, so frame 10 needs an eleven-frame budget.
- */
-export function nativeCaptureFrameBudget(
-    nativeEnvironment?: Record<string, string>,
-): number {
-    const screenshotFrame = Number.parseInt(
-        nativeEnvironment?.BBLITE_SCREENSHOT_FRAME ?? "0",
-        10,
-    );
-    return Number.isFinite(screenshotFrame) && screenshotFrame >= 0
-        ? screenshotFrame + 1
-        : 1;
-}
-
 export function runNative(
     executable: string,
     screenshot: string,
@@ -1296,49 +514,17 @@ export function runNative(
     clusterBufferPath?: string,
     generatedDirectory?: string,
 ): void {
-    if (!existsSync(executable)) {
-        throw new Error(
-            `Native executable not found: ${executable}. Build the scene Release target first.`,
-        );
-    }
-    if (generatedDirectory) {
-        // Before spending a run: a payload that never deployed would
-        // otherwise surface as a driver error from the previous binaries.
-        verifyDeployedPayload(executable, generatedDirectory);
-    }
-    mkdirSync(resolve(screenshot, ".."), { recursive: true });
-    // The run must write this screenshot; one left by an earlier run would
-    // otherwise be measured in its place, and a capture that never landed
-    // (a run that ended with the gate still pending) would read as the
-    // previous result rather than as the missing file it is.
-    rmSync(resolve(screenshot), { force: true });
-    const maxFrames = nativeCaptureFrameBudget(nativeEnvironment);
-    spawnNativeMeasured(executable, {
-        ...nativeEnvironment,
-        ...(idBufferPath
-            ? { BBLITE_ID_BUFFER: resolve(idBufferPath) }
+    runMeasured(executable, {
+        ...(generatedDirectory !== undefined ? { generatedDirectory } : {}),
+        ...(nativeEnvironment !== undefined
+            ? { environment: nativeEnvironment }
             : {}),
-        ...(clusterBufferPath
-            ? { BBLITE_CLUSTER_BUFFER: resolve(clusterBufferPath) }
-            : {}),
-        BBLITE_MAX_FRAMES: String(maxFrames),
-        BBLITE_SCREENSHOT: resolve(screenshot),
-        BBLITE_TEST_PASS: "1",
-        ...(generatedDirectory
-            ? {
-                  BBLITE_BUILD_STAMP_OUT: resolve(
-                      `${screenshot}.build-stamp`,
-                  ),
-              }
+        screenshot,
+        ...(idBufferPath !== undefined ? { idBuffer: idBufferPath } : {}),
+        ...(clusterBufferPath !== undefined
+            ? { clusterBuffer: clusterBufferPath }
             : {}),
     });
-    if (generatedDirectory) {
-        verifyBuildIdentity(
-            executable,
-            generatedDirectory,
-            resolve(`${screenshot}.build-stamp`),
-        );
-    }
 }
 
 export function validateReferenceCapture(
@@ -1749,6 +935,37 @@ export async function runSceneParity(
             },
             files: { actual: canvasActual, reference: canvasReference },
         };
+        // The canvas lane's own report, beside its PNGs, one file for
+        // both backends: `verify-status` checks the published
+        // "canvas-only MAD" numbers against it, so those cells are data
+        // the pipeline checks rather than prose it trusts.
+        const canvasReportPath = parityCanvasReportPath(canvasDirectory);
+        const previous = readReport<{
+            backends?: Record<string, unknown>;
+        }>(canvasReportPath);
+        writeReport(
+            canvasReportPath,
+            {
+                tool: "parity-canvas",
+                generatedDirectory: resolve(scene.output),
+            },
+            {
+                scene: scene.name,
+                backends: {
+                    ...(previous?.backends ?? {}),
+                    [backend]: {
+                        fullMad: canvas.full.mad,
+                        foregroundMad: canvas.region.mad,
+                        buildStamp: readFileSync(
+                            `${canvasActual}.build-stamp`,
+                            "utf8",
+                        ).trim(),
+                        writtenAt: new Date().toISOString(),
+                        files: canvas.files,
+                    },
+                },
+            },
+        );
     }
 
     const report = {
@@ -1995,12 +1212,12 @@ export async function runSceneParityDifferential(
 // ---------------------------------------------------------------------------
 // `scene -- stability` — the run-to-run wobble check
 //
-// Scenes 9 and 37 render differently on Dawn from one run to the next
-// with no code change at all, and that was found by re-running the same
-// native render and comparing. This command is that check on demand,
-// with its one trap built in: comparing runs only against each other
-// hides a stable-but-wrong image, so every run is also compared against
-// the golden and both columns always print.
+// Some scenes render differently from one run to the next with no code
+// change at all (`scene-neutrality.ts` lists the measured ones, per
+// backend). This command is that check on demand, with its one trap
+// built in: comparing runs only against each other hides a
+// stable-but-wrong image, so every run is also compared against the
+// golden and both columns always print.
 // ---------------------------------------------------------------------------
 
 export interface StabilityArguments {

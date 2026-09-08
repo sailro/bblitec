@@ -32,7 +32,8 @@ for (const fixture of [
         writeReport("baseline", fixture.before);
         if (fixture.after !== undefined) writeReport("artifacts/parity", fixture.after);
         const result = spawnSync(process.execPath, ["--input-type=module", "-e",
-            `import { runNeutralityReport } from ${JSON.stringify(moduleUrl)}; runNeutralityReport("baseline");`,
+            // The library returns the verdict; the entry point owns the exit code.
+            `import { runNeutralityReport } from ${JSON.stringify(moduleUrl)}; process.exitCode = runNeutralityReport("baseline").neutral ? 0 : 1;`,
         ], { cwd: root, encoding: "utf8" });
         assert.equal(result.status, fixture.status, result.stdout + result.stderr);
         assert.match(result.stdout + result.stderr, fixture.message);

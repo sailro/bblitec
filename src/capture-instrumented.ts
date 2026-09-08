@@ -29,19 +29,21 @@ import {
     withBrowserPage,
 } from "./browser-harness.js";
 import {
+    goldenFixedFrame,
+    usesRetainedUi,
+    usesSeededRandom,
+} from "./parity-scene.js";
+import {
     captureBuffersPath,
     captureDrawsPath,
     captureMetaPath,
     captureShadersDirectory,
     captureTextureUploadsPath,
     defaultCaptureDirectory,
-    goldenFixedFrame,
     readCaptureMeta,
-    usesRetainedUi,
-    usesSeededRandom,
     writeSeekMeta,
     type CaptureMeta,
-} from "./parity-scene.js";
+} from "./tooling/artifacts.js";
 import {
     resolveScene,
     scenes,

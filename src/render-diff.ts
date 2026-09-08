@@ -6,7 +6,7 @@ import {
     captureDrawsPath,
     captureShadersDirectory,
     captureTextureUploadsPath,
-} from "./parity-scene.js";
+} from "./tooling/artifacts.js";
 import {
     fieldOffsets,
     lastWriteBytes,
@@ -325,9 +325,8 @@ export interface NativeCapture {
 
 /**
  * Per-family census of what the native capture composed beyond the two
- * mesh draw lists, so a report names the families in play — and so a
- * family the capture used to omit is visibly present rather than silently
- * counted into `nativeDraws`.
+ * mesh draw lists, so a report names the families in play: a family is
+ * visibly present rather than silently counted into `nativeDraws`.
  */
 export interface FamilyCensus {
     billboardDraws: number;
