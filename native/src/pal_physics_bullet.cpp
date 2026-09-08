@@ -34,6 +34,8 @@
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
+#include <BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
+#include <BulletCollision/Gimpact/btGImpactShape.h>
 
 namespace bbl::pal {
 namespace {
@@ -133,6 +135,9 @@ struct PhysicsShapeState {
     std::vector<PhysicsBodyState*> users;
     std::unique_ptr<btTriangleMesh> triangle_mesh;
     std::unique_ptr<btCollisionShape> shape;
+    // Dynamic users retain a GImpact view of the same triangles. Static
+    // users keep their BVH and its existing query/contact behavior.
+    std::unique_ptr<btGImpactMeshShape> moving_mesh;
     /**
      * Transform from Bullet's centre-of-mass/principal-axis body frame into
      * the node-local frame the pin exposes. A primitive contributes its
@@ -1254,6 +1259,7 @@ PhysicsWorldHandle physics_world_create() {
         std::make_unique<btDefaultCollisionConfiguration>();
     entry.dispatcher = std::make_unique<SpeculativeDispatcher>(
         entry.configuration.get());
+    btGImpactCollisionAlgorithm::registerAlgorithm(entry.dispatcher.get());
     entry.broadphase = std::make_unique<btDbvtBroadphase>();
     entry.solver =
         std::make_unique<btSequentialImpulseConstraintSolver>();
@@ -1823,6 +1829,31 @@ void set_body_collision_shape(
         shape->getContactBreakingThreshold(gContactBreakingThreshold);
 }
 
+btCollisionShape* body_shape(PhysicsBodyState& entry) {
+    PhysicsShapeState& shape = *entry.shape;
+    if (!shape.triangle_mesh || entry.body->isStaticOrKinematicObject()) {
+        return shape.shape.get();
+    }
+    if (!shape.moving_mesh) {
+        shape.moving_mesh =
+            std::make_unique<btGImpactMeshShape>(shape.triangle_mesh.get());
+        shape.moving_mesh->updateBound();
+    }
+    return shape.moving_mesh.get();
+}
+
+void refresh_body_shape(PhysicsBodyState& entry) {
+    if (!entry.shape) return;
+    btCollisionShape* shape = body_shape(entry);
+    if (entry.mass_frame_shape) {
+        entry.mass_frame_shape->removeChildShapeByIndex(0);
+        entry.mass_frame_shape->addChildShape(
+            entry.node_from_body.inverse() * entry.shape->node_from_body, shape);
+        shape = entry.mass_frame_shape.get();
+    }
+    set_body_collision_shape(entry, shape);
+}
+
 /**
  * Drop any per-body mass-frame compound and wear the shared shape itself.
  * Both callers reach this the moment the body's centre of mass becomes the
@@ -1830,7 +1861,7 @@ void set_body_collision_shape(
  * properties that author none ask for the shape's.
  */
 void wear_shared_shape(PhysicsBodyState& entry) {
-    set_body_collision_shape(entry, entry.shape->shape.get());
+    set_body_collision_shape(entry, body_shape(entry));
     entry.mass_frame_shape.reset();
 }
 
@@ -1877,27 +1908,6 @@ bool is_triangle_mesh_shape(const btCollisionShape& shape) {
     return shape.getShapeType() == TRIANGLE_MESH_SHAPE_PROXYTYPE;
 }
 
-/**
- * A triangle-mesh shape cannot be worn by a body the solver moves: Bullet
- * answers no inertia tensor for a concave shape and detects no
- * concave-concave contact, which is the case it documents as unsupported.
- * Havok has no such rule -- it simulates a mesh shape on a dynamic body --
- * so this is a substituted-solver refusal and says so, rather than
- * simulating something the pin did not describe. Every reached scene builds
- * its mesh shapes for static colliders. `docs/fidelity.md#physics-contract`.
- */
-void reject_moving_triangle_mesh_shape(
-    const btCollisionShape& shape,
-    const btRigidBody& body) {
-    if (!is_triangle_mesh_shape(shape) || body.isStaticOrKinematicObject()) {
-        return;
-    }
-    throw std::runtime_error(
-        "A triangle-mesh physics shape on a dynamic body is not lowered "
-        "by this prototype; Bullet does not simulate a moving concave "
-        "shape.");
-}
-
 void physics_body_set_motion_type(
     PhysicsBodyHandle body,
     PhysicsMotionType motion_type) {
@@ -1918,15 +1928,7 @@ void physics_body_set_motion_type(
             break;
     }
     entry.body->setCollisionFlags(flags);
-    // The pin sets the motion type before the shape, so this arm catches a
-    // LATER `setPhysicsBodyMotionType` that would set a mesh collider
-    // moving; `physics_body_set_shape` catches the pin's own order.
-    // The body's own record rather than its collision shape: a body with
-    // an authored centre of mass wears a compound around the shape, and
-    // the guard has to see through it.
-    reject_moving_triangle_mesh_shape(
-        entry.shape ? *entry.shape->shape : *entry.body->getCollisionShape(),
-        *entry.body);
+    refresh_body_shape(entry);
     mark_body_dirty(entry);
 }
 
@@ -1935,7 +1937,6 @@ void physics_body_set_shape(
     PhysicsShapeHandle shape) {
     PhysicsBodyState& entry = body_at(body);
     PhysicsShapeState& shape_entry = shape_at(shape);
-    reject_moving_triangle_mesh_shape(*shape_entry.shape, *entry.body);
     const bool shape_changed = entry.shape != shape.ownership;
     if (shape_changed) {
         shape_entry.users.push_back(&entry);
@@ -1999,13 +2000,10 @@ PhysicsMassProperties physics_shape_build_mass_properties(
             static_cast<btScalar>(properties.inertia[1]),
             static_cast<btScalar>(properties.inertia[2]));
     } else {
-        // A triangle-mesh shape answers `calculateLocalInertia` with an
-        // assertion and a zeroed tensor, because a moving concave body is
-        // what Bullet does not support. One only ever reaches here on a
-        // static or kinematic body -- `reject_moving_triangle_mesh_shape`
-        // is why -- and the solver reads no inertia for either, so the
-        // zero it would return is taken without asking.
-        if (!is_triangle_mesh_shape(*shape_entry.shape)) {
+        if (shape_entry.moving_mesh) {
+            shape_entry.moving_mesh->calculateLocalInertia(
+                static_cast<btScalar>(mass), inertia);
+        } else if (!is_triangle_mesh_shape(*shape_entry.shape)) {
             shape_entry.shape->calculateLocalInertia(
                 static_cast<btScalar>(mass), inertia);
         }
@@ -2110,7 +2108,7 @@ void apply_body_mass_frame(
     } else {
         auto offset = std::make_unique<btCompoundShape>();
         offset->addChildShape(
-            node_from_body.inverse() * shape_frame, entry.shape->shape.get());
+            node_from_body.inverse() * shape_frame, body_shape(entry));
         set_body_collision_shape(entry, offset.get());
         entry.mass_frame_shape = std::move(offset);
     }

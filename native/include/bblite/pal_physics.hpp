@@ -276,13 +276,9 @@ physics_world_trigger_events(PhysicsWorldHandle world);
  * with the pin's two packed heap buffers expanded into the vertex list and
  * the index triples that address it.
  *
- * The one thing this shape kind cannot do is move. Havok simulates a mesh
- * shape on a dynamic body; Bullet's triangle-mesh shape is concave, and a
- * moving concave body is the case Bullet documents as unsupported -- it
- * answers no inertia tensor and no concave-concave contact. So a mesh shape
- * that reaches a DYNAMIC body refuses at the assignment, in
- * `physics_body_set_shape` and `physics_body_set_motion_type`, rather than
- * simulating something the pin did not describe.
+ * Static users retain Bullet's BVH. Dynamic users retain a GImpact view of
+ * the same triangles and its inertia approximation; both views outlive the
+ * bodies that reference them.
  */
 [[nodiscard]] PhysicsShapeHandle physics_shape_create_mesh(
     const std::vector<std::array<double, 3>>& positions,

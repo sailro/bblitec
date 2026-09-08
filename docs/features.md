@@ -305,8 +305,9 @@ on first use; reads before assignment refuse. Material producers retain their so
 
 Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/static-mesh shapes, forces,
 velocities, motion/prestep, aggregates, centre of mass, masks, collisions/triggers, raycasts and floating origin.
-Constraints, characters, heightfields and proximity/cast queries remain incomplete. Inertia overrides,
-dynamic concave meshes and non-Y-aligned capsule/cylinder segments refuse. See [physics fidelity](fidelity.md#physics-contract).
+Constraints, characters, heightfields and proximity/cast queries remain incomplete. Dynamic triangle
+meshes use GImpact; inertia overrides and non-Y-aligned capsule/cylinder segments refuse.
+See [physics fidelity](fidelity.md#physics-contract).
 
 Raycasts return nullable body identity, point/normal and double distance. Trigger selection and both masks
 filter the closest eligible body. Arguments evaluate in source order; retained point objects expose changes

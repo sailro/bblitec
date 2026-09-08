@@ -189,7 +189,8 @@ Preserve authored overrides in browser/native comparisons.
 Body insertion/configuration order, center-of-mass offsets, collider ownership,
 trigger events and combine modes are explicit library boundaries. Degenerate
 boxes expand below Bullet's margin with a positive-face limitation.
-Triangle-mesh storage outlives its shape; dynamic concave bodies refuse.
+Triangle-mesh storage outlives its shapes. Static bodies use Bullet's BVH;
+dynamic bodies use GImpact with its approximate inertia over the same triangles.
 Floating-origin regions are separate worlds and do not collide with one another.
 
 Compare rest/shape properties separately from per-step flight, contact, rebound
