@@ -326,7 +326,8 @@ velocities, motion/prestep, aggregates, centre of mass, masks, collisions/trigge
 Convex proximity/cast queries return local input and world target contacts, distance/fraction, trigger/mask
 filtering and cast body exclusion. Query bags and quaternions require inline objects; concave/compound proximity
 targets refuse. Dynamic triangle meshes use GImpact. Character movement kernels, capsule lifecycle and
-collision callbacks lower from pinned source; scene integration remains pending. Constraints remain incomplete.
+collision callbacks lower from pinned source; collectors retain body identity across convex, mesh and compound contacts.
+Constraint springs/motors, retained handles and explicit or rectangular heightfields refuse.
 Mass and inertia overrides are supported. Omitted mass requires a positive primitive or closed convex volume.
 Inertia-orientation overrides and non-Y-aligned capsule/cylinder segments refuse. See [physics fidelity](fidelity.md#physics-contract).
 

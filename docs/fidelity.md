@@ -240,6 +240,12 @@ Box queries use a measured 0.015 rounded margin capped by the smallest half-exte
 ties select the capsule's authored first endpoint within the face overlap. In 32 face/edge proximity
 and cast controls, the largest Havok delta is 0.000355 (cast fraction).
 
+Scene104's 55-step character pose differs by at most 0.003; its first box-contact Y differs by 0.001.
+Scene105's 55-step character pose agrees within 0.0000005, while obstacle0/1 Z differs by 0.244/0.392
+before character contact. First obstacle0/1 callbacks therefore occur at source `steps` values 57/60
+in Havok and 61/59 in Bullet. The 105-step contacted-body set agrees; character pose differs by at most 0.165
+and later contact points differ.
+
 Rotation gizmos translate the pinned drag angle and quaternion arithmetic. Native GPU picks complete
 synchronously. Custom drag observables, sector readout, sibling-disable styling and multi-pointer/touch
 capture remain unsupported.

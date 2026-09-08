@@ -7,11 +7,7 @@ its scene.
 
 ## Unregistered numbered scenes
 
-The corpus/registry comparison leaves **2** numbered scenes unregistered.
-
-| Scene | Remaining integration |
-| --- | --- |
-| 104, 105 | Character-controller collision parity and interaction checks |
+All numbered corpus scenes are registered.
 
 ## Compiler and lowering
 

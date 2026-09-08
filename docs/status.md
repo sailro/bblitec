@@ -114,6 +114,8 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Bullet/Havok trigger drop two elastic bounces in; the rebound rule's 0.2% compounding, not a renderer-fidelity value. |
 | 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | 0.003 / 0.125 | 0.003 / 0.125 | Physics Raycast over Triangle-Soup Colliders |
 | 103 | <img src="images/scenes/scene103.png" alt="Scene 103 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Raycast Instance Picking; exact captureFrame=5 pose. |
+| 104 | <img src="images/scenes/scene104.png" alt="Scene 104 rendering" width="160"> | 0.014 / 0.013 | 0.014 / 0.013 | Character capsule movement, collision events, keyboard/jump and camera follow; imported level lightmaps. |
+| 105 | <img src="images/scenes/scene105.png" alt="Scene 105 rendering" width="160"> | 0.274 / 0.204 | 0.274 / 0.204 | Character movement and animated platform; Bullet/Havok dynamic-obstacle solver delta. |
 | 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.018 / 0.098 | 0.018 / 0.098 | Physics Motion and Prestep Grid; Bullet/Havok geometry and solver residual at frame 20. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
