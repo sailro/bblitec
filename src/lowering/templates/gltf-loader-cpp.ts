@@ -994,11 +994,21 @@ std::uint32_t read_index(
     return static_cast<std::uint32_t>(read_component(buffer, container, views, accessor, element, 0));
 }
 
+// src/loader-gltf/gltf-feature-lights-punctual.ts applyAsset: a punctual
+// light's world forward is \`Math.hypot(fx, fy, fz) || 1\` under its three
+// lanes, a zero forward kept as it is. The load-time call is the one
+// gltf/punctual-lights.ts emits against this name after asserting that
+// shape; the animated refresh below reuses it. Vertex, tangent and face
+// normals take the vertex stage's own normalize instead
+// (upstream::normalize_baked_direction).
 Vec3 normalize(Vec3 value) {
-    const float length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
-    return length > 0.000001f
-        ? Vec3{value.x / length, value.y / length, value.z / length}
-        : Vec3{0.0f, 1.0f, 0.0f};
+    const double length = js::or_number(
+        js::hypot_js({value.x, value.y, value.z}), 1.0);
+    return Vec3{
+        static_cast<float>(value.x / length),
+        static_cast<float>(value.y / length),
+        static_cast<float>(value.z / length),
+    };
 }
 
 ${lowered.animationInterpolation}
@@ -1159,11 +1169,12 @@ Vec3 transform_point(const Matrix& matrix, Vec3 value) {
     return Vec3{-transformed.x, transformed.y, transformed.z};
 }
 
-// Babylon Lite normalizes the object-space direction and interpolates
-// the transformed vector unnormalized; only the fragment renormalizes.
+// Babylon Lite normalizes the object-space direction (pbr-template.ts:
+// \`finalWorld * vec4<f32>(normalize(normal), 0.0)\`) and interpolates the
+// transformed vector unnormalized; only the fragment renormalizes.
 Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
-    const Vec3 transformed =
-        upstream::transform_direction(matrix, normalize(value));
+    const Vec3 transformed = upstream::transform_direction(
+        matrix, upstream::normalize_baked_direction(value));
     return Vec3{-transformed.x, transformed.y, transformed.z};
 }
 
@@ -3017,13 +3028,15 @@ ${sourceTextureReads ? `                retain_source_albedo(materials.back(), m
                         read_component(buffer, container, views, *normals, index, 2),
                     };${retainLocalNormals ? `
                     geometry.local_normals[index] = local_normal;` : ""}
-                    live_local_normal = normalize(Vec3{
+                    // The vertex stage's own normalize (pbr-template.ts
+                    // \`normalize(normal)\`), on the lanes the pin uploads.
+                    live_local_normal = upstream::normalize_baked_direction(Vec3{
                         -local_normal.x,
                         local_normal.y,
                         local_normal.z,
                     });
                     vertex.normal = animated || instanced
-                        ? normalize(Vec3{
+                        ? upstream::normalize_baked_direction(Vec3{
                               -local_normal.x,
                               local_normal.y,
                               local_normal.z,
@@ -3046,7 +3059,7 @@ ${sourceTextureReads ? `                retain_source_albedo(materials.back(), m
                         -local_tangent_w,
                     };
                     const Vec3 tangent = animated || instanced
-                        ? normalize(Vec3{
+                        ? upstream::normalize_baked_direction(Vec3{
                               -local_tangent.x,
                               local_tangent.y,
                               local_tangent.z,
@@ -3362,7 +3375,12 @@ ${lowered.vertexColor}
                         edge2.z * edge1.x - edge2.x * edge1.z,
                         edge2.x * edge1.y - edge2.y * edge1.x,
                     };
-                    const Vec3 normal = normalize(face);
+                    // The pin's flat normal is the fragment stage's
+                    // normalize(cross(dpdx(worldPos), dpdy(worldPos)));
+                    // its CPU stand-in normalizes the face through the
+                    // same guarded shader normalize the vertex bake uses.
+                    const Vec3 normal =
+                        upstream::normalize_baked_direction(face);
                     a.normal = normal;
                     b.normal = normal;
                     c.normal = normal;
@@ -3483,6 +3501,15 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             ++gltf_mesh_counter;
             record.primitive = PrimitiveKind::gltf;
             record.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
+            // src/material/pbr/fragments/refraction-rtt-fragment.ts
+            // thicknessScaleLine: the refraction fragment scales its
+            // thickness lanes by \`ts = max(length(mesh.world[0].xyz),
+            // max(length(mesh.world[1].xyz), length(mesh.world[2].xyz)))\`,
+            // the mesh world's longest basis column. This loader bakes the
+            // node world into the vertices, so the draw's mesh.world carries
+            // no scale and the fragment's \`ts\` is one; the pinned product is
+            // kept by reading that column length off the baked node world
+            // here and scaling the material block per draw with it.
             record.baked_world_scale = std::max({
                 std::sqrt(
                     matrix[0] * matrix[0] +
@@ -4615,7 +4642,7 @@ ${deformPicking ? `                // The pin's detailed pick reads \`mesh.world
                         c.position.y - a.position.y,
                         c.position.z - a.position.z,
                     };
-                    const Vec3 face = normalize(Vec3{
+                    const Vec3 face = upstream::normalize_baked_direction(Vec3{
                         edge2.y * edge1.z - edge2.z * edge1.y,
                         edge2.z * edge1.x - edge2.x * edge1.z,
                         edge2.x * edge1.y - edge2.y * edge1.x,

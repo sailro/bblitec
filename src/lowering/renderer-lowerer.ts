@@ -2,10 +2,6 @@ import { typeComponents } from "../shader-ir.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
-import {
-    pinnedTrsComposition,
-    type PinnedTrsComposition,
-} from "./pinned-trs.js";
 import { doubleLiteral as dvalue } from "../cpp-literals.js";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
@@ -426,17 +422,6 @@ export class RendererLowerer {
             // contract, asserted here so a pin retune fails generation.
             assertPinnedFogInfosOrder();
         }
-        // The mesh TRS composition, which every emission below interpolates:
-        // the mesh's own local matrix, a thin-instanced pool's parent world,
-        // and the eye-relative world a floating-origin draw carries. It is
-        // unconditional because the CPU vertex bake reads the first of those
-        // on every scene that draws a mesh at all.
-        const meshTrs: PinnedTrsComposition =
-            pinnedTrsComposition(this.context);
-        // The same composition over a transform node's own record, which
-        // carries the same lanes because upstream it is the same type.
-        const nodeTrs: PinnedTrsComposition =
-            pinnedTrsComposition(this.context, "node");
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
@@ -506,8 +491,6 @@ export class RendererLowerer {
                 opaqueOrderStamp,
                 shaderVariantTable,
                 shaderVariantEntries,
-                meshTrs,
-                nodeTrs,
                 secondAnalyticLightFill,
                 backgroundGeometry,
                 perspectiveWriter,
@@ -1417,12 +1400,10 @@ std::array<float, 16> build_view_matrix(
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     double aspect);
-// One mesh's local matrix, from the pin's own composeTrsLocalMatrix.
-//
-// Both the CPU vertex bake and the shader draw world go through this rather
-// than rotating basis vectors by the record's quaternion or Euler triple: a
-// parent's transform composes as a matrix product, and a negative scale
-// above a rotation is not expressible as the child's own scale-rotate pair.
+// One mesh's local matrix, from the pin's own composeTrsLocalMatrix: the
+// always-emitted pinned_world_transform.hpp composition (trs_matrix) over
+// the mesh record, kept as a plain function so a fixture can stand in for
+// it.
 std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh);
 // One mesh's world matrix: its own composition under its parent chain.
 //
@@ -1571,8 +1552,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp: string;
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
-            meshTrs: PinnedTrsComposition;
-            nodeTrs: PinnedTrsComposition;
             secondAnalyticLightFill: string;
             backgroundGeometry: {
                 groundVertexRows: string;
@@ -1592,8 +1571,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp,
             shaderVariantTable,
             shaderVariantEntries,
-            meshTrs,
-            nodeTrs,
             secondAnalyticLightFill,
             backgroundGeometry,
             perspectiveWriter,
@@ -2242,7 +2219,7 @@ std::array<float, 16> build_skybox_view_projection(
 // as a mesh's is.
 std::array<float, 16> transform_node_local_matrix(
     const TransformNodeRecord& node) {
-${nodeTrs.composeWorldBody}    return world;
+    return trs_matrix(node);
 }
 
 // world-matrix-state.ts: a node's world is its parent's world times its own
@@ -2328,47 +2305,21 @@ ${options.mirroredMeshes
     return flipped;
 }
 `
-    : ""}// src/scene/world-matrix-state.ts composeTrsLocalMatrix, translated whole:
-// the pin composes in JavaScript-number width and stores once into its
-// allocateMat4() Float32Array, so the locals here are double and the
-// narrowing is the single store loop at the end.
-std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
-${meshTrs.composeWorldBody}    return world;
+    : ""}std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
+    return trs_matrix(mesh);
 }
 
+// The imported clone root's outer transform on the left of a mesh's world,
+// at the composition's own double width: the same pinned Euler-to-quaternion
+// and mat4ComposeInto walk the draw path narrows to f32
+// (outer_transform_matrix), multiplied through the pinned writer's F64 arm.
+// Shadow fitting and floating-origin packing share it, and both subtract an
+// eye from the result before narrowing.
 std::array<double, 16> apply_mesh_outer_transform(
     const MeshRecord& mesh,
     std::array<double, 16> world) {
-    if (
-        mesh.outer_rotation.x != 0.0f ||
-        mesh.outer_rotation.y != 0.0f ||
-        mesh.outer_rotation.z != 0.0f) {
-        const double sin_x = std::sin(static_cast<double>(mesh.outer_rotation.x));
-        const double cos_x = std::cos(static_cast<double>(mesh.outer_rotation.x));
-        const double sin_y = std::sin(static_cast<double>(mesh.outer_rotation.y));
-        const double cos_y = std::cos(static_cast<double>(mesh.outer_rotation.y));
-        const double sin_z = std::sin(static_cast<double>(mesh.outer_rotation.z));
-        const double cos_z = std::cos(static_cast<double>(mesh.outer_rotation.z));
-        for (std::size_t column = 0; column < 4; ++column) {
-            const std::size_t offset = column * 4;
-            const double x0 = world[offset];
-            const double y0 = world[offset + 1];
-            const double z0 = world[offset + 2];
-            const double x1 = x0;
-            const double y1 = y0 * cos_x - z0 * sin_x;
-            const double z1 = y0 * sin_x + z0 * cos_x;
-            const double x2 = x1 * cos_y + z1 * sin_y;
-            const double y2 = y1;
-            const double z2 = -x1 * sin_y + z1 * cos_y;
-            world[offset] = x2 * cos_z - y2 * sin_z;
-            world[offset + 1] = x2 * sin_z + y2 * cos_z;
-            world[offset + 2] = z2;
-        }
-    }
-    world[12] += static_cast<double>(mesh.outer_position.x);
-    world[13] += static_cast<double>(mesh.outer_position.y);
-    world[14] += static_cast<double>(mesh.outer_position.z);
-    return world;
+    return outer_transform_product(
+        mesh.outer_position, mesh.outer_rotation, world);
 }
 
 ${options.floatingOrigin
@@ -2383,32 +2334,20 @@ std::array<float, 16> mesh_world_eye_relative(
     const MeshRecord& mesh,
     const std::array<float, 16>& base,
     Vec3d eye) {
-${meshTrs.composeLocalBody}\
+    const std::array<double, 16> local = trs_local_matrix(mesh);
     // The family's own base world, kept: the PBR convention's X mirror, a
     // thin-instanced pool's parent, an animated mesh's palette entry. The
     // eye-relative frame replaces where a mesh sits, never which convention
     // its family draws it under -- inserting the subtraction BESIDE the arm
-    // chain instead of inside it is what dropped the mirror.
+    // chain instead of inside it is what dropped the mirror. The product
+    // is the pinned multiply's F64 arm, the composition's own width.
     std::array<double, 16> world_local{};
-    for (std::size_t row = 0; row < 4; ++row) {
-        for (std::size_t column = 0; column < 4; ++column) {
-            double sum = 0.0;
-            for (std::size_t term = 0; term < 4; ++term) {
-                sum += static_cast<double>(base[term * 4 + column]) *
-                    local[row * 4 + term];
-            }
-            world_local[row * 4 + column] = sum;
-        }
-    }
+    mat4_multiply_into_f64(world_local, 0, base, 0, local, 0);
     world_local = apply_mesh_outer_transform(mesh, world_local);
     world_local[12] -= eye.x;
     world_local[13] -= eye.y;
     world_local[14] -= eye.z;
-    std::array<float, 16> world{};
-    for (std::size_t cell = 0; cell < 16; ++cell) {
-        world[cell] = static_cast<float>(world_local[cell]);
-    }
-    return world;
+    return narrow_mat4(world_local);
 }
 
 `
@@ -2431,10 +2370,10 @@ std::array<float, 16> build_instance_parent_world(
     if (!mesh.thin_instanced) {
         return mesh.instance_parent_matrix;
     }
-${meshTrs.composeLocalBody}\
-    // The pinned multiply, translated whole above: the parent is the f32
-    // matrix the loader recorded and the composed TRS stays f64, which is
-    // the pinned accumulation's own width for both.
+    const std::array<double, 16> local = trs_local_matrix(mesh);
+    // The pinned multiply, translated whole: the parent is the f32 matrix
+    // the loader recorded and the composed TRS stays f64, which is the
+    // pinned accumulation's own width for both.
     std::array<float, 16> result{};
     mat4_multiply_into(
         result, 0, mesh.instance_parent_matrix, 0, local, 0);
@@ -2497,22 +2436,17 @@ PbrUniforms build_pbr_uniforms(
             return;
         }
         const LightRecord& light = engine.lights[handle.value];
-        const Vec3 matrix_direction{
+        // Every pinned light with an orientation writes its lane as its
+        // world matrix's third column, as stored (src/light/directional-light.ts,
+        // src/light/spot-light.ts and src/light/hemispheric.ts _writeLightUbo:
+        // \`data[o] = w[8]\`): localMatrixFromDirection already normalized
+        // that column, and the pin neither renormalizes it nor substitutes
+        // the record's direction for it.
+        const Vec3 direction{
             light.local_matrix[8],
             light.local_matrix[9],
             light.local_matrix[10],
         };
-        const float matrix_length = std::sqrt(
-            matrix_direction.x * matrix_direction.x +
-            matrix_direction.y * matrix_direction.y +
-            matrix_direction.z * matrix_direction.z);
-        const Vec3 direction = matrix_length > 0.000001f
-            ? Vec3{
-                  matrix_direction.x / matrix_length,
-                  matrix_direction.y / matrix_length,
-                  matrix_direction.z / matrix_length,
-              }
-            : light.direction;
         // The kind tag this struct encodes -- 0 hemispheric, 1 point,
         // 2 directional -- is the retired transcribed fragment's own, and it
         // has no spot: that fragment is gone and every PBR draw now binds the
@@ -4953,43 +4887,10 @@ ${pinnedFogInfosPacking()}    };
             "utf8",
         );
         return {
-            vertex: rawWgslLiteral(vertexModule, "skyboxVertSrc"),
-            fragment: rawWgslLiteral(module, "skyboxFragSrc"),
+            vertex: extractPackagedStringLiteral(vertexModule, "skyboxVertSrc"),
+            fragment: extractPackagedStringLiteral(module, "skyboxFragSrc"),
             sceneUniforms: this.compiledSceneUniformsWgsl(),
             dither: readPinnedDitherWgsl(packageRoot).dither,
         };
     }
-}
-
-/**
- * Read one `const <name> = "...";` WGSL literal out of a packaged module. The
- * bundler emits these as single-line double-quoted JavaScript strings, so the
- * value is recovered by scanning to the closing quote and parsing it as JSON
- * rather than by a regex that would have to model every escape.
- */
-function rawWgslLiteral(source: string, name: string): string {
-    const marker = `const ${name} = "`;
-    const start = source.indexOf(marker);
-    if (start < 0) {
-        throw new Error(
-            `Pinned Babylon Lite WGSL literal '${name}' was not found.`,
-        );
-    }
-    let index = start + marker.length;
-    let escaped = "";
-    while (index < source.length && source[index] !== '"') {
-        if (source[index] === "\\") {
-            escaped += source[index]! + (source[index + 1] ?? "");
-            index += 2;
-            continue;
-        }
-        escaped += source[index];
-        index += 1;
-    }
-    if (index >= source.length) {
-        throw new Error(
-            `Pinned Babylon Lite WGSL literal '${name}' is unterminated.`,
-        );
-    }
-    return JSON.parse(`"${escaped}"`) as string;
 }

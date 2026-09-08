@@ -1,6 +1,9 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { lowerObjectComponents } from "./pinned-function-lowerer.js";
+import {
+    lowerObjectComponents,
+    lowerPinnedFunction,
+} from "./pinned-function-lowerer.js";
 import {
     type PinnedBinding,
     PinnedNumericLowerer,
@@ -162,6 +165,7 @@ export class BabylonLowerer {
                 );
             }
         }
+        this.assertMeshTransformArguments(declaration);
         return {
             modulePath,
             symbolName,
@@ -170,12 +174,91 @@ export class BabylonLowerer {
                 this.context.provenance(modulePath, symbolName),
                 this.lowerCameraDerivation(),
                 submeshNameSuffix,
+                { bakeLocalMatrix: this.lowerLocalMatrixBake(declaration) },
                 lightMeshLists,
                 diffuseUv2,
                 bumpTexture,
                 meshClones,
             ),
         };
+    }
+
+    /**
+     * The TRS the pinned loader hands `initMeshTransform` for every mesh
+     * node -- position and rotation defaulting to zero, scaling to one --
+     * which the template reads as `vec3_or(source, ..., <default>)` and
+     * composes through the pinned `composeTrsLocalMatrix` walk.
+     */
+    private assertMeshTransformArguments(
+        loader: ts.FunctionDeclaration,
+    ): void {
+        const call = this.context.callExpression(loader, "initMeshTransform");
+        const expected = [
+            "md.position?.[0] ?? 0",
+            "md.position?.[1] ?? 0",
+            "md.position?.[2] ?? 0",
+            "md.rotation?.[0] ?? 0",
+            "md.rotation?.[1] ?? 0",
+            "md.rotation?.[2] ?? 0",
+            "md.scaling?.[0] ?? 1",
+            "md.scaling?.[1] ?? 1",
+            "md.scaling?.[2] ?? 1",
+        ];
+        if (call.arguments.length !== expected.length + 1) {
+            this.context.contractError(
+                call,
+                "Expected the pinned mesh TRS as nine arguments after the mesh.",
+            );
+        }
+        expected.forEach((shape, index) =>
+            this.context.assertExpressionShape(
+                call.arguments[index + 1]!,
+                shape,
+                `Babylon mesh TRS argument ${index}`,
+            ),
+        );
+    }
+
+    /**
+     * `bakeLocalMatrix` translated whole: the pin's pivot bake over the
+     * Float32Array attributes it is about to upload, at JavaScript-number
+     * width with one rounding per store, and the normal renormalization
+     * behind its own length guard. The call site and its guard are asserted
+     * against the pinned loader, so the bake cannot silently apply to a
+     * node the pin leaves alone.
+     */
+    private lowerLocalMatrixBake(loader: ts.FunctionDeclaration): string {
+        this.context.expectShapeCount(
+            loader,
+            "md.localMatrix && bakeLocalMatrix",
+            "Babylon pivot-bake guard",
+        );
+        this.context.expectShapeCount(
+            loader,
+            "bakeLocalMatrix(positions, normals, md.localMatrix)",
+            "Babylon pivot-bake call",
+        );
+        return lowerPinnedFunction(
+            this.context,
+            "src/loader-babylon/bake-local-matrix.ts",
+            "bakeLocalMatrix",
+            [
+                { pinned: "positions", kind: "f32Buffer", cpp: "positions" },
+                { pinned: "normals", kind: "f32Buffer", cpp: "normals" },
+                {
+                    pinned: "lm",
+                    kind: "numberList",
+                    cpp: "lm",
+                    cppType: "std::array<double, 16>",
+                },
+            ],
+            {
+                cppName: "bake_local_matrix",
+                returns: "void",
+                calls: pinnedNumericMathCalls(),
+                booleanAnd: true,
+            },
+        );
     }
 
     /**
@@ -206,6 +289,24 @@ export class BabylonLowerer {
                 this.context.variableInitializer(declaration, name),
                 shape,
                 `Pinned camera ${name}`,
+            );
+        }
+        // The three guarded stores after the factory call, which the
+        // template reads as `selected->value(<key>, <factory default>)`.
+        for (const [key, member] of [
+            ["fov", "fov"],
+            ["minZ", "nearPlane"],
+            ["maxZ", "farPlane"],
+        ] as const) {
+            this.context.expectShapeCount(
+                declaration,
+                `cd.${key} != null`,
+                `Pinned camera ${key} guard`,
+            );
+            this.context.expectShapeCount(
+                declaration,
+                `cam.${member} = cd.${key}`,
+                `Pinned camera ${key} store`,
             );
         }
         const lowerer = new PinnedNumericLowerer(file, {

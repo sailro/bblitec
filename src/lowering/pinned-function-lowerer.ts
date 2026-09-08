@@ -33,20 +33,27 @@ export interface PinnedFunctionParameter {
     /**
      * `number`/`boolean` are JavaScript scalars and become `double`/`bool`;
      * `mat4` is the pin's `Mat4Storage` and becomes an f32 array reference,
-     * so every store through it rounds where the pin's store does.
-     * `matrix` is a `Float32Array` the body only reads — the fixed matrix
-     * by const reference, which is what the shadow family's own
-     * `Float32Array` parameters are.
+     * so every store through it rounds where the pin's store does, and
+     * `mat4F64` the same storage at the F64 width `allocateMat4()` hands
+     * out under high-precision matrices, where a store goes through
+     * unrounded. `matrix` is a `Float32Array` the body only reads — the
+     * fixed matrix by const reference, which is what the shadow family's
+     * own `Float32Array` parameters are. `vec3` is the pin's `Vec3` record,
+     * read member-wise through the translator's own record shape.
      */
     kind:
         | "number"
         | "index"
         | "boolean"
         | "mat4"
+        | "mat4F64"
         | "matrix"
         | "mat4Const"
         | "numberArray"
+        | "numberList"
         | "u32Buffer"
+        | "f32Buffer"
+        | "vec3"
         | "record";
     /**
      * The emitted C++ parameter name. Usually the pinned name; different
@@ -75,10 +82,11 @@ export interface PinnedFunctionParameter {
      */
     cppType?: string;
     /**
-     * Bind a `record` parameter by MUTABLE reference. A pinned body that
-     * writes its own parameter's members -- a stepper advancing the
-     * animation it was handed -- needs the storage it writes to be the
-     * caller's, which a const binding would refuse at the store.
+     * Bind a caller-typed (`cppType`) parameter by MUTABLE reference. A
+     * pinned body that writes its own parameter's members -- a stepper
+     * advancing the animation it was handed -- or stores through a
+     * caller-typed matrix needs the storage it writes to be the caller's,
+     * which a const binding would refuse at the store.
      */
     mutableRecord?: boolean;
     /**
@@ -137,6 +145,11 @@ const parameterKinds: Readonly<
         bindingType: "f32",
         declare: (cpp) => `std::array<float, 16>& ${cpp}`,
     },
+    mat4F64: {
+        annotation: "Mat4Storage",
+        bindingType: "f64-buffer",
+        declare: (cpp) => `std::array<double, 16>& ${cpp}`,
+    },
     matrix: {
         annotation: "Float32Array",
         bindingType: "f32",
@@ -158,13 +171,35 @@ const parameterKinds: Readonly<
         bindingType: "f32",
         declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
     },
+    // A plain `number[]` the body only reads, at the pin's own double
+    // width: a growable vector by default, or the fixed length a caller
+    // that validated one (the `.babylon` pivot bake's sixteen-cell
+    // matrix) states through `cppType`.
+    numberList: {
+        annotation: "number[]",
+        bindingType: "f64-buffer",
+        declare: (cpp) => `const std::vector<double>& ${cpp}`,
+    },
     // A typed buffer the body indexes and stores through, sized by its
     // caller rather than fixed at sixteen. The store's width is the kind's:
-    // `u32Buffer` rounds where the pin's `Uint32Array` store rounds.
+    // `u32Buffer` rounds where the pin's `Uint32Array` store rounds, and
+    // `f32Buffer` where its `Float32Array` store does.
     u32Buffer: {
         annotation: "Uint32Array",
         bindingType: "u32",
         declare: (cpp) => `std::vector<std::uint32_t>& ${cpp}`,
+    },
+    f32Buffer: {
+        annotation: "Float32Array",
+        bindingType: "f32",
+        declare: (cpp) => `std::vector<float>& ${cpp}`,
+    },
+    // The pin's `{x, y, z}` record: `v.x` resolves through the translator's
+    // own record shape, so no caller lists the members.
+    vec3: {
+        annotation: "Vec3",
+        bindingType: "vec3",
+        declare: (cpp) => `const bbl::Vec3d& ${cpp}`,
     },
     // A record the body reads named members off. The caller supplies both
     // the annotation and the C++ type, because it owns the native record the
@@ -263,19 +298,33 @@ export function lowerObjectComponents(
  * The pinned matrix multiply translated whole, shared by the render plan
  * and the glTF loader so one pinned declaration has one translation. Its
  * `Mat4Storage` parameters accept F32- or F64-backed storage upstream;
- * the output is an f32 array while the input storage can be an array or a
- * PAL uniform pointer, containing f32 or f64 lanes. The body's reads widen
- * to double for both, so the operand containers are template parameters.
- * Signature adaptation uses the same parameter contracts and body lowering
- * as other pinned functions.
+ * the input storage can be an array or a PAL uniform pointer, containing
+ * f32 or f64 lanes. The body's reads widen to double for both, so the
+ * operand containers are template parameters. Signature adaptation uses
+ * the same parameter contracts and body lowering as other pinned
+ * functions.
+ *
+ * The target storage is the caller's choice between the two widths the
+ * pin's own `allocateMat4()` hands out: `f32` (the default Float32Array,
+ * which every GPU consumer takes) stores through `static_cast<float>`,
+ * and `f64` (the Float64Array storage the same writer accepts) stores the
+ * product unrounded -- the arm a composition kept at double width until
+ * its consumer subtracts an eye from it needs.
  */
-export function lowerMat4MultiplyWriterCpp(context: LoweringContext): string {
+export function lowerMat4MultiplyWriterCpp(
+    context: LoweringContext,
+    target: "f32" | "f64" = "f32",
+): string {
     return lowerPinnedFunction(
         context,
         "src/math/mat4-multiply-into.ts",
         "mat4MultiplyInto",
         [
-            { pinned: "dst", kind: "mat4", cpp: "dst" },
+            {
+                pinned: "dst",
+                kind: target === "f32" ? "mat4" : "mat4F64",
+                cpp: "dst",
+            },
             { pinned: "d", kind: "index", cpp: "d" },
             { pinned: "a", kind: "mat4", cpp: "a", cppType: "MatA" },
             { pinned: "i", kind: "index", cpp: "i" },
@@ -283,11 +332,48 @@ export function lowerMat4MultiplyWriterCpp(context: LoweringContext): string {
             { pinned: "j", kind: "index", cpp: "j" },
         ],
         {
-            cppName: "mat4_multiply_into",
+            cppName:
+                target === "f32"
+                    ? "mat4_multiply_into"
+                    : "mat4_multiply_into_f64",
             returns: "void",
             templateParameters: ["typename MatA", "typename MatB"],
         },
     );
+}
+
+/**
+ * A function declared INSIDE a pinned function's body, by name.
+ *
+ * The camera factories keep their per-instance arithmetic as nested
+ * declarations over the record they close over (`localEyePosition` inside
+ * `createArcRotateCamera`), which `LoweringContext.functionDeclaration`
+ * cannot reach because it walks module-level statements only. The
+ * enclosing declaration is resolved first, so a nested name that moved
+ * out of it -- or gained a twin -- fails by both names.
+ */
+function nestedFunctionDeclaration(
+    context: LoweringContext,
+    modulePath: string,
+    enclosing: string,
+    symbolName: string,
+): { file: ts.SourceFile; declaration: ts.FunctionDeclaration } {
+    const outer = context.functionDeclaration(modulePath, enclosing);
+    const nested = context.findNodes(
+        outer.declaration,
+        (node): node is ts.FunctionDeclaration =>
+            ts.isFunctionDeclaration(node) &&
+            node.name?.text === symbolName &&
+            node.body !== undefined,
+    );
+    if (nested.length !== 1) {
+        context.contractError(
+            outer.declaration,
+            `Expected one nested function '${symbolName}' with a body ` +
+                `inside pinned ${enclosing}.`,
+        );
+    }
+    return { file: outer.file, declaration: nested[0]! };
 }
 
 /** The pinned full 4x4 inverse, including its f32 allocation boundary. */
@@ -460,6 +546,12 @@ export function lowerPinnedFunction(
         callShapes?: PinnedNumericScope["callShapes"];
         /** See `PinnedNumericScope.recordLiteral`. */
         recordLiteral?: PinnedNumericScope["recordLiteral"];
+        /**
+         * The module-level pinned function whose body declares
+         * `symbolName` as a nested function, for a body the pin keeps
+         * inside its factory. The provenance names both.
+         */
+        enclosing?: string;
     },
 ): string {
     const parts = lowerPinnedFunctionParts(
@@ -492,10 +584,14 @@ export function lowerPinnedFunctionParts(
     parameters: readonly PinnedFunctionParameter[],
     options: Parameters<typeof lowerPinnedFunction>[4],
 ): { provenance: string; declaration: string; body: string } {
-    const { file, declaration } = context.functionDeclaration(
-        modulePath,
-        symbolName,
-    );
+    const { file, declaration } = options.enclosing
+        ? nestedFunctionDeclaration(
+              context,
+              modulePath,
+              options.enclosing,
+              symbolName,
+          )
+        : context.functionDeclaration(modulePath, symbolName);
     if (declaration.parameters.length !== parameters.length) {
         context.contractError(
             declaration,
@@ -636,7 +732,12 @@ export function lowerPinnedFunctionParts(
         ? options.returns
         : options.returns.type;
     return {
-        provenance: context.provenance(modulePath, symbolName),
+        provenance: context.provenance(
+            modulePath,
+            options.enclosing
+                ? `${options.enclosing}.${symbolName}`
+                : symbolName,
+        ),
         declaration:
             `${returnType} ${options.cppName}(\n    ${signature.join(",\n    ")})`,
         body,
