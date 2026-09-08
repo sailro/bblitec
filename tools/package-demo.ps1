@@ -15,7 +15,8 @@ param(
 # ships no runtime or CRT DLLs.
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
+$root = Get-RepositoryRoot
 if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
     throw (
         "Shipping requires a generated scene id made from lowercase letters, " +
@@ -34,12 +35,7 @@ $cacheFile = Join-Path $buildPath "CMakeCache.txt"
 if (-not (Test-Path $cacheFile)) {
     throw "CMake cache not found: $cacheFile. Configure and build the exact mini tree described in docs/development.md#minimal-size-shipping-builds."
 }
-$cache = @{}
-foreach ($line in Get-Content $cacheFile) {
-    if ($line -match '^([^:]+):[^=]+=(.*)$') {
-        $cache[$Matches[1]] = $Matches[2].Trim()
-    }
-}
+$cache = Read-CMakeCache $cacheFile
 $backend = $cache["BBLITE_BACKEND"]
 if ($null -eq $backend) {
     throw "BBLITE_BACKEND is not recorded in $cacheFile. Reconfigure the exact mini tree with the current toolchain."
@@ -505,6 +501,27 @@ if ($missing.Count -gt 0) {
         ForEach-Object { "$($_.Key) (imported by $($_.Value))" }) -join ", "
     throw "Package would not start: missing runtime libraries the toolchain provides: $detail"
 }
+
+# The staged package must start: run it from the package directory for a
+# few frames -- BBLITE_MAX_FRAMES is the run limit every backend's loop
+# honours -- and require a clean exit. A shader the payload lacks, a
+# device the trimmed dependencies cannot bring up, or a library the
+# loader cannot resolve all fail here, before the archive exists.
+$smokeFrames = 5
+$smokeStart = [System.Diagnostics.ProcessStartInfo]::new()
+$smokeStart.FileName = Join-Path $packageDirectory $exeName
+$smokeStart.WorkingDirectory = $packageDirectory
+$smokeStart.UseShellExecute = $false
+$smokeStart.Environment["BBLITE_MAX_FRAMES"] = "$smokeFrames"
+$smoke = [System.Diagnostics.Process]::Start($smokeStart)
+if (-not $smoke.WaitForExit(120000)) {
+    $smoke.Kill()
+    throw "Package smoke run did not exit within 120 s: $exeName did not stop after $smokeFrames frames."
+}
+if ($smoke.ExitCode -ne 0) {
+    throw "Package smoke run failed: $exeName exited with $($smoke.ExitCode) after at most $smokeFrames frames."
+}
+Write-Output "Smoke run: $exeName rendered $smokeFrames frames and exited 0."
 
 Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
 Write-Output "Created $archivePath ($backend payload)"

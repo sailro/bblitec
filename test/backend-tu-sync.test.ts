@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { featureSources } from "../src/compiler/output-projection.js";
 
 // `featureSources` decides which SDL_GPU translation units a feature
-// compiles into BBLITE_RUNTIME_SOURCES, and the CMake backend arm removes
-// exactly those files from a build without the SDL_GPU backend. Neither
-// list references the other, so a TU added to one and not the other would
-// fail only at build time — this pins the sync, reading the record itself
-// so no spelling of a source entry can dodge it.
-test("a DAWN-only build removes exactly the SDL_GPU TUs featureSources names", () => {
+// compiles into BBLITE_RUNTIME_SOURCES; the CMake backend arm derives the
+// Dawn twins from that selection by name and drops the SDL units from a
+// build without the SDL_GPU backend by the same name pattern. One
+// authority, so what is pinned here is the pattern's coverage: every SDL
+// unit the table names matches it, and every one has its Dawn twin on
+// disk -- a twin the derivation would otherwise refuse at configure.
+test("the CMake backend arm derives the Dawn twins from the SDL_GPU units featureSources names", () => {
     const featureTus = [
         ...new Set(
             Object.values(featureSources)
@@ -21,21 +22,25 @@ test("a DAWN-only build removes exactly the SDL_GPU TUs featureSources names", (
                 ),
         ),
     ];
+    assert.ok(featureTus.length > 0, "featureSources names no SDL_GPU TU");
 
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
-    const removal = cmake.match(
-        /list\(\s*REMOVE_ITEM\s+BBLITE_RUNTIME_SOURCES\s+([^)]*)\)/,
-    );
-    assert.ok(
-        removal,
-        "CMakeLists.txt has no BBLITE_RUNTIME_SOURCES REMOVE_ITEM list",
-    );
-    const removedTus = [
-        ...removal[1]!.matchAll(/"\$\{BBLITE_NATIVE_ROOT\}\/(src\/[^"]+)"/g),
-    ].map((match) => match[1]!);
-
-    assert.ok(featureTus.length > 0, "featureSources names no SDL_GPU TU");
-    assert.deepEqual([...removedTus].sort(), [...featureTus].sort());
+    const pattern = /list\(FILTER BBLITE_SDL_GPU_SOURCES INCLUDE REGEX "([^"]+)"\)/.exec(cmake)?.[1];
+    assert.ok(pattern, "CMakeLists.txt does not select the SDL_GPU units by pattern");
+    const exclusion = /list\(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "([^"]+)"\)/.exec(cmake)?.[1];
+    assert.ok(exclusion, "CMakeLists.txt does not drop the SDL_GPU units by pattern");
+    assert.equal(exclusion, pattern, "selection and exclusion must be one pattern");
+    // CMake spells the regex with doubled backslashes inside its quotes.
+    const selector = new RegExp(pattern.replaceAll("\\\\", "\\"));
+    assert.match(cmake, /string\(REPLACE "\/src\/pal_sdl_gpu" "\/src\/pal_dawn" bblite_dawn_source/);
+    assert.match(cmake, /target_sources\(bblite_native PRIVATE \$\{BBLITE_DAWN_SOURCES\}\)/);
+    assert.doesNotMatch(cmake, /REMOVE_ITEM/);
+    assert.doesNotMatch(cmake, /PRIVATE "\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_dawn[^"]*\.cpp"/);
+    for (const source of featureTus) {
+        assert.match(`/${source}`, selector, `${source} escapes the SDL_GPU pattern`);
+        const twin = `native/${source.replace("src/pal_sdl_gpu", "src/pal_dawn")}`;
+        assert.ok(existsSync(twin), `${source} has no Dawn twin at ${twin}`);
+    }
 });
 
 // The draw lists filter `visible` when they are BUILT (the pin's

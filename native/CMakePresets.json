@@ -32,26 +32,46 @@
             "cacheVariables": { "BBLITE_BACKEND": "DAWN" }
         },
         {
-            "name": "min-sdl",
-            "displayName": "Minimal-size shipping, SDL_GPU",
+            "name": "min",
+            "hidden": true,
+            "description": "The shipping shape docs/development.md#minimal-size-shipping-builds describes: MSVC (cl on PATH, a Visual Studio developer prompt), the static triplet and CRT, one backend, no capture. The reached dependencies come from the trimmed installs named by each concrete preset.",
             "inherits": "base",
             "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "cl",
                 "VCPKG_TARGET_TRIPLET": "x64-windows-static",
                 "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
-                "BBLITE_BACKEND": "SDL_GPU",
                 "BBLITE_MINSIZE": "ON",
+                "BBLITE_VISUAL_CAPTURE": "OFF",
+                "BBLITE_AUDIO_CAPTURE": "OFF"
+            }
+        },
+        {
+            "name": "min-sdl",
+            "displayName": "Minimal-size shipping, SDL_GPU, visual-only SDL",
+            "description": "Scenes reaching neither audio:engine nor input:gamepad: tools/build-sdl-min.ps1 without switches.",
+            "inherits": "min",
+            "cacheVariables": {
+                "BBLITE_BACKEND": "SDL_GPU",
                 "BBLITE_SDL_DIR": "${sourceDir}/../artifacts/tools/sdl-min"
+            }
+        },
+        {
+            "name": "min-sdl-audio-gamepad",
+            "displayName": "Minimal-size shipping, SDL_GPU, audio and gamepad SDL",
+            "description": "Scenes reaching audio:engine or input:gamepad: tools/build-sdl-min.ps1 -EnableAudio -EnableGamepad and tools/build-labsound.ps1 -StaticRuntime (-EnableCodecs for audio:decoded-buffer, then point BBLITE_LABSOUND_DIR at labsound-static-codecs). RmlUi resolves to the static artifact by itself.",
+            "inherits": "min",
+            "cacheVariables": {
+                "BBLITE_BACKEND": "SDL_GPU",
+                "BBLITE_SDL_DIR": "${sourceDir}/../artifacts/tools/sdl-min-audio-gamepad",
+                "BBLITE_LABSOUND_DIR": "${sourceDir}/../artifacts/tools/labsound-static"
             }
         },
         {
             "name": "min-dawn",
             "displayName": "Minimal-size shipping, Dawn",
-            "inherits": "base",
+            "inherits": "min",
             "cacheVariables": {
-                "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
                 "BBLITE_BACKEND": "DAWN",
-                "BBLITE_MINSIZE": "ON",
                 "BBLITE_DAWN_DIR": "${sourceDir}/../artifacts/tools/dawn-min"
             }
         }
@@ -61,6 +81,7 @@
         { "name": "dev-sdl", "configurePreset": "dev-sdl" },
         { "name": "dev-dawn", "configurePreset": "dev-dawn" },
         { "name": "min-sdl", "configurePreset": "min-sdl" },
+        { "name": "min-sdl-audio-gamepad", "configurePreset": "min-sdl-audio-gamepad" },
         { "name": "min-dawn", "configurePreset": "min-dawn" }
     ]
 }

@@ -48,6 +48,38 @@ export function hashEntries(entries: readonly string[]): string {
     return createHash("sha256").update(entries.join("\n")).digest("hex");
 }
 
+/**
+ * A file's SHA-256, keyed by its size and mtime: a population run asks
+ * for the same pinned sources and native headers hundreds of times in one
+ * process, and reads each once. A file whose size or mtime moved is read
+ * again, so an edit during the run is still seen.
+ */
+const contentDigests = new Map<
+    string,
+    { size: number; mtimeMs: number; sha256: string }
+>();
+
+export function contentDigest(path: string): string {
+    const stat = statSync(path);
+    const cached = contentDigests.get(path);
+    if (
+        cached &&
+        cached.size === stat.size &&
+        cached.mtimeMs === stat.mtimeMs
+    ) {
+        return cached.sha256;
+    }
+    const sha256 = createHash("sha256")
+        .update(readFileSync(path))
+        .digest("hex");
+    contentDigests.set(path, {
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        sha256,
+    });
+    return sha256;
+}
+
 /** SHA-256 over the bytes of every file under each path, missing paths included. */
 export function contentFingerprint(paths: readonly string[]): string {
     const entries: string[] = [];
@@ -58,21 +90,28 @@ export function contentFingerprint(paths: readonly string[]): string {
             continue;
         }
         for (const file of filesUnder(root).sort()) {
-            entries.push(
-                `${file}\t${createHash("sha256")
-                    .update(readFileSync(file))
-                    .digest("hex")}`,
-            );
+            entries.push(`${file}\t${contentDigest(file)}`);
         }
     }
     return hashEntries(entries);
 }
 
-/** A file's identity without reading it: its path, size and mtime. */
+/**
+ * A tool's identity without reading it: its path, size and mtime. Right
+ * for an installed executable, which nothing rewrites in place; wrong for
+ * a repository file, which a checkout, rebase or stash rewrites with the
+ * same bytes and a new mtime (`contentIdentity`).
+ */
 export function toolIdentity(path: string | undefined): string {
     if (!path || !existsSync(path)) return "missing";
     const stat = statSync(path);
     return `${resolve(path)}\t${stat.size}\t${stat.mtimeMs}`;
+}
+
+/** A repository file's identity: its bytes, so a byte-identical checkout is the same file. */
+export function contentIdentity(path: string): string {
+    if (!existsSync(path)) return "missing";
+    return contentDigest(path);
 }
 
 /**

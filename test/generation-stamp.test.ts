@@ -80,7 +80,12 @@ test("a scene is regenerated until a record proves its inputs and outputs", () =
         false,
     );
 
-    // A source edit is a miss, size kept or not: the identity is the mtime.
+    // A checkout that rewrites the same bytes moves only the mtime, and
+    // the identity is the bytes: still a hit.
+    touchBack(source, 60);
+    assert.equal(generationIsCurrent(scene, arguments_), true);
+
+    // A source edit is a miss, size kept or not: the identity is the bytes.
     writeFileSync(source, "export const probe = 2;\n");
     assert.equal(generationIsCurrent(scene, arguments_), false);
 

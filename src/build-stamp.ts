@@ -28,6 +28,7 @@ import {
     statSync,
 } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { contentDigest } from "./validation-resume.js";
 
 /** The generated header the executable embeds. */
 export const buildStampHeaderPath =
@@ -47,33 +48,6 @@ export interface BuildStamp {
 
 function digest(bytes: Buffer): string {
     return createHash("sha256").update(bytes).digest("hex");
-}
-
-/**
- * A file's SHA-256, keyed by its size and mtime. The native source set is
- * the same for every scene and a population run stamps every scene in one
- * process: without this, refreshing 229 stamps re-reads and re-hashes the
- * ~2.5 MB of handwritten sources 229 times. A file is re-hashed when its
- * size or mtime moved, so an edit during the run is still seen.
- */
-const digestCache = new Map<
-    string,
-    { size: number; mtimeMs: number; sha256: string }
->();
-
-function cachedDigest(path: string): string {
-    const stat = statSync(path);
-    const cached = digestCache.get(path);
-    if (
-        cached &&
-        cached.size === stat.size &&
-        cached.mtimeMs === stat.mtimeMs
-    ) {
-        return cached.sha256;
-    }
-    const sha256 = digest(readFileSync(path));
-    digestCache.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, sha256 });
-    return sha256;
 }
 
 function walkFiles(
@@ -159,14 +133,17 @@ export function computeBuildStamp(
         )) {
             inputs.push({
                 path: `generated/${path}`,
-                sha256: cachedDigest(resolve(generatedDirectory, path)),
+                sha256: contentDigest(resolve(generatedDirectory, path)),
             });
         }
     }
+    // The native source set is the same for every scene and a population
+    // run stamps every scene in one process; the digest cache reads the
+    // ~2.5 MB of handwritten sources once rather than 229 times.
     for (const path of nativeSourceFiles(repositoryRoot)) {
         inputs.push({
             path: `native/${path}`,
-            sha256: cachedDigest(resolve(repositoryRoot, "native", path)),
+            sha256: contentDigest(resolve(repositoryRoot, "native", path)),
         });
     }
     const stamp = digest(

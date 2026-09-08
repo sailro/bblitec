@@ -1298,7 +1298,7 @@ test("routes voxel save and load through the host file-dialog PAL", () => {
     assert.doesNotMatch(pal, /SDL_PollEvent|_WIN32|GetOpenFileName/);
     assert.match(
         cmake,
-        /"browser:file" IN_LIST BBLITE_RUNTIME_FEATURES[\s\S]{0,120}BBLITE_HAS_BROWSER_FILE=1/,
+        /bblite_feature_define\(BBLITE_HAS_BROWSER_FILE "browser:file"\)/,
     );
     assert.doesNotMatch(cmake, /comdlg32/);
 });
