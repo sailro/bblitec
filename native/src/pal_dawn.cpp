@@ -12789,7 +12789,6 @@ SceneRun run_dawn_engine(Engine& engine) {
             state.prune_shared_shader_geometries();
             state.prune_shared_shader_material_textures();
             state.prune_shared_composed_material_textures();
-            rebuild_task_draw_lists();
         }
         if (
             scene.render_topology_version !=
@@ -12823,7 +12822,6 @@ SceneRun run_dawn_engine(Engine& engine) {
             state.prune_shared_composed_material_textures();
             state.meshes = std::move(updated_meshes);
             render_plan = std::move(updated_plan);
-            rebuild_task_draw_lists();
             synced_render_topology_version =
                 scene.render_topology_version;
             synced_material_family_mask = scene.material_family_mask;
@@ -12856,6 +12854,8 @@ SceneRun run_dawn_engine(Engine& engine) {
             render_plan.draw_lists = upstream::build_render_draw_lists(
                 render_plan.items,
                 engine);
+        }
+        if (topology_updated || engine.draw_list_epoch != synced_draw_list_epoch) {
             rebuild_task_draw_lists();
         }
         synced_draw_list_epoch = engine.draw_list_epoch;

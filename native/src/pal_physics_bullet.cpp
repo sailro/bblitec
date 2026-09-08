@@ -1573,10 +1573,7 @@ PhysicsRaycastResult physics_world_raycast(
 namespace {
 
 btTransform query_transform(const PhysicsTransform& transform) {
-    return btTransform(btQuaternion(
-        static_cast<btScalar>(transform.rotation[0]), static_cast<btScalar>(transform.rotation[1]),
-        static_cast<btScalar>(transform.rotation[2]), static_cast<btScalar>(transform.rotation[3])),
-        to_bt(transform.position));
+    return btTransform(to_bt(transform.rotation), to_bt(transform.position));
 }
 
 const btConvexShape& convex_query_shape(const PhysicsShapeState& shape) {
