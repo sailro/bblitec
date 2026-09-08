@@ -1126,7 +1126,7 @@ test("generates the Babylon loader adapter from pinned scene semantics", () => {
     );
     assert.match(
         lowered.source,
-        /std::array<float, 16> node_world_matrix\(\n    Vec3 position,\n    Vec3 rotation,\n    Vec3 scaling\)/,
+        /std::array<float, 16> node_world_matrix\(\n    Vec3 position,\n    Vec3 rotation,\n    Vec3 scaling\) \{\n    return upstream::trs_matrix\(upstream::TrsLanes\{\n        \.rotation = rotation,\n        \.scaling = scaling,\n        \.position = Vec3d\{position\.x, position\.y, position\.z\}\}\);/,
     );
     assert.match(
         lowered.source,
@@ -1639,7 +1639,7 @@ test("generates ArcRotate and default camera factories from upstream constants",
     // camera_world_matrix only feeds it the eye, target and up vector.
     assert.match(
         arc.source,
-        /void mat4_look_at_world_lh_to_ref\(\n    std::array<CameraMatrixScalar, 16>& out,\n    const Vec3d& eye,\n    const Vec3d& target,\n    const Vec3d& up\)/,
+        /void mat4_look_at_world_lh_to_ref\(\n    std::array<CameraMatrixScalar, 16>& out,\n    const bbl::Vec3d& eye,\n    const bbl::Vec3d& target,\n    const bbl::Vec3d& up\)/,
     );
     assert.match(arc.source, /if \(zLen >= 1e-10\) \{/);
     assert.match(arc.source, /out\[static_cast<std::size_t>\(12\.0\)\] = static_cast<float>\(eye\.x\);/);
@@ -1876,7 +1876,39 @@ test("emits the world-basis pair and pinned determinant once for every scene sha
     );
     assert.match(
         header,
-        /inline std::array<float, 16> outer_transform_matrix\(\n    const Vec3& position, const Vec3& rotation\) \{\n    const std::array<double, 16> local =\n        outer_transform_local\(position, rotation\);/,
+        /inline std::array<float, 16> outer_transform_matrix\(\n    const Vec3& position, const Vec3& rotation\) \{\n    return narrow_mat4\(outer_transform_local\(position, rotation\)\);/,
+    );
+    // The pinned TRS composition is emitted here once, over whichever
+    // record carries the lanes, and narrowed by one store loop; every other
+    // consumer calls these rather than carrying the composition itself.
+    assert.match(
+        header,
+        /template <typename Record>\nstd::array<double, 16> trs_local_matrix\(const Record& mesh\) \{/,
+    );
+    assert.match(
+        header,
+        /qx = \(\(\(sx \* cy\) \* cz\) \+ \(\(cx \* sy\) \* sz\)\);/,
+    );
+    assert.match(
+        header,
+        /local\[0\] = \(\(1\.0 - \(2\.0 \* \(yy \+ zz\)\)\) \* scale_x\);/,
+    );
+    assert.match(
+        header,
+        /template <typename Record>\nstd::array<float, 16> trs_matrix\(const Record& mesh\) \{\n    return narrow_mat4\(trs_local_matrix\(mesh\)\);/,
+    );
+    assert.match(
+        header,
+        /struct TrsLanes \{\n    Vec3 rotation\{\};\n    Vec3 scaling\{1\.0f, 1\.0f, 1\.0f\};\n    Vec3d position\{\};/,
+    );
+    assert.match(
+        header,
+        /return trs_local_matrix\(TrsLanes\{\n        \.rotation = rotation,\n        \.position = Vec3d\{position\.x, position\.y, position\.z\}\}\);/,
+    );
+    // An identity root returns the world itself instead of composing.
+    assert.match(
+        header,
+        /rotation\.x == 0\.0f && rotation\.y == 0\.0f && rotation\.z == 0\.0f\) \{\n        return world;/,
     );
     assert.match(
         header,
@@ -2147,23 +2179,27 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
         plan.header,
         /build_instance_parent_world\(\s*const MeshRecord& mesh\)/,
     );
-    // mat4ComposeInto's quaternion basis, eulerToQuat's half-angle terms
-    // and products, and the whole-translated mat4_multiply_into all flow
-    // from the pinned ASTs (through the shared PinnedNumericLowerer, whose
-    // parenthesization is explicit); the record's own transform never
-    // reaches the helper for non-thin-instanced meshes.
+    // mat4ComposeInto's quaternion basis and eulerToQuat's half-angle terms
+    // flow from the pinned ASTs into the always-emitted world-transform
+    // header's one composition (through the shared PinnedNumericLowerer,
+    // whose parenthesization is explicit), which the helper calls at the
+    // composition's double width before the whole-translated
+    // mat4_multiply_into; the record's own transform never reaches the
+    // helper for non-thin-instanced meshes.
+    const worldTransform = pinnedWorldTransformHeader(new LoweringContext());
     assert.match(
-        plan.source,
+        worldTransform,
         /\(\(1\.0 - \(2\.0 \* \(yy \+ zz\)\)\) \* scale_x\)/,
     );
     assert.match(
-        plan.source,
+        worldTransform,
         /qx = \(\(\(sx \* cy\) \* cz\) \+ \(\(cx \* sy\) \* sz\)\);/,
     );
     assert.match(
         plan.source,
-        /if \(!mesh\.thin_instanced\) \{\s*\r?\n\s*return mesh\.instance_parent_matrix;/,
+        /if \(!mesh\.thin_instanced\) \{\s*\r?\n\s*return mesh\.instance_parent_matrix;\s*\r?\n\s*\}\s*\r?\n\s*const std::array<double, 16> local = trs_local_matrix\(mesh\);/,
     );
+    assert.doesNotMatch(plan.source, /const double cx = std::cos/);
     // Both analytic slots fold material.directIntensity like the pinned
     // single-light and extra-light terms.
     assert.match(

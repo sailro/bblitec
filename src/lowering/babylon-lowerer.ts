@@ -9,7 +9,6 @@ import {
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
-import { pinnedTrsComposition } from "./pinned-trs.js";
 import { babylonLoaderCpp } from "./templates/babylon-loader-cpp.js";
 
 export class BabylonLowerer {
@@ -175,11 +174,7 @@ export class BabylonLowerer {
                 this.context.provenance(modulePath, symbolName),
                 this.lowerCameraDerivation(),
                 submeshNameSuffix,
-                {
-                    meshWorldComposition:
-                        pinnedTrsComposition(this.context).composeWorldBody,
-                    bakeLocalMatrix: this.lowerLocalMatrixBake(declaration),
-                },
+                { bakeLocalMatrix: this.lowerLocalMatrixBake(declaration) },
                 lightMeshLists,
                 diffuseUv2,
                 bumpTexture,

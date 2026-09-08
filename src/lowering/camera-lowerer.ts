@@ -8,7 +8,6 @@ import {
 } from "./pinned-function-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
-import { pinnedTrsComposition } from "./pinned-trs.js";
 
 export class CameraLowerer {
     public constructor(private readonly context: LoweringContext, private readonly trackVersions = false) {}
@@ -124,10 +123,8 @@ export class CameraLowerer {
     private lowerLookAtWorld(highPrecisionMatrix: boolean): string {
         const vector = (name: string): PinnedFunctionParameter => ({
             pinned: name,
-            kind: "record",
+            kind: "vec3",
             cpp: name,
-            cppType: "Vec3d",
-            annotation: "Vec3",
         });
         return lowerPinnedFunction(
             this.context,
@@ -136,14 +133,10 @@ export class CameraLowerer {
             [
                 {
                     pinned: "out",
-                    kind: "mat4",
+                    kind: highPrecisionMatrix ? "mat4F64" : "mat4",
                     cpp: "out",
                     cppType: "std::array<CameraMatrixScalar, 16>",
                     mutableRecord: true,
-                    binding: {
-                        cpp: "out",
-                        type: highPrecisionMatrix ? "f64-buffer" : "f32",
-                    },
                 },
                 vector("eye"),
                 vector("target"),
@@ -153,19 +146,6 @@ export class CameraLowerer {
                 cppName: "mat4_look_at_world_lh_to_ref",
                 returns: "void",
                 calls: pinnedNumericMathCalls(),
-                memberBindings: new Map(
-                    ["eye", "target", "up"].flatMap((record) =>
-                        ["x", "y", "z"].map(
-                            (component): [string, PinnedBinding] => [
-                                `${record}.${component}`,
-                                {
-                                    cpp: `${record}.${component}`,
-                                    type: "scalar",
-                                },
-                            ],
-                        ),
-                    ),
-                ),
             },
         );
     }
@@ -737,7 +717,6 @@ CameraHandle create_banked_free_camera(
         );
         const value = (input: number): string => this.context.floatLiteral(input);
         const dvalue = (input: number): string => this.context.doubleLiteral(input);
-        const meshTrs = pinnedTrsComposition(this.context);
         return {
             modulePath,
             symbolName,
@@ -754,24 +733,17 @@ CameraHandle create_banked_free_camera(
 namespace bbl {
 namespace {
 
-// src/scene/world-matrix-state.ts composeTrsLocalMatrix, translated whole:
-// the pin composes in JavaScript-number width and stores once into its
-// allocateMat4() Float32Array, so the locals here are double and the
-// narrowing is the single store loop at the end.
-std::array<float, 16> framed_local_matrix(const MeshRecord& mesh) {
-${meshTrs.composeWorldBody}    return world;
-}
-
 // src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh takes each
 // object-local box through mesh.worldMatrix. The record splits that world
 // into the mesh's own TRS and an imported clone root's outer transform,
 // applied in the order the draw path applies them, each through the
 // vertex stage's own f32 multiply.
-Vec3 transform_bounds_point(Vec3 point, const MeshRecord& mesh) {
+Vec3 transform_bounds_point(
+    Vec3 point,
+    const std::array<float, 16>& local,
+    const std::array<float, 16>& outer) {
     return upstream::transform_position(
-        upstream::outer_transform_matrix(
-            mesh.outer_position, mesh.outer_rotation),
-        upstream::transform_position(framed_local_matrix(mesh), point));
+        outer, upstream::transform_position(local, point));
 }
 
 void extend_bounds(Vec3 point, Vec3& minimum, Vec3& maximum) {
@@ -835,7 +807,10 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             Vec3{local_min.x, local_max.y, local_max.z},
             Vec3{local_max.x, local_max.y, local_max.z},
         };
-        for (const Vec3 corner : corners) extend_bounds(transform_bounds_point(corner, mesh), minimum, maximum);
+        const std::array<float, 16> local = upstream::trs_matrix(mesh);
+        const std::array<float, 16> outer = upstream::outer_transform_matrix(
+            mesh.outer_position, mesh.outer_rotation);
+        for (const Vec3 corner : corners) extend_bounds(transform_bounds_point(corner, local, outer), minimum, maximum);
         has_bounds = true;
     }
 

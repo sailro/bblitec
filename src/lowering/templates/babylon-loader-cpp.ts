@@ -8,12 +8,6 @@
  */
 export interface BabylonLoaderLoweredSegments {
     /**
-     * The body of `node_world_matrix`: `composeTrsLocalMatrix` over the
-     * node's own TRS, emitted by `pinned-trs.ts` from the pinned
-     * `eulerToQuat` and `mat4ComposeInto` writers.
-     */
-    meshWorldComposition: string;
-    /**
      * `bake_local_matrix`, lowered whole from
      * `src/loader-babylon/bake-local-matrix.ts#bakeLocalMatrix`.
      */
@@ -152,15 +146,16 @@ std::optional<std::array<double, 16>> local_matrix_or_absent(
     const auto found = node.find("localMatrix");
     if (found == node.end() || found->is_null()) return std::nullopt;
     std::array<double, 16> matrix{};
-    if (!found->is_array() || found->size() != matrix.size()) {
+    if (
+        !found->is_array() ||
+        found->size() != matrix.size() ||
+        !std::all_of(found->begin(), found->end(), [](const Json& cell) {
+            return cell.is_number();
+        })) {
         throw std::runtime_error(
             "A .babylon localMatrix must carry sixteen numbers.");
     }
     for (std::size_t index = 0; index < matrix.size(); ++index) {
-        if (!(*found)[index].is_number()) {
-            throw std::runtime_error(
-                "A .babylon localMatrix must carry sixteen numbers.");
-        }
         matrix[index] = (*found)[index].get<double>();
     }
     return matrix;
@@ -176,14 +171,10 @@ std::array<float, 16> node_world_matrix(
     Vec3 position,
     Vec3 rotation,
     Vec3 scaling) {
-    const struct {
-        Vec3 rotation;
-        Vec3 scaling;
-        Vec3 position;
-        bool has_rotation_quaternion = false;
-        Vec4 rotation_quaternion{};
-    } mesh{.rotation = rotation, .scaling = scaling, .position = position};
-${lowered.meshWorldComposition}    return world;
+    return upstream::trs_matrix(upstream::TrsLanes{
+        .rotation = rotation,
+        .scaling = scaling,
+        .position = Vec3d{position.x, position.y, position.z}});
 }
 
 MaterialHandle load_material(

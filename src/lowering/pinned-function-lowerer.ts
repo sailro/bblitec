@@ -33,22 +33,27 @@ export interface PinnedFunctionParameter {
     /**
      * `number`/`boolean` are JavaScript scalars and become `double`/`bool`;
      * `mat4` is the pin's `Mat4Storage` and becomes an f32 array reference,
-     * so every store through it rounds where the pin's store does.
-     * `matrix` is a `Float32Array` the body only reads — the fixed matrix
-     * by const reference, which is what the shadow family's own
-     * `Float32Array` parameters are.
+     * so every store through it rounds where the pin's store does, and
+     * `mat4F64` the same storage at the F64 width `allocateMat4()` hands
+     * out under high-precision matrices, where a store goes through
+     * unrounded. `matrix` is a `Float32Array` the body only reads — the
+     * fixed matrix by const reference, which is what the shadow family's
+     * own `Float32Array` parameters are. `vec3` is the pin's `Vec3` record,
+     * read member-wise through the translator's own record shape.
      */
     kind:
         | "number"
         | "index"
         | "boolean"
         | "mat4"
+        | "mat4F64"
         | "matrix"
         | "mat4Const"
         | "numberArray"
         | "numberList"
         | "u32Buffer"
         | "f32Buffer"
+        | "vec3"
         | "record";
     /**
      * The emitted C++ parameter name. Usually the pinned name; different
@@ -140,6 +145,11 @@ const parameterKinds: Readonly<
         bindingType: "f32",
         declare: (cpp) => `std::array<float, 16>& ${cpp}`,
     },
+    mat4F64: {
+        annotation: "Mat4Storage",
+        bindingType: "f64-buffer",
+        declare: (cpp) => `std::array<double, 16>& ${cpp}`,
+    },
     matrix: {
         annotation: "Float32Array",
         bindingType: "f32",
@@ -162,8 +172,9 @@ const parameterKinds: Readonly<
         declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
     },
     // A plain `number[]` the body only reads, at the pin's own double
-    // width: the parsed JSON matrix the `.babylon` pivot bake takes. The
-    // caller usually fixes its length through `cppType`.
+    // width: a growable vector by default, or the fixed length a caller
+    // that validated one (the `.babylon` pivot bake's sixteen-cell
+    // matrix) states through `cppType`.
     numberList: {
         annotation: "number[]",
         bindingType: "f64-buffer",
@@ -182,6 +193,13 @@ const parameterKinds: Readonly<
         annotation: "Float32Array",
         bindingType: "f32",
         declare: (cpp) => `std::vector<float>& ${cpp}`,
+    },
+    // The pin's `{x, y, z}` record: `v.x` resolves through the translator's
+    // own record shape, so no caller lists the members.
+    vec3: {
+        annotation: "Vec3",
+        bindingType: "vec3",
+        declare: (cpp) => `const bbl::Vec3d& ${cpp}`,
     },
     // A record the body reads named members off. The caller supplies both
     // the annotation and the C++ type, because it owns the native record the
@@ -297,23 +315,16 @@ export function lowerMat4MultiplyWriterCpp(
     context: LoweringContext,
     target: "f32" | "f64" = "f32",
 ): string {
-    const destination: PinnedFunctionParameter =
-        target === "f32"
-            ? { pinned: "dst", kind: "mat4", cpp: "dst" }
-            : {
-                  pinned: "dst",
-                  kind: "mat4",
-                  cpp: "dst",
-                  cppType: "std::array<double, 16>",
-                  mutableRecord: true,
-                  binding: { cpp: "dst", type: "f64-buffer" },
-              };
     return lowerPinnedFunction(
         context,
         "src/math/mat4-multiply-into.ts",
         "mat4MultiplyInto",
         [
-            destination,
+            {
+                pinned: "dst",
+                kind: target === "f32" ? "mat4" : "mat4F64",
+                cpp: "dst",
+            },
             { pinned: "d", kind: "index", cpp: "d" },
             { pinned: "a", kind: "mat4", cpp: "a", cppType: "MatA" },
             { pinned: "i", kind: "index", cpp: "i" },

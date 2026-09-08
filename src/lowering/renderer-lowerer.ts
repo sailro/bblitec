@@ -2,10 +2,6 @@ import { typeComponents } from "../shader-ir.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
-import {
-    pinnedTrsComposition,
-    type PinnedTrsComposition,
-} from "./pinned-trs.js";
 import { doubleLiteral as dvalue } from "../cpp-literals.js";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
@@ -426,17 +422,6 @@ export class RendererLowerer {
             // contract, asserted here so a pin retune fails generation.
             assertPinnedFogInfosOrder();
         }
-        // The mesh TRS composition, which every emission below interpolates:
-        // the mesh's own local matrix, a thin-instanced pool's parent world,
-        // and the eye-relative world a floating-origin draw carries. It is
-        // unconditional because the CPU vertex bake reads the first of those
-        // on every scene that draws a mesh at all.
-        const meshTrs: PinnedTrsComposition =
-            pinnedTrsComposition(this.context);
-        // The same composition over a transform node's own record, which
-        // carries the same lanes because upstream it is the same type.
-        const nodeTrs: PinnedTrsComposition =
-            pinnedTrsComposition(this.context, "node");
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
@@ -506,8 +491,6 @@ export class RendererLowerer {
                 opaqueOrderStamp,
                 shaderVariantTable,
                 shaderVariantEntries,
-                meshTrs,
-                nodeTrs,
                 secondAnalyticLightFill,
                 backgroundGeometry,
                 perspectiveWriter,
@@ -1417,12 +1400,10 @@ std::array<float, 16> build_view_matrix(
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     double aspect);
-// One mesh's local matrix, from the pin's own composeTrsLocalMatrix.
-//
-// Both the CPU vertex bake and the shader draw world go through this rather
-// than rotating basis vectors by the record's quaternion or Euler triple: a
-// parent's transform composes as a matrix product, and a negative scale
-// above a rotation is not expressible as the child's own scale-rotate pair.
+// One mesh's local matrix, from the pin's own composeTrsLocalMatrix: the
+// always-emitted pinned_world_transform.hpp composition (trs_matrix) over
+// the mesh record, kept as a plain function so a fixture can stand in for
+// it.
 std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh);
 // One mesh's world matrix: its own composition under its parent chain.
 //
@@ -1571,8 +1552,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp: string;
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
-            meshTrs: PinnedTrsComposition;
-            nodeTrs: PinnedTrsComposition;
             secondAnalyticLightFill: string;
             backgroundGeometry: {
                 groundVertexRows: string;
@@ -1592,8 +1571,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp,
             shaderVariantTable,
             shaderVariantEntries,
-            meshTrs,
-            nodeTrs,
             secondAnalyticLightFill,
             backgroundGeometry,
             perspectiveWriter,
@@ -2242,7 +2219,7 @@ std::array<float, 16> build_skybox_view_projection(
 // as a mesh's is.
 std::array<float, 16> transform_node_local_matrix(
     const TransformNodeRecord& node) {
-${nodeTrs.composeWorldBody}    return world;
+    return trs_matrix(node);
 }
 
 // world-matrix-state.ts: a node's world is its parent's world times its own
@@ -2328,12 +2305,8 @@ ${options.mirroredMeshes
     return flipped;
 }
 `
-    : ""}// src/scene/world-matrix-state.ts composeTrsLocalMatrix, translated whole:
-// the pin composes in JavaScript-number width and stores once into its
-// allocateMat4() Float32Array, so the locals here are double and the
-// narrowing is the single store loop at the end.
-std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
-${meshTrs.composeWorldBody}    return world;
+    : ""}std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
+    return trs_matrix(mesh);
 }
 
 // The imported clone root's outer transform on the left of a mesh's world,
@@ -2361,32 +2334,20 @@ std::array<float, 16> mesh_world_eye_relative(
     const MeshRecord& mesh,
     const std::array<float, 16>& base,
     Vec3d eye) {
-${meshTrs.composeLocalBody}\
+    const std::array<double, 16> local = trs_local_matrix(mesh);
     // The family's own base world, kept: the PBR convention's X mirror, a
     // thin-instanced pool's parent, an animated mesh's palette entry. The
     // eye-relative frame replaces where a mesh sits, never which convention
     // its family draws it under -- inserting the subtraction BESIDE the arm
-    // chain instead of inside it is what dropped the mirror.
+    // chain instead of inside it is what dropped the mirror. The product
+    // is the pinned multiply's F64 arm, the composition's own width.
     std::array<double, 16> world_local{};
-    for (std::size_t row = 0; row < 4; ++row) {
-        for (std::size_t column = 0; column < 4; ++column) {
-            double sum = 0.0;
-            for (std::size_t term = 0; term < 4; ++term) {
-                sum += static_cast<double>(base[term * 4 + column]) *
-                    local[row * 4 + term];
-            }
-            world_local[row * 4 + column] = sum;
-        }
-    }
+    mat4_multiply_into_f64(world_local, 0, base, 0, local, 0);
     world_local = apply_mesh_outer_transform(mesh, world_local);
     world_local[12] -= eye.x;
     world_local[13] -= eye.y;
     world_local[14] -= eye.z;
-    std::array<float, 16> world{};
-    for (std::size_t cell = 0; cell < 16; ++cell) {
-        world[cell] = static_cast<float>(world_local[cell]);
-    }
-    return world;
+    return narrow_mat4(world_local);
 }
 
 `
@@ -2409,10 +2370,10 @@ std::array<float, 16> build_instance_parent_world(
     if (!mesh.thin_instanced) {
         return mesh.instance_parent_matrix;
     }
-${meshTrs.composeLocalBody}\
-    // The pinned multiply, translated whole above: the parent is the f32
-    // matrix the loader recorded and the composed TRS stays f64, which is
-    // the pinned accumulation's own width for both.
+    const std::array<double, 16> local = trs_local_matrix(mesh);
+    // The pinned multiply, translated whole: the parent is the f32 matrix
+    // the loader recorded and the composed TRS stays f64, which is the
+    // pinned accumulation's own width for both.
     std::array<float, 16> result{};
     mat4_multiply_into(
         result, 0, mesh.instance_parent_matrix, 0, local, 0);

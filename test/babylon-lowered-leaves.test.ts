@@ -25,7 +25,7 @@ const lane = (buffer: string, offset: number): string =>
         ? `${buffer}[static_cast<std::size_t>(i)]`
         : `${buffer}[static_cast<std::size_t>((i + ${offset}.0))]`;
 
-const expectedBakeLocalMatrix = `// Generated from @babylonjs/lite@1.27.0 (64710b56f9dfe175d919c635812f84c8872d467c) ${BAKE_MODULE}#bakeLocalMatrix.
+const expectedBakeLocalMatrix = `// ${new LoweringContext().provenance(BAKE_MODULE, "bakeLocalMatrix")}
 void bake_local_matrix(
     std::vector<float>& positions,
     std::vector<float>& normals,
@@ -66,13 +66,15 @@ test("lowers the pinned pivot bake byte-identically to the loader's fixed presen
     assert.ok(loaderSource().includes(expectedBakeLocalMatrix));
 });
 
-test("the loader composes each node's TRS through the pinned writers and bakes only pivoted nodes", () => {
+test("the loader composes each node's TRS through the shared pinned composition and bakes only pivoted nodes", () => {
     const source = loaderSource();
-    // The Euler triple goes through eulerToQuat's half-angle products and
-    // mat4ComposeInto's basis stores, never a per-axis rotator.
-    assert.match(source, /qx = \(\(\(sx \* cy\) \* cz\) \+ \(\(cx \* sy\) \* sz\)\);/);
-    assert.match(source, /local\[0\] = \(\(1\.0 - \(2\.0 \* \(yy \+ zz\)\)\) \* scale_x\);/);
-    assert.doesNotMatch(source, /cosine_x|sine_x|Vec3 rotate\(/);
+    // The Euler triple goes through the world-transform header's one
+    // eulerToQuat + mat4ComposeInto composition, never a per-axis rotator.
+    assert.match(
+        source,
+        /return upstream::trs_matrix\(upstream::TrsLanes\{\n\s*\.rotation = rotation,\n\s*\.scaling = scaling,/,
+    );
+    assert.doesNotMatch(source, /cosine_x|sine_x|const double cx = std::cos/);
     // The bake runs on the pin's own predicate: a node carrying a
     // localMatrix, refused rather than padded when it is malformed.
     assert.match(

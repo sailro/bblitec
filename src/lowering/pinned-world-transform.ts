@@ -2,18 +2,19 @@
  * Shared CPU vertex transforms for the PAL and both geometry loaders.
  * World-basis application stays f32 to model the pinned vertex shader,
  * rather than the double intermediates of JavaScript matrix helpers. The
- * two multiplies are scalarized from the pinned PBR vertex template's own
- * resolved outputs, normalization comes from the same shader IR, the
- * mirrored-basis determinant from the shared pinned mat4Determinant3
- * lowerer, and an imported clone root's outer transform is the pinned TRS
- * composition at both widths its consumers keep it at.
+ * two multiplies follow the pinned PBR vertex template's own resolved
+ * outputs, normalization comes from the same shader IR, the mirrored-basis
+ * determinant from the shared pinned mat4Determinant3 lowerer, and the
+ * pinned TRS composition is emitted here once, at the double width the pin
+ * composes at, for every record and consumer that needs a local matrix:
+ * the render plan's meshes and transform nodes, an imported clone root's
+ * outer transform, the default camera's framing and the .babylon node.
  */
 import type { LoweringContext } from "./context.js";
 import { lowerMat4Determinant3 } from "./pinned-mat4-decompose.js";
 import { lowerMat4MultiplyWriterCpp } from "./pinned-function-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 import { pinnedPbrVertexOutputs } from "../pinned-material-vertex.js";
-import { emitShaderCppExpression } from "../shader-cpp-emitter.js";
 import type { ShaderExpression } from "../shader-ir.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 import { pinnedVertexNormalization } from "./pinned-vertex-normalization.js";
@@ -36,22 +37,21 @@ const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
     value.parts.every((part, index) => part === parts[index]);
 
 /**
- * One of the pin's two world multiplies, scalarized from the PBR vertex
- * template's resolved outputs: `worldPos = (mesh.world * vec4<f32>(pos,
- * 1.0)).xyz` and `worldNormal = (mesh.world * vec4<f32>(normalize(normal),
- * 0.0)).xyz`.
+ * One of the pin's two world multiplies, from the PBR vertex template's
+ * resolved outputs: `worldPos = (mesh.world * vec4<f32>(pos, 1.0)).xyz` and
+ * `worldNormal = (mesh.world * vec4<f32>(normalize(normal), 0.0)).xyz`.
  *
- * `emitShaderCppExpression` scalarizes the vector operand; the matrix
- * application is the one WGSL operator it does not carry, and it is
- * spelled here from the operand it was asserted against: `mesh.world` is
- * the sixteen f32 cells in WGSL's column-major order, so lane r of the
- * product is the sum over the three basis columns c of `world[c * 4 + r]`
- * times the vector's lane c, plus the translation column where the
- * homogeneous lane is one and nothing where it is zero (a zero term
- * contributes no value). The direction operand binds the WHOLE
- * `normalize(normal)` call to the caller's value, because that
- * normalization is `normalize_baked_direction` below and a CPU bake
- * applies the two in sequence.
+ * The operand order and the homogeneous lane are read off the template;
+ * the matrix application itself is the one WGSL operator the shared
+ * shader-to-C++ emitter does not carry, so it is spelled here from the
+ * operand asserted above it: `mesh.world` is the sixteen f32 cells in
+ * WGSL's column-major order, so lane r of the product is the sum over the
+ * three basis columns c of `world[c * 4 + r]` times the vector's lane c,
+ * plus the translation column where the homogeneous lane is one and
+ * nothing where it is zero (a zero term contributes no value). The
+ * direction operand binds the WHOLE `normalize(normal)` call to the
+ * caller's value, because that normalization is `normalize_baked_direction`
+ * below and a CPU bake applies the two in sequence.
  */
 function pinnedWorldMultiplyLanes(
     context: LoweringContext,
@@ -97,22 +97,9 @@ function pinnedWorldMultiplyLanes(
     ) {
         return fail();
     }
-    const operand = emitShaderCppExpression(
-        { kind: "path", parts: ["value"] },
-        new Map([
-            [
-                "value",
-                ["x", "y", "z"].map((component) => ({
-                    cpp: `value.${component}`,
-                })),
-            ],
-        ]),
-    );
-    if (operand.components.length !== 3 || operand.declarations.length !== 0) {
-        return fail();
-    }
+    const lanes = ["x", "y", "z"].map((component) => `value.${component}`);
     return [0, 1, 2].map((row) => {
-        const terms = operand.components.map(
+        const terms = lanes.map(
             (lane, column) => `world[${column * 4 + row}] * ${lane}`,
         );
         if (translated === 1) terms.push(`world[${12 + row}]`);
@@ -121,9 +108,10 @@ function pinnedWorldMultiplyLanes(
 }
 
 /**
- * The always-emitted header carrying the two world-basis multiplies, the
- * pinned determinant and the imported clone root's outer transform, for
- * every consumer on either side of the generated/PAL boundary.
+ * The always-emitted header carrying the pinned TRS composition, the two
+ * world-basis multiplies, the pinned determinant and the imported clone
+ * root's outer transform, for every consumer on either side of the
+ * generated/PAL boundary.
  */
 export function pinnedWorldTransformHeader(context: LoweringContext): string {
     if (
@@ -165,30 +153,32 @@ namespace bbl::upstream {
 
 ${multiply}
 
-// An imported clone root's outer position and rotation, composed the way
-// src/scene/world-matrix-state.ts composeTrsLocalMatrix composes any
-// SceneNode: the pinned Euler-to-quaternion and mat4ComposeInto walk over
-// a unit scale and no quaternion source. Kept at the composition's own
-// double width for the consumers that subtract an eye or fit a shadow
-// volume before narrowing.
-inline std::array<double, 16> outer_transform_local(
-    const Vec3& position, const Vec3& rotation) {
-    const struct {
-        Vec3 rotation;
-        Vec3 scaling{1.0f, 1.0f, 1.0f};
-        Vec3 position;
-        bool has_rotation_quaternion = false;
-        Vec4 rotation_quaternion{};
-    } mesh{.rotation = rotation, .position = position};
+// The lanes src/scene/world-matrix-state.ts composeTrsLocalMatrix reads off
+// a SceneNode, for a transform that is not a record's own: an imported
+// clone root's outer position and rotation, a .babylon node's TRS.
+struct TrsLanes {
+    Vec3 rotation{};
+    Vec3 scaling{1.0f, 1.0f, 1.0f};
+    Vec3d position{};
+    bool has_rotation_quaternion = false;
+    Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+// src/scene/world-matrix-state.ts composeTrsLocalMatrix, translated whole
+// over whichever record carries the lanes -- a mesh, a transform node or
+// TrsLanes: the pin composes in JavaScript-number width and stores once
+// into its allocateMat4() Float32Array, so the locals are double and the
+// result is left at that width for the consumers that subtract an eye or
+// fit a shadow volume before narrowing.
+template <typename Record>
+std::array<double, 16> trs_local_matrix(const Record& mesh) {
 ${trs.composeLocalBody}    return local;
 }
 
-// The same composition narrowed once: the allocateMat4() Float32Array
-// store every GPU consumer reads.
-inline std::array<float, 16> outer_transform_matrix(
-    const Vec3& position, const Vec3& rotation) {
-    const std::array<double, 16> local =
-        outer_transform_local(position, rotation);
+// The allocateMat4() Float32Array store: the composition narrowed once,
+// which is what every GPU consumer reads.
+inline std::array<float, 16> narrow_mat4(
+    const std::array<double, 16>& local) {
     std::array<float, 16> world{};
     for (std::size_t cell = 0; cell < 16; ++cell) {
         world[cell] = static_cast<float>(local[cell]);
@@ -196,14 +186,46 @@ inline std::array<float, 16> outer_transform_matrix(
     return world;
 }
 
+// One record's local matrix as the pin stores it. Both the CPU vertex bake
+// and the shader draw world go through this rather than rotating basis
+// vectors by the record's quaternion or Euler triple: a parent's transform
+// composes as a matrix product, and a negative scale above a rotation is
+// not expressible as the child's own scale-rotate pair.
+template <typename Record>
+std::array<float, 16> trs_matrix(const Record& mesh) {
+    return narrow_mat4(trs_local_matrix(mesh));
+}
+
+// An imported clone root's outer position and rotation: the same
+// composition over a unit scale and no quaternion source.
+inline std::array<double, 16> outer_transform_local(
+    const Vec3& position, const Vec3& rotation) {
+    return trs_local_matrix(TrsLanes{
+        .rotation = rotation,
+        .position = Vec3d{position.x, position.y, position.z}});
+}
+
+inline std::array<float, 16> outer_transform_matrix(
+    const Vec3& position, const Vec3& rotation) {
+    return narrow_mat4(outer_transform_local(position, rotation));
+}
+
 // \`outer * world\` at double width: the clone root's composition on the
 // left of a mesh's own world, the operand order world-matrix-state.ts
 // getWorldMatrix multiplies a parent by (\`mat4MultiplyInto(out, 0,
 // parent, 0, local, 0)\`), through the pinned writer's F64 storage arm.
+// The pin multiplies only under a parent, and an unrotated, untranslated
+// root is the identity: its product is the world itself, cell for cell,
+// so that world is returned rather than composed per caster per frame.
 inline std::array<double, 16> outer_transform_product(
     const Vec3& position,
     const Vec3& rotation,
     const std::array<double, 16>& world) {
+    if (
+        position.x == 0.0f && position.y == 0.0f && position.z == 0.0f &&
+        rotation.x == 0.0f && rotation.y == 0.0f && rotation.z == 0.0f) {
+        return world;
+    }
     std::array<double, 16> product{};
     mat4_multiply_into_f64(
         product, 0, outer_transform_local(position, rotation), 0, world, 0);

@@ -32,15 +32,12 @@ function doubleArray(value: Float64Array): string {
 test("generated matrix and pick projections match the executed pin bit for bit", {
     skip: !tools,
 }, async () => {
+    // One pinned writer over either storage width: f32 output for the draw
+    // path, F64 output for the outer transform's double product.
     const { mat4MultiplyInto } = await importPinnedModule<{
-        mat4MultiplyInto: (out: Float32Array, d: number, left: Float32Array,
-            i: number, right: Float64Array, j: number) => void;
-    }>("math/mat4-multiply-into.js");
-    // The same pinned writer over its F64 storage arm, which the outer
-    // transform's double product translates.
-    const { mat4MultiplyInto: mat4MultiplyIntoDouble } = await importPinnedModule<{
-        mat4MultiplyInto: (out: Float64Array, d: number, left: Float64Array,
-            i: number, right: Float64Array, j: number) => void;
+        mat4MultiplyInto: (out: Float32Array | Float64Array, d: number,
+            left: Float32Array | Float64Array, i: number, right: Float64Array,
+            j: number) => void;
     }>("math/mat4-multiply-into.js");
     const { mat4ComposeInto } = await importPinnedModule<{
         mat4ComposeInto: (out: Float64Array, off: number, tx: number, ty: number,
@@ -112,12 +109,12 @@ test("generated matrix and pick projections match the executed pin bit for bit",
         mat4ComposeInto(outerDouble, 0, translation[0]!, translation[1]!, translation[2]!,
             qx, qy, qz, qw, 1, 1, 1);
         const productDouble = new Float64Array(16);
-        mat4MultiplyIntoDouble(productDouble, 0, outerDouble, 0, right, 0);
+        mat4MultiplyInto(productDouble, 0, outerDouble, 0, right, 0);
         const translatedOnly = new Float64Array(16);
         mat4ComposeInto(translatedOnly, 0, translation[0]!, translation[1]!, translation[2]!,
             0, 0, 0, 1, 1, 1, 1);
         const translatedProduct = new Float64Array(16);
-        mat4MultiplyIntoDouble(translatedProduct, 0, translatedOnly, 0, right, 0);
+        mat4MultiplyInto(translatedProduct, 0, translatedOnly, 0, right, 0);
         const x = sample * 123.125 - 17.5;
         const y = sample * 31.0625 + 0.5;
         const width = 1280 + sample;
