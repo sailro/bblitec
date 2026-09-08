@@ -42,7 +42,7 @@ export function compileScreenSpaceTaskOptions(
     expression: ts.Expression,
     taskIndex: number,
 ): CompiledScreenSpaceTask {
-    const { kind } = screenSpaceFacts(intrinsic);
+    const { kind, module } = screenSpaceFacts(intrinsic);
     const object = context.expectObjectLiteral(expression);
     const nameExpression = context.objectProperty(object, "name");
     const name = nameExpression
@@ -77,7 +77,7 @@ export function compileScreenSpaceTaskOptions(
     const options = compileDescriptorOptions(
         context,
         object,
-        intrinsic,
+        { module, factory: intrinsic },
         HANDLE_OPTIONS,
     );
 
