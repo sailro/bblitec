@@ -49,10 +49,13 @@ export const physicsEngineModulePackage = "@babylonjs/havok";
 export function declaredInDefaultLibrary(
     symbol: ts.Symbol | undefined,
 ): boolean {
-    return (symbol?.declarations ?? []).some((declaration) => {
-        const file = declaration.getSourceFile();
-        return file.isDeclarationFile && file.hasNoDefaultLib;
-    });
+    return (symbol?.declarations ?? []).some(declarationInDefaultLibrary);
+}
+
+/** Whether one declaration lives in a library file — see {@link declaredInDefaultLibrary}. */
+export function declarationInDefaultLibrary(declaration: ts.Node): boolean {
+    const file = declaration.getSourceFile();
+    return file.isDeclarationFile && file.hasNoDefaultLib;
 }
 
 /**

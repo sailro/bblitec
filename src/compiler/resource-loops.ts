@@ -20,6 +20,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { nativeDataIterationIntrinsics, runtimeOnlyIntrinsics } from "./intrinsics/registry.js";
+import { declarationInDefaultLibrary } from "./symbols.js";
 import { resizingArrayMethods } from "./data-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
@@ -791,7 +792,12 @@ export function parameterizedResourceLoop(
             }
             // Native data/Math methods have library signatures. An unresolved
             // callback or opaque method might conceal generation-time effects.
-            if (!called?.getSourceFile().hasNoDefaultLib && !nativeTransformSet(context, node)) safe = false;
+            if (
+                !(called !== undefined && declarationInDefaultLibrary(called)) &&
+                !nativeTransformSet(context, node)
+            ) {
+                safe = false;
+            }
             return work + 1;
         }
         const guarded = conditional || ts.isIfStatement(node) ||
