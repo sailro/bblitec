@@ -1,0 +1,14 @@
+{
+  "scene": "scene149",
+  "notes": "Node-geometry GPU transport: the native nodeGpu receipts of one canonical frame (BBLITE_NODE_GPU_CAPTURE=1) joined against the browser identity observation and instrumented buffer capture under artifacts/scene149-reference (identities.json, instrumented/buffers.json, instrumented/capture-meta.json) and the generated asset: raw attribute bytes, index sequences, texture/sampler sharing per material, per-view bindings, and world uploads exact to the word except signed zeros. The browser reference's producer is a node-material identity observer the repository does not carry; the directory is an input.",
+  "base": "adhoc",
+  "timeoutMs": 120000,
+  "env": { "BBLITE_NODE_GPU_CAPTURE": "1" },
+  "phases": [
+    { "id": "canonical", "frame": 181 }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "canonical", "path": "nodeGpu.draws.length", "equals": 855 },
+    { "kind": "plugin", "module": "checks/plugins/node-transport.mjs", "options": { "control": "scene149", "referenceDirectory": "artifacts/scene149-reference" } }
+  ]
+}

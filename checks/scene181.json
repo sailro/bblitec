@@ -1,0 +1,280 @@
+{
+  "scene": "scene181",
+  "notes": "Live text input: the browser edits the host page's textarea (edit, clear, regrow), resizes the textarea and the window, orbits and zooms; each step's glyph placements, style palette, camera, viewport and form size are observed. Every native phase replays the same control through the SDL event tape and must match the browser's glyph placements, palette, camera and image (the textarea is hidden in both captures except while it is resized).",
+  "base": "adhoc",
+  "phases": [
+    {
+      "id": "initial",
+      "frame": 240,
+      "tape": [
+        "-*20"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "edit",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@80:35",
+        "UiKey@Ctrl+A",
+        "UiText@4e657720666669207465787420cea920d096",
+        "UiClick@400:250"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "empty",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@80:35",
+        "UiKey@Ctrl+A",
+        "UiKey@Backspace",
+        "UiClick@400:250"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "regrow",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@80:35",
+        "UiKey@Ctrl+A",
+        "UiKey@Backspace",
+        "UiClick@400:250",
+        "-*5",
+        "UiClick@80:35",
+        "UiKey@Ctrl+A",
+        "UiText@4c696e65206f6e650a416e6f74686572206c696e65207769746820415620616e6420c3a90a4e657720676c797068732073746179206c6976652e",
+        "UiClick@400:250"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "textarea-resize",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "+UiMouseLeft@350:150",
+        "UiMove@350:230",
+        "-UiMouseLeft@350:230"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "1"
+      }
+    },
+    {
+      "id": "window-resize",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "WindowResize@960:600"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "orbit",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "+UiMouseLeft@640:360",
+        "UiMove@760:360",
+        "-UiMouseLeft@760:360"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "zoom",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiWheelUp"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "kind": "plugin",
+      "module": "checks/plugins/text-glyphs.mjs",
+      "options": {
+        "background": [
+          51,
+          51,
+          76
+        ],
+        "gates": {
+          "textarea-resize": {
+            "full": 0.05,
+            "foreground": 0.499
+          },
+          "default": {
+            "full": 0.001,
+            "foreground": 0.001
+          }
+        },
+        "textareaColumn": 170,
+        "textareaRows": 300
+      }
+    }
+  ],
+  "observe": {
+    "hooks": [
+      {
+        "marker": "await registerScene(scene);",
+        "position": "before",
+        "inject": "window.__observe = () => { const group = data._groups[0]; const ids = new Map([...group._curveSet._atlas._glyphSlots].map(([id, slot]) => [slot._index, id])); const instances = Array.from({ length: data._instanceCount }, (_, i) => { const word = data._instancesU32[i * 3 + 2]; return word === 0xffffffff ? null : [ids.get(word & 0xffff), data._instances[i * 3], data._instances[i * 3 + 1], word >>> 16]; }); const rectangle = document.getElementById('textInput').getBoundingClientRect(); return { width: data.width, height: data.height, instances, styles: Array.from(data._styles), camera: { alpha: camera.alpha, beta: camera.beta, radius: camera.radius }, position: { x: text.position.x, y: text.position.y, z: text.position.z }, viewport: { width: engine.canvas.width, height: engine.canvas.height }, form: { width: rectangle.width, height: rectangle.height } }; };"
+      }
+    ],
+    "steps": [
+      {
+        "id": "initial",
+        "settleFrames": 180,
+        "hideStyle": "#textInput{visibility:hidden!important}"
+      },
+      {
+        "id": "edit",
+        "actions": [
+          {
+            "fill": {
+              "selector": "#textInput",
+              "text": "New ffi text Ω Ж"
+            }
+          },
+          {
+            "click": [
+              400,
+              250
+            ]
+          }
+        ],
+        "settleFrames": 180,
+        "hideStyle": "#textInput{visibility:hidden!important}"
+      },
+      {
+        "id": "empty",
+        "actions": [
+          {
+            "fill": {
+              "selector": "#textInput",
+              "text": ""
+            }
+          },
+          {
+            "click": [
+              400,
+              250
+            ]
+          }
+        ],
+        "settleFrames": 180,
+        "hideStyle": "#textInput{visibility:hidden!important}"
+      },
+      {
+        "id": "regrow",
+        "actions": [
+          {
+            "fill": {
+              "selector": "#textInput",
+              "text": ""
+            }
+          },
+          {
+            "fill": {
+              "selector": "#textInput",
+              "text": "Line one\nAnother line with AV and é\nNew glyphs stay live."
+            }
+          },
+          {
+            "click": [
+              400,
+              250
+            ]
+          }
+        ],
+        "settleFrames": 180,
+        "hideStyle": "#textInput{visibility:hidden!important}"
+      },
+      {
+        "id": "textarea-resize",
+        "actions": [
+          {
+            "drag": [
+              350,
+              150,
+              350,
+              230
+            ]
+          }
+        ],
+        "settleFrames": 180
+      },
+      {
+        "id": "window-resize",
+        "actions": [
+          {
+            "resize": [
+              960,
+              600
+            ]
+          }
+        ],
+        "settleFrames": 180,
+        "hideStyle": "#textInput{visibility:hidden!important}"
+      },
+      {
+        "id": "orbit",
+        "actions": [
+          {
+            "resize": [
+              1280,
+              720
+            ]
+          },
+          {
+            "drag": [
+              640,
+              360,
+              760,
+              360
+            ]
+          }
+        ],
+        "settleFrames": 180,
+        "hideStyle": "#textInput{visibility:hidden!important}"
+      },
+      {
+        "id": "zoom",
+        "actions": [
+          {
+            "move": [
+              640,
+              360
+            ]
+          },
+          {
+            "wheel": -100
+          }
+        ],
+        "settleFrames": 180,
+        "hideStyle": "#textInput{visibility:hidden!important}"
+      }
+    ]
+  }
+}

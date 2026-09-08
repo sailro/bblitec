@@ -1,0 +1,19 @@
+{
+  "scene": "scene261",
+  "twin": true,
+  "notes": "TAA, live: the no-query twin keeps rendering, so camera movement must reset the accumulation (blend factor 1 while moving, 0.05 once settled), the source task's camera key must advance, the image must follow the camera, and a window resize must rebuild the source's clean data at the new aspect without disturbing the blend.",
+  "base": "adhoc",
+  "minFrames": 30,
+  "phases": [
+    { "id": "settled", "frame": 181 },
+    { "id": "moving", "frame": 35, "tape": ["-*20", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360"] },
+    { "id": "recovered", "frame": 181, "tape": ["-*20", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360"] },
+    { "id": "resize", "frame": 181, "tape": ["-*20", "WindowResize@960:600"] }
+  ],
+  "expect": [
+    { "kind": "camera-delta", "phase": "recovered", "vs": "settled", "key": "alpha", "min": 0.1 },
+    { "kind": "image-mad", "phase": "recovered", "vs": "settled", "min": 0.05, "notes": "camera input changes the rendered image" },
+    { "kind": "viewport", "phase": "resize", "equals": [960, 600] },
+    { "kind": "plugin", "module": "checks/plugins/scene261-taa.mjs", "options": { "mode": "live" } }
+  ]
+}

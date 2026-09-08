@@ -1,0 +1,36 @@
+{
+  "scene": "offscreen",
+  "notes": "A measurement, not a gate: the frame cadence of the main and worker realms, browser (headed, on the same display) and native, from which the camera's angular speed follows (the original advances 0.0035 radians per render). The plugin reports the rates; it asserts only that both realms produced samples.",
+  "base": "none",
+  "testPass": true,
+  "gpuDebug": false,
+  "capture": false,
+  "timeoutMs": 20000,
+  "logErrorPattern": "error|exception",
+  "env": { "BBLITE_WINDOW_TRACE": "1", "BBLITE_RUNTIME_TRACE": "0", "BBLITE_RUNTIME_TRACE_INTERVAL": "60" },
+  "phases": [
+    { "id": "run", "frame": 899 }
+  ],
+  "expect": [
+    { "kind": "plugin", "module": "checks/plugins/offscreen-cadence.mjs" }
+  ],
+  "observe": {
+    "headless": false,
+    "golden": false,
+    "steps": [
+      {
+        "id": "cadence",
+        "screenshot": "none",
+        "state": false,
+        "actions": [
+          { "wait": 1500 },
+          { "evaluate": "(() => { const raf = globalThis.requestAnimationFrame.bind(globalThis); globalThis.__offscreenCadenceSamples = []; globalThis.requestAnimationFrame = (callback) => raf((timestamp) => { globalThis.__offscreenCadenceSamples.push(timestamp); callback(timestamp); }); })()" },
+          { "workerEvaluate": "(() => { const raf = globalThis.requestAnimationFrame.bind(globalThis); globalThis.__offscreenCadenceSamples = []; globalThis.requestAnimationFrame = (callback) => raf((timestamp) => { globalThis.__offscreenCadenceSamples.push(timestamp); callback(timestamp); }); })()" },
+          { "wait": 3500 },
+          { "evaluate": "(() => { const samples = globalThis.__offscreenCadenceSamples; if (samples.length < 100) throw new Error('Insufficient original frame samples'); const seconds = (samples.at(-1) - samples[0]) / 1000; const framesPerSecond = (samples.length - 1) / seconds; return { frames: samples.length, seconds, framesPerSecond, degreesPerSecond: framesPerSecond * 0.0035 * 180 / Math.PI }; })()", "as": "main" },
+          { "workerEvaluate": "(() => { const samples = globalThis.__offscreenCadenceSamples; if (samples.length < 100) throw new Error('Insufficient original frame samples'); const seconds = (samples.at(-1) - samples[0]) / 1000; const framesPerSecond = (samples.length - 1) / seconds; return { frames: samples.length, seconds, framesPerSecond, degreesPerSecond: framesPerSecond * 0.0035 * 180 / Math.PI }; })()", "as": "worker" }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "scene": "scene164",
+  "notes": "Device loss and recovery: the browser holds the device open until the harness sets dataset.captured, then loses and recovers it, keeping environment identity and rebuilding the fallback, shadow and background resources; the canvas after recovery must equal the canvas before it, resize and wheel input must render, and dispose must stop the frame counter. Natively the same handshake runs through the recovery tape (Dataset@, DeviceLoss, GlobalCall@) and the runtime trace must report every flag, two recovery generations with draws, one reused window, camera movement and both sizes.",
+  "base": "none",
+  "capture": false,
+  "env": { "BBLITE_RUNTIME_TRACE": "1" },
+  "phases": [
+    { "id": "recovery", "frame": 50, "maxFrames": 200, "tape": ["Dataset@captured=true", "-*3", "WindowResize@960:540", "-*40", "WindowResize@1280:720", "+UiMouseLeft@640:360", "UiMove@680:360", "-UiMouseLeft@680:360", "-*21", "DeviceLoss", "-*39", "GlobalCall@__scene164Dispose"] }
+  ],
+  "expect": [
+    { "kind": "log-match", "phase": "recovery", "pattern": "dataset (?:gpuError|recoveryError|recoveryFailed)=", "absent": true },
+    { "kind": "log-match", "phase": "recovery", "pattern": "dataset disposed=true" },
+    { "kind": "log-match", "phase": "recovery", "pattern": "dataset drawCalls=[1-9]\\d*" },
+    { "kind": "log-match", "phase": "recovery", "pattern": "size=960x540" },
+    { "kind": "log-match", "phase": "recovery", "pattern": "size=1280x720" },
+    { "kind": "plugin", "module": "checks/plugins/scene164-recovery.mjs" }
+  ],
+  "observe": {
+    "ready": "preLossReady",
+    "golden": false,
+    "steps": [
+      { "id": "before", "screenshot": "canvas" },
+      { "id": "after", "actions": [{ "evaluate": "document.getElementById('renderCanvas').dataset.captured = 'true'" }, { "waitFor": "document.getElementById('renderCanvas')?.dataset.ready === 'true'", "timeoutMs": 120000 }], "screenshot": "canvas" },
+      { "id": "resized", "actions": [{ "style": "html,body,canvas{width:100%;height:100%}" }, { "resize": [960, 540] }, { "frames": 4 }], "screenshot": "none" },
+      { "id": "input", "actions": [{ "move": [480, 270] }, { "wheel": -100 }, { "frames": 20 }, { "resize": [1280, 720] }, { "frames": 4 }], "screenshot": "canvas" },
+      { "id": "disposed", "actions": [{ "evaluate": "globalThis.__scene164Dispose()" }, { "frames": 4 }], "screenshot": "none" }
+    ]
+  }
+}

@@ -10,7 +10,7 @@
  * modules a check names.
  */
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
@@ -92,7 +92,7 @@ export interface ObservationsReport {
     moduleSha256?: string;
     referenceSha256?: string;
     captureFrames?: Array<{ frame: number; image?: string; state?: unknown }>;
-    steps?: Array<{ id: string; image?: string; state?: unknown }>;
+    steps?: Array<{ id: string; image?: string; state?: unknown; extras?: Record<string, unknown>; errors?: string[] }>;
 }
 
 export function observationsPath(outputDirectory: string): string {
@@ -330,9 +330,12 @@ function evaluateForBackendPhase(
                     problems.push(`${expectation.path} is ${describe(value)}, expected ${describe(expectation.equals)}`);
                 }
             }
-            const numbers = Array.isArray(value) ? value : [value];
             if (expectation.min !== undefined || expectation.max !== undefined || expectation.finite) {
-                for (const entry of numbers) {
+                // Numeric bounds apply to every leaf a path yields: a
+                // position list yields triples, and each lane is judged.
+                const leaves = (entry: unknown): unknown[] =>
+                    Array.isArray(entry) ? entry.flatMap(leaves) : [entry];
+                for (const entry of leaves(value)) {
                     if (typeof entry !== "number") {
                         problems.push(`${expectation.path} yields ${describe(entry)}, not a number`);
                         continue;
@@ -532,7 +535,13 @@ async function runPlugin(
 
 export async function runCheck(options: CheckRunOptions): Promise<CheckVerdict> {
     const { checkId, scene, spec, target } = options;
-    enableGpuDebug();
+    if (spec.gpuDebug !== false) {
+        enableGpuDebug();
+    } else {
+        // A timing measurement runs without the validation layer, and
+        // without an ambient one either.
+        delete process.env.BBLITE_GPU_DEBUG;
+    }
     const outputDirectory = resolve(defaultCheckDirectory(checkId));
     const backends = [...(options.backends ?? NATIVE_BACKENDS)];
     const phases = options.phase === undefined
@@ -568,6 +577,29 @@ export async function runCheck(options: CheckRunOptions): Promise<CheckVerdict> 
         console.log(`  ${entry.ok ? "ok  " : "FAIL"} #${entry.index} ${entry.kind}${where ? ` ${where}` : ""}: ${entry.detail}`);
     };
     const selectedIds = new Set(phases.map((phase) => phase.id));
+    // The one implicit expectation: a capture describes the frame the
+    // phase asked for. A run that ended early or a capture writer that
+    // fired on another frame would otherwise pass every declared
+    // expectation against the wrong frame. Frame 0 asks for the first
+    // frame the scene is ready on, which the runtime chooses; that frame
+    // is recorded rather than compared.
+    for (const backend of backends) {
+        for (const phase of phases) {
+            const result = results[backend]![phase.id]!;
+            if (result.capture === undefined) continue;
+            const frame = readCapturePath(result.capture, "frame");
+            const firstReady = phase.frame === 0 && typeof frame === "number" && frame >= 0;
+            record({
+                index: -1, kind: "frame", phase: phase.id, backend,
+                ok: firstReady || frame === phase.frame,
+                detail: firstReady
+                    ? `first ready frame ${describe(frame)}`
+                    : frame === phase.frame
+                      ? `captured frame ${phase.frame}`
+                      : `capture describes frame ${describe(frame)}, phase asked for ${phase.frame}`,
+            });
+        }
+    }
     for (const [index, expectation] of spec.expect.entries()) {
         if (expectation.kind === "plugin") {
             try {
@@ -628,6 +660,7 @@ export async function runCheck(options: CheckRunOptions): Promise<CheckVerdict> 
     }
     const failures = expectationResults.filter((entry) => !entry.ok);
     const reportPath = resolve(outputDirectory, "report.json");
+    mkdirSync(outputDirectory, { recursive: true });
     writeReport(
         reportPath,
         { tool: "check", backend: backends.join("+"), generatedDirectory: resolve(target.output) },

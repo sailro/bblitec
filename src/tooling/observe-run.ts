@@ -14,6 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Page } from "playwright-core";
 import {
+    gotoScenePage,
     screenshotCaptureBrowserArgs,
     waitForSceneReady,
     withBrowserPage,
@@ -129,6 +130,32 @@ interface RecordedStep {
     image?: string;
     state?: unknown;
     extras?: Record<string, unknown>;
+    /** Page errors raised while the step ran (a pin that throws on resize records its error here). */
+    errors?: string[];
+}
+
+/**
+ * Navigate to the scene page and wait for the readiness flag the check
+ * names: `waitForSceneReady`'s ready handshake and settle for the
+ * default, a bare navigation for `none`, or another dataset flag.
+ */
+async function navigateReady(
+    page: Page,
+    origin: string,
+    ready: string | undefined,
+    search?: string,
+): Promise<void> {
+    if (ready === undefined || ready === "ready") {
+        await waitForSceneReady(page, origin, false, search);
+        return;
+    }
+    await gotoScenePage(page, origin, search);
+    if (ready === "none") return;
+    await page.waitForFunction(
+        (flag: string) => document.getElementById("renderCanvas")?.dataset[flag] === "true",
+        ready,
+        { timeout: 120_000 },
+    );
 }
 
 export async function runObserve(options: ObserveRunOptions): Promise<string> {
@@ -184,8 +211,12 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
         },
         async (page, origin) => {
             if (initScript !== undefined) await page.addInitScript(initScript);
+            let pageErrors: string[] = [];
+            page.on("pageerror", (error) => {
+                pageErrors.push(error.message);
+            });
             for (const frame of spec.captureFrames ?? []) {
-                await waitForSceneReady(page, origin, false, `?captureFrame=${frame}`);
+                await navigateReady(page, origin, spec.ready, `?captureFrame=${frame}`);
                 const state: unknown = await page.evaluate(stateExpression);
                 const name = `frame-${frame}.png`;
                 await checkGolden(page, name);
@@ -198,6 +229,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
             let ready = false;
             for (const step of spec.steps) {
                 const extras: Record<string, unknown> = {};
+                pageErrors = [];
                 if (step.startup !== undefined) {
                     const [width, height] = step.startup.viewport;
                     await page.setViewportSize({ width, height });
@@ -208,12 +240,12 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                             .replaceAll('width="1280" height="720"', `width="${width}" height="${height}"`);
                         await route.fulfill({ response, body: html });
                     });
-                    await waitForSceneReady(page, origin, false);
+                    await navigateReady(page, origin, spec.ready);
                     await page.unroute("**/scene.html");
                     ready = true;
                 } else if (!ready) {
                     await page.setViewportSize({ width: viewport[0], height: viewport[1] });
-                    await waitForSceneReady(page, origin, false);
+                    await navigateReady(page, origin, spec.ready);
                     ready = true;
                     await checkGolden(page, "observed.png");
                 }
@@ -247,6 +279,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                     ...(image !== undefined ? { image } : {}),
                     ...(state !== undefined ? { state } : {}),
                     ...(Object.keys(extras).length > 0 ? { extras } : {}),
+                    ...(pageErrors.length > 0 ? { errors: [...pageErrors] } : {}),
                 });
                 console.log(`observe ${checkId}: step ${step.id} observed`);
             }

@@ -61,7 +61,7 @@ export function parseCanvasCell(
     coverage: string,
 ): PublishedRow["canvas"] | undefined {
     const perBackend =
-        /canvas-only MAD: SDL_GPU ([0-9.]+) \/ ([0-9.]+), Dawn ([0-9.]+) \/ ([0-9.]+)/.exec(
+        /canvas-only MAD: SDL_GPU (\d+\.\d+) \/ (\d+\.\d+), Dawn (\d+\.\d+) \/ (\d+\.\d+)/.exec(
             coverage,
         );
     if (perBackend) {
@@ -70,7 +70,7 @@ export function parseCanvasCell(
             dawn: [perBackend[3]!, perBackend[4]!],
         };
     }
-    const both = /canvas-only MAD: ([0-9.]+) \/ ([0-9.]+) on both backends/.exec(
+    const both = /canvas-only MAD: (\d+\.\d+) \/ (\d+\.\d+) on both backends/.exec(
         coverage,
     );
     if (both) {

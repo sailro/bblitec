@@ -186,12 +186,18 @@ export function spawnNativeMeasured(
         timeout: timeoutMs,
         env: { ...inherited, ...overrides },
     });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
+    const tail = captureStderr && result.stderr ? `\n${result.stderr.slice(-2000)}` : "";
+    if (result.error) {
         throw new Error(
-            `Native renderer exited with status ${result.status}.` +
-                (captureStderr ? `\n${result.stderr.slice(-2000)}` : ""),
+            `Native renderer did not complete: ${result.error.message}` +
+                (timeoutMs !== undefined && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
+                    ? ` (killed after ${timeoutMs} ms)`
+                    : "") +
+                tail,
         );
+    }
+    if (result.status !== 0) {
+        throw new Error(`Native renderer exited with status ${result.status}.${tail}`);
     }
     return captureStderr ? result.stderr : "";
 }

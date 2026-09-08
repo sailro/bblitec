@@ -1,0 +1,20 @@
+{
+  "scene": "scene302",
+  "notes": "Node particle emitter, frozen: the registry tree folds the authored ?seekTime=2, so the billboard population is fixed after registration and the image does not change between frames 10 and 70; an orbit gesture still turns the camera and the particles. Rendered at one sample: input/state replay uses one sample while parity keeps the authored MSAA.",
+  "base": "fixed",
+  "env": { "BBLITE_MSAA": "1" },
+  "phases": [
+    { "id": "early", "frame": 10 },
+    { "id": "later", "frame": 70 },
+    { "id": "orbit", "frame": 70, "tape": ["-*35", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360"] }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "draws[pipeline=billboard].length", "equals": 1 },
+    { "kind": "capture-path", "phase": "*", "path": "draws[pipeline=billboard].instanceCount", "min": 100, "notes": "the source produces a visible particle population" },
+    { "kind": "capture-same", "phase": "later", "vs": "early", "path": "camera" },
+    { "kind": "capture-same", "phase": "later", "vs": "early", "path": "draws[pipeline=billboard].instanceCount" },
+    { "kind": "image-mad", "phase": "later", "vs": "early", "maxDiff": 0, "notes": "the authored zero-speed state does not change after registration" },
+    { "kind": "camera-delta", "phase": "orbit", "vs": "later", "key": "alpha", "min": 0.1 },
+    { "kind": "image-mad", "phase": "orbit", "vs": "later", "min": 0.01, "notes": "the orbit changes the rendered particles" }
+  ]
+}

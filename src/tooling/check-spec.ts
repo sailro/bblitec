@@ -195,6 +195,12 @@ export interface ObserveSpec {
     initScriptFile?: string;
     /** The page expression the driver evaluates for a step's state. */
     state?: string;
+    /**
+     * The canvas dataset flag the page raises when the scene is ready
+     * (`ready` by default; a recovery scene raises `preLossReady`
+     * first); `none` navigates without waiting.
+     */
+    ready?: string;
     /** Serve the registry host page (default when the registry names one). */
     hostPage?: boolean;
     viewport?: [number, number];
@@ -221,6 +227,13 @@ export interface CheckSpec {
     /** `BBLITE_TEST_PASS`; checks run outside a hidden test pass by default
      *  because pointer callbacks only attach there. */
     testPass?: boolean;
+    /**
+     * The backend's validation layer plus the SDL assertion defusal
+     * (`--gpu-debug`), on by default so a failed pass names itself; a
+     * timing measurement turns it off because the layer changes the
+     * cadence it measures.
+     */
+    gpuDebug?: boolean;
     timeoutMs?: number;
     /** A floor for every phase's `BBLITE_MAX_FRAMES`. */
     minFrames?: number;
@@ -642,7 +655,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
     if (!isRecord(value)) fail(location, "must be an object");
     refuseUnknown(
         value,
-        ["hooks", "initScriptFile", "state", "hostPage", "viewport", "headless", "captureFrames", "golden", "steps", "notes"],
+        ["hooks", "initScriptFile", "state", "ready", "hostPage", "viewport", "headless", "captureFrames", "golden", "steps", "notes"],
         location,
     );
     const hooks = value.hooks;
@@ -659,6 +672,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
     }
     const initScriptFile = optionalString(value, "initScriptFile", location);
     const state = optionalString(value, "state", location);
+    const ready = optionalString(value, "ready", location);
     const hostPage = optionalBoolean(value, "hostPage", location);
     const headless = optionalBoolean(value, "headless", location);
     const golden = optionalBoolean(value, "golden", location);
@@ -684,6 +698,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
             : {}),
         ...(initScriptFile !== undefined ? { initScriptFile } : {}),
         ...(state !== undefined ? { state } : {}),
+        ...(ready !== undefined ? { ready } : {}),
         ...(hostPage !== undefined ? { hostPage } : {}),
         ...(value.viewport !== undefined
             ? { viewport: pair(value.viewport, location, "viewport") }
@@ -709,7 +724,7 @@ export function parseCheckSpec(text: string, location: string): CheckSpec {
     if (!isRecord(value)) fail(location, "must be a JSON object");
     refuseUnknown(
         value,
-        ["scene", "twin", "base", "env", "testPass", "timeoutMs", "minFrames", "capture", "logErrorPattern", "phases", "expect", "observe", "notes"],
+        ["scene", "twin", "base", "env", "testPass", "gpuDebug", "timeoutMs", "minFrames", "capture", "logErrorPattern", "phases", "expect", "observe", "notes"],
         location,
     );
     const base = optionalString(value, "base", location);
@@ -723,6 +738,7 @@ export function parseCheckSpec(text: string, location: string): CheckSpec {
     const twin = optionalBoolean(value, "twin", location);
     const env = optionalStringRecord(value, "env", location);
     const testPass = optionalBoolean(value, "testPass", location);
+    const gpuDebug = optionalBoolean(value, "gpuDebug", location);
     const timeoutMs = optionalNumber(value, "timeoutMs", location);
     const minFrames = optionalNumber(value, "minFrames", location);
     const capture = optionalBoolean(value, "capture", location);
@@ -734,6 +750,7 @@ export function parseCheckSpec(text: string, location: string): CheckSpec {
         ...(base !== undefined ? { base: base as CheckEnvironmentBase } : {}),
         ...(env !== undefined ? { env } : {}),
         ...(testPass !== undefined ? { testPass } : {}),
+        ...(gpuDebug !== undefined ? { gpuDebug } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         ...(minFrames !== undefined ? { minFrames } : {}),
         ...(capture !== undefined ? { capture } : {}),

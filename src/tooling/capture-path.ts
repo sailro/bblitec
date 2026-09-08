@@ -55,6 +55,11 @@ function property(value: unknown, name: string): unknown {
 
 function select(value: unknown, selector: string, path: string): unknown {
     if (!Array.isArray(value)) return undefined;
+    // A property read over an array of records yields an array of arrays
+    // (each record's list); a selector then applies to each list.
+    if (value.length > 0 && value.every((element) => Array.isArray(element))) {
+        return value.map((element) => select(element, selector, path));
+    }
     if (selector === "*") return value;
     if (/^\d+$/.test(selector)) return value[Number(selector)];
     const equality = selector.indexOf("=");

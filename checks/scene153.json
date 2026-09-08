@@ -1,0 +1,15 @@
+{
+  "scene": "scene153",
+  "notes": "Animation manager, frozen: the registry tree folds the pinned ?seekTime=1 query, so the manager seeks the source target and stops; the animated rectangle must sit at the sought position (2 units right, in the frame's 18% track units), not move between frames, and resize from live canvas dimensions without changing pose. The registry clock (16 ms) frames the phases.",
+  "timeoutMs": 20000,
+  "phases": [
+    { "id": "early", "frame": 5 },
+    { "id": "later", "frame": 40 },
+    { "id": "resize", "frame": 40, "tape": ["-*10", "WindowResize@960:540"] }
+  ],
+  "expect": [
+    { "kind": "viewport", "phase": "resize", "equals": [960, 540] },
+    { "kind": "image-mad", "phase": "later", "vs": "early", "maxDiff": 0, "notes": "the frozen branch does not animate" },
+    { "kind": "plugin", "module": "checks/plugins/scene153-rectangle.mjs", "options": { "mode": "frozen" } }
+  ]
+}

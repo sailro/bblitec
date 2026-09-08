@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { availableParallelism, totalmem } from "node:os";
 import {
     cpSync,
@@ -650,16 +651,29 @@ function installVcpkgManifest(
     environment: NodeJS.ProcessEnv,
 ): void {
     const stampPath = join(install.installedDirectory, ".bblite-install-stamp");
+    // The manifest fingerprint is keyed by repository-relative paths: the
+    // install is shared by every linked worktree, and a fingerprint carrying
+    // absolute paths would differ per worktree, so each one's first build
+    // would re-run vcpkg over an install it already matches -- and two
+    // worktrees building at once would collide on vcpkg's lock.
+    const manifestEntries = ["vcpkg.json", "vcpkg-configuration.json", "vcpkg-overlay-ports"]
+        .map((name) => resolve("native", name))
+        .flatMap((root) =>
+            existsSync(root)
+                ? (statSync(root).isDirectory() ? findFiles(root, () => true).sort() : [root])
+                : [`${relative(resolve("."), root)}\tmissing`],
+        )
+        .map((file) =>
+            file.endsWith("\tmissing")
+                ? file
+                : `${relative(resolve("."), file).replaceAll("\\", "/")}\t${createHash("sha256").update(readFileSync(file)).digest("hex")}`,
+        );
     const stamp = hashEntries([
-        "vcpkg-install v1",
+        "vcpkg-install v2",
         `triplet ${install.triplet}`,
         `features ${install.features.join(";")}`,
         `vcpkg ${toolIdentity(vcpkgExecutable)}`,
-        `manifest ${contentFingerprint([
-            resolve("native", "vcpkg.json"),
-            resolve("native", "vcpkg-configuration.json"),
-            resolve("native", "vcpkg-overlay-ports"),
-        ])}`,
+        `manifest ${hashEntries(manifestEntries)}`,
     ]);
     if (
         existsSync(stampPath) &&

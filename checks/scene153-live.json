@@ -1,0 +1,16 @@
+{
+  "scene": "scene153",
+  "twin": true,
+  "notes": "Animation manager, live: the no-query twin runs its autonomous manager, so the rectangle advances along its track between frames 5 and 40 (more than one track unit), and a window resize keeps the pose while the rectangle resizes from the live canvas dimensions.",
+  "timeoutMs": 20000,
+  "phases": [
+    { "id": "early", "frame": 5 },
+    { "id": "later", "frame": 40 },
+    { "id": "resize", "frame": 40, "tape": ["-*10", "WindowResize@960:540"] }
+  ],
+  "expect": [
+    { "kind": "viewport", "phase": "resize", "equals": [960, 540] },
+    { "kind": "image-mad", "phase": "later", "vs": "early", "min": 0.2, "notes": "the autonomous manager changes the rendered image" },
+    { "kind": "plugin", "module": "checks/plugins/scene153-rectangle.mjs", "options": { "mode": "live" } }
+  ]
+}
