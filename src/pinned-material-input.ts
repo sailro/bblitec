@@ -11,8 +11,8 @@
  * - the seven loader extensions (`gltf-ext-clearcoat.ts` … `gltf-ext-
  *   dielectric.ts`) are executed against a recording `ctx` stub, and the
  *   option objects are whatever their own `setPbrX` calls set;
- * - `buildDefaultPbrTexturesExt` + `assemblePbrPropsExt` run with the GPU
- *   uploads stubbed to decide the occlusion carrier, the UV2 mask and the
+ * - `buildDefaultPbrTexturesExt` + `assemblePbrPropsExt` run against a
+ *   recording device to decide the occlusion carrier, the UV2 mask and the
  *   factor gates;
  * - `animation-pointer-ext.ts`'s `seedExtMaterials` runs for the animated-
  *   pointer seeding, so the IOR Fresnel is computed by the pin's own
@@ -53,6 +53,7 @@ import {
     registeredPbrExtensionIds,
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
+import { createRecordingDevice } from "./recording-device.js";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -451,22 +452,13 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
             emissiveTexture: unknown,
         ) => boolean;
     }>("loader-gltf/gltf-pbr-builder.js");
-    // The texture assembly's factor-texel branches call the real GPU uploads,
-    // and `gpu-flags.ts` snapshots `globalThis.GPUTextureUsage`, which Node
-    // does not have. The uploads are redirected to recording stubs — the
-    // `ctx` pattern one seam over: a factor texel's only reads here are its
-    // missing `_hasTx`/`_texCoord` markers and its truthiness, and an empty
-    // record carries both. `needsGltfEmissive` above stays on the real
-    // module.
-    const uploadStubs = javascriptModuleUrl(
-        "export const uploadBaseColorFactorTexture = () => ({});\n" +
-            "export const uploadOrmFactorTexture = () => ({});\n" +
-            "export const uploadTex = () => ({});\n",
-    );
+    // The texture assembly's factor-texel branches call the pin's own GPU
+    // uploads, which run against the recording engine below: a factor
+    // texel's only reads here are its missing `_hasTx`/`_texCoord` markers
+    // and its truthiness, both of which the pin's texture record carries.
     const builderExt = await importPinnedModuleUnasynced(
         "loader-gltf/gltf-pbr-builder-ext.js",
         ["needsGltfUvTransform"],
-        new Map([["./gltf-pbr-builder.js", uploadStubs]]),
     ) as {
         buildDefaultPbrTexturesExt: PinnedLoaderExecution[
             "buildDefaultPbrTexturesExt"
@@ -583,11 +575,19 @@ function executedPin(): PinnedLoaderExecution {
 }
 
 /**
- * The engine and mipmap generator only flow into the stubbed uploads —
- * `samplerFor` is withheld, so every image-backed slot goes through the
- * `getCachedTex` stub instead — so both are inert placeholders.
+ * The engine the factor-texel uploads run against. `samplerFor` is withheld,
+ * so every image-backed slot goes through the `getCachedTex` stub instead,
+ * and the one upload the pin makes here is `uploadTex` writing a factor
+ * texel; nothing it records is read back, and the mipmap generator it is
+ * handed is reached only for a decoded image.
  */
-const stubEngine: unknown = undefined;
+const uploadEngine: unknown = {
+    _device: createRecordingDevice({
+        producer: "gltf-material-input",
+        device: ["createTexture"],
+        queue: ["writeTexture"],
+    }).device,
+};
 
 const noopGenerateMipmaps = (): void => {};
 
@@ -749,7 +749,7 @@ export function pinnedMaterialInputFromGltf(
         scene.recordMetallicReflectanceRegistration?.();
     }
     const textures = pin.buildDefaultPbrTexturesExt(
-        stubEngine,
+        uploadEngine,
         mat,
         undefined,
         noopGenerateMipmaps,
