@@ -2,7 +2,7 @@ import ts from "typescript";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { createRecordingDevice } from "./recording-device.js";
-import { unwrapPin } from "./lowering/gltf/shared.js";
+import { unwrapExpression } from "./lowering/context.js";
 
 /**
  * Which lights a shadow-receiving mesh samples, and with which filter.
@@ -71,7 +71,7 @@ export function pinnedShadowFilter(
             // bare literal and the directional PCF writes `"pcf" as const`.
             // The assertion is a type-level narrowing with no value in it,
             // so it is unwrapped rather than being a second shape to accept.
-            const value = unwrapPin(node.initializer);
+            const value = unwrapExpression(node.initializer);
             if (ts.isStringLiteral(value)) filter = value.text;
             return;
         }

@@ -9,9 +9,8 @@ import {
 
 // The AST reads the leaves share with every other lowering come from the
 // context module; the leaves import them here beside the family's own
-// helpers. `unwrapPin` is the same read under the name two readers outside
-// the family still spell.
-export { findNodes, unwrapExpression, unwrapExpression as unwrapPin };
+// helpers.
+export { findNodes, unwrapExpression };
 
 export const laneMembers = ["x", "y", "z", "w"] as const;
 
