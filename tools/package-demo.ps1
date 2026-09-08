@@ -15,7 +15,8 @@ param(
 # ships no runtime or CRT DLLs.
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
+$root = Get-RepositoryRoot
 if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
     throw (
         "Shipping requires a generated scene id made from lowercase letters, " +
@@ -34,12 +35,7 @@ $cacheFile = Join-Path $buildPath "CMakeCache.txt"
 if (-not (Test-Path $cacheFile)) {
     throw "CMake cache not found: $cacheFile. Configure and build the exact mini tree described in docs/development.md#minimal-size-shipping-builds."
 }
-$cache = @{}
-foreach ($line in Get-Content $cacheFile) {
-    if ($line -match '^([^:]+):[^=]+=(.*)$') {
-        $cache[$Matches[1]] = $Matches[2].Trim()
-    }
-}
+$cache = Read-CMakeCache $cacheFile
 $backend = $cache["BBLITE_BACKEND"]
 if ($null -eq $backend) {
     throw "BBLITE_BACKEND is not recorded in $cacheFile. Reconfigure the exact mini tree with the current toolchain."

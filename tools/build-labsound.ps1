@@ -31,7 +31,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
+$root = Get-RepositoryRoot
 if (-not $Workspace) {
     $Workspace = if ($StaticRuntime) {
         if ($EnableCodecs) {
@@ -59,37 +60,12 @@ if ($CoreOnly -and $EnableCodecs) {
 }
 $pin = Get-Content (Join-Path $root "upstream\labsound.json") -Raw |
     ConvertFrom-Json
-$workspacePath = Join-Path $root $Workspace
+$workspacePath = Resolve-RepositoryPath $Workspace
 $source = Join-Path $workspacePath "labsound"
 $nyquist = Join-Path $workspacePath "libnyquist"
 $build = Join-Path $workspacePath "build"
-$output = Join-Path $root $OutputDirectory
-
-if (-not $CMake) {
-    $command = Get-Command cmake -ErrorAction SilentlyContinue
-    if ($command) {
-        $CMake = $command.Source
-    }
-}
-if (-not $CMake -or -not (Test-Path $CMake)) {
-    throw "CMake was not found. Set CMAKE_COMMAND or pass -CMake."
-}
-
-function Sync-PinnedCheckout([string]$path, [string]$repository, [string]$commit, [string]$label) {
-    if (-not (Test-Path (Join-Path $path ".git"))) {
-        git init $path
-        git -C $path remote add origin $repository
-        git -C $path config core.longpaths true
-    }
-    git -C $path fetch --depth 1 origin $commit
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to fetch pinned $label commit $commit."
-    }
-    git -C $path checkout --force --detach FETCH_HEAD
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to check out pinned $label commit $commit."
-    }
-}
+$output = Resolve-RepositoryPath $OutputDirectory
+$CMake = Find-CMake $CMake
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force | Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "LabSound"
