@@ -7,13 +7,15 @@
  * existing native `create_mesh_from_data` under the pin's own "tube"
  * name.
  *
- * The emission is the reached subset, in the camera-controls style:
- * every load-bearing formula is shape-asserted against the pinned AST
- * (the Rodrigues rotation rows, the Frenet tangent/normal/binormal
- * steps, the ribbon's distance tables and triangulation pushes, the
- * seam averaging, the normals accumulation), and the constants flow
- * (the path epsilon, the radius/tessellation defaults, the full-turn
- * step). The cap, arc, radius-function and single-path arms are
+ * The emission is the reached subset. The vector arithmetic the sweep
+ * and the frames call -- the three `Vec3` helpers, the object
+ * normalization and the Rodrigues rotation -- is translated whole from
+ * its pinned declarations (`lowerVectorHelpers`); every other
+ * load-bearing formula is shape-asserted against the pinned AST (the
+ * Frenet tangent/normal/binormal steps, the ribbon's distance tables and
+ * triangulation pushes, the seam averaging, the normals accumulation),
+ * and the constants flow (the path epsilon, the radius/tessellation
+ * defaults, the full-turn step). The cap, arc, radius-function and single-path arms are
  * outside the reached subset: the intrinsic refuses their options by
  * name, and the anchors here pin the pinned defaults that make the
  * dropped arms unreachable (cap NONE starts the circle index at 0,
