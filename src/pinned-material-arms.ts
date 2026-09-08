@@ -186,60 +186,69 @@ export interface MaterialSubject {
     metallicReflectanceRegistered: boolean;
 }
 
-/**
- * The single-light kinds a glTF asset's own KHR_lights_punctual lights reach.
- *
- * The pin's loader creates these lights exactly like scene code does, and
- * `writeMeshLightSelection` walks them the same way, so the composed arms
- * must cover their kinds even when no scene-code intrinsic declares a light
- * feature. glTF has no hemispheric light, so the mapping is the identity on
- * the three punctual kinds.
- */
-export function gltfLightKinds(path: string): readonly string[] {
-    const record = glbDocument(path);
-    if (!record) return [];
-    const extensions = record["extensions"] as
-        | Record<string, unknown>
-        | undefined;
-    const punctual = extensions?.["KHR_lights_punctual"] as
-        | { lights?: { type?: string }[] }
-        | undefined;
-    const kinds = new Set<string>();
-    for (const light of punctual?.lights ?? []) {
-        if (
-            light.type === "point" ||
-            light.type === "directional" ||
-            light.type === "spot") {
-            kinds.add(light.type);
-        }
-    }
-    return [...kinds];
+/** The punctual lights a glTF asset's nodes reference. */
+export interface GltfNodeLights {
+    /**
+     * How many nodes reference a light — the count the pin grows
+     * `MAX_LIGHTS` from: `gltf-feature-lights-punctual.ts` walks the node
+     * array and calls `setMaxLights(lightNodeCount)` when it exceeds the
+     * constant. This port freezes the pin's constant and the native writers
+     * stop at it, so the same count is read at generation to refuse what
+     * upstream would grow.
+     */
+    count: number;
+    /**
+     * The single-light kinds those nodes' lights reach, in first-reference
+     * order. glTF has no hemispheric light, so the mapping is the identity
+     * on the three punctual kinds.
+     */
+    kinds: readonly string[];
 }
 
 /**
- * How many nodes reference a punctual light — the count the pin grows
- * `MAX_LIGHTS` from: `gltf-feature-lights-punctual.ts` walks the node array
- * and calls `setMaxLights(lightNodeCount)` when it exceeds the constant.
- * This port freezes the pin's constant and the native writers stop at it, so
- * the same count is read at generation to refuse what upstream would grow.
+ * The lights a glTF asset creates, read the way the pin creates them.
+ *
+ * `gltf-feature-lights-punctual.ts` walks the NODE array and creates one
+ * light per node carrying `KHR_lights_punctual.light`; the document's
+ * declared `lights[]` table is only what those references resolve through,
+ * so a declared light no node names creates nothing and reaches no arm.
+ * The two consumers -- the `light:*` feature join, whose arms the composed
+ * variants must cover because the loader creates these lights exactly like
+ * scene code does, and the static scene-arm selection, which asks whether
+ * an asset contributes lights at all -- read this one answer.
  */
-export function gltfLightNodeCount(path: string): number {
+export function gltfNodeLights(path: string): GltfNodeLights {
     const record = glbDocument(path);
-    if (!record) return 0;
+    if (!record) return { count: 0, kinds: [] };
+    const extensions = record["extensions"] as
+        | Record<string, unknown>
+        | undefined;
+    const declared =
+        (extensions?.["KHR_lights_punctual"] as
+            | { lights?: { type?: string }[] }
+            | undefined)?.lights ?? [];
     const nodes = Array.isArray(record["nodes"])
         ? (record["nodes"] as Record<string, unknown>[])
         : [];
     let count = 0;
+    const kinds = new Set<string>();
     for (const node of nodes) {
-        const extensions = node?.["extensions"] as
+        const nodeExtensions = node?.["extensions"] as
             | Record<string, unknown>
             | undefined;
-        const punctual = extensions?.["KHR_lights_punctual"] as
+        const reference = (nodeExtensions?.["KHR_lights_punctual"] as
             | { light?: unknown }
-            | undefined;
-        if (punctual?.light !== undefined) count += 1;
+            | undefined)?.light;
+        if (reference === undefined) continue;
+        count += 1;
+        const type = typeof reference === "number"
+            ? declared[reference]?.type
+            : undefined;
+        if (type === "point" || type === "directional" || type === "spot") {
+            kinds.add(type);
+        }
     }
-    return count;
+    return { count, kinds: [...kinds] };
 }
 
 /**

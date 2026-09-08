@@ -78,8 +78,7 @@ import { GeneratedTree } from "./generated-tree.js";
 import { downloadCached } from "./asset-download-cache.js";
 import {
     gltfHasImageBasedLight,
-    gltfLightKinds,
-    gltfLightNodeCount,
+    gltfNodeLights,
 } from "./pinned-material-arms.js";
 import {
     emitAssetSpecializations,
@@ -942,11 +941,11 @@ async function main(): Promise<void> {
         // The pin grows MAX_LIGHTS from this count at run time; the frozen
         // constant makes exceeding it a generation refusal instead
         // (`emitUpstreamGenerated` checks it beside the pinned constant).
-        const lightNodeCount = gltfLightNodeCount(assetPath);
-        if (lightNodeCount > (assetLightNodes?.count ?? 0)) {
-            assetLightNodes = { count: lightNodeCount, asset: asset.output };
+        const nodeLights = gltfNodeLights(assetPath);
+        if (nodeLights.count > (assetLightNodes?.count ?? 0)) {
+            assetLightNodes = { count: nodeLights.count, asset: asset.output };
         }
-        const assetFeatures = gltfLightKinds(assetPath).map(
+        const assetFeatures = nodeLights.kinds.map(
             (kind) => `light:${kind}` as Feature,
         );
         // EXT_lights_image_based installs the asset's own environment, which

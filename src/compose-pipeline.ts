@@ -40,7 +40,7 @@ import {
     composeScenePbrVariants,
     gltfHasImageBasedLight,
     gltfMaterialCount,
-    gltfLightNodeCount,
+    gltfNodeLights,
     gltfLightmapMaterials,
     gltfRenderableFeatures,
     proceduralRenderableFeatures,
@@ -399,9 +399,9 @@ export async function composeScenePipeline({
     const assetLightsReached =
         uniqueGltfAssets.some(
             (asset) =>
-                gltfLightNodeCount(
+                gltfNodeLights(
                     resolve(outputPath, "assets", asset.output),
-                ) > 0,
+                ).count > 0,
         ) || babylonLights(outputPath, result.manifest.assets).length > 0;
     const staticLightKinds =
         !result.manifest.dynamicSceneLights && !assetLightsReached
