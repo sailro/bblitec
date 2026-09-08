@@ -52,6 +52,9 @@ test("body viewer compilation isolates startup and refuses observable bootstrap-
     assert.match(extraction, /create_physics_aggregate/);
     assert.doesNotMatch(extraction, /start_engine/);
     assert.match(main.slice(main.indexOf("int main(")), /start_engine/);
+    const sceneRead = compileSource(source.replace("createEngine,", "addToScene, createEngine,").replace("showPhysicsBody(viewer, aggregate.body);",
+        "addToScene(viewer.scene, mesh); showPhysicsBody(viewer, aggregate.body);"), options);
+    assert.match(sceneRead.cpp, /add_to_scene\(\(v_viewer\)->scene, v_mesh\)/);
     for (const statement of ["const debug = showPhysicsBody(viewer, aggregate.body);", "if (showPhysicsBody(viewer, aggregate.body)) mesh.position.x = 2;"]) {
         assert.throws(() => compileSource(source.replace("showPhysicsBody(viewer, aggregate.body);", statement), options), /discarded showPhysicsBody/);
     }

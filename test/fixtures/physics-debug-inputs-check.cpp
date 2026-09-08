@@ -26,6 +26,13 @@ int main() {
     assert((physics_shape_debug_descriptor(mesh) == PhysicsDebugShapeDescriptor{"MESH", {0, 0, 0, 1, 0, 0, 0, 1, 0}, {0, 1, 2}, {}}));
     auto hull = physics_shape_create_convex_hull({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}});
     assert((physics_shape_debug_descriptor(hull).parameters == std::vector<float>{0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1}));
+    auto container = physics_shape_create_container();
+    physics_shape_add_child(container, sphere, {{4, 5, 6}, {0, 0, 0, 1}}, {2, 3, 4});
+    physics_shape_add_child(container, box, {{-1, -2, -3}, {0, 0, 0, 1}}, {1, 1, 1});
+    assert((physics_shape_debug_descriptor(container) == PhysicsDebugShapeDescriptor{
+        "CONTAINER", {4, 5, 6, 0, 0, 0, 1, 2, 3, 4, -1, -2, -3, 0, 0, 0, 1, 1, 1, 1}, {},
+        {physics_shape_debug_descriptor(sphere), physics_shape_debug_descriptor(box)}}));
+    assert((physics_shape_debug_descriptor(sphere).parameters == std::vector<float>{1, 2, 3, 0.75f}));
     auto body = physics_body_create();
     physics_body_set_shape(body, sphere);
     physics_body_set_transform(body, {{7, 8, 9}, {0, 0, 0, 1}});

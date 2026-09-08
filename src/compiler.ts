@@ -9562,6 +9562,10 @@ class Compiler
         // receiver was just constructed or came out of an array.
         const owner = this.classLowerer.hydrate(rawOwner) ?? rawOwner;
         const property = expression.name.text;
+        if (owner.kind === "physics-viewer" && property === "scene") {
+            return { kind: "scene", cpp: `(${owner.cpp})->scene`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}) };
+        }
         if (owner.kind === "scene" && property === "_envTextures") {
             this.reachFeature("engine:device-recovery", expression);
             return { kind: "gpu-environment", cpp: `bbl::environment_identity(${owner.cpp})`, engineCpp: this.requireEngine(owner, expression), dataType: { kind: "handle", handle: "gpu-environment" }, impure: true };
