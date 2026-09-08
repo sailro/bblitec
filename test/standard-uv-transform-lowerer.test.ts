@@ -23,13 +23,14 @@ const sources = {
         _bumpTexture: "material.bump_texture.has_image()",
         _specularTexture: "material.specular_texture.has_image()",
         _ambientTexture: "material.ambient_texture.has_image()",
+        _lightmapTexture: "material.lightmap_texture.has_image()",
         _opacityTexture: "material.opacity_texture.has_image()",
     },
     coordIndex: {
         diffuseCoordIndex: "material.diffuse_coord_index",
         specularCoordIndex: "material.specular_coord_index",
         ambientCoordIndex: "material.ambient_coord_index",
-        lightmapCoordIndex: null,
+        lightmapCoordIndex: "material.lightmap_coord_index",
     },
 };
 
@@ -85,7 +86,7 @@ test("takes a channel's texture from the same expression its feature bit does", 
     );
     assert.match(
         source,
-        /channel 5: l \(_lightmapTexture\)[\s\S]*?\n        nullptr,/,
+        /channel 5: l \(_lightmapTexture\)[\s\S]*?&material.lightmap_texture : nullptr,/,
     );
 });
 
@@ -94,10 +95,9 @@ test("folds each row's UV set from the pin's own coordIndexKey", () => {
     assert.ok(source.includes("material.diffuse_coord_index == 1"));
     assert.ok(source.includes("material.specular_coord_index == 1"));
     assert.ok(source.includes("material.ambient_coord_index == 1"));
-    // Emissive, bump and opacity carry no coordIndexKey upstream, and the
-    // lightmap's UV set is a slot this port does not record — both fold to
-    // the constant the pin's `&&` produces.
-    assert.equal(source.split(" == 1,").length - 1, 3);
+    assert.ok(source.includes("material.lightmap_coord_index == 1"));
+    assert.equal(source.split(" == 1,").length - 1, 4);
+    assert.ok(source.includes(`material.lightmap_texture.uv_transform.u_ang == ${Math.PI}`));
 });
 
 test("computes in double and rounds once, at the store", () => {

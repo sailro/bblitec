@@ -2611,6 +2611,7 @@ export type Feature =
   | "material:standard-emissive-render-texture"
   | "material:standard-diffuse-file-texture"
   | "material:standard-emissive-file-texture"
+  | "material:standard-lightmap"
   | "texture:file"
   | "texture:compressed"
   | "texture:pixels"

@@ -97,6 +97,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:plugin-textures": [],
     "material:standard-emissive-render-texture": [],
     "material:standard-emissive-file-texture": [],
+    "material:standard-lightmap": [],
     "material:standard-vertex-colors": [],
     "material:standard-skeleton": [],
     "material:standard-uv-offset": [],

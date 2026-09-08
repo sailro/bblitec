@@ -3242,6 +3242,9 @@ struct MaterialRecord {
     // the gamma decode and the V flip are all composition input and carry
     // no lane at all.
     float lightmap_level = 1.0f;
+    float lightmap_coord_index = 1.0f;
+    bool lightmap_shadowmap = false;
+    bool lightmap_texture_srgb = false;
     float iridescence_intensity = 0.0f;
     // Pinned defaults: KHR_materials_iridescence ior 1.3, thickness
     // 100..400 nm (gltf-ext-iridescence.ts).
@@ -3382,7 +3385,7 @@ struct MaterialRecord {
     TextureData sheen_roughness_texture;
     TextureData iridescence_texture;
     TextureData iridescence_thickness_texture;
-    /** The baked lightmap `setPbrLightmap` bound (enable-pbr-lightmap.ts). */
+    /** The file texture bound by the PBR or Standard lightmap setter. */
     TextureData lightmap_texture;
     TextureData emissive_texture;
     TextureData opacity_texture;
@@ -6192,6 +6195,7 @@ void set_pbr_lightmap(
     MaterialHandle material,
     FileTexture texture,
     float level);
+void set_standard_lightmap_texture(Engine& engine, MaterialHandle material, const FileTexture& texture);
 void set_pbr_subsurface(
     Engine& engine,
     MaterialHandle material,

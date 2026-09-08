@@ -33,8 +33,8 @@
  *   `opacityFromRGB` → `OPACITY_FROM_RGB`, exactly the pin's own loader
  *   write (`load-babylon.ts` TEX_SLOTS opacity `extra`). Sponza's chain,
  *   plant and Deg masks are the reached case.
- * - `lightmapTexture` → `HAS_LIGHTMAP_TEXTURE` family — no reached scene
- *   carries one; composes here regardless, since the pin's ext owns it.
+ * - `setStandardLightmapTexture` → `HAS_LIGHTMAP_TEXTURE`; UV channel,
+ *   shadowmap blending and `uAng === Math.PI` follow the extension's detect.
  * - `backFaceCulling === false` → `DOUBLE_SIDED` (pipeline cull state; no
  *   WGSL change).
  * - `reflectionCubeTexture` → `HAS_CUBE_REFLECTION`; a 2D
@@ -907,10 +907,9 @@ const standardFeatureRecordSources: Readonly<
     specularCoordIndex: "material.specular_coord_index",
     _ambientTexture: "material.ambient_texture.has_image()",
     ambientCoordIndex: "material.ambient_coord_index",
-    // The generated .babylon loader loads no lightmap slot.
-    _lightmapTexture: null,
-    lightmapCoordIndex: null,
-    useLightmapAsShadowmap: null,
+    _lightmapTexture: "material.lightmap_texture.has_image()",
+    lightmapCoordIndex: "material.lightmap_coord_index",
+    useLightmapAsShadowmap: "material.lightmap_shadowmap",
     _opacityTexture: "material.opacity_texture.has_image()",
     // babylon-loader-cpp.ts reads opacityTexture.getAlphaFromRGB into the
     // record, mirroring the pin's own loader write (load-babylon.ts
@@ -1058,6 +1057,11 @@ function lowerStandardFeatureDerivation(
                 right.text === "depth"
             ) {
                 return emissiveRenderTextureSource;
+            }
+            if (operator === ts.SyntaxKind.EqualsEqualsEqualsToken && ts.isPropertyAccessExpression(left) &&
+                left.name.text === "uAng" && propertyName(left.expression) === "_lightmapTexture") {
+                context.assertExpressionShape(right, "Math.PI", "Standard lightmap V-flip comparison");
+                return `material.lightmap_texture.uv_transform.u_ang == ${Math.PI}`;
             }
             // `m.lightmapTexture.uAng === Math.PI` and any other read off an
             // unmapped property folds with its property.
@@ -1438,6 +1442,7 @@ export interface StandardSceneCompositionInput {
      *  extension's filtering arm where a depth attachment composes its
      *  unfilterable-float one. */
     emissiveFileTexture: boolean;
+    lightmapFileTexture?: boolean;
     /** `material:standard-uv-transform` reached: scene code marked a
      *  hand-built material with `enableMaterialUvTransform`. */
     uvTransform: boolean;
@@ -1602,6 +1607,7 @@ function sceneCodeMaterialInputs(
     options: {
         emissiveRenderTexture: boolean;
         emissiveFileTexture: boolean;
+        lightmapFileTexture?: boolean;
         diffuseRenderTexture: boolean;
         diffusePixelsTexture: boolean;
         diffuseSolidTexture: boolean;
@@ -1694,7 +1700,11 @@ function sceneCodeMaterialInputs(
             ),
         );
     }
-    return inputs;
+    if (!options.lightmapFileTexture) return inputs;
+    const lightmaps: PinnedStandardMaterialInput[] = [{}];
+    for (const lightmapCoordIndex of [0, 1]) for (const useLightmapAsShadowmap of [false, true]) for (const uAng of [0, Math.PI])
+        lightmaps.push({ lightmapTexture: { uAng }, lightmapCoordIndex, useLightmapAsShadowmap });
+    return inputs.flatMap(input => lightmaps.map(lightmap => ({ ...input, ...lightmap })));
 }
 
 /**
@@ -1726,6 +1736,7 @@ export async function composeSceneStandardVariants(
             ...sceneCodeMaterialInputs({
                 emissiveRenderTexture: input.emissiveRenderTexture,
                 emissiveFileTexture: input.emissiveFileTexture,
+                lightmapFileTexture: input.lightmapFileTexture ?? false,
                 diffuseRenderTexture: input.diffuseRenderTexture,
                 diffusePixelsTexture: input.diffusePixelsTexture,
                 diffuseSolidTexture: input.diffuseSolidTexture,
@@ -2090,6 +2101,10 @@ const standardBuiltinBindings: readonly StandardBuiltinBinding[] = [
         origin: ["normal-map-fragment.ts."],
     },
     {
+        texture: "lT", sampler: "lS", source: "lightmap", reflectionCube: false,
+        origin: ["std-lightmap-fragment.ts."],
+    },
+    {
         texture: "rT",
         sampler: "rS",
         source: "standard_reflection",
@@ -2433,9 +2448,7 @@ inline bool standard_uv_inverted(
 //    (load-babylon.ts: coordinatesMode === 2 -> 2, else the
 //    createStandardMaterial default 1), feeding writeStdMaterialData's
 //    rCm lane the composed fragment forks on (rCm < 1.5 -> spherical).
-//  - lightmap_level: no record field exists and no generated loader fills
-//    the pin's input, so the pin's own default in StandardMaterialProps
-//    stands.${uvTransformBlock}
+//  - lightmap_level: the Standard and PBR setters share its scalar.${uvTransformBlock}
 inline StandardMaterialProps standard_material_props(
     const MaterialRecord& material) {
     StandardMaterialProps props{};
@@ -2447,6 +2460,7 @@ inline StandardMaterialProps standard_material_props(
     props.ambient_color = material.ambient_color;
     props.bump_level = material.bump_scale;
     props.ambient_tex_level = material.ambient_level;
+    props.lightmap_level = material.lightmap_level;
     props.opacity_level = material.opacity_level;
     props.alpha_cutoff = material.alpha_cutoff;
     props.reflection_level = material.reflection_level;

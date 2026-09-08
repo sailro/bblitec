@@ -180,10 +180,9 @@ test("extension rows append in the pinned registration order", () => {
         `    {17, MaterialTextureSource::occlusion_uv2, ` +
         `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
         `"occlusionTexture", "occlusionSampler_"},`,
-        // ...the opt-in baked lightmap, uploaded linear because its own
-        // fragment does the sRGB decode...
+        // ...the opt-in baked lightmap retains its texture's encoding...
         `    {18, MaterialTextureSource::lightmap, ` +
-        `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
+        `MaterialTextureSrgb::lightmap, MaterialTextureFallback::white, ` +
         `"lmTexture", "lmSampler"},`,
         // ...then the Standard bump pair, so no index above moves...
         `    {19, MaterialTextureSource::standard_bump, ` +

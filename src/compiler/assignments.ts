@@ -150,6 +150,11 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     field: "specular_power",
     value: "number",
   },
+  ...([
+    ["lightmapLevel", "lightmap_level", "number"],
+    ["lightmapCoordIndex", "lightmap_coord_index", "number"],
+    ["useLightmapAsShadowmap", "lightmap_shadowmap", "boolean"],
+  ] as const).map(([property, field, value]) => ({ kind: "material" as const, property, collection: "materials" as const, field, value })),
   {
     // src/material/standard/standard-material.ts: "Fragments with
     // `alpha < alphaCutOff` are discarded." It is a plain number field,

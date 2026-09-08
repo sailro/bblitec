@@ -885,6 +885,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/texture/texture-2d.ts",
         consumers: CMAKE,
     },
+    "material:standard-lightmap": {
+        provenance: "src/material/standard/set-std-lightmap.ts + fragments/std-lightmap-fragment.ts",
+        consumers: CMAKE,
+    },
     "material:standard-diffuse-file-texture": {
         provenance:
             "src/material/standard/standard-material.ts diffuseTexture + " +
@@ -1437,7 +1441,9 @@ function capabilityRows(
         "metallicReflectanceMap",
     );
     const reflectanceMap = pbrBindingNames.has("reflectanceMap");
-    const lightmap = pbrBindingNames.has("lmTexture");
+    const standardLightmap = (emit.pinnedStandardVariants ?? []).some(variant =>
+        variantBindings(variant.vertexWgsl, variant.fragmentWgsl).some(binding => binding.name === "lT"));
+    const lightmap = pbrBindingNames.has("lmTexture") || standardLightmap;
     return [
         checkedRow(
             "BBLITE_LOCAL_CUBEMAP",
@@ -1729,15 +1735,14 @@ function capabilityRows(
             lightmap,
             [
                 [
-                    has("material:lightmap") && lightmap,
+                    has("material:lightmap") && pbrBindingNames.has("lmTexture"),
                     "scene source reached material:lightmap and a composed " +
                         "variant binds lmTexture",
                 ],
+                [has("material:standard-lightmap") && standardLightmap, "scene source reached material:standard-lightmap and a composed variant binds lT"],
             ],
-            "no composed PBR variant binds lmTexture",
-            "src/material/pbr/enable-pbr-lightmap.ts is the opt-in that " +
-                "registers the extension; fragments/lightmap-fragment.ts " +
-                "declares the lmTexture/lmSampler pair and the lmLvl field",
+            "no composed material binds a lightmap",
+            "src/material/pbr/enable-pbr-lightmap.ts and src/material/standard/set-std-lightmap.ts register their lightmap fragments",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",

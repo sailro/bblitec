@@ -208,6 +208,8 @@ Standard, PBR, Grid, shader materials, supported no-colour views and live proper
 Reached PBR layers include clearcoat, sheen, iridescence, anisotropy and transmission. Explicit lightmap,
 Standard UV and vertex-colour opt-ins remain distinct from asset discovery; live UV offsets require
 `enableStandardUvOffset`. Vertex-alpha meshes select the matching transparent variant.
+Standard file lightmaps preserve texture encoding, UV channel, intensity, additive/shadowmap blending
+and the pinned `uAng === Math.PI` V flip. Texture binding requires setup before registration.
 
 Public PBR factor/Standard diffuse arrays retain identity and double precision; factors have four
 channels and diffuse colors three. Standard whole-array replacement retains its supplied storage.

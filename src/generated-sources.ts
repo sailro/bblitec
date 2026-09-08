@@ -224,6 +224,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "material:standard-diffuse-solid-texture",
             "material:standard-diffuse-file-texture",
             "material:standard-emissive-file-texture",
+            "material:standard-lightmap",
             "material:standard-uv-transform",
             "material:plugin-index",
             "material:plugin-textures",

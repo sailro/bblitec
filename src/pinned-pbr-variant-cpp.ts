@@ -2111,7 +2111,7 @@ export interface MaterialTextureSlotFeatures {
 /** One emitted row; `slot: null` marks a scene-owned resource. */
 interface MaterialSlotRow {
     source: string;
-    srgb: "linear" | "srgb" | "srgb_unless_standard" | "base_color";
+    srgb: "linear" | "srgb" | "srgb_unless_standard" | "base_color" | "lightmap";
     fallback:
         | "white"
         | "black"
@@ -2307,14 +2307,11 @@ function materialTextureSlotRows(
         });
     }
     if (features.lightmap) {
-        // A baked lightmap is a `loadTexture2D` image the scene hands the
-        // setter, so its encoding is the texture's: the reached call loads
-        // it linear and the composed fragment does the sRGB decode itself
-        // (the pin's `gamma` arm). Uploading through an sRGB view would
-        // decode it twice.
+        // Both material families preserve the loaded texture's encoding.
+        // The PBR fragment's optional gamma conversion remains in WGSL.
         mesh.push({
             source: "lightmap",
-            srgb: "linear",
+            srgb: "lightmap",
             fallback: "white",
             textureName: "lmTexture",
             samplerName: "lmSampler",
@@ -2596,6 +2593,7 @@ enum class MaterialTextureSrgb {
      * for no decode. Standard uploads linear either way.
      */
     base_color,
+    lightmap,
 };
 
 enum class MaterialTextureFallback {
@@ -3066,8 +3064,8 @@ using bbl::Color3;
 //
 // The pin's own StandardMaterialProps, with the pin's own defaults — the
 // values the two writers below read. Wave D fills it from MaterialRecord
-// (diffuse_color, specular_power, bump_level, ... are one-to-one, and
-// lightmap_level / reflection_coord_mode have no record field yet).
+// (diffuse_color, specular_power, bump_level, lightmap_level and
+// reflection_coord_mode map directly).
 struct StandardMaterialProps {
 ${propsMembers.join("\n")}${uvOffset ? "\n    std::array<double, 2> uv_offset{};" : ""}
 };

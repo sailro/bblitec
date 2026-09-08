@@ -1038,6 +1038,7 @@ export async function composeScenePipeline({
                 emissiveFileTexture: result.manifest.features.includes(
                     "material:standard-emissive-file-texture",
                 ),
+                lightmapFileTexture: result.manifest.features.includes("material:standard-lightmap"),
                 uvTransform: result.manifest.features.includes(
                     "material:standard-uv-transform",
                 ),
