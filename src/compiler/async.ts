@@ -3,7 +3,8 @@ import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataTypeRegistry } from "./data-types.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
-import { tryResolveFunctionDeclaration, unwrapExpression } from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import { unwrapExpression, argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 
 interface AsyncContext {
@@ -55,7 +56,7 @@ export class AsyncLowerer {
         if (ts.isPropertyAccessExpression(callee) && ["then", "catch"].includes(callee.name.text) && this.isPromiseType(callee.expression)) {
             if (node.arguments.length !== 1) return context.fail(node, "This promise reaction requires one callback.");
             const promise = this.asPromise(context.compileValue(callee.expression), node);
-            const callback = context.unwrap(node.arguments[0]!);
+            const callback = context.unwrap(argumentAt(node, 0));
             if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback) && !ts.isIdentifier(callback)) {
                 return context.fail(callback, "Promise reactions require a compiled function value.");
             }

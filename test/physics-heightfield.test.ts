@@ -17,8 +17,10 @@ test("heightfield and gravity contracts reject unrepresented constructor or disp
     for (const [module, before, after, lower] of [
         [physicsHeightfieldModule, "[scaleX, 1, scaleZ]", "[scaleZ, 1, scaleX]", lowerPhysicsHeightfield],
         [physicsHeightfieldModule, "return { _hkShape: hkShape, _type: PhysicsShapeType.HEIGHTFIELD };", "return { _hkShape: hkShape, _type: PhysicsShapeType.MESH };", lowerPhysicsHeightfield],
-        ["src/physics/havok.ts", "[gravity.x, gravity.y, gravity.z], worldPosition", "[gravity.z, gravity.y, gravity.x], worldPosition", lowerPhysicsGravity],
-        ["src/physics/havok-floating-origin.ts", "setGravity: _setGravity", "setGravity: _setVelocityLimits", lowerPhysicsGravity],
+        ["src/physics/havok.ts", "[gravity.x, gravity.y, gravity.z], worldPosition", "[gravity.z, gravity.y, gravity.x], worldPosition",
+            (context: LoweringContext) => lowerPhysicsGravity(context, true)],
+        ["src/physics/havok-floating-origin.ts", "setGravity: _setGravity", "setGravity: _setVelocityLimits",
+            (context: LoweringContext) => lowerPhysicsGravity(context, false)],
     ] as const) {
         class Changed extends LoweringContext {
             public override sourceFile(path: string): ts.SourceFile {
@@ -62,10 +64,13 @@ test("heightfields preserve pinned ground samples, rays, contacts and region gra
     }
     const output = resolve("artifacts/physics-heightfield");
     mkdirSync(output, { recursive: true });
-    emitUpstreamGenerated(output, ["core", "camera:free", "renderer:scene", "physics:world", "physics:heightfield"]);
+    // The fixture also drives a region's gravity, which is the
+    // floating-origin module's arm.
+    emitUpstreamGenerated(output, ["core", "camera:free", "renderer:scene", "physics:world", "physics:heightfield", "physics:floating-origin"]);
     writeFileSync(join(output, "heightfield-ground-cases.inc"), cases.join("\n"));
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
+        "/DBBLITE_HAS_PHYSICS_HEIGHTFIELD=1", "/DBBLITE_HAS_PHYSICS_FLOATING_ORIGIN=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include", "/I", output,
         "/I", join(output, "upstream/include"), "/I", join(output, "upstream/src"),
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0",

@@ -343,7 +343,13 @@ test("keeps package scene commands registry-driven", () => {
         /sceneUsesNativeFeature\(scene, "audio:engine"\)/,
     );
     assert.match(sceneCommand, /\[audioScenes, 1\]/);
-    const parityScene = readFileSync("src/parity-scene.ts", "utf8");
-    assert.match(parityScene, /windowsHide: true/);
-    assert.match(parityScene, /BBLITE_TEST_PASS: "1"/);
+    // The one measured-run spawn hides the native window and runs a
+    // measured render as a hidden test pass unless the caller asks for
+    // an interaction check (`testPass: false`).
+    const nativeRun = readFileSync("src/tooling/native-run.ts", "utf8");
+    assert.match(nativeRun, /windowsHide: true/);
+    assert.match(
+        nativeRun,
+        /BBLITE_TEST_PASS: options\.testPass === false \? "0" : "1"/,
+    );
 });

@@ -62,7 +62,7 @@ test("preserves SceneContext identity across native value copies", () => {
     const runtime = source("native/include/bblite/runtime.hpp");
     const scene = source("src/lowering/scene-lowerer.ts");
     assert.match(runtime, /struct Scene \{\s+std::shared_ptr<SceneState> state;/);
-    assert.match(runtime, /Scene\(const Scene& other\)\s+: Scene\(other\.state\)/);
+    assert.match(runtime, /Scene\(const Scene& other\) noexcept\s+: Scene\(other\.state\)/);
     assert.match(
         runtime,
         /SnapshotList<std::shared_ptr<Scene>> registered_scenes;/,
@@ -82,13 +82,25 @@ test("uses TypeScript semantic symbols instead of import-name text matching", ()
     );
 });
 
-test("delegates default-library identity to the TypeScript program", () => {
-    const compiler = source("src/compiler.ts");
-    assert.match(
-        compiler,
-        /this\.program\.isSourceFileDefaultLibrary/,
-    );
-    assert.doesNotMatch(compiler, /hasNoDefaultLib/);
+test("resolves default-library identity in one place", () => {
+    // The marker every lib.*.d.ts carries is read by symbols.ts alone;
+    // every other compiler file asks it rather than spelling its own test.
+    const symbols = source("src/compiler/symbols.ts");
+    assert.match(symbols, /file\.isDeclarationFile && file\.hasNoDefaultLib/);
+    const axis = [
+        "src/compiler.ts",
+        ...readdirSync("src/compiler")
+            .filter((name) => name.endsWith(".ts") && name !== "symbols.ts")
+            .map((name) => `src/compiler/${name}`),
+        ...readdirSync("src/compiler/intrinsics")
+            .filter((name) => name.endsWith(".ts"))
+            .map((name) => `src/compiler/intrinsics/${name}`),
+    ];
+    for (const path of axis) {
+        const text = source(path);
+        assert.doesNotMatch(text, /hasNoDefaultLib/, path);
+        assert.doesNotMatch(text, /\.isSourceFileDefaultLibrary\(/, path);
+    }
 });
 
 test("keeps migrated upstream contracts AST-driven", () => {
@@ -1298,7 +1310,7 @@ test("routes voxel save and load through the host file-dialog PAL", () => {
     assert.doesNotMatch(pal, /SDL_PollEvent|_WIN32|GetOpenFileName/);
     assert.match(
         cmake,
-        /"browser:file" IN_LIST BBLITE_RUNTIME_FEATURES[\s\S]{0,120}BBLITE_HAS_BROWSER_FILE=1/,
+        /bblite_feature_define\(BBLITE_HAS_BROWSER_FILE "browser:file"\)/,
     );
     assert.doesNotMatch(cmake, /comdlg32/);
 });
@@ -1603,10 +1615,13 @@ test("shares parent and clone transforms with shadow caster fitting", () => {
         shadows,
         /return apply_mesh_outer_transform\(mesh, local\);/,
     );
+    // The outer transform is the pinned composition's double arm on the
+    // left of the world, never a per-column rotation restated here.
     assert.match(
         renderer,
-        /std::array<double, 16> apply_mesh_outer_transform\([\s\S]{0,2500}mesh\.outer_position\.x/,
+        /std::array<double, 16> apply_mesh_outer_transform\(\s*const MeshRecord& mesh,\s*std::array<double, 16> world\) \{\s*return outer_transform_product\(\s*mesh\.outer_position, mesh\.outer_rotation, world\);/,
     );
+    assert.doesNotMatch(renderer, /std::sin\(static_cast<double>\(mesh\.outer_rotation/);
 });
 
 test("reuploads dynamic thin-instance colors on both GPU backends", () => {

@@ -3,19 +3,21 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
-    captureNativePaths,
-    captureSeekBracketDirectory,
     formatStabilityReport,
-    nativeCaptureFrameBudget,
     parseParityArguments,
     parseStabilityArguments,
+    withoutVariable,
+    type StabilityRunComparison,
+} from "../src/parity-scene.js";
+import {
+    captureNativePaths,
+    captureSeekBracketDirectory,
     readCaptureMeta,
     readSeekMeta,
     seekBracketPlan,
-    withoutVariable,
     writeSeekMeta,
-    type StabilityRunComparison,
-} from "../src/parity-scene.js";
+} from "../src/tooling/artifacts.js";
+import { nativeCaptureFrameBudget } from "../src/tooling/native-run.js";
 
 // The TL-gaps rungs' parseable pieces: the shared native-capture path
 // trio, the seek-bracket plan, the `--without` composition rules, and

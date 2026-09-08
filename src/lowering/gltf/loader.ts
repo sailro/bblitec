@@ -32,11 +32,11 @@ import { lowerSamplerMappingCpp } from "./sampler-mapping.js";
 import { lowerShPrescaleCpp } from "./sh-prescale.js";
 import {
     coalescedPropertyDefault,
-    collectNodes,
+    findNodes,
     identifierText,
     refuseModule,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /**
@@ -364,26 +364,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         count: number,
         label: string,
     ): void {
-        const matches = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.Expression =>
-                    ts.isBinaryExpression(node) ||
-                    ts.isPrefixUnaryExpression(node) ||
-                    ts.isCallExpression(node),
-            )
-            .filter((expression) =>
-                this.context.expressionMatchesShape(
-                    expression,
-                    expected,
-                ),
-            );
-        if (matches.length !== count) {
-            this.context.contractError(
-                declaration,
-                `Expected ${count === 1 ? "one" : count} ${label}.`,
-            );
-        }
+        this.context.expectShapeCount(declaration, expected, label, count);
     }
 
     /**
@@ -831,6 +812,20 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             ),
         );
         const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(this.context);
+        // The refraction fragment's thickness scale the loader pre-bakes
+        // into record.baked_world_scale (gltf-loader-cpp.ts): the pinned
+        // read must stay the mesh world's longest basis column.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                this.context.functionDeclaration(
+                    "src/material/pbr/fragments/refraction-rtt-fragment.ts",
+                    "makeRefractionMod",
+                ).declaration,
+                "thicknessScaleLine",
+            ),
+            "hasVolume || hasThicknessMap ? `let ts=max(length(mesh.world[0].xyz),max(length(mesh.world[1].xyz),length(mesh.world[2].xyz)));` : ``",
+            "Pinned refraction thickness scale",
+        );
         return {
             modulePath,
             symbolName,
@@ -902,7 +897,7 @@ function assertRestPoseSeed(
         "meshWorldMatrix",
     ]) {
         if (
-            collectNodes(
+            findNodes(
                 seed,
                 (node): node is ts.Node =>
                     (ts.isPropertyAccessExpression(node) ||
@@ -916,18 +911,18 @@ function assertRestPoseSeed(
             );
         }
     }
-    const seeds = collectNodes(
+    const seeds = findNodes(
         skeletonFeature,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
-            collectNodes(
+            findNodes(
                 node,
                 (inner): inner is ts.Identifier =>
                     ts.isIdentifier(inner) &&
                     inner.text === "computeBoneTextureData",
             ).length > 0,
     );
-    const handedOver = collectNodes(
+    const handedOver = findNodes(
         skeletonFeature,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -958,7 +953,7 @@ export function pinnedGltfMeshNamePrefix(
     const loadGltfFile = context.sourceFile("src/loader-gltf/load-gltf.ts");
     const shareFile = context.sourceFile("src/loader-gltf/gltf-share.ts");
     const prefixIn = (file: ts.SourceFile): string | undefined => {
-        const fallback = collectNodes(
+        const fallback = findNodes(
             file,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node),
@@ -973,11 +968,11 @@ export function pinnedGltfMeshNamePrefix(
                 (candidate) =>
                     candidate?.key === "name" &&
                     ts.isTemplateExpression(
-                        unwrapPin(candidate.fallback),
+                        unwrapExpression(candidate.fallback),
                     ),
             );
         return fallback
-            ? (unwrapPin(fallback.fallback) as ts.TemplateExpression)
+            ? (unwrapExpression(fallback.fallback) as ts.TemplateExpression)
                   .head.text
             : undefined;
     };

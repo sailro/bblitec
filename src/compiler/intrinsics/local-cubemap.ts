@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type {CompileAsset, ResolvedCompileOptions, ScenePbrMaterialManifest, Value} from "../types.js";
 import type {IntrinsicCallContext} from "./context.js";
 import {packLocalCubemapSync, pinnedLocalCubemapLimits, type LocalCubemapJson, type LocalCubemapPlan} from "../../pinned-local-cubemap.js";
@@ -67,18 +68,18 @@ export function compileLocalCubemapIntrinsic(context: LocalCubemapIntrinsicConte
     if (maxCandidates === undefined) context.fail(call, "Call enablePbrLocalCubemap before configuring local environments.");
     const argumentCount = name === "setPbrLocalEnvironment" ? 3 : name === "clearPbrLocalEnvironment" ? 1 : 2;
     context.expectArgumentCount(call, argumentCount, argumentCount);
-    const first = context.compileValue(call.arguments[0]!);
+    const first = context.compileValue(argumentAt(call, 0));
     if (name === "setPbrLocalEnvironmentProbeDebug") {
-        context.expectKind(first, "pbr-local-probe-set", call.arguments[0]!);
-        const enabled = context.compileCondition(call.arguments[1]!);
+        context.expectKind(first, "pbr-local-probe-set", argumentAt(call, 0));
+        const enabled = context.compileCondition(argumentAt(call, 1));
         if ((enabled !== "true" && enabled !== "false") || !first.localCubemap) context.fail(call, "Local probe debug must be a static boolean on a retained probe set.");
         if ((first.localCubemap.plan.debug ?? false) === (enabled === "true")) return {kind: "void", cpp: ""};
         first.localCubemap.plan.debug = enabled === "true";
         return {kind: "void", cpp: `*${first.cpp} = *${packetExpression(context, first.localCubemap, call)}`};
     }
-    if (name === "createPbrLocalEnvironmentProbeSet") context.expectKind(first, "scene", call.arguments[0]!);
+    if (name === "createPbrLocalEnvironmentProbeSet") context.expectKind(first, "scene", argumentAt(call, 0));
     else {
-        context.expectKind(first, "material", call.arguments[0]!);
+        context.expectKind(first, "material", argumentAt(call, 0));
         if (first.scenePbrMaterialIndex === undefined) context.fail(call, "Local environments currently require a statically known scene PBR material.");
         const material = context.scenePbrMaterials[first.scenePbrMaterialIndex]!;
         if (name === "clearPbrLocalEnvironment") {
@@ -87,8 +88,8 @@ export function compileLocalCubemapIntrinsic(context: LocalCubemapIntrinsicConte
         }
         material.localCubemapCandidates = maxCandidates;
         if (name === "setPbrLocalEnvironmentProbeSet") {
-            const set = context.compileValue(call.arguments[1]!);
-            context.expectKind(set, "pbr-local-probe-set", call.arguments[1]!);
+            const set = context.compileValue(argumentAt(call, 1));
+            context.expectKind(set, "pbr-local-probe-set", argumentAt(call, 1));
             context.expectSameEngine(first, set, call);
             return {kind: "void", cpp: `${first.engineCpp}.materials.at(${first.cpp}.value).local_environment = ${set.cpp}`};
         }
@@ -97,8 +98,8 @@ export function compileLocalCubemapIntrinsic(context: LocalCubemapIntrinsicConte
     let options: LocalCubemapPlan["options"] = {};
     const optionArgument = name === "createPbrLocalEnvironmentProbeSet" ? call.arguments[1] : name === "setPbrLocalEnvironment" ? call.arguments[2] : undefined;
     if (name !== "createPbrLocalEnvironmentProbeSet") {
-        const environment = context.compileValue(call.arguments[1]!);
-        context.expectKind(environment, "environment-textures", call.arguments[1]!);
+        const environment = context.compileValue(argumentAt(call, 1));
+        context.expectKind(environment, "environment-textures", argumentAt(call, 1));
         if (!environment.environmentAsset) context.fail(call, "Local environments require retained loadEnvironment results.");
         environments.push(environment);
     }

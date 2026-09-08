@@ -1,0 +1,21 @@
+{
+  "scene": "scene231",
+  "notes": "Skinned palette animation and camera controls through the tape: the single transparent draw's palette updates change the rendered geometry between frames 14 and 70 without moving the camera, and an orbit gesture turns the camera and the image. The registry declares no clock (its pose is a fixed screenshot frame), so the check declares the 16 ms delta it measures at.",
+  "env": { "BBLITE_FRAME_DELTA_MS": "16" },
+  "timeoutMs": 20000,
+  "phases": [
+    { "id": "animating", "frame": 14 },
+    { "id": "frozen", "frame": 70 },
+    { "id": "orbit", "frame": 70, "tape": ["-*35", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360"] }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "meshes.length", "equals": 1 },
+    { "kind": "capture-path", "phase": "*", "path": "meshes[0].boneMatrixCount", "equals": 2 },
+    { "kind": "capture-path", "phase": "*", "path": "draws.length", "equals": 1 },
+    { "kind": "capture-path", "phase": "*", "path": "draws[0].stage", "equals": "transparent" },
+    { "kind": "capture-same", "phase": "frozen", "vs": "animating", "path": "camera", "notes": "the animation does not move the camera" },
+    { "kind": "image-mad", "phase": "frozen", "vs": "animating", "min": 0.05, "notes": "palette updates change the rendered geometry" },
+    { "kind": "camera-delta", "phase": "orbit", "vs": "frozen", "key": "alpha", "min": 0.1 },
+    { "kind": "image-mad", "phase": "orbit", "vs": "frozen", "min": 0.05 }
+  ]
+}

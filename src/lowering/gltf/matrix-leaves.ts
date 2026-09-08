@@ -4,7 +4,7 @@ import { renderCppExpression } from "./animation-interpolation.js";
 import {
     CppExpressionScope,
     coalescedPropertyDefault,
-    collectNodes,
+    findNodes,
     identifierParameters,
     identifierText,
     laneMembers,
@@ -12,9 +12,9 @@ import {
     pinnedRootFlip,
     refuseModule,
     refuseNode,
-    signedNumericValue,
+    pinnedNumericValue,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /*
@@ -82,14 +82,14 @@ function offsetElementIndex(
     baseName: string,
     offsetName: string,
 ): number | undefined {
-    const read = unwrapPin(expression);
+    const read = unwrapExpression(expression);
     if (
         !ts.isElementAccessExpression(read) ||
         identifierText(read.expression) !== baseName
     ) {
         return undefined;
     }
-    const index = unwrapPin(read.argumentExpression);
+    const index = unwrapExpression(read.argumentExpression);
     if (ts.isIdentifier(index)) {
         return index.text === offsetName ? 0 : undefined;
     }
@@ -97,9 +97,9 @@ function offsetElementIndex(
         ts.isBinaryExpression(index) &&
         index.operatorToken.kind === ts.SyntaxKind.PlusToken &&
         identifierText(index.left) === offsetName &&
-        ts.isNumericLiteral(unwrapPin(index.right))
+        ts.isNumericLiteral(unwrapExpression(index.right))
     ) {
-        return Number((unwrapPin(index.right) as ts.NumericLiteral).text);
+        return Number((unwrapExpression(index.right) as ts.NumericLiteral).text);
     }
     return undefined;
 }
@@ -172,7 +172,7 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
                     "binds a local this lowering cannot carry",
                 );
             }
-            const product = unwrapPin(binding.initializer);
+            const product = unwrapExpression(binding.initializer);
             const quaternionProduct = ts.isBinaryExpression(product) &&
                 product.operatorToken.kind ===
                     ts.SyntaxKind.AsteriskToken &&
@@ -217,7 +217,7 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
                 `no longer stores component ${lane} in order`,
             );
         }
-        const value = unwrapPin(assignment.right);
+        const value = unwrapExpression(assignment.right);
         if (lane === 3 || lane === 7 || lane === 11 || lane === 15) {
             const expected = lane === 15 ? 1 : 0;
             if (
@@ -298,14 +298,14 @@ function numericElementIndex(
     expression: ts.Expression,
     baseName: string,
 ): number | undefined {
-    const read = unwrapPin(expression);
+    const read = unwrapExpression(expression);
     if (
         !ts.isElementAccessExpression(read) ||
         identifierText(read.expression) !== baseName
     ) {
         return undefined;
     }
-    const index = unwrapPin(read.argumentExpression);
+    const index = unwrapExpression(read.argumentExpression);
     return ts.isNumericLiteral(index) ? Number(index.text) : undefined;
 }
 
@@ -347,12 +347,12 @@ export function lowerLocalMatrixCpp(
     const symbol = "computeNodeWorldMatrix";
     const declaration = topLevelFunction(parserFile, symbol);
     // The authored-matrix arm: `if (node.matrix) { … new F32(node.matrix) … }`.
-    const matrixBranches = collectNodes(
+    const matrixBranches = findNodes(
         declaration,
         (node): node is ts.IfStatement =>
             ts.isIfStatement(node) &&
-            ts.isPropertyAccessExpression(unwrapPin(node.expression)) &&
-            (unwrapPin(node.expression) as ts.PropertyAccessExpression)
+            ts.isPropertyAccessExpression(unwrapExpression(node.expression)) &&
+            (unwrapExpression(node.expression) as ts.PropertyAccessExpression)
                     .name.text === "matrix",
     );
     if (matrixBranches.length !== 1) {
@@ -363,16 +363,16 @@ export function lowerLocalMatrixCpp(
     }
     const matrixBranch = matrixBranches[0]!;
     const matrixKey =
-        (unwrapPin(matrixBranch.expression) as ts.PropertyAccessExpression)
+        (unwrapExpression(matrixBranch.expression) as ts.PropertyAccessExpression)
             .name.text;
-    const matrixCopies = collectNodes(
+    const matrixCopies = findNodes(
         matrixBranch.thenStatement,
         (node): node is ts.NewExpression =>
             ts.isNewExpression(node) &&
             identifierText(node.expression) === "F32" &&
             node.arguments?.length === 1 &&
-            ts.isPropertyAccessExpression(unwrapPin(node.arguments[0]!)) &&
-            (unwrapPin(node.arguments[0]!) as ts.PropertyAccessExpression)
+            ts.isPropertyAccessExpression(unwrapExpression(node.arguments[0]!)) &&
+            (unwrapExpression(node.arguments[0]!) as ts.PropertyAccessExpression)
                     .name.text === matrixKey,
     );
     if (matrixCopies.length !== 1) {
@@ -385,7 +385,7 @@ export function lowerLocalMatrixCpp(
     }
     // The TRS arm's whole-array defaults, keyed by binding name.
     const inputs = new Map<string, LocalComposeInput>();
-    for (const binding of collectNodes(
+    for (const binding of findNodes(
         declaration,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
@@ -394,18 +394,18 @@ export function lowerLocalMatrixCpp(
     )) {
         const coalesced = coalescedPropertyDefault(binding.initializer!);
         if (!coalesced) continue;
-        const fallback = unwrapPin(coalesced.fallback);
+        const fallback = unwrapExpression(coalesced.fallback);
         if (!ts.isArrayLiteralExpression(fallback)) continue;
         inputs.set((binding.name as ts.Identifier).text, {
             bindingName: (binding.name as ts.Identifier).text,
             key: coalesced.key,
             defaults: fallback.elements.map((element) =>
-                signedNumericValue(symbol, parserFile, element)
+                pinnedNumericValue(symbol, parserFile, element)
             ),
         });
     }
     // The compose call fixes which binding feeds which parameter block.
-    const composeCalls = collectNodes(
+    const composeCalls = findNodes(
         declaration,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -428,7 +428,7 @@ export function lowerLocalMatrixCpp(
     ): LocalComposeInput => {
         let input: LocalComposeInput | undefined;
         for (let lane = 0; lane < count; lane += 1) {
-            const argument = unwrapPin(composeArguments[start + lane]!);
+            const argument = unwrapExpression(composeArguments[start + lane]!);
             const read = ts.isElementAccessExpression(argument)
                 ? argument
                 : undefined;

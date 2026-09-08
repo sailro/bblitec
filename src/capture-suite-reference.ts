@@ -19,12 +19,12 @@ import {
 // Lazy module loads
 //
 // This module sits on the parity path's import chain, and the cached-
-// reference path — every parity child in a matrix run — used to pay 431 of
-// its 544 ms import cost loading playwright-core and typescript through the
-// static imports here (browser-harness, upstream-source, compiler/symbols)
-// without ever calling them: `captureSuiteReference` returns before touching
-// a browser when the golden is already on disk. Each module is loaded on
-// first use instead. The loads are synchronous (`require` of an ES module,
+// reference path — every parity child in a matrix run — never calls the
+// browser harness, the upstream source reader or the compiler symbols:
+// `captureSuiteReference` returns before touching a browser when the golden
+// is already on disk. Loading playwright-core and typescript statically here
+// would cost every such child most of its startup for nothing, so each
+// module is loaded on first use. The loads are synchronous (`require` of an ES module,
 // which Node supports unflagged from 22.12 — `package.json` pins the
 // engine) because the composers that need them (`suiteBrowserModule`,
 // the suite server's on-demand transpile) are synchronous exports with
@@ -339,7 +339,7 @@ export function pinnedPackageSpecifiers(source: string, entryUrl = pinnedBrowser
  * matching bbl::js::random_js in native/include/bblite/js_data.hpp. The
  * stub runs in a plain script before the scene module loads.
  */
-export const seededRandomScript =
+const seededRandomScript =
     "Math.random = (() => { let s = 1 >>> 0; return () => {" +
     " s = (s + 0x6D2B79F5) | 0;" +
     " let t = Math.imul(s ^ (s >>> 15), 1 | s);" +

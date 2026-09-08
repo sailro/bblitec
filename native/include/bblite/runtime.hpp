@@ -829,7 +829,10 @@ struct PickingInfo {
     std::optional<PickDetailReadback>& detail;
 
     PickingInfo() : PickingInfo(std::make_shared<PickingInfoState>()) {}
-    PickingInfo(const PickingInfo& other) : PickingInfo(other.state) {}
+    // Copying binds references into a shared state and copies its owner,
+    // neither of which can throw; the assignment operators below rely on
+    // that, since they destroy and re-place this object.
+    PickingInfo(const PickingInfo& other) noexcept : PickingInfo(other.state) {}
     PickingInfo(PickingInfo&& other) noexcept : PickingInfo(std::move(other.state)) {}
     PickingInfo& operator=(const PickingInfo& other) {
         if (this != &other) {
@@ -869,6 +872,10 @@ private:
           normals_invalid(state->normals_invalid),
           detail(state->detail) {}
 };
+// The destroy-then-place assignment operators above are only sound while a
+// copy cannot throw between the destruction and the placement.
+static_assert(std::is_nothrow_copy_constructible_v<PickingInfo>);
+static_assert(std::is_nothrow_move_constructible_v<PickingInfo>);
 
 [[nodiscard]] inline Engine& picking_engine(const PickingInfo& info) {
     if (!info.state->engine || info.state->engine_lifetime.expired()) {
@@ -2390,6 +2397,12 @@ struct MeshRecord {
     // draw path consults it, because a non-pickable mesh still renders.
     bool pickable = true;
     std::vector<std::array<float, 16>> bone_matrices;
+    /**
+     * Moves with every rewrite of `bone_matrices`; both backends upload
+     * the palette texture only when it differs from the version they
+     * last streamed, so a still skeleton costs no upload.
+     */
+    std::uint64_t bone_matrices_version = 0;
     /**
      * The animated node's own world matrix, in this port's convention.
      *
@@ -4454,9 +4467,18 @@ struct GpuDeviceIdentity {
     std::uint64_t generation = 0;
     friend bool operator==(const GpuDeviceIdentity&, const GpuDeviceIdentity&) = default;
 };
+/**
+ * The identity of a texture a backend published for the device-recovery
+ * observers: the device generation it was created under and the
+ * allocation ordinal `publish_gpu_texture_identity` hands out. An ordinal
+ * rather than the object's address, so the shared record carries no
+ * foreign handle and a recycled address cannot alias an older texture.
+ * Generated readers compare identities and test `object` for zero, which
+ * no published identity carries.
+ */
 struct GpuTextureIdentity {
     std::uint64_t generation = 0;
-    std::uintptr_t object = 0;
+    std::uint64_t object = 0;
     friend bool operator==(const GpuTextureIdentity&, const GpuTextureIdentity&) = default;
 };
 struct EnvironmentIdentity {
@@ -4776,11 +4798,24 @@ struct Engine::DeviceRecoveryState {
     std::unordered_map<const SceneState*, std::size_t> renderable_counts;
     std::vector<GpuTextureIdentity> shadows;
     GpuTextureIdentity fallback;
+    /** The last ordinal `publish_gpu_texture_identity` handed out. */
+    std::uint64_t published_textures = 0;
     bool requested = false;
     bool recovering = false;
     bool resources_ready = false;
     bool disposed = false;
 };
+
+/**
+ * The identity a backend publishes for a texture the device-recovery
+ * observers watch: the current device generation and a fresh ordinal. A
+ * backend calls it once per texture it publishes and again only when the
+ * texture behind an identity changed, so two identities compare equal
+ * exactly when the same texture stood behind both.
+ */
+inline GpuTextureIdentity publish_gpu_texture_identity(Engine& engine) {
+    return {engine.device_generation, ++engine.device_recovery->published_textures};
+}
 
 inline GpuDeviceIdentity gpu_device_identity(Engine& engine) { return {&engine, engine.device_generation}; }
 EnvironmentIdentity environment_identity(const Scene& scene);
@@ -5121,7 +5156,10 @@ inline void set_material_diffuse_color(
             }
             const double width = layer.instance_data[base + 2u];
             const double height = layer.instance_data[base + 3u];
-            if (width == 0.0 || height == 0.0) {
+            // `pickSprite2D`'s own `sizeX <= 0 || sizeY <= 0`: a sprite
+            // hidden by a non-positive size is skipped, not just an empty
+            // one.
+            if (width <= 0.0 || height <= 0.0) {
                 continue;
             }
             const double dx = x_px - layer.instance_data[base];
@@ -5391,7 +5429,10 @@ struct Scene {
 
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(state); }
 
-    Scene(const Scene& other)
+    // Copying binds references into the shared state and copies its owner,
+    // neither of which can throw; the assignment operators below rely on
+    // that, since they destroy and re-place this object.
+    Scene(const Scene& other) noexcept
         : Scene(other.state) {}
 
     Scene(Scene&& other) noexcept
@@ -5460,6 +5501,10 @@ private:
           fog_color(state->fog_color),
           clip_plane(state->clip_plane) {}
 };
+// The destroy-then-place assignment operators above are only sound while a
+// copy cannot throw between the destruction and the placement.
+static_assert(std::is_nothrow_copy_constructible_v<Scene>);
+static_assert(std::is_nothrow_move_constructible_v<Scene>);
 
 [[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine, MaterialHandle material) {
     return std::any_of(engine.registered_scenes.begin(), engine.registered_scenes.end(),

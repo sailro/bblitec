@@ -11,7 +11,7 @@ import {
     captureBuffersPath,
     captureMetaPath,
     writeSeekMeta,
-} from "../src/parity-scene.js";
+} from "../src/tooling/artifacts.js";
 import { resolveScene } from "../src/scene-registry.js";
 
 // The one reader every capture-reuse path shares: diff recaptures on a

@@ -48,9 +48,6 @@ test("scene morph attachment records its exact PBR row and keeps weight updates 
     const composed = await composeScenePipeline({
         result, outputPath, tree: new GeneratedTree(outputPath),
         specializationFeatures: emitAssetSpecializations(outputPath, []),
-        emittedArms: { clearcoat: false, clearcoatF0Remap: false, sheen: false,
-            sheenAlbedoScaling: false, iridescence: false, occlusionUv2: false,
-            transmission: false, dispersion: false },
     });
     const pin = await importPinnedModule<{ MSH_HAS_MORPH_TARGETS: number }>("material/mesh-features.js");
     assert.deepEqual(composed.renderableMeshFeatures, [pin.MSH_HAS_MORPH_TARGETS, 0]);

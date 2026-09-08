@@ -7,7 +7,11 @@ working tree. Interpretation belongs in [fidelity](fidelity.md#what-is-measured-
 
 ## Curated parity scenes
 
-Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-specific gates remain authoritative.
+Pinned numbered scenes. A coverage cell leads with the registry name; commentary follows a
+semicolon. Plain cells are below 0.5; a row with any value at or above 0.5 is coloured per
+value (green below 0.5, yellow at or above 0.5, red at or above 1). Scene-specific registry
+gates remain authoritative. Rows named in the wobble allowlist of `src/scene-neutrality.ts`
+keep their published value while the newest report lies inside the recorded band.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -50,16 +54,16 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 37 | <img src="images/scenes/scene37.png" alt="Scene 37 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Sheen Wood Leather Sofa |
 | 38 | <img src="images/scenes/scene38.png" alt="Scene 38 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Builder Gallery |
 | 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animated Waterfall |
-| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Bullet on Havok's sub-steps, speculative landing and rebound; a solver delta, not a renderer-fidelity value. |
-| 41 | <img src="images/scenes/scene41.png" alt="Scene 41 rendering" width="160"> | 0.215 / 0.284 | 0.215 / 0.284 | Mesh, hull and compound bodies with retained debug overlays; Bullet/Havok free-fall solver delta. |
+| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Havok Sphere Drop; Bullet on Havok's sub-steps, speculative landing and rebound; a solver delta, not a renderer-fidelity value |
+| 41 | <img src="images/scenes/scene41.png" alt="Scene 41 rendering" width="160"> | 0.215 / 0.284 | 0.215 / 0.284 | Physics Shape Debug Viewer; Mesh, hull and compound bodies with retained debug overlays; Bullet/Havok free-fall solver delta |
 | 42 | <img src="images/scenes/scene42.png" alt="Scene 42 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Clone Pre-Step |
 | 43 | <img src="images/scenes/scene43.png" alt="Scene 43 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Parametric Proximity Path |
-| 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | 0.006 / 0.037 | 0.006 / 0.037 | Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value. |
-| 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | 0.039 / 0.074 | 0.039 / 0.074 | Bullet/Havok landing hops under -1 gravity; a solver delta, not a renderer-fidelity value. |
-| 46 | <img src="images/scenes/scene46.png" alt="Scene 46 rendering" width="160"> | 0.001 / 0.077 | 0.001 / 0.077 | Seven constraint types including radial limits; upstream frame 10. Later trajectories differ between solvers. |
-| 47 | <img src="images/scenes/scene47.png" alt="Scene 47 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Heightfield and six falling shape types; upstream frame 1. Later contact trajectories differ between solvers. |
-| 48 | <img src="images/scenes/scene48.png" alt="Scene 48 rendering" width="160"> | 0.060 / 0.098 | 0.060 / 0.098 | Authored centres of mass under a kick, captured mid-topple; Bullet/Havok contact-instant lateral drift, not a renderer-fidelity value. |
-| 49 | <img src="images/scenes/scene49.png" alt="Scene 49 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Cylinder/capsule proximity and cast; live rotation/query, orbit and resize controls. |
+| 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | 0.006 / 0.037 | 0.006 / 0.037 | Physics Sleeping Towers; Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value |
+| 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | 0.039 / 0.074 | 0.039 / 0.074 | Physics Collision Filtering; Bullet/Havok landing hops under -1 gravity; a solver delta, not a renderer-fidelity value |
+| 46 | <img src="images/scenes/scene46.png" alt="Scene 46 rendering" width="160"> | 0.001 / 0.077 | 0.001 / 0.077 | Physics Constraints; Seven constraint types including radial limits; upstream frame 10. Later trajectories differ between solvers |
+| 47 | <img src="images/scenes/scene47.png" alt="Scene 47 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Physics Heightfield; Heightfield and six falling shape types; upstream frame 1. Later contact trajectories differ between solvers |
+| 48 | <img src="images/scenes/scene48.png" alt="Scene 48 rendering" width="160"> | 0.060 / 0.098 | 0.060 / 0.098 | Physics Centre of Mass; Authored centres of mass under a kick, captured mid-topple; Bullet/Havok contact-instant lateral drift, not a renderer-fidelity value |
+| 49 | <img src="images/scenes/scene49.png" alt="Scene 49 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Shape Queries; cylinder/capsule proximity and cast with live rotation, query, orbit and resize controls |
 | 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Grid |
 | 51 | <img src="images/scenes/scene51.png" alt="Scene 51 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Soft-Edged Sprite Grid |
 | 52 | <img src="images/scenes/scene52.png" alt="Scene 52 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | HUD on 3D |
@@ -101,7 +105,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 88 | <img src="images/scenes/scene88.png" alt="Scene 88 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Loop Block |
 | 89 | <img src="images/scenes/scene89.png" alt="Scene 89 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Storage Blocks |
 | 90 | <img src="images/scenes/scene90.png" alt="Scene 90 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | CSG Operations |
-| 91 | <img src="images/scenes/scene91.png" alt="Scene 91 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | CSG2 Manifold Operations and Material Partitions |
+| 91 | <img src="images/scenes/scene91.png" alt="Scene 91 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | CSG2 Operations; Manifold operations and material partitions |
 | 92 | <img src="images/scenes/scene92.png" alt="Scene 92 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Custom Shader |
 | 93 | <img src="images/scenes/scene93.png" alt="Scene 93 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Palette Shader |
 | 94 | <img src="images/scenes/scene94.png" alt="Scene 94 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Custom Shader |
@@ -110,12 +114,12 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 97 | <img src="images/scenes/scene97.png" alt="Scene 97 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Multiply Blend |
 | 98 | <img src="images/scenes/scene98.png" alt="Scene 98 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprites |
 | 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bone Control |
-| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Scene 40 plus the collision event; the same solver delta, not a renderer-fidelity value. |
-| 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Bullet/Havok trigger drop two elastic bounces in; the rebound rule's 0.2% compounding, not a renderer-fidelity value. |
-| 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | 0.003 / 0.125 | 0.003 / 0.125 | Physics Raycast over Triangle-Soup Colliders |
+| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Havok Collision Event; Scene 40 plus the collision event; the same solver delta, not a renderer-fidelity value |
+| 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Physics Trigger Volume; Bullet/Havok trigger drop two elastic bounces in; the rebound rule's 0.2% compounding, not a renderer-fidelity value |
+| 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | 0.003 / 0.125 | 0.003 / 0.125 | Havok Filtered Raycast; raycast over triangle-soup colliders |
 | 103 | <img src="images/scenes/scene103.png" alt="Scene 103 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Raycast Instance Picking; exact captureFrame=5 pose. |
-| 104 | <img src="images/scenes/scene104.png" alt="Scene 104 rendering" width="160"> | 0.014 / 0.013 | 0.014 / 0.013 | Character capsule movement, collision events, keyboard/jump and camera follow; imported level lightmaps. |
-| 105 | <img src="images/scenes/scene105.png" alt="Scene 105 rendering" width="160"> | 0.274 / 0.204 | 0.274 / 0.204 | Character movement and animated platform; Bullet/Havok dynamic-obstacle solver delta. |
+| 104 | <img src="images/scenes/scene104.png" alt="Scene 104 rendering" width="160"> | 0.014 / 0.013 | 0.014 / 0.013 | Havok Character Controller; Character capsule movement, collision events, keyboard/jump and camera follow; imported level lightmaps |
+| 105 | <img src="images/scenes/scene105.png" alt="Scene 105 rendering" width="160"> | 0.274 / 0.204 | 0.274 / 0.204 | Havok Character Moving Platform; Character movement and animated platform; Bullet/Havok dynamic-obstacle solver delta |
 | 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.018 / 0.097 | 0.018 / 0.097 | Physics Motion and Prestep Grid; Bullet/Havok geometry and solver residual at frame 20. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
@@ -178,7 +182,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 180 | <img src="images/scenes/scene180.png" alt="Scene 180 rendering" width="160"> | 0.020 / 0.455 | 0.020 / 0.455 | Standalone Text Renderer |
 | 181 | <img src="images/scenes/scene181.png" alt="Scene 181 rendering" width="160"> | 0.002 / 0.028 | 0.002 / 0.028 | Live Text Editor |
 | 186 | <img src="images/scenes/scene186.png" alt="Scene 186 rendering" width="160"> | 0.002 / 0.004 | 0.002 / 0.004 | Local Cubemap Blending |
-| 187 | <img src="images/scenes/scene187.png" alt="Scene 187 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | SMAA |
+| 187 | <img src="images/scenes/scene187.png" alt="Scene 187 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Subpixel Morphological Anti-Aliasing |
 | 200 | <img src="images/scenes/scene200.png" alt="Scene 200 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix Off |
 | 201 | <img src="images/scenes/scene201.png" alt="Scene 201 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix On |
 | 202 | <img src="images/scenes/scene202.png" alt="Scene 202 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Point Light |
@@ -187,7 +191,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 205 | <img src="images/scenes/scene205.png" alt="Scene 205 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Facing Billboards |
 | 206 | <img src="images/scenes/scene206.png" alt="Scene 206 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Cutout Billboards |
 | 207 | <img src="images/scenes/scene207.png" alt="Scene 207 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Directional Shadows |
-| 209 | <img src="images/scenes/scene209.png" alt="Scene 209 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Physics Regions |
+| 209 | <img src="images/scenes/scene209.png" alt="Scene 209 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Havok Physics; Floating Origin Physics Regions |
 | 210 | <img src="images/scenes/scene210.png" alt="Scene 210 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | XMP Metadata Rounded Cube |
 | 211 | <img src="images/scenes/scene211.png" alt="Scene 211 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | BrainStem Meshopt |
 | 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="160"> | 0.014 / 0.016 | 0.010 / 0.011 | Dispersion Test |
@@ -244,7 +248,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 272 | <img src="images/scenes/scene272.png" alt="Scene 272 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Runtime Mesh Swap |
 | 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Runtime Material Family |
 | 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Alpha to Coverage |
-| 275 | <img src="images/scenes/scene275.png" alt="Scene 275 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Text Alpha to Coverage |
+| 275 | <img src="images/scenes/scene275.png" alt="Scene 275 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Text Alpha-to-Coverage |
 | 276 | <img src="images/scenes/scene276.png" alt="Scene 276 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite Sheet Particles |
 | 277 | <img src="images/scenes/scene277.png" alt="Scene 277 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Attractor Update |
 | 278 | <img src="images/scenes/scene278.png" alt="Scene 278 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Line System |
@@ -254,7 +258,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 282 | <img src="images/scenes/scene282.png" alt="Scene 282 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard UV Transform |
 | 283 | <img src="images/scenes/scene283.png" alt="Scene 283 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Multiply Blend |
 | 284 | <img src="images/scenes/scene284.png" alt="Scene 284 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE MultiplyAdd Blend |
-| 300 | <img src="images/scenes/scene300.png" alt="Scene 300 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite2D Frozen Buffer and Shared Sprite Sheet |
+| 300 | <img src="images/scenes/scene300.png" alt="Scene 300 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Frozen NPE Sprite2D Sheet; frozen buffer and shared sprite sheet |
 | 301 | <img src="images/scenes/scene301.png" alt="Scene 301 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite2D Blend Modes |
 | 302 | <img src="images/scenes/scene302.png" alt="Scene 302 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Moving Emitter |
 | 303 | <img src="images/scenes/scene303.png" alt="Scene 303 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite2D Renderer-Native Y-Sort |
@@ -297,7 +301,7 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | nav-crowd | <img src="images/scenes/regression-nav-crowd.png" alt="Navigation crowd step rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd Step |
 | nav-obstacles | <img src="images/scenes/regression-nav-obstacles.png" alt="Navigation obstacle removal rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Removal |
 | mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Visible and Pickable |
-| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.053 / 0.083 | 0.053 / 0.083 | Physics Aggregate Options |
+| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options; 0.053 / 0.083 before the physics family gates: with the constraints family compiled out the cylinder's landing moves by a float ulp, deterministic on both backends |
 | physics-floating-origin | <img src="images/scenes/regression-physics-floating-origin.png" alt="Physics floating origin rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Floating Origin Regions |
 | physics-mesh-shape | <img src="images/scenes/regression-physics-mesh-shape.png" alt="Physics mesh shape rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Triangle-Soup Shape |
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |

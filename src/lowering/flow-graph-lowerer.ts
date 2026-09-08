@@ -39,20 +39,31 @@ import type {
     FlowGraphSocket,
 } from "../pinned-flow-graph.js";
 import { type LoweredSource, LoweringContext, statementKind } from "./context.js";
-import { PINNED_ARITHMETIC_OPERATORS, pinnedNumericMathCalls } from "./pinned-operators.js";
+import { CPP_RECORD, CPP_SCALAR } from "./cpp-types.js";
+import {
+    PINNED_ARITHMETIC_OPERATORS,
+    PINNED_RELATIONAL_OPERATORS,
+    pinnedNumericMathCalls,
+    pinnedRemainderCall,
+} from "./pinned-operators.js";
+import {
+    type Callable,
+    type Classified,
+    type Completion,
+    Env,
+    type Frame,
+    type FunctionCallable,
+    NORMAL,
+    PartialEvaluator,
+    type PinnedDeclaration,
+    type RecordEntry,
+    type ValueModel,
+} from "./pinned-partial-evaluator.js";
 
 /** A graph-authored name as one C++ identifier fragment. */
 function identifier(name: string): string {
     return snakeCase(sanitizeCppIdentifier(name));
 }
-
-/** The comparisons `fg-math` and `rich-type` state over numbers. */
-const COMPARISON_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
-    [ts.SyntaxKind.LessThanToken, "<"],
-    [ts.SyntaxKind.LessThanEqualsToken, "<="],
-    [ts.SyntaxKind.GreaterThanToken, ">"],
-    [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
-]);
 
 /** `Math.*` over a run-time number, spelled by the shared table. */
 const PINNED_MATH_CALLS = pinnedNumericMathCalls();
@@ -95,7 +106,7 @@ type Val =
     | {
           k: "closure";
           node: ts.ArrowFunction | ts.FunctionExpression;
-          env: Env;
+          env: FgEnv;
           file: ts.SourceFile;
           module: string;
       }
@@ -137,31 +148,13 @@ interface NativeAccessor {
 
 const STATIC_UNDEFINED: Val = { k: "static", value: undefined };
 
+/** What a name binds: its value, and whether a `let` may rebind it. */
 interface Binding {
     value: Val;
     mutable: boolean;
 }
 
-class Env {
-    private readonly bindings = new Map<string, Binding>();
-
-    public constructor(public readonly parent?: Env) {}
-
-    public lookup(name: string): Binding | undefined {
-        return this.bindings.get(name) ?? this.parent?.lookup(name);
-    }
-
-    public declare(name: string, value: Val, mutable = false): void {
-        this.bindings.set(name, { value, mutable });
-    }
-}
-
-type Completion =
-    | { kind: "normal" }
-    | { kind: "return"; value: Val }
-    | { kind: "break" };
-
-const NORMAL: Completion = { kind: "normal" };
+type FgEnv = Env<Binding>;
 
 function isNullish(value: Val): boolean {
     return value.k === "static" && (value.value === undefined || value.value === null);
@@ -175,12 +168,15 @@ function staticNumber(value: number): Val {
     return { k: "static", value };
 }
 
+// The graph's four-lane shape has no positional record in the shared
+// registry (no pinned body the translators serve builds one), so its
+// storage is spelled here beside the registry's.
 const SHAPE_CPP: Record<Shape, string> = {
-    number: "double",
-    boolean: "bool",
-    string: "std::string",
-    vec2: "Vec2d",
-    vec3: "Vec3d",
+    number: CPP_SCALAR.number,
+    boolean: CPP_SCALAR.boolean,
+    string: CPP_SCALAR.string,
+    vec2: CPP_RECORD.vec2.storage,
+    vec3: CPP_RECORD.vec3.storage,
     vec4: "Vec4d",
 };
 
@@ -320,7 +316,8 @@ class GraphLowering {
     private readonly lowering = new Set<string>();
     private readonly accessors = new Map<string, NativeAccessor | null>();
     private readonly selectableNodes = new Map<number, string>();
-    private readonly moduleEnvs = new Map<string, Env>();
+    /** The module-scope environments, shared by every block's interpreter. */
+    public readonly moduleEnvs = new Map<string, FgEnv>();
     private readonly startBlocks: FlowGraphBlock[] = [];
     private readonly pointerBlocks: FlowGraphBlock[] = [];
 
@@ -648,7 +645,7 @@ class GraphLowering {
     ): void {
         const declaration = definition[method]!;
         const interpreter = new Interpreter(this, this.context, emitter);
-        const env = new Env(this.moduleEnv(definition.module));
+        const env: FgEnv = new Env(interpreter.moduleEnv(definition.module));
         const params = declaration.parameters.map((parameter) => parameter.name.getText(definition.file));
         const values: Val[] = [
             { k: "static", value: block },
@@ -656,7 +653,9 @@ class GraphLowering {
             { k: "opaque", tag: "env" },
             { k: "opaque", tag: "incoming-signal" },
         ];
-        params.forEach((name, index) => env.declare(name, values[index] ?? STATIC_UNDEFINED));
+        params.forEach((name, index) =>
+            env.declare(name, { value: values[index] ?? STATIC_UNDEFINED, mutable: false }),
+        );
         const thisValue: Val = { k: "opaque", tag: "def", data: definition };
         const completion = interpreter.statements(
             declaration.body!.statements,
@@ -669,15 +668,6 @@ class GraphLowering {
         if (completion.kind === "break") {
             this.context.contractError(declaration, "A block body broke out of nothing.");
         }
-    }
-
-    public moduleEnv(module: string): Env {
-        let env = this.moduleEnvs.get(module);
-        if (!env) {
-            env = new Env();
-            this.moduleEnvs.set(module, env);
-        }
-        return env;
     }
 
     // ── The restated runtime: pull, store, push ───────────────────────────
@@ -938,21 +928,20 @@ ${selectableCases.length > 0
 // ── The interpreter over pinned bodies ───────────────────────────────────────
 
 /**
- * Evaluates pinned statements over `Val`s: static data folds, residual
- * operands emit C++, and the block-runtime calls resolve through the graph.
+ * The flow graph's value model over the shared partial evaluator: static
+ * data folds, residual operands emit C++, and the block-runtime calls
+ * resolve through the graph.
  */
-class Interpreter {
-    /** The pinned helpers the plumbing calls directly, resolved once each. */
-    private readonly pinnedCalls = new Map<
-        string,
-        { target: Val & { k: "function" }; site: ts.CallExpression }
-    >();
+class Interpreter implements ValueModel<Val, Binding> {
+    public readonly evaluator: PartialEvaluator<Val, Binding>;
 
     public constructor(
         private readonly graph: GraphLowering,
         private readonly context: LoweringContext,
         private readonly emitter: Emitter,
-    ) {}
+    ) {
+        this.evaluator = new PartialEvaluator(context, this, graph.moduleEnvs);
+    }
 
     private fail(node: ts.Node, what: string): never {
         return this.context.contractError(
@@ -961,335 +950,246 @@ class Interpreter {
         );
     }
 
-    // ── Statements ────────────────────────────────────────────────────────
+    public moduleEnv(module: string): FgEnv {
+        return this.evaluator.moduleEnv(module);
+    }
 
     public statements(
         list: readonly ts.Statement[],
-        env: Env,
+        env: FgEnv,
         file: ts.SourceFile,
         module: string,
         thisValue: Val | undefined,
         mode: "emit" | "inline",
-    ): Completion {
-        for (const statement of list) {
-            const completion = this.statement(statement, env, file, module, thisValue, mode);
-            if (completion.kind !== "normal") return completion;
-        }
-        return NORMAL;
+    ): Completion<Val> {
+        return this.evaluator.statements(list, { env, file, module, thisValue, mode });
     }
 
-    private statement(
-        statement: ts.Statement,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-        thisValue: Val | undefined,
-        mode: "emit" | "inline",
-    ): Completion {
-        if (ts.isVariableStatement(statement)) {
-            const mutable = (statement.declarationList.flags & ts.NodeFlags.Const) === 0;
-            for (const declaration of statement.declarationList.declarations) {
-                const value = declaration.initializer
-                    ? this.expression(declaration.initializer, env, file, module, thisValue)
-                    : STATIC_UNDEFINED;
-                this.bindPattern(declaration.name, value, env, file, mutable);
-            }
-            return NORMAL;
+    /** A pinned function called by name, from outside a body. */
+    public callPinned(module: string, name: string, args: Val[]): Val {
+        return this.evaluator.callPinned(module, name, args);
+    }
+
+    // ── The value model ───────────────────────────────────────────────────
+
+    public raw(value: unknown): Val {
+        return { k: "static", value };
+    }
+
+    public classify(value: Val): Classified {
+        switch (value.k) {
+            case "static":
+                return { k: "value", raw: value.value };
+            case "residual":
+                return {
+                    k: "residual",
+                    typeofName:
+                        value.shape === "boolean" || value.shape === "number" || value.shape === "string"
+                            ? value.shape
+                            : "object",
+                    truthiness: (at) => {
+                        if (value.shape === "boolean") return { k: "residual", cpp: value.cpp };
+                        if (value.shape === "number") {
+                            return { k: "residual", cpp: `(${value.cpp} != 0.0 && !std::isnan(${value.cpp}))` };
+                        }
+                        if (value.shape === "string") return this.fail(at, "truthiness of a run-time string");
+                        return { k: "static", value: true };
+                    },
+                };
+            case "record":
+            case "array":
+            case "opaque":
+                return { k: "object" };
+            case "closure":
+            case "function":
+                return { k: "function" };
         }
-        if (ts.isExpressionStatement(statement)) {
-            this.expression(statement.expression, env, file, module, thisValue);
-            return NORMAL;
+    }
+
+    public declared(_name: string, value: Val, mutable: boolean): Binding {
+        return { value, mutable };
+    }
+
+    public parameter(value: Val): Binding {
+        return { value, mutable: true };
+    }
+
+    public valueOf(binding: Binding): Val {
+        return binding.value;
+    }
+
+    public assign(binding: Binding | undefined, value: Val, target: ts.Identifier): void {
+        if (!binding?.mutable) this.fail(target, "assignment to a non-let binding");
+        binding.value = value;
+    }
+
+    public builtin(name: string): Val | undefined {
+        switch (name) {
+            case "undefined":
+                return STATIC_UNDEFINED;
+            case "NaN":
+                return staticNumber(Number.NaN);
+            case "Infinity":
+                return staticNumber(Number.POSITIVE_INFINITY);
+            case "Math":
+                return { k: "opaque", tag: "math" };
+            case "String":
+                return { k: "opaque", tag: "string-ctor" };
+            case "Number":
+                return { k: "opaque", tag: "number-ctor" };
+            case "Array":
+                return { k: "opaque", tag: "array-ctor" };
+            default:
+                return undefined;
         }
-        if (ts.isIfStatement(statement)) {
-            const condition = this.expression(statement.expression, env, file, module, thisValue);
-            const known = this.truthiness(condition, statement.expression);
-            if (known.k === "static") {
-                if (known.value) return this.statement(statement.thenStatement, new Env(env), file, module, thisValue, mode);
-                return statement.elseStatement
-                    ? this.statement(statement.elseStatement, new Env(env), file, module, thisValue, mode)
-                    : NORMAL;
+    }
+
+    public functionValue(fn: PinnedDeclaration): Val {
+        return { k: "function", declaration: fn.declaration, file: fn.file, module: fn.module };
+    }
+
+    public closure(node: ts.ArrowFunction | ts.FunctionExpression, frame: Frame<Val, Binding>): Val {
+        return { k: "closure", node, env: frame.env, file: frame.file, module: frame.module };
+    }
+
+    public callable(value: Val): Callable<Val, Binding> | undefined {
+        if (value.k === "closure") {
+            return { k: "closure", node: value.node, env: value.env, file: value.file, module: value.module };
+        }
+        if (value.k === "function") {
+            return {
+                k: "function",
+                declaration: value.declaration,
+                file: value.file,
+                module: value.module,
+                thisValue: value.thisValue,
+            };
+        }
+        return undefined;
+    }
+
+    public record(entries: readonly RecordEntry<Val>[]): Val {
+        return { k: "record", members: new Map(entries.map((entry) => [entry.name, entry.value])) };
+    }
+
+    public refuse(node: ts.Node, what: string): never {
+        return this.fail(node, what);
+    }
+
+    public expression(
+        node: ts.Expression,
+        frame: Frame<Val, Binding>,
+        evaluator: PartialEvaluator<Val, Binding>,
+    ): Val | undefined {
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+            const left = evaluator.expression(node.left, frame);
+            if (shapeOf(left) === "other") this.fail(node, "instanceof over an unknown value");
+            return staticBoolean(false);
+        }
+        return undefined;
+    }
+
+    public elements(value: Val): Val[] | undefined {
+        return value.k === "array" ? value.elements : undefined;
+    }
+
+    public array(elements: Val[]): Val {
+        return { k: "array", elements };
+    }
+
+    public negate(operand: Val): Val {
+        return { k: "residual", cpp: `(-${this.graph.numberCpp(operand)})`, shape: "number" };
+    }
+
+    public hasMember(owner: Val, name: string, at: ts.Node): boolean | undefined {
+        if (owner.k === "record") return owner.members.has(name);
+        if (owner.k === "residual") {
+            if (owner.shape === "vec2" || owner.shape === "vec3" || owner.shape === "vec4") {
+                return VECTOR_LANES[owner.shape].includes(name);
             }
-            if (mode === "inline") {
-                this.fail(statement, "run-time branch inside an inlined pinned body");
+            return this.fail(at, "in over a run-time scalar");
+        }
+        return undefined;
+    }
+
+    public equality(left: Val, right: Val, equal: boolean, node: ts.BinaryExpression): Val {
+        // A residual is never nullish, and only scalars compare by
+        // value; a residual against a static of another kind is a
+        // question about kinds the shapes already answer.
+        if (isNullish(left) || isNullish(right)) return staticBoolean(!equal);
+        const leftShape = shapeOf(left);
+        const rightShape = shapeOf(right);
+        if (leftShape !== rightShape) return staticBoolean(!equal);
+        if (leftShape === "number" || leftShape === "boolean") {
+            const cpp = `(${this.renderShape(left, leftShape)} ${equal ? "==" : "!="} ${this.renderShape(right, leftShape)})`;
+            return { k: "residual", cpp, shape: "boolean" };
+        }
+        return this.fail(node, `equality over ${leftShape}`);
+    }
+
+    public binary(kind: ts.SyntaxKind, left: Val, right: Val, node: ts.BinaryExpression): Val {
+        const a = this.graph.numberCpp(left);
+        const b = this.graph.numberCpp(right);
+        const operator = PINNED_ARITHMETIC_OPERATORS.get(kind);
+        if (operator) return { k: "residual", cpp: `(${a} ${operator} ${b})`, shape: "number" };
+        const compare = PINNED_RELATIONAL_OPERATORS.get(kind);
+        if (compare) return { k: "residual", cpp: `(${a} ${compare} ${b})`, shape: "boolean" };
+        if (kind === ts.SyntaxKind.PercentToken) {
+            return { k: "residual", cpp: pinnedRemainderCall(a, b), shape: "number" };
+        }
+        if (kind === ts.SyntaxKind.BarToken && right.k === "static" && right.value === 0) {
+            return {
+                k: "residual",
+                cpp: `static_cast<double>(static_cast<std::int32_t>(${a}))`,
+                shape: "number",
+            };
+        }
+        return this.fail(node, "binary operator");
+    }
+
+    public readonly residual: NonNullable<ValueModel<Val, Binding>["residual"]> = {
+        not: (cpp) => ({ k: "residual", cpp: `(!${cpp})`, shape: "boolean" }),
+        select: (cpp, whenTrue, whenFalse, at) => {
+            const shape = this.commonShape(whenTrue, whenFalse, at);
+            return {
+                k: "residual",
+                cpp: `(${cpp} ? ${this.renderShape(whenTrue, shape)} : ${this.renderShape(whenFalse, shape)})`,
+                shape,
+            };
+        },
+        join: (or, leftCpp, left, right, node) => {
+            const rightKnown = this.evaluator.truthiness(right, node.right);
+            if (shapeOf(left) !== "boolean" || shapeOf(right) !== "boolean") {
+                this.fail(node, "value-selecting boolean join over run-time operands");
             }
-            this.emitter.emit(`if (${known.cpp}) {`);
+            const rightCpp = rightKnown.k === "static" ? (rightKnown.value ? "true" : "false") : rightKnown.cpp;
+            return { k: "residual", cpp: `(${leftCpp} ${or ? "||" : "&&"} ${rightCpp})`, shape: "boolean" };
+        },
+        ifStatement: (cpp, statement, branch) => {
+            this.emitter.emit(`if (${cpp}) {`);
             this.emitter.indent += "    ";
-            const thenCompletion = this.statement(statement.thenStatement, new Env(env), file, module, thisValue, mode);
-            if (thenCompletion.kind === "return") {
-                if (thenCompletion.value.k !== "static" || thenCompletion.value.value !== undefined) {
-                    this.fail(statement, "value return inside a run-time branch");
-                }
-                this.emitter.emit("return;");
-            } else if (thenCompletion.kind === "break") {
-                this.fail(statement, "break inside a run-time branch");
-            }
+            this.emitBranchCompletion(branch(statement.thenStatement), statement);
             this.emitter.indent = this.emitter.indent.slice(4);
             if (statement.elseStatement) {
                 this.emitter.emit("} else {");
                 this.emitter.indent += "    ";
-                const elseCompletion = this.statement(statement.elseStatement, new Env(env), file, module, thisValue, mode);
-                if (elseCompletion.kind === "return") {
-                    if (elseCompletion.value.k !== "static" || elseCompletion.value.value !== undefined) {
-                        this.fail(statement, "value return inside a run-time branch");
-                    }
-                    this.emitter.emit("return;");
-                } else if (elseCompletion.kind === "break") {
-                    this.fail(statement, "break inside a run-time branch");
-                }
+                this.emitBranchCompletion(branch(statement.elseStatement), statement);
                 this.emitter.indent = this.emitter.indent.slice(4);
             }
             this.emitter.emit("}");
             return NORMAL;
-        }
-        if (ts.isBlock(statement)) {
-            return this.statements(statement.statements, new Env(env), file, module, thisValue, mode);
-        }
-        if (ts.isReturnStatement(statement)) {
-            return {
-                kind: "return",
-                value: statement.expression
-                    ? this.expression(statement.expression, env, file, module, thisValue)
-                    : STATIC_UNDEFINED,
-            };
-        }
-        if (ts.isBreakStatement(statement)) return { kind: "break" };
-        if (ts.isForOfStatement(statement)) {
-            const iterated = this.expression(statement.expression, env, file, module, thisValue);
-            const elements = this.staticElements(iterated, statement.expression);
-            const initializer = statement.initializer;
-            if (!ts.isVariableDeclarationList(initializer) || initializer.declarations.length !== 1) {
-                this.fail(statement, "for-of initializer");
-            }
-            for (const element of elements) {
-                const scope = new Env(env);
-                this.bindPattern(initializer.declarations[0]!.name, element, scope, file, false);
-                const completion = this.statement(statement.statement, scope, file, module, thisValue, mode);
-                if (completion.kind === "break") break;
-                if (completion.kind === "return") return completion;
-            }
-            return NORMAL;
-        }
-        if (ts.isSwitchStatement(statement)) {
-            const discriminant = this.expression(statement.expression, env, file, module, thisValue);
-            if (discriminant.k !== "static") this.fail(statement, "switch over a run-time value");
-            const clauses = statement.caseBlock.clauses;
-            let selected = clauses.findIndex((clause) => {
-                if (!ts.isCaseClause(clause)) return false;
-                const value = this.expression(clause.expression, env, file, module, thisValue);
-                if (value.k !== "static") this.fail(clause, "switch case over a run-time value");
-                return value.value === discriminant.value;
-            });
-            if (selected < 0) selected = clauses.findIndex(ts.isDefaultClause);
-            if (selected < 0) return NORMAL;
-            const scope = new Env(env);
-            for (let index = selected; index < clauses.length; index += 1) {
-                const completion = this.statements(clauses[index]!.statements, scope, file, module, thisValue, mode);
-                if (completion.kind === "break") return NORMAL;
-                if (completion.kind === "return") return completion;
-            }
-            return NORMAL;
-        }
-        if (ts.isThrowStatement(statement)) {
-            return this.context.contractError(
-                statement,
-                "The flow graph reaches a pinned throw at generation.",
-            );
-        }
-        return this.fail(statement, "statement");
-    }
+        },
+    };
 
-    private bindPattern(
-        name: ts.BindingName,
-        value: Val,
-        env: Env,
-        file: ts.SourceFile,
-        mutable: boolean,
-    ): void {
-        if (ts.isIdentifier(name)) {
-            env.declare(name.text, value, mutable);
-            return;
-        }
-        if (ts.isArrayBindingPattern(name)) {
-            const elements = this.staticElements(value, name);
-            name.elements.forEach((element, index) => {
-                if (ts.isOmittedExpression(element)) return;
-                if (!ts.isIdentifier(element.name) || element.dotDotDotToken) {
-                    this.fail(element, "binding element");
-                }
-                env.declare(element.name.text, elements[index] ?? STATIC_UNDEFINED, mutable);
-            });
-            return;
-        }
-        for (const element of name.elements) {
-            if (!ts.isIdentifier(element.name) || element.dotDotDotToken) {
-                this.fail(element, "binding element");
+    /** A run-time branch may leave the block function, but not with a value. */
+    private emitBranchCompletion(completion: Completion<Val>, statement: ts.IfStatement): void {
+        if (completion.kind === "return") {
+            if (completion.value.k !== "static" || completion.value.value !== undefined) {
+                this.fail(statement, "value return inside a run-time branch");
             }
-            const property = element.propertyName
-                ? element.propertyName.getText(file)
-                : element.name.text;
-            env.declare(element.name.text, this.graph.member(value, property), mutable);
-        }
-    }
-
-    private staticElements(value: Val, at: ts.Node): Val[] {
-        if (value.k === "array") return value.elements;
-        if (value.k === "static" && Array.isArray(value.value)) {
-            return value.value.map((element): Val => ({ k: "static", value: element }));
-        }
-        return this.fail(at, "iteration over a run-time list");
-    }
-
-    // ── Expressions ───────────────────────────────────────────────────────
-
-    public expression(
-        expression: ts.Expression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-        thisValue: Val | undefined,
-    ): Val {
-        const node = this.context.unwrapExpression(expression);
-        if (ts.isNumericLiteral(node)) return staticNumber(Number(node.text));
-        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-            return { k: "static", value: node.text };
-        }
-        if (ts.isTemplateExpression(node)) {
-            let text = node.head.text;
-            for (const span of node.templateSpans) {
-                const value = this.expression(span.expression, env, file, module, thisValue);
-                if (value.k !== "static") this.fail(span, "template over a run-time value");
-                text += `${String(value.value)}${span.literal.text}`;
-            }
-            return { k: "static", value: text };
-        }
-        if (node.kind === ts.SyntaxKind.TrueKeyword) return staticBoolean(true);
-        if (node.kind === ts.SyntaxKind.FalseKeyword) return staticBoolean(false);
-        if (node.kind === ts.SyntaxKind.NullKeyword) return { k: "static", value: null };
-        if (node.kind === ts.SyntaxKind.ThisKeyword) {
-            return thisValue ?? this.fail(node, "this outside a method");
-        }
-        if (ts.isIdentifier(node)) {
-            const bound = env.lookup(node.text);
-            if (bound) return bound.value;
-            return this.resolveFree(node.text, file, module, node);
-        }
-        if (ts.isPropertyAccessExpression(node)) {
-            const owner = this.expression(node.expression, env, file, module, thisValue);
-            if (node.questionDotToken && isNullish(owner)) return STATIC_UNDEFINED;
-            return this.propertyRead(owner, node.name.text, node);
-        }
-        if (ts.isElementAccessExpression(node)) {
-            const owner = this.expression(node.expression, env, file, module, thisValue);
-            if (node.questionDotToken && isNullish(owner)) return STATIC_UNDEFINED;
-            const index = this.expression(node.argumentExpression, env, file, module, thisValue);
-            return this.elementRead(owner, index, node);
-        }
-        if (ts.isTypeOfExpression(node)) {
-            return { k: "static", value: this.typeofName(this.expression(node.expression, env, file, module, thisValue)) };
-        }
-        if (ts.isPrefixUnaryExpression(node)) {
-            const operand = this.expression(node.operand, env, file, module, thisValue);
-            if (node.operator === ts.SyntaxKind.ExclamationToken) {
-                const known = this.truthiness(operand, node.operand);
-                return known.k === "static"
-                    ? staticBoolean(!known.value)
-                    : { k: "residual", cpp: `(!${known.cpp})`, shape: "boolean" };
-            }
-            if (node.operator === ts.SyntaxKind.MinusToken) {
-                if (operand.k === "static" && typeof operand.value === "number") {
-                    return staticNumber(-operand.value);
-                }
-                return { k: "residual", cpp: `(-${this.graph.numberCpp(operand)})`, shape: "number" };
-            }
-            return this.fail(node, "prefix operator");
-        }
-        if (ts.isConditionalExpression(node)) {
-            const condition = this.truthiness(
-                this.expression(node.condition, env, file, module, thisValue),
-                node.condition,
-            );
-            if (condition.k === "static") {
-                return this.expression(condition.value ? node.whenTrue : node.whenFalse, env, file, module, thisValue);
-            }
-            const whenTrue = this.expression(node.whenTrue, env, file, module, thisValue);
-            const whenFalse = this.expression(node.whenFalse, env, file, module, thisValue);
-            const shape = this.commonShape(whenTrue, whenFalse, node);
-            return {
-                k: "residual",
-                cpp: `(${condition.cpp} ? ${this.renderShape(whenTrue, shape)} : ${this.renderShape(whenFalse, shape)})`,
-                shape,
-            };
-        }
-        if (ts.isBinaryExpression(node)) return this.binary(node, env, file, module, thisValue);
-        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-            return { k: "closure", node, env, file, module };
-        }
-        if (ts.isObjectLiteralExpression(node)) {
-            const members = new Map<string, Val>();
-            for (const property of node.properties) {
-                if (ts.isShorthandPropertyAssignment(property)) {
-                    members.set(property.name.text, this.expression(property.name, env, file, module, thisValue));
-                    continue;
-                }
-                if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) {
-                    this.fail(property, "object literal member");
-                }
-                members.set(property.name.text, this.expression(property.initializer, env, file, module, thisValue));
-            }
-            return { k: "record", members };
-        }
-        if (ts.isArrayLiteralExpression(node)) {
-            const elements = node.elements.map((element) => this.expression(element, env, file, module, thisValue));
-            if (elements.every((element) => element.k === "static")) {
-                return { k: "static", value: elements.map((element) => (element as { value: unknown }).value) };
-            }
-            return { k: "array", elements };
-        }
-        if (ts.isCallExpression(node)) return this.call(node, env, file, module, thisValue);
-        if (ts.isNewExpression(node)) return this.fail(node, "constructor call");
-        return this.fail(node, "expression");
-    }
-
-    private typeofName(value: Val): string {
-        switch (value.k) {
-            case "static": {
-                const raw = value.value;
-                return raw === null ? "object" : typeof raw;
-            }
-            case "residual":
-                return value.shape === "boolean" ? "boolean" : value.shape === "number" ? "number" : value.shape === "string" ? "string" : "object";
-            case "record":
-            case "array":
-            case "opaque":
-                return "object";
-            case "closure":
-            case "function":
-                return "function";
-        }
-    }
-
-    /** JavaScript truthiness, static where the value is, else a C++ bool. */
-    private truthiness(value: Val, at: ts.Node): { k: "static"; value: boolean } | { k: "residual"; cpp: string } {
-        switch (value.k) {
-            case "static": {
-                const raw = value.value;
-                return { k: "static", value: Boolean(raw) && !(typeof raw === "number" && Number.isNaN(raw)) };
-            }
-            case "residual":
-                if (value.shape === "boolean") return { k: "residual", cpp: value.cpp };
-                if (value.shape === "number") {
-                    return { k: "residual", cpp: `(${value.cpp} != 0.0 && !std::isnan(${value.cpp}))` };
-                }
-                if (value.shape === "string") return this.fail(at, "truthiness of a run-time string");
-                return { k: "static", value: true };
-            case "record":
-            case "array":
-            case "closure":
-            case "function":
-                return { k: "static", value: true };
-            case "opaque":
-                if (value.tag === "accessor-set" || value.tag === "accessor-get") return { k: "static", value: true };
-                return { k: "static", value: true };
+            this.emitter.emit("return;");
+        } else if (completion.kind === "break") {
+            this.fail(statement, "break inside a run-time branch");
         }
     }
 
@@ -1310,7 +1210,7 @@ class Interpreter {
         throw new Error(`Cannot render a ${value.k} as ${shape}.`);
     }
 
-    private propertyRead(owner: Val, name: string, at: ts.Node): Val {
+    public member(owner: Val, name: string, at: ts.Node): Val {
         if (owner.k === "opaque") {
             switch (owner.tag) {
                 case "ctx":
@@ -1356,7 +1256,7 @@ class Interpreter {
         return this.graph.member(owner, name);
     }
 
-    private elementRead(owner: Val, index: Val, at: ts.Node): Val {
+    public element(owner: Val, index: Val, at: ts.Node): Val {
         if (owner.k === "opaque" && owner.tag === "user-vars") {
             if (index.k !== "static" || typeof index.value !== "string") {
                 this.fail(at, "variable read by a run-time name");
@@ -1378,150 +1278,15 @@ class Interpreter {
         return this.fail(at, "element access");
     }
 
-    private binary(
-        node: ts.BinaryExpression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-        thisValue: Val | undefined,
-    ): Val {
-        const kind = node.operatorToken.kind;
-        if (kind === ts.SyntaxKind.EqualsToken) {
-            return this.assign(node, env, file, module, thisValue);
-        }
-        if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken) {
-            const left = this.expression(node.left, env, file, module, thisValue);
-            const or = kind === ts.SyntaxKind.BarBarToken;
-            const known = this.truthiness(left, node.left);
-            if (known.k === "static") {
-                if (or ? known.value : !known.value) return left;
-                return this.expression(node.right, env, file, module, thisValue);
-            }
-            const right = this.expression(node.right, env, file, module, thisValue);
-            const rightKnown = this.truthiness(right, node.right);
-            if (shapeOf(left) !== "boolean" || shapeOf(right) !== "boolean") {
-                this.fail(node, "value-selecting boolean join over run-time operands");
-            }
-            const rightCpp = rightKnown.k === "static" ? (rightKnown.value ? "true" : "false") : rightKnown.cpp;
-            return { k: "residual", cpp: `(${known.cpp} ${or ? "||" : "&&"} ${rightCpp})`, shape: "boolean" };
-        }
-        if (kind === ts.SyntaxKind.QuestionQuestionToken) {
-            const left = this.expression(node.left, env, file, module, thisValue);
-            if (isNullish(left)) return this.expression(node.right, env, file, module, thisValue);
-            return left;
-        }
-        if (kind === ts.SyntaxKind.InKeyword) {
-            const key = this.expression(node.left, env, file, module, thisValue);
-            const owner = this.expression(node.right, env, file, module, thisValue);
-            if (key.k !== "static" || typeof key.value !== "string") this.fail(node, "in over a run-time key");
-            return staticBoolean(this.hasMember(owner, key.value, node));
-        }
-        if (kind === ts.SyntaxKind.InstanceOfKeyword) {
-            const left = this.expression(node.left, env, file, module, thisValue);
-            const shape = shapeOf(left);
-            if (shape === "other") this.fail(node, "instanceof over an unknown value");
-            return staticBoolean(false);
-        }
-        const left = this.expression(node.left, env, file, module, thisValue);
-        const right = this.expression(node.right, env, file, module, thisValue);
-        const equality =
-            kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.EqualsEqualsToken
-                ? true
-                : kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || kind === ts.SyntaxKind.ExclamationEqualsToken
-                  ? false
-                  : undefined;
-        if (equality !== undefined) {
-            if (left.k === "static" && right.k === "static") {
-                return staticBoolean((left.value === right.value) === equality);
-            }
-            // A residual is never nullish, and only scalars compare by
-            // value; a residual against a static of another kind is a
-            // question about kinds the shapes already answer.
-            if (isNullish(left) || isNullish(right)) return staticBoolean(!equality);
-            const leftShape = shapeOf(left);
-            const rightShape = shapeOf(right);
-            if (leftShape !== rightShape) return staticBoolean(!equality);
-            if (leftShape === "number" || leftShape === "boolean") {
-                const cpp = `(${this.renderShape(left, leftShape)} ${equality ? "==" : "!="} ${this.renderShape(right, leftShape)})`;
-                return { k: "residual", cpp, shape: "boolean" };
-            }
-            return this.fail(node, `equality over ${leftShape}`);
-        }
-        const arithmetic = PINNED_ARITHMETIC_OPERATORS;
-        const comparison = COMPARISON_OPERATORS;
-        if (left.k === "static" && right.k === "static") {
-            const a = left.value;
-            const b = right.value;
-            if (kind === ts.SyntaxKind.PlusToken && (typeof a === "string" || typeof b === "string")) {
-                return { k: "static", value: String(a) + String(b) };
-            }
-            if (typeof a !== "number" || typeof b !== "number") this.fail(node, "operator over non-numbers");
-            switch (kind) {
-                case ts.SyntaxKind.PlusToken: return staticNumber(a + b);
-                case ts.SyntaxKind.MinusToken: return staticNumber(a - b);
-                case ts.SyntaxKind.AsteriskToken: return staticNumber(a * b);
-                case ts.SyntaxKind.SlashToken: return staticNumber(a / b);
-                case ts.SyntaxKind.PercentToken: return staticNumber(a % b);
-                case ts.SyntaxKind.LessThanToken: return staticBoolean(a < b);
-                case ts.SyntaxKind.LessThanEqualsToken: return staticBoolean(a <= b);
-                case ts.SyntaxKind.GreaterThanToken: return staticBoolean(a > b);
-                case ts.SyntaxKind.GreaterThanEqualsToken: return staticBoolean(a >= b);
-                case ts.SyntaxKind.BarToken: return staticNumber(a | b);
-                default: return this.fail(node, "operator");
-            }
-        }
-        const a = this.graph.numberCpp(left);
-        const b = this.graph.numberCpp(right);
-        const operator = arithmetic.get(kind);
-        if (operator) return { k: "residual", cpp: `(${a} ${operator} ${b})`, shape: "number" };
-        const compare = comparison.get(kind);
-        if (compare) return { k: "residual", cpp: `(${a} ${compare} ${b})`, shape: "boolean" };
-        if (kind === ts.SyntaxKind.PercentToken) {
-            return { k: "residual", cpp: `std::fmod(${a}, ${b})`, shape: "number" };
-        }
-        if (kind === ts.SyntaxKind.BarToken && right.k === "static" && right.value === 0) {
-            return {
-                k: "residual",
-                cpp: `static_cast<double>(static_cast<std::int32_t>(${a}))`,
-                shape: "number",
-            };
-        }
-        return this.fail(node, "binary operator");
-    }
-
-    private hasMember(owner: Val, name: string, at: ts.Node): boolean {
-        if (owner.k === "record") return owner.members.has(name);
-        if (owner.k === "static") {
-            const raw = owner.value;
-            return typeof raw === "object" && raw !== null && name in (raw as object);
-        }
-        if (owner.k === "residual") {
-            if (owner.shape === "vec2" || owner.shape === "vec3" || owner.shape === "vec4") {
-                return VECTOR_LANES[owner.shape].includes(name);
-            }
-            return this.fail(at, "in over a run-time scalar");
-        }
-        return this.fail(at, "in");
-    }
-
-    private assign(
-        node: ts.BinaryExpression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-        thisValue: Val | undefined,
-    ): Val {
-        const value = this.expression(node.right, env, file, module, thisValue);
-        const target = this.context.unwrapExpression(node.left);
-        if (ts.isIdentifier(target)) {
-            const bound = env.lookup(target.text);
-            if (!bound?.mutable) this.fail(target, "assignment to a non-let binding");
-            bound.value = value;
-            return value;
-        }
+    public assignTarget(
+        target: ts.Expression,
+        value: Val,
+        frame: Frame<Val, Binding>,
+        evaluator: PartialEvaluator<Val, Binding>,
+    ): Val | undefined {
         if (ts.isElementAccessExpression(target)) {
-            const owner = this.expression(target.expression, env, file, module, thisValue);
-            const index = this.expression(target.argumentExpression, env, file, module, thisValue);
+            const owner = evaluator.expression(target.expression, frame);
+            const index = evaluator.expression(target.argumentExpression, frame);
             if (owner.k === "opaque" && owner.tag === "user-vars") {
                 if (index.k !== "static" || typeof index.value !== "string") {
                     this.fail(target, "variable write by a run-time name");
@@ -1530,88 +1295,71 @@ class Interpreter {
                 return value;
             }
         }
-        return this.fail(target, "assignment target");
+        return undefined;
     }
 
     // ── Calls ─────────────────────────────────────────────────────────────
 
-    private call(
+    public methodCall(
+        owner: Val,
+        method: string,
+        args: () => Val[],
         node: ts.CallExpression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-        thisValue: Val | undefined,
-    ): Val {
-        const callee = this.context.unwrapExpression(node.expression);
-        const args = () => node.arguments.map((argument) => this.expression(argument, env, file, module, thisValue));
-        if (ts.isIdentifier(callee)) {
-            const bound = env.lookup(callee.text);
-            const target = bound ? bound.value : this.resolveFree(callee.text, file, module, callee);
-            return this.invoke(target, args(), node, file, env, module, thisValue, callee.text);
+        frame: Frame<Val, Binding>,
+    ): Val | undefined {
+        if (owner.k === "opaque" && owner.tag === "math") {
+            return this.mathCall(method, args(), node);
         }
-        if (ts.isPropertyAccessExpression(callee)) {
-            const owner = this.expression(callee.expression, env, file, module, thisValue);
-            if (node.questionDotToken && isNullish(owner)) return STATIC_UNDEFINED;
-            const method = callee.name.text;
-            if (owner.k === "opaque" && owner.tag === "math") {
-                return this.mathCall(method, args(), node);
+        if (owner.k === "opaque" && owner.tag === "number-ctor") {
+            const [value] = args();
+            if (!value) this.fail(node, "Number call");
+            if (value.k === "static") {
+                const raw = value.value;
+                if (method === "isNaN") return staticBoolean(Number.isNaN(raw));
+                if (method === "isFinite") return staticBoolean(Number.isFinite(raw));
+                if (method === "isInteger") return staticBoolean(Number.isInteger(raw));
+            } else if (value.k === "residual" && value.shape === "number") {
+                if (method === "isNaN") return { k: "residual", cpp: `std::isnan(${value.cpp})`, shape: "boolean" };
+                if (method === "isFinite") return { k: "residual", cpp: `std::isfinite(${value.cpp})`, shape: "boolean" };
             }
-            if (owner.k === "opaque" && owner.tag === "number-ctor") {
+            return this.fail(node, `Number.${method}`);
+        }
+        if (owner.k === "opaque" && owner.tag === "array-ctor") {
+            if (method === "isArray") {
                 const [value] = args();
-                if (!value) this.fail(node, "Number call");
-                if (value.k === "static") {
-                    const raw = value.value;
-                    if (method === "isNaN") return staticBoolean(Number.isNaN(raw));
-                    if (method === "isFinite") return staticBoolean(Number.isFinite(raw));
-                    if (method === "isInteger") return staticBoolean(Number.isInteger(raw));
-                } else if (value.k === "residual" && value.shape === "number") {
-                    if (method === "isNaN") return { k: "residual", cpp: `std::isnan(${value.cpp})`, shape: "boolean" };
-                    if (method === "isFinite") return { k: "residual", cpp: `std::isfinite(${value.cpp})`, shape: "boolean" };
-                }
-                return this.fail(node, `Number.${method}`);
+                return staticBoolean(value !== undefined && (value.k === "array" || (value.k === "static" && Array.isArray(value.value))));
             }
-            if (owner.k === "opaque" && owner.tag === "array-ctor") {
-                if (method === "isArray") {
-                    const [value] = args();
-                    return staticBoolean(value !== undefined && (value.k === "array" || (value.k === "static" && Array.isArray(value.value))));
-                }
-                return this.fail(node, `Array.${method}`);
-            }
-            if (owner.k === "opaque" && owner.tag === "accessor-get") {
-                return (owner.data as NativeAccessor).get();
-            }
-            if (owner.k === "opaque" && owner.tag === "def") {
-                const target = this.propertyRead(owner, method, callee);
-                return this.invoke(target, args(), node, file, env, module, thisValue, method);
-            }
-            if (owner.k === "static" && Array.isArray(owner.value)) {
-                return this.arrayMethod(owner.value.map((element): Val => ({ k: "static", value: element })), method, args(), node, file, env, module, thisValue);
-            }
-            if (owner.k === "array") {
-                return this.arrayMethod(owner.elements, method, args(), node, file, env, module, thisValue);
-            }
-            if (owner.k === "record") {
-                const member = owner.members.get(method);
-                if (member?.k === "opaque" && member.tag === "accessor-get") return (member.data as NativeAccessor).get();
-                if (member?.k === "opaque" && member.tag === "accessor-set") {
-                    const [value] = args();
-                    (member.data as NativeAccessor).set!(value ?? STATIC_UNDEFINED, (line) => this.emitter.emit(line));
-                    return STATIC_UNDEFINED;
-                }
-            }
-            if (owner.k === "opaque" && owner.tag === "accessor") {
-                const accessor = owner.data as NativeAccessor;
-                if (method === "get") return accessor.get();
-                if (method === "set") {
-                    if (!accessor.set) this.fail(node, "set on a read-only accessor");
-                    const [value] = args();
-                    accessor.set(value ?? STATIC_UNDEFINED, (line) => this.emitter.emit(line));
-                    return STATIC_UNDEFINED;
-                }
-            }
-            return this.fail(node, `method ${method}`);
+            return this.fail(node, `Array.${method}`);
         }
-        return this.fail(node, "call target");
+        if (owner.k === "opaque" && owner.tag === "accessor-get") {
+            return (owner.data as NativeAccessor).get();
+        }
+        if (owner.k === "static" && Array.isArray(owner.value)) {
+            return this.arrayMethod(owner.value.map((element): Val => ({ k: "static", value: element })), method, args(), node, frame);
+        }
+        if (owner.k === "array") {
+            return this.arrayMethod(owner.elements, method, args(), node, frame);
+        }
+        if (owner.k === "record") {
+            const member = owner.members.get(method);
+            if (member?.k === "opaque" && member.tag === "accessor-get") return (member.data as NativeAccessor).get();
+            if (member?.k === "opaque" && member.tag === "accessor-set") {
+                const [value] = args();
+                (member.data as NativeAccessor).set!(value ?? STATIC_UNDEFINED, (line) => this.emitter.emit(line));
+                return STATIC_UNDEFINED;
+            }
+        }
+        if (owner.k === "opaque" && owner.tag === "accessor") {
+            const accessor = owner.data as NativeAccessor;
+            if (method === "get") return accessor.get();
+            if (method === "set") {
+                if (!accessor.set) this.fail(node, "set on a read-only accessor");
+                const [value] = args();
+                accessor.set(value ?? STATIC_UNDEFINED, (line) => this.emitter.emit(line));
+                return STATIC_UNDEFINED;
+            }
+        }
+        return undefined;
     }
 
     private arrayMethod(
@@ -1619,14 +1367,11 @@ class Interpreter {
         method: string,
         args: Val[],
         node: ts.CallExpression,
-        file: ts.SourceFile,
-        env: Env,
-        module: string,
-        thisValue: Val | undefined,
+        frame: Frame<Val, Binding>,
     ): Val {
         const predicate = (element: Val, index: number): boolean => {
-            const result = this.invoke(args[0]!, [element, staticNumber(index)], node, file, env, module, thisValue, method);
-            const known = this.truthiness(result, node);
+            const result = this.evaluator.invoke(args[0]!, [element, staticNumber(index)], node, frame, method);
+            const known = this.evaluator.truthiness(result, node);
             if (known.k !== "static") this.fail(node, `run-time ${method} predicate`);
             return known.value;
         };
@@ -1645,7 +1390,7 @@ class Interpreter {
             }
             case "map": {
                 const mapped = elements.map((element, index) =>
-                    this.invoke(args[0]!, [element, staticNumber(index)], node, file, env, module, thisValue, method),
+                    this.evaluator.invoke(args[0]!, [element, staticNumber(index)], node, frame, method),
                 );
                 return mapped.every((element) => element.k === "static")
                     ? { k: "static", value: mapped.map((element) => (element as { value: unknown }).value) }
@@ -1656,7 +1401,7 @@ class Interpreter {
         }
     }
 
-    private mathCall(method: string, args: Val[], node: ts.CallExpression): Val {
+    private mathCall(method: string, args: Val[], node: ts.Node): Val {
         if (args.every((argument) => argument.k === "static" && typeof argument.value === "number")) {
             const numbers = args.map((argument) => (argument as { value: number }).value);
             const fn = (Math as unknown as Record<string, (...values: number[]) => number>)[method];
@@ -1672,67 +1417,29 @@ class Interpreter {
         };
     }
 
-    private invoke(
-        target: Val,
-        args: Val[],
-        node: ts.CallExpression,
-        _file: ts.SourceFile,
-        _env: Env,
-        _module: string,
-        thisValue: Val | undefined,
-        name: string,
-    ): Val {
-        if (target.k === "closure") {
-            const scope = new Env(target.env);
-            target.node.parameters.forEach((parameter, index) => {
-                this.bindPattern(parameter.name, args[index] ?? STATIC_UNDEFINED, scope, target.file, true);
-            });
-            const body = target.node.body;
-            if (!ts.isBlock(body)) {
-                return this.expression(body, scope, target.file, target.module, thisValue);
-            }
-            const completion = this.statements(body.statements, scope, target.file, target.module, thisValue, "inline");
-            return completion.kind === "return" ? completion.value : STATIC_UNDEFINED;
-        }
-        if (target.k === "function") {
-            const intercepted = this.intercept(target, args, node);
-            if (intercepted) return intercepted;
-            const scope = new Env(this.graph.moduleEnv(target.module));
-            target.declaration.parameters.forEach((parameter, index) => {
-                this.bindPattern(parameter.name, args[index] ?? STATIC_UNDEFINED, scope, target.file, true);
-            });
-            const completion = this.statements(
-                target.declaration.body!.statements,
-                scope,
-                target.file,
-                target.module,
-                target.thisValue,
-                "inline",
-            );
-            return completion.kind === "return" ? completion.value : STATIC_UNDEFINED;
-        }
+    public invoke(target: Val, args: Val[], site: ts.Node): Val | undefined {
         // `unary(a, Math.abs)`: a Math member handed on as the callback.
         if (target.k === "opaque" && target.tag === "math" && typeof target.data === "string") {
-            return this.mathCall(target.data, args, node);
+            return this.mathCall(target.data, args, site);
         }
         if (target.k === "opaque" && target.tag === "string-ctor") {
             const [value] = args;
             if (value?.k === "static") return { k: "static", value: String(value.value) };
-            return this.fail(node, "String over a run-time value");
+            return this.fail(site, "String over a run-time value");
         }
         if (target.k === "opaque" && target.tag === "number-ctor") {
             const [value] = args;
             if (value?.k === "static") return staticNumber(Number(value.value));
-            return this.fail(node, "Number over a run-time value");
+            return this.fail(site, "Number over a run-time value");
         }
-        return this.fail(node, `call of ${name}`);
+        return undefined;
     }
 
     /**
      * The runtime plumbing, restated over the static graph. Each restated
      * body is asserted once against the pin (`FlowGraphLowerer.assertRuntime`).
      */
-    private intercept(target: { declaration: ts.FunctionDeclaration | ts.MethodDeclaration; module: string }, args: Val[], node: ts.CallExpression): Val | undefined {
+    public intercept(target: FunctionCallable<Val>, args: Val[], node: ts.Node): Val | undefined {
         const declared = target.declaration.name;
         const name = declared && ts.isIdentifier(declared) ? declared.text : undefined;
         if (target.module === RUNTIME_MODULE) {
@@ -1806,82 +1513,6 @@ class Interpreter {
     private stringArgument(value: Val | undefined, node: ts.Node): string {
         if (value?.k === "static" && typeof value.value === "string") return value.value;
         return this.fail(node, "socket name");
-    }
-
-    /** A pinned function called by name, from outside a body. */
-    public callPinned(module: string, name: string, args: Val[]): Val {
-        const key = `${module}#${name}`;
-        let pinned = this.pinnedCalls.get(key);
-        if (!pinned) {
-            const { file, declaration } = this.context.functionDeclaration(module, name);
-            pinned = {
-                target: { k: "function", declaration, file, module },
-                site: ts.factory.createCallExpression(ts.factory.createIdentifier(name), undefined, []),
-            };
-            this.pinnedCalls.set(key, pinned);
-        }
-        return this.invoke(
-            pinned.target,
-            args,
-            pinned.site,
-            pinned.target.file,
-            this.graph.moduleEnv(module),
-            module,
-            undefined,
-            name,
-        );
-    }
-
-    // ── Free names ────────────────────────────────────────────────────────
-
-    private resolveFree(name: string, file: ts.SourceFile, module: string, site: ts.Node): Val {
-        const env = this.graph.moduleEnv(module);
-        const cached = env.lookup(name);
-        if (cached) return cached.value;
-        switch (name) {
-            case "undefined":
-                return STATIC_UNDEFINED;
-            case "NaN":
-                return staticNumber(Number.NaN);
-            case "Infinity":
-                return staticNumber(Number.POSITIVE_INFINITY);
-            case "Math":
-                return { k: "opaque", tag: "math" };
-            case "String":
-                return { k: "opaque", tag: "string-ctor" };
-            case "Number":
-                return { k: "opaque", tag: "number-ctor" };
-            case "Array":
-                return { k: "opaque", tag: "array-ctor" };
-            default:
-                break;
-        }
-        const constant = this.context.moduleScopeConstant(file, name);
-        if (constant) {
-            const value = this.expression(constant, env, file, module, undefined);
-            env.declare(name, value);
-            return value;
-        }
-        const declaration = file.statements.find(
-            (statement): statement is ts.FunctionDeclaration =>
-                ts.isFunctionDeclaration(statement) && statement.name?.text === name && statement.body !== undefined,
-        );
-        if (declaration) {
-            const value: Val = { k: "function", declaration, file, module };
-            env.declare(name, value);
-            return value;
-        }
-        const imported = this.context.moduleOfImport(module, name);
-        if (imported) {
-            const importedFile = this.context.sourceFile(imported);
-            const value = this.resolveFree(name, importedFile, imported, site);
-            env.declare(name, value);
-            return value;
-        }
-        return this.context.contractError(
-            site,
-            `The flow-graph lowering cannot resolve '${name}'.`,
-        );
     }
 }
 

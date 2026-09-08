@@ -60,6 +60,7 @@ export async function executeModuleGraph(
  * The arguments are plain JSON for the same reason the result is: anything
  * else would be a value this route cannot promise two engines agree on.
  */
+// Referenced by name from the generation-child script in src/compiler/module-json-sync.ts.
 export async function executeModuleGraphCall(
     source: ExecutedModuleSource,
     argumentsJson: readonly unknown[],

@@ -1,0 +1,41 @@
+{
+  "scene": "scene121",
+  "notes": "Gaussian splat data updates: the source translates the first 30 000 rows of the raw .splat asset by Y -= 2 through updateData once. The browser observation records the retained bytes' digest, bounds and sample rows; every native capture must retain exactly those bytes (the sidecar the capture writes), commit the update exactly once, hold state through idle and orbit, and turn the camera under pointer input. The splat renderer wobbles between runs at 4x, so the hooked page is compared to the golden without being required to match it byte for byte.",
+  "base": "adhoc",
+  "minFrames": 30,
+  "phases": [
+    { "id": "first-ready", "frame": 0 },
+    { "id": "canonical", "frame": 181 },
+    { "id": "idle", "frame": 362 },
+    { "id": "orbit", "frame": 181, "tape": ["-*20", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360"] }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "splats.length", "equals": 1 },
+    { "kind": "capture-path", "phase": "*", "path": "splats[0].dataVersion", "equals": 1, "notes": "the authored update committed exactly once" },
+    { "kind": "capture-same", "phase": "canonical", "vs": "first-ready", "path": "splats[0].vertexCount" },
+    { "kind": "capture-same", "phase": "idle", "vs": "first-ready", "path": "splats[0].vertexCount" },
+    { "kind": "capture-same", "phase": "orbit", "vs": "first-ready", "path": "splats[0].vertexCount" },
+    { "kind": "capture-same", "phase": "canonical", "vs": "first-ready", "path": "camera" },
+    { "kind": "capture-same", "phase": "idle", "vs": "first-ready", "path": "camera" },
+    { "kind": "golden-mad", "phase": "first-ready", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "golden-mad", "phase": "canonical", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "golden-mad", "phase": "idle", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "image-mad", "phase": "idle", "vs": "canonical", "max": 0.5, "notes": "idle image stability; byte and scene state stability stay exact" },
+    { "kind": "camera-delta", "phase": "orbit", "vs": "canonical", "key": "alpha", "min": 0.1, "notes": "authored camera input turns the camera" },
+    { "kind": "image-mad", "phase": "orbit", "vs": "canonical", "min": 0.05, "notes": "the orbit changes the rendered splats" },
+    { "kind": "plugin", "module": "checks/plugins/scene121-splats.mjs", "options": { "assetUrl": "https://cdn.jsdelivr.net/gh/CedricGuillemet/dump@master/Halo_Believe.splat", "translatedRows": 30000, "translationY": -2 } }
+  ],
+  "observe": {
+    "golden": false,
+    "hooks": [
+      {
+        "marker": "(window as unknown as { __gs: GaussianSplattingMesh }).__gs = gs;",
+        "inject": "window.__observe = async () => { const data = gs.splatsData; const view = new DataView(data); const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(data)); const rows = [0, 1, 29999, 30000, 100000, 200000, gs.vertexCount - 1]; return { byteLength: data.byteLength, vertexCount: gs.vertexCount, dataSha256: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''), boundMin: Array.from(gs.boundMin), boundMax: Array.from(gs.boundMax), sampleRows: rows.map((row) => ({ row, position: [view.getFloat32(row * 32, true), view.getFloat32(row * 32 + 4, true), view.getFloat32(row * 32 + 8, true)] })), camera: { alpha: camera.alpha, beta: camera.beta, radius: camera.radius } }; };"
+      }
+    ],
+    "steps": [
+      { "id": "first" },
+      { "id": "idle", "settleFrames": 180 }
+    ]
+  }
+}

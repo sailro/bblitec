@@ -8,7 +8,8 @@ import { fieldOffsets } from "../src/capture-uniforms.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { pinnedMaterialVertex, pinnedPbrVertexTemplate } from "../src/pinned-material-vertex.js";
-import { composePinnedPbrShader, extractWgslFunction, importPinnedModule } from "../src/pinned-shader-composer.js";
+import { extractWgslFunction, importPinnedModule } from "../src/pinned-shader-composer.js";
+import { composePinnedPbrShader } from "./pinned-pbr-shader-fixture.js";
 import { DEFORMATION_BONE_SLOTS, materialVertexWgsl } from "../src/shader-builtins-standard.js";
 import {
     mapShaderStatements,

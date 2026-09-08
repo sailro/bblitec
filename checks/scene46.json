@@ -1,0 +1,36 @@
+{
+  "scene": "scene46",
+  "twin": true,
+  "notes": "Seven constraint groups (ball-and-socket, hinge, fixed, radial-limited, prismatic and the paired anchors) simulated live in the no-query twin. The browser observation records every body's transform at frames 10, 60 and 240 through a Havok step counter; the native bodies must match the browser at frame 10 and keep every pivot attached afterwards, ignore unhandled pointer and wheel input (the source attaches no camera controls), and resize without disturbing the simulation.",
+  "base": "fixed",
+  "phases": [
+    { "id": "frame-10", "frame": 10 },
+    { "id": "frame-60", "frame": 60 },
+    { "id": "frame-240", "frame": 240 },
+    { "id": "pointer-wheel", "frame": 60, "tape": ["-*20", "+UiMouseLeft@850:340", "UiMove@910:355", "-UiMouseLeft@910:355", "WheelDown"] },
+    { "id": "resize", "frame": 60, "tape": ["-*20", "WindowResize@1000:600"] }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "meshes.length", "equals": 16 },
+    { "kind": "capture-path", "phase": "*", "path": "meshes[*].position", "finite": true },
+    { "kind": "capture-same", "phase": "pointer-wheel", "vs": "frame-60", "path": "camera", "notes": "the source attaches no camera controls" },
+    { "kind": "capture-same", "phase": "pointer-wheel", "vs": "frame-60", "path": "meshes[*].position", "notes": "unhandled input does not change the simulation" },
+    { "kind": "capture-same", "phase": "resize", "vs": "frame-60", "path": "meshes[*].position" },
+    { "kind": "viewport", "phase": "resize", "equals": [1000, 600] },
+    { "kind": "capture-differs", "phase": "resize", "vs": "frame-60", "path": "camera.viewProjection" },
+    { "kind": "backends-agree", "phase": "*", "paths": ["meshes[*].position"], "imageMaxDiff": 0 },
+    { "kind": "plugin", "module": "checks/plugins/scene46-pivots.mjs" }
+  ],
+  "observe": {
+    "state": "window.__observeConstraints()",
+    "captureFrames": [10, 60, 240],
+    "hooks": [
+      { "marker": "ballAndSocket(scene, engine, world);", "position": "before", "inject": "let observedSteps = 0; const observedStep = hknp.HP_World_Step; hknp.HP_World_Step = (...args) => { const result = observedStep(...args); ++observedSteps; return result; }; window.__observeConstraints = () => ({ steps: observedSteps, viewport: { width: canvas.width, height: canvas.height }, camera: [scene.camera.position.x, scene.camera.position.y, scene.camera.position.z], bodies: world._bodies.map((body) => ({ mesh: scene.meshes.indexOf(body.node), transform: hknp.HP_Body_GetQTransform(body._hkBody)[1] })) });" }
+    ],
+    "steps": [
+      { "id": "baseline" },
+      { "id": "pointer-wheel", "actions": [{ "drag": [850, 340, 910, 355], "steps": 8 }, { "wheel": 100 }, { "wait": 150 }] },
+      { "id": "resize", "actions": [{ "resize": [1000, 600] }, { "style": "html,body,canvas{width:1000px!important;height:600px!important}" }, { "waitFor": "window.__observeConstraints().viewport.width === 1000" }] }
+    ]
+  }
+}

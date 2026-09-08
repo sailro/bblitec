@@ -4,6 +4,7 @@ import {
     cppIdentifierPattern,
 } from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 import {
     dataTypesEqual,
     passesByReference,
@@ -23,7 +24,6 @@ export interface NativeFunctionContext {
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
     sourceFiles(): readonly ts.SourceFile[];
-    isEntrySourceFile(file: ts.SourceFile): boolean;
     lookupIdentifierValue(
         identifier: ts.Identifier,
     ): Value | undefined;
@@ -68,7 +68,7 @@ export interface NativeFunctionContext {
     fail(node: ts.Node, message: string): never;
 }
 
-export interface DataFunctionParameter {
+interface DataFunctionParameter {
     name: ts.Identifier;
     type: DataType;
     byReference: boolean;
@@ -1581,7 +1581,11 @@ export class NativeFunctionLowerer {
             if (ts.isCallExpression(node)) {
                 if (
                     ts.isIdentifier(node.expression) &&
-                    node.expression.text === "fetch"
+                    node.expression.text === "fetch" &&
+                    isDefaultLibraryIdentifier(
+                        this.context.checker,
+                        node.expression,
+                    )
                 ) {
                     found = true;
                     return;

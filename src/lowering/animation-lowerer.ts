@@ -5,6 +5,7 @@ import {
 } from "../compiler/property-animation.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerAnimationManagerClock } from "./animation-manager.js";
+import { lowerAnimationInterpolationCpp } from "./gltf/animation-interpolation.js";
 
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -1613,44 +1614,14 @@ void enable_animation_blending(
             "(t >= t1 ? idx + 1 : idx) * stride",
             "STEP tie-break",
         );
-        // The near-parallel slerp threshold feeds the emitted
-        // `slerp_quaternion` guard (`if (dot > ...)`) directly, so a pin
-        // retune changes the generated literal — a deliberate byte-gate
-        // signal — instead of passing behind a presence check. The
-        // structural filter (a `dot > <literal>` comparison) also pins
-        // the comparison direction. The `std::clamp(dot, -1.0f, 1.0f)`
-        // ahead of the emitted acos has no pinned counterpart: it is our
-        // defensive guard, unreachable while dot <= this threshold.
-        const { file: evaluateFile, declaration: quatSlerp } =
-            this.context.functionDeclaration(
-                evaluateModule,
-                "quatSlerp",
-            );
-        const parallelThresholds = this.context
-            .findNodes(
-                quatSlerp,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
-            )
-            .filter(
-                (expression) =>
-                    expression.operatorToken.kind ===
-                        ts.SyntaxKind.GreaterThanToken &&
-                    ts.isIdentifier(expression.left) &&
-                    expression.left.text === "dot" &&
-                    ts.isNumericLiteral(expression.right),
-            );
-        if (parallelThresholds.length !== 1) {
-            this.context.contractError(
-                quatSlerp,
-                "Expected one near-parallel slerp threshold.",
-            );
-        }
-        const slerpParallelThreshold =
-            this.context.numericValue(
-                parallelThresholds[0]!.right,
-                evaluateFile,
-            );
+        // The quaternion path is the pinned `quatSlerp`/`normalizeQuat4`
+        // pair translated whole -- the same translation the glTF loader
+        // carries -- so the near-parallel threshold, the hemisphere flip
+        // and the double-math-float-store width all flow from the
+        // declaration rather than being restated here.
+        const interpolation = lowerAnimationInterpolationCpp(
+            this.context.sourceFile(evaluateModule),
+        );
         // The playback tick the emitted `tick_group` transcribes lives on
         // the controller `createPointerAnimationGroup` builds. Everything
         // load-bearing in it is pinned here: the ms-per-second divisor
@@ -2212,59 +2183,28 @@ PropertyAnimationManagerRecord& bind_manager_engine(
 #include <string>
 #include <utility>
 
+namespace bbl::upstream {
+
+// ${this.context.provenance(evaluateModule, "normalizeQuat4, quatSlerp and evaluateSampler's CUBICSPLINE branch")}
+// The one translation of the pinned sampler arithmetic, the same text the
+// glTF loader carries in its own translation unit: a rotation track
+// slerps in JavaScript-number width and rounds once at the Float32Array
+// store, exactly as a glTF rotation channel does.
+${interpolation}
+
+} // namespace bbl::upstream
+
 namespace bbl {
 namespace {
 
-std::array<float, 4> normalized_quaternion(
-    std::array<float, 4> value) {
-    const float length = std::sqrt(
-        value[0] * value[0] +
-        value[1] * value[1] +
-        value[2] * value[2] +
-        value[3] * value[3]);
-    if (length <= 0.0f) {
-        return {0.0f, 0.0f, 0.0f, 1.0f};
-    }
-    for (float& component : value) component /= length;
-    return value;
+// A track's four stored lanes as the pinned quaternion and back: transport
+// only, the values pass through unchanged.
+Vec4 track_quaternion(const std::array<float, 4>& value) {
+    return Vec4{value[0], value[1], value[2], value[3]};
 }
 
-std::array<float, 4> slerp_quaternion(
-    std::array<float, 4> left,
-    std::array<float, 4> right,
-    float amount) {
-    float dot =
-        left[0] * right[0] +
-        left[1] * right[1] +
-        left[2] * right[2] +
-        left[3] * right[3];
-    if (dot < 0.0f) {
-        for (float& component : right) component = -component;
-        dot = -dot;
-    }
-    if (dot > ${this.context.floatLiteral(slerpParallelThreshold)}) {
-        std::array<float, 4> result{};
-        for (std::size_t index = 0; index < result.size(); ++index) {
-            result[index] =
-                left[index] +
-                (right[index] - left[index]) * amount;
-        }
-        return normalized_quaternion(result);
-    }
-    dot = std::clamp(dot, -1.0f, 1.0f);
-    const float theta = std::acos(dot);
-    const float sin_theta = std::sin(theta);
-    const float left_weight =
-        std::sin((1.0f - amount) * theta) / sin_theta;
-    const float right_weight =
-        std::sin(amount * theta) / sin_theta;
-    std::array<float, 4> result{};
-    for (std::size_t index = 0; index < result.size(); ++index) {
-        result[index] =
-            left[index] * left_weight +
-            right[index] * right_weight;
-    }
-    return result;
+std::array<float, 4> track_lanes(const Vec4& value) {
+    return {value.x, value.y, value.z, value.w};
 }
 
 std::array<float, 4> evaluate_track(
@@ -2307,10 +2247,10 @@ std::array<float, 4> evaluate_track(
     // clip derived from its path -- so a path naming one component of a
     // quaternion lerps that number, as it does upstream.
     if (track.quaternion) {
-        return slerp_quaternion(
-            track.keys[left].value,
-            track.keys[right].value,
-            amount);
+        return track_lanes(upstream::interpolate_quaternion(
+            track_quaternion(track.keys[left].value),
+            track_quaternion(track.keys[right].value),
+            amount));
     }
     std::array<float, 4> result{};
     for (std::size_t index = 0; index < result.size(); ++index) {

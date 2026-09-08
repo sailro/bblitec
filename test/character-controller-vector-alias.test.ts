@@ -65,6 +65,7 @@ test("character vectors retain returned references across controller rebinding a
     `);
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
+        "/DBBLITE_HAS_PHYSICS_CHARACTER=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include", "/I", output,
         "/I", join(output, "upstream/include"), "/I", join(output, "upstream/src"),
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0",

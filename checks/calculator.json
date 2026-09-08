@@ -1,0 +1,22 @@
+{
+  "scene": "calculator",
+  "notes": "KHR_interactivity taps at the golden pose (registry referenceFrame 180): the press pauses auto-rotate so the taps share the golden's pose, and the pinned pointer bridge picks on pointerup. Client-pixel positions of the 7 and x keys and of the display's two digit cells are read off the golden.",
+  "capture": false,
+  "timeoutMs": 30000,
+  "phases": [
+    { "id": "press", "frame": 190, "tape": ["-*180", "+UiMouseLeft@516:343"] },
+    { "id": "seven", "frame": 190, "tape": ["-*180", "+UiMouseLeft@516:343", "-UiMouseLeft@516:343"] },
+    { "id": "seven-times", "frame": 190, "tape": ["-*180", "+UiMouseLeft@516:343", "-UiMouseLeft@516:343", "-*3", "+UiMouseLeft@706:340", "-UiMouseLeft@706:340"] }
+  ],
+  "expect": [
+    { "kind": "log-match", "phase": "*", "pattern": "flow-graph attach asset=\\S+ runtimes=1\\b", "notes": "the container's runtime list, as attach filled it: one runtime for the asset's one graph" },
+    {
+      "kind": "plugin",
+      "module": "checks/plugins/calculator-digits.mjs",
+      "options": {
+        "layout": { "tens": { "x": 745, "y": 245, "width": 55, "height": 75 }, "ones": { "x": 800, "y": 245, "width": 55, "height": 75 } },
+        "dispatches": { "press": [], "seven": ["Button 7"], "seven-times": ["Button 7", "Button multiply"] }
+      }
+    }
+  ]
+}

@@ -6,7 +6,7 @@ import {
 } from "../templates/gltf-loader-cpp.js";
 import {
     coalescedPropertyDefault,
-    collectNodes,
+    findNodes,
     declarationOf,
     featureMethod,
     identifierText,
@@ -14,9 +14,9 @@ import {
     pinnedPropertyPath,
     refuseModule,
     refuseNode,
-    signedNumericValue,
+    pinnedNumericValue,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /*
@@ -57,21 +57,21 @@ import {
 function typeofNumberDefault(
     expression: ts.Expression,
 ): { key: string; value: number } | undefined {
-    const conditional = unwrapPin(expression);
+    const conditional = unwrapExpression(expression);
     if (!ts.isConditionalExpression(conditional)) return undefined;
-    const condition = unwrapPin(conditional.condition);
+    const condition = unwrapExpression(conditional.condition);
     if (
         !ts.isBinaryExpression(condition) ||
         condition.operatorToken.kind !==
             ts.SyntaxKind.EqualsEqualsEqualsToken ||
-        !ts.isTypeOfExpression(unwrapPin(condition.left)) ||
-        !ts.isStringLiteral(unwrapPin(condition.right)) ||
-        (unwrapPin(condition.right) as ts.StringLiteral).text !== "number"
+        !ts.isTypeOfExpression(unwrapExpression(condition.left)) ||
+        !ts.isStringLiteral(unwrapExpression(condition.right)) ||
+        (unwrapExpression(condition.right) as ts.StringLiteral).text !== "number"
     ) {
         return undefined;
     }
-    const typeofRead = unwrapPin(
-        (unwrapPin(condition.left) as ts.TypeOfExpression).expression,
+    const typeofRead = unwrapExpression(
+        (unwrapExpression(condition.left) as ts.TypeOfExpression).expression,
     );
     if (
         !ts.isPropertyAccessExpression(typeofRead) &&
@@ -79,11 +79,11 @@ function typeofNumberDefault(
     ) {
         return undefined;
     }
-    const whenTrue = unwrapPin(conditional.whenTrue);
+    const whenTrue = unwrapExpression(conditional.whenTrue);
     const readsKey = (ts.isPropertyAccessExpression(whenTrue) ||
         ts.isPropertyAccessChain(whenTrue)) &&
         whenTrue.name.text === typeofRead.name.text;
-    const whenFalse = unwrapPin(conditional.whenFalse);
+    const whenFalse = unwrapExpression(conditional.whenFalse);
     if (!readsKey || !ts.isNumericLiteral(whenFalse)) return undefined;
     return {
         key: typeofRead.name.text,
@@ -101,7 +101,7 @@ function pinnedColor3(
         refuseModule(symbol, "no longer defaults a three-lane color");
     }
     const lanes = elements.map((element) =>
-        floatLiteral(signedNumericValue(symbol, file, element))
+        floatLiteral(pinnedNumericValue(symbol, file, element))
     );
     return `Color3{${lanes.join(", ")}}`;
 }
@@ -125,12 +125,12 @@ function assembleMaterialDefaults(file: ts.SourceFile): {
 } {
     const symbol = "assembleMaterial";
     const declaration = topLevelFunction(file, symbol);
-    const returns = collectNodes(
+    const returns = findNodes(
         declaration,
         (node): node is ts.ReturnStatement =>
             ts.isReturnStatement(node) &&
             node.expression !== undefined &&
-            ts.isObjectLiteralExpression(unwrapPin(node.expression)),
+            ts.isObjectLiteralExpression(unwrapExpression(node.expression)),
     );
     if (returns.length !== 1) {
         refuseModule(
@@ -140,7 +140,7 @@ function assembleMaterialDefaults(file: ts.SourceFile): {
     }
     const properties = new Map<string, ts.Expression>();
     for (const property of (
-        unwrapPin(returns[0]!.expression!) as ts.ObjectLiteralExpression
+        unwrapExpression(returns[0]!.expression!) as ts.ObjectLiteralExpression
     ).properties) {
         if (
             ts.isPropertyAssignment(property) &&
@@ -166,7 +166,7 @@ function assembleMaterialDefaults(file: ts.SourceFile): {
             initializerOf(property),
         );
         const fallback = coalesced
-            ? unwrapPin(coalesced.fallback)
+            ? unwrapExpression(coalesced.fallback)
             : undefined;
         if (!coalesced || !fallback || !ts.isNumericLiteral(fallback)) {
             refuseModule(
@@ -186,7 +186,7 @@ function assembleMaterialDefaults(file: ts.SourceFile): {
             initializerOf(property),
         );
         const fallback = coalesced
-            ? unwrapPin(coalesced.fallback)
+            ? unwrapExpression(coalesced.fallback)
             : undefined;
         if (
             !coalesced ||
@@ -203,7 +203,7 @@ function assembleMaterialDefaults(file: ts.SourceFile): {
     // baseColor: the absent arm is the record's native Color4{1,1,1,1}.
     const baseColor = arrayCoalesce("_baseColorFactor");
     const baseColorValues = baseColor.elements.map((element) =>
-        signedNumericValue(symbol, file, element)
+        pinnedNumericValue(symbol, file, element)
     );
     if (baseColorValues.join(",") !== "1,1,1,1") {
         refuseModule(
@@ -249,7 +249,7 @@ function assembleMaterialDefaults(file: ts.SourceFile): {
         initializerOf("_alphaMode"),
     );
     const alphaModeFallback = alphaModeCoalesced
-        ? unwrapPin(alphaModeCoalesced.fallback)
+        ? unwrapExpression(alphaModeCoalesced.fallback)
         : undefined;
     if (
         !alphaModeCoalesced ||
@@ -262,15 +262,15 @@ function assembleMaterialDefaults(file: ts.SourceFile): {
         );
     }
     // doubleSided: `!!mat.doubleSided` — the bool_or(false) coercion.
-    const doubleSided = unwrapPin(initializerOf("_doubleSided"));
+    const doubleSided = unwrapExpression(initializerOf("_doubleSided"));
     const doubleSidedInner = ts.isPrefixUnaryExpression(doubleSided) &&
             doubleSided.operator === ts.SyntaxKind.ExclamationToken
-        ? unwrapPin(doubleSided.operand)
+        ? unwrapExpression(doubleSided.operand)
         : undefined;
     const doubleSidedRead = doubleSidedInner &&
             ts.isPrefixUnaryExpression(doubleSidedInner) &&
             doubleSidedInner.operator === ts.SyntaxKind.ExclamationToken
-        ? unwrapPin(doubleSidedInner.operand)
+        ? unwrapExpression(doubleSidedInner.operand)
         : undefined;
     if (
         !doubleSidedRead ||
@@ -287,7 +287,7 @@ function assembleMaterialDefaults(file: ts.SourceFile): {
         if (consumed.has(property)) continue;
         const coalesced = coalescedPropertyDefault(initializer);
         const fallback = coalesced
-            ? unwrapPin(coalesced.fallback)
+            ? unwrapExpression(coalesced.fallback)
             : undefined;
         const carriesDefault = (fallback !== undefined &&
             (ts.isNumericLiteral(fallback) ||
@@ -349,7 +349,7 @@ function dielectricSpecularDefault(file: ts.SourceFile): {
         ) {
             return;
         }
-        const call = unwrapPin(node.left);
+        const call = unwrapExpression(node.left);
         if (
             !ts.isCallExpression(call) ||
             !ts.isPropertyAccessExpression(call.expression) ||
@@ -359,21 +359,21 @@ function dielectricSpecularDefault(file: ts.SourceFile): {
         ) {
             return;
         }
-        const difference = unwrapPin(call.arguments[0]!);
+        const difference = unwrapExpression(call.arguments[0]!);
         if (
             !ts.isBinaryExpression(difference) ||
             difference.operatorToken.kind !== ts.SyntaxKind.MinusToken
         ) {
             return;
         }
-        const read = unwrapPin(difference.left);
+        const read = unwrapExpression(difference.left);
         const readKey = (ts.isPropertyAccessExpression(read) ||
                 ts.isPropertyAccessChain(read))
             ? read.name.text
             : undefined;
         if (readKey !== key) return;
-        const clear = unwrapPin(difference.right);
-        const epsilon = unwrapPin(node.right);
+        const clear = unwrapExpression(difference.right);
+        const epsilon = unwrapExpression(node.right);
         if (!ts.isNumericLiteral(clear) || !ts.isNumericLiteral(epsilon)) {
             refuseNode(
                 symbol,
@@ -408,29 +408,29 @@ function dielectricSpecularDefault(file: ts.SourceFile): {
     }
     // The paired arms: within epsilon both options drop (the record's
     // clear-to-one), beyond it the factor feeds f0Factor AND the weight.
-    const pairedIfs = collectNodes(
+    const pairedIfs = findNodes(
         applyMaterial.body,
         (node): node is ts.IfStatement =>
             ts.isIfStatement(node) &&
             node.elseStatement !== undefined &&
-            ts.isBinaryExpression(unwrapPin(node.expression)) &&
-            unwrapPin(node.expression).getText(file).includes(key),
+            ts.isBinaryExpression(unwrapExpression(node.expression)) &&
+            unwrapExpression(node.expression).getText(file).includes(key),
     );
     const paired = pairedIfs.find((candidate) => {
-        const assigns = collectNodes(
+        const assigns = findNodes(
             candidate.thenStatement,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
         ).map((assignment) =>
-            unwrapPin(assignment.left).getText(file).split(".").pop()
+            unwrapExpression(assignment.left).getText(file).split(".").pop()
         );
-        const deletes = collectNodes(
+        const deletes = findNodes(
             candidate.elseStatement!,
             (node): node is ts.DeleteExpression =>
                 ts.isDeleteExpression(node),
         ).map((expression) =>
-            unwrapPin(expression.expression).getText(file).split(".").pop()
+            unwrapExpression(expression.expression).getText(file).split(".").pop()
         );
         return assigns.includes("f0Factor") &&
             assigns.includes("specularWeight") &&
@@ -464,15 +464,15 @@ function dielectricIorFold(file: ts.SourceFile): {
 } {
     const symbol = "KHR_materials_dielectric";
     const applyMaterial = featureMethod(file, symbol, "applyMaterial");
-    const folds = collectNodes(
+    const folds = findNodes(
         applyMaterial.body,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
             pinnedPropertyPath(node.left)?.join(".") ===
                 "reflOpts.f0Factor" &&
-            ts.isBinaryExpression(unwrapPin(node.right)) &&
-            (unwrapPin(node.right) as ts.BinaryExpression)
+            ts.isBinaryExpression(unwrapExpression(node.right)) &&
+            (unwrapExpression(node.right) as ts.BinaryExpression)
                     .operatorToken.kind ===
                 ts.SyntaxKind.SlashToken,
     );
@@ -482,8 +482,8 @@ function dielectricIorFold(file: ts.SourceFile): {
             "no longer computes the IOR fold in a single assignment",
         );
     }
-    const division = unwrapPin(folds[0]!.right) as ts.BinaryExpression;
-    const base = unwrapPin(division.right);
+    const division = unwrapExpression(folds[0]!.right) as ts.BinaryExpression;
+    const base = unwrapExpression(division.right);
     if (!ts.isNumericLiteral(base)) {
         refuseNode(
             symbol,
@@ -492,12 +492,12 @@ function dielectricIorFold(file: ts.SourceFile): {
             "no longer divides the fold by a constant base reflectance",
         );
     }
-    const power = unwrapPin(division.left);
+    const power = unwrapExpression(division.left);
     if (
         !ts.isBinaryExpression(power) ||
         power.operatorToken.kind !==
             ts.SyntaxKind.AsteriskAsteriskToken ||
-        signedNumericValue(symbol, file, power.right) !== 2
+        pinnedNumericValue(symbol, file, power.right) !== 2
     ) {
         refuseNode(
             symbol,
@@ -506,15 +506,15 @@ function dielectricIorFold(file: ts.SourceFile): {
             "no longer squares the IOR ratio",
         );
     }
-    const ratio = unwrapPin(power.left);
+    const ratio = unwrapExpression(power.left);
     if (
         !ts.isBinaryExpression(ratio) ||
         ratio.operatorToken.kind !== ts.SyntaxKind.SlashToken
     ) {
         refuseNode(symbol, file, power, "no longer folds an IOR ratio");
     }
-    const numerator = unwrapPin(ratio.left);
-    const denominator = unwrapPin(ratio.right);
+    const numerator = unwrapExpression(ratio.left);
+    const denominator = unwrapExpression(ratio.right);
     if (
         !ts.isBinaryExpression(numerator) ||
         numerator.operatorToken.kind !== ts.SyntaxKind.MinusToken ||
@@ -531,8 +531,8 @@ function dielectricIorFold(file: ts.SourceFile): {
             "no longer folds (ior - one) over (ior + one)",
         );
     }
-    const one = signedNumericValue(symbol, file, numerator.right);
-    if (one !== signedNumericValue(symbol, file, denominator.right)) {
+    const one = pinnedNumericValue(symbol, file, numerator.right);
+    if (one !== pinnedNumericValue(symbol, file, denominator.right)) {
         refuseModule(
             symbol,
             "no longer folds the IOR ratio around a single unit",
@@ -561,14 +561,14 @@ function dielectricSpecularColor(file: ts.SourceFile): {
     const key = "specularColorFactor";
     // Locals declared as reads of the factor (`specColFactor`).
     const aliases = new Set<string>();
-    for (const binding of collectNodes(
+    for (const binding of findNodes(
         applyMaterial.body,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
             node.initializer !== undefined &&
             ts.isIdentifier(node.name),
     )) {
-        const read = unwrapPin(binding.initializer!);
+        const read = unwrapExpression(binding.initializer!);
         if (
             (ts.isPropertyAccessExpression(read) ||
                 ts.isPropertyAccessChain(read)) &&
@@ -578,7 +578,7 @@ function dielectricSpecularColor(file: ts.SourceFile): {
         }
     }
     const readsFactor = (expression: ts.Expression): boolean => {
-        const node = unwrapPin(expression);
+        const node = unwrapExpression(expression);
         if (
             (ts.isPropertyAccessExpression(node) ||
                 ts.isPropertyAccessChain(node)) &&
@@ -598,27 +598,27 @@ function dielectricSpecularColor(file: ts.SourceFile): {
             node.operatorToken.kind ===
                 ts.SyntaxKind.ExclamationEqualsEqualsToken
         ) {
-            const lane = unwrapPin(node.left);
+            const lane = unwrapExpression(node.left);
             if (
                 !ts.isElementAccessExpression(lane) ||
                 !readsFactor(lane.expression)
             ) {
                 return;
             }
-            const index = signedNumericValue(
+            const index = pinnedNumericValue(
                 symbol,
                 file,
                 lane.argumentExpression,
             );
             laneCounts.set(index, (laneCounts.get(index) ?? 0) + 1);
-            units.push(signedNumericValue(symbol, file, node.right));
+            units.push(pinnedNumericValue(symbol, file, node.right));
             return;
         }
         if (
             node.operatorToken.kind ===
                 ts.SyntaxKind.EqualsEqualsEqualsToken
         ) {
-            const read = unwrapPin(node.left);
+            const read = unwrapExpression(node.left);
             if (
                 !(ts.isPropertyAccessExpression(read) ||
                     ts.isPropertyAccessChain(read)) ||
@@ -627,7 +627,7 @@ function dielectricSpecularColor(file: ts.SourceFile): {
             ) {
                 return;
             }
-            lengths.push(signedNumericValue(symbol, file, node.right));
+            lengths.push(pinnedNumericValue(symbol, file, node.right));
         }
     };
     visit(applyMaterial.body);
@@ -696,29 +696,29 @@ function textureTransformDefaults(
     );
     // The patched fields, by their `patch.<field> = kt.<key>…` writes.
     const patches = new Map<string, ts.Expression>();
-    for (const assignment of collectNodes(
+    for (const assignment of findNodes(
         wrapTexture.body,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ts.isPropertyAccessExpression(unwrapPin(node.left)) &&
+            ts.isPropertyAccessExpression(unwrapExpression(node.left)) &&
             identifierText(
-                (unwrapPin(node.left) as ts.PropertyAccessExpression)
+                (unwrapExpression(node.left) as ts.PropertyAccessExpression)
                     .expression,
             ) === "patch",
     )) {
         patches.set(
-            (unwrapPin(assignment.left) as ts.PropertyAccessExpression)
+            (unwrapExpression(assignment.left) as ts.PropertyAccessExpression)
                 .name.text,
             assignment.right,
         );
     }
     const patchKey = (field: string): string => {
         const value = patches.get(field);
-        const read = value ? unwrapPin(value) : undefined;
+        const read = value ? unwrapExpression(value) : undefined;
         // uAng reads `kt.rotation`; uScale reads `kt.scale[0]`.
         const property = read && ts.isElementAccessExpression(read)
-            ? unwrapPin(read.expression)
+            ? unwrapExpression(read.expression)
             : read;
         if (
             !property ||
@@ -750,7 +750,7 @@ function textureTransformDefaults(
     // would leave the record's absent-transform arm silently wrong.
     const writer = topLevelFunction(writerFile, "writeOne");
     const identities = new Map<string, number>();
-    for (const binding of collectNodes(
+    for (const binding of findNodes(
         writer,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
@@ -758,7 +758,7 @@ function textureTransformDefaults(
     )) {
         const coalesced = coalescedPropertyDefault(binding.initializer!);
         const fallback = coalesced
-            ? unwrapPin(coalesced.fallback)
+            ? unwrapExpression(coalesced.fallback)
             : undefined;
         if (coalesced && fallback && ts.isNumericLiteral(fallback)) {
             identities.set(coalesced.key, Number(fallback.text));
@@ -818,14 +818,14 @@ function clearcoatConditionalDefault(
     const coalesced = coalescedPropertyDefault(
         optionInitializer(symbol, options, optionName),
     );
-    const fallback = coalesced ? unwrapPin(coalesced.fallback) : undefined;
+    const fallback = coalesced ? unwrapExpression(coalesced.fallback) : undefined;
     if (!coalesced || !fallback || !ts.isConditionalExpression(fallback)) {
         refuseModule(
             symbol,
             `no longer conditions the '${optionName}' fallback on a texture`,
         );
     }
-    const condition = unwrapPin(fallback.condition);
+    const condition = unwrapExpression(fallback.condition);
     const textureKey = (ts.isPropertyAccessExpression(condition) ||
             ts.isPropertyAccessChain(condition))
         ? condition.name.text
@@ -842,10 +842,10 @@ function clearcoatConditionalDefault(
     return {
         key: coalesced.key,
         present: floatLiteral(
-            signedNumericValue(symbol, file, fallback.whenTrue),
+            pinnedNumericValue(symbol, file, fallback.whenTrue),
         ),
         absent: floatLiteral(
-            signedNumericValue(symbol, file, fallback.whenFalse),
+            pinnedNumericValue(symbol, file, fallback.whenFalse),
         ),
     };
 }
@@ -856,14 +856,14 @@ function setterOptionsObject(
     root: ts.Node,
     calleeName: string,
 ): ts.ObjectLiteralExpression {
-    const calls = collectNodes(
+    const calls = findNodes(
         root,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
             identifierText(node.expression) === calleeName,
     );
     const options = calls.length === 1 && calls[0]!.arguments.length === 2
-        ? unwrapPin(calls[0]!.arguments[1]!)
+        ? unwrapExpression(calls[0]!.arguments[1]!)
         : undefined;
     if (!options || !ts.isObjectLiteralExpression(options)) {
         refuseModule(
@@ -899,20 +899,20 @@ function specGlossDefaults(
     // The two fetches, tied to the record fields they land on through the
     // destructure that names them: a pin that swapped the two calls would
     // otherwise silently feed the specular map to base colour.
-    const fetched = collectNodes(
+    const fetched = findNodes(
         body,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
             ts.isArrayBindingPattern(node.name) &&
             node.initializer !== undefined,
     )[0];
-    const awaited = fetched ? unwrapPin(fetched.initializer!) : undefined;
+    const awaited = fetched ? unwrapExpression(fetched.initializer!) : undefined;
     const all = awaited && ts.isAwaitExpression(awaited)
-        ? unwrapPin(awaited.expression)
+        ? unwrapExpression(awaited.expression)
         : undefined;
     const fetches = all && ts.isCallExpression(all) &&
             all.arguments.length === 1
-        ? unwrapPin(all.arguments[0]!)
+        ? unwrapExpression(all.arguments[0]!)
         : undefined;
     if (!fetched || !fetches || !ts.isArrayLiteralExpression(fetches)) {
         refuseModule(
@@ -923,18 +923,18 @@ function specGlossDefaults(
     const bindings = (fetched.name as ts.ArrayBindingPattern).elements;
     const fetchedKeys = new Map<string, string>();
     fetches.elements.forEach((element, index) => {
-        const call = unwrapPin(element);
+        const call = unwrapExpression(element);
         if (!ts.isCallExpression(call) || call.arguments.length !== 2) {
             refuseNode(symbol, file, element, "no longer fetches a texture");
         }
-        const info = unwrapPin(call.arguments[0]!);
+        const info = unwrapExpression(call.arguments[0]!);
         if (
             !ts.isPropertyAccessExpression(info) &&
             !ts.isPropertyAccessChain(info)
         ) {
             refuseNode(symbol, file, info, "no longer names the texture it fetches");
         }
-        if (unwrapPin(call.arguments[1]!).kind !== ts.SyntaxKind.TrueKeyword) {
+        if (unwrapExpression(call.arguments[1]!).kind !== ts.SyntaxKind.TrueKeyword) {
             refuseNode(
                 symbol,
                 file,
@@ -954,19 +954,19 @@ function specGlossDefaults(
         fetchedKeys.set(binding.name.text, info.name.text);
     });
     const out = declarationOf(body, "out");
-    const literal = out?.initializer ? unwrapPin(out.initializer) : undefined;
+    const literal = out?.initializer ? unwrapExpression(out.initializer) : undefined;
     if (!literal || !ts.isObjectLiteralExpression(literal)) {
         refuseModule(symbol, "no longer returns one options literal");
     }
     // `out.<field> = <binding>` ties each fetch to the record slot it fills.
     const textureKey = (field: string): string => {
-        for (const assignment of collectNodes(
+        for (const assignment of findNodes(
             body,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
         )) {
-            const target = unwrapPin(assignment.left);
+            const target = unwrapExpression(assignment.left);
             if (
                 ts.isPropertyAccessExpression(target) &&
                 target.name.text === field
@@ -980,7 +980,7 @@ function specGlossDefaults(
         refuseModule(symbol, `no longer fills '${field}' from a fetched texture`);
     };
     // `roughnessFactor: complement - (glossinessFactor ?? fallback)`.
-    const complement = unwrapPin(
+    const complement = unwrapExpression(
         optionInitializer(symbol, literal, "roughnessFactor"),
     );
     if (
@@ -1000,7 +1000,7 @@ function specGlossDefaults(
     }
     // `reflectance: sf ? Math.max(sf[0], sf[1], sf[2]) : absent`, where `sf`
     // is the binding the specular factor was read into.
-    const reflectance = unwrapPin(
+    const reflectance = unwrapExpression(
         optionInitializer(symbol, literal, "reflectance"),
     );
     if (!ts.isConditionalExpression(reflectance)) {
@@ -1010,7 +1010,7 @@ function specGlossDefaults(
     const factor = factorName
         ? declarationOf(body, factorName)?.initializer
         : undefined;
-    const read = factor ? unwrapPin(factor) : undefined;
+    const read = factor ? unwrapExpression(factor) : undefined;
     if (
         !read ||
         (!ts.isPropertyAccessExpression(read) && !ts.isPropertyAccessChain(read))
@@ -1025,9 +1025,9 @@ function specGlossDefaults(
     const largest = mathCall(reflectance.whenTrue, "max");
     const channels = largest?.arguments ?? [];
     const indexed = channels.every((argument, index) => {
-        const element = unwrapPin(argument);
+        const element = unwrapExpression(argument);
         if (!ts.isElementAccessExpression(element)) return false;
-        const channel = unwrapPin(element.argumentExpression);
+        const channel = unwrapExpression(element.argumentExpression);
         return identifierText(element.expression) === factorName &&
             ts.isNumericLiteral(channel) && Number(channel.text) === index;
     });
@@ -1044,7 +1044,7 @@ function specGlossDefaults(
         diffuseTextureKey: textureKey("baseColorTexture"),
         specGlossTextureKey: textureKey("specGlossTexture"),
         metallicFactor: floatLiteral(
-            signedNumericValue(
+            pinnedNumericValue(
                 symbol,
                 file,
                 optionInitializer(symbol, literal, "metallicFactor"),
@@ -1053,17 +1053,17 @@ function specGlossDefaults(
         glossiness: {
             key: glossiness.key,
             literal: floatLiteral(
-                signedNumericValue(symbol, file, glossiness.fallback),
+                pinnedNumericValue(symbol, file, glossiness.fallback),
             ),
             complement: floatLiteral(
-                signedNumericValue(symbol, file, complement.left),
+                pinnedNumericValue(symbol, file, complement.left),
             ),
         },
         reflectance: {
             key: read.name.text,
             channels: String(channels.length),
             absent: floatLiteral(
-                signedNumericValue(symbol, file, reflectance.whenFalse),
+                pinnedNumericValue(symbol, file, reflectance.whenFalse),
             ),
         },
     };
@@ -1125,7 +1125,7 @@ export function lowerGltfMaterialDefaults(files: {
         ),
     );
     const bumpFallback = bumpScale
-        ? unwrapPin(bumpScale.fallback)
+        ? unwrapExpression(bumpScale.fallback)
         : undefined;
     if (!bumpScale || !bumpFallback || !ts.isNumericLiteral(bumpFallback)) {
         refuseModule(
@@ -1144,7 +1144,7 @@ export function lowerGltfMaterialDefaults(files: {
         optionInitializer(sheenSymbol, sheenOptions, "color"),
     );
     const sheenColorFallback = sheenColor
-        ? unwrapPin(sheenColor.fallback)
+        ? unwrapExpression(sheenColor.fallback)
         : undefined;
     if (
         !sheenColor ||
@@ -1160,7 +1160,7 @@ export function lowerGltfMaterialDefaults(files: {
         optionInitializer(sheenSymbol, sheenOptions, "roughness"),
     );
     const sheenRoughnessFallback = sheenRoughness
-        ? unwrapPin(sheenRoughness.fallback)
+        ? unwrapExpression(sheenRoughness.fallback)
         : undefined;
     if (
         !sheenRoughness ||
@@ -1172,7 +1172,7 @@ export function lowerGltfMaterialDefaults(files: {
             "no longer defaults the sheen roughness to a constant",
         );
     }
-    const sheenIntensity = unwrapPin(
+    const sheenIntensity = unwrapExpression(
         optionInitializer(sheenSymbol, sheenOptions, "intensity"),
     );
     if (!ts.isNumericLiteral(sheenIntensity)) {
@@ -1189,7 +1189,7 @@ export function lowerGltfMaterialDefaults(files: {
         "applyMaterial",
     ).body;
     const strengthDefaults: GltfLoweredDefault[] = [];
-    for (const binding of collectNodes(
+    for (const binding of findNodes(
         strengthBody,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
@@ -1197,7 +1197,7 @@ export function lowerGltfMaterialDefaults(files: {
     )) {
         const coalesced = coalescedPropertyDefault(binding.initializer!);
         const fallback = coalesced
-            ? unwrapPin(coalesced.fallback)
+            ? unwrapExpression(coalesced.fallback)
             : undefined;
         if (coalesced && fallback && ts.isNumericLiteral(fallback)) {
             strengthDefaults.push({

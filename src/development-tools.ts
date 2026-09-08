@@ -58,7 +58,7 @@ function executableNames(
 }
 
 /** Resolve a command exactly as a child process would, without invoking it. */
-export function findExecutable(
+function findExecutable(
     command: string | undefined,
     options: ToolDiscoveryOptions = {},
 ): string | undefined {
@@ -92,7 +92,7 @@ function latestDirectory(root: string): string | undefined {
             right.localeCompare(left, undefined, { numeric: true }))[0];
 }
 
-export function discoverVisualStudioRoot(
+function discoverVisualStudioRoot(
     options: ToolDiscoveryOptions = {},
 ): string | undefined {
     const environment = options.environment ?? process.env;

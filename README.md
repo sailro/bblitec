@@ -36,10 +36,8 @@ to that page instead of repeating its content.
 | [Backends](docs/backends.md) | GPU resource/binding/encoding implementation |
 | [UI](docs/ui.md) | DOM/CSS/Canvas2D support and browser compatibility |
 | [Status](docs/status.md) | Published measurements and scene previews |
-| [TODO](TODO.md) | Unfinished work and unregistered scenes |
-
-Documentation contains current facts and actionable instructions. Keep commits,
-checkpoint summaries, timings and completed reviews in Git/PRs or artifacts.
+| [TODO](TODO.md) | Unfinished work |
+| [Audit](audit.md) | Verified findings and their status |
 
 ## Acknowledgements
 

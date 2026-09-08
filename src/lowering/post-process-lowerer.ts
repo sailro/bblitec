@@ -25,6 +25,13 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { TaaPostProcessLowerer } from "./taa-post-process-lowerer.js";
 import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
+import {
+    refuseGeneration,
+    type FeatureSites,
+} from "../generation-refusal.js";
+
+/** The feature every post-process refusal is keyed on. */
+const POST_PROCESS_FEATURE = "renderer:post-process";
 
 const TASK_MODULE = "src/frame-graph/post-process-task.ts";
 
@@ -45,11 +52,11 @@ export class PostProcessLowerer {
         private readonly tasks: readonly PostProcessTaskManifest[],
         private readonly composites: readonly ComposedComposite[] = [],
         /**
-         * A preformatted " (reached from <file:line>)" suffix naming the
-         * scene call site that pulled the post-process family in, appended
-         * to the composite refusals; empty when the caller has no site.
+         * The manifest's first-reach sites, so a composite refusal names
+         * the scene call site that pulled the post-process family in;
+         * absent when the caller has no record.
          */
-        private readonly refusalSite: string = "",
+        private readonly featureSites?: FeatureSites,
         /**
          * Writer bodies for stages another lowerer composed onto this
          * table -- a screen-space task's composite pass, whose writer
@@ -527,7 +534,11 @@ export class PostProcessLowerer {
         const lifecycleHeaders = new Set(this.composites.filter((composite) => composite.taa !== undefined)
             .map((composite) => new TaaPostProcessLowerer(this.context, composite).header()));
         if (lifecycleHeaders.size > 1) {
-            throw new Error("Pinned TAA composites disagree on their retained child pass layout.");
+            refuseGeneration(
+                POST_PROCESS_FEATURE,
+                "Pinned TAA composites disagree on their retained child pass layout.",
+                this.featureSites,
+            );
         }
         const sceneUbo = lifecycleHeaders.size ? new SceneUboLowerer(this.context) : undefined;
         return `#pragma once
@@ -569,7 +580,8 @@ void write_post_process_uniforms(
 } // namespace bbl::upstream
 ${this.compositeDeclarations()}
 ${[...lifecycleHeaders].join("\n")}
-${sceneUbo ? `#define BBLITE_HAS_TAA 1\n${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}\n${sceneUbo.packingHeader()}` : ""}`;
+#define BBLITE_HAS_TAA ${sceneUbo ? 1 : 0}
+${sceneUbo ? `${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}\n${sceneUbo.packingHeader()}` : ""}`;
     }
 
     /** The pin's own switch, as the emitted table's case arms. */
@@ -808,7 +820,7 @@ ${this.compositeFactories()}
                         `${nativeTextureFormat(
                             target.format,
                             target.label,
-                            this.refusalSite,
+                            this.featureSites,
                         )};`,
                     `    ${intermediate(slot)}_options.has_format = true;`,
                 );
@@ -839,9 +851,10 @@ ${this.compositeFactories()}
             }
             if (texture.option === "targetTexture") {
                 if (!asTarget) {
-                    throw new Error(
-                        "A composite pass reads the task's own output " +
-                            `target.${this.refusalSite}`,
+                    refuseGeneration(
+                        POST_PROCESS_FEATURE,
+                        "A composite pass reads the task's own output target.",
+                        this.featureSites,
                     );
                 }
                 return "inputs.target";
@@ -853,7 +866,7 @@ ${this.compositeFactories()}
             const slot = compositeExtraIndex(
                 composite,
                 texture.option,
-                this.refusalSite,
+                this.featureSites,
             );
             return `inputs.extra_textures[${slot}]`;
         };
@@ -863,14 +876,14 @@ ${this.compositeFactories()}
                 .join(", ");
             return (
                 `        PostProcessPassOptions{\n` +
-                `            ${passName(pass.name, this.refusalSite)},\n` +
+                `            ${passName(pass.name, this.featureSites)},\n` +
                 `            ${firstShaderIndex + slot}u,\n` +
                 `            ${reference(pass.source, false)},\n` +
                 `            ${reference(pass.target, true)},\n` +
                 `            PostProcessSampling::${nativeSampling(
                     pass.sampling,
                     pass.name,
-                    this.refusalSite,
+                    this.featureSites,
                 )},\n` +
                 `            ${pass.alphaMode}u,\n` +
                 `            ${pass.viewport ? "true" : "false"},\n` +
@@ -933,8 +946,10 @@ ${composite.taa ? `    options.taa = std::make_shared<TaaPostProcessState>(
         const declared = [...byEffect].map(([intrinsic, indices]) => {
             const effect = postProcessEffect(intrinsic);
             if (!effect) {
-                throw new Error(
+                refuseGeneration(
+                    POST_PROCESS_FEATURE,
                     `Reached post-process effect '${intrinsic}' has no descriptor.`,
+                    this.featureSites,
                 );
             }
             const labels = indices
@@ -1140,12 +1155,14 @@ ${body}
 function nativeSampling(
     mode: string,
     name: string,
-    refusalSite = "",
+    featureSites?: FeatureSites,
 ): string {
     if (mode !== "nearest" && mode !== "linear") {
-        throw new Error(
+        refuseGeneration(
+            POST_PROCESS_FEATURE,
             `A composite's pass '${name}' samples in '${mode}', which is ` +
-                `neither of the two modes the pass carries.${refusalSite}`,
+                "neither of the two modes the pass carries.",
+            featureSites,
         );
     }
     return mode;
@@ -1156,15 +1173,16 @@ function nativeSampling(
  * suffix. The composite's name is the scene's, known only at run time, so the
  * suffix is what generation carries.
  */
-function passName(name: string, refusalSite = ""): string {
+function passName(name: string, featureSites?: FeatureSites): string {
     try {
         return `inputs.name + ${stringLiteral(passSuffix(name))}`;
     } catch (error) {
         // The identity is `passSuffix`'s; this adds only the site, which
         // the composer has no way to know.
-        throw new Error(
-            `${error instanceof Error ? error.message : String(error)}` +
-                refusalSite,
+        refuseGeneration(
+            POST_PROCESS_FEATURE,
+            error instanceof Error ? error.message : String(error),
+            featureSites,
         );
     }
 }
@@ -1210,14 +1228,16 @@ function passNameEndsWith(
 function compositeExtraIndex(
     composite: ComposedComposite,
     option: string,
-    refusalSite = "",
+    featureSites?: FeatureSites,
 ): number {
     const descriptor = postProcessComposite(composite.intrinsic);
     const slot = descriptor?.extraTextures.indexOf(option) ?? -1;
     if (slot < 0) {
-        throw new Error(
+        refuseGeneration(
+            POST_PROCESS_FEATURE,
             `${composite.intrinsic} builds a pass reading '${option}', ` +
-                `which its descriptor does not name as a texture.${refusalSite}`,
+                "which its descriptor does not name as a texture.",
+            featureSites,
         );
     }
     return slot;
@@ -1235,7 +1255,7 @@ function compositeExtraIndex(
 export function nativeTextureFormat(
     format: string,
     label: string,
-    refusalSite = "",
+    featureSites?: FeatureSites,
 ): string {
     const native: Readonly<Record<string, string>> = {
         r8unorm: "TextureFormatClass::r8_unorm",
@@ -1247,9 +1267,11 @@ export function nativeTextureFormat(
     };
     const name = native[format];
     if (!name) {
-        throw new Error(
+        refuseGeneration(
+            POST_PROCESS_FEATURE,
             `The pin keeps '${label}' in '${format}', which this port's ` +
-                `two backends do not both express.${refusalSite}`,
+                "two backends do not both express.",
+            featureSites,
         );
     }
     return name;

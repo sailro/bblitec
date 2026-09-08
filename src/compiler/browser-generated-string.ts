@@ -38,12 +38,12 @@ const cache = new Map<string, string>();
  * means the value is not generation-known, which is what keeps a runtime
  * argument out of the bake.
  */
-export type FoldGeneratedStringArgument = (
+type FoldGeneratedStringArgument = (
     argument: ts.Expression,
 ) => string | number | boolean | undefined;
 
 /** The compiler's own answer to "is this the pin's `wgsl` tag over a template". */
-export type PinnedWgslTemplate = (
+type PinnedWgslTemplate = (
     expression: ts.Expression,
 ) => ts.TemplateLiteral | undefined;
 

@@ -2,7 +2,8 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { cppCondition } from "../cpp-expressions.js";
 import type { LoweringContext } from "./context.js";
-import { PINNED_ASSIGNMENT_OPERATORS, PINNED_BOOLEAN_OPERATORS, pinnedNumericMathCalls } from "./pinned-operators.js";
+import { CPP_SCALAR } from "./cpp-types.js";
+import { PINNED_ASSIGNMENT_OPERATORS, PINNED_BOOLEAN_OPERATORS, pinnedNumericMathCalls, pinnedRemainderCall } from "./pinned-operators.js";
 
 export interface ReferenceValue { cpp: string; type: string }
 export interface ReferenceFunction { cpp: string; parameters: readonly string[]; requiredParameters: number; returns: string }
@@ -52,9 +53,9 @@ export class PinnedReferenceLowerer {
     }
 
     public storage(type: string): string {
-        if (type === "number") return "double";
-        if (type === "boolean") return "bool";
-        if (type === "string") return "std::string";
+        if (type === "number") return CPP_SCALAR.number;
+        if (type === "boolean") return CPP_SCALAR.boolean;
+        if (type === "string") return CPP_SCALAR.string;
         if (type === "void") return "void";
         if (type.startsWith("optional:")) return `std::optional<${this.storage(type.slice(9))}>`;
         const tuple = tupleTypes(type);
@@ -221,9 +222,8 @@ export class PinnedReferenceLowerer {
                 return { cpp: `([&]() { const auto optional = ${left.cpp}; return optional ? *optional : ${right.cpp}; }())`, type };
             }
             const right = this.expression(node.right, left.type);
-            if (node.operatorToken.kind === ts.SyntaxKind.PercentToken) return { cpp: `std::fmod(${left.cpp}, ${right.cpp})`, type: "number" };
-            const operator = PINNED_ASSIGNMENT_OPERATORS.get(node.operatorToken.kind) ?? PINNED_BOOLEAN_OPERATORS.get(node.operatorToken.kind) ??
-                new Map([[ts.SyntaxKind.ExclamationEqualsEqualsToken, "!="], [ts.SyntaxKind.LessThanEqualsToken, "<="], [ts.SyntaxKind.GreaterThanEqualsToken, ">="]]).get(node.operatorToken.kind);
+            if (node.operatorToken.kind === ts.SyntaxKind.PercentToken) return { cpp: pinnedRemainderCall(left.cpp, right.cpp), type: "number" };
+            const operator = PINNED_ASSIGNMENT_OPERATORS.get(node.operatorToken.kind) ?? PINNED_BOOLEAN_OPERATORS.get(node.operatorToken.kind);
             if (!operator) return this.context.contractError(node, "Pinned reference binary operator is not represented.");
             return { cpp: `(${left.cpp} ${operator} ${right.cpp})`, type: ["==", "!=", "<", ">", "<=", ">=", "&&", "||"].includes(operator) ? "boolean" : left.type };
         }

@@ -16,9 +16,10 @@ import {
     type NodeParticleFrozenBufferRequest,
 } from "../pinned-node-particle.js";
 
-export interface ParticleBufferContext extends PositiveIntegerContext {
+interface ParticleBufferContext extends PositiveIntegerContext {
     readonly reachedNodeParticles: CompiledNodeParticles;
     unwrap(expression: ts.Expression): ts.Expression;
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     isRuntimeResourceConstruction(): boolean;
 }
 
@@ -307,6 +308,7 @@ function guardThrows(
     return (
         ts.isNewExpression(thrown) &&
         ts.isIdentifier(thrown.expression) &&
-        thrown.expression.text === "Error"
+        thrown.expression.text === "Error" &&
+        context.isDefaultLibraryIdentifier(thrown.expression)
     );
 }

@@ -7,78 +7,18 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
-import { UpstreamSourceStore } from "../src/upstream-source.js";
+import { doctoredContext as doctoredModuleContext } from "./doctored-store.js";
 
 const MIXER_MODULE = "src/animation/weighted-gltf-mixer.ts";
-
-/**
- * A store serving one module with an exact edit applied. The base store
- * pre-parses modules while constructing, so the edited module bypasses
- * that cache with a doctored parse of its own.
- */
-class DoctoredStore extends UpstreamSourceStore {
-    private edits:
-        | ReadonlyMap<string, readonly [string, string]>
-        | undefined;
-    private readonly doctoredFiles = new Map<
-        string,
-        ts.SourceFile
-    >();
-
-    public withEdits(
-        edits: ReadonlyMap<string, readonly [string, string]>,
-    ): this {
-        this.edits = edits;
-        return this;
-    }
-
-    public override getSource(modulePath: string): string {
-        const source = super.getSource(modulePath);
-        const edit = this.edits?.get(
-            modulePath.replace(/\\/g, "/"),
-        );
-        if (!edit) return source;
-        assert.ok(
-            source.includes(edit[0]),
-            `the pinned source no longer contains '${edit[0]}'`,
-        );
-        return source.replace(edit[0], edit[1]);
-    }
-
-    public override getSourceFile(
-        modulePath: string,
-    ): ts.SourceFile {
-        const normalized = modulePath.replace(/\\/g, "/");
-        if (!this.edits?.has(normalized)) {
-            return super.getSourceFile(modulePath);
-        }
-        const cached = this.doctoredFiles.get(normalized);
-        if (cached) return cached;
-        const file = ts.createSourceFile(
-            normalized,
-            this.getSource(normalized),
-            ts.ScriptTarget.Latest,
-            true,
-            ts.ScriptKind.TS,
-        );
-        this.doctoredFiles.set(normalized, file);
-        return file;
-    }
-}
 
 function doctoredContext(
     needle: string,
     replacement: string,
 ): LoweringContext {
-    return new LoweringContext(
-        new DoctoredStore().withEdits(
-            new Map([[MIXER_MODULE, [needle, replacement]]]),
-        ),
-    );
+    return doctoredModuleContext(MIXER_MODULE, needle, replacement);
 }
 
 test("the additive group writers carry the pinned conversion and guard", () => {

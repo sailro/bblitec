@@ -1,0 +1,18 @@
+{
+  "scene": "offscreen",
+  "notes": "Worker windows: holding the host page's button blocks the main realm while the worker keeps presenting (the window trace counts each canvas's presented frames), the button label expands and contracts, and a window resize reaches both engines. Runs at the wall clock (no registry clock) with the window trace on, as the application behaves outside a capture.",
+  "base": "none",
+  "testPass": true,
+  "gpuDebug": false,
+  "capture": false,
+  "timeoutMs": 20000,
+  "logErrorPattern": "error|exception",
+  "env": { "BBLITE_RUNTIME_TRACE": "0", "BBLITE_WINDOW_TRACE": "1", "BBLITE_RUNTIME_TRACE_INTERVAL": "1", "BBLITE_CAPTURE_UI": "1" },
+  "phases": [
+    { "id": "blocked", "frame": 160, "maxFrames": 200, "tape": ["UiIdle@0:0*40", "+UiMouseLeft@640:35", "UiIdle@0:0*20", "-UiMouseLeft@640:35"] },
+    { "id": "resized", "frame": 580, "maxFrames": 640, "tape": ["UiIdle@0:0*40", "+UiMouseLeft@640:35", "UiIdle@0:0*20", "-UiMouseLeft@640:35", "UiIdle@0:0*160", "+UiMouseLeft@640:35", "UiIdle@0:0*20", "-UiMouseLeft@640:35", "UiIdle@0:0*100", "WindowResize@700:560"] }
+  ],
+  "expect": [
+    { "kind": "plugin", "module": "checks/plugins/offscreen-window.mjs" }
+  ]
+}

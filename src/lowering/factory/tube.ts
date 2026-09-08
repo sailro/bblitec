@@ -7,13 +7,15 @@
  * existing native `create_mesh_from_data` under the pin's own "tube"
  * name.
  *
- * The emission is the reached subset, in the camera-controls style:
- * every load-bearing formula is shape-asserted against the pinned AST
- * (the Rodrigues rotation rows, the Frenet tangent/normal/binormal
- * steps, the ribbon's distance tables and triangulation pushes, the
- * seam averaging, the normals accumulation), and the constants flow
- * (the path epsilon, the radius/tessellation defaults, the full-turn
- * step). The cap, arc, radius-function and single-path arms are
+ * The emission is the reached subset. The vector arithmetic the sweep
+ * and the frames call -- the three `Vec3` helpers, the object
+ * normalization and the Rodrigues rotation -- is translated whole from
+ * its pinned declarations (`lowerVectorHelpers`); every other
+ * load-bearing formula is shape-asserted against the pinned AST (the
+ * Frenet tangent/normal/binormal steps, the ribbon's distance tables and
+ * triangulation pushes, the seam averaging, the normals accumulation),
+ * and the constants flow (the path epsilon, the radius/tessellation
+ * defaults, the full-turn step). The cap, arc, radius-function and single-path arms are
  * outside the reached subset: the intrinsic refuses their options by
  * name, and the anchors here pin the pinned defaults that make the
  * dropped arms unreachable (cap NONE starts the circle index at 0,
@@ -26,9 +28,153 @@
  */
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "../context.js";
+import {
+    lowerObjectComponents,
+    lowerPinnedFunction,
+    type PinnedFunctionParameter,
+} from "../pinned-function-lowerer.js";
+import {
+    type PinnedBinding,
+    type PinnedNumericLowerer,
+    recordLiteralCpp,
+} from "../pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "../pinned-operators.js";
+
+/** A pinned `Vec3` parameter, landing on the runtime's double record. */
+function vec3Parameter(pinned: string): PinnedFunctionParameter {
+    return {
+        pinned,
+        kind: "record",
+        cpp: pinned,
+        cppType: "Vec3d",
+        annotation: "Vec3",
+    };
+}
+
+/** The three members a body reads off each named `Vec3` parameter. */
+function vec3Members(...names: readonly string[]): Map<string, PinnedBinding> {
+    return new Map(
+        names.flatMap((name) =>
+            ["x", "y", "z"].map((lane): [string, PinnedBinding] => [
+                `${name}.${lane}`,
+                { cpp: `${name}.${lane}`, type: "scalar" },
+            ]),
+        ),
+    );
+}
 
 export class TubeLowerer {
     public constructor(private readonly context: LoweringContext) {}
+
+    /**
+     * The five pinned vector helpers the sweep and the Frenet chain call,
+     * each translated whole from its own declaration: the three `Vec3`
+     * arithmetic modules, the object normalization (whose degenerate arm
+     * answers zero below `1e-10`), and the tube's own Rodrigues rotation.
+     * They keep the `tube_` spellings the hand-written frames call them by.
+     */
+    private lowerVectorHelpers(tubeModule: string): string {
+        const calls = new Map([
+            ...pinnedNumericMathCalls(),
+            [
+                "lengthVec3",
+                (args: readonly string[]) => `tube_length(${args.join(", ")})`,
+            ],
+        ]);
+        const returnsVec3 = (modulePath: string, symbolName: string) => ({
+            type: "Vec3d",
+            value: (
+                lowerer: PinnedNumericLowerer,
+                expression: ts.Expression | undefined,
+            ): string =>
+                recordLiteralCpp(
+                    "vec3",
+                    lowerObjectComponents(
+                        this.context,
+                        lowerer,
+                        expression ??
+                            this.context.contractError(
+                                this.context.functionDeclaration(
+                                    modulePath,
+                                    symbolName,
+                                ).declaration,
+                                `Expected pinned ${symbolName} to return a value.`,
+                            ),
+                        ["x", "y", "z"],
+                    ),
+                ),
+        });
+        const lengthModule = "src/math/length-vec3.ts";
+        const subModule = "src/math/sub-vec3.ts";
+        const crossModule = "src/math/cross-vec3.ts";
+        const normalizeModule = "src/math/normalize-vec3-object.ts";
+        return [
+            lowerPinnedFunction(
+                this.context,
+                lengthModule,
+                "lengthVec3",
+                [vec3Parameter("v")],
+                {
+                    cppName: "tube_length",
+                    returns: "double",
+                    calls,
+                    memberBindings: vec3Members("v"),
+                },
+            ),
+            lowerPinnedFunction(
+                this.context,
+                subModule,
+                "subVec3",
+                [vec3Parameter("a"), vec3Parameter("b")],
+                {
+                    cppName: "tube_sub",
+                    returns: returnsVec3(subModule, "subVec3"),
+                    calls,
+                    memberBindings: vec3Members("a", "b"),
+                },
+            ),
+            lowerPinnedFunction(
+                this.context,
+                crossModule,
+                "crossVec3",
+                [vec3Parameter("a"), vec3Parameter("b")],
+                {
+                    cppName: "tube_cross",
+                    returns: returnsVec3(crossModule, "crossVec3"),
+                    calls,
+                    memberBindings: vec3Members("a", "b"),
+                },
+            ),
+            lowerPinnedFunction(
+                this.context,
+                normalizeModule,
+                "normalizeVec3",
+                [vec3Parameter("v")],
+                {
+                    cppName: "tube_normalize",
+                    returns: returnsVec3(normalizeModule, "normalizeVec3"),
+                    calls,
+                    memberBindings: vec3Members("v"),
+                },
+            ),
+            lowerPinnedFunction(
+                this.context,
+                tubeModule,
+                "rodrigues",
+                [
+                    vec3Parameter("v"),
+                    vec3Parameter("k"),
+                    { pinned: "angle", kind: "number", cpp: "angle" },
+                ],
+                {
+                    cppName: "tube_rodrigues",
+                    returns: returnsVec3(tubeModule, "rodrigues"),
+                    calls,
+                    memberBindings: vec3Members("v", "k"),
+                },
+            ),
+        ].join("\n\n");
+    }
 
     /**
      * `createExtrudeShape`, which is the tube's own machinery under a
@@ -107,28 +253,23 @@ MeshHandle create_extrude_shape(
         throw std::runtime_error(
             "createExtrudeShape requires at least two path points.");
     }
-    std::vector<TubeVec> frame_curve;
-    frame_curve.reserve(curve.size());
-    for (const Vec3d& point : curve) {
-        frame_curve.push_back(TubeVec{point.x, point.y, point.z});
-    }
-    const TubePath3D frames = tube_compute_path(frame_curve);
+    const TubePath3D frames = tube_compute_path(curve);
     std::vector<std::vector<Vec3d>> shape_paths;
     shape_paths.reserve(curve.size());
     double angle = 0.0;
     for (std::size_t i = 0; i < curve.size(); ++i) {
-        const TubeVec& t = frames.tangents[i];
-        const TubeVec& n = frames.normals[i];
-        const TubeVec& b = frames.binormals[i];
+        const Vec3d& t = frames.tangents[i];
+        const Vec3d& n = frames.normals[i];
+        const Vec3d& b = frames.binormals[i];
         std::vector<Vec3d> shape_path;
         shape_path.reserve(shape.size());
         for (const Vec3d& sp : shape) {
-            const TubeVec planed{
+            const Vec3d planed{
                 t.x * sp.z + n.x * sp.x + b.x * sp.y,
                 t.y * sp.z + n.y * sp.x + b.y * sp.y,
                 t.z * sp.z + n.z * sp.x + b.z * sp.y,
             };
-            const TubeVec rotated = tube_rodrigues(planed, t, angle);
+            const Vec3d rotated = tube_rodrigues(planed, t, angle);
             shape_path.push_back(Vec3d{
                 rotated.x * scale + curve[i].x,
                 rotated.y * scale + curve[i].y,
@@ -186,30 +327,8 @@ MeshHandle create_extrude_shape(
             "Math.PI * 2",
             "Tube full turn",
         );
-        // The swept circle: Rodrigues about the tangent, scaled and
-        // translated onto the path point.
-        const { declaration: rodrigues } =
-            this.context.functionDeclaration(tubeModule, "rodrigues");
-        this.context.expectShapeCount(
-            rodrigues,
-            "v.x * c + crossX * s + k.x * dot * (1 - c)",
-            "Rodrigues x row",
-        );
-        this.context.expectShapeCount(
-            rodrigues,
-            "v.y * c + crossY * s + k.y * dot * (1 - c)",
-            "Rodrigues y row",
-        );
-        this.context.expectShapeCount(
-            rodrigues,
-            "v.z * c + crossZ * s + k.z * dot * (1 - c)",
-            "Rodrigues z row",
-        );
-        this.context.expectShapeCount(
-            rodrigues,
-            "k.x * v.x + k.y * v.y + k.z * v.z",
-            "Rodrigues axis dot",
-        );
+        // The swept circle: Rodrigues about the tangent (lowered whole by
+        // `lowerVectorHelpers`), scaled and translated onto the path point.
         this.context.expectShapeCount(
             tubeData,
             "rotated.x * rad + path[i].x",
@@ -432,6 +551,7 @@ MeshHandle create_extrude_shape(
         );
 
         const epsilonLiteral = this.context.doubleLiteral(epsilon);
+        const vectorHelpers = this.lowerVectorHelpers(tubeModule);
         return {
             modulePath: tubeModule,
             symbolName: "createTubeData",
@@ -451,46 +571,18 @@ MeshHandle create_extrude_shape(
 namespace bbl {
 namespace {
 
-struct TubeVec {
-    double x = 0.0;
-    double y = 0.0;
-    double z = 0.0;
-};
-
-double tube_length(const TubeVec& v) {
-    return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-}
-
-TubeVec tube_sub(const TubeVec& a, const TubeVec& b) {
-    return TubeVec{a.x - b.x, a.y - b.y, a.z - b.z};
-}
-
-TubeVec tube_cross(const TubeVec& a, const TubeVec& b) {
-    return TubeVec{
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x,
-    };
-}
-
-TubeVec tube_normalize(const TubeVec& v) {
-    const double length = tube_length(v);
-    if (length == 0.0) {
-        return v;
-    }
-    return TubeVec{v.x / length, v.y / length, v.z / length};
-}
+${vectorHelpers}
 
 bool tube_within_epsilon(double a, double b, double eps) {
     return std::abs(a - b) <= eps;
 }
 
 // path3d.ts getFirstNonNullVector / getLastNonNullVector.
-TubeVec tube_first_non_null(
-    const std::vector<TubeVec>& curve,
+Vec3d tube_first_non_null(
+    const std::vector<Vec3d>& curve,
     std::size_t index) {
     std::size_t i = 1;
-    TubeVec v = tube_sub(curve[index + i], curve[index]);
+    Vec3d v = tube_sub(curve[index + i], curve[index]);
     while (tube_length(v) == 0.0 && index + i + 1 < curve.size()) {
         ++i;
         v = tube_sub(curve[index + i], curve[index]);
@@ -498,11 +590,11 @@ TubeVec tube_first_non_null(
     return v;
 }
 
-TubeVec tube_last_non_null(
-    const std::vector<TubeVec>& curve,
+Vec3d tube_last_non_null(
+    const std::vector<Vec3d>& curve,
     std::size_t index) {
     std::size_t i = 1;
-    TubeVec v = tube_sub(curve[index], curve[index - i]);
+    Vec3d v = tube_sub(curve[index], curve[index - i]);
     while (tube_length(v) == 0.0 && index > i + 1) {
         ++i;
         v = tube_sub(curve[index], curve[index - i]);
@@ -511,35 +603,35 @@ TubeVec tube_last_non_null(
 }
 
 // path3d.ts normalVector: the first-frame normal pick.
-TubeVec tube_normal_vector(const TubeVec& vt) {
+Vec3d tube_normal_vector(const Vec3d& vt) {
     double tgl = tube_length(vt);
     if (tgl == 0.0) {
         tgl = 1.0;
     }
     constexpr double epsilon = ${epsilonLiteral};
-    TubeVec point{};
+    Vec3d point{};
     if (!tube_within_epsilon(std::abs(vt.y) / tgl, 1.0, epsilon)) {
-        point = TubeVec{0.0, -1.0, 0.0};
+        point = Vec3d{0.0, -1.0, 0.0};
     } else if (!tube_within_epsilon(std::abs(vt.x) / tgl, 1.0, epsilon)) {
-        point = TubeVec{1.0, 0.0, 0.0};
+        point = Vec3d{1.0, 0.0, 0.0};
     } else if (!tube_within_epsilon(std::abs(vt.z) / tgl, 1.0, epsilon)) {
-        point = TubeVec{0.0, 0.0, 1.0};
+        point = Vec3d{0.0, 0.0, 1.0};
     } else {
-        point = TubeVec{0.0, 0.0, 0.0};
+        point = Vec3d{0.0, 0.0, 0.0};
     }
     return tube_normalize(tube_cross(vt, point));
 }
 
 struct TubePath3D {
-    std::vector<TubeVec> tangents;
-    std::vector<TubeVec> normals;
-    std::vector<TubeVec> binormals;
+    std::vector<Vec3d> tangents;
+    std::vector<Vec3d> normals;
+    std::vector<Vec3d> binormals;
     std::vector<double> distances;
 };
 
 // path3d.ts computePath3D, the always-normalized non-raw chain with a
 // null firstNormal.
-TubePath3D tube_compute_path(const std::vector<TubeVec>& curve) {
+TubePath3D tube_compute_path(const std::vector<Vec3d>& curve) {
     const std::size_t l = curve.size();
     TubePath3D path;
     path.tangents.resize(l);
@@ -555,10 +647,10 @@ TubePath3D tube_compute_path(const std::vector<TubeVec>& curve) {
         tube_cross(path.tangents[0], path.normals[0]));
     path.distances[0] = 0.0;
     for (std::size_t i = 1; i < l; ++i) {
-        const TubeVec prev = tube_last_non_null(curve, i);
+        const Vec3d prev = tube_last_non_null(curve, i);
         if (i < l - 1) {
-            const TubeVec cur = tube_first_non_null(curve, i);
-            path.tangents[i] = tube_normalize(TubeVec{
+            const Vec3d cur = tube_first_non_null(curve, i);
+            path.tangents[i] = tube_normalize(Vec3d{
                 prev.x + cur.x,
                 prev.y + cur.y,
                 prev.z + cur.z,
@@ -566,8 +658,8 @@ TubePath3D tube_compute_path(const std::vector<TubeVec>& curve) {
         }
         path.distances[i] = path.distances[i - 1] +
             tube_length(tube_sub(curve[i], curve[i - 1]));
-        const TubeVec& tangent = path.tangents[i];
-        TubeVec n = tube_cross(path.binormals[i - 1], tangent);
+        const Vec3d& tangent = path.tangents[i];
+        Vec3d n = tube_cross(path.binormals[i - 1], tangent);
         if (tube_length(n) == 0.0) {
             n = path.normals[i - 1];
         } else {
@@ -578,25 +670,6 @@ TubePath3D tube_compute_path(const std::vector<TubeVec>& curve) {
     }
     return path;
 }
-
-// create-tube.ts rodrigues.
-TubeVec tube_rodrigues(
-    const TubeVec& v,
-    const TubeVec& k,
-    double angle) {
-    const double c = std::cos(angle);
-    const double s = std::sin(angle);
-    const double dot = k.x * v.x + k.y * v.y + k.z * v.z;
-    const double cross_x = k.y * v.z - k.z * v.y;
-    const double cross_y = k.z * v.x - k.x * v.z;
-    const double cross_z = k.x * v.y - k.y * v.x;
-    return TubeVec{
-        v.x * c + cross_x * s + k.x * dot * (1.0 - c),
-        v.y * c + cross_y * s + k.y * dot * (1.0 - c),
-        v.z * c + cross_z * s + k.z * dot * (1.0 - c),
-    };
-}
-
 
 } // namespace
 
@@ -618,11 +691,7 @@ MeshHandle create_tube(
     }
     const std::size_t tessellation = static_cast<std::size_t>(
         static_cast<std::int32_t>(tessellation_option));
-    std::vector<TubeVec> curve;
-    curve.reserve(path_points.size());
-    for (const Vec3d& point : path_points) {
-        curve.push_back(TubeVec{point.x, point.y, point.z});
-    }
+    const std::vector<Vec3d>& curve = path_points;
     const TubePath3D frames = tube_compute_path(curve);
 
     // createTubeData: one circle per path point (cap NONE, arc 1).
@@ -633,7 +702,7 @@ MeshHandle create_tube(
         std::vector<Vec3d>& circle = circle_paths[i];
         circle.reserve(tessellation);
         for (std::size_t t = 0; t < tessellation; ++t) {
-            const TubeVec rotated = tube_rodrigues(
+            const Vec3d rotated = tube_rodrigues(
                 frames.normals[i],
                 frames.tangents[i],
                 step * static_cast<double>(t));

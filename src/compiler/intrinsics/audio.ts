@@ -30,6 +30,7 @@
 // it and emitting one would be a substitution wearing a subset's
 // clothes.
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -166,8 +167,8 @@ export function compileAudioIntrinsic(
             // `ctx.resume()` behind the pin's own `state !== "running"`
             // guard, which the PAL's resume already carries.
             context.expectArgumentCount(call, 1, 1);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "audio-engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "audio-engine", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp: `bbl::pal::audio_resume(${engine.cpp})`,
@@ -176,8 +177,8 @@ export function compileAudioIntrinsic(
 
         case "disposeAudioEngine": {
             context.expectArgumentCount(call, 1, 1);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "audio-engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "audio-engine", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp: `bbl::pal::audio_close_context(${engine.cpp})`,
@@ -194,10 +195,10 @@ export function compileAudioIntrinsic(
             // with no spatial, stereo or analyzer sub-node the graph's
             // head and tail are that one gain, which is what this emits.
             context.expectArgumentCount(call, 2, 3);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "audio-engine", call.arguments[0]!);
-            const node = context.compileValue(call.arguments[1]!);
-            context.expectKind(node, "audio-node", call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "audio-engine", argumentAt(call, 0));
+            const node = context.compileValue(argumentAt(call, 1));
+            context.expectKind(node, "audio-node", argumentAt(call, 1));
             if (call.arguments[2]) {
                 context.expectObjectLiteral(call.arguments[2]);
                 context.fail(
@@ -209,7 +210,7 @@ export function compileAudioIntrinsic(
             const mainBus = engine.audioMainBusCpp;
             if (!mainBus) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "Audio engine value carries no main bus.",
                 );
             }

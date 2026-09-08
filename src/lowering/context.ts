@@ -1,4 +1,8 @@
 import ts from "typescript";
+import {
+    propertyNameText,
+    unwrapExpression as unwrapSyntaxWrappers,
+} from "../compiler/syntax.js";
 import { UpstreamSourceStore } from "../upstream-source.js";
 import {
     doubleLiteral as cppDoubleLiteral,
@@ -37,6 +41,206 @@ export function statementKind(statement: ts.Statement): string {
     );
 }
 
+// ── The AST reads every lowering shares ──────────────────────────────────────
+//
+// Each is a pure function of the pinned tree, so a lowerer that holds only a
+// `ts.SourceFile` (the glTF leaves, the numeric translator) reads through the
+// same code the context's methods do rather than through a copy of it.
+
+/** The refusal every contract states: the pinned location, then the message. */
+export function contractError(node: ts.Node, message: string): never {
+    const { file, line, character } = sourceLocation(node);
+    throw new Error(`${file.fileName}:${line}:${character}: ${message}`);
+}
+
+export function hasNode(
+    root: ts.Node,
+    predicate: (node: ts.Node) => boolean,
+): boolean {
+    let found = false;
+    const visit = (node: ts.Node): void => {
+        if (found) return;
+        if (predicate(node)) {
+            found = true;
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(root);
+    return found;
+}
+
+export function findNodes<T extends ts.Node>(
+    root: ts.Node,
+    predicate: (node: ts.Node) => node is T,
+): T[] {
+    const result: T[] = [];
+    const visit = (node: ts.Node): void => {
+        if (predicate(node)) result.push(node);
+        ts.forEachChild(node, visit);
+    };
+    visit(root);
+    return result;
+}
+
+/**
+ * The index text of an element-access store target (`data[base + 3]`
+ * gives `base + 3`), whitespace-normalized so a table of expected slots
+ * compares against it whatever the pin's line breaks. Undefined for a
+ * target that is not an element access.
+ */
+export function elementIndexText(target: ts.Expression): string | undefined {
+    if (!ts.isElementAccessExpression(target)) return undefined;
+    return target.argumentExpression
+        .getText(target.getSourceFile())
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+/** The name a property is declared under, where it is a plain name or literal. */
+export function propertyName(name: ts.PropertyName): string | undefined {
+    return propertyNameText(name);
+}
+
+/** The expression under every `as`, `<T>`, `(...)`, `!` and `satisfies` the pin wraps it in. */
+export function unwrapExpression(expression: ts.Expression): ts.Expression {
+    return unwrapSyntaxWrappers(expression);
+}
+
+/**
+ * The initializer of a module-scope `const` a pinned module declares.
+ *
+ * Two things narrow it, and both are the point. Only the file's own top
+ * level is consulted, so a same-named local inside some function is a
+ * different binding. And the declaration has to be `const`: the module
+ * this rule first reached is the demonstration — `hdr-ibl-pipeline.ts`
+ * declares `HDR_LOD_GENERATION_SCALE` on one line and a mutable
+ * `let _prefilteredEnvironmentExtraUsage = 0` counter on the next, and a
+ * scan that folded the second would bake a value the pin means to change.
+ */
+export function moduleScopeConstant(
+    file: ts.SourceFile,
+    name: string,
+): ts.Expression | undefined {
+    for (const statement of file.statements) {
+        if (
+            !ts.isVariableStatement(statement) ||
+            (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+        ) {
+            continue;
+        }
+        for (const declaration of statement.declarationList.declarations) {
+            if (
+                ts.isIdentifier(declaration.name) &&
+                declaration.name.text === name &&
+                declaration.initializer
+            ) {
+                return declaration.initializer;
+            }
+        }
+    }
+    return undefined;
+}
+
+/**
+ * The two sides of a pinned `<left> ?? <right>` default.
+ *
+ * Every lowerer that anchors a pinned default splits this expression, so
+ * the split is stated once. A caller anchoring a pinned `||` default (the
+ * falsy-name fallbacks) passes `BarBarToken` as the operator.
+ */
+export function nullishDefault(
+    expression: ts.Expression,
+    operator: ts.SyntaxKind = ts.SyntaxKind.QuestionQuestionToken,
+): { left: ts.Expression; right: ts.Expression } | undefined {
+    const node = unwrapExpression(expression);
+    if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== operator) {
+        return undefined;
+    }
+    return { left: node.left, right: node.right };
+}
+
+/** How `numericValue` reaches past the expression it is handed. */
+export interface NumericValueOptions {
+    /**
+     * A name's constant initializer. The default reads the file's own
+     * module-scope `const`s; a caller with a store follows imports too.
+     */
+    constant?: (
+        name: string,
+        file: ts.SourceFile,
+    ) => { initializer: ts.Expression; file: ts.SourceFile } | undefined;
+    /** The refusal, in the caller's own voice. */
+    refuse?: (node: ts.Node, file: ts.SourceFile) => never;
+}
+
+function sameFileConstant(
+    name: string,
+    file: ts.SourceFile,
+): { initializer: ts.Expression; file: ts.SourceFile } | undefined {
+    const initializer = moduleScopeConstant(file, name);
+    return initializer ? { initializer, file } : undefined;
+}
+
+/**
+ * The number a pinned expression states as a constant.
+ *
+ * The pin writes a constant as the LAYOUT it describes whenever the layout
+ * is the point -- the splat UBO is `16 * 4 * 3 + 8 * 4`, and its SH sibling
+ * is the same plus one more `4 * 4`; a spot default is `Math.PI / 4` -- so
+ * a caller that reads the number cannot read a literal. Folding the
+ * arithmetic keeps the value the pin's; refusing it would have to be
+ * answered by restating the product at the caller, which is the copy that
+ * drifts. A name resolves through `options.constant`.
+ */
+export function numericValue(
+    expression: ts.Expression,
+    file: ts.SourceFile,
+    options: NumericValueOptions = {},
+): number {
+    const unwrapped = unwrapExpression(expression);
+    if (ts.isNumericLiteral(unwrapped)) return Number(unwrapped.text);
+    if (
+        ts.isPrefixUnaryExpression(unwrapped) &&
+        unwrapped.operator === ts.SyntaxKind.MinusToken
+    ) {
+        return -numericValue(unwrapped.operand, file, options);
+    }
+    if (
+        ts.isPropertyAccessExpression(unwrapped) &&
+        ts.isIdentifier(unwrapped.expression) &&
+        unwrapped.expression.text === "Math" &&
+        unwrapped.name.text === "PI"
+    ) {
+        return Math.PI;
+    }
+    if (ts.isBinaryExpression(unwrapped)) {
+        const left = numericValue(unwrapped.left, file, options);
+        const right = numericValue(unwrapped.right, file, options);
+        switch (unwrapped.operatorToken.kind) {
+            case ts.SyntaxKind.PlusToken:
+                return left + right;
+            case ts.SyntaxKind.MinusToken:
+                return left - right;
+            case ts.SyntaxKind.AsteriskToken:
+                return left * right;
+            case ts.SyntaxKind.SlashToken:
+                return left / right;
+            default:
+                break;
+        }
+    }
+    if (ts.isIdentifier(unwrapped)) {
+        const bound = (options.constant ?? sameFileConstant)(unwrapped.text, file);
+        if (bound) return numericValue(bound.initializer, bound.file, options);
+    }
+    if (options.refuse) return options.refuse(unwrapped, file);
+    return contractError(
+        unwrapped,
+        `Expected numeric constant, found ${unwrapped.getText(file)}.`,
+    );
+}
+
 export class LoweringContext {
     public constructor(public readonly store = new UpstreamSourceStore()) {}
 
@@ -51,63 +255,29 @@ export class LoweringContext {
         return this.store.getSourceFile(modulePath);
     }
 
-    public contractError(
-        node: ts.Node,
-        message: string,
-    ): never {
-        const { file, line, character } = sourceLocation(node);
-        throw new Error(
-            `${file.fileName}:${line}:${character}: ${message}`,
-        );
+    public contractError(node: ts.Node, message: string): never {
+        return contractError(node, message);
     }
 
     public hasNode(
         root: ts.Node,
         predicate: (node: ts.Node) => boolean,
     ): boolean {
-        let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found) {
-                return;
-            }
-            if (predicate(node)) {
-                found = true;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(root);
-        return found;
+        return hasNode(root, predicate);
     }
 
     public countNodes(
         root: ts.Node,
         predicate: (node: ts.Node) => boolean,
     ): number {
-        let count = 0;
-        const visit = (node: ts.Node): void => {
-            if (predicate(node)) {
-                count += 1;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(root);
-        return count;
+        return findNodes(root, (node): node is ts.Node => predicate(node)).length;
     }
 
     public findNodes<T extends ts.Node>(
         root: ts.Node,
         predicate: (node: ts.Node) => node is T,
     ): T[] {
-        const result: T[] = [];
-        const visit = (node: ts.Node): void => {
-            if (predicate(node)) {
-                result.push(node);
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(root);
-        return result;
+        return findNodes(root, predicate);
     }
 
     /** Every `<target>[...] = ...` store inside a pinned writer, in order. */
@@ -131,17 +301,8 @@ export class LoweringContext {
         });
     }
 
-    public propertyName(
-        name: ts.PropertyName,
-    ): string | undefined {
-        if (
-            ts.isIdentifier(name) ||
-            ts.isStringLiteral(name) ||
-            ts.isNumericLiteral(name)
-        ) {
-            return name.text;
-        }
-        return undefined;
+    public propertyName(name: ts.PropertyName): string | undefined {
+        return propertyName(name);
     }
 
     public hasNamedImport(
@@ -886,43 +1047,11 @@ export class LoweringContext {
         );
     }
 
+    /** `numericValue`, with a name resolving through the store's imports too. */
     public numericValue(expression: ts.Expression, file: ts.SourceFile): number {
-        const unwrapped = this.unwrapExpression(expression);
-        if (ts.isNumericLiteral(unwrapped)) return Number(unwrapped.text);
-        if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.MinusToken) {
-            return -this.numericValue(unwrapped.operand, file);
-        }
-        // The pin writes a constant as the LAYOUT it describes whenever the
-        // layout is the point -- the splat UBO is `16 * 4 * 3 + 8 * 4`, and
-        // its SH sibling is the same plus one more `4 * 4` -- so a caller
-        // that reads the number cannot read a literal. Folding the
-        // arithmetic keeps the value the pin's; refusing it would have to be
-        // answered by restating the product here, which is the copy that
-        // drifts.
-        if (ts.isBinaryExpression(unwrapped)) {
-            const left = this.numericValue(unwrapped.left, file);
-            const right = this.numericValue(unwrapped.right, file);
-            switch (unwrapped.operatorToken.kind) {
-                case ts.SyntaxKind.PlusToken:
-                    return left + right;
-                case ts.SyntaxKind.MinusToken:
-                    return left - right;
-                case ts.SyntaxKind.AsteriskToken:
-                    return left * right;
-                case ts.SyntaxKind.SlashToken:
-                    return left / right;
-                default:
-                    break;
-            }
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            const bound = this.moduleConstant(file, unwrapped.text);
-            if (bound) return this.numericValue(bound.initializer, bound.file);
-        }
-        return this.contractError(
-            unwrapped,
-            `Expected numeric constant, found ${unwrapped.getText(file)}.`,
-        );
+        return numericValue(expression, file, {
+            constant: (name, at) => this.moduleConstant(at, name),
+        });
     }
 
     /**
@@ -953,39 +1082,11 @@ export class LoweringContext {
             : undefined;
     }
 
-    /**
-     * The initializer of a module-scope `const` a pinned module declares.
-     *
-     * Two things narrow it, and both are the point. Only the file's own top
-     * level is consulted, so a same-named local inside some function is a
-     * different binding. And the declaration has to be `const`: the module
-     * this rule first reached is the demonstration — `hdr-ibl-pipeline.ts`
-     * declares `HDR_LOD_GENERATION_SCALE` on one line and a mutable
-     * `let _prefilteredEnvironmentExtraUsage = 0` counter on the next, and a
-     * scan that folded the second would bake a value the pin means to change.
-     */
     public moduleScopeConstant(
         file: ts.SourceFile,
         name: string,
     ): ts.Expression | undefined {
-        for (const statement of file.statements) {
-            if (
-                !ts.isVariableStatement(statement) ||
-                (statement.declarationList.flags & ts.NodeFlags.Const) === 0
-            ) {
-                continue;
-            }
-            for (const declaration of statement.declarationList.declarations) {
-                if (
-                    ts.isIdentifier(declaration.name) &&
-                    declaration.name.text === name &&
-                    declaration.initializer
-                ) {
-                    return declaration.initializer;
-                }
-            }
-        }
-        return undefined;
+        return moduleScopeConstant(file, name);
     }
 
     /**
@@ -1020,27 +1121,10 @@ export class LoweringContext {
         return found;
     }
 
-    /**
-     * The two sides of a pinned `<left> ?? <right>` default.
-     *
-     * Every lowerer that anchors a pinned default splits this expression, and
-     * each hand-rolled copy carries its own spelling of the same two tests.
-     * `coalescedPropertyDefault` in the glTF lowerers is the specialization
-     * that additionally names the property on the left; this is the general
-     * form, for the defaults whose left side is a bare parameter.
-     */
     public nullishDefault(
         expression: ts.Expression,
     ): { left: ts.Expression; right: ts.Expression } | undefined {
-        const node = this.unwrapExpression(expression);
-        if (
-            !ts.isBinaryExpression(node) ||
-            node.operatorToken.kind !==
-                ts.SyntaxKind.QuestionQuestionToken
-        ) {
-            return undefined;
-        }
-        return { left: node.left, right: node.right };
+        return nullishDefault(expression);
     }
 
     /**
@@ -1164,16 +1248,7 @@ export class LoweringContext {
     }
 
     public unwrapExpression(expression: ts.Expression): ts.Expression {
-        let current = expression;
-        while (
-            ts.isAsExpression(current) ||
-            ts.isTypeAssertionExpression(current) ||
-            ts.isParenthesizedExpression(current) ||
-            ts.isNonNullExpression(current)
-        ) {
-            current = current.expression;
-        }
-        return current;
+        return unwrapExpression(expression);
     }
 
     /**

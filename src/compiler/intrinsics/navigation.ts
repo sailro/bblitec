@@ -7,6 +7,8 @@
 // wrapper's wasm compiles — so unlike physics, nothing is substituted
 // and the answers are expected to match the browser reference.
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
+import { handleCppType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -184,14 +186,14 @@ export function compileNavigationIntrinsic(
 
         case "createNavMesh": {
             context.expectArgumentCount(call, 3, 3);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const meshList = context.expectStaticArrayLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const meshes = meshList.elements.map((element) => {
                 const mesh = context.compileValue(element);
@@ -200,7 +202,7 @@ export function compileNavigationIntrinsic(
             });
             if (meshes.length === 0) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "createNavMesh requires at least one mesh.",
                 );
             }
@@ -209,7 +211,7 @@ export function compileNavigationIntrinsic(
                 call,
             );
             const options = context.expectObjectLiteral(
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             validateNavMeshParams(context, options);
             // Which arm this build takes is decided HERE and nowhere else:
@@ -238,7 +240,7 @@ export function compileNavigationIntrinsic(
                 cpp:
                     `bbl::upstream::create_nav_mesh(${engine}, ` +
                     `${plugin.cpp}, ` +
-                    `std::vector<bbl::MeshHandle>{${meshes
+                    `std::vector<${handleCppType("mesh")}>{${meshes
                         .map((mesh) => mesh.cpp)
                         .join(", ")}}, ` +
                     `${parameters})`,
@@ -253,21 +255,21 @@ export function compileNavigationIntrinsic(
             // full cache update the entry point below runs alone.
             const box = importedName === "addBoxObstacle";
             context.expectArgumentCount(call, 4, 4);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const position = context.compileVec3(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const second = box
-                ? context.compileVec3(call.arguments[2]!, "double")
-                : context.compileNumber(call.arguments[2]!, "double");
+                ? context.compileVec3(argumentAt(call, 2), "double")
+                : context.compileNumber(argumentAt(call, 2), "double");
             const third = context.compileNumber(
-                call.arguments[3]!,
+                argumentAt(call, 3),
                 "double",
             );
             return {
@@ -281,17 +283,17 @@ export function compileNavigationIntrinsic(
 
         case "removeObstacle": {
             context.expectArgumentCount(call, 2, 2);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const obstacle = context.compileValue(call.arguments[1]!);
+            const obstacle = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 obstacle,
                 "navigation-obstacle",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             return {
                 kind: "void",
@@ -308,11 +310,11 @@ export function compileNavigationIntrinsic(
             // than folded away because the pin emits it, and because the
             // day an add stops waiting this is what would carry the wait.
             context.expectArgumentCount(call, 1, 1);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "void",
@@ -324,18 +326,18 @@ export function compileNavigationIntrinsic(
 
         case "computePath": {
             context.expectArgumentCount(call, 3, 3);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const start = context.compileVec3(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const end = context.compileVec3(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "double",
             );
             const path = context.allocateTemporaryCppName("nav_path");
@@ -361,18 +363,18 @@ export function compileNavigationIntrinsic(
 
         case "agentGoto": {
             context.expectArgumentCount(call, 3, 3);
-            const crowd = context.compileValue(call.arguments[0]!);
+            const crowd = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 crowd,
                 "navigation-crowd",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const index = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const destination = context.compileVec3(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "double",
             );
             return {
@@ -385,14 +387,14 @@ export function compileNavigationIntrinsic(
 
         case "updateNavCrowd": {
             context.expectArgumentCount(call, 2, 2);
-            const crowd = context.compileValue(call.arguments[0]!);
+            const crowd = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 crowd,
                 "navigation-crowd",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const delta = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             return {
@@ -405,11 +407,11 @@ export function compileNavigationIntrinsic(
 
         case "createDebugNavMeshGeometry": {
             context.expectArgumentCount(call, 1, 1);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const temporary =
                 context.allocateTemporaryCppName("nav_debug");
@@ -443,18 +445,18 @@ export function compileNavigationIntrinsic(
 
         case "raycast": {
             context.expectArgumentCount(call, 3, 3);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const start = context.compileVec3(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const end = context.compileVec3(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "double",
             );
             const temporary =
@@ -487,14 +489,14 @@ export function compileNavigationIntrinsic(
 
         case "getClosestPoint": {
             context.expectArgumentCount(call, 2, 2);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const position = context.compileVec3(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             return navVec3Record(
@@ -507,18 +509,18 @@ export function compileNavigationIntrinsic(
         case "createNavCrowd": {
             context.reachFeature("navigation:crowd", call);
             context.expectArgumentCount(call, 3, 3);
-            const plugin = context.compileValue(call.arguments[0]!);
+            const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 plugin,
                 "navigation",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const maxAgents = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const maxAgentRadius = context.compileNumber(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "double",
             );
             const crowd = context.allocateTemporaryCppName("nav_crowd");
@@ -532,18 +534,18 @@ export function compileNavigationIntrinsic(
 
         case "addAgent": {
             context.expectArgumentCount(call, 3, 3);
-            const crowd = context.compileValue(call.arguments[0]!);
+            const crowd = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 crowd,
                 "navigation-crowd",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const position = context.compileVec3(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const options = context.expectObjectLiteral(
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             validateObjectProperties(
                 context,
@@ -557,7 +559,7 @@ export function compileNavigationIntrinsic(
             // whose author expects it to reach the agent.
             if (context.objectProperty(options, "reachRadius")) {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "addAgent's reachRadius is declared but never " +
                         "forwarded to the crowd by the pinned module.",
                 );
@@ -571,7 +573,7 @@ export function compileNavigationIntrinsic(
                 const value = context.objectProperty(options, name);
                 if (!value) {
                     context.fail(
-                        call.arguments[2]!,
+                        argumentAt(call, 2),
                         `addAgent requires '${name}'; the pinned ` +
                             "parameters carry no default for it.",
                     );
@@ -609,14 +611,14 @@ export function compileNavigationIntrinsic(
 
         case "getAgentPosition": {
             context.expectArgumentCount(call, 2, 2);
-            const crowd = context.compileValue(call.arguments[0]!);
+            const crowd = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 crowd,
                 "navigation-crowd",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const index = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             return navVec3Record(

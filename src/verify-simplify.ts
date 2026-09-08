@@ -2,10 +2,10 @@
  * The `/simplify` gate, as a check that fails and names what is missing.
  *
  * Gate 3 runs the skill over the complete body of work before the validation
- * sweep, on every branch that becomes a pull request, whatever its size.
- * Stated as prose it was skipped by judging a change too small, and the run
- * that followed had real defects to find — so it is stated here instead, in
- * the form this repository already trusts for `docs/status.md`.
+ * sweep, on every branch that becomes a pull request, whatever its size;
+ * a change judged too small to review is exactly where the run finds
+ * defects, so the gate is a check rather than prose, in the form this
+ * repository already trusts for `docs/status.md`.
  *
  * The record is keyed by the CONTENT of the work, not by the branch or the
  * commit, for the same reason `parity` refuses a stale binary: a review of
@@ -21,9 +21,10 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
+import { isMainModule, parseFlags } from "./tooling/flags.js";
 
 /** Where a record lives, relative to the repository root. */
-export const reviewDirectory = "docs/reviews";
+const reviewDirectory = "docs/reviews";
 
 /** One finding, and what happened to it. */
 export interface SimplifyFinding {
@@ -63,7 +64,7 @@ function gitText(root: string, ...args: string[]): string {
 }
 
 /** The default branch this work is measured against. */
-export function baseBranch(root: string): string {
+function baseBranch(root: string): string {
     for (const candidate of ["origin/main", "main"]) {
         try {
             gitText(root, "rev-parse", "--verify", "--quiet", candidate);
@@ -137,7 +138,7 @@ export function workHash(root: string): SimplifyWork {
     };
 }
 
-export function recordPath(root: string, hash: string): string {
+function recordPath(root: string, hash: string): string {
     return join(root, ...reviewDirectory.split("/"), `${hash}.json`);
 }
 
@@ -205,7 +206,7 @@ export function validateRecord(record: unknown): string[] {
 }
 
 /** What the gate found, as lines to print, and whether it passed. */
-export function verifySimplify(root: string): {
+function verifySimplify(root: string): {
     ok: boolean;
     lines: string[];
 } {
@@ -279,8 +280,13 @@ export function verifySimplify(root: string): {
 }
 
 function main(): void {
+    const parsed = parseFlags(
+        process.argv.slice(2),
+        { boolean: ["--path"] },
+        "verify-simplify",
+    );
     const root = join(dirname(new URL(import.meta.url).pathname.slice(1)), "..", "..");
-    if (process.argv.includes("--path")) {
+    if (parsed.flags.has("--path")) {
         const path = recordPath(root, workHash(root).hash);
         mkdirSync(dirname(path), { recursive: true });
         process.stdout.write(`${path}\n`);
@@ -294,10 +300,6 @@ function main(): void {
     if (!ok) process.exitCode = 1;
 }
 
-if (
-    process.argv[1] &&
-    import.meta.url ===
-        new URL(`file://${process.argv[1].replace(/\\/g, "/")}`).href
-) {
+if (isMainModule(import.meta.url)) {
     main();
 }

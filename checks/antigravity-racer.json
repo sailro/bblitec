@@ -1,0 +1,12 @@
+{
+  "scene": "antigravity-racer",
+  "notes": "Split-screen: the demo creates the second player's canvas at run time and appends it to host chrome the retained UI does not project, so that canvas has no layout rectangle and the two surface scenes share the window in equal panes. Selecting 'Split-Screen (2 Players)' from the menu must present both panes on both backends (the 2026-09-06 release did; layout-only panes left both black).",
+  "capture": false,
+  "phases": [
+    { "id": "split", "frame": 600, "tape": ["-*240", "ArrowDown", "-*10", "Enter"] }
+  ],
+  "expect": [
+    { "kind": "viewport", "phase": "split", "equals": [1280, 720] },
+    { "kind": "plugin", "module": "checks/plugins/racer-split.mjs" }
+  ]
+}

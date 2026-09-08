@@ -17,7 +17,7 @@
  */
 import ts from "typescript";
 import { LoweringContext } from "./lowering/context.js";
-import { unwrapPin } from "./lowering/gltf/shared.js";
+import { unwrapExpression } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 
 /** One reader per process; the pin cannot move under a generation. */
@@ -69,7 +69,7 @@ function pinnedDefaultExpression(
     };
     visit(initializer);
     return found
-        ? unwrapPin(found.right)
+        ? unwrapExpression(found.right)
         : context.contractError(
               initializer,
               `${modulePath}#${factory} resolves '${local}' without a '??'.`,

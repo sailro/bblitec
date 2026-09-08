@@ -1,0 +1,72 @@
+{
+  "scene": "break-meshes",
+  "notes": "Physics step rate at 240 frames per second: two seconds of frames must simulate exactly 480 fixed 12.5 ms steps on both sides. The demo steps one fixed step per rendered frame; the browser is paced through checks/plugins/raf-pacing.init.js and observed headed so the display's real cadence is measured.",
+  "base": "none",
+  "testPass": true,
+  "gpuDebug": false,
+  "capture": false,
+  "env": {
+    "BBLITE_PHYSICS_TRACE": "1",
+    "BBLITE_RUNTIME_TRACE": "0",
+    "BBLITE_CPU_PROFILE": "0",
+    "BBLITE_FRAME_DELTA_MS": "4.166666666666667"
+  },
+  "phases": [
+    {
+      "id": "run",
+      "frame": 480,
+      "tape": [
+        "UiIdle@0:0*10",
+        "+UiMouseLeft@640:370",
+        "-UiMouseLeft@640:370"
+      ]
+    }
+  ],
+  "expect": [
+    {
+      "kind": "plugin",
+      "module": "checks/plugins/break-meshes-timing.mjs",
+      "options": {
+        "fps": 240
+      }
+    }
+  ],
+  "observe": {
+    "headless": false,
+    "initScriptFile": "checks/plugins/raf-pacing.init.js",
+    "golden": false,
+    "hooks": [
+      {
+        "marker": "await registerSceneWithShadowSupport(scene);",
+        "position": "before",
+        "inject": "globalThis.__bblRafPacing(240); globalThis.__physicsTiming = { world, scene, samples: [] }; world._afterStep ??= []; world._afterStep.push((seconds) => globalThis.__physicsTiming.samples.push({ seconds, now: performance.now() }));"
+      }
+    ],
+    "steps": [
+      {
+        "id": "timing",
+        "actions": [
+          {
+            "click": [
+              640,
+              370
+            ]
+          },
+          {
+            "waitFor": "globalThis.__physicsTiming.world._bodies.some((body) => body.motionType === 2)"
+          },
+          {
+            "evaluate": "globalThis.__physicsTiming.samples = []"
+          },
+          {
+            "waitFor": "globalThis.__physicsTiming.samples.length >= 481"
+          },
+          {
+            "evaluate": "(() => { const { world, scene, samples } = globalThis.__physicsTiming; return { sceneFixed: scene.fixedDeltaMs ?? 0, worldFixed: world._fixedDeltaMs, dynamicBodies: world._bodies.filter((body) => body.motionType === 2).length, samples: samples.slice(0, 481) }; })()",
+            "as": "observed"
+          }
+        ]
+      }
+    ]
+  }
+}

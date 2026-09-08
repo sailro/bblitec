@@ -1,18 +1,19 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
+import { computeBuildStamp } from "./build-stamp.js";
 import {
     backendFileToken,
     canonicalBackend,
     captureNativePaths,
     defaultCaptureDirectory,
-    defaultExecutable,
-    nativeCaptureFrameBudget,
-    spawnNativeMeasured,
-    verifyBuildIdentity,
-    verifyDeployedPayload,
+    readSeekMeta,
     writeSeekMeta,
-} from "./parity-scene.js";
-import { resolveScene } from "./scene-registry.js";
+} from "./tooling/artifacts.js";
+import {
+    resolveNativeExecutable,
+    runMeasured,
+} from "./tooling/native-run.js";
+import { resolveScene, type SceneDefinition } from "./scene-registry.js";
 
 /**
  * The native half of `scene -- capture`.
@@ -27,20 +28,56 @@ import { resolveScene } from "./scene-registry.js";
  *
  * It runs under the same build-identity checks as a measured parity run,
  * because a capture from a stale executable describes a frame nobody is
- * looking at — and that failure is silent, which is exactly the kind of
- * hour this tooling exists to avoid.
+ * looking at — and that failure is silent.
  */
 export interface NativeCaptureOptions {
     /** `sdl_gpu` (default) or `dawn`; `gpu` is accepted for `sdl_gpu`. */
     backend?: string;
     seekSeconds?: number;
     outputDirectory?: string;
+    /** An explicit executable; `BBLITE_NATIVE_EXE` and the scene's own
+     *  Release build are the fallbacks (`resolveNativeExecutable`). */
+    executable?: string;
 }
 
 export interface NativeCaptureResult {
     capturePath: string;
     screenshotPath: string;
     backend: string;
+}
+
+/**
+ * Why a native capture on disk is NOT reusable as evidence for `scene`
+ * at `wantSeek` (`null` = no seek), or `undefined` when it is. The
+ * capture embeds the stamp of the generated tree it was built from; a
+ * tree that moved since makes the capture describe a build that no
+ * longer exists. `scene -- diff` recaptures on any reason.
+ */
+export function nativeCaptureStaleness(
+    scene: SceneDefinition,
+    captureDirectory: string,
+    token: string,
+    wantSeek: number | null,
+): string | undefined {
+    const paths = captureNativePaths(captureDirectory, token);
+    if (!existsSync(paths.capture)) return "missing";
+    try {
+        const capture = JSON.parse(
+            readFileSync(paths.capture, "utf8"),
+        ) as { buildStamp?: string };
+        if (
+            capture.buildStamp !==
+            computeBuildStamp(resolve(scene.output)).stamp
+        ) {
+            return "was captured from a different generated tree";
+        }
+    } catch {
+        return "is unreadable";
+    }
+    if (readSeekMeta(paths.meta) !== wantSeek) {
+        return "was captured at a different seek (or carries no provenance)";
+    }
+    return undefined;
 }
 
 export function runNativeCapture(
@@ -58,54 +95,40 @@ export function runNativeCapture(
     const outputDirectory = resolve(
         options.outputDirectory ?? defaultCaptureDirectory(scene.id),
     );
-    mkdirSync(outputDirectory, { recursive: true });
-    const executable = defaultExecutable(scene.buildDirectory);
+    const executable = resolveNativeExecutable(
+        options.executable,
+        scene.buildDirectory,
+    );
     if (!existsSync(executable)) {
         throw new Error(
             `Native executable not found: ${executable}. Run 'scene -- process ${scene.id}' first.`,
         );
     }
-    verifyDeployedPayload(executable, scene.output);
-
     // One spelling for the trio, shared with the `scene -- diff` reader.
     const paths = captureNativePaths(outputDirectory, token);
-    const capturePath = paths.capture;
-    const screenshotPath = paths.screenshot;
-    const stampPath = `${screenshotPath}.build-stamp`;
     // The seek pairs the native frame to the browser frame the golden was
     // captured at; without it an animated scene is described at a
     // different pose than the one being diffed against.
     const seekSeconds =
         options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
-    const nativeEnvironment = scene.parity?.nativeEnvironment;
-    // A failed or too-short run must not make a previous same-build capture
-    // look current. These paths are this invocation's exact native outputs.
-    for (const path of [capturePath, screenshotPath, stampPath, paths.meta]) {
-        rmSync(path, { force: true });
-    }
-    spawnNativeMeasured(
-        executable,
-        {
-            ...(nativeEnvironment ?? {}),
-            ...(backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
-            BBLITE_TEST_PASS: "1",
-            BBLITE_MAX_FRAMES: String(
-                nativeCaptureFrameBudget(nativeEnvironment),
-            ),
-            BBLITE_SCREENSHOT: screenshotPath,
-            BBLITE_RENDER_CAPTURE: capturePath,
-            BBLITE_BUILD_STAMP_OUT: stampPath,
-            ...(seekSeconds !== undefined
-                ? { BBLITE_ANIMATION_SEEK_SECONDS: String(seekSeconds) }
-                : {}),
-        },
+    // The run deletes the capture, screenshot and stamp it must write;
+    // the provenance sidecar is this writer's own and goes with them, so
+    // a failed run cannot leave a previous capture looking current.
+    rmSync(paths.meta, { force: true });
+    runMeasured(executable, {
+        generatedDirectory: scene.output,
+        ...(scene.parity?.nativeEnvironment !== undefined
+            ? { environment: scene.parity.nativeEnvironment }
+            : {}),
         // An ambient backend selection must not survive into a run whose
         // backend the flag chooses explicitly.
-        ["BBLITE_GPU_BACKEND"],
-    );
-    verifyBuildIdentity(executable, scene.output, stampPath);
-    if (!existsSync(capturePath)) {
-        // Every frame loop writes a capture now: the scene loops describe
+        backend,
+        screenshot: paths.screenshot,
+        capture: paths.capture,
+        ...(seekSeconds !== undefined ? { seekSeconds } : {}),
+    });
+    if (!existsSync(paths.capture)) {
+        // Every frame loop writes a capture: the scene loops describe
         // the families a scene composes, and the standalone sprite/effect
         // loops (pal_*_sprite.cpp / pal_*_effect.cpp) write theirs through
         // write_standalone_render_capture. A run that completed without
@@ -113,7 +136,7 @@ export function runNativeCapture(
         // standalone writers, or a run that ended before the capture
         // frame — never an expected shape.
         throw new Error(
-            `The native run wrote no capture to ${capturePath}. Every frame loop writes one ` +
+            `The native run wrote no capture to ${paths.capture}. Every frame loop writes one ` +
                 `(scene, sprite-only and effect-renderer-only alike), so this run either ended ` +
                 `before the capture frame or ran an executable predating the standalone capture ` +
                 `writers. Rebuild with 'scene -- process ${scene.id}' and recapture.`,
@@ -122,5 +145,9 @@ export function runNativeCapture(
     // Seek provenance for the reuse path; the build stamp is already inside
     // the capture itself, written by the native run.
     writeSeekMeta(paths.meta, seekSeconds);
-    return { capturePath, screenshotPath, backend };
+    return {
+        capturePath: paths.capture,
+        screenshotPath: paths.screenshot,
+        backend,
+    };
 }

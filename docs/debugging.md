@@ -23,7 +23,8 @@ parity, paired captures and asset composition.
 
 `diff` refreshes missing/stale captures; `--recapture` forces refresh. Match
 source, module, query, pose, UI and [build identity](development.md#build-identity).
-`--seek <t>` requires intentional reference recapture for gated comparisons.
+`--seek <t>` requires an intentional reference recapture (`--recapture-reference`)
+for gated comparisons.
 `--no-fail`, suppressed features and changed poses are diagnostic-only.
 `--differential` accepts only `--gpu-debug` alongside it.
 
@@ -54,10 +55,11 @@ bindings and uniform uploads/pushes. These captures can be large. SDL group ID
 zero means no native bind-group object. Bytes outside `writtenRanges` are
 unobserved.
 
-`tools/check-scene149-transport.mjs` joins saved browser/native receipts,
-checking attributes, indices, texture sharing and bindings. It rejects stale
-stamps and numerical world differences; signed-zero differences are reported
-separately. `--allow-stale` is diagnostic-only. Retained splat
+`scene -- check scene149-transport` joins the native `nodeGpu` receipts of one
+canonical frame against the saved browser identity observation and instrumented
+buffer capture under `artifacts/scene149-reference`, checking attributes, indices,
+texture sharing and bindings. It rejects stale stamps and numerical world
+differences; signed-zero differences are reported separately. Retained splat
 `retainedDataFile` sidecars contain CPU bytes, not texture uploads.
 
 `probe-variants <id> --shader <stem> --term <text> --with <text>` temporarily
@@ -66,32 +68,51 @@ SDL probes need offline shader compilation.
 
 ## Before calling a scene done
 
-Run [checkpoint validation](development.md#validation), then exercise input,
-live state and resize on both backends. Check significant state numerically
-when a missing small object or changed buffer could pass an image gate.
+Run [checkpoint validation](development.md#validation), then the scene's declared
+interaction check on both backends:
 
-| Control | Tool / evidence |
+```powershell
+npm run scene -- observe <check-id>   # when the check declares a browser observation
+npm run scene -- check <check-id> [--backend sdl_gpu|dawn] [--phase <id>] [--keep]
+```
+
+A check is `checks/<check-id>.json`: the native phases (frame window, input tape,
+environment), a typed expectation vocabulary (`capture-path`, `capture-same`,
+`capture-differs`, `capture-compare`, `camera-delta`, `image-mad`, `viewport`,
+`golden-mad`, `backends-agree`, `log-match`, `plugin`) and the browser observation
+the expectations compare against; `checks/plugins/*.mjs` hold scene-specific
+arithmetic. The driver spreads the registry `nativeEnvironment` before the phase
+window, so a check measures at parity's pose unless it declares another clock. A
+check declaring `twin: true` first generates and builds the byte-identical no-query
+copy into `generated/<id>-live` and `native/build-<id>-live-release`. Outputs land
+in `artifacts/check/<check-id>/` (`report.json`, per-phase
+`<backend>-<phase>.{png,json,log}`, `browser/observations.json`). Check significant
+state numerically when a missing small object or changed buffer could pass an image gate.
+
+| Control | Check |
 | --- | --- |
-| Morph/skeleton picking | `check-scene114-input.mjs`: reference picking observations/golden, four markers. `test/fixtures/morph-picking-standard.ts` covers immediate update/pick. |
-| Splat updates | `check-scene121-input.mjs`: reference splat observations/golden, complete retained buffer through idle/input. Use the source's raw SPLAT asset. |
-| TAA | `check-scene261-input.mjs`: frozen/live observations, history and camera state. |
-| Text | `check-scene275-input.mjs`: operation observations for scene/shared/blend fixtures. |
-| Node geometry | `check-scene149-input.mjs`: browser orbit/resize observations. Live browser resize throws error84; compare unchanged-module startup at resized dimensions. |
-| Local cubemaps | `check-scene186-input.mjs`: native camera, idle and resize captures; eight faces and four reflective ORM replacements on both backends. |
-| Live text | `check-scene181-input.mjs`: edit/clear/regrow, glyph/palette receipts, textarea/window resize, orbit and zoom on both backends. |
-| Shared-engine canvases | `check-surface-input.mjs`: scenes 227/228 left/right drags, divider-crossing capture, idle isolation and geometry after resize. |
-| Worker windows | `check-offscreen-window.mjs`: held presses, worker progress, resize, shutdown. |
-| Physics timing | `check-break-meshes-timing.mjs`: unchanged fixed overrides and live timing. |
-| Heightfields | `observe-scene47.mjs` then `check-scene47-controls.mjs`: free-fall, terrain contact, live viewer poses, unhandled input and resize. The native checker requires a processed byte-identical `artifacts/scene47-live.ts` copy without a capture query. |
-| Constraints | `observe-scene46.mjs` then `check-scene46-controls.mjs`: seven groups, pivot/axis/limit state, unhandled input and resize. Process a byte-identical `artifacts/scene46-live.ts` copy without a capture query first. |
-| KHR_interactivity | `check-calculator-input.mjs [calculator\|scene304]`: press control, "7" then "x" taps at the scene's golden pose; display digits and dispatched nodes by name on both backends. |
+| Morph/skeleton picking | `scene114`: four markers against the browser picks; idle holds. `test/fixtures/morph-picking-standard.ts` covers immediate update/pick. |
+| Splat updates | `scene121`: the retained buffer through idle and orbit against the browser digest and the source's raw SPLAT asset. |
+| TAA | `scene261` (frozen words against the browser), `scene261-live` (twin: reset, recovery, resize). |
+| Text | `scene275`: native text GPU receipts against the browser's WebGPU receipts; idle, input, resize. |
+| Node geometry | `scene149`: orbit/resize against the browser observation (a live browser resize throws Babylon error #84, so the resized comparison is an unchanged-module startup at 960x600); `scene149-transport` for the GPU receipts. |
+| Local cubemaps | `scene186`: camera, idle and resize captures; eight faces and four reflective ORM replacements. |
+| Live text | `scene181` (edit/clear/regrow, textarea/window resize, orbit, zoom) and `scene180` (weight, colour, rotation, opacity, drag, scale, resizes); glyph/palette receipts against the browser. |
+| Shared-engine canvases | `scene227`, `scene228`: left/right drags, divider crossing, idle isolation, geometry after resize. |
+| Worker windows | `offscreen`: held presses, worker progress, resize; `offscreen-cadence` measures Window/Worker rates in a headed browser without correcting runtime speed. |
+| Physics timing | `break-meshes-60`, `break-meshes-240`, `break-meshes-live`: fixed overrides and live timing (headed browser). |
+| Heightfields | `scene47` (twin): free-fall, terrain contact, live viewer poses, unhandled input, resize. |
+| Constraints | `scene46` (twin): seven groups, pivot/axis/limit state, unhandled input, resize. |
+| Debug viewer / queries | `scene41` (twin): seven retained overlays, clone geometry, fixed camera; `scene49` (twin): Havok proximity/cast markers, gizmo drags, orbit, resize. |
+| Animation manager / emitter | `scene153`, `scene153-live`, `scene302`, `scene302-live`: frozen registry tree against the live twin; `scene231`, `scene241`: palette/texture animation and orbit. |
+| Device recovery | `scene164`: dataset handshake, resize, input, dispose; the recovery tape (`Dataset@key=value`, `GlobalCall@name`, `DeviceLoss`). |
+| KHR_interactivity | `calculator`, `scene304`: press control, "7" then "x" taps at the golden pose; display digits and dispatched nodes by name. |
+| Split-screen surfaces | `antigravity-racer`: the menu's two-player selection; the run-time second canvas has no layout rectangle, so both equal panes must present. |
 
-Scripts are under `tools/`. Checkers use scene defaults or take an executable, generated
-directory and saved browser observations; see each script's usage. Build its
-matching source first. A registry `nativeEnvironment` carries
-`BBLITE_SCREENSHOT_FRAME` beside its clock; a checker spreads it before its own
-frame window. `measure-offscreen-cadence.mjs` measures Window/Worker
-rates independently and does not correct runtime speed.
+Tape spellings: `-` is an idle frame (`UiIdle@0:0` is the retained-UI spelling of the
+same); `UiWheelUp|UiWheelDown` queue SDL wheel packets at the canvas centre and
+`WheelUp|WheelDown` dispatch a browser-sized notch (`native/src/pal_platform_events.hpp`);
+`"<entry>*<n>"` repeats an entry in a check file.
 
 `memory` defaults to 6,000 frames and 32 MB post-warm-up growth; `all` selects
 applications. Override with `--frames`, `--max-growth-mb`, `--backend` and one
@@ -108,7 +129,6 @@ Working-set stability does not establish object/GPU resource reclamation.
 | `artifacts/memory/` | Verdicts, samples and raw traces |
 
 Artifact suffix `gpu` means SDL_GPU; CLI values are `sdl_gpu|dawn`.
-Store detailed runs and experiments here, outside project documentation.
 
 ## Runtime switches
 
@@ -127,7 +147,13 @@ Store detailed runs and experiments here, outside project documentation.
 | `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS` | WAV path/duration in enabled builds |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialog paths |
-| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides |
+| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides; the executable override reaches every measuring command (`parity`, `geometry`, `memory`, `stability`, `check`, `diff`, `capture --native`, `probe-variants`) |
+| `BBLITE_GPU_DEBUG` | SDL_GPU validation layer (Dawn validation is always on) |
+| `BBLITE_TEST_PASS` | Hidden test pass: camera controls disabled (set by the harness) |
+| `BBLITE_GROUND`, `BBLITE_BACKGROUND` | Suppress ground/background (set by `parity --without`) |
+| `BBLITE_ID_BUFFER`, `BBLITE_CLUSTER_BUFFER`, `BBLITE_COPY_TASK` | Attribution outputs and copy-task filter (set by `parity` for id-diagnostic scenes) |
+| `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Frame count and stamp path of a measured run (set by `memory`/`parity`) |
+| `BBLITE_AUDIO_LOG` | LabSound log level (`trace`, `debug`, ...) |
 
 Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL
 assertion prompts. Build configuration belongs in [development](development.md).

@@ -13,10 +13,15 @@
 // skips the compiler; a miss, or anything the digest cannot see,
 // regenerates exactly as before.
 //
-// Inputs and outputs are both keyed by size and mtime, the identity ninja
-// trusts for the same files one step later; hashing content would read
-// the Doom WAD and the glTF demos' assets (56 MB over the registry) on
-// every no-op run for nothing the mtime does not already say.
+// Inputs are keyed by their bytes: a checkout, rebase or stash rewrites
+// every file it touches with a new mtime and the same content, and a
+// stamp keyed on mtimes regenerated the whole registry after each one.
+// The digests are cached per process by size and mtime, so a population
+// run reads each shared input once; the repository's own tools -- the
+// compiler under `dist/`, the pins -- are digested the same way. Outputs
+// are keyed by size and mtime, the identity ninja trusts for the same
+// files one step later: nothing rewrites them with identical bytes, and
+// an edited one must miss.
 //
 // The record lives under `artifacts/`, not inside the generated tree:
 // `scene -- neutrality-generated` digests every generated file, and a
@@ -37,7 +42,7 @@
 //     digest keeps that contract, since a rewritten or missing output is a
 //     miss.
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { browserIdentity } from "./bake-cache.js";
 import {
     buildStampHeader,
@@ -49,6 +54,7 @@ import {
 import { GeneratedTree } from "./generated-tree.js";
 import {
     contentFingerprint,
+    contentIdentity,
     hashEntries,
     isCompiledShaderOutput,
     metadataFingerprint,
@@ -88,7 +94,10 @@ export function generationStampPath(
  * The inputs every scene's generation shares -- the compiler, the pinned
  * package, the pins, the runtime and the browser -- digested once per
  * process rather than once per scene: a population run asks 229 times.
- * `undefined` when there is no compiler stamp to digest.
+ * The compiler is its emitted JavaScript under `dist/src`, digested by
+ * content: the build wrapper's own stamp follows source mtimes, which a
+ * checkout moves without changing a byte of what runs. `undefined` when
+ * there is no compiler to digest.
  */
 const sharedInputsByRoot = new Map<string, string | undefined>();
 
@@ -96,11 +105,11 @@ function sharedGenerationInputs(repositoryRoot: string): string | undefined {
     if (sharedInputsByRoot.has(repositoryRoot)) {
         return sharedInputsByRoot.get(repositoryRoot);
     }
-    const distStamp = resolve(repositoryRoot, "dist", ".build-stamp");
-    const shared = existsSync(distStamp)
+    const compiler = resolve(repositoryRoot, "dist", "src");
+    const shared = existsSync(compiler)
         ? hashEntries([
               `node ${process.version}`,
-              `dist ${readFileSync(distStamp, "utf8").trim()}`,
+              `dist ${contentFingerprint([compiler])}`,
               `pins ${contentFingerprint([
                   resolve(repositoryRoot, "package-lock.json"),
                   resolve(repositoryRoot, "upstream"),
@@ -115,8 +124,22 @@ function sharedGenerationInputs(repositoryRoot: string): string | undefined {
 }
 
 /**
+ * One reached input's identity. A repository file is its bytes; a file
+ * outside the repository is a tool (the physics-viewer specialization
+ * lists the CMake and compiler executables it ran), which no checkout
+ * rewrites and which is too large to read for nothing.
+ */
+function inputIdentity(input: string, repositoryRoot: string): string {
+    const path = resolve(repositoryRoot, input);
+    const inside = relative(repositoryRoot, path);
+    return inside.startsWith("..") || isAbsolute(inside)
+        ? toolIdentity(path)
+        : contentIdentity(path);
+}
+
+/**
  * Digest of everything one generation reads, over a known input list.
- * `undefined` when there is no compiler stamp to digest, which the caller
+ * `undefined` when there is no compiler to digest, which the caller
  * treats as a miss.
  */
 function generationInputFingerprint(
@@ -127,15 +150,12 @@ function generationInputFingerprint(
     const shared = sharedGenerationInputs(repositoryRoot);
     if (shared === undefined) return undefined;
     return hashEntries([
-        "generation-stamp v2",
+        "generation-stamp v3",
         `shared ${shared}`,
         `arguments ${JSON.stringify(compilerArguments)}`,
         ...[...inputs]
             .sort()
-            .map(
-                (input) =>
-                    `${input}\t${toolIdentity(resolve(repositoryRoot, input))}`,
-            ),
+            .map((input) => `${input}\t${inputIdentity(input, repositoryRoot)}`),
     ]);
 }
 

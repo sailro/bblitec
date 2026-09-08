@@ -84,9 +84,8 @@ Background geometry, cube orientation, mip policy, encoding and samplers follow
 the reached pinned path. Image processing and scene-color capture are separate
 passes; keep their source order.
 
-Local cubemap configuration is static before registration. The pin's setters, probe-grid producer,
-uniform writer and copy planner execute at generation; native ownership retains their separate
-environments and the composed fragment stays unchanged. SDL's large-uniform storage substitution
+Local cubemap probe sets execute the pin's setters, probe-grid producer, uniform writer and copy
+planner at generation; the composed fragment stays unchanged. SDL's large-uniform storage substitution
 is recorded in `static-local-cubemap-packets`.
 
 ### glTF material inputs
@@ -97,9 +96,6 @@ merging. Native animation targets retain independent texture slots; the pin
 does not resolve metallic-roughness texture-transform pointers.
 
 Public color/texture presence and identity differ from render fallbacks.
-Retain original color arrays in double precision and project them at the source
-registration boundary. Babylon material loading copies the first three diffuse
-channels into a fresh array; unused export channels are not public diffuse lanes.
 
 ### Deformation and instancing
 
@@ -108,15 +104,13 @@ Loaded glTF coordinate mirroring is not a universal Standard-mesh convention.
 Native Euler/quaternion lanes differ from the pin's single rotation proxy;
 mixed writes and wider sharing need explicit admission.
 
-Imported node geometry preserves raw source attributes/indices and per-view
-worlds. Its world receipts can be numerically identical with signed-zero
+Imported node geometry world receipts can be numerically identical with signed-zero
 differences; no general bit-identity claim follows.
 
 ### Textures and compressed textures
 
-Keep pinned mips, encoding, samplers and upload orientation. KTX/Basis payloads
-retain their block data/mips. `invertY` may select a UV transform rather than
-a row flip; color and depth views are distinct resources.
+Keep pinned mips, encoding, samplers and upload orientation. `invertY` may select
+a UV transform rather than a row flip; color and depth views are distinct resources.
 
 ### Gaussian splats
 
@@ -128,9 +122,8 @@ Borrowed buffers without an owning lifetime refuse.
 ### Animation and hierarchy
 
 Property/glTF tracks have separate target/interpolation contracts. Preserve
-mutation and render-list invalidation boundaries. Autonomous managers use pinned
-clock/lifecycle logic with ordered cancellable native frame requests. Persistent
-application RAF composition remains bounded by source requeue semantics.
+mutation and render-list invalidation boundaries. Autonomous managers issue ordered
+cancellable native frame requests.
 
 ### Frame graph and post-process passes
 
@@ -151,20 +144,14 @@ scene camera.
 
 Screen-space history resets follow source allocation, identity, version, enable
 and inverse-matrix predicates. Native recreation of unchanged-size textures can
-invalidate history that a browser retained. SDL sampled-depth formats can also
-differ from Dawn's browser-compatible depth format.
+invalidate history that a browser retained.
 
 ## Picking contract
 
 Use pinned projection modules and originating resource identity. Readback
-continuations run after producing draws. Result aliases preserve identity and
-barycentric width; mesh queries validate engine lifetime.
-
-Upload pending morph weights/current bone poses before immediate picks.
-Visible and picking draws must agree on geometry/world/palette space.
-Detailed picking requires primitive-index support; native throws when unavailable
-where the browser probe can leave the feature absent. Supported regular
-deformation does not imply thin-instance/VAT or eight-influence coverage.
+continuations run after producing draws. Visible and picking draws must agree on
+geometry/world/palette space. Detailed picking requires primitive-index support;
+native throws when unavailable where the browser probe can leave the feature absent.
 
 ## Flow-graph contract
 
@@ -173,12 +160,7 @@ order and pointer writes are the pin's. `flow-graph-attach-at-add` records the s
 the attach runs inside addToScene instead of a resolved promise; onStart fires on the first
 before-render tick in both. Pick dispatch is synchronous: the native release handler reads the id
 buffer back in the same input phase, at most one frame earlier than the browser's readback promise.
-The pin's pointer-identity guard on release is asserted, not restated; native mouse events carry one
-pointer. Material transform reads come from the record each draw packs; a written offset shows at the
-next draw. Selectability is a per-node flag the pick filter reads; visibility writes cascade through
-the asset's node children and bump the draw-list epoch. `flowGraphRuntimes` is assigned per
-addToScene and kept past the scene's disposal, as the pin's resolved array is; `flowGraphs` is the
-document's graph list, filled at load.
+A written material transform offset shows at the next draw.
 
 ## Physics contract
 
@@ -188,25 +170,20 @@ external storage and observable debug membership refuse. Only unread direct inst
 Source/assets/compiler/native/tool identities and descriptors are recorded in `physics-debug-geometry.json`;
 native matching compares every descriptor field. No body poses, trajectories, frames or reference pixels are baked.
 
-The generated Babylon layer targets Bullet; the browser uses Havok.
-
 HINGE anchors and default perpendicular vectors come from the pin; Bullet supplies the hinge solver.
 Other Cartesian/angular constraints use Bullet's six-axis solver with source-selected free/limited/locked rows.
 The radial row preserves those Cartesian frames. It evaluates predicted substep anchors and applies the
 measured correction `0.4 * initialSignedViolation - predictedSignedViolation`, with short-step stiffness
 scaling. Forces, torque, both lever arms and inverse inertia participate; no poses or trajectories are baked.
-Scene46's frame-10 coordinate/quaternion errors are below 0.005/0.006. Later trajectories differ by up to
-1.261 m at frame 240; pivot attachment, Cartesian locks and distance intervals remain checked separately.
 Degenerate anchor axes and constraints between bodies in different worlds refuse.
 Identical trajectories are not guaranteed. Solver substitutions include substeps,
 speculative contacts, rebound reconstruction, damping/speed conversion and rest
 stabilization. The rebound rule is fitted behavior, not ported Havok internals.
 
 Deep initial overlaps use fitted positional recovery, approximately 5% per 60 Hz frame capped at 1 m/s;
-incoming impacts retain the rebound solver. Across 135 depth/timestep/mass/motion-type controls,
-four-step position error stays below 0.01. TELEPORT pose writes retain zero kinematic velocity.
-ACTION still uses Bullet's immediate swept pose; Havok instead integrates a deferred target and retains
-the derived velocity across later steps.
+incoming impacts retain the rebound solver. TELEPORT pose writes retain zero kinematic velocity.
+ACTION pose writes use Bullet's immediate swept pose, where Havok integrates a deferred target and
+retains the derived velocity.
 
 Default physics follows variable frame delta, capped at 100 ms. Explicit
 scene/world fixed steps advance once per rendered frame, including the initial zero engine delta.
@@ -222,9 +199,6 @@ dynamic bodies use GImpact with its approximate inertia over the same triangles.
 Heightfield extraction translates pinned world-space bounds, Float32 stores and sample remapping.
 Bullet uses a static triangle BVH with the measured Havok grid orientation and cell diagonal.
 Rectangular HP heightfields read inconsistent/out-of-range samples in the pin and refuse.
-Scene47 uses the upstream spec's frame 1. Its 60-frame free-fall coordinate difference is at most 0.002526 m;
-later contact coordinates differ by up to 5.389 m at frame 240. Terrain contact and live viewer poses
-are checked separately; the capture gate does not establish matching collision trajectories.
 Container placement translates the pinned inverse/product/decomposition path. Bullet convex support
 instances preserve child-local offsets, rotation and nonuniform scale without mutating shared geometry.
 Container inertia uses Bullet's approximation; child material/filter/trigger differences refuse.
@@ -233,39 +207,21 @@ Floating-origin regions are separate worlds and do not collide with one another.
 Convex proximity uses Bullet GJK/EPA; casts use its convex sweep. Cylinder queries use a measured rounded
 rim margin `min(0.015, 0.1 * minimumHalfExtent)`. Parallel cylinder/capsule contacts select the lower axial
 overlap endpoint to match Havok's nonunique closest feature. These are measured solver adaptations.
-Scene49 is pixel-exact at its authored capture pose; rotated query fields and live contact markers differ
-from Havok by less than 0.005 in the checked poses.
-
 Box queries use a measured 0.015 rounded margin capped by the smallest half-extent. Capsule/box face
-ties select the capsule's authored first endpoint within the face overlap. In 32 face/edge proximity
-and cast controls, the largest Havok delta is 0.000355 (cast fraction).
+ties select the capsule's authored first endpoint within the face overlap.
 
-Scene104's 55-step character pose differs by at most 0.003; its first box-contact Y differs by 0.001.
-Scene105's 55-step character pose agrees within 0.0000005, while obstacle0/1 Z differs by 0.244/0.392
-before character contact. First obstacle0/1 callbacks therefore occur at source `steps` values 57/60
-in Havok and 61/59 in Bullet. The 105-step contacted-body set agrees; character pose differs by at most 0.165
-and later contact points differ.
-
-Rotation gizmos translate the pinned drag angle and quaternion arithmetic. Native GPU picks complete
-synchronously. Custom drag observables, sector readout, sibling-disable styling and multi-pointer/touch
-capture remain unsupported.
+Character-controller contact order differs from Havok when dynamic obstacles move; the contacted-body
+set agrees while contact instants and later contact points differ.
 
 Compare rest/shape properties separately from per-step flight, contact, rebound
-and sleep traces. Remaining capabilities and residuals belong in [TODO](../TODO.md).
+and sleep traces.
 
 ## Text contract
 
-Pinned producers shape/pack static text. Lowered transforms retain doubles until
-source float stores; uniform updates preserve their independent invalidation
-conditions. TextData retains distinct mutable identity even when blobs deduplicate.
-
-Live layout uses HarfBuzz over the packaged font and pinned AST layout/packing.
-Generation runs the pinned extractor/atlas packer over the complete font repertoire;
-atlas allocation and indices therefore precede input. DefaultTextData keeps its
-single run, slot reuse, dirty ranges, palette versions and live dimensions.
-
-Standalone layers retain source affine uniforms, per-layer caches and immutable bundle commands.
-Weight variants use the pinned composed shader; single-run color replacement retains the supplied tuple.
+Pinned producers shape/pack static text. TextData retains distinct mutable identity even when
+blobs deduplicate. Live layout uses HarfBuzz over the packaged font and pinned AST layout/packing;
+generation runs the pinned extractor/atlas packer over the complete font repertoire, so atlas
+allocation and indices precede input.
 
 Group caches belong to TextData. Shared data can retain the first renderable's
 UBO/style bindings until source invalidation rebuilds a group. Disposal releases
@@ -278,15 +234,11 @@ admitted async wrappers allow the batch's remaining calls before rejection.
 Arbitrary asynchronous builders are outside this boundary.
 
 Both backends consume unchanged Slug WGSL and pinned pipeline descriptors.
-SDL depth-format substitution and UI font rendering are separate adaptations.
-Capture commands and unobserved byte-range limits belong in [debugging](debugging.md).
 
 ## Audio contract
 
 LabSound implements the reached Web Audio boundary and remains independent of
 the renderer. Matching graph topology/scheduling does not establish PCM fidelity.
-A durable browser/native offline PCM gate and master-volume ramp support remain
-unfinished; see [TODO](../TODO.md).
 
 ## What is measured: the full page
 

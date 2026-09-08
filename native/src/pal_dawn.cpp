@@ -335,6 +335,7 @@ struct DawnMeshResources {
     WGPUTexture pinned_bone_texture = nullptr;
     WGPUTextureView pinned_bone_view = nullptr;
     std::uint32_t pinned_bone_count = 0;
+    std::uint64_t pinned_bone_version = unsynced_bone_palette;
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -937,6 +938,15 @@ struct DawnState : DawnDevice {
     std::vector<DawnRenderTarget> render_targets;
     /** The last `DawnRenderTarget::allocation` handed out. */
     std::uint32_t render_target_allocations = 0;
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+    /**
+     * The textures whose identities the device-recovery observers last
+     * received, so a new identity is published only when the texture
+     * behind it changed; the handles stay this backend's.
+     */
+    WGPUTexture published_environment_cube = nullptr;
+    WGPUTexture published_white_texture = nullptr;
+#endif
     std::vector<DawnRenderTask> render_tasks;
     std::vector<DawnGeometryTask> geometry_tasks;
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -3476,6 +3486,16 @@ WGPUTexture create_frame_texture(
     return texture;
 }
 
+/** A view over a frame-graph texture, refused rather than stored null. */
+WGPUTextureView create_frame_view(
+    WGPUTexture texture,
+    const WGPUTextureViewDescriptor* descriptor,
+    const char* label) {
+    WGPUTextureView view = wgpuTextureCreateView(texture, descriptor);
+    if (!view) dawn_error(label);
+    return view;
+}
+
 // Mirrors the SDL backend's create_frame_graph_textures: render
 // targets sized per record (or canvas), sampled aliases for
 // single-sample attachments, and per-geometry-task MRT chains.
@@ -3557,8 +3577,8 @@ void create_frame_graph_textures(
                         WGPUTextureUsage_CopySrc |
                         WGPUTextureUsage_CopyDst
                     : WGPUTextureUsage_RenderAttachment);
-            target.color_view =
-                wgpuTextureCreateView(target.color, nullptr);
+            target.color_view = create_frame_view(
+                target.color, nullptr, "wgpuTextureCreateView frame graph color");
             if (samples == 1) {
                 target.sampled_color = target.color;
                 target.sampled_color_view = target.color_view;
@@ -3572,9 +3592,10 @@ void create_frame_graph_textures(
                     WGPUTextureUsage_RenderAttachment |
                         WGPUTextureUsage_TextureBinding |
                         WGPUTextureUsage_CopySrc);
-                target.sampled_color_view = wgpuTextureCreateView(
+                target.sampled_color_view = create_frame_view(
                     target.sampled_color,
-                    nullptr);
+                    nullptr,
+                    "wgpuTextureCreateView frame graph sampled color");
             }
         }
         if (record.has_depth) {
@@ -3608,8 +3629,8 @@ void create_frame_graph_textures(
                 layer_descriptor.dimension = WGPUTextureViewDimension_2D;
                 layer_descriptor.baseArrayLayer = layer;
                 layer_descriptor.arrayLayerCount = 1;
-                target.depth_layer_views[layer] =
-                    wgpuTextureCreateView(target.depth, &layer_descriptor);
+                target.depth_layer_views[layer] = create_frame_view(
+                    target.depth, &layer_descriptor, "wgpuTextureCreateView frame graph depth layer");
             }
             if (record.sampled_depth) {
                 WGPUTextureViewDescriptor depth_view_descriptor =
@@ -3624,9 +3645,10 @@ void create_frame_graph_textures(
                         WGPUTextureViewDimension_2DArray;
                     depth_view_descriptor.arrayLayerCount = depth_layers;
                 }
-                target.depth_sampled_view = wgpuTextureCreateView(
+                target.depth_sampled_view = create_frame_view(
                     target.depth,
-                    &depth_view_descriptor);
+                    &depth_view_descriptor,
+                    "wgpuTextureCreateView frame graph sampled depth");
                 // A shadow map is read through a comparison sampler on the
                 // depth texture itself, and a screen-space effect reads a
                 // colour-carrying target's depth through the depth-only view
@@ -3643,8 +3665,8 @@ void create_frame_graph_textures(
                         target.height,
                         WGPUTextureUsage_RenderAttachment |
                             WGPUTextureUsage_TextureBinding);
-                    target.depth_copy_view =
-                        wgpuTextureCreateView(target.depth_copy, nullptr);
+                    target.depth_copy_view = create_frame_view(
+                        target.depth_copy, nullptr, "wgpuTextureCreateView frame graph depth copy");
                 }
             }
         }
@@ -3708,8 +3730,8 @@ void create_frame_graph_textures(
                         WGPUTextureUsage_TextureBinding
                     : WGPUTextureUsage_RenderAttachment);
             task.colors.push_back(color);
-            task.color_views.push_back(
-                wgpuTextureCreateView(color, nullptr));
+            task.color_views.push_back(create_frame_view(
+                color, nullptr, "wgpuTextureCreateView geometry task color"));
             if (samples == 1) {
                 task.sampled_colors.push_back(color);
                 task.sampled_views.push_back(task.color_views.back());
@@ -3723,8 +3745,8 @@ void create_frame_graph_textures(
                     WGPUTextureUsage_RenderAttachment |
                         WGPUTextureUsage_TextureBinding);
                 task.sampled_colors.push_back(sampled);
-                task.sampled_views.push_back(
-                    wgpuTextureCreateView(sampled, nullptr));
+                task.sampled_views.push_back(create_frame_view(
+                    sampled, nullptr, "wgpuTextureCreateView geometry task sampled color"));
             }
         }
         task.depth = create_frame_texture(
@@ -3734,7 +3756,8 @@ void create_frame_graph_textures(
             width,
             height,
             WGPUTextureUsage_RenderAttachment);
-        task.depth_view = wgpuTextureCreateView(task.depth, nullptr);
+        task.depth_view = create_frame_view(
+            task.depth, nullptr, "wgpuTextureCreateView geometry task depth");
     }
 }
 
@@ -4325,39 +4348,34 @@ void write_pinned_bone_texture(
     DawnState& state,
     DawnMesh& mesh,
     const MeshRecord& record) {
-    const std::uint32_t bones =
-        static_cast<std::uint32_t>(record.bone_matrices.size());
-    if (bones == 0) return;
-    const BonePaletteLayout palette = bone_palette_layout(bones);
-    if (mesh.pinned_bone_count != bones) {
-        if (mesh.pinned_bone_view) {
-            wgpuTextureViewRelease(mesh.pinned_bone_view);
-        }
-        if (mesh.pinned_bone_texture) {
-            wgpuTextureRelease(mesh.pinned_bone_texture);
-        }
-        mesh.pinned_bone_texture = create_pinned_float_texture(
-            state,
-            palette.width,
-            palette.height,
-            "pinned bone texture creation failed.");
-        mesh.pinned_bone_view =
-            wgpuTextureCreateView(mesh.pinned_bone_texture, nullptr);
-        mesh.pinned_bone_count = bones;
-    }
-    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    destination.texture = mesh.pinned_bone_texture;
-    WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
-    layout.bytesPerRow = palette.bytes;
-    layout.rowsPerImage = palette.height;
-    WGPUExtent3D extent{palette.width, palette.height, 1};
-    wgpuQueueWriteTexture(
-        state.queue,
-        &destination,
-        record.bone_matrices.data(),
-        palette.bytes,
-        &layout,
-        &extent);
+    sync_pinned_bone_palette(
+        mesh,
+        record,
+        [&](const BonePaletteLayout& palette) {
+            if (mesh.pinned_bone_view) {
+                wgpuTextureViewRelease(mesh.pinned_bone_view);
+            }
+            if (mesh.pinned_bone_texture) {
+                wgpuTextureRelease(mesh.pinned_bone_texture);
+            }
+            mesh.pinned_bone_texture = create_pinned_float_texture(
+                state,
+                palette.width,
+                palette.height,
+                "pinned bone texture creation failed.");
+            mesh.pinned_bone_view =
+                wgpuTextureCreateView(mesh.pinned_bone_texture, nullptr);
+        },
+        [&](const float* floats, const BonePaletteLayout& palette) {
+            WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+            destination.texture = mesh.pinned_bone_texture;
+            WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
+            layout.bytesPerRow = palette.bytes;
+            layout.rowsPerImage = palette.height;
+            WGPUExtent3D extent{palette.width, palette.height, 1};
+            wgpuQueueWriteTexture(
+                state.queue, &destination, floats, palette.bytes, &layout, &extent);
+        });
 }
 
 #endif
@@ -6811,19 +6829,22 @@ void apply_geometry_color_targets(
     std::size_t entry_color_target_count,
     const char* family,
     const WGPUBlendState* blend) {
-    const GeometryTargetClasses classes = geometry_target_classes(task);
-    require_geometry_target_count(classes, entry_color_target_count, family);
-    targets.reserve(classes.attachments.size() + 1u);
-    const auto push = [&](WGPUTextureFormat format) {
+    const std::vector<WGPUTextureFormat> formats =
+        geometry_color_target_formats<WGPUTextureFormat>(
+            task,
+            entry_color_target_count,
+            family,
+            [](TextureFormatClass format_class) {
+                return texture_format(format_class);
+            },
+            state.frame_color_format);
+    targets.reserve(formats.size());
+    for (const WGPUTextureFormat format : formats) {
         WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
         target.format = format;
         target.blend = blend;
         targets.push_back(target);
-    };
-    for (const TextureFormatClass format_class : classes.attachments) {
-        push(texture_format(format_class));
     }
-    if (classes.trailing_output) push(state.frame_color_format);
     fragment.targetCount = targets.size();
     fragment.targets = targets.data();
     depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
@@ -16729,8 +16750,17 @@ SceneRun run_dawn_engine(Engine& engine) {
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
         if (engine.device_recovery) {
             auto& recovery = *engine.device_recovery;
-            recovery.environments[scene.state.get()] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment_cube)};
-            recovery.fallback = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.white_texture)};
+            GpuTextureIdentity& environment = recovery.environments[scene.state.get()];
+            if (environment.object == 0 || environment.generation != engine.device_generation ||
+                state.published_environment_cube != state.environment_cube) {
+                state.published_environment_cube = state.environment_cube;
+                environment = publish_gpu_texture_identity(engine);
+            }
+            if (recovery.fallback.object == 0 || recovery.fallback.generation != engine.device_generation ||
+                state.published_white_texture != state.white_texture) {
+                state.published_white_texture = state.white_texture;
+                recovery.fallback = publish_gpu_texture_identity(engine);
+            }
             auto& renderable_count = recovery.renderable_counts[scene.state.get()];
             renderable_count = state.meshes.size() + state.skybox_enabled + state.ground_enabled;
 #if BBLITE_SOLID_SKYBOX

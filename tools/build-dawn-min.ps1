@@ -17,46 +17,19 @@ param(
 # tools/build-dawn.ps1.
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
+$root = Get-RepositoryRoot
 $pin = Get-Content (Join-Path $root "upstream\tint.json") -Raw |
     ConvertFrom-Json
-$workspacePath = if ([System.IO.Path]::IsPathRooted($Workspace)) {
-    $Workspace
-} else {
-    Join-Path $root $Workspace
-}
+$workspacePath = Resolve-RepositoryPath $Workspace
 $source = Join-Path $workspacePath "dawn"
 $build = Join-Path $workspacePath "build-dawn-min"
-$output = Join-Path $root $OutputDirectory
-
-if (-not $CMake) {
-    $command = Get-Command cmake -ErrorAction SilentlyContinue
-    if ($command) {
-        $CMake = $command.Source
-    }
-}
-if (-not $CMake -or -not (Test-Path $CMake)) {
-    throw "CMake was not found. Set CMAKE_COMMAND or pass -CMake."
-}
+$output = Resolve-RepositoryPath $OutputDirectory
+$CMake = Find-CMake $CMake
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
-if (-not (Test-Path (Join-Path $source ".git"))) {
-    git init $source
-    git -C $source remote add origin $pin.repository
-    git -C $source config core.longpaths true
-}
-$head = git -C $source rev-parse HEAD
-if ($head -ne $pin.commit) {
-    git -C $source fetch --depth 1 origin $pin.commit
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to fetch pinned Dawn commit $($pin.commit)."
-    }
-    git -C $source checkout --force --detach FETCH_HEAD
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to check out pinned Dawn commit $($pin.commit)."
-    }
-}
+Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
 
 & $CMake -S $source -B $build `
     -DCMAKE_BUILD_TYPE=MinSizeRel `

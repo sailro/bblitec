@@ -4,7 +4,7 @@ import {
     pinnedAssignments,
     refuseModule,
     refuseNode,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /**
@@ -26,7 +26,7 @@ export function lowerImageProcessingDefaultsCpp(
                 `no longer writes ${path} exactly once`,
             );
         }
-        const value = unwrapPin(found[0]!.right);
+        const value = unwrapExpression(found[0]!.right);
         if (!ts.isNumericLiteral(value)) {
             refuseNode(
                 symbol,
@@ -45,7 +45,7 @@ export function lowerImageProcessingDefaultsCpp(
     );
     if (
         toneMapping.length !== 1 ||
-        unwrapPin(toneMapping[0]!.right).kind !==
+        unwrapExpression(toneMapping[0]!.right).kind !==
             ts.SyntaxKind.TrueKeyword
     ) {
         refuseModule(

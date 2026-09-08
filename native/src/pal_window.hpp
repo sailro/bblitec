@@ -103,9 +103,29 @@ inline void release_run_window(SDL_Window* window) {
     }
 }
 
+/**
+ * The one system cursor the canvas surface reaches (`cursor: crosshair`),
+ * created on first use and destroyed with the SDL run rather than leaked.
+ */
+inline SDL_Cursor*& crosshair_cursor() {
+    static SDL_Cursor* cursor = nullptr;
+    return cursor;
+}
+
+inline void release_canvas_cursors() {
+    SDL_Cursor*& cursor = crosshair_cursor();
+    if (cursor) {
+        SDL_DestroyCursor(cursor);
+        cursor = nullptr;
+    }
+}
+
 inline void quit_run_sdl() {
     if (OffscreenRun::current()) return;
-    if (!active_window_run) SDL_Quit();
+    if (!active_window_run) {
+        release_canvas_cursors();
+        SDL_Quit();
+    }
 }
 
 } // namespace bbl::pal

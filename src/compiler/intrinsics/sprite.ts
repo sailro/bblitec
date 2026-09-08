@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type {
     SpriteCustomShaderManifest,
     Value,
@@ -549,7 +550,7 @@ function spriteHandleLayerCpp(
 ): string {
     if (handle.spriteLayerCpp === undefined) {
         context.fail(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             `${importedName} takes the layer its handle lives in; this ` +
                 "handle reached here without one.",
         );
@@ -572,7 +573,7 @@ export function compileSpriteIntrinsic(
     switch (importedName) {
         case "pickSprite2D": {
             context.expectArgumentCount(call, 3, 3);
-            const layers = context.compileValue(call.arguments[0]!);
+            const layers = context.compileValue(argumentAt(call, 0));
             const tupleLayers =
                 layers.kind === "tuple"
                     ? layers.tupleElements
@@ -584,7 +585,7 @@ export function compileSpriteIntrinsic(
                 layers.dataType.element.handle === "sprite-layer";
             if (!tupleLayers && !dataLayers) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "pickSprite2D requires an array of sprite layers.",
                 );
             }
@@ -592,7 +593,7 @@ export function compileSpriteIntrinsic(
                 context.expectKind(
                     layer,
                     "sprite-layer",
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 );
             }
             const firstLayer = tupleLayers?.[0];
@@ -631,16 +632,16 @@ export function compileSpriteIntrinsic(
                 probe:
                     `const auto hit = bbl::pick_sprite_2d(${engineCpp}, ` +
                     `${layerList}, ` +
-                    `${context.compileNumber(call.arguments[1]!, "double")}, ` +
-                    `${context.compileNumber(call.arguments[2]!, "double")});`,
+                    `${context.compileNumber(argumentAt(call, 1), "double")}, ` +
+                    `${context.compileNumber(argumentAt(call, 2), "double")});`,
                 miss: "!hit",
             });
         }
 
         case "createRenderTexture2D": {
             context.expectArgumentCount(call, 3, 4);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             if (call.arguments[3]) {
                 const options = optionsRecord(
                     context,
@@ -662,24 +663,24 @@ export function compileSpriteIntrinsic(
                 textureStorage: "render",
                 cpp:
                     `bbl::create_sprite_render_texture(${engine.cpp}, ` +
-                    `${context.compileNumber(call.arguments[1]!)}, ` +
-                    `${context.compileNumber(call.arguments[2]!)})`,
+                    `${context.compileNumber(argumentAt(call, 1))}, ` +
+                    `${context.compileNumber(argumentAt(call, 2))})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
 
         case "createSpriteAtlasFromFrames": {
             context.expectArgumentCount(call, 2, 3);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const sources = context.compileValue(call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const sources = context.compileValue(argumentAt(call, 1));
             if (
                 sources.kind !== "data" ||
                 sources.dataType?.kind !== "vector" ||
                 sources.dataType.element.kind !== "struct"
             ) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "createSpriteAtlasFromFrames expects an array of frame-source records.",
                 );
             }
@@ -692,7 +693,7 @@ export function compileSpriteIntrinsic(
                 const field = context.dataTypes.structField(
                     sourceType.name,
                     name,
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
                 return `${source}${arrow ? "->" : "."}${field.name}`;
             };
@@ -710,7 +711,7 @@ export function compileSpriteIntrinsic(
                 const value = property(options, name);
                 if (!value) return fallback;
                 if (value.kind !== "number") {
-                    context.fail(call.arguments[2]!, `${name} must be numeric.`);
+                    context.fail(argumentAt(call, 2), `${name} must be numeric.`);
                 }
                 return `bbl::js::to_uint32(${value.cpp})`;
             };
@@ -721,21 +722,21 @@ export function compileSpriteIntrinsic(
                 sampling.staticString !== "linear"
             ) {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     'sampling must be the literal "nearest" or "linear".',
                 );
             }
             const srgb = property(options, "srgb");
             if (srgb && srgb.cpp !== "false") {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "sRGB in-memory sprite atlases are not lowered yet.",
                 );
             }
             const premultiplied = property(options, "premultipliedAlpha");
             if (premultiplied && premultiplied.kind !== "boolean") {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "premultipliedAlpha must be boolean.",
                 );
             }
@@ -775,15 +776,15 @@ export function compileSpriteIntrinsic(
 
         case "createGridSpriteAtlas": {
             context.expectArgumentCount(call, 2, 2);
-            const texture = context.compileValue(call.arguments[0]!);
-            context.expectKind(texture, "texture", call.arguments[0]!);
+            const texture = context.compileValue(argumentAt(call, 0));
+            context.expectKind(texture, "texture", argumentAt(call, 0));
             if (
                 texture.textureStorage !== "file" &&
                 texture.textureStorage !== "pixels" &&
                 texture.textureStorage !== "render"
             ) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "createGridSpriteAtlas currently requires a file, pixels, or render texture.",
                 );
             }
@@ -796,7 +797,7 @@ export function compileSpriteIntrinsic(
             const cellHeight = property(options, "cellHeightPx");
             if (!cellWidth || !cellHeight) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "createGridSpriteAtlas requires cellWidthPx and cellHeightPx.",
                 );
             }
@@ -828,7 +829,7 @@ export function compileSpriteIntrinsic(
                     )
                 ) {
                     context.fail(
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                         `createGridSpriteAtlas ${name} must be numeric.`,
                     );
                 }
@@ -857,16 +858,16 @@ export function compileSpriteIntrinsic(
         case "loadSpriteAtlas": {
             context.expectArgumentCount(call, 3, 3);
             const engine = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const assetPath =
                 context.registerSpriteAtlasAsset(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             const options = optionsRecord(
                 context,
@@ -900,7 +901,7 @@ export function compileSpriteIntrinsic(
             if (textureOptions) {
                 if (textureOptions.kind !== "record") {
                     context.fail(
-                        call.arguments[2]!,
+                        argumentAt(call, 2),
                         "loadSpriteAtlas textureOptions must be written as an object literal.",
                     );
                 }
@@ -912,7 +913,7 @@ export function compileSpriteIntrinsic(
                         member !== "addressModeV"
                     ) {
                         context.fail(
-                            call.arguments[2]!,
+                            argumentAt(call, 2),
                             `loadSpriteAtlas textureOptions '${member}' is not lowered.`,
                         );
                     }
@@ -931,7 +932,7 @@ export function compileSpriteIntrinsic(
                 const mapped = addressModeByPin[mode.staticString];
                 if (!mapped) {
                     context.fail(
-                        call.arguments[2]!,
+                        argumentAt(call, 2),
                         `loadSpriteAtlas ${name} '${mode.staticString}' is not a pinned address mode.`,
                     );
                 }
@@ -944,7 +945,7 @@ export function compileSpriteIntrinsic(
                 sampling.staticString !== "nearest"
             ) {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "loadSpriteAtlas sampling must be the literal \"linear\" or \"nearest\".",
                 );
             }
@@ -981,12 +982,12 @@ export function compileSpriteIntrinsic(
         case "createSprite2DLayer": {
             context.expectArgumentCount(call, 1, 2);
             const atlas = context.compileSpriteAtlas(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 atlas,
                 "sprite-atlas",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options = optionsRecord(
                 context,
@@ -1001,14 +1002,14 @@ export function compileSpriteIntrinsic(
                 )
             ) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     'createSprite2DLayer depth must be "none", "test", or "test-write".',
                 );
             }
             for (const unreached of ["view"]) {
                 if (property(options, unreached)) {
                     context.fail(
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                         `createSprite2DLayer option '${unreached}' is not lowered.`,
                     );
                 }
@@ -1072,12 +1073,12 @@ export function compileSpriteIntrinsic(
         case "addSprite2DIndex": {
             context.expectArgumentCount(call, 2, 2);
             const layer = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 layer,
                 "sprite-layer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const props = optionsRecord(
                 context,
@@ -1107,8 +1108,8 @@ export function compileSpriteIntrinsic(
             // sprite's removal would otherwise drive whichever sprite the
             // swap moved into its slot.
             context.expectArgumentCount(call, 2, 2);
-            const layer = context.compileValue(call.arguments[0]!);
-            context.expectKind(layer, "sprite-layer", call.arguments[0]!);
+            const layer = context.compileValue(argumentAt(call, 0));
+            context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
             const props = optionsRecord(
                 context,
                 call.arguments[1],
@@ -1143,11 +1144,11 @@ export function compileSpriteIntrinsic(
             // which is exactly why it cannot be folded to the slot the add
             // returned -- a removal or a Y-sort moves it.
             context.expectArgumentCount(call, 1, 1);
-            const handle = context.compileValue(call.arguments[0]!);
+            const handle = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 handle,
                 "sprite-2d-handle",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const layerCpp = spriteHandleLayerCpp(
                 context,
@@ -1170,11 +1171,11 @@ export function compileSpriteIntrinsic(
             // The handle form of the index update: same patch rules, over
             // whichever slot the id names when the call runs.
             context.expectArgumentCount(call, 2, 2);
-            const handle = context.compileValue(call.arguments[0]!);
+            const handle = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 handle,
                 "sprite-2d-handle",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const layerCpp = spriteHandleLayerCpp(
                 context,
@@ -1210,11 +1211,11 @@ export function compileSpriteIntrinsic(
             // reaching this call is what makes every other sprite path see
             // the layer's GPU order at all.
             context.expectArgumentCount(call, 1, 2);
-            const layer = context.compileValue(call.arguments[0]!);
+            const layer = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 layer,
                 "sprite-layer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             let defaultBias = "0.0";
             if (call.arguments[1]) {
@@ -1250,11 +1251,11 @@ export function compileSpriteIntrinsic(
 
         case "setSprite2DYSortHandleBias": {
             context.expectArgumentCount(call, 2, 2);
-            const handle = context.compileValue(call.arguments[0]!);
+            const handle = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 handle,
                 "sprite-2d-handle",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const layerCpp = spriteHandleLayerCpp(
                 context,
@@ -1263,7 +1264,7 @@ export function compileSpriteIntrinsic(
                 "setSprite2DYSortHandleBias",
             );
             const bias = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const engineCpp = context.engineFor(handle, call);
@@ -1286,23 +1287,23 @@ export function compileSpriteIntrinsic(
             // resolving defaults here.
             context.expectArgumentCount(call, 3, 3);
             const layer = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 layer,
                 "sprite-layer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // `addSprite2DIndex` hands the index back as a JavaScript
             // number and the pin's range check compares it as one, so it
             // travels at that width rather than rounding at the call.
             const index = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const engineCpp = context.engineFor(layer, call);
             context.reachFeature("sprite:2d", call);
-            const options = call.arguments[2]!;
+            const options = argumentAt(call, 2);
             const updateCpp = (expression: ts.Expression): string => {
                 const props = optionsRecord(
                     context,
@@ -1374,21 +1375,21 @@ export function compileSpriteIntrinsic(
             // target record here is that same decoupling as data.
             const sprite2d = importedName === "playSprite2DAnimation";
             context.expectArgumentCount(call, 6, 7);
-            const manager = context.compileValue(call.arguments[0]!);
+            const manager = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "sprite-animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const target = context.compileValue(call.arguments[1]!);
+            const target = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 target,
                 sprite2d ? "sprite-2d-handle" : "billboard-sprite",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const number = (index: number): string =>
-                context.compileNumber(call.arguments[index]!, "double");
-            const loop = context.compileCondition(call.arguments[4]!);
+                context.compileNumber(argumentAt(call, index), "double");
+            const loop = context.compileCondition(argumentAt(call, 4));
             const options = optionsRecord(
                 context,
                 call.arguments[6],
@@ -1396,7 +1397,7 @@ export function compileSpriteIntrinsic(
             );
             if (property(options, "onEnd")) {
                 context.fail(
-                    call.arguments[6]!,
+                    argumentAt(call, 6),
                     importedName +
                         "'s onEnd callback is unreached: a native animation " +
                         "has no place to run scene code as it finishes.",
@@ -1414,7 +1415,7 @@ export function compileSpriteIntrinsic(
                 removeWhenFinished !== "false"
             ) {
                 context.fail(
-                    call.arguments[6]!,
+                    argumentAt(call, 6),
                     importedName +
                         "'s removeWhenFinished decides whether the sprite " +
                         "survives its own animation, so it must settle at " +
@@ -1424,7 +1425,7 @@ export function compileSpriteIntrinsic(
             const engineCpp = context.engineFor(manager, call);
             if (sprite2d && target.spriteLayerCpp === undefined) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "A Sprite2D animation target carries the layer it lives " +
                         "in; this handle reached here without one.",
                 );
@@ -1467,11 +1468,11 @@ export function compileSpriteIntrinsic(
 
         case "updateSpriteAnimationManager": {
             context.expectArgumentCount(call, 2, 2);
-            const manager = context.compileValue(call.arguments[0]!);
+            const manager = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "sprite-animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const engineCpp = context.engineFor(manager, call);
             context.reachFeature("sprite:animation", call);
@@ -1483,7 +1484,7 @@ export function compileSpriteIntrinsic(
                     ", " +
                     manager.cpp +
                     ", " +
-                    context.compileNumber(call.arguments[1]!, "double") +
+                    context.compileNumber(argumentAt(call, 1), "double") +
                     ")",
                 engineCpp,
             };
@@ -1507,12 +1508,12 @@ export function compileSpriteIntrinsic(
         case "clearSprite2DLayer": {
             context.expectArgumentCount(call, 1, 1);
             const layer = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 layer,
                 "sprite-layer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const engineCpp = context.engineFor(layer, call);
             context.reachFeature("sprite:2d", call);
@@ -1536,12 +1537,12 @@ export function compileSpriteIntrinsic(
                 optionsIndex + 1,
             );
             const atlas = context.compileSpriteAtlas(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 atlas,
                 "sprite-atlas",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const optionsArg = call.arguments[optionsIndex];
             const options = optionsRecord(
@@ -1587,7 +1588,7 @@ export function compileSpriteIntrinsic(
             // rejects a degenerate one there, so that stays lowered rather
             // than recomputed at the call site.
             const axisCpp = locked
-                ? context.compileVec3(call.arguments[1]!)
+                ? context.compileVec3(argumentAt(call, 1))
                 : "bbl::Vec3{0.0f, 0.0f, 0.0f}";
             const engineCpp = context.engineFor(atlas, call);
             context.reachFeature("sprite:billboard", call);
@@ -1632,12 +1633,12 @@ export function compileSpriteIntrinsic(
         case "addBillboardSpriteIndex": {
             context.expectArgumentCount(call, 2, 2);
             const system = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 system,
                 "billboard-system",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const props = optionsRecord(
                 context,
@@ -1658,8 +1659,8 @@ export function compileSpriteIntrinsic(
 
         case "addBillboardSprite": {
             context.expectArgumentCount(call, 2, 2);
-            const system = context.compileValue(call.arguments[0]!);
-            context.expectKind(system, "billboard-system", call.arguments[0]!);
+            const system = context.compileValue(argumentAt(call, 0));
+            context.expectKind(system, "billboard-system", argumentAt(call, 0));
             const props = optionsRecord(
                 context,
                 call.arguments[1],
@@ -1678,8 +1679,8 @@ export function compileSpriteIntrinsic(
 
         case "updateBillboardSprite": {
             context.expectArgumentCount(call, 2, 2);
-            const handle = context.compileValue(call.arguments[0]!);
-            context.expectKind(handle, "billboard-sprite", call.arguments[0]!);
+            const handle = context.compileValue(argumentAt(call, 0));
+            context.expectKind(handle, "billboard-sprite", argumentAt(call, 0));
             const props = optionsRecord(
                 context,
                 call.arguments[1],
@@ -1697,8 +1698,8 @@ export function compileSpriteIntrinsic(
 
         case "removeBillboardSprite": {
             context.expectArgumentCount(call, 1, 1);
-            const handle = context.compileValue(call.arguments[0]!);
-            context.expectKind(handle, "billboard-sprite", call.arguments[0]!);
+            const handle = context.compileValue(argumentAt(call, 0));
+            context.expectKind(handle, "billboard-sprite", argumentAt(call, 0));
             const engineCpp = context.engineFor(handle, call);
             context.reachFeature("sprite:billboard", call);
             return {
@@ -1710,12 +1711,12 @@ export function compileSpriteIntrinsic(
         case "clearBillboardSprites": {
             context.expectArgumentCount(call, 1, 1);
             const system = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 system,
                 "billboard-system",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const engineCpp = context.engineFor(system, call);
             context.reachFeature("sprite:billboard", call);
@@ -1728,22 +1729,22 @@ export function compileSpriteIntrinsic(
         case "createTexture2DFromPixels": {
             context.expectArgumentCount(call, 4, 5);
             const engine = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // A zero-argument module producer remains bakeable. A reached
             // runtime Uint8Array instead travels directly to the native
             // factory, preserving WAD/decoded/generated pixel workflows.
             const bakedPixels = context.probePixelsAsset(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const runtimePixels = bakedPixels
                 ? undefined
-                : context.compileValue(call.arguments[1]!);
+                : context.compileValue(argumentAt(call, 1));
             if (
                 runtimePixels &&
                 !(
@@ -1752,16 +1753,16 @@ export function compileSpriteIntrinsic(
                 )
             ) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "createTexture2DFromPixels pixels must run at generation through a bakeable module producer or evaluate to a native Uint8Array.",
                 );
             }
             const width = context.compileNumber(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "double",
             );
             const height = context.compileNumber(
-                call.arguments[3]!,
+                argumentAt(call, 3),
                 "double",
             );
             // The pin's sampler and format overrides. Each travels as "named, and this
@@ -1773,8 +1774,8 @@ export function compileSpriteIntrinsic(
                 call.arguments[4],
             );
             const staticSize = [
-                staticNumberValue(context, call.arguments[2]!),
-                staticNumberValue(context, call.arguments[3]!),
+                staticNumberValue(context, argumentAt(call, 2)),
+                staticNumberValue(context, argumentAt(call, 3)),
             ];
             context.reachFeature("texture:pixels", call);
             return {
@@ -1897,15 +1898,15 @@ export function compileSpriteIntrinsic(
         case "setSprite2DShaderParams":
         case "setBillboardShaderParams": {
             context.expectArgumentCount(call, 2, 2);
-            const target = context.compileValue(call.arguments[0]!);
+            const target = context.compileValue(argumentAt(call, 0));
             const sprite =
                 importedName === "setSprite2DShaderParams";
             context.expectKind(
                 target,
                 sprite ? "sprite-layer" : "billboard-system",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const params = context.compileVec4(call.arguments[1]!);
+            const params = context.compileVec4(argumentAt(call, 1));
             const engineCpp = context.engineFor(target, call);
             context.emit(
                 `bbl::${
@@ -1919,18 +1920,18 @@ export function compileSpriteIntrinsic(
 
         case "setAlphaToCoverage": {
             context.expectArgumentCount(call, 2, 2);
-            const target = context.compileValue(call.arguments[0]!);
+            const target = context.compileValue(argumentAt(call, 0));
             if (
                 target.kind !== "billboard-system" &&
                 target.kind !== "sprite-layer"
             ) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "setAlphaToCoverage supports billboard systems and Sprite2D layers.",
                 );
             }
             const enabled = context.compileBoolean(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const engineCpp = context.engineFor(target, call);
             context.reachFeature(
@@ -1951,13 +1952,13 @@ export function compileSpriteIntrinsic(
 
         case "addDepthHostedSpriteLayer": {
             context.expectArgumentCount(call, 2, 2);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
-            const layer = context.compileValue(call.arguments[1]!);
-            context.expectKind(layer, "sprite-layer", call.arguments[1]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
+            const layer = context.compileValue(argumentAt(call, 1));
+            context.expectKind(layer, "sprite-layer", argumentAt(call, 1));
             if (layer.spriteDepthMode === "none") {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     'Depth-hosted sprites require depth != "none".',
                 );
             }
@@ -1976,16 +1977,16 @@ export function compileSpriteIntrinsic(
         case "addAxisLockedBillboardSystem": {
             context.expectArgumentCount(call, 2, 2);
             const scene = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             const system = context.compileValue(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectKind(
                 system,
                 "billboard-system",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.reachFeature("sprite:billboard", call);
             // A billboard system is a scene renderable: it draws inside the
@@ -2001,14 +2002,14 @@ export function compileSpriteIntrinsic(
 
         case "setSprite2DUvOffset": {
             context.expectArgumentCount(call, 3, 3);
-            const layer = context.compileValue(call.arguments[0]!);
+            const layer = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 layer,
                 "sprite-layer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const index = context.compileNumber(call.arguments[1]!);
-            const offset = context.compileVec2(call.arguments[2]!);
+            const index = context.compileNumber(argumentAt(call, 1));
+            const offset = context.compileVec2(argumentAt(call, 2));
             const engineCpp = context.engineFor(layer, call);
             context.reachFeature("sprite:2d", call);
             // Importing the setter is the pin's own opt-in trigger for the
@@ -2024,12 +2025,12 @@ export function compileSpriteIntrinsic(
         case "createSpriteRenderer": {
             context.expectArgumentCount(call, 2, 2);
             const surface = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 surface,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options = optionsRecord(
                 context,
@@ -2048,7 +2049,7 @@ export function compileSpriteIntrinsic(
                 layers.dataType.element.handle === "sprite-layer";
             if (!tupleLayers && !dataLayers) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "createSpriteRenderer requires an array of layers.",
                 );
             }
@@ -2059,12 +2060,12 @@ export function compileSpriteIntrinsic(
                 context.expectKind(
                     layer,
                     "sprite-layer",
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
                 rejectDepthHostedStandaloneLayer(
                     context,
                     layer,
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             }
             const clearValue = tupleClearValue(
@@ -2090,12 +2091,12 @@ export function compileSpriteIntrinsic(
         case "registerSpriteRenderer": {
             context.expectArgumentCount(call, 1, 1);
             const renderer = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 renderer,
                 "sprite-renderer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("renderer:sprite", call);
             return {
@@ -2106,11 +2107,11 @@ export function compileSpriteIntrinsic(
 
         case "unregisterSpriteRenderer": {
             context.expectArgumentCount(call, 1, 1);
-            const renderer = context.compileValue(call.arguments[0]!);
+            const renderer = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 renderer,
                 "sprite-renderer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("renderer:sprite", call);
             return {
@@ -2121,17 +2122,17 @@ export function compileSpriteIntrinsic(
 
         case "setSpriteRendererTarget": {
             context.expectArgumentCount(call, 2, 2);
-            const renderer = context.compileValue(call.arguments[0]!);
+            const renderer = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 renderer,
                 "sprite-renderer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const target = context.compileValue(call.arguments[1]!);
+            const target = context.compileValue(argumentAt(call, 1));
             const absent = target.kind === "json-null";
             if (!absent && target.textureStorage !== "render") {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "setSpriteRendererTarget requires a createRenderTexture2D texture or null.",
                 );
             }
@@ -2155,20 +2156,20 @@ export function compileSpriteIntrinsic(
             // gets that boolean, and one that ignores it emits a statement.
             context.expectArgumentCount(call, 2, 2);
             const renderer = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 renderer,
                 "sprite-renderer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const layer = context.compileValue(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectKind(
                 layer,
                 "sprite-layer",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const engineCpp = context.engineFor(
                 renderer.engineCpp ? renderer : layer,
@@ -2181,7 +2182,7 @@ export function compileSpriteIntrinsic(
                 rejectDepthHostedStandaloneLayer(
                     context,
                     layer,
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             }
             const cpp =
@@ -2200,12 +2201,12 @@ export function compileSpriteIntrinsic(
         case "disposeSpriteRenderer": {
             context.expectArgumentCount(call, 1, 1);
             const renderer = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 renderer,
                 "sprite-renderer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("renderer:sprite", call);
             return {

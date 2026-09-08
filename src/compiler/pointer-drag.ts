@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import { argumentAt } from "./syntax.js";
 import { renderClosure } from "./closure-captures.js";
 import type { Value } from "./types.js";
 import type { GizmoIntrinsicContext } from "./intrinsics/gizmo.js";
@@ -29,11 +30,11 @@ export function compilePointerDragRegistration(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 3, 3);
-    const layer = context.compileValue(call.arguments[0]!);
-    const canvas = context.compileValue(call.arguments[1]!);
-    const drag = context.compileValue(call.arguments[2]!);
-    context.expectKind(layer, "utility-layer", call.arguments[0]!);
-    context.expectKind(drag, "pointer-drag", call.arguments[2]!);
+    const layer = context.compileValue(argumentAt(call, 0));
+    const canvas = context.compileValue(argumentAt(call, 1));
+    const drag = context.compileValue(argumentAt(call, 2));
+    context.expectKind(layer, "utility-layer", argumentAt(call, 0));
+    context.expectKind(drag, "pointer-drag", argumentAt(call, 2));
     context.expectSameEngine(layer, drag, call);
     context.reachFeature("gizmo:pointer-drag", call);
     context.reachFeature("picking:gpu", call);
@@ -48,7 +49,7 @@ export function compilePointerDragRegistration(
             const add = canvas.recordMethods?.addEventListener ?? canvas.recordProperties.addEventListener?.callbackDeclaration;
             const remove = canvas.recordMethods?.removeEventListener ?? canvas.recordProperties.removeEventListener?.callbackDeclaration;
             if (!add || !remove) {
-                context.fail(call.arguments[1]!, "A pointer canvas proxy must expose source-defined add/removeEventListener methods.");
+                context.fail(argumentAt(call, 1), "A pointer canvas proxy must expose source-defined add/removeEventListener methods.");
             }
             dispatcher = context.allocateTemporaryCppName("pointer_dispatcher");
             context.emit(`auto ${dispatcher} = bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, false);`);
@@ -82,7 +83,7 @@ export function compilePointerDragRegistration(
     } else if (canvas.kind === "browser") {
         dispatcher = `bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, true)`;
     } else {
-        return context.fail(call.arguments[1]!, "Pointer drag requires a canvas or a structural canvas event proxy.");
+        return context.fail(argumentAt(call, 1), "Pointer drag requires a canvas or a structural canvas event proxy.");
     }
     return {
         kind: "data",

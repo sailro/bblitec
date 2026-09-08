@@ -1,0 +1,22 @@
+{
+  "scene": "scene304",
+  "notes": "The Khronos Calculator asset with a static camera: a short settle of 30 frames (the graph attached at add and started on the first tick), then the same 7 and x taps as the calculator demo at scene 304's key and digit positions.",
+  "capture": false,
+  "timeoutMs": 30000,
+  "phases": [
+    { "id": "press", "frame": 40, "tape": ["-*30", "+UiMouseLeft@500:378"] },
+    { "id": "seven", "frame": 40, "tape": ["-*30", "+UiMouseLeft@500:378", "-UiMouseLeft@500:378"] },
+    { "id": "seven-times", "frame": 40, "tape": ["-*30", "+UiMouseLeft@500:378", "-UiMouseLeft@500:378", "-*3", "+UiMouseLeft@683:325", "-UiMouseLeft@683:325"] }
+  ],
+  "expect": [
+    { "kind": "log-match", "phase": "*", "pattern": "flow-graph attach asset=\\S+ runtimes=1\\b" },
+    {
+      "kind": "plugin",
+      "module": "checks/plugins/calculator-digits.mjs",
+      "options": {
+        "layout": { "tens": { "x": 692, "y": 228, "width": 40, "height": 46 }, "ones": { "x": 732, "y": 228, "width": 42, "height": 46 } },
+        "dispatches": { "press": [], "seven": ["Button 7"], "seven-times": ["Button 7", "Button multiply"] }
+      }
+    }
+  ]
+}

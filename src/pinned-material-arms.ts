@@ -59,6 +59,7 @@ import {
 } from "./pinned-mesh-features.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
+import { refuseGeneration } from "./generation-refusal.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -77,7 +78,8 @@ function pinnedOcclusionUv2Bit(): number {
         source,
     );
     if (!match) {
-        throw new Error(
+        refuseGeneration(
+            "src/material/pbr/pbr-template-ext.ts",
             "Pinned pbr-template-ext.ts no longer decodes _hasOcclusionUv2 " +
                 "from a uv2Mask bit literal.",
         );
@@ -86,14 +88,17 @@ function pinnedOcclusionUv2Bit(): number {
 }
 
 /**
- * The composer's material UBO spec as plain data.
+ * A composer's UBO spec as plain data -- the PBR material block
+ * (`_materialUboSpec`) and the Standard mesh block (`_meshUboSpec`) share
+ * one shape.
  *
  * `_offsets` is a `Map<string, number>`, so it serializes to `{}` and any
  * consumer reading the JSON would have to recompute the layout from WGSL
- * alignment rules. The pin's own `_writeMaterialData` keys every field off this
- * map, which makes it the authority on where each field sits.
+ * alignment rules. The pin's own writers (`_writeMaterialData`,
+ * `writeStdMaterialData`) key every field off this map, which makes it the
+ * authority on where each field sits.
  */
-function plainMaterialUboSpec(spec: unknown): unknown {
+export function plainUboSpec(spec: unknown): unknown {
     const record = spec as
         | { _totalBytes?: number; _offsets?: unknown; _structBody?: string }
         | undefined;
@@ -122,6 +127,13 @@ export interface PinnedMaterialArms {
     occlusionUv2: boolean;
     transmission: boolean;
     dispersion: boolean;
+    /**
+     * The spec-gloss workflow replacement (`PBR_HAS_SPEC_GLOSS`), which the
+     * pin's feature derivation sets only for a material carrying its
+     * `specGlossTexture` -- a declared KHR_materials_pbrSpecularGlossiness
+     * with no texture composes the metallic-roughness path.
+     */
+    specularGlossiness: boolean;
 }
 
 const noArms: PinnedMaterialArms = {
@@ -133,7 +145,84 @@ const noArms: PinnedMaterialArms = {
     occlusionUv2: false,
     transmission: false,
     dispersion: false,
+    specularGlossiness: false,
 };
+
+/** The pin's own bits the arms that have no fragment id of their own read. */
+interface PinnedArmBits {
+    sheenAlbedoScaling: number;
+    specGloss: number;
+    occlusionUv2: number;
+}
+
+let pinnedArmBitsPromise: Promise<PinnedArmBits> | undefined;
+
+function pinnedArmBits(): Promise<PinnedArmBits> {
+    pinnedArmBitsPromise ??= importPinnedModule<{
+        PBR_HAS_SHEEN_ALBEDO_SCALING: number;
+        PBR_HAS_SPEC_GLOSS: number;
+    }>("material/pbr/pbr-flag-bits.js").then((bits) => ({
+        sheenAlbedoScaling: bits.PBR_HAS_SHEEN_ALBEDO_SCALING,
+        specGloss: bits.PBR_HAS_SPEC_GLOSS,
+        occlusionUv2: pinnedOcclusionUv2Bit(),
+    }));
+    return pinnedArmBitsPromise;
+}
+
+/**
+ * The arms one composed variant carries, read off the composition itself:
+ * the pin's fragment key names the extension fragments it spliced, its
+ * feature word carries the bits that select a model inside one fragment,
+ * and the uv2 mask the dedicated occlusion pair. Every composed variant --
+ * a glTF material's, a scene-code material's, a caster view's -- reports
+ * its arms through this one reading, and the scene-wide union of them is
+ * what the capability defines and the texture-slot table are derived from.
+ */
+function pinnedVariantArms(
+    input: PinnedMaterialInput,
+    uv2Mask: number,
+    variant: PinnedPbrVariant,
+    bits: PinnedArmBits,
+): PinnedMaterialArms {
+    const key = variant.fragmentKey;
+    const coat = key.includes("clearcoat");
+    return {
+        clearcoat: coat,
+        // `-X` in the coat's own key is PBR2_CC_F0_REMAP_OFF, which
+        // every glTF coat sets; a coat without it wants the remap.
+        clearcoatF0Remap: coat && !/clearcoat-[A-Z]*X/.test(key),
+        sheen: key.includes("sheen"),
+        // The two sheen models live inside one `sheen` arm, so the key
+        // does not separate them and the bit has to be read. A glTF
+        // sheen always takes the scaling one, because
+        // `gltf-ext-sheen.ts` passes `albedoScaling: true` — but read
+        // from the composition rather than asserted, so it follows the
+        // pin if that ever stops being true.
+        sheenAlbedoScaling:
+            (variant.features & bits.sheenAlbedoScaling) !== 0,
+        iridescence: key.includes("iridescence"),
+        // The occlusion bit alone: `createPbrTemplateExt`
+        // declares the dedicated occlusion pair for
+        // `_hasOcclusionUv2`, while the other five bits select a
+        // base UV set inside stages that are already bound. Reading
+        // the whole mask here asked the build for a texture slot no
+        // variant declares as soon as any other slot moved to
+        // TEXCOORD_1.
+        occlusionUv2: (uv2Mask & bits.occlusionUv2) !== 0,
+        transmission: key.includes("refraction"),
+        // Dispersion has no feature bit of its own. It rides on
+        // `_subsurface.refraction.dispersion`, which the refraction
+        // extension's `frag` reads off the material to choose the
+        // chromatic sample, so it is read from the same place.
+        dispersion:
+            (
+                asObject(
+                    asObject(input["_subsurface"])?.["refraction"],
+                )?.["dispersion"]
+            ) !== undefined,
+        specularGlossiness: (variant.features & bits.specGloss) !== 0,
+    };
+}
 
 /** One composed material: the pin's key for it, plus the name to blame. */
 export interface PinnedComposedMaterial {
@@ -183,60 +272,69 @@ export interface MaterialSubject {
     metallicReflectanceRegistered: boolean;
 }
 
-/**
- * The single-light kinds a glTF asset's own KHR_lights_punctual lights reach.
- *
- * The pin's loader creates these lights exactly like scene code does, and
- * `writeMeshLightSelection` walks them the same way, so the composed arms
- * must cover their kinds even when no scene-code intrinsic declares a light
- * feature. glTF has no hemispheric light, so the mapping is the identity on
- * the three punctual kinds.
- */
-export function gltfLightKinds(path: string): readonly string[] {
-    const record = glbDocument(path);
-    if (!record) return [];
-    const extensions = record["extensions"] as
-        | Record<string, unknown>
-        | undefined;
-    const punctual = extensions?.["KHR_lights_punctual"] as
-        | { lights?: { type?: string }[] }
-        | undefined;
-    const kinds = new Set<string>();
-    for (const light of punctual?.lights ?? []) {
-        if (
-            light.type === "point" ||
-            light.type === "directional" ||
-            light.type === "spot") {
-            kinds.add(light.type);
-        }
-    }
-    return [...kinds];
+/** The punctual lights a glTF asset's nodes reference. */
+export interface GltfNodeLights {
+    /**
+     * How many nodes reference a light — the count the pin grows
+     * `MAX_LIGHTS` from: `gltf-feature-lights-punctual.ts` walks the node
+     * array and calls `setMaxLights(lightNodeCount)` when it exceeds the
+     * constant. This port freezes the pin's constant and the native writers
+     * stop at it, so the same count is read at generation to refuse what
+     * upstream would grow.
+     */
+    count: number;
+    /**
+     * The single-light kinds those nodes' lights reach, in first-reference
+     * order. glTF has no hemispheric light, so the mapping is the identity
+     * on the three punctual kinds.
+     */
+    kinds: readonly string[];
 }
 
 /**
- * How many nodes reference a punctual light — the count the pin grows
- * `MAX_LIGHTS` from: `gltf-feature-lights-punctual.ts` walks the node array
- * and calls `setMaxLights(lightNodeCount)` when it exceeds the constant.
- * This port freezes the pin's constant and the native writers stop at it, so
- * the same count is read at generation to refuse what upstream would grow.
+ * The lights a glTF asset creates, read the way the pin creates them.
+ *
+ * `gltf-feature-lights-punctual.ts` walks the NODE array and creates one
+ * light per node carrying `KHR_lights_punctual.light`; the document's
+ * declared `lights[]` table is only what those references resolve through,
+ * so a declared light no node names creates nothing and reaches no arm.
+ * The two consumers -- the `light:*` feature join, whose arms the composed
+ * variants must cover because the loader creates these lights exactly like
+ * scene code does, and the static scene-arm selection, which asks whether
+ * an asset contributes lights at all -- read this one answer.
  */
-export function gltfLightNodeCount(path: string): number {
+export function gltfNodeLights(path: string): GltfNodeLights {
     const record = glbDocument(path);
-    if (!record) return 0;
+    if (!record) return { count: 0, kinds: [] };
+    const extensions = record["extensions"] as
+        | Record<string, unknown>
+        | undefined;
+    const declared =
+        (extensions?.["KHR_lights_punctual"] as
+            | { lights?: { type?: string }[] }
+            | undefined)?.lights ?? [];
     const nodes = Array.isArray(record["nodes"])
         ? (record["nodes"] as Record<string, unknown>[])
         : [];
     let count = 0;
+    const kinds = new Set<string>();
     for (const node of nodes) {
-        const extensions = node?.["extensions"] as
+        const nodeExtensions = node?.["extensions"] as
             | Record<string, unknown>
             | undefined;
-        const punctual = extensions?.["KHR_lights_punctual"] as
+        const reference = (nodeExtensions?.["KHR_lights_punctual"] as
             | { light?: unknown }
-            | undefined;
-        if (punctual?.light !== undefined) count += 1;
+            | undefined)?.light;
+        if (reference === undefined) continue;
+        count += 1;
+        const type = typeof reference === "number"
+            ? declared[reference]?.type
+            : undefined;
+        if (type === "point" || type === "directional" || type === "spot") {
+            kinds.add(type);
+        }
     }
-    return count;
+    return { count, kinds: [...kinds] };
 }
 
 /**
@@ -603,12 +701,10 @@ export async function composeGltfMaterials(
         !documentHasDefaultMaterial(document)) {
         return [];
     }
-    const { PBR_HAS_ENV, PBR_HAS_SHEEN_ALBEDO_SCALING } =
-        await importPinnedModule<{
-            PBR_HAS_ENV: number;
-            PBR_HAS_SHEEN_ALBEDO_SCALING: number;
-        }>("material/pbr/pbr-flag-bits.js");
-    const occlusionUv2Bit = pinnedOcclusionUv2Bit();
+    const { PBR_HAS_ENV } = await importPinnedModule<{
+        PBR_HAS_ENV: number;
+    }>("material/pbr/pbr-flag-bits.js");
+    const bits = await pinnedArmBits();
     const composed: PinnedComposedMaterial[] = [];
     for (const {
         name,
@@ -624,65 +720,32 @@ export async function composeGltfMaterials(
             uv2Mask,
         };
         const variant = await composePinnedPbrVariant(input, options);
-        const key = variant.fragmentKey;
-        const coat = key.includes("clearcoat");
         composed.push({
             name,
-            fragmentKey: key,
-            arms: {
-                clearcoat: coat,
-                // `-X` in the coat's own key is PBR2_CC_F0_REMAP_OFF, which
-                // every glTF coat sets; a coat without it wants the remap.
-                clearcoatF0Remap: coat && !/clearcoat-[A-Z]*X/.test(key),
-                sheen: key.includes("sheen"),
-                // The two sheen models live inside one `sheen` arm, so the key
-                // does not separate them and the bit has to be read. A glTF
-                // sheen always takes the scaling one, because
-                // `gltf-ext-sheen.ts` passes `albedoScaling: true` — but read
-                // from the composition rather than asserted, so it follows the
-                // pin if that ever stops being true.
-                sheenAlbedoScaling:
-                    (variant.features & PBR_HAS_SHEEN_ALBEDO_SCALING) !== 0,
-                iridescence: key.includes("iridescence"),
-                // The occlusion bit alone: `createPbrTemplateExt`
-                // declares the dedicated occlusion pair for
-                // `_hasOcclusionUv2`, while the other five bits select a
-                // base UV set inside stages that are already bound. Reading
-                // the whole mask here asked the build for a texture slot no
-                // variant declares as soon as any other slot moved to
-                // TEXCOORD_1.
-                occlusionUv2: (uv2Mask & occlusionUv2Bit) !== 0,
-                transmission: key.includes("refraction"),
-                // Dispersion has no feature bit of its own. It rides on
-                // `_subsurface.refraction.dispersion`, which the refraction
-                // extension's `frag` reads off the material to choose the
-                // chromatic sample, so it is read from the same place.
-                dispersion:
-                    (
-                        asObject(
-                            asObject(input["_subsurface"])?.["refraction"],
-                        )?.["dispersion"]
-                    ) !== undefined,
-            },
+            fragmentKey: variant.fragmentKey,
+            arms: pinnedVariantArms(input, uv2Mask, variant, bits),
             vertexWgsl: variant.vertexWgsl,
             fragmentWgsl: variant.fragmentWgsl,
             // `_offsets` is a Map, which serializes to `{}`. The pin's own
             // `_writeMaterialData` keys every field off it, so it is the
             // authority on where each field sits — carry it as an object rather
             // than recomputing the layout from alignment rules here.
-            materialUboSpec: plainMaterialUboSpec(variant.materialUboSpec),
+            materialUboSpec: plainUboSpec(variant.materialUboSpec),
             metallicReflectanceRegistered,
         });
     }
     return composed;
 }
 
-/** The union of arms every material in a set needs. */
+/**
+ * The union of arms a set of composed materials or variants carries -- for
+ * the scene's whole composed set, what the emitted fragments have.
+ */
 export function unionArms(
-    materials: readonly PinnedComposedMaterial[],
+    composed: readonly { arms: PinnedMaterialArms }[],
 ): PinnedMaterialArms {
     const union = { ...noArms };
-    for (const material of materials) {
+    for (const material of composed) {
         for (const arm of Object.keys(union) as (keyof PinnedMaterialArms)[]) {
             union[arm] ||= material.arms[arm];
         }
@@ -714,7 +777,8 @@ export function assertArmsCovered(
         }
     }
     if (missing.length === 0) return;
-    throw new Error(
+    refuseGeneration(
+        asset,
         `The PBR fragment emitted for ${asset} is missing arms Babylon Lite ` +
             `composes for its own materials:\n${missing.join("\n")}\n` +
             "Each of these would render as a shading bias rather than a " +
@@ -749,6 +813,8 @@ export interface PinnedRenderableVariant {
     /** The arm's label, for provenance and to disambiguate file names. */
     armLabel: string;
     fragmentKey: string;
+    /** What this variant's composition carries (`pinnedVariantArms`). */
+    arms: PinnedMaterialArms;
     vertexWgsl: string;
     fragmentWgsl: string;
     materialUboSpec: unknown;
@@ -826,6 +892,7 @@ export async function composeRenderableVariants(
     const receiveBit = scene.shadowLights && scene.shadowLights.length > 0
         ? await pinnedReceiveShadowsBit()
         : 0;
+    const bits = await pinnedArmBits();
     for (const subject of subjects) {
         // A material no primitive references still composes, at the attribute
         // set a primitive would have to have: scene code can assign it to a
@@ -875,11 +942,15 @@ export async function composeRenderableVariants(
                     toneMapping: arm.toneMapping,
                     armLabel: arm.label,
                     fragmentKey: variant.fragmentKey,
+                    arms: pinnedVariantArms(
+                        subject.input,
+                        subject.uv2Mask,
+                        variant,
+                        bits,
+                    ),
                     vertexWgsl: variant.vertexWgsl,
                     fragmentWgsl: variant.fragmentWgsl,
-                    materialUboSpec: plainMaterialUboSpec(
-                        variant.materialUboSpec,
-                    ),
+                    materialUboSpec: plainUboSpec(variant.materialUboSpec),
                 });
                 // The pin composes each geometry task's MRT arm from the
                 // same inputs through `composePbrGeometryShader`; only the
@@ -907,9 +978,15 @@ export async function composeRenderableVariants(
                         geometryTask: task.index,
                         armLabel: `${arm.label} geometry ${task.index}`,
                         fragmentKey: geometry.fragmentKey,
+                        arms: pinnedVariantArms(
+                            subject.input,
+                            subject.uv2Mask,
+                            geometry,
+                            bits,
+                        ),
                         vertexWgsl: geometry.vertexWgsl,
                         fragmentWgsl: geometry.fragmentWgsl,
-                        materialUboSpec: plainMaterialUboSpec(
+                        materialUboSpec: plainUboSpec(
                             geometry.materialUboSpec,
                         ),
                     });
@@ -1104,6 +1181,7 @@ export async function composeScenePbrVariants(
     const receiveBit = scene.shadowLights && scene.shadowLights.length > 0
         ? await pinnedReceiveShadowsBit()
         : 0;
+    const bits = await pinnedArmBits();
     const variants: PinnedRenderableVariant[] = [];
     // Scene 20 creates many material records with one composition shape.
     // The selector still needs one row per material, but the pinned composer
@@ -1143,7 +1221,7 @@ export async function composeScenePbrVariants(
             // The pin derives this UBO field from array truthiness only.
             // Refuse if future composition starts inspecting runtime lanes.
             input.baseColorFactor = new Proxy<number[]>([], {
-                get(_target, key) { throw new Error(`PBR composition reads runtime baseColorFactor.${String(key)}.`); },
+                get(_target, key) { return refuseGeneration("material:pbr", `PBR composition reads runtime baseColorFactor.${String(key)}.`); },
             });
         }
         if (material.hasOrmTexture) input["ormTexture"] = {};
@@ -1307,7 +1385,8 @@ export async function composeScenePbrVariants(
         }
         if (material.shadowOnly) setters.setShadowOnly(input, material.shadowOnly);
         if (material.transmission > 0) {
-            throw new Error(
+            refuseGeneration(
+                "renderer:transmission",
                 "A scene-code transmissive material has no composed arm yet; " +
                     "the refraction pass structure is the open transmission " +
                     "item.",
@@ -1388,11 +1467,15 @@ export async function composeScenePbrVariants(
                 toneMapping: arm.toneMapping,
                 armLabel: arm.label,
                 fragmentKey: variant.fragmentKey,
+                arms: pinnedVariantArms(
+                    input,
+                    composeOptions.uv2Mask ?? 0,
+                    variant,
+                    bits,
+                ),
                 vertexWgsl: variant.vertexWgsl,
                 fragmentWgsl: variant.fragmentWgsl,
-                materialUboSpec: plainMaterialUboSpec(
-                    variant.materialUboSpec,
-                ),
+                materialUboSpec: plainUboSpec(variant.materialUboSpec),
             });
         }
         }

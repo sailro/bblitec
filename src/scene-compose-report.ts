@@ -29,8 +29,8 @@ import { join, resolve as resolvePath } from "node:path";
 import {
     captureShadersDirectory,
     defaultCaptureDirectory,
-    writeReport,
-} from "./parity-scene.js";
+} from "./tooling/artifacts.js";
+import { writeReport } from "./tooling/reports.js";
 import {
     browserCaptureStaleness,
     runInstrumentedCapture,
@@ -241,9 +241,6 @@ export async function runComposeReport(
                 console.log(`Report: ${reportPath}`);
             }
         }
-    }
-    if (outcome.gaps > 0) {
-        process.exitCode = 1;
     }
     return outcome;
 }

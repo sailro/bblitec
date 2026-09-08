@@ -15,6 +15,7 @@
  * to 4, `vec3<f32>` and `vec4<f32>` to 16, the struct rounds up to 16 — and a
  * field or total the pin places elsewhere is a generation failure.
  */
+import { createHash } from "node:crypto";
 import ts from "typescript";
 import { floatLiteral } from "./cpp-literals.js";
 import { pinnedLightModeCpp } from "./pinned-light-mode.js";
@@ -422,7 +423,7 @@ function memberName(name: string): string {
     return name;
 }
 
-export function parseVariantFields(structBody: string): VariantField[] {
+function parseVariantFields(structBody: string): VariantField[] {
     const fields: VariantField[] = [];
     for (const line of structBody.split("\n")) {
         const trimmed = line.trim();
@@ -456,7 +457,7 @@ export function parseVariantFields(structBody: string): VariantField[] {
 }
 
 /** Offsets and total size under WGSL uniform layout rules. */
-export function variantLayout(
+function variantLayout(
     fields: readonly VariantField[],
 ): { offsets: number[]; totalBytes: number } {
     const offsets: number[] = [];
@@ -612,7 +613,7 @@ interface VariantBinding {
  * to answer "which generator is this". A name outside the pin's three shapes
  * fails generation rather than being bound to a guess.
  */
-export function shadowBindingSlot(
+function shadowBindingSlot(
     name: string,
 ): { role: "map" | "map_sampler" | "info"; light: number } {
     const slot = shadowBindingSlotOrNull(name);
@@ -727,6 +728,16 @@ function textureBindingKind(
     }
 }
 
+/**
+ * The rows `variantBindings` reflected, by composed text and group. A
+ * variant's rows are asked for by every consumer of the variant -- the
+ * feature table, the emit options, the C++ header, the Dawn layout -- and
+ * the composed WGSL is the only authority on them at generation (the
+ * `.slots` sidecar the shader step writes does not exist yet), so the
+ * reflection runs once per text and the readers share its rows.
+ */
+const reflectedVariantBindings = new Map<string, readonly VariantBinding[]>();
+
 export function variantBindings(
     vertexWgsl: string,
     fragmentWgsl: string,
@@ -734,6 +745,25 @@ export function variantBindings(
     // group 2 is the shadow receiver's, whose rows the same reflection
     // answers for -- the composed text is the only authority on either.
     group = 1,
+): readonly VariantBinding[] {
+    const key = createHash("sha1")
+        .update(String(group))
+        .update("\0")
+        .update(vertexWgsl)
+        .update("\0")
+        .update(fragmentWgsl)
+        .digest("hex");
+    const cached = reflectedVariantBindings.get(key);
+    if (cached) return cached;
+    const rows = reflectVariantBindings(vertexWgsl, fragmentWgsl, group);
+    reflectedVariantBindings.set(key, rows);
+    return rows;
+}
+
+function reflectVariantBindings(
+    vertexWgsl: string,
+    fragmentWgsl: string,
+    group: number,
 ): readonly VariantBinding[] {
     const pattern = new RegExp(
         `@group\\(${group}\\)\\s*@binding\\((\\d+)\\)\\s*` +
@@ -796,7 +826,7 @@ export function variantBindings(
     );
 }
 
-export function variantCppName(fragmentKey: string): string {
+function variantCppName(fragmentKey: string): string {
     const parts = fragmentKey
         .split(/[^A-Za-z0-9]+/)
         .filter((part) => part !== "");

@@ -8,7 +8,7 @@
 // position itself is derived here once.
 import ts from "typescript";
 
-export interface SourceLocation {
+interface SourceLocation {
     file: ts.SourceFile;
     /** 1-based. */
     line: number;

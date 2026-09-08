@@ -542,7 +542,6 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
     const composition = await composeSceneStandardVariants(
         {
             babylonAssets: [],
-            bumpTexture: false,
             diffuseUv2: false,
             fog: false,
             vertexColors: false,
@@ -609,7 +608,6 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
     const again = await composeSceneStandardVariants(
         {
             babylonAssets: [],
-            bumpTexture: false,
             diffuseUv2: false,
             fog: false,
             vertexColors: false,
@@ -702,7 +700,6 @@ test("the babylon walk mirrors the generated loader's records", async () => {
     const composition = await composeSceneStandardVariants(
         {
             babylonAssets: ["asset.babylon"],
-            bumpTexture: false,
             diffuseUv2: false,
             fog: false,
             vertexColors: false,

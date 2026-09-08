@@ -7,6 +7,7 @@ import {
     type ShaderModule,
     type ShaderStruct,
 } from "./shader-ir.js";
+import { isPath } from "./pinned-material-vertex.js";
 
 function requireShape(condition: unknown, description: string): asserts condition {
     if (!condition) throw new Error(`Pinned skybox-cubemap ${description} changed.`);
@@ -18,9 +19,6 @@ function one<T>(values: readonly T[], description: string): T {
 }
 
 const path = (...parts: string[]): ShaderExpression => ({ kind: "path", parts });
-const isPath = (expression: ShaderExpression, ...parts: string[]): boolean =>
-    expression.kind === "path" && expression.parts.length === parts.length &&
-    expression.parts.every((part, index) => part === parts[index]);
 
 function structure(module: ShaderModule, name: string): ShaderStruct {
     return one(module.structs.filter((value) => value.name === name), `struct ${name}`);

@@ -42,7 +42,13 @@ struct TextGroupKey {
     bool operator==(const TextGroupKey&) const = default;
     bool operator==(const std::string& id) const { return !variant && curve_set_id == id; }
 };
-inline bool text_weight_installed = false;
+/**
+ * `setFontWeightOffset` installed its style seam on this realm. Written by
+ * the generated installer and read by both text renderers; realm state like
+ * the other JavaScript-side flags, so a worker realm that renders text keeps
+ * its own.
+ */
+inline thread_local bool text_weight_installed = false;
 struct TextDrawGroup {
     std::size_t atlas_index = 0;
     TextGroupKey group_key;

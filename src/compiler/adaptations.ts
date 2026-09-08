@@ -71,8 +71,8 @@ export function compileAdaptations(
         adaptations.push({
             id: "retained-canvas-surfaces", category: "platform", risk: "medium",
             sourceSemantics: "Each canvas has its own swapchain, scene targets, projection and pointer controls on a shared device.",
-            nativeSemantics: "Scene targets follow retained host canvas rectangles and are composed into one OS window. Mouse capture remains with the canvas where the drag began. Reviewed host companions provide layout and labels; native target resize follows layout each frame.",
-            validation: ["surface admission tests", "scene227 and scene228 full-page/canvas gates and independent camera/resize replay"],
+            nativeSemantics: "Scene targets follow retained host canvas rectangles and are composed into one OS window; a surface canvas the source appended to host chrome outside the projected document has no rectangle and shares the window in equal horizontal panes with the primary scene, in registration order. Mouse capture remains with the canvas where the drag began. Reviewed host companions provide layout and labels; native target resize follows layout each frame.",
+            validation: ["surface admission tests", "scene227 and scene228 full-page/canvas gates and independent camera/resize replay", "antigravity-racer split-screen check (both equal panes present on both backends)"],
         });
     }
     if (features.includes("platform:workers")) {
@@ -679,20 +679,19 @@ export function compileAdaptations(
                     ".ts` drops a sphere at `5e6 + 0.3`, which float32 " +
                     "cannot hold at that magnitude, through a region " +
                     "migration and a region reclaim. Region-local it " +
-                    "rests where it was dropped and measures 0.0002 full " +
-                    "/ 0.0004 region against the pinned Havok golden, " +
-                    "byte-identical between the backends; simulated at " +
-                    "raw world coordinates the same scene rests 0.2 " +
-                    "units away in x and z and measures 1.911 / 3.491",
+                    "rests where it was dropped, byte-identical between " +
+                    "the backends; simulated at raw world coordinates " +
+                    "the same scene rests away from the drop in x and z " +
+                    "(the current distances are in docs/status.md)",
                 "an aggregate's `startAsleep` sleeps in Bullet the way " +
                     "`HP_World_AddBody`'s third argument sleeps in " +
                     "Havok, and wakes on the same contact: scene 44's " +
                     "two towers, frozen at the pin's own " +
                     "`?captureAfter=5` (physics step 300, one second " +
                     "after the dropped box wakes the sleeping tower, so " +
-                    "the pose is mid-collapse), measure 0.007 full / " +
-                    "0.047 region against the browser golden, " +
-                    "identically on both backends",
+                    "the pose is mid-collapse), are graded against the " +
+                    "browser golden identically on both backends (the " +
+                    "current distances are in docs/status.md)",
             ],
         });
     }

@@ -32,8 +32,8 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
-import { pinnedTrsComposition } from "./pinned-trs.js";
 import { pinnedCsmFunctions } from "./pinned-csm.js";
+import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 
 const baseModule = "src/shadow/shadow-base.ts";
@@ -1530,7 +1530,13 @@ export function pinnedShadowHeader(context: LoweringContext): string {
     const csm = csmDefaults(context);
     const mat4Invert = lowerMat4InvertCpp(context, { inline: true });
     const casterFallback = esmCasterBoundsFallback(context);
-    const trs = pinnedTrsComposition(context);
+    // `computeAabb`'s local arm, the per-target delta range the morph
+    // bounds provider caches.
+    const computeAabb = lowerComputeAabb(context, {
+        arm: "local",
+        cppName: "compute_aabb",
+        inline: true,
+    });
     const floats = (values: readonly number[]): string =>
         values.map((value) => floatLiteral(value)).join(", ");
     return `#pragma once
@@ -1552,6 +1558,7 @@ export function pinnedShadowHeader(context: LoweringContext): string {
 
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
 namespace bbl::upstream {
@@ -1786,8 +1793,7 @@ inline CsmConfig csm_config(const ShadowGeneratorRecord& generator) {
  */
 inline std::array<double, 16> shadow_caster_local(
     const MeshRecord& mesh) {
-${trs.composeLocalBody}\
-    return local;
+    return trs_local_matrix(mesh);
 }
 
 inline std::array<double, 16> shadow_caster_world(
@@ -1860,6 +1866,22 @@ inline void expand_morph_caster_bounds(
 }
 
 /**
+ * The pin's per-target delta buffer, over the Vec3 deltas this port keeps.
+ *
+ * Upstream each morph target's deltas are one flat Float32Array the fold
+ * reads three lanes at a time; the same walk reads through this view.
+ */
+${positionsView({
+    name: "MorphDeltaPositions",
+    element: "Vec3",
+    member: "deltas",
+    local: "delta",
+    position: "delta",
+})}
+
+${computeAabb}
+
+/**
  * The pin's cached per-target computeAabb, filled on first use.
  *
  * Upstream this is a WeakMap keyed on the mesh and invalidated when its
@@ -1877,24 +1899,19 @@ inline void ensure_morph_target_ranges(const ModelGeometry& geometry) {
     geometry.morph_bounds.clear();
     geometry.morph_bounds.reserve(geometry.morph_positions.size());
     for (const std::vector<Vec3>& deltas : geometry.morph_positions) {
-        Vec3 low{
-            std::numeric_limits<float>::infinity(),
-            std::numeric_limits<float>::infinity(),
-            std::numeric_limits<float>::infinity()};
-        Vec3 high{
-            -std::numeric_limits<float>::infinity(),
-            -std::numeric_limits<float>::infinity(),
-            -std::numeric_limits<float>::infinity()};
-        for (const Vec3& delta : deltas) {
-            low.x = std::min(low.x, delta.x);
-            low.y = std::min(low.y, delta.y);
-            low.z = std::min(low.z, delta.z);
-            high.x = std::max(high.x, delta.x);
-            high.y = std::max(high.y, delta.y);
-            high.z = std::max(high.z, delta.z);
-        }
-        geometry.morph_bounds.push_back(
-            std::array<Vec3, 2>{low, high});
+        // The pin's computeAabb over the target's delta buffer: its double
+        // fold, rounded once at this float store.
+        const std::array<std::array<double, 3>, 2> aabb =
+            compute_aabb(MorphDeltaPositions{&deltas});
+        geometry.morph_bounds.push_back(std::array<Vec3, 2>{
+            Vec3{
+                static_cast<float>(aabb[0][0]),
+                static_cast<float>(aabb[0][1]),
+                static_cast<float>(aabb[0][2])},
+            Vec3{
+                static_cast<float>(aabb[1][0]),
+                static_cast<float>(aabb[1][1]),
+                static_cast<float>(aabb[1][2])}});
     }
 }
 

@@ -3,6 +3,7 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
+import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import {
     RendererLowerer,
     lowerOpaqueOrderStamp,
@@ -184,41 +185,58 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({ gpuInstancing: true });
+    // The composition lives once, in the always-emitted world-transform
+    // header; the render plan's mesh, transform-node, thin-instance and
+    // eye-relative worlds all call it there.
+    assert.match(
+        plan.source,
+        /std::array<float, 16> mesh_local_matrix\(const MeshRecord& mesh\) \{\n    return trs_matrix\(mesh\);/,
+    );
+    assert.match(
+        plan.source,
+        /const TransformNodeRecord& node\) \{\n    return trs_matrix\(node\);/,
+    );
+    assert.match(
+        plan.source,
+        /const std::array<double, 16> local = trs_local_matrix\(mesh\);/,
+    );
+    assert.doesNotMatch(plan.source, /const double cx = std::cos/);
+    const header = pinnedWorldTransformHeader(new LoweringContext());
     // eulerToQuat's four products, printed from the pinned tuple through
     // the shared translator (double operands, explicit parenthesization).
     assert.match(
-        plan.source,
+        header,
         /qx = \(\(\(sx \* cy\) \* cz\) \+ \(\(cx \* sy\) \* sz\)\);/,
     );
     assert.match(
-        plan.source,
+        header,
         /qy = \(\(\(cx \* sy\) \* cz\) - \(\(sx \* cy\) \* sz\)\);/,
     );
     assert.match(
-        plan.source,
+        header,
         /qz = \(\(\(cx \* cy\) \* sz\) \+ \(\(sx \* sy\) \* cz\)\);/,
     );
     assert.match(
-        plan.source,
+        header,
         /qw = \(\(\(cx \* cy\) \* cz\) - \(\(sx \* sy\) \* sz\)\);/,
     );
     // mat4ComposeInto's quaternion basis, printed from the pinned stores.
-    assert.match(plan.source, /const double xx = \(qx \* qx\);/);
-    assert.match(plan.source, /const double wz = \(qw \* qz\);/);
+    assert.match(header, /const double xx = \(qx \* qx\);/);
+    assert.match(header, /const double wz = \(qw \* qz\);/);
     assert.match(
-        plan.source,
+        header,
         /local\[0\] = \(\(1\.0 - \(2\.0 \* \(yy \+ zz\)\)\) \* scale_x\);/,
     );
     assert.match(
-        plan.source,
+        header,
         /local\[6\] = \(\(2\.0 \* \(yz \+ wx\)\) \* scale_y\);/,
     );
     assert.match(
-        plan.source,
+        header,
         /local\[9\] = \(\(2\.0 \* \(yz - wx\)\) \* scale_z\);/,
     );
-    assert.match(plan.source, /local\[12\] = mesh\.position\.x;/);
-    assert.match(plan.source, /local\[15\] = 1\.0;/);
+    assert.match(header, /local\[12\] = mesh\.position\.x;/);
+    assert.match(header, /local\[15\] = 1\.0;/);
 });
 
 test("translates the pinned multiply writer whole", () => {

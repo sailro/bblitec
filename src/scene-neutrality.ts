@@ -3,25 +3,24 @@
  * neutrality proof asks for, as a command.
  *
  * `docs/development.md` prescribes the procedure — snapshot every
- * `report-differential.json`, run the matrix, compare cell by cell — and that
- * is exactly right, because a change to the compiler that is meant to be
- * image-neutral either moves a number or it does not. What it did not have
- * was a command, so the comparison kept being retyped as a throwaway script,
- * and a throwaway script does not know which movement is already understood.
- *
- * This one does. Three scenes are not bit-stable from run to run, and the
- * mover is multisampling rather than a backend: at one sample every one of
- * them is byte-identical across runs. Their wobbling cells are reported as
- * expected rather than as movement and the exit status ignores them; every
+ * `report-differential.json`, run the matrix, compare cell by cell — and
+ * a change to the compiler that is meant to be image-neutral either moves
+ * a number or it does not. The command knows which movement is already
+ * understood: some scenes are not bit-stable from run to run, and the
+ * mover is multisampling rather than a backend — at one sample every one
+ * of them is byte-identical across runs. Their wobbling cells are reported
+ * as expected rather than as movement and the verdict ignores them; every
  * other moved cell is a finding.
  *
- * A scene earns a place here per backend and by measurement, never by one
- * surprising neutrality run: `scene -- stability <id> --backend <b>` has to
- * show the re-runs differing, and `--single-sample` has to show them stop.
- * The table below is that pair for each entry. What it costs is real -- an
- * entry excuses those cells permanently, and scene 120's Dawn foreground
- * sits at 0.004 with the wobble spanning 0.002, so a regression smaller than
- * the wobble would hide here.
+ * A scene earns a place in the table per backend and by measurement,
+ * never by one surprising neutrality run: `scene -- stability <id>
+ * --backend <b>` has to show the re-runs differing, and `--single-sample`
+ * has to show them stop. What an entry costs is real: it excuses those
+ * cells permanently, so a regression smaller than the wobble hides there.
+ * The published `docs/status.md` cells of these scenes are likewise
+ * exempt from the value check (`verify-status` prints them so the owner
+ * can mark them); the severity colour is still checked, because a wobble
+ * is one level, never a band.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -33,8 +32,10 @@ import { join } from "node:path";
  * | Scene | Backend | 4x re-runs vs run 1 | at one sample |
  * | --- | --- | --- | --- |
  * | 9 | Dawn | differ | byte-identical |
+ * | 14 | SDL_GPU | differ, worst MAD 0.000002, max 1 | byte-identical |
  * | 37 | Dawn | differ | byte-identical |
  * | 37 | SDL_GPU | differ, worst MAD 0.000059, max 1 | byte-identical |
+ * | 44 | both | the 2000 ms drop is a wall-clock timer (TODO.md, physics): the collapse pose rolls 0.005--0.006 / 0.033--0.037 | n/a |
  * | 120 | Dawn | differ | byte-identical |
  * | 120 | SDL_GPU | differ, worst MAD 0.000250, max 2 | byte-identical |
  * | 121 | SDL_GPU | differ, worst MAD 0.000636, max 2 | byte-identical |
@@ -43,111 +44,35 @@ import { join } from "node:path";
  * | 122 | SDL_GPU | differ, worst MAD 0.000274, max 1 | byte-identical |
  * | 123 | Dawn | differ, worst MAD 0.000856, max 1 | byte-identical |
  * | 123 | SDL_GPU | differ, worst MAD 0.000760, max 2 | byte-identical |
+ * | 124 | SDL_GPU | differ, worst MAD 0.000042, max 1 | byte-identical |
+ * | 124 | Dawn | differ, worst MAD 0.000146, max 1 | byte-identical |
+ * | 125 | Dawn | differ, worst MAD 0.000001, max 1; serial differential runs span 2.8e-5..1.8e-4 | byte-identical |
+ * | 125 | SDL_GPU | differ, worst MAD 0.000051, max 1 | byte-identical |
  * | 126 | Dawn | differ, worst MAD 0.001657, max 18 | byte-identical |
  * | 126 | SDL_GPU | differ, worst MAD 0.000081, max 2 | byte-identical |
  * | 128 | Dawn | differ, worst MAD 0.000035, max 1 | byte-identical |
  * | 128 | SDL_GPU | differ, worst MAD 0.000007, max 1 | byte-identical |
- * | 14 | SDL_GPU | differ, worst MAD 0.000002, max 1 | byte-identical |
- * | 125 | Dawn | differ, worst MAD 0.000001, max 1 | byte-identical |
- * | 125 | SDL_GPU | differ, worst MAD 0.000051, max 1 | byte-identical |
  * | 129 | Dawn | differ, worst MAD 0.000772, max 3 | byte-identical |
  * | 129 | SDL_GPU | differ, worst MAD 0.000118, max 2 | byte-identical |
+ * | 226 | SDL_GPU | differ, worst MAD 0.000260, max 1 | byte-identical |
+ * | 226 | Dawn | differ, worst MAD 0.000210, max 1 | byte-identical |
  * | 231 | SDL_GPU | differ, worst MAD 0.000005, max 1 | byte-identical |
  * | 231 | Dawn | differ under concurrent captures, worst MAD 0.000004, max 1 | byte-identical |
  * | 302 | Dawn | differ under mixed GPU load, worst MAD 0.000004, max 1 | byte-identical |
  * | 302 | SDL_GPU | differ under mixed GPU load, worst MAD 0.000012, max 1 | byte-identical |
  *
- * Scene 128 joined on 2026-08-27, found the way an entry should be: a
- * neutrality run over a change that could not reach it reported a moved
- * cell, and the pair above says why. Its band is the narrowest here, which
- * is what makes the entry cheap -- its published row is 0.000 and the
- * wobble spans 4e-5.
- *
- * Scene 14 joined the same way on the 1.25.0 bump: a run over a whitespace
- * change to the pin's composed fragment reported one moved channel-byte,
- * and the pair above says why. It is narrower still -- one byte on one
- * pixel, 1.1e-6 of a MAD column published at 0.012.
- *
- * Scenes 9 and 14 are measured bit-stable on the backend each is absent
- * from -- 9 on SDL_GPU across four runs, 14 on Dawn across three -- because
- * the wobble is per scene AND per backend, not a property of either alone.
- *
- * Scenes 125 and 129 joined on 2026-08-29, the same way 128 did: a
- * neutrality run over a change that could not reach either -- neither
- * compiles a glTF loader at all -- reported moved cells, and the pairs
- * above say why. They are the splat family's band, and its width is worth
- * stating because the stability sample alone understates it: three
- * consecutive serial `parity --differential` runs of one unchanged
- * scene-125 binary gave Dawn full MADs of 1.8e-4, 2.8e-5 and 1.6e-4,
- * which spans both the value a previous sweep recorded and the one the
- * next sweep did. Both published rows are 0.000 and 0.001 against
- * thresholds two orders above that.
- *
- * Scene 226 joined on its own integration rather than after a surprise, and
- * paid the entry fee up front: its worst run-to-run move is 2.6e-4 on
- * SDL_GPU and 2.1e-4 on Dawn, and both backends are bit-identical under
- * `BBLITE_MSAA=1`. That is the same band and the same bisection as the rest
- * of the splat family, which is what makes it the family's wobble rather
- * than a property of the new glTF route it loads through.
- *
- * Scene 124 joined the same way on 2026-09-03: four runs per backend give a
- * worst run-to-run move of 4.2e-5 on SDL_GPU and 1.46e-4 on Dawn, each one
- * byte on one channel, and three consecutive `BBLITE_MSAA=1` runs are
- * byte-identical. Same band, same bisection -- so the spherical-harmonic
- * pipeline it is the first scene to reach is not what moves it.
- *
- * Scene 123 joined on its own integration and paid the fee up front, like
- * 226 did: five runs per backend at 4x give a worst run-to-run move of
- * 7.6e-4 (max 2) on SDL_GPU and 8.6e-4 (max 1) on Dawn, and five runs per
- * backend at one sample are byte-identical. Its cloud is the family's
- * largest -- 786,233 splats covering 99.6% of the frame against scene 124's
- * 59,973-px mask -- so the same per-pixel coverage wobble is averaged over
- * far more pixels, which is why the band sits where it does. It is not the
- * family's widest: scene 126's Dawn band above is 1.7e-3 at max 18. Its
- * published rows are 0.001 against thresholds of 0.003 and 0.007, about
- * four and eight times the band.
- *
- * Scene 121 was measured at adoption on 2026-09-07. All four re-runs of
- * five at 4x vary on each backend, worst MAD 0.000636 on SDL_GPU and
- * 0.000642 on Dawn, max 2. Five runs per backend at one sample are
- * byte-identical. Every capture uses the same source and generated build
- * stamp; retained row bytes, bounds and update version also remain exact
- * through idle and orbit checks. This reproduces the splat family's
- * multisample repeatability boundary without changing its image gates.
- *
- * Scene 122 joined on 2026-09-07 after a neutrality comparison found a
- * 5.3e-5 movement in its Dawn full MAD. Five consecutive runs per backend
- * reproduce the bands above on one unchanged binary; five per backend at
- * one sample are byte-identical. The SOG cloud therefore has the same
- * multisample repeatability boundary as the other measured splat scenes.
- * Its image thresholds and committed golden remain unchanged.
- *
- * Scene 231's SDL_GPU entry was measured on 2026-09-07 before the next
- * integration sweep: two of four re-runs moved, with worst MAD 5.1e-6 and
- * max channel difference 1; all five one-sample runs are byte-identical.
- * Dawn's serial five-run controls were stable, but the full sweep moved
- * its full MAD by 1.4e-5. Four concurrent stability groups, each with five
- * runs of the same binary, reproduced a smaller run-to-run band: all four
- * groups varied, worst MAD 3.6e-6 and max 1. All twenty one-sample controls
- * are byte-identical. The source, reference and thresholds are unchanged.
- *
- * Scene 302's Dawn entry was measured on 2026-09-07 after the full sweep
- * changed 28 pixels (full MAD 1.01e-5, max 1). Five serial
- * runs and four concurrent five-run groups stayed exact to the golden.
- * Two twenty-run groups alongside scene 120's SDL_GPU stability workload
- * reproduced three varying re-runs, worst MAD 3.98e-6 and max 1. All forty
- * matched one-sample controls under that same load are byte-identical.
- * A later sweep also moved SDL_GPU by 5.79e-6 full MAD. Two twenty-run SDL
- * groups alongside scene 120's Dawn workload reproduced 24 varying re-runs,
- * worst MAD 1.19e-5 and max 1; all forty matched one-sample controls are
- * byte-identical. Image gates and the source/golden remain unchanged.
+ * The wobble is per scene AND per backend, not a property of either
+ * alone: scene 9 is measured bit-stable on SDL_GPU and scene 14 on Dawn.
+ * The splat family (120-129, 226) shares one band, the per-pixel coverage
+ * wobble averaged over each cloud's footprint: scene 123's 786,233 splats
+ * cover 99.6% of the frame, scene 124's cloud a 59,973-px mask, and scene
+ * 126's Dawn band is the family's widest at 1.7e-3 with max 18. Every band
+ * sits at least an order of magnitude under the scene's thresholds.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
     ["scene14", new Set(["sdl_gpu"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
-    // Its 2000 ms drop is a wall-clock timer (TODO.md, physics): the
-    // collapse pose rolls 0.005--0.006 / 0.033--0.037 between runs.
     ["scene44", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
     ["scene121", new Set(["dawn", "sdl_gpu"])],
@@ -175,7 +100,7 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
  * excusing it, because that scene's own `goldenVersusSdlGpu` cells stay
  * compared and are where an SDL_GPU regression would show.
  */
-export function cellBackends(path: string): string[] {
+function cellBackends(path: string): string[] {
     const backends: string[] = [];
     if (/sdl_?gpu/i.test(path)) backends.push("sdl_gpu");
     if (/dawn/i.test(path)) backends.push("dawn");
@@ -185,9 +110,9 @@ export function cellBackends(path: string): string[] {
 /**
  * Whether one cell's movement is the measured wobble rather than a finding.
  *
- * Both the neutrality run and the published-table check ask this, so they ask
- * it once: this module exists because the comparison kept being retyped, and
- * a predicate spelled twice is the same failure one level down.
+ * Both the neutrality run and the published-table check ask this, so they
+ * ask it once: a predicate spelled twice is the same failure one level
+ * down.
  */
 export function isWobblingCell(scene: string, path: string): boolean {
     const wobbling = wobbleScenes.get(scene);
@@ -236,7 +161,19 @@ function reportsIn(directory: string): Map<string, Map<string, number>> {
     return reports;
 }
 
-export function runNeutralityReport(baselineDirectory: string): void {
+/** The verdict of one neutrality comparison; `neutral` when no measured
+ *  cell moved and every baseline scene was measured again. */
+export interface NeutralityVerdict {
+    neutral: boolean;
+    unchanged: number;
+    moved: string[];
+    wobbled: string[];
+    missing: string[];
+}
+
+export function runNeutralityReport(
+    baselineDirectory: string,
+): NeutralityVerdict {
     const baseline = reportsIn(baselineDirectory);
     const current = reportsIn(join("artifacts", "parity"));
     if (baseline.size === 0) {
@@ -315,9 +252,7 @@ export function runNeutralityReport(baselineDirectory: string): void {
                 "it is not neutral.",
         );
     }
-    if (moved.length > 0 || missing.length > 0) {
-        process.exitCode = 1;
-        return;
-    }
-    console.log("\nNeutral: no measured cell moved.");
+    const neutral = moved.length === 0 && missing.length === 0;
+    if (neutral) console.log("\nNeutral: no measured cell moved.");
+    return { neutral, unchanged, moved, wobbled, missing };
 }

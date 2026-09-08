@@ -33,7 +33,7 @@ function pipelineDigest(vertex: string, fragment: string): string {
 }
 
 /** How a renderable selects this variant, as the pin's own composition key. */
-export interface PinnedVariantSelector {
+interface PinnedVariantSelector {
     materialIndex: number;
     materialName: string;
     materialView?: "no-color" | "esm-shadow";

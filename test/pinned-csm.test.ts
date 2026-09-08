@@ -7,6 +7,7 @@ import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedCsmFunctions } from "../src/lowering/pinned-csm.js";
 import { pinnedShadowHeader } from "../src/lowering/shadow-lowerer.js";
+import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { importPinnedModule, importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
@@ -407,6 +408,12 @@ test("CSM full shadow header compiles and publishes pinned receiver bytes", {
     const rendererIncludes = join(output, "bblite", "upstream");
     mkdirSync(rendererIncludes, { recursive: true });
     writeFileSync(join(output, "shadow.hpp"), pinnedShadowHeader(context));
+    // The shadow header composes a caster's local matrix through the
+    // pinned TRS composition every generated tree emits.
+    writeFileSync(
+        join(rendererIncludes, "pinned_world_transform.hpp"),
+        pinnedWorldTransformHeader(context),
+    );
     // Declarations only: this fixture exercises the shadow header's own
     // receiver adapter, not the separate renderer's camera/world routines.
     writeFileSync(join(rendererIncludes, "renderer_plan.hpp"), `#pragma once

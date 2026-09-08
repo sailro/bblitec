@@ -10,8 +10,9 @@
 // scene keeps), and whether a call is browser instrumentation that is
 // erased outright.
 import ts from "typescript";
+import { argumentAt, identifierText } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
-import { foldableMathUnary } from "./option-helpers.js";
+import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 
 /**
@@ -575,7 +576,7 @@ export class BrowserErasure {
         if (!ts.isPropertyAccessExpression(callee) ||
             callee.name.text !== "getContext" || call.arguments.length !== 1) return false;
         const canvas = evaluate(callee.expression);
-        const context = evaluate(call.arguments[0]!);
+        const context = evaluate(argumentAt(call, 0));
         return canvas?.kind === "object" && !!canvas.primaryCanvas &&
             context?.kind === "string" && context.value === "2d";
     }
@@ -599,7 +600,7 @@ export class BrowserErasure {
         return (
             callee.name.text === "appendChild" &&
             call.arguments.length === 1 &&
-            this.isNativeDomBridge(call.arguments[0]!) &&
+            this.isNativeDomBridge(argumentAt(call, 0)) &&
             ts.isPropertyAccessExpression(callee.expression) &&
             (callee.expression.name.text === "body" ||
                 callee.expression.name.text === "head") &&
@@ -829,7 +830,7 @@ export class BrowserErasure {
             )?.text === "window" &&
             unwrapped.expression.arguments.length === 1 &&
             this.evaluateBrowserValue(
-                unwrapped.expression.arguments[0]!,
+                argumentAt(unwrapped.expression, 0),
             )?.kind === "string"
         ) {
             // The native executable is an SDL desktop surface with mouse
@@ -1017,7 +1018,7 @@ export class BrowserErasure {
                 ) {
                     const elementId =
                         this.evaluateBrowserValue(
-                            unwrapped.arguments[0]!,
+                            argumentAt(unwrapped, 0),
                         );
                     if (
                         elementId?.kind !== "string" ||
@@ -1086,7 +1087,7 @@ export class BrowserErasure {
             ) {
                 const argument =
                     this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
+                        argumentAt(unwrapped, 0),
                     );
                 const text =
                     argument?.kind === "string"
@@ -1107,7 +1108,7 @@ export class BrowserErasure {
             ) {
                 const argument =
                     this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
+                        argumentAt(unwrapped, 0),
                     );
                 // Only the kinds JavaScript converts to a NUMBER fold; an
                 // opaque browser object or the search-params record does
@@ -1143,7 +1144,7 @@ export class BrowserErasure {
             ) {
                 const argument =
                     this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
+                        argumentAt(unwrapped, 0),
                     );
                 return argument?.kind === "number"
                     ? {
@@ -1170,7 +1171,7 @@ export class BrowserErasure {
             ) {
                 const argument =
                     this.evaluateBrowserValue(
-                        unwrapped.arguments[0]!,
+                        argumentAt(unwrapped, 0),
                     );
                 return argument?.kind === "number"
                     ? {
@@ -1201,11 +1202,10 @@ export class BrowserErasure {
                 // a resolved value alike -- cannot disagree about which
                 // ones resolve. A transcendental is deliberately absent
                 // from that table, and stays unfoldable here too.
-                const fold =
-                    foldableMathUnary[unwrapped.expression.name.text];
+                const fold = mathUnaryFold(unwrapped.expression.name.text);
                 if (fold === undefined) return undefined;
                 const argument = this.evaluateBrowserValue(
-                    unwrapped.arguments[0]!,
+                    argumentAt(unwrapped, 0),
                 );
                 return argument?.kind === "number"
                     ? { kind: "number", value: fold(argument.value) }
@@ -1515,7 +1515,7 @@ export class BrowserErasure {
         ) {
             return false;
         }
-        const callback = raf.arguments[0]!;
+        const callback = argumentAt(raf, 0);
         if (
             !ts.isArrowFunction(callback) ||
             callback.parameters.length !== 0
@@ -1565,7 +1565,7 @@ export class BrowserErasure {
         ) {
             return false;
         }
-        const callback = outer.arguments[0]!;
+        const callback = argumentAt(outer, 0);
         if (
             !ts.isArrowFunction(callback) ||
             callback.parameters.length !== 0
@@ -1579,8 +1579,7 @@ export class BrowserErasure {
             ts.isCallExpression(inner) &&
             this.isDefaultRequestAnimationFrameCall(inner) &&
             inner.arguments.length === 1 &&
-            ts.isIdentifier(inner.arguments[0]!) &&
-            inner.arguments[0]!.text === executor.resolveName
+            identifierText(argumentAt(inner, 0)) === executor.resolveName
         );
     }
 
@@ -1662,8 +1661,7 @@ export class BrowserErasure {
             !ts.isCallExpression(scheduled) ||
             !this.isDefaultRequestAnimationFrameCall(scheduled) ||
             scheduled.arguments.length !== 1 ||
-            !ts.isIdentifier(scheduled.arguments[0]!) ||
-            (scheduled.arguments[0] as ts.Identifier).text !== waitName
+            identifierText(argumentAt(scheduled, 0)) !== waitName
         ) {
             return undefined;
         }
@@ -1746,6 +1744,7 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(call.expression) &&
             ts.isIdentifier(call.expression.expression) &&
             call.expression.expression.text === "Object" &&
+            this.context.isDefaultLibraryIdentifier(call.expression.expression) &&
             (call.expression.name.text === "assign" ||
                 (call.expression.name.text === "defineProperty" &&
                     call.arguments[0] !== undefined &&

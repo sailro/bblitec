@@ -13,13 +13,14 @@
 // sink (a number, a string, a condition) exactly where JavaScript coerces.
 
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { DataType } from "./data-types.js";
 import type { Feature, Value } from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
-export interface JsonBridgeContext {
+interface JsonBridgeContext {
     readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     fail(node: ts.Node, message: string): never;
@@ -135,7 +136,7 @@ function compileStringify(
         // The specification clamps the indent at ten spaces.
         indent = Math.min(staticNumber, 10);
     }
-    const argument = call.arguments[0]!;
+    const argument = argumentAt(call, 0);
     const dataType = context.dataLowerer.dataTypeAt(argument);
     if (!dataType) {
         context.fail(
@@ -173,7 +174,7 @@ function compileParse(
     }
     context.reachJson();
     context.reachJsData();
-    const text = context.dataLowerer.compileForSink(call.arguments[0]!, {
+    const text = context.dataLowerer.compileForSink(argumentAt(call, 0), {
         kind: "string",
     });
     return jsonValue(`bbl::js::json_parse(${text})`);

@@ -1,0 +1,38 @@
+{
+  "scene": "scene114",
+  "notes": "Morph and skeleton picking through the markers the scene's own source places: the browser observation records the four pick hits and every mesh's placement; the native captures must place the same markers (positions exact, scaling within float lanes) and hold the authored state through idle.",
+  "base": "adhoc",
+  "testPass": true,
+  "minFrames": 30,
+  "phases": [
+    { "id": "first-ready", "frame": 0 },
+    { "id": "canonical", "frame": 181 },
+    { "id": "idle", "frame": 362 }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "meshes.length", "equals": 19 },
+    { "kind": "capture-path", "phase": "*", "path": "meshes[0].geometryInfo.vertexCount", "equals": 4 },
+    { "kind": "capture-path", "phase": "*", "path": "meshes[0].morphStorageWeights[0]", "equals": 1 },
+    { "kind": "capture-path", "phase": "*", "path": "meshes[1].boneMatrixCount", "equals": 2 },
+    { "kind": "golden-mad", "phase": "*", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "capture-same", "phase": "canonical", "vs": "first-ready", "path": "camera", "notes": "idle does not change the authored camera" },
+    { "kind": "capture-same", "phase": "idle", "vs": "first-ready", "path": "camera" },
+    { "kind": "capture-same", "phase": "canonical", "vs": "first-ready", "path": "meshes", "notes": "idle does not change the authored mesh state" },
+    { "kind": "capture-same", "phase": "idle", "vs": "first-ready", "path": "meshes" },
+    { "kind": "image-mad", "phase": "canonical", "vs": "first-ready", "maxDiff": 0, "notes": "the idle image does not change" },
+    { "kind": "image-mad", "phase": "idle", "vs": "first-ready", "maxDiff": 0 },
+    { "kind": "plugin", "module": "checks/plugins/scene114-markers.mjs" }
+  ],
+  "observe": {
+    "hooks": [
+      {
+        "marker": "await registerScene(scene);",
+        "inject": "window.__observe = () => ({ hits: { morphGpuHit: canvas.dataset.morphGpuHit, morphDetailedHit: canvas.dataset.morphDetailedHit, skeletonGpuHit: canvas.dataset.skeletonGpuHit, skeletonDetailedHit: canvas.dataset.skeletonDetailedHit }, meshes: scene.meshes.map((mesh, index) => ({ index, name: mesh.name, position: [mesh.position.x, mesh.position.y, mesh.position.z], scaling: [mesh.scaling.x, mesh.scaling.y, mesh.scaling.z] })) });"
+      }
+    ],
+    "steps": [
+      { "id": "first" },
+      { "id": "idle", "settleFrames": 180 }
+    ]
+  }
+}

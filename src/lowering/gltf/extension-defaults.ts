@@ -8,8 +8,8 @@ import {
     featureMethod,
     refuseModule,
     refuseNode,
-    signedNumericValue,
-    unwrapPin,
+    pinnedNumericValue,
+    unwrapExpression,
 } from "./shared.js";
 
 interface PinnedJsonDefault {
@@ -39,18 +39,18 @@ function pinnedTypeofDefaults(
         ) {
             return;
         }
-        const conditional = unwrapPin(node.initializer);
+        const conditional = unwrapExpression(node.initializer);
         if (!ts.isConditionalExpression(conditional)) return;
-        const condition = unwrapPin(conditional.condition);
+        const condition = unwrapExpression(conditional.condition);
         const typeofRead = ts.isBinaryExpression(condition) &&
                 condition.operatorToken.kind ===
                     ts.SyntaxKind.EqualsEqualsEqualsToken &&
-                ts.isTypeOfExpression(unwrapPin(condition.left)) &&
-                ts.isStringLiteral(unwrapPin(condition.right)) &&
-                (unwrapPin(condition.right) as ts.StringLiteral).text ===
+                ts.isTypeOfExpression(unwrapExpression(condition.left)) &&
+                ts.isStringLiteral(unwrapExpression(condition.right)) &&
+                (unwrapExpression(condition.right) as ts.StringLiteral).text ===
                     "number"
-            ? unwrapPin(
-                (unwrapPin(condition.left) as ts.TypeOfExpression)
+            ? unwrapExpression(
+                (unwrapExpression(condition.left) as ts.TypeOfExpression)
                     .expression,
             )
             : undefined;
@@ -60,7 +60,7 @@ function pinnedTypeofDefaults(
             ? typeofRead.name.text
             : undefined;
         if (key === undefined) return;
-        const whenTrue = unwrapPin(conditional.whenTrue);
+        const whenTrue = unwrapExpression(conditional.whenTrue);
         const readsKey = (ts.isPropertyAccessExpression(whenTrue) ||
             ts.isPropertyAccessChain(whenTrue)) &&
             whenTrue.name.text === key;
@@ -72,7 +72,7 @@ function pinnedTypeofDefaults(
                 `no longer substitutes '${key}' behind its own typeof test`,
             );
         }
-        const whenFalse = unwrapPin(conditional.whenFalse);
+        const whenFalse = unwrapExpression(conditional.whenFalse);
         if (ts.isIdentifier(whenFalse) && whenFalse.text === "undefined") {
             result.push({
                 key,
@@ -84,7 +84,7 @@ function pinnedTypeofDefaults(
         result.push({
             key,
             bindingName: node.name.text,
-            value: signedNumericValue(symbol, file, whenFalse),
+            value: pinnedNumericValue(symbol, file, whenFalse),
         });
     };
     visit(root);
@@ -172,8 +172,8 @@ export function lowerGltfExtensionDefaults(
         const color = entries.get("color");
         const distance = entries.get("atDistance");
         if (!color || !distance) return;
-        const colorValue = unwrapPin(color);
-        const distanceValue = unwrapPin(distance);
+        const colorValue = unwrapExpression(color);
+        const distanceValue = unwrapExpression(distance);
         if (
             !ts.isArrayLiteralExpression(colorValue) ||
             !ts.isNumericLiteral(distanceValue)
@@ -182,7 +182,7 @@ export function lowerGltfExtensionDefaults(
         }
         fallbacks.push({
             color: colorValue.elements.map((element) =>
-                signedNumericValue(
+                pinnedNumericValue(
                     dielectricSymbol,
                     dielectricFile,
                     element,
@@ -219,16 +219,16 @@ export function lowerGltfExtensionDefaults(
     findDispersion(applyMaterial.body);
     const strength = dispersionCalls.length === 1 &&
             dispersionCalls[0]!.arguments.length === 2
-        ? unwrapPin(dispersionCalls[0]!.arguments[1]!)
+        ? unwrapExpression(dispersionCalls[0]!.arguments[1]!)
         : undefined;
     const scale = strength !== undefined &&
             ts.isBinaryExpression(strength) &&
             strength.operatorToken.kind === ts.SyntaxKind.SlashToken &&
-            ts.isNumericLiteral(unwrapPin(strength.left)) &&
-            ts.isIdentifier(unwrapPin(strength.right)) &&
-            (unwrapPin(strength.right) as ts.Identifier).text ===
+            ts.isNumericLiteral(unwrapExpression(strength.left)) &&
+            ts.isIdentifier(unwrapExpression(strength.right)) &&
+            (unwrapExpression(strength.right) as ts.Identifier).text ===
                 dispersionEntry.bindingName
-        ? Number((unwrapPin(strength.left) as ts.NumericLiteral).text)
+        ? Number((unwrapExpression(strength.left) as ts.NumericLiteral).text)
         : undefined;
     if (scale === undefined) {
         refuseModule(
@@ -259,9 +259,9 @@ export function lowerGltfExtensionDefaults(
     const options = setterCalls.length === 1 &&
             setterCalls[0]!.arguments.length === 2 &&
             ts.isObjectLiteralExpression(
-                unwrapPin(setterCalls[0]!.arguments[1]!),
+                unwrapExpression(setterCalls[0]!.arguments[1]!),
             )
-        ? unwrapPin(
+        ? unwrapExpression(
             setterCalls[0]!.arguments[1]!,
         ) as ts.ObjectLiteralExpression
         : undefined;
@@ -286,7 +286,7 @@ export function lowerGltfExtensionDefaults(
         ) {
             continue;
         }
-        const coalesce = unwrapPin(property.initializer);
+        const coalesce = unwrapExpression(property.initializer);
         if (
             !ts.isBinaryExpression(coalesce) ||
             coalesce.operatorToken.kind !==
@@ -294,7 +294,7 @@ export function lowerGltfExtensionDefaults(
         ) {
             continue;
         }
-        const readValue = unwrapPin(coalesce.left);
+        const readValue = unwrapExpression(coalesce.left);
         const key = (ts.isPropertyAccessExpression(readValue) ||
                 ts.isPropertyAccessChain(readValue))
             ? readValue.name.text
@@ -311,7 +311,7 @@ export function lowerGltfExtensionDefaults(
         iridescenceDefaults.set(slot, {
             key,
             literal: floatLiteral(
-                signedNumericValue(
+                pinnedNumericValue(
                     iridescenceSymbol,
                     iridescenceFile,
                     coalesce.right,

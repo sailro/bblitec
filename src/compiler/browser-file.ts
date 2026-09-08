@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { Feature, Value, ValueKind } from "./types.js";
@@ -8,7 +9,7 @@ import type { Feature, Value, ValueKind } from "./types.js";
  * module owns its value shapes so Blob/object-URL/File handling does not become
  * another branch in the Babylon intrinsic registry.
  */
-export interface BrowserFileContext {
+interface BrowserFileContext {
     readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     resolveStaticExpression(expression: ts.Expression): ts.Expression;
@@ -212,7 +213,7 @@ export function compileBrowserFileCall(
             callee.name.text === "revokeObjectURL")
     ) {
         context.expectArgumentCount(call, 1, 1);
-        const argument = context.compileValue(call.arguments[0]!);
+        const argument = context.compileValue(argumentAt(call, 0));
         // A URL the bake driver produced exists only at generation; the
         // release upstream writes for it is the driver's own page's to
         // perform, so the call is no statement here and reaches no file
@@ -226,7 +227,7 @@ export function compileBrowserFileCall(
         const engine = context.requireDefaultEngine(call);
         context.reachFeature("browser:file", call);
         if (callee.name.text === "createObjectURL") {
-            context.expectKind(argument, "blob", call.arguments[0]!);
+            context.expectKind(argument, "blob", argumentAt(call, 0));
             return {
                 kind: "object-url",
                 cpp: `bbl::js::create_object_url(${engine}, ${argument.cpp})`,
@@ -235,7 +236,7 @@ export function compileBrowserFileCall(
                 impure: true,
             };
         }
-        context.expectKind(argument, "object-url", call.arguments[0]!);
+        context.expectKind(argument, "object-url", argumentAt(call, 0));
         return {
             kind: "void",
             cpp: `bbl::js::revoke_object_url(${engine}, ${argument.cpp})`,

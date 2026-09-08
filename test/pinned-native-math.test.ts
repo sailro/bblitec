@@ -23,13 +23,27 @@ function floatVector(value: readonly number[]): string {
     return `bbl::Vec3{${value.map((lane) => `static_cast<float>(${doubleLiteral(lane)})`).join(", ")}}`;
 }
 
+function doubleArray(value: Float64Array): string {
+    return `std::array<double, 16>{${[...new BigUint64Array(value.buffer)].map(
+        (bits) => `std::bit_cast<double>(${bits}ull)`,
+    ).join(", ")}}`;
+}
+
 test("generated matrix and pick projections match the executed pin bit for bit", {
     skip: !tools,
 }, async () => {
+    // One pinned writer over either storage width: f32 output for the draw
+    // path, F64 output for the outer transform's double product.
     const { mat4MultiplyInto } = await importPinnedModule<{
-        mat4MultiplyInto: (out: Float32Array, d: number, left: Float32Array,
-            i: number, right: Float64Array, j: number) => void;
+        mat4MultiplyInto: (out: Float32Array | Float64Array, d: number,
+            left: Float32Array | Float64Array, i: number, right: Float64Array,
+            j: number) => void;
     }>("math/mat4-multiply-into.js");
+    const { mat4ComposeInto } = await importPinnedModule<{
+        mat4ComposeInto: (out: Float64Array, off: number, tx: number, ty: number,
+            tz: number, qx: number, qy: number, qz: number, qw: number,
+            sx: number, sy: number, sz: number) => void;
+    }>("math/mat4-compose-into.js");
     const { computePickVP } = await importPinnedModuleWithExports<{
         computePickVP: (out: Float32Array, vp: Float32Array, x: number,
             y: number, width: number, height: number) => void;
@@ -85,6 +99,22 @@ test("generated matrix and pick projections match the executed pin bit for bit",
         );
         const appliedOuter = new Float32Array(16);
         mat4MultiplyInto(appliedOuter, 0, outer, 0, Float64Array.from(left), 0);
+        // The double arm: the unrounded composition on the left of a double
+        // world, compared after one f32 narrowing (the pin's own quaternion
+        // trigonometry may differ from the CRT's by an ulp in double), and
+        // bit for bit as doubles where no trigonometry is involved -- a
+        // translation-only root, whose product is exactly the world with
+        // the translation added.
+        const outerDouble = new Float64Array(16);
+        mat4ComposeInto(outerDouble, 0, translation[0]!, translation[1]!, translation[2]!,
+            qx, qy, qz, qw, 1, 1, 1);
+        const productDouble = new Float64Array(16);
+        mat4MultiplyInto(productDouble, 0, outerDouble, 0, right, 0);
+        const translatedOnly = new Float64Array(16);
+        mat4ComposeInto(translatedOnly, 0, translation[0]!, translation[1]!, translation[2]!,
+            0, 0, 0, 1, 1, 1, 1);
+        const translatedProduct = new Float64Array(16);
+        mat4MultiplyInto(translatedProduct, 0, translatedOnly, 0, right, 0);
         const x = sample * 123.125 - 17.5;
         const y = sample * 31.0625 + 0.5;
         const width = 1280 + sample;
@@ -100,6 +130,8 @@ test("generated matrix and pick projections match the executed pin bit for bit",
     const auto outer = bbl::upstream::outer_transform_matrix(${floatVector(translation)}, ${floatVector(rotation)});
     same(outer, ${floatArray(outer)});
     same(bbl::upstream::matrix_product(outer, left), ${floatArray(appliedOuter)});
+    narrowed(bbl::upstream::outer_transform_product(${floatVector(translation)}, ${floatVector(rotation)}, right), ${floatArray(Float32Array.from(productDouble))});
+    exact(bbl::upstream::outer_transform_product(${floatVector(translation)}, bbl::Vec3{0.0f, 0.0f, 0.0f}, right), ${doubleArray(translatedProduct)});
     same(bbl::upstream::matrix_product(left, right), ${floatArray(product)});
     same(bbl::upstream::matrix_product(left.data(), right), ${floatArray(product)});
     std::array<float, 16> actual{};
@@ -119,6 +151,14 @@ test("generated matrix and pick projections match the executed pin bit for bit",
 void same(const std::array<float, 16>& actual, const std::array<float, 16>& expected) {
     for (std::size_t lane = 0; lane < 16; ++lane)
         assert(std::bit_cast<std::uint32_t>(actual[lane]) == std::bit_cast<std::uint32_t>(expected[lane]));
+}
+void narrowed(const std::array<double, 16>& actual, const std::array<float, 16>& expected) {
+    for (std::size_t lane = 0; lane < 16; ++lane)
+        assert(std::bit_cast<std::uint32_t>(static_cast<float>(actual[lane])) == std::bit_cast<std::uint32_t>(expected[lane]));
+}
+void exact(const std::array<double, 16>& actual, const std::array<double, 16>& expected) {
+    for (std::size_t lane = 0; lane < 16; ++lane)
+        assert(std::bit_cast<std::uint64_t>(actual[lane]) == std::bit_cast<std::uint64_t>(expected[lane]));
 }
 int main() {
 ${cases.join("\n")}

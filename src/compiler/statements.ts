@@ -16,7 +16,7 @@ import type {
     Value,
     ValueKind,
 } from "./types.js";
-import { lightVectorSetter } from "./assignments.js";
+import { lightSetter } from "./assignments.js";
 import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import {
     staticIndexLoopShape,
@@ -29,6 +29,8 @@ import {
 import type { CompilerSymbols } from "./symbols.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { argumentAt, isUpdateExpression, unwrappedIdentifier } from "./syntax.js";
+import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -449,52 +451,6 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
     [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
 ]);
 
-/**
- * The control statement that would leave the enclosing loop, or undefined.
- *
- * Descent stops at a nested loop and at a function-like, because a control
- * statement there binds to that one; an unqualified `break` additionally
- * binds to a nested `switch`, so descent tracks that too. `returns` adds an
- * early `return`, which leaves the loop the same way for a caller folding
- * the loop away — the statement itself comes back so such a caller can
- * refuse at it by name.
- */
-export function enclosingLoopControl(
-    statement: ts.Statement,
-    options: { returns?: boolean } = {},
-): ts.Statement | undefined {
-    let found: ts.Statement | undefined;
-    const visit = (node: ts.Node, insideSwitch: boolean): void => {
-        if (found) return;
-        if (
-            ts.isForStatement(node) ||
-            ts.isWhileStatement(node) ||
-            ts.isForOfStatement(node) ||
-            ts.isForInStatement(node) ||
-            ts.isDoStatement(node) ||
-            ts.isFunctionLike(node)
-        ) {
-            return;
-        }
-        if (ts.isBreakStatement(node)) {
-            if (!insideSwitch) found = node;
-            return;
-        }
-        if (ts.isContinueStatement(node)) {
-            found = node;
-            return;
-        }
-        if (options.returns && ts.isReturnStatement(node)) {
-            found = node;
-            return;
-        }
-        const nestedSwitch = insideSwitch || ts.isSwitchStatement(node);
-        ts.forEachChild(node, (child) => visit(child, nestedSwitch));
-    };
-    visit(statement, false);
-    return found;
-}
-
 export class StatementLowerer {
     private readonly loweredTerminators = new WeakSet<ts.Statement>();
     private readonly labels: Array<{ source: string; target: string }> = [];
@@ -913,7 +869,7 @@ export class StatementLowerer {
                 return constant(node.left, seen) && constant(node.right, seen);
             }
             return ts.isPrefixUnaryExpression(node) &&
-                node.operator !== ts.SyntaxKind.PlusPlusToken && node.operator !== ts.SyntaxKind.MinusMinusToken &&
+                !isUpdateExpression(node) &&
                 constant(node.operand, seen);
         };
         let settled = true;
@@ -935,31 +891,9 @@ export class StatementLowerer {
     private breaksEnclosingLoop(
         statement: ts.Statement,
     ): boolean {
-        let found = false;
-        const visit = (
-            node: ts.Node,
-            insideSwitch: boolean,
-        ): void => {
-            if (found) return;
-            if (
-                ts.isForStatement(node) ||
-                ts.isWhileStatement(node) ||
-                ts.isForOfStatement(node) ||
-                ts.isForInStatement(node) ||
-                ts.isDoStatement(node) ||
-                ts.isFunctionLike(node)
-            ) {
-                return;
-            }
-            if (ts.isBreakStatement(node)) {
-                if (!insideSwitch) found = true;
-                return;
-            }
-            const nestedSwitch = insideSwitch || ts.isSwitchStatement(node);
-            ts.forEachChild(node, (child) => visit(child, nestedSwitch));
-        };
-        visit(statement, false);
-        return found;
+        return (
+            enclosingLoopControl(statement, { continues: false }) !== undefined
+        );
     }
 
     private emitSwitch(
@@ -1189,56 +1123,22 @@ export class StatementLowerer {
     private findSwitchBoundBreak(
         statement: ts.Statement,
     ): ts.Node | undefined {
-        let found: ts.Node | undefined;
-        const visit = (node: ts.Node): void => {
-            if (found) {
-                return;
-            }
-            if (
-                ts.isForStatement(node) ||
-                ts.isWhileStatement(node) ||
-                ts.isForOfStatement(node) ||
-                ts.isForInStatement(node) ||
-                ts.isDoStatement(node) ||
-                ts.isSwitchStatement(node) ||
-                ts.isFunctionLike(node)
-            ) {
-                return;
-            }
-            if (
-                ts.isBreakStatement(node) &&
-                !node.label
-            ) {
-                found = node;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(statement);
-        return found;
+        // An unqualified break under a nested switch binds to that switch,
+        // which the shared walk expresses by not counting it there.
+        return enclosingLoopControl(statement, {
+            continues: false,
+            labeled: false,
+        });
     }
 
     /** A continue that crosses the switch and binds to an enclosing loop. */
     private findSwitchBoundContinue(
         statement: ts.Statement,
-    ): ts.ContinueStatement | undefined {
-        let found: ts.ContinueStatement | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
-                found ||
-                ts.isIterationStatement(node, false) ||
-                ts.isFunctionLike(node)
-            ) {
-                return;
-            }
-            if (ts.isContinueStatement(node) && !node.label) {
-                found = node;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(statement);
-        return found;
+    ): ts.Node | undefined {
+        return enclosingLoopControl(statement, {
+            breaks: false,
+            labeled: false,
+        });
     }
 
     private emitIf(
@@ -1322,13 +1222,8 @@ export class StatementLowerer {
                     "A break in a statically unrolled resource loop requires a generation-known condition.",
                 );
             }
-            const returns = (node: ts.Node): boolean => {
-                if (ts.isFunctionLike(node)) return false;
-                return ts.isReturnStatement(node) ||
-                    (ts.forEachChild(node, returns) ?? false);
-            };
-            if (returns(statement.thenStatement) ||
-                (statement.elseStatement && returns(statement.elseStatement))) {
+            if (firstReturn([statement.thenStatement]) ||
+                (statement.elseStatement && firstReturn([statement.elseStatement]))) {
                 context.trackResourceLoopEarlyReturn(statement.expression);
             }
         }
@@ -1482,9 +1377,9 @@ export class StatementLowerer {
             browserLocal(expression.expression.expression) &&
             expression.expression.name.text === "addEventListener" &&
             expression.arguments.length >= 2 &&
-            pure(expression.arguments[0]!) &&
-            (ts.isArrowFunction(expression.arguments[1]!) ||
-                ts.isFunctionExpression(expression.arguments[1]!)) &&
+            pure(argumentAt(expression, 0)) &&
+            (ts.isArrowFunction(argumentAt(expression, 1)) ||
+                ts.isFunctionExpression(argumentAt(expression, 1))) &&
             expression.arguments.slice(2).every(pure)
         ) {
             // The callback is reachable only through the browser handle that
@@ -1737,7 +1632,8 @@ export class StatementLowerer {
         const message =
             ts.isNewExpression(thrown) &&
             ts.isIdentifier(thrown.expression) &&
-            thrown.expression.text === "Error"
+            thrown.expression.text === "Error" &&
+            context.isDefaultLibraryIdentifier(thrown.expression)
                 ? thrown.arguments?.[0]
                 : undefined;
         if (!message) {
@@ -3379,7 +3275,9 @@ export class StatementLowerer {
                 } else if (
                     isHandleKind(target.kind) &&
                     operator === "=" &&
-                    ts.isIdentifier(context.unwrap(unwrapped.left)) &&
+                    unwrappedIdentifier(unwrapped.left, (wrapped) =>
+                        context.unwrap(wrapped),
+                    ) !== undefined &&
                     context.unwrap(unwrapped.right).kind !==
                         ts.SyntaxKind.NullKeyword
                 ) {
@@ -3394,10 +3292,11 @@ export class StatementLowerer {
                         );
                     }
                     context.emit(`${target.cpp} = ${right.cpp};`);
-                    context.rebindVariable(
-                        context.unwrap(unwrapped.left) as ts.Identifier,
-                        right,
+                    const leftName = unwrappedIdentifier(
+                        unwrapped.left,
+                        (wrapped) => context.unwrap(wrapped),
                     );
+                    if (leftName) context.rebindVariable(leftName, right);
                     return;
                 } else if (
                     target.kind === "json-null" &&
@@ -3429,13 +3328,7 @@ export class StatementLowerer {
             }
             return;
         }
-        if (
-            (ts.isPostfixUnaryExpression(unwrapped) || ts.isPrefixUnaryExpression(unwrapped)) &&
-            [
-                ts.SyntaxKind.PlusPlusToken,
-                ts.SyntaxKind.MinusMinusToken,
-            ].includes(unwrapped.operator)
-        ) {
+        if (isUpdateExpression(unwrapped)) {
             if (ts.isIdentifier(unwrapped.operand)) {
                 const target = context.lookup(
                     unwrapped.operand,
@@ -3934,7 +3827,7 @@ export class StatementLowerer {
             // a message that would name the wrong cause.
             return false;
         }
-        const setter = lightVectorSetter(target, property);
+        const setter = lightSetter(target, property, "vector");
         if (!setter) {
             context.fail(
                 call,
@@ -3975,7 +3868,7 @@ export class StatementLowerer {
     ): string[] {
         if (
             call.arguments.length === 1 &&
-            ts.isSpreadElement(call.arguments[0]!)
+            ts.isSpreadElement(argumentAt(call, 0))
         ) {
             const spread = call.arguments[0] as ts.SpreadElement;
             const value = context.compileValue(spread.expression);
@@ -4049,7 +3942,7 @@ export class StatementLowerer {
             return false;
         }
         context.expectArgumentCount(call, 1, 1);
-        const child = context.compileValue(call.arguments[0]!);
+        const child = context.compileValue(argumentAt(call, 0));
         // MeshRecord::children is a mesh list -- the visibility cascade
         // that walks it takes a MeshHandle -- while a transform node's is
         // the pin's own mixed list. So what a receiver accepts is a
@@ -4062,7 +3955,7 @@ export class StatementLowerer {
                 : ["mesh", "transform-node"];
         if (!accepted.includes(child.kind)) {
             context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 `${node.kind === "mesh" ? "Mesh" : "TransformNode"} ` +
                     "children.push supports exactly " +
                     `${accepted.join(" and ")} values, ` +
@@ -4125,12 +4018,12 @@ export class StatementLowerer {
         }
         context.expectArgumentCount(call, 1, 2);
         const mesh = context.compileValue(
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         context.expectKind(
             mesh,
             "mesh",
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         context.expectSameEngine(task, mesh, call);
         const engine = context.requireEngine(task, call);
@@ -4139,7 +4032,7 @@ export class StatementLowerer {
         let materialCpp = `${engine}.meshes[${mesh.cpp}.value].material`;
         if (call.arguments.length === 2) {
             const options = context.expectObjectLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const materialExpression = context.objectProperty(
                 options,

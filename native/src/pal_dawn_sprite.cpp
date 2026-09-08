@@ -243,6 +243,14 @@ bool run_sprite_dawn_engine(Engine& engine) {
             update_ui_rml_runtime(*ui_runtime, width, height);
 #endif
             const double frame_start = monotonic_milliseconds();
+#if BBLITE_HAS_TEXT_RENDERER
+            // Text contexts update right after layout and before the sprite
+            // contexts, the one slot both hosts give them; the encoder and
+            // target they record into arrive once the frame's texture does.
+            text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+            DawnStandaloneTextOps text_ops(*text_renderer,state.surface_format);
+            for(const auto& renderer:engine.registered_text_renderers)update_text_renderer(*renderer,width,height,state.device,text_ops);
+#endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
             sync_render_textures();
@@ -292,9 +300,6 @@ bool run_sprite_dawn_engine(Engine& engine) {
             WGPUCommandEncoder encoder =
                 wgpuDeviceCreateCommandEncoder(state.device, nullptr);
 #if BBLITE_HAS_TEXT_RENDERER
-            text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-            DawnStandaloneTextOps text_ops(*text_renderer,state.surface_format);
-            for(const auto& renderer:engine.registered_text_renderers)update_text_renderer(*renderer,width,height,state.device,text_ops);
             text_ops.encoder=encoder;text_ops.target=surface_view;
             for(const auto& renderer:engine.registered_text_renderers)record_text_renderer(*renderer,text_ops);
 #endif

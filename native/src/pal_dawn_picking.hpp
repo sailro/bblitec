@@ -267,8 +267,8 @@ public:
         device_ = device;
         queue_ = queue;
         scene_layout_ = scene_layout;
-        draws_ = collect_pick_billboard_candidates(
-            engine, scene, ranges, next_id);
+        collect_pick_billboard_candidates(
+            engine, scene, ranges, next_id, draws_);
         systems_.resize(scene.billboard_systems.size());
         for (const PickBillboardCandidate& candidate : draws_) {
             ensure_indices();

@@ -1,0 +1,33 @@
+{
+  "scene": "scene47",
+  "twin": true,
+  "notes": "Heightfield and six falling shapes, simulated live in the no-query twin: free fall must match the browser's body transforms through frame 60, the debug viewer meshes must follow their bodies, every shape must land on the terrain by frame 240, unhandled pointer and wheel input must not disturb the simulation (the source attaches no camera controls), and resize must not either.",
+  "base": "fixed",
+  "phases": [
+    { "id": "frame-1", "frame": 1 },
+    { "id": "frame-60", "frame": 60 },
+    { "id": "frame-120", "frame": 120 },
+    { "id": "frame-240", "frame": 240 },
+    { "id": "pointer-wheel", "frame": 120, "tape": ["-*20", "+UiMouseLeft@850:340", "UiMove@910:355", "-UiMouseLeft@910:355", "WheelDown"] },
+    { "id": "resize", "frame": 120, "tape": ["-*20", "WindowResize@1000:600"] }
+  ],
+  "expect": [
+    { "kind": "capture-same", "phase": "pointer-wheel", "vs": "frame-120", "path": "camera", "notes": "the source attaches no camera controls" },
+    { "kind": "viewport", "phase": "resize", "equals": [1000, 600] },
+    { "kind": "capture-differs", "phase": "resize", "vs": "frame-120", "path": "camera.viewProjection" },
+    { "kind": "backends-agree", "phase": "*", "imageMaxDiff": 0 },
+    { "kind": "plugin", "module": "checks/plugins/scene47-bodies.mjs" }
+  ],
+  "observe": {
+    "state": "window.__scene47Observe()",
+    "captureFrames": [1, 60, 120, 240],
+    "hooks": [
+      { "marker": "await registerScene(scene);", "position": "before", "inject": "window.__scene47Observe = () => { const vector = (value) => [value.x, value.y, value.z]; return { step: physStep, camera: { alpha: scene.camera.alpha, beta: scene.camera.beta, radius: scene.camera.radius }, viewport: { width: canvas.width, height: canvas.height }, bodies: world._bodies.map((body) => ({ mesh: scene.meshes.indexOf(body.node), type: body._shape._type, position: vector(body.node.position), rotation: [body.node.rotationQuaternion.x, body.node.rotationQuaternion.y, body.node.rotationQuaternion.z, body.node.rotationQuaternion.w] })) }; };" }
+    ],
+    "steps": [
+      { "id": "baseline" },
+      { "id": "pointer-wheel", "actions": [{ "drag": [850, 340, 910, 355], "steps": 8 }, { "wheel": 100 }, { "wait": 200 }] },
+      { "id": "resize", "actions": [{ "resize": [1000, 600] }, { "style": "html,body,canvas{width:1000px!important;height:600px!important}" }, { "waitFor": "window.__scene47Observe().viewport.width === 1000" }] }
+    ]
+  }
+}

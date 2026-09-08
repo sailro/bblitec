@@ -29,6 +29,17 @@
  *
  * Handles own opaque solver state. Worlds retain their members; bodies retain
  * shapes and borrow their current world. No process-wide object registry is needed.
+ *
+ * Six families of this surface are reached through their own runtime
+ * features, and each is declared and compiled only when its feature is
+ * on: `BBLITE_HAS_PHYSICS_QUERIES` (`physics:queries`),
+ * `BBLITE_HAS_PHYSICS_CONSTRAINTS` (`physics:constraints`),
+ * `BBLITE_HAS_PHYSICS_TRIGGER` (`physics:trigger`),
+ * `BBLITE_HAS_PHYSICS_HEIGHTFIELD` (`physics:heightfield`),
+ * `BBLITE_HAS_PHYSICS_CHARACTER` (`physics:character-controller`) and
+ * `BBLITE_HAS_PHYSICS_FLOATING_ORIGIN` (`physics:floating-origin`). The
+ * generated `physics.cpp` emits the matching arm under the same feature, so
+ * a tree that never reaches a family neither declares nor calls it.
  */
 
 #include <array>
@@ -77,11 +88,6 @@ struct PhysicsConstraintAnchor {
     std::array<double, 3> perpendicular{};
 };
 
-void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
-    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions);
-
-PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
-    std::array<double, 3> scale, const std::vector<float>& heights);
 enum class PhysicsConstraintAxisMode { free, limited, locked };
 struct PhysicsConstraintAxisLimit {
     PhysicsConstraintAxisMode mode = PhysicsConstraintAxisMode::free;
@@ -89,9 +95,18 @@ struct PhysicsConstraintAxisLimit {
     double maximum = 0;
 };
 using PhysicsConstraintAxes = std::array<PhysicsConstraintAxisLimit, 7>;
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
+void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions);
 void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
     const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor,
     const PhysicsConstraintAxes& axes, bool collisions);
+#endif
+
+#if BBLITE_HAS_PHYSICS_HEIGHTFIELD
+PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
+    std::array<double, 3> scale, const std::vector<float>& heights);
+#endif
 
 /**
  * The pair `HP_World_GetSpeedLimit` returns and `HP_World_SetSpeedLimit`
@@ -221,7 +236,11 @@ struct PhysicsShapeQueryResult {
     std::uint32_t body_identity = 0;
 };
 
-/** Collector queries retain the closest `capacity` hits, including multiple mesh features. */
+#if BBLITE_HAS_PHYSICS_CHARACTER
+/**
+ * Collector queries retain the closest `capacity` hits, including multiple
+ * mesh features. The character controller's kernels are their only reader.
+ */
 [[nodiscard]] std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_proximity(
     PhysicsWorldHandle world, PhysicsShapeHandle shape,
     const PhysicsTransform& transform, double max_distance,
@@ -231,7 +250,10 @@ struct PhysicsShapeQueryResult {
     std::array<double, 4> rotation, std::array<double, 3> from,
     std::array<double, 3> to, bool should_hit_triggers,
     PhysicsBodyHandle ignored_body, std::size_t capacity);
+#endif
 
+#if BBLITE_HAS_PHYSICS_QUERIES
+/** `HP_World_ShapeProximity` / `HP_World_ShapeCast`: the closest hit alone. */
 [[nodiscard]] PhysicsShapeQueryResult physics_world_shape_proximity(
     PhysicsWorldHandle world, PhysicsShapeHandle shape,
     const PhysicsTransform& transform, double max_distance,
@@ -241,6 +263,7 @@ struct PhysicsShapeQueryResult {
     std::array<double, 4> rotation, std::array<double, 3> from,
     std::array<double, 3> to, bool should_hit_triggers,
     PhysicsBodyHandle ignored_body);
+#endif
 
 // --- World -----------------------------------------------------------
 
@@ -250,23 +273,28 @@ struct PhysicsShapeQueryResult {
 void physics_world_set_gravity(
     PhysicsWorldHandle world,
     std::array<double, 3> gravity);
-/** `HP_World_GetSpeedLimit`, as the pair the pin reads `[1]` and `[2]` of. */
+#if BBLITE_HAS_PHYSICS_FLOATING_ORIGIN
+/**
+ * `HP_World_GetSpeedLimit`, as the pair the pin reads `[1]` and `[2]` of.
+ * The floating-origin module's `_getOrCreateRegion` is the one reader.
+ */
 [[nodiscard]] PhysicsSpeedLimit physics_world_get_speed_limit(
     PhysicsWorldHandle world);
-/** `HP_World_SetSpeedLimit`. */
+/** `HP_World_SetSpeedLimit`, seeding a new region from the base world. */
 void physics_world_set_speed_limit(
     PhysicsWorldHandle world,
     double max_linear,
     double max_angular);
+#endif
 /** `HP_World_AddBody`. */
 void physics_world_add_body(
     PhysicsWorldHandle world,
     PhysicsBodyHandle body,
     bool start_asleep);
 /**
- * `HP_World_RemoveBody`. Reached by the floating-origin module alone:
- * a body crossing a region boundary leaves one world and joins another
- * within one step.
+ * `HP_World_RemoveBody`. Reached by `removePhysicsBody` and by a
+ * floating-origin migration: a body crossing a region boundary leaves one
+ * world and joins another within one step.
  */
 void physics_world_remove_body(
     PhysicsWorldHandle world,
@@ -284,9 +312,16 @@ void physics_world_release(PhysicsWorldHandle world);
 void physics_world_step(PhysicsWorldHandle world, double seconds);
 [[nodiscard]] const std::vector<PhysicsCollisionEvent>&
 physics_world_collision_events(PhysicsWorldHandle world);
+#if BBLITE_HAS_PHYSICS_TRIGGER
 /** `HP_World_GetTriggerEvents`, drained into one list per step. */
 [[nodiscard]] const std::vector<PhysicsTriggerEvent>&
 physics_world_trigger_events(PhysicsWorldHandle world);
+#endif
+/**
+ * `HP_World_QueryRaycast`. `should_hit_triggers` is the pin's own option
+ * and travels whether or not trigger shapes are compiled in: without them
+ * no object is ever excluded.
+ */
 [[nodiscard]] PhysicsRaycastResult physics_world_raycast(
     PhysicsWorldHandle world,
     std::array<double, 3> from,
@@ -354,6 +389,7 @@ void physics_shape_set_filter_membership_mask(
 void physics_shape_set_filter_collide_mask(
     PhysicsShapeHandle shape,
     std::uint32_t collide_mask);
+#if BBLITE_HAS_PHYSICS_TRIGGER
 /**
  * `HP_Shape_SetTrigger`. A trigger shape overlaps without producing a
  * contact response, and the overlaps it does produce are what
@@ -362,6 +398,7 @@ void physics_shape_set_filter_collide_mask(
 void physics_shape_set_trigger(
     PhysicsShapeHandle shape,
     bool is_trigger);
+#endif
 
 // --- Bodies ----------------------------------------------------------
 

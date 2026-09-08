@@ -80,42 +80,6 @@ export function reachedDiffuseUv2(
 }
 
 /**
- * Whether any reached `.babylon` material carries a bump map. The pinned
- * Standard material composes its normal-map fragment per material, so a
- * scene with none emits the loader, uniform block, shader and texture slot
- * it emitted before.
- */
-export function reachedStandardBump(
-    outputPath: string,
-    assets: CompileAsset[],
-): boolean {
-    for (const asset of assets) {
-        if (asset.kind !== "babylon") {
-            continue;
-        }
-        const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) {
-            continue;
-        }
-        const document = JSON.parse(
-            readFileSync(materialized, "utf8"),
-        ) as { materials?: { bumpTexture?: unknown }[] };
-        if (
-            (document.materials ?? []).some(
-                (material) => material.bumpTexture,
-            )
-        ) {
-            return true;
-        }
-    }
-    return false;
-}
-
-export function reachedStandardLights(lights: BabylonLight[]): number {
-    return lights.filter((light) => light.type === 0).length;
-}
-
-/**
  * Whether any reached light names the meshes it applies to. The pinned
  * engine keeps that as a per-mesh light set, which the Standard uniform
  * block only has to express for a scene whose assets declare one.

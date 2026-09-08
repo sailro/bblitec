@@ -1,11 +1,13 @@
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { pinnedHypotCall, pinnedMathSpelling } from "../lowering/pinned-operators.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
+import { staticNumberValue } from "./option-helpers.js";
 import {
-    foldableMathUnary,
-    staticNumberValue,
-} from "./option-helpers.js";
+    describeMathArity,
+    MATH_MEMBERS,
+    mathMemberAccess,
+    mathUnaryFold,
+} from "./math-intrinsics.js";
 import {
     DataTypeRegistry,
     dataTypesEqual,
@@ -13,6 +15,7 @@ import {
     isTypedArrayType,
     passesByReference,
     pinnedHandleKind,
+    TYPED_ARRAY_KINDS,
     typedArrayStem,
     typedArrayStoreExpression,
     type DataIterationElement,
@@ -31,25 +34,14 @@ import {
 } from "./data-methods.js";
 import { isTrsVectorName } from "./assignments.js";
 import { pickedMeshHandleCpp } from "./properties.js";
-
-/**
- * The one-argument `Math` members scene code may call, each a `<cmath>`
- * function of the same arity over doubles. The members the pinned-body
- * layer also accepts spell through the shared pinned table, so the
- * scene-code compiler and the pinned-body translator cannot disagree about
- * what a shared member lowers to; the compiler-only extras follow the same
- * `std::` rule and stay here because no pinned body reaches them. Members
- * with different semantics (`Math.round`'s tie rule, the seeded
- * `Math.random`) are dispatched separately below and say why.
- */
-const mathUnaryCalls: ReadonlyMap<string, string> = new Map([
-    ...(["abs", "ceil", "cos", "floor", "sin", "sqrt", "tan"] as const).map(
-        (name): [string, string] => [name, pinnedMathSpelling(name)],
-    ),
-    ["atan", "std::atan"],
-    ["exp", "std::exp"],
-    ["trunc", "std::trunc"],
-]);
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    rootExpression,
+    rootIdentifier,
+    argumentAt,
+    identifierText,
+} from "./syntax.js";
 
 
 /**
@@ -582,14 +574,10 @@ export class DataLowerer {
      * what comes back.
      */
     public plainDataOwnerChain(expression: ts.Expression): boolean {
-        let node = this.context.unwrap(expression);
-        while (
-            ts.isPropertyAccessExpression(node) ||
-            ts.isElementAccessExpression(node)
-        ) {
-            node = this.context.unwrap(node.expression);
-        }
-        if (!ts.isIdentifier(node)) return true;
+        const node = rootIdentifier(expression, (chain) =>
+            this.context.unwrap(chain),
+        );
+        if (!node) return true;
         const bound = this.context.lookupIdentifierValue(node);
         return (
             bound?.kind !== "scene" &&
@@ -1363,17 +1351,7 @@ export class DataLowerer {
         if (
             !ts.isNewExpression(source) ||
             !ts.isIdentifier(source.expression) ||
-            ![
-                "Float32Array",
-                "Float64Array",
-                "Uint8Array",
-                "Uint16Array",
-                "Int16Array",
-                "Uint32Array",
-                "Int32Array",
-            ].includes(
-                source.expression.text,
-            ) ||
+            !TYPED_ARRAY_KINDS.has(source.expression.text) ||
             this.context.lookupIdentifierValue(
                 source.expression,
             ) ||
@@ -1382,7 +1360,7 @@ export class DataLowerer {
             return undefined;
         }
         const argument = this.context.resolveStaticExpression(
-            source.arguments[0]!,
+            argumentAt(source, 0),
         );
         if (ts.isArrayLiteralExpression(argument)) {
             return argument.elements.length;
@@ -2194,12 +2172,8 @@ export class DataLowerer {
         const indexCanRunCode = (node: ts.Node): boolean =>
             ts.isCallExpression(node) || ts.isNewExpression(node) ||
             ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
-            ts.isPostfixUnaryExpression(node) ||
-            (ts.isPrefixUnaryExpression(node) &&
-                (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) ||
-            (ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            isUpdateExpression(node) ||
+            isAssignmentExpression(node) ||
             !!ts.forEachChild(node, indexCanRunCode);
         const typedIndexRunsCode = isTypedArrayType(dataType) && indexCanRunCode(access.argumentExpression);
         const retainedIndexOwner = ownedRead || typedIndexRunsCode;
@@ -2705,11 +2679,7 @@ export class DataLowerer {
                 return;
             }
             if (
-                (ts.isPostfixUnaryExpression(node) ||
-                    ts.isPrefixUnaryExpression(node)) &&
-                (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                    node.operator ===
-                        ts.SyntaxKind.MinusMinusToken) &&
+                isUpdateExpression(node) &&
                 this.isSameSymbolIdentifier(
                     node.operand,
                     indexSymbol,
@@ -2718,13 +2688,7 @@ export class DataLowerer {
                 safe = false;
                 return;
             }
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >=
-                    ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <=
-                    ts.SyntaxKind.LastAssignment
-            ) {
+            if (isAssignmentExpression(node)) {
                 const target = this.context.unwrap(node.left);
                 if (
                     this.isSameSymbolIdentifier(
@@ -3391,13 +3355,13 @@ export class DataLowerer {
             return undefined;
         }
         if (call.arguments.length === 1) {
-            const source = this.context.compileValue(call.arguments[0]!);
+            const source = this.context.compileValue(argumentAt(call, 0));
             if (
                 source.kind !== "data" ||
                 source.dataType?.kind !== "vector"
             ) {
                 this.context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "Array.from with one argument requires a native array value.",
                 );
             }
@@ -3415,7 +3379,7 @@ export class DataLowerer {
                 "Array.from currently requires an array-like length object and one mapper callback.",
             );
         }
-        const source = this.context.unwrap(call.arguments[0]!);
+        const source = this.context.unwrap(argumentAt(call, 0));
         if (!ts.isObjectLiteralExpression(source)) {
             this.context.fail(
                 source,
@@ -3434,7 +3398,7 @@ export class DataLowerer {
                 "Array.from array-like object requires a length property.",
             );
         }
-        const callback = this.context.unwrap(call.arguments[1]!);
+        const callback = this.context.unwrap(argumentAt(call, 1));
         if (
             !ts.isIdentifier(callback) &&
             !ts.isArrowFunction(callback) &&
@@ -3518,17 +3482,13 @@ export class DataLowerer {
     public compileMathCall(
         call: ts.CallExpression,
     ): Value | undefined {
-        const callee = this.context.unwrap(
-            call.expression,
+        // Resolved, not spelled: a scene's own binding named `Math` is not
+        // the library object, however the compiler came to know it.
+        const callee = mathMemberAccess(
+            this.context.unwrap(call.expression),
+            (identifier) => this.context.isDefaultLibraryIdentifier(identifier),
         );
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "Math" ||
-            this.context.lookupIdentifierValue(
-                callee.expression,
-            )
-        ) {
+        if (!callee) {
             return undefined;
         }
         const method = callee.name.text;
@@ -3540,12 +3500,12 @@ export class DataLowerer {
                 ),
             );
         // The integer-valued one-argument functions fold over a static
-        // argument: the result is exact in both engines, so the folded value
-        // and the emitted call agree, and a scene that hands one to
-        // generation-time state (a particle column) needs the value rather
-        // than the expression. The transcendental ones deliberately do NOT
-        // fold: V8 and a native maths library need not agree on them.
-        if (foldableMathUnary[method] && call.arguments.length === 1) {
+        // argument (the table says which): the result is exact in both
+        // engines, so the folded value and the emitted call agree, and a
+        // scene that hands one to generation-time state (a particle
+        // column) needs the value rather than the expression.
+        const fold = mathUnaryFold(method);
+        if (fold && call.arguments.length === 1) {
             // Folded from the SOURCE, never from a compiled value: this arm
             // runs before the runtime path compiles the argument, and
             // compiling it speculatively would emit an inlined body twice
@@ -3553,10 +3513,10 @@ export class DataLowerer {
             // through `staticCanvasSize`, so it folds here too.
             const argument = staticNumberValue(
                 this.context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (argument !== undefined) {
-                const folded = foldableMathUnary[method]!(argument);
+                const folded = fold(argument);
                 return {
                     kind: "number",
                     cpp: doubleLiteral(folded),
@@ -3565,86 +3525,30 @@ export class DataLowerer {
                 };
             }
         }
-        const unary = mathUnaryCalls.get(method);
-        if (unary) {
-            if (call.arguments.length !== 1) {
+        const member = MATH_MEMBERS.get(method);
+        if (member) {
+            const count = call.arguments.length;
+            if (member.variadic ? count < member.arity : count !== member.arity) {
                 this.context.fail(
                     call,
-                    `Math.${method} expects one argument.`,
+                    `Math.${method} expects ${describeMathArity(member)}.`,
                 );
             }
+            const cpp = member.cpp(numbers());
+            if (member.reach !== undefined) this.context.reachJsData();
+            if (member.reach === "js-random") this.context.reachJsRandom();
             return {
                 kind: "number",
-                cpp: `${unary}(${numbers()[0]})`,
+                cpp,
                 dataType: { kind: "number" },
-            };
-        }
-        if (method === "imul") {
-            if (call.arguments.length !== 2) {
-                this.context.fail(
-                    call,
-                    "Math.imul expects two arguments.",
-                );
-            }
-            const [left, right] = numbers();
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::math_imul(${left}, ${right})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "pow" || method === "atan2") {
-            if (call.arguments.length !== 2) {
-                this.context.fail(
-                    call,
-                    `Math.${method} expects two arguments.`,
-                );
-            }
-            const [left, right] = numbers();
-            // `pow` is a shared member, spelled through the pinned table;
-            // `atan2` is compiler-only (no pinned body reaches it) and
-            // follows the same std:: rule here.
-            const spelling = method === "pow"
-                ? pinnedMathSpelling(method)
-                : `std::${method}`;
-            return {
-                kind: "number",
-                cpp: `${spelling}(${left}, ${right})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "hypot") {
-            if (call.arguments.length < 2) {
-                this.context.fail(
-                    call,
-                    "Math.hypot expects at least two arguments.",
-                );
-            }
-            // Not `std::hypot`: it is two- or three-argument, so a
-            // quaternion length has no spelling there at all, and it
-            // rounds differently from JavaScript's besides. `hypot_js`
-            // is the whole-list root of the sum of squares every pinned
-            // lowering already reaches through
-            // `pinnedNumericMathCallsWithHypot`, and the one spelling
-            // `fidelity.md` records as `splat-hypot-approximation` --
-            // so scene code and pinned code agree on it rather than
-            // this one call site being the exception.
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: pinnedHypotCall(numbers()),
-                dataType: { kind: "number" },
+                ...(member.impure ? { impure: true } : {}),
             };
         }
         if (method === "max" || method === "min") {
-            if (
-                call.arguments.length === 1 &&
-                ts.isSpreadElement(call.arguments[0]!)
-            ) {
-                const spread = this.context.compileValue(
-                    call.arguments[0]!.expression,
-                );
+            const only =
+                call.arguments.length === 1 ? argumentAt(call, 0) : undefined;
+            if (only && ts.isSpreadElement(only)) {
+                const spread = this.context.compileValue(only.expression);
                 if (
                     spread.kind !== "data" ||
                     (spread.dataType?.kind !== "vector" &&
@@ -3652,7 +3556,7 @@ export class DataLowerer {
                     spread.dataType.element.kind !== "number"
                 ) {
                     this.context.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Math.${method} spread requires an array of numbers.`,
                     );
                 }
@@ -3723,53 +3627,6 @@ export class DataLowerer {
                 dataType: { kind: "number" },
             };
         }
-        if (method === "round") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Math.round expects one argument.",
-                );
-            }
-            // Not `std::round`: JavaScript rounds a tie toward +Infinity
-            // and C rounds it away from zero, so the two disagree on every
-            // negative half. `round_js` carries the spec's own rule.
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::round_js(${numbers()[0]})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "sign") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Math.sign expects one argument.",
-                );
-            }
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::math_sign(${numbers()[0]})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "random") {
-            if (call.arguments.length !== 0) {
-                this.context.fail(
-                    call,
-                    "Math.random expects no arguments.",
-                );
-            }
-            this.context.reachJsData();
-            this.context.reachJsRandom();
-            return {
-                kind: "number",
-                cpp: "bbl::js::random_js()",
-                dataType: { kind: "number" },
-                impure: true,
-            };
-        }
         this.context.fail(
             callee.name,
             `Math.${method} is not supported.`,
@@ -3802,12 +3659,12 @@ export class DataLowerer {
         }
         const source = this.typedArrayFromSource(
             typedArrayStem(kind),
-            this.context.unwrap(call.arguments[0]!),
+            this.context.unwrap(argumentAt(call, 0)),
             kind,
         );
         if (source === undefined) {
             this.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "TypedArray.set expects a numeric sequence: a typed array, " +
                     "a number array or a numeric tuple.",
             );
@@ -3816,7 +3673,7 @@ export class DataLowerer {
         const offset =
             call.arguments.length === 2
                 ? this.context.compileNumber(
-                      call.arguments[1]!,
+                      argumentAt(call, 1),
                       "double",
                   )
                 : "0.0";
@@ -3869,7 +3726,7 @@ export class DataLowerer {
         }
         this.context.reachJsData();
         const value = this.compileForSink(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             element,
         );
         const index = `bbl::js::array_index_of(${owner.cpp}, ${value})`;
@@ -3917,7 +3774,7 @@ export class DataLowerer {
                 `Array.${method} requires exactly one callback and no thisArg.`,
             );
         }
-        const callback = this.context.unwrap(call.arguments[0]!);
+        const callback = this.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(callback) &&
             !ts.isArrowFunction(callback) &&
@@ -4120,7 +3977,10 @@ export class DataLowerer {
             !ts.isIdentifier(
                 declaration.initializer.expression,
             ) ||
-            declaration.initializer.expression.text !== "Map"
+            declaration.initializer.expression.text !== "Map" ||
+            !this.context.isDefaultLibraryIdentifier(
+                declaration.initializer.expression,
+            )
         ) {
             return undefined;
         }
@@ -4170,10 +4030,10 @@ export class DataLowerer {
                     return;
                 }
                 const key = this.context.unwrap(
-                    node.arguments[0]!,
+                    argumentAt(node, 0),
                 );
                 const value = this.context.unwrap(
-                    node.arguments[1]!,
+                    argumentAt(node, 1),
                 );
                 if (
                     ts.isPropertyAccessExpression(key) &&
@@ -4227,7 +4087,7 @@ export class DataLowerer {
             `static const auto ${source} = ${sourceCpp};`,
         );
         const key = this.compileForSink(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             mapType.key,
         );
         const resultType = this.dataTypeAt(call) ?? {
@@ -4277,7 +4137,7 @@ export class DataLowerer {
             );
         }
         return this.context.compileNumber(
-            expression.arguments[0]!,
+            argumentAt(expression, 0),
             "double",
         );
     }
@@ -4479,32 +4339,12 @@ export class DataLowerer {
             return undefined;
         }
         const name = expression.expression.text;
-        if (
-            name !== "Float64Array" &&
-            name !== "Float32Array" &&
-            name !== "Uint8Array" &&
-            name !== "Uint16Array" &&
-            name !== "Int16Array" &&
-            name !== "Uint32Array" &&
-            name !== "Int32Array"
-        ) {
+        const kind = TYPED_ARRAY_KINDS.get(name);
+        if (!kind) {
             return undefined;
         }
-        const dataType: DataType =
-            name === "Float64Array"
-                ? { kind: "f64array" }
-                : name === "Float32Array"
-                  ? { kind: "f32array" }
-                : name === "Uint8Array"
-                  ? { kind: "u8array" }
-                : name === "Uint16Array"
-                  ? { kind: "u16array" }
-                : name === "Int16Array"
-                  ? { kind: "i16array" }
-                : name === "Uint32Array"
-                  ? { kind: "u32array" }
-                  : { kind: "i32array" };
-        const prefix = typedArrayStem(dataType.kind);
+        const dataType: DataType = { kind };
+        const prefix = typedArrayStem(kind);
         this.context.reachJsData();
         const argument = expression.arguments?.[0];
         if (!argument) {
@@ -5640,7 +5480,7 @@ export class DataLowerer {
                             );
                         }
                         const value = this.compileForSink(
-                            unwrapped.arguments[0]!,
+                            argumentAt(unwrapped, 0),
                             dataType.element,
                         );
                         this.context.reachJsData();
@@ -7450,13 +7290,8 @@ export class DataLowerer {
                 ) ||
                 this.context.unwrap(expression.right).kind ===
                     ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(
-                    this.context.unwrap(expression.right),
-                ) &&
-                    (this.context.unwrap(
-                        expression.right,
-                    ) as ts.Identifier).text ===
-                        "undefined"));
+                identifierText(this.context.unwrap(expression.right)) ===
+                    "undefined");
         if (
             kind !== "number" &&
             kind !== "boolean" &&
@@ -7595,14 +7430,10 @@ export class DataLowerer {
             }
         }
         const clearStaticHandleSnapshot = (node: ts.Expression): void => {
-            let root = this.context.unwrap(node);
-            while (
-                ts.isPropertyAccessExpression(root) ||
-                ts.isElementAccessExpression(root)
-            ) {
-                root = this.context.unwrap(root.expression);
-            }
-            if (ts.isIdentifier(root)) {
+            const root = rootIdentifier(node, (chain) =>
+                this.context.unwrap(chain),
+            );
+            if (root) {
                 const value = this.context.lookupIdentifierValue(root);
                 if (value) this.invalidateStaticElements(value);
             }
@@ -7782,13 +7613,9 @@ export class DataLowerer {
         if (!target) {
             return false;
         }
-        let targetRoot: ts.Expression = left;
-        while (
-            ts.isPropertyAccessExpression(targetRoot) ||
-            ts.isElementAccessExpression(targetRoot)
-        ) {
-            targetRoot = this.context.unwrap(targetRoot.expression);
-        }
+        const targetRoot = rootExpression(left, (chain) =>
+            this.context.unwrap(chain),
+        );
         const invalidateRootRecordSnapshot = (): void => {
             if (
                 !ts.isPropertyAccessExpression(left) ||

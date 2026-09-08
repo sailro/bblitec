@@ -26,6 +26,7 @@ import {
     importPinnedModuleFetching,
     importPinnedModuleUnasynced,
     installPinnedImportHook,
+    pinnedLibraryRoot,
 } from "./pinned-shader-composer.js";
 import {
     createSuiteSceneServer,
@@ -38,11 +39,14 @@ import {
 } from "./browser-harness.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import {
+    cachedBake,
     cachedBakeSync,
     cachedJsonBake,
+    moduleClosureBytes,
     moduleIdentity,
 } from "./bake-cache.js";
 import {
+    asObject,
     GAUSSIAN_SPLATTING_EXTENSION,
     type JsonRecord,
 } from "./gltf-document.js";
@@ -373,10 +377,100 @@ function observedContainerRotation(
 }
 
 const SPZ_MODULE = "loader-splat/load-spz.js";
+/** The loader's one import the run stands in for, as the loader spells it. */
+const SPZ_ATTACH_SPECIFIER = "./load-splat.js";
 
 /** The export surface `packageSpz` asks the pinned SPZ loader for. */
 interface PinnedSpzModule {
     loadSPZ?: (scene: unknown, url: string) => Promise<unknown>;
+}
+
+/**
+ * What one `loadSPZ` run observed, as the bake cache stores it beside the
+ * rows and the SH stream: the four container contracts' facts, the rotation
+ * the loader wrote, and the harmonic degree the parse reported.
+ */
+interface CapturedSpz extends ObservedContainerAttach {
+    shDegree: number;
+}
+
+interface SpzRun {
+    captured: CapturedSpz;
+    rows: Uint8Array;
+    sh: Uint8Array;
+}
+
+/**
+ * Frames one run as the bytes the bake cache stores: the capture as JSON
+ * behind a four-byte length, then the rows, then the SH stream. The rows
+ * and the stream are the packaged bytes themselves, so a replay copies
+ * nothing and the JSON stays a few hundred bytes.
+ */
+function frameSpzRun(run: SpzRun): Uint8Array {
+    const header = Buffer.from(
+        JSON.stringify({
+            ...run.captured,
+            rowBytes: run.rows.byteLength,
+            shBytes: run.sh.byteLength,
+        }),
+        "utf8",
+    );
+    const framed = new Uint8Array(
+        4 + header.byteLength + run.rows.byteLength + run.sh.byteLength,
+    );
+    new DataView(framed.buffer).setUint32(0, header.byteLength, true);
+    framed.set(header, 4);
+    framed.set(run.rows, 4 + header.byteLength);
+    framed.set(run.sh, 4 + header.byteLength + run.rows.byteLength);
+    return framed;
+}
+
+function isStringList(value: unknown): value is string[] {
+    return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isNumberTriple(value: unknown): value is [number, number, number] {
+    return (
+        Array.isArray(value) &&
+        value.length === 3 &&
+        value.every((entry) => typeof entry === "number")
+    );
+}
+
+function unframeSpzRun(framed: Uint8Array): SpzRun {
+    const malformed = (): Error =>
+        new Error("Cached loadSPZ capture is not the shape this packager stores.");
+    if (framed.byteLength < 4) throw malformed();
+    const headerBytes = new DataView(framed.buffer, framed.byteOffset, 4).getUint32(0, true);
+    if (4 + headerBytes > framed.byteLength) throw malformed();
+    const parsed: unknown = JSON.parse(
+        Buffer.from(framed.buffer, framed.byteOffset + 4, headerBytes).toString("utf8"),
+    );
+    const header = asObject(parsed);
+    if (!header) throw malformed();
+    const {
+        attached, returnedAttached, name, fragments, written, rotation, shDegree, rowBytes, shBytes,
+    } = header;
+    if (
+        typeof attached !== "number" ||
+        typeof returnedAttached !== "boolean" ||
+        typeof name !== "string" ||
+        typeof fragments !== "boolean" ||
+        !isStringList(written) ||
+        !isNumberTriple(rotation) ||
+        typeof shDegree !== "number" ||
+        typeof rowBytes !== "number" ||
+        typeof shBytes !== "number" ||
+        4 + headerBytes + rowBytes + shBytes !== framed.byteLength
+    ) {
+        throw malformed();
+    }
+    const rowsStart = 4 + headerBytes;
+    return {
+        captured: { attached, returnedAttached, name, fragments, written, rotation, shDegree },
+        rows: framed.subarray(rowsStart, rowsStart + rowBytes),
+        sh: framed.subarray(rowsStart + rowBytes, rowsStart + rowBytes + shBytes),
+    };
 }
 
 /**
@@ -405,20 +499,52 @@ export interface PackagedSplatContainer extends PackagedSplat {
  * stood in for: `fetch` answers from the bytes the download cache already
  * holds, and `attachParsedSplat` records instead of building a GPU mesh.
  *
- * Not bake-cached, unlike the PLY parse beside it. What there would be to
- * cache is the packaged BYTES — this run hands back a live object graph, not
- * a serialized capture the way `packageSog` below does — and replaying bytes
- * would skip the four contracts it answers: that exactly one cloud was
- * attached, that the loader returned the one it attached, that it passed no
- * shader fragments, and that the only lane it wrote is the rotation. Those
- * are what make the rest of this a port rather than a guess. The inflate and
- * parse cost about 280 ms on the reached container against a 19 ms cache
- * replay, which is what that buys.
+ * Bake-cached the way `packageSog` is: what the cache stores is the
+ * CAPTURE -- the four container contracts' facts and the rotation the
+ * loader wrote, beside the rows and the SH stream -- so a replay still
+ * answers the contracts from that capture rather than trusting bytes. A run
+ * whose capture fails them is refused before anything is stored. The key is
+ * the container, the URL the loader is handed (its name derives from it),
+ * and the bytes of every pinned module the run executes: the loader and its
+ * imports, minus the attach it stands in for.
  */
 export async function packageSpz(
     bytes: Uint8Array,
     url: string,
 ): Promise<PackagedSplatContainer> {
+    const run = async (): Promise<Uint8Array> => {
+        const observed = await runPinnedSpz(bytes, url);
+        observedContainerRotation(observed.captured, "Pinned loadSPZ");
+        return frameSpzRun(observed);
+    };
+    const executed = moduleClosureBytes(
+        [SPZ_MODULE],
+        pinnedLibraryRoot(),
+        new Set([SPZ_ATTACH_SPECIFIER]),
+    );
+    const { captured, rows, sh } = unframeSpzRun(
+        executed
+            ? await cachedBake(
+                  {
+                      kind: "splat-spz",
+                      version: "1",
+                      module: moduleIdentity(import.meta.url),
+                      browser: false,
+                      parameters: { url },
+                      inputs: [bytes, ...executed],
+                  },
+                  run,
+              )
+            : await run(),
+    );
+    return {
+        rotation: observedContainerRotation(captured, "Pinned loadSPZ"),
+        ...packagedSplat(rows, sh, captured.shDegree),
+    };
+}
+
+/** One execution of the pinned loader over the container, observed. */
+async function runPinnedSpz(bytes: Uint8Array, url: string): Promise<SpzRun> {
     const recorded: RecordedAttach[] = [];
     const attach = installPinnedImportHook((entry: RecordedAttach) => {
         recorded.push(entry);
@@ -439,7 +565,7 @@ export async function packageSpz(
                 }
                 return bytes;
             },
-            new Map([["./load-splat.js", attachParsedSplatRecorder(attach.hook)]]),
+            new Map([[SPZ_ATTACH_SPECIFIER, attachParsedSplatRecorder(attach.hook)]]),
         );
         const module = fetching.module;
         if (typeof module.loadSPZ !== "function") {
@@ -460,24 +586,15 @@ export async function packageSpz(
     // `.then` callback runs on the way out of `loadSPZ` and the TRS it
     // writes is only on the cloud afterwards. That is why each engine
     // projects its own view of the attach and only the CLAIMS are shared.
-    const rotation = observedContainerRotation(
-        {
+    return {
+        captured: {
             attached: recorded.length,
             returnedAttached: entry !== undefined && mesh === entry.mesh,
             ...observedAttach(entry),
+            shDegree: entry?.parsed.shDegree ?? 0,
         },
-        "Pinned loadSPZ",
-    );
-    // `attached === 1` is what the first contract above refuses on, so the
-    // one recorded attach is in hand here.
-    const parsed = entry!.parsed;
-    return {
-        rotation,
-        ...packagedSplat(
-            new Uint8Array(parsed.data),
-            parsed.sh,
-            parsed.shDegree ?? 0,
-        ),
+        rows: entry ? new Uint8Array(entry.parsed.data) : new Uint8Array(0),
+        sh: entry?.parsed.sh ?? new Uint8Array(0),
     };
 }
 
@@ -555,13 +672,14 @@ window.${SOG_PAGE_GLOBAL} = async () => {
  * GPU mesh — through the same recorder text, served over the pinned module's
  * own path so the pin's `load-sog.js` imports it unmodified.
  *
- * Bake-cached, unlike the whole-loader run `packageSpz` performs. What the
- * cache stores is the CAPTURED OBJECT — the JSON that crossed the page
- * boundary — not the packaged bytes, so a replay still answers the four
- * contracts below from that object: exactly one cloud attached, the returned
- * cloud is the attached one, no shader fragments, and the only lane written is
- * the rotation. `basis-transcode.ts` caches its own browser capture on exactly
- * that boundary, with its contract assertion after it.
+ * Bake-cached like `packageSpz`. What the cache stores is the CAPTURED
+ * OBJECT — the JSON that crossed the page boundary — not the packaged bytes,
+ * so a replay still answers the four contracts from that object: exactly one
+ * cloud attached, the returned cloud is the attached one, no shader
+ * fragments, and the only lane written is the rotation. A run whose capture
+ * fails them is refused before anything is stored. `basis-transcode.ts`
+ * caches its own browser capture on exactly that boundary, with its contract
+ * assertion after it.
  *
  * The trade it buys is a whole Chromium launch: the run is 1.65 s on the
  * reached container (412 ms of it inside the loader) against a 126 ms replay
@@ -583,8 +701,8 @@ export async function packageSog(
             parameters: {},
             inputs: [bytes],
         },
-        async () =>
-            (await runPageGlobal(
+        async () => {
+            const observed = (await runPageGlobal(
                 createSuiteSceneServer(sogPageModule(), {
                     virtualAssets: { [SOG_SERVED_PATH]: bytes },
                     // Ahead of the repository lookup, so the pinned loader's
@@ -606,7 +724,10 @@ export async function packageSog(
                     // profile.
                     browserArgs: screenshotCaptureBrowserArgs,
                 },
-            )) as CapturedSog,
+            )) as CapturedSog;
+            observedContainerRotation(observed, "Pinned loadSOG");
+            return observed;
+        },
     );
     return {
         rotation: observedContainerRotation(captured, "Pinned loadSOG"),

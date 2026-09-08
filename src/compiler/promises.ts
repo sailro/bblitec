@@ -1,7 +1,9 @@
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 
 export interface PromiseLoweringContext {
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     compileValue(expression: ts.Expression): Value;
     compileCallbackWithValues(
         declaration: ts.ArrowFunction | ts.FunctionExpression,
@@ -32,6 +34,7 @@ export function compileImmediatePromise(
         ts.isPropertyAccessExpression(call.expression) &&
         ts.isIdentifier(call.expression.expression) &&
         call.expression.expression.text === "Promise" &&
+        context.isDefaultLibraryIdentifier(call.expression.expression) &&
         call.expression.name.text === "resolve"
     ) {
         if (call.arguments.length !== 1) {
@@ -40,12 +43,13 @@ export function compileImmediatePromise(
                 "Immediate Promise.resolve requires one value.",
             );
         }
-        return context.compileValue(call.arguments[0]!);
+        return context.compileValue(argumentAt(call, 0));
     }
     if (
         ts.isPropertyAccessExpression(call.expression) &&
         ts.isIdentifier(call.expression.expression) &&
         call.expression.expression.text === "Promise" &&
+        context.isDefaultLibraryIdentifier(call.expression.expression) &&
         call.expression.name.text === "all"
     ) {
         if (call.arguments.length !== 1) {
@@ -54,7 +58,7 @@ export function compileImmediatePromise(
                 "Promise.all requires one static iterable.",
             );
         }
-        const argument = call.arguments[0]!;
+        const argument = argumentAt(call, 0);
         if (!ts.isArrayLiteralExpression(argument)) {
             const iterable = context.compileValue(argument);
             if (
@@ -127,7 +131,7 @@ export function compileImmediatePromise(
             "Immediate promise then requires one fulfillment callback and an optional rejection callback.",
         );
     }
-    const callback = call.arguments[0]!;
+    const callback = argumentAt(call, 0);
     if (
         !ts.isArrowFunction(callback) &&
         !ts.isFunctionExpression(callback)
@@ -223,7 +227,7 @@ function compileImmediateCatch(
     if (call.arguments.length !== 1) {
         context.fail(call, "Immediate promise catch requires one callback.");
     }
-    const callback = call.arguments[0]!;
+    const callback = argumentAt(call, 0);
     if (
         (!ts.isArrowFunction(callback) &&
             !ts.isFunctionExpression(callback)) ||

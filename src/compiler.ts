@@ -69,16 +69,6 @@ import {
     compileHdrEnvironmentOptions,
     type AssetOptionContext,
 } from "./compiler/intrinsics/asset-options.js";
-import {
-    compilePostProcessCompositeOptions,
-    compilePostProcessTaskOptions,
-    type CompiledPostProcessComposite,
-    type CompiledPostProcessTask,
-} from "./compiler/intrinsics/post-process-options.js";
-import {
-    compileScreenSpaceTaskOptions,
-    type CompiledScreenSpaceTask,
-} from "./compiler/intrinsics/screen-space-options.js";
 import { screenSpaceFacts } from "./pinned-screen-space.js";
 import {
     compileRenderTargetOptions,
@@ -181,6 +171,10 @@ import {
     opaqueEngineValue,
     passesByReference,
     passesByReferenceKind,
+    BUFFER_VIEW_KINDS,
+    TYPED_ARRAY_KINDS,
+    declaredInDomLibrary,
+    handleCppType,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
@@ -228,13 +222,23 @@ import {
     recursiveStorageEscapes,
     writesThroughTrackedRoot,
     resolveFunctionDeclaration,
-    rootIdentifier,
-    unwrapExpression,
     tryResolveFunctionDeclaration,
     type SupportedFunction,
     type UserFunctionContext,
     UserFunctionLowerer,
 } from "./compiler/user-functions.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    objectProperty,
+    rootIdentifier,
+    unwrapExpression,
+    argumentAt,
+    identifierText,
+    stringLiteralText,
+    unwrappedIdentifier,
+} from "./compiler/syntax.js";
+import { CompileError } from "./compiler/compile-error.js";
 import {
     mutatingArrayMethods,
     storingDataMethods,
@@ -537,7 +541,7 @@ const NULLABLE_RESOURCE_TYPES = new Map<
     ],
     [
         "AudioBuffer",
-        { kind: "audio-buffer", cppType: "bbl::pal::AudioBufferHandle" },
+        { kind: "audio-buffer", cppType: handleCppType("audio-buffer") },
     ],
     [
         "SpriteRenderer",
@@ -545,30 +549,30 @@ const NULLABLE_RESOURCE_TYPES = new Map<
     ],
     [
         "Sprite2DLayer",
-        { kind: "sprite-layer", cppType: "bbl::Sprite2DLayerHandle" },
+        { kind: "sprite-layer", cppType: handleCppType("sprite-layer") },
     ],
-    ["Element", { kind: "ui-element", cppType: "bbl::UiElementHandle" }],
-    ["HTMLElement", { kind: "ui-element", cppType: "bbl::UiElementHandle" }],
+    ["Element", { kind: "ui-element", cppType: handleCppType("ui-element") }],
+    ["HTMLElement", { kind: "ui-element", cppType: handleCppType("ui-element") }],
     [
         "HTMLDivElement",
-        { kind: "ui-element", cppType: "bbl::UiElementHandle" },
+        { kind: "ui-element", cppType: handleCppType("ui-element") },
     ],
     [
         "HTMLCanvasElement",
-        { kind: "ui-element", cppType: "bbl::UiElementHandle" },
+        { kind: "ui-element", cppType: handleCppType("ui-element") },
     ],
     [
         "ObstacleHandle",
         {
             kind: "navigation-obstacle",
-            cppType: "bbl::pal::NavObstacleHandle",
+            cppType: handleCppType("navigation-obstacle"),
         },
     ],
-    ["Mesh", { kind: "mesh", cppType: "bbl::MeshHandle" }],
+    ["Mesh", { kind: "mesh", cppType: handleCppType("mesh") }],
     ["AssetContainer", { kind: "asset", cppType: "bbl::AssetHandle" }],
     [
         "StorageBuffer",
-        { kind: "storage-buffer", cppType: "bbl::StorageBufferHandle" },
+        { kind: "storage-buffer", cppType: handleCppType("storage-buffer") },
     ],
 ]);
 
@@ -592,6 +596,12 @@ const NULLABLE_VAT_RESOURCE_TYPES = new Map<
 >([
     ["VatHandle", { kind: "vat-handle", cppType: "bbl::VatHandle" }],
     ["VatClip", { kind: "vat-clip", cppType: "bbl::VatClipRow" }],
+]);
+
+/** The two DOM types a drawing surface is declared as. */
+const CANVAS_TYPE_NAMES: ReadonlySet<string> = new Set([
+    "HTMLCanvasElement",
+    "OffscreenCanvas",
 ]);
 
 /** The closure key for a callback the program evaluates once, at module scope. */
@@ -631,24 +641,7 @@ function callbackClosureContainer(
     ) as ts.ClassLikeDeclaration | ts.SignatureDeclaration | undefined;
 }
 
-export class CompileError extends Error {
-    public readonly fileName: string;
-    public readonly line: number;
-    public readonly column: number;
-
-    public constructor(
-        fileName: string,
-        line: number,
-        column: number,
-        message: string,
-    ) {
-        super(`${fileName}:${line}:${column}: ${message}`);
-        this.name = "CompileError";
-        this.fileName = fileName;
-        this.line = line;
-        this.column = column;
-    }
-}
+export { CompileError };
 
 export function compileSource(
     source: string,
@@ -1264,18 +1257,12 @@ class Compiler
                 "A native host UI companion requires a scene engine.",
             );
         }
-        this.features.add("ui:rml");
         // The reaching "site" is the audited companion file itself: a
         // companion-only scene has no call in its own source to name, and
         // leaving the site empty would attribute the activation to the
         // compiled scene TypeScript. A scene-source reach recorded during
-        // the walk still wins, matching `reachFeature`'s first-reach rule.
-        if (!this.featureSites.has("ui:rml")) {
-            this.featureSites.set(
-                "ui:rml",
-                `${hostUi.sourcePath} (host UI companion)`,
-            );
-        }
+        // the walk still wins, by `reachFeature`'s first-reach rule.
+        this.reachFeature("ui:rml", `${hostUi.sourcePath} (host UI companion)`);
         const indent = "    ".repeat(2);
         const emitted: string[] = [];
         const ids = new Set<string>();
@@ -1425,7 +1412,7 @@ class Compiler
         ) {
             return false;
         }
-        const id = this.unwrap(call.arguments[0]!);
+        const id = this.unwrap(argumentAt(call, 0));
         // A literal, or an inlined helper's parameter bound to one: a
         // demo's `bindToggle(buttonId, ...)` looks its button up by the
         // literal every call site passes, which the inlined binding still
@@ -1826,7 +1813,7 @@ class Compiler
         ) {
             return statement;
         }
-        const handler = this.unwrap(call.arguments[0]!);
+        const handler = this.unwrap(argumentAt(call, 0));
         if (!this.isBrowserOnlyHandler(handler)) {
             this.fail(
                 handler,
@@ -1898,12 +1885,21 @@ class Compiler
         if (this.typeIsOrExtendsNamed(members[0]!, "Material")) {
             return {
                 kind: "material",
-                cppType: "bbl::MaterialHandle",
+                cppType: handleCppType("material"),
             };
         }
         const vat = name ? NULLABLE_VAT_RESOURCE_TYPES.get(name) : undefined;
         if (vat) return vat;
-        if (name?.endsWith("Node")) {
+        // Resolved through the DOM library's own `AudioNode`: a scene's
+        // `SceneNode`, or the pin's `TransformNode`, is not a Web Audio node.
+        if (
+            this.typeIsOrExtendsNamed(
+                members[0]!,
+                "AudioNode",
+                new Set(),
+                declaredInDomLibrary,
+            )
+        ) {
             return {
                 kind: "audio-node",
                 cppType: "bbl::pal::AudioNodeHandle",
@@ -1925,12 +1921,18 @@ class Compiler
         return undefined;
     }
 
+    /**
+     * Whether a type is, or derives from, the class or interface named
+     * `name`; `declaredBy` narrows which declaration of that name counts
+     * (the DOM library's `AudioNode`, not a scene's own class of that name).
+     */
     private typeIsOrExtendsNamed(
         type: ts.Type,
         name: string,
         visited = new Set<ts.Type>(),
+        declaredBy: (symbol: ts.Symbol) => boolean = () => true,
     ): boolean {
-        if (type.symbol?.name === name) return true;
+        if (type.symbol?.name === name && declaredBy(type.symbol)) return true;
         if (visited.has(type) || (type.flags & ts.TypeFlags.Object) === 0) {
             return false;
         }
@@ -1947,7 +1949,7 @@ class Compiler
             this.checker
                 .getBaseTypes(type as ts.InterfaceType)
                 ?.some((base) =>
-                    this.typeIsOrExtendsNamed(base, name, visited),
+                    this.typeIsOrExtendsNamed(base, name, visited, declaredBy),
                 ) ?? false
         );
     }
@@ -1966,19 +1968,15 @@ class Compiler
             if (
                 ts.isBinaryExpression(candidate) &&
                 candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isIdentifier(this.unwrap(candidate.left)) &&
-                this.symbols.valueSymbol(
-                    this.unwrap(candidate.left) as ts.Identifier,
-                ) === symbol
+                this.unwrappedValueSymbol(candidate.left) === symbol
             ) {
                 const right = this.unwrap(candidate.right);
-                if (
-                    ts.isCallExpression(right) &&
-                    ts.isIdentifier(this.unwrap(right.expression)) &&
-                    this.symbols.importedName(
-                        this.unwrap(right.expression) as ts.Identifier,
-                    ) === intrinsic
-                ) {
+                const callee = ts.isCallExpression(right)
+                    ? unwrappedIdentifier(right.expression, (wrapped) =>
+                          this.unwrap(wrapped),
+                      )
+                    : undefined;
+                if (callee && this.symbols.importedName(callee) === intrinsic) {
                     found = true;
                     return;
                 }
@@ -2274,16 +2272,12 @@ class Compiler
                 // A property of the program's own data keeps the function;
                 // a library global's (`Math.random = () => ...`, which a
                 // bake moves to generation) does not.
-                let root: ts.Expression = parent.left;
-                while (
-                    ts.isPropertyAccessExpression(root) ||
-                    ts.isElementAccessExpression(root)
-                ) {
-                    root = root.expression;
-                }
+                const target = this.unwrap(parent.left);
+                const root = rootIdentifier(target, (chain) => this.unwrap(chain));
                 return (
-                    root !== parent.left &&
-                    (!(ts.isIdentifier(root) && this.isDefaultLibraryIdentifier(root)) ||
+                    (ts.isPropertyAccessExpression(target) ||
+                        ts.isElementAccessExpression(target)) &&
+                    (!(root && this.isDefaultLibraryIdentifier(root)) ||
                         (isDeterministicRandomRead(this, parent.left) && this.sourceUsesNativeParticleProvider()))
                 );
             }
@@ -2638,7 +2632,7 @@ class Compiler
         const hostLookup = this.unwrap(declaration.initializer);
         if (!this.defaultEngineCpp && !this.options.workers &&
             ts.isCallExpression(hostLookup) && this.isNativeHostUiLookup(hostLookup)) {
-            const id = this.compileStringLiteral(hostLookup.arguments[0]!);
+            const id = this.compileStringLiteral(argumentAt(hostLookup, 0));
             const value: Value = { kind: "ui-element", cpp: cppName, uiHostId: id,
                 uiTag: this.nativeHostUiTags().get(id)!, truthinessCpp: "true" };
             this.pendingHostUiLookups.push(value);
@@ -3959,10 +3953,7 @@ class Compiler
                         }
                     }
                     if (
-                        (ts.isPrefixUnaryExpression(node) ||
-                            ts.isPostfixUnaryExpression(node)) &&
-                        (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                            node.operator === ts.SyntaxKind.MinusMinusToken) &&
+                        isUpdateExpression(node) &&
                         ts.isElementAccessExpression(node.operand) &&
                         scan.namesAlias(this.unwrap(node.operand.expression))
                     ) {
@@ -3986,11 +3977,7 @@ class Compiler
                         }
                     }
                     return (
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind >=
-                            ts.SyntaxKind.FirstAssignment &&
-                        node.operatorToken.kind <=
-                            ts.SyntaxKind.LastAssignment &&
+                        isAssignmentExpression(node) &&
                         (((ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
                             scan.containsAlias(node.right)) ||
                           (ts.isElementAccessExpression(node.left) &&
@@ -4011,16 +3998,11 @@ class Compiler
         const directlyIndexes = (expression: ts.Expression): boolean =>
             (ts.isElementAccessExpression(expression) ||
                 ts.isPropertyAccessExpression(expression)) &&
-            ts.isIdentifier(this.unwrap(expression.expression)) &&
-            this.symbols.valueSymbol(
-                this.unwrap(expression.expression) as ts.Identifier,
-            ) === symbol;
+            this.unwrappedValueSymbol(expression.expression) === symbol;
         const visit = (node: ts.Node): void => {
             if (mutated) return;
             if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+                isAssignmentExpression(node) &&
                 directlyIndexes(node.left)
             ) {
                 mutated = true;
@@ -4110,11 +4092,7 @@ class Compiler
                         return true;
                     }
                     if (
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind >=
-                            ts.SyntaxKind.FirstAssignment &&
-                        node.operatorToken.kind <=
-                            ts.SyntaxKind.LastAssignment &&
+                        isAssignmentExpression(node) &&
                         (ts.isPropertyAccessExpression(node.left) ||
                             ts.isElementAccessExpression(node.left)) &&
                         isAlias(scan, node.left)
@@ -4134,10 +4112,7 @@ class Compiler
                         return true;
                     }
                     if (
-                        (ts.isPrefixUnaryExpression(node) ||
-                            ts.isPostfixUnaryExpression(node)) &&
-                        (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                            node.operator === ts.SyntaxKind.MinusMinusToken) &&
+                        isUpdateExpression(node) &&
                         (ts.isPropertyAccessExpression(node.operand) ||
                             ts.isElementAccessExpression(node.operand)) &&
                         isAlias(scan, node.operand)
@@ -4703,7 +4678,7 @@ class Compiler
     private uiCreationTag(expression: ts.Expression): string | undefined {
         const creation = this.uiCreationCall(expression);
         const tag = creation
-            ? this.tryUiStaticString(creation.arguments[0]!)
+            ? this.tryUiStaticString(argumentAt(creation, 0))
             : undefined;
         return tag?.toLowerCase();
     }
@@ -6199,8 +6174,8 @@ class Compiler
             const divisor = this.compileValue(expression.right).staticNumber;
             return divisor !== undefined && divisor > 0 ? divisor : undefined;
         };
-        const width = logical(call.arguments[0]!, "width");
-        const height = logical(call.arguments[1]!, "height");
+        const width = logical(argumentAt(call, 0), "width");
+        const height = logical(argumentAt(call, 1), "height");
         if (width !== undefined && height !== undefined) {
             this.uiCanvasFullClearSizes.add(`${width}x${height}`);
         }
@@ -6231,7 +6206,7 @@ class Compiler
             );
         for (const index of [0, 1]) {
             const origin = this.compileValue(
-                call.arguments[index]!,
+                argumentAt(call, index),
             ).staticNumber;
             if (origin !== 0) {
                 refuse(
@@ -6241,13 +6216,13 @@ class Compiler
             }
         }
         if (
-            this.isUiCanvasSizeRead(call.arguments[2]!, "width") &&
-            this.isUiCanvasSizeRead(call.arguments[3]!, "height")
+            this.isUiCanvasSizeRead(argumentAt(call, 2), "width") &&
+            this.isUiCanvasSizeRead(argumentAt(call, 3), "height")
         ) {
             return;
         }
-        const width = this.compileValue(call.arguments[2]!).staticNumber;
-        const height = this.compileValue(call.arguments[3]!).staticNumber;
+        const width = this.compileValue(argumentAt(call, 2)).staticNumber;
+        const height = this.compileValue(argumentAt(call, 3)).staticNumber;
         if (width !== undefined && height !== undefined) {
             if (this.uiCanvasFullClearSizes.has(`${width}x${height}`)) {
                 return;
@@ -10158,13 +10133,13 @@ class Compiler
             return undefined;
         }
         this.expectArgumentCount(call, 3, 3);
-        const mesh = this.compileValue(call.arguments[0]!);
-        this.expectKind(mesh, "mesh", call.arguments[0]!);
+        const mesh = this.compileValue(argumentAt(call, 0));
+        this.expectKind(mesh, "mesh", argumentAt(call, 0));
         const matrices = this.compileTypedArrayArgument(
-            call.arguments[1]!,
+            argumentAt(call, 1),
             "f32array",
         );
-        const count = this.compileNumber(call.arguments[2]!);
+        const count = this.compileNumber(argumentAt(call, 2));
         this.reachFeature("mesh:thin-instances", call);
         this.reachFeature("mesh:thin-instances-dynamic", call);
         this.recordThinInstanceMesh(mesh.sceneMeshIndex);
@@ -10203,7 +10178,7 @@ class Compiler
         const device = this.compileValue(callee.expression.expression);
         if (device.kind !== "gpu-device") return undefined;
         this.expectArgumentCount(call, 4, 4);
-        const destination = this.unwrap(call.arguments[0]!);
+        const destination = this.unwrap(argumentAt(call, 0));
         if (!ts.isObjectLiteralExpression(destination)) {
             this.fail(
                 destination,
@@ -10235,13 +10210,13 @@ class Compiler
                 "GPUQueue.writeTexture currently updates createTexture2DFromPixels results.",
             );
         }
-        const pixelValue = this.compileValue(call.arguments[1]!);
+        const pixelValue = this.compileValue(argumentAt(call, 1));
         if (
             pixelValue.kind !== "data" ||
             pixelValue.dataType?.kind !== "u8array"
         ) {
             this.fail(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "GPUQueue.writeTexture source must be a Uint8Array.",
             );
         }
@@ -10280,9 +10255,9 @@ class Compiler
                 node.expression.name.text === "writeBuffer" &&
                 node.arguments.length === 5
             ) {
-                const source = node.arguments[2]!;
-                const offset = node.arguments[3]!;
-                const size = node.arguments[4]!;
+                const source = argumentAt(node, 2);
+                const offset = argumentAt(node, 3);
+                const size = argumentAt(node, 4);
                 directUpload =
                     ts.isPropertyAccessExpression(source) &&
                     source.name.text === "buffer" &&
@@ -10337,45 +10312,6 @@ class Compiler
 
     public compileCopyTaskOptions(expression: ts.Expression): string {
         return compileCopyTaskOptions(this, expression);
-    }
-
-    public compilePostProcessTaskOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        shaderIndex: number,
-    ): CompiledPostProcessTask {
-        return compilePostProcessTaskOptions(
-            this,
-            intrinsic,
-            expression,
-            shaderIndex,
-        );
-    }
-
-    public compilePostProcessCompositeOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        compositeIndex: number,
-    ): CompiledPostProcessComposite {
-        return compilePostProcessCompositeOptions(
-            this,
-            intrinsic,
-            expression,
-            compositeIndex,
-        );
-    }
-
-    public compileScreenSpaceTaskOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        taskIndex: number,
-    ): CompiledScreenSpaceTask {
-        return compileScreenSpaceTaskOptions(
-            this,
-            intrinsic,
-            expression,
-            taskIndex,
-        );
     }
 
     public compileGroundOptions(
@@ -10656,14 +10592,15 @@ class Compiler
     }
 
     public isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean {
-        const declarations = this.symbols.valueSymbol(identifier)?.declarations;
-        return (
-            declarations?.some((declaration) =>
-                this.program.isSourceFileDefaultLibrary(
-                    declaration.getSourceFile(),
-                ),
-            ) ?? false
+        return this.symbols.isDefaultLibraryIdentifier(identifier);
+    }
+
+    /** The value symbol an expression names once unwrapped, or undefined. */
+    private unwrappedValueSymbol(expression: ts.Expression): ts.Symbol | undefined {
+        const identifier = unwrappedIdentifier(expression, (wrapped) =>
+            this.unwrap(wrapped),
         );
+        return identifier && this.symbols.valueSymbol(identifier);
     }
 
     /**
@@ -11304,17 +11241,11 @@ class Compiler
                     const value = this.compileValue(unwrapped.left);
                     if (value.nativeError) return "true";
                 }
-                const expected = new Map<string, string>([
-                    ["ArrayBuffer", "arraybuffer"],
-                    ["DataView", "dataview"],
-                    ["Uint8Array", "u8array"],
-                    ["Uint16Array", "u16array"],
-                    ["Int16Array", "i16array"],
-                    ["Uint32Array", "u32array"],
-                    ["Int32Array", "i32array"],
-                    ["Float64Array", "f64array"],
-                    ["Float32Array", "f32array"],
-                ]).get(unwrapped.right.text);
+                // The two buffer views answer `instanceof` beside the
+                // typed arrays; neither table alone names every binary kind.
+                const expected: string | undefined =
+                    BUFFER_VIEW_KINDS.get(unwrapped.right.text) ??
+                    TYPED_ARRAY_KINDS.get(unwrapped.right.text);
                 if (expected) {
                     const value = this.compileValue(unwrapped.left);
                     if (value.dataType) {
@@ -11967,21 +11898,7 @@ class Compiler
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression | undefined {
-        for (const property of object.properties) {
-            if (
-                ts.isPropertyAssignment(property) &&
-                this.propertyName(property.name) === name
-            ) {
-                return property.initializer;
-            }
-            if (
-                ts.isShorthandPropertyAssignment(property) &&
-                property.name.text === name
-            ) {
-                return property.name;
-            }
-        }
-        return undefined;
+        return objectProperty(object, name, (key) => this.propertyName(key));
     }
 
     public propertyName(name: ts.PropertyName): string | undefined {
@@ -12083,8 +12000,8 @@ class Compiler
             if (
                 ts.isCallExpression(node) &&
                 node.arguments.length === 2 &&
-                (ts.isStringLiteral(node.arguments[0]!) ||
-                    ts.isNoSubstitutionTemplateLiteral(node.arguments[0]!))
+                (ts.isStringLiteral(argumentAt(node, 0)) ||
+                    ts.isNoSubstitutionTemplateLiteral(argumentAt(node, 0)))
             ) {
                 const url = this.moduleRelativeAssetUrl(node);
                 if (url !== undefined) candidates.add(url);
@@ -12144,10 +12061,8 @@ class Compiler
                 (this.checker.getResolvedSignature(candidate)?.declaration ===
                     owner ||
                     (ownerSymbol !== undefined &&
-                        ts.isIdentifier(this.unwrap(candidate.expression)) &&
-                        this.symbols.valueSymbol(
-                            this.unwrap(candidate.expression) as ts.Identifier,
-                        ) === ownerSymbol))
+                        this.unwrappedValueSymbol(candidate.expression) ===
+                            ownerSymbol))
             ) {
                 reachedCall = true;
                 if (candidate.arguments.length > index) {
@@ -12177,7 +12092,7 @@ class Compiler
             !ts.isCallExpression(resolved) ||
             !ts.isIdentifier(resolved.expression) ||
             resolved.arguments.length !== 2 ||
-            !this.isImportMetaUrl(resolved.arguments[1]!)
+            !this.isImportMetaUrl(argumentAt(resolved, 1))
         ) {
             return undefined;
         }
@@ -12201,11 +12116,11 @@ class Compiler
             moduleParameter.text,
         );
         if (!replacements) return undefined;
-        if (ts.isTemplateExpression(resolved.arguments[0]!)) {
+        if (ts.isTemplateExpression(argumentAt(resolved, 0))) {
             return undefined;
         }
         const path = this.evaluator.compileStringLiteral(
-            resolved.arguments[0]!,
+            argumentAt(resolved, 0),
         );
         const url = new URL(path, "https://bblite.invalid/");
         for (const [search, replacement] of replacements) {
@@ -12225,7 +12140,7 @@ class Compiler
             !ts.isCallExpression(resolved) ||
             !ts.isIdentifier(resolved.expression) ||
             resolved.arguments.length !== 2 ||
-            !this.isImportMetaUrl(resolved.arguments[1]!)
+            !this.isImportMetaUrl(argumentAt(resolved, 1))
         ) {
             return undefined;
         }
@@ -12249,7 +12164,7 @@ class Compiler
             moduleParameter.text,
         );
         if (!replacements) return undefined;
-        const path = this.unwrap(resolved.arguments[0]!);
+        const path = this.unwrap(argumentAt(resolved, 0));
         if (
             !ts.isTemplateExpression(path) ||
             path.templateSpans.length !== 1 ||
@@ -12323,11 +12238,10 @@ class Compiler
             !ts.isNewExpression(declaration.initializer) ||
             !ts.isIdentifier(declaration.initializer.expression) ||
             declaration.initializer.expression.text !== "URL" ||
+            !this.isDefaultLibraryIdentifier(declaration.initializer.expression) ||
             declaration.initializer.arguments?.length !== 2 ||
-            !ts.isIdentifier(declaration.initializer.arguments[0]!) ||
-            declaration.initializer.arguments[0]!.text !== pathParameter ||
-            !ts.isIdentifier(declaration.initializer.arguments[1]!) ||
-            declaration.initializer.arguments[1]!.text !== moduleParameter
+            identifierText(argumentAt(declaration.initializer, 0)) !== pathParameter ||
+            identifierText(argumentAt(declaration.initializer, 1)) !== moduleParameter
         ) {
             return undefined;
         }
@@ -12365,16 +12279,16 @@ class Compiler
                 !ts.isIdentifier(call.expression.expression.expression) ||
                 call.expression.expression.expression.text !== urlVariable ||
                 call.expression.expression.name.text !== "pathname" ||
-                call.arguments.length !== 2 ||
-                !ts.isStringLiteralLike(call.arguments[0]!) ||
-                !ts.isStringLiteralLike(call.arguments[1]!)
+                call.arguments.length !== 2
             ) {
                 return undefined;
             }
-            replacements.push([
-                call.arguments[0]!.text,
-                call.arguments[1]!.text,
-            ]);
+            const from = stringLiteralText(argumentAt(call, 0));
+            const to = stringLiteralText(argumentAt(call, 1));
+            if (from === undefined || to === undefined) {
+                return undefined;
+            }
+            replacements.push([from, to]);
         }
         return replacements;
     }
@@ -12450,8 +12364,8 @@ class Compiler
         }
         let canvasArgument = "";
         if (this.options.workers) {
-            const canvas = this.compileValue(call.arguments[0]!);
-            if (canvas.kind !== "offscreen-canvas" && canvas.kind !== "ui-element") this.fail(call.arguments[0]!, "The realm engine requires a native canvas context.");
+            const canvas = this.compileValue(argumentAt(call, 0));
+            if (canvas.kind !== "offscreen-canvas" && canvas.kind !== "ui-element") this.fail(argumentAt(call, 0), "The realm engine requires a native canvas context.");
             canvasArgument = `, ${canvas.kind === "ui-element" ? `bbl::pal::window_canvas(${canvas.cpp})` : canvas.cpp}`;
         }
         this.emit(`auto ${cppName} = ${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}}${canvasArgument});`);
@@ -12468,9 +12382,9 @@ class Compiler
         }
         let surfaceCanvas = false;
         if (!this.options.workers && [...this.nativeHostUiTags().values()].includes("canvas")) {
-            const canvas = this.compileValue(call.arguments[0]!);
+            const canvas = this.compileValue(argumentAt(call, 0));
             if (canvas.kind === "ui-element") {
-                if (canvas.uiTag !== "canvas") this.fail(call.arguments[0]!, "An engine surface requires a retained canvas element.");
+                if (canvas.uiTag !== "canvas") this.fail(argumentAt(call, 0), "An engine surface requires a retained canvas element.");
                 this.emit(`${engineCpp}.surface_canvas = ${canvas.cpp};`);
                 this.emit(`${engineCpp}.ui_elements[${canvas.cpp}.value].client_rect_requested = true;`);
                 surfaceCanvas = true;
@@ -12973,10 +12887,6 @@ class Compiler
         return this.cppIdentifier(sourceName);
     }
 
-    public isEntrySourceFile(file: ts.SourceFile): boolean {
-        return file === this.sourceFile;
-    }
-
     public sourceFiles(): readonly ts.SourceFile[] {
         return this.program.getSourceFiles();
     }
@@ -13055,9 +12965,9 @@ class Compiler
         return this.classLowerer.resolveClass(expression) !== undefined;
     }
 
-    public reachVoxelFileStorage(): void {
+    public reachVoxelFileStorage(site: ts.Node): void {
         this.voxelFileStorageReached = true;
-        this.reachFeature("browser:file");
+        this.reachFeature("browser:file", site);
     }
 
     public reachJson(): void {
@@ -13089,7 +12999,7 @@ class Compiler
         if (!/\/demos\/minecraft\/save-load\.(?:ts|js)$/i.test(fileName)) {
             return undefined;
         }
-        this.reachVoxelFileStorage();
+        this.reachVoxelFileStorage(call);
         this.reachJsData();
         if (name === "saveToFile") {
             this.expectArgumentCount(call, 1, 1);
@@ -13111,7 +13021,7 @@ class Compiler
                 kind: "boolean",
                 cpp:
                     `bbl::js::save_voxel_world(${this.requireDefaultEngine(call)}, ` +
-                    `${this.dataLowerer.compileForSink(call.arguments[0]!, dataType)})`,
+                    `${this.dataLowerer.compileForSink(argumentAt(call, 0), dataType)})`,
                 dataType: { kind: "boolean" },
             };
         }
@@ -14347,8 +14257,7 @@ class Compiler
     private compileCameraMutation(expression: ts.Expression): Value | undefined {
         const node = this.unwrap(expression);
         const unary = ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node);
-        if (unary ? node.operator !== ts.SyntaxKind.PlusPlusToken && node.operator !== ts.SyntaxKind.MinusMinusToken :
-            !ts.isBinaryExpression(node) || node.operatorToken.kind < ts.SyntaxKind.FirstAssignment || node.operatorToken.kind > ts.SyntaxKind.LastAssignment) return undefined;
+        if (unary ? !isUpdateExpression(node) : !isAssignmentExpression(node)) return undefined;
         const left = this.unwrap(unary ? node.operand : (node as ts.BinaryExpression).left);
         const operator = unary ? (node.operator === ts.SyntaxKind.PlusPlusToken ? "+" :
             node.operator === ts.SyntaxKind.MinusMinusToken ? "-" : undefined) :
@@ -14997,18 +14906,7 @@ class Compiler
         if (element?.uiCanvas) {
             return element.uiPrimaryCanvas && axis.client ? axis : undefined;
         }
-        const ownerType = this.checker.getTypeAtLocation(unwrapped.expression);
-        const members =
-            (ownerType.flags & ts.TypeFlags.Union) !== 0
-                ? (ownerType as ts.UnionType).types
-                : [ownerType];
-        const canvases = new Set(["HTMLCanvasElement", "OffscreenCanvas"]);
-        return members.length > 0 &&
-            members.every((member) =>
-                canvases.has(member.getSymbol()?.getName() ?? ""),
-            )
-            ? axis
-            : undefined;
+        return this.isCanvasElement(unwrapped.expression) ? axis : undefined;
     }
 
     public canvasSizeProperty(
@@ -15064,7 +14962,8 @@ class Compiler
                 ts.isPropertyAccessExpression(callee) &&
                 callee.name.text === "getGamepads" &&
                 ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "navigator"
+                callee.expression.text === "navigator" &&
+                this.isDefaultLibraryIdentifier(callee.expression)
             ) {
                 return false;
             }
@@ -15282,11 +15181,11 @@ class Compiler
             const owner = this.compileValue(callee.expression);
             if (owner.kind === "gpu-device") {
                 this.expectArgumentCount(call, 2, 2);
-                if (this.compileStringLiteral(call.arguments[0]!) !== "uncapturederror") this.fail(call, "Only GPU uncapturederror listeners are represented.");
+                if (this.compileStringLiteral(argumentAt(call, 0)) !== "uncapturederror") this.fail(call, "Only GPU uncapturederror listeners are represented.");
                 this.reachFeature("engine:device-recovery", call);
                 const message = this.allocateTemporaryCppName("gpu_error");
                 const value: Value = { kind: "record", cpp: "", recordProperties: { error: { kind: "record", cpp: "", recordProperties: { message: { kind: "string", cpp: message, dataType: { kind: "string" } } } } } };
-                const callback = this.compilePlatformCallback(call.arguments[1]!, { cppType: "const std::string&", name: message }, [value], undefined, false, false);
+                const callback = this.compilePlatformCallback(argumentAt(call, 1), { cppType: "const std::string&", name: message }, [value], undefined, false, false);
                 return { kind: "void", cpp: `bbl::add_gpu_error_listener(${owner.cpp}, ${callback.cpp})` };
             }
         }
@@ -15307,7 +15206,7 @@ class Compiler
                 this.requirePresentationHost(call);
             }
             if (this.isNativeHostUiLookup(call)) {
-                const id = this.compileStringLiteral(call.arguments[0]!);
+                const id = this.compileStringLiteral(argumentAt(call, 0));
                 const engine = this.options.workers ? "bbl::pal::window_document_engine()" : this.requireDefaultEngine(call);
                 this.reachFeature("ui:rml", call);
                 return {
@@ -15328,17 +15227,17 @@ class Compiler
                 this.isDefaultLibraryIdentifier(callee.expression)
             ) {
                 this.expectArgumentCount(call, 1, 1);
-                const tag = this.compileStringLiteral(call.arguments[0]!);
+                const tag = this.compileStringLiteral(argumentAt(call, 0));
                 const normalizedTag = tag.toLowerCase();
                 if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Native UI element tag '${tag}' is not valid.`,
                     );
                 }
                 if (Compiler.UI_IMPLEMENTATION_TAGS.has(normalizedTag)) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Native UI element tag '${tag}' is reserved for the retained projection.`,
                     );
                 }
@@ -15383,10 +15282,10 @@ class Compiler
                 callee.name.text === "getContext"
             ) {
                 this.expectArgumentCount(call, 1, 1);
-                const context = this.compileStringLiteral(call.arguments[0]!);
+                const context = this.compileStringLiteral(argumentAt(call, 0));
                 if (context !== "2d") {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         "Retained native canvas only supports the '2d' context.",
                     );
                 }
@@ -15398,7 +15297,7 @@ class Compiler
             if (element?.uiCanvasContext) {
                 const engine = this.requireEngine(element, call);
                 const number = (index: number): string =>
-                    this.compileNumber(call.arguments[index]!, "double");
+                    this.compileNumber(argumentAt(call, index), "double");
                 const invocation = (
                     name: string,
                     minimum: number,
@@ -15496,15 +15395,16 @@ class Compiler
                     }
                     case "putImageData": {
                         this.expectArgumentCount(call, 3, 3);
-                        const imageData = this.unwrap(call.arguments[0]!);
+                        const imageData = this.unwrap(argumentAt(call, 0));
                         if (
                             !ts.isNewExpression(imageData) ||
                             !ts.isIdentifier(imageData.expression) ||
                             imageData.expression.text !== "ImageData" ||
+                            !this.isDefaultLibraryIdentifier(imageData.expression) ||
                             (imageData.arguments?.length ?? 0) !== 3
                         ) {
                             this.fail(
-                                call.arguments[0]!,
+                                argumentAt(call, 0),
                                 "Retained Canvas2D putImageData requires new ImageData(rgba, width, height).",
                             );
                         }
@@ -15519,7 +15419,7 @@ class Compiler
                                     "Uint8Array") &&
                             pixelsConstructor.arguments?.length === 1
                         ) {
-                            pixelsExpression = pixelsConstructor.arguments[0]!;
+                            pixelsExpression = argumentAt(pixelsConstructor, 0);
                         }
                         const pixels = this.compileValue(pixelsExpression);
                         if (
@@ -15543,10 +15443,10 @@ class Compiler
                     }
                     case "drawImage": {
                         this.expectArgumentCount(call, 5, 5);
-                        const source = this.compileValue(call.arguments[0]!);
+                        const source = this.compileValue(argumentAt(call, 0));
                         if (source.kind !== "ui-element") {
                             this.fail(
-                                call.arguments[0]!,
+                                argumentAt(call, 0),
                                 "Retained Canvas2D drawImage source must be a retained UI element; " +
                                     `received ${source.kind}.`,
                             );
@@ -15556,14 +15456,14 @@ class Compiler
                         }
                         this.expectSameEngine(element, source, call);
                         const sourceText = this.unwrap(
-                            call.arguments[0]!,
+                            argumentAt(call, 0),
                         ).getText();
                         const extent = (
                             argumentIndex: number,
                             axis: "width" | "height",
                         ): string => {
                             const argument = this.unwrap(
-                                call.arguments[argumentIndex]!,
+                                argumentAt(call, argumentIndex),
                             );
                             let dimension: ts.Expression = argument;
                             let multiplier = "1.0";
@@ -15601,7 +15501,7 @@ class Compiler
                                     sourceText
                             ) {
                                 this.fail(
-                                    call.arguments[argumentIndex]!,
+                                    argumentAt(call, argumentIndex),
                                     `Retained Canvas2D drawImage ${axis} must be source.${axis}, optionally multiplied by a scale.`,
                                 );
                             }
@@ -15623,7 +15523,7 @@ class Compiler
                             kind: "void",
                             cpp:
                                 `bbl::ui_canvas_fill_text(${engine}, ${element.cpp}, ` +
-                                `${this.uiStringCpp(call.arguments[0]!, "Canvas2D fillText")}, ` +
+                                `${this.uiStringCpp(argumentAt(call, 0), "Canvas2D fillText")}, ` +
                                 `${number(1)}, ${number(2)})`,
                         };
                 }
@@ -15660,7 +15560,7 @@ class Compiler
             }
             if (element && callee.name.text === "querySelector") {
                 this.expectArgumentCount(call, 1, 1);
-                const selector = this.compileStringLiteral(call.arguments[0]!);
+                const selector = this.compileStringLiteral(argumentAt(call, 0));
                 if (element.uiStaticId === undefined) {
                     this.fail(
                         call,
@@ -15699,7 +15599,7 @@ class Compiler
                         })();
                 if (!query) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Retained UI querySelector selector '${selector}' is not lowered.`,
                     );
                 }
@@ -15732,11 +15632,11 @@ class Compiler
             }
             if (element && callee.name.text === "querySelectorAll") {
                 this.expectArgumentCount(call, 1, 1);
-                const selector = this.compileStringLiteral(call.arguments[0]!);
+                const selector = this.compileStringLiteral(argumentAt(call, 0));
                 const matched = selector.match(/^\.([A-Za-z_][A-Za-z0-9_-]*)$/);
                 if (!matched) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Retained UI querySelectorAll selector '${selector}' is not lowered; only a static '.class' scoped query is supported.`,
                     );
                 }
@@ -15805,13 +15705,13 @@ class Compiler
             }
             if (element && callee.name.text === "setAttribute") {
                 this.expectArgumentCount(call, 2, 2);
-                const name = this.compileStringLiteral(call.arguments[0]!);
+                const name = this.compileStringLiteral(argumentAt(call, 0));
                 const engine = this.requireEngine(element, call);
                 const browserFile = this.compileUiBrowserFileAttribute(
                     element,
                     engine,
                     name,
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     call,
                     "attribute",
                 );
@@ -15821,10 +15721,10 @@ class Compiler
                         cpp: browserFile,
                     };
                 }
-                const staticValue = this.tryUiStaticString(call.arguments[1]!);
+                const staticValue = this.tryUiStaticString(argumentAt(call, 1));
                 const sourceValue =
                     staticValue === undefined
-                        ? this.compileValue(call.arguments[1]!)
+                        ? this.compileValue(argumentAt(call, 1))
                         : undefined;
                 if (
                     sourceValue !== undefined &&
@@ -15835,7 +15735,7 @@ class Compiler
                     )
                 ) {
                     this.fail(
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                         `UI setAttribute value requires a string, received ${sourceValue?.kind}.`,
                     );
                 }
@@ -15845,7 +15745,7 @@ class Compiler
                               this.lowerUiAttributeLiteral(
                                   name,
                                   staticValue,
-                                  call.arguments[1]!,
+                                  argumentAt(call, 1),
                               ),
                           )
                         : sourceValue!.cpp;
@@ -15853,7 +15753,7 @@ class Compiler
                     this.recordUiStaticAttribute(
                         element,
                         name,
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                     );
                 } else if (name === "style" && staticValue !== undefined) {
                     this.recordUiStaticStyle(
@@ -15861,7 +15761,7 @@ class Compiler
                         this.lowerUiAttributeLiteral(
                             "style",
                             staticValue,
-                            call.arguments[1]!,
+                            argumentAt(call, 1),
                         ),
                     );
                 } else if (name === "style") {
@@ -15877,8 +15777,8 @@ class Compiler
             }
             if (element && callee.name.text === "appendChild") {
                 this.expectArgumentCount(call, 1, 1);
-                const child = this.compileValue(call.arguments[0]!);
-                this.expectKind(child, "ui-element", call.arguments[0]!);
+                const child = this.compileValue(argumentAt(call, 0));
+                this.expectKind(child, "ui-element", argumentAt(call, 0));
                 if (!element.uiRoot) {
                     this.expectSameEngine(element, child, call);
                 }
@@ -16015,17 +15915,17 @@ class Compiler
                         method === "toggle" ? 2 : 1,
                         method === "toggle" ? 2 : 1,
                     );
-                    const name = this.compileStringLiteral(call.arguments[0]!);
+                    const name = this.compileStringLiteral(argumentAt(call, 0));
                     if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
                         this.fail(
-                            call.arguments[0]!,
+                            argumentAt(call, 0),
                             `Native UI class name '${name}' is not valid.`,
                         );
                     }
                     const enabled =
                         method === "toggle"
                             ? this.uiBooleanCpp(
-                                  call.arguments[1]!,
+                                  argumentAt(call, 1),
                                   "UI classList.toggle",
                               )
                             : method === "add"
@@ -16065,8 +15965,8 @@ class Compiler
                 this.isDefaultLibraryIdentifier(callee.expression.expression)
             ) {
                 this.expectArgumentCount(call, 1, 1);
-                const child = this.compileValue(call.arguments[0]!);
-                this.expectKind(child, "ui-element", call.arguments[0]!);
+                const child = this.compileValue(argumentAt(call, 0));
+                this.expectKind(child, "ui-element", argumentAt(call, 0));
                 const engine = this.requireEngine(child, call);
                 this.recordUiStaticRootAppend(child);
                 return {
@@ -16088,7 +15988,7 @@ class Compiler
             this.isDefaultLibraryIdentifier(callee.expression)
         ) {
             this.expectArgumentCount(call, 1, 1);
-            const argument = this.compileValue(call.arguments[0]!);
+            const argument = this.compileValue(argumentAt(call, 0));
             if (argument.staticNumber !== undefined) {
                 return {
                     kind: "boolean",
@@ -16100,7 +16000,7 @@ class Compiler
             return {
                 kind: "boolean",
                 cpp: `std::isfinite(${this.compileNumber(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "double",
                 )})`,
             };
@@ -16115,17 +16015,17 @@ class Compiler
                     kind: "boolean",
                     cpp:
                         `std::isfinite(` +
-                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
             if (callee.text === "setInterval") {
                 this.expectArgumentCount(call, 2, 2);
                 const engine = this.requireDefaultEngine(call);
                 const callback = this.compileFrameCallback(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "interval",
                 );
-                const delay = this.compileNumber(call.arguments[1]!, "double");
+                const delay = this.compileNumber(argumentAt(call, 1), "double");
                 return {
                     kind: "number",
                     cpp: `bbl::set_interval(${engine}, ${callback}, ${delay})`,
@@ -16139,7 +16039,7 @@ class Compiler
                     kind: "void",
                     cpp:
                         `bbl::clear_interval(${engine}, ` +
-                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
             if (callee.text === "clearTimeout") {
@@ -16149,7 +16049,7 @@ class Compiler
                     kind: "void",
                     cpp:
                         `bbl::clear_timeout(${engine}, ` +
-                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
         }
@@ -16322,12 +16222,12 @@ class Compiler
         call: ts.CallExpression,
     ): Value | undefined {
         this.expectArgumentCount(call, 1, 1);
-        const argument = this.unwrap(call.arguments[0]!);
+        const argument = this.unwrap(argumentAt(call, 0));
         const stored = ts.isIdentifier(argument) ? this.lookupOptional(argument) : undefined;
         // A materialized callback retains its own requeue operation, including
         // conditional schedules and synchronous priming calls.
         const recurring = !(stored?.kind === "callback" && stored.cpp.length > 0) && this.animationFrameCallbackRearmsItself(
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         const nested = this.frameCallbackDepth > 0;
         if (nested && recurring) {
@@ -16335,7 +16235,7 @@ class Compiler
         }
         const engine = this.requireDefaultEngine(call);
         const callback = this.compileFrameCallback(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             "timestamp",
         );
         if (!recurring) {
@@ -16374,11 +16274,11 @@ class Compiler
         if (uiElement) {
             if (removing) return false;
             this.expectArgumentCount(call, 2, 2);
-            const event = this.compileStringLiteral(call.arguments[0]!);
+            const event = this.compileStringLiteral(argumentAt(call, 0));
             if (event === "change") {
                 if (uiElement.uiTag !== "input" || !uiElement.uiFileInput) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         "The native 'change' event is supported only on a retained <input type=\"file\">.",
                     );
                 }
@@ -16409,11 +16309,11 @@ class Compiler
                 event !== "contextmenu"
             ) {
                 this.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     `Native UI elements do not support the '${event}' event.`,
                 );
             }
-            const callback = call.arguments[1]!;
+            const callback = argumentAt(call, 1);
             this.hoistForwardCallbackBindings(callback, call.pos);
             const engine = this.requireEngine(uiElement, call);
             if (event === "contextmenu") {
@@ -16476,8 +16376,8 @@ class Compiler
                 "Platform event listeners require an event name, callback, and optional options record.",
             );
         }
-        const event = this.evaluator.staticTextValue(call.arguments[0]!);
-        const callback = call.arguments[1]!;
+        const event = this.evaluator.staticTextValue(argumentAt(call, 0));
+        const callback = argumentAt(call, 1);
         this.hoistForwardCallbackBindings(callback, call.pos);
         let once = false;
         if (!removing && call.arguments[2]) {
@@ -16593,18 +16493,20 @@ class Compiler
         );
     }
 
+    /**
+     * Whether every member of an expression's type is one of the two canvas
+     * types. A member whose symbol has no name is not a canvas, so it fails
+     * the test rather than being compared under an empty name.
+     */
     public isCanvasElement(expression: ts.Expression): boolean {
         const type = this.checker.getTypeAtLocation(expression);
-        const members =
-            (type.flags & ts.TypeFlags.Union) !== 0
-                ? (type as ts.UnionType).types
-                : [type];
-        const canvases = new Set(["HTMLCanvasElement", "OffscreenCanvas"]);
+        const members = type.isUnion() ? type.types : [type];
         return (
             members.length > 0 &&
-            members.every((member) =>
-                canvases.has(member.getSymbol()?.getName() ?? ""),
-            )
+            members.every((member) => {
+                const name = member.getSymbol()?.getName();
+                return name !== undefined && CANVAS_TYPE_NAMES.has(name);
+            })
         );
     }
 
@@ -17644,7 +17546,7 @@ class Compiler
                 const cpp = `${owner.cpp}.parts[${part.index}]`;
                 const drag: Value = {
                     kind: "pointer-drag",
-                    cpp: `bbl::PointerDragHandle{${cpp}.value}`,
+                    cpp: `${handleCppType("pointer-drag")}{${cpp}.value}`,
                     engineCpp: engine,
                     dataType: { kind: "handle", handle: "pointer-drag" },
                 };
@@ -17695,8 +17597,8 @@ class Compiler
                         includes: {
                             kind: "data",
                             cpp:
-                                `std::function<bool(bbl::MeshHandle)>{` +
-                                `[&](bbl::MeshHandle mesh) { return ` +
+                                `std::function<bool(${handleCppType("mesh")})>{` +
+                                `[&](${handleCppType("mesh")} mesh) { return ` +
                                 `bbl::pointer_drag_has_collider(${engine}, ` +
                                 `${owner.cpp}, mesh); }}`,
                             dataType: {
@@ -19052,24 +18954,6 @@ class Compiler
         this.defineVariable(identifier, stored);
     }
 
-    private visibleValues(): Value[] {
-        const names = new Set<string>();
-        const result: Value[] = [];
-        for (
-            let index = this.variableScopes.length - 1;
-            index >= 0;
-            index -= 1
-        ) {
-            for (const binding of this.variableScopes[index]!.values()) {
-                if (!names.has(binding.name)) {
-                    names.add(binding.name);
-                    result.push(binding.value);
-                }
-            }
-        }
-        return result;
-    }
-
     /** Visit bindings and the generation facts nested inside their values. */
     private visitScopedValues(visitor: (value: Value) => void): void {
         const seen = new Set<Value>();
@@ -19894,14 +19778,6 @@ class Compiler
         generator.casters = [...casters];
     }
 
-    public shadowGeneratorHasRecordedCasters(generatorIndex: number): boolean {
-        const generator = this.shadowGenerators[generatorIndex];
-        return Boolean(
-            generator &&
-            (generator.casters.length > 0 || generator.dynamicCasters),
-        );
-    }
-
     public recordDynamicShadowCasters(generatorIndex: number): void {
         const generator = this.shadowGenerators[generatorIndex];
         if (!generator) {
@@ -20204,10 +20080,15 @@ class Compiler
         this.clusteredContainer = state;
     }
 
-    public reachFeature(feature: Feature, site?: ts.Node): void {
+    /**
+     * `site` is the scene-source node that reached the feature, or — for a
+     * feature an audited companion file reaches with no call in the scene
+     * to name — the already-formatted location of that file.
+     */
+    public reachFeature(feature: Feature, site?: ts.Node | string): void {
         if ((feature === "math:mat4-invert" && this.features.has("renderer:high-precision-matrix")) ||
             (feature === "renderer:high-precision-matrix" && this.features.has("math:mat4-invert"))) {
-            this.fail(site ?? this.sourceFile,
+            this.fail(typeof site === "object" ? site : this.sourceFile,
                 "mat4Invert currently requires Float32 Mat4 storage; high-precision matrix allocation is not supported by this scene-code intrinsic.");
         }
         // Every raw Web Audio node/asset feature is implemented by the same
@@ -20220,13 +20101,17 @@ class Compiler
         }
         this.features.add(feature);
         if (site !== undefined && !this.featureSites.has(feature)) {
-            const { file, line } = sourceLocation(site);
-            const fileName =
-                file === this.sourceFile
-                    ? this.options.fileName
-                    : file.fileName;
-            this.featureSites.set(feature, `${fileName}:${line}`);
+            this.featureSites.set(feature, this.featureSite(site));
         }
+    }
+
+    /** One reaching site as the `featureSites` record spells it. */
+    private featureSite(site: ts.Node | string): string {
+        if (typeof site === "string") return site;
+        const { file, line } = sourceLocation(site);
+        const fileName =
+            file === this.sourceFile ? this.options.fileName : file.fileName;
+        return `${fileName}:${line}`;
     }
 
     /**
@@ -20269,7 +20154,7 @@ class Compiler
                     "        engine.render_targets[resolve_target.value].surface_canvas = scene.surface_canvas;",
                     "        auto render_task = bbl::create_render_task(engine, scene, " +
                         'bbl::RenderTaskOptions{"default-render-task", target, scene.clear_color, true, ' +
-                        "bbl::CameraHandle{}, false, true, true, true});",
+                        `${handleCppType("camera")}{}, false, true, true, true});`,
                     "        bbl::add_task(scene, render_task);",
                     "        auto resolve_task = bbl::create_copy_to_texture_task(engine, scene, " +
                         'bbl::CopyTaskOptions{"default-resolve", bbl::render_target_texture(target), ' +
@@ -20339,19 +20224,6 @@ class Compiler
 
     public recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void {
         this.screenSpaceTasks.push(manifest);
-    }
-
-    public requireDefaultScene(node: ts.Node): Value {
-        const scenes = this.visibleValues().filter(
-            (value) => value.kind === "scene",
-        );
-        if (scenes.length !== 1) {
-            this.fail(
-                node,
-                "This intrinsic requires exactly one scene context.",
-            );
-        }
-        return scenes[0]!;
     }
 
     public expectArgumentCount(
@@ -20460,8 +20332,8 @@ class Compiler
     public compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined {
         if (!["enableDeviceLostSceneRecovery", "forceWebGpuDeviceLossForTesting", "disposeEngine"].includes(name)) return undefined;
         this.expectArgumentCount(call, 1, name === "enableDeviceLostSceneRecovery" ? 2 : 1);
-        const engine = this.compileValue(call.arguments[0]!);
-        this.expectKind(engine, "engine", call.arguments[0]!);
+        const engine = this.compileValue(argumentAt(call, 0));
+        this.expectKind(engine, "engine", argumentAt(call, 0));
         this.reachFeature("engine:device-recovery", call);
         if (name === "enableDeviceLostSceneRecovery") {
             if (this.engineHasStarted() || this.isRuntimeResourceConstruction()) this.fail(call, "Device recovery registration requires unconditional construction before engine startup.");

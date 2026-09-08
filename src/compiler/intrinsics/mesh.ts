@@ -1,10 +1,11 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 
 
 
 import type { CompileAsset, Value } from "../types.js";
 import type { CompilerSymbols } from "../symbols.js";
-import type { DataTypeRegistry } from "../data-types.js";
+import { handleCppType, type DataTypeRegistry } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { AssignmentContext } from "../assignments.js";
 import {
@@ -591,11 +592,11 @@ export function compileMeshIntrinsic(
         case "createCsg2FromMesh": {
             context.expectArgumentCount(call, 1, 2);
             if (!initializedCsg2Contexts.has(context)) context.fail(call, "CSG2 requires initializeCsg2Async before creating a solid.");
-            const mesh = context.compileValue(call.arguments[0]!);
-            context.expectKind(mesh, "mesh", call.arguments[0]!);
-            const builder = csgSourceCall(context, call.arguments[0]!);
+            const mesh = context.compileValue(argumentAt(call, 0));
+            context.expectKind(mesh, "mesh", argumentAt(call, 0));
+            const builder = csgSourceCall(context, argumentAt(call, 0));
             const source = builder && csgSourceFromCall(context, builder);
-            if (!source) context.fail(call.arguments[0]!, "createCsg2FromMesh requires an unchanged identity-transform createBox/createSphere with generation-known options; only preceding material assignments are permitted.");
+            if (!source) context.fail(argumentAt(call, 0), "createCsg2FromMesh requires an unchanged identity-transform createBox/createSphere with generation-known options; only preceding material assignments are permitted.");
             const materialSlot = call.arguments[1] ? staticNumberValue(context, context.unwrap(call.arguments[1])) : 0;
             const slotCount = csg2MaterialSlotCount();
             if (materialSlot === undefined || !Number.isInteger(materialSlot) || materialSlot < 0 || materialSlot >= slotCount) {
@@ -608,15 +609,15 @@ export function compileMeshIntrinsic(
         case "csg2Intersect":
         case "csg2Add": {
             context.expectArgumentCount(call, 2, 2);
-            const left = requireCsg2Solid(context, call.arguments[0]!);
-            const right = requireCsg2Solid(context, call.arguments[1]!);
+            const left = requireCsg2Solid(context, argumentAt(call, 0));
+            const right = requireCsg2Solid(context, argumentAt(call, 1));
             context.reachFeature("mesh:csg2", call);
             return { kind: "csg2-solid", cpp: "", csg2Solid: { plan: { op: importedName, left, right }, disposed: false } };
         }
         case "disposeCsg2": {
             context.expectArgumentCount(call, 1, 1);
-            const value = context.compileValue(call.arguments[0]!);
-            context.expectKind(value, "csg2-solid", call.arguments[0]!);
+            const value = context.compileValue(argumentAt(call, 0));
+            context.expectKind(value, "csg2-solid", argumentAt(call, 0));
             if (!value.csg2Solid) context.fail(call, "CSG2 disposal requires a generation-known solid.");
             value.csg2Solid.disposed = true;
             context.reachFeature("mesh:csg2", call);
@@ -626,11 +627,11 @@ export function compileMeshIntrinsic(
         case "createMeshesFromCsg2": {
             const partitioned = importedName === "createMeshesFromCsg2";
             context.expectArgumentCount(call, partitioned ? 3 : 2, partitioned ? 4 : 3);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const plan = requireCsg2Solid(context, call.arguments[1]!);
-            const materials = partitioned ? context.handleCollections.staticHandleList(call.arguments[2]!) : undefined;
-            if (partitioned && !materials) context.fail(call.arguments[2]!, "CSG2 material partitioning requires a generation-known material list.");
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const plan = requireCsg2Solid(context, argumentAt(call, 1));
+            const materials = partitioned ? context.handleCollections.staticHandleList(argumentAt(call, 2)) : undefined;
+            if (partitioned && !materials) context.fail(argumentAt(call, 2), "CSG2 material partitioning requires a generation-known material list.");
             for (const material of materials ?? []) {
                 context.expectKind(material.value, "material", material.node);
                 context.expectSameEngine(engine, material.value, material.node);
@@ -677,12 +678,12 @@ export function compileMeshIntrinsic(
             context.reachFeature("math:look-direction", call);
             const forward = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "look_forward",
             );
             const up = compileVec3Temporary(
                 context,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "look_up",
             );
             const temporary =
@@ -701,12 +702,12 @@ export function compileMeshIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const left = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "vec3_left",
             );
             const right = compileVec3Temporary(
                 context,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "vec3_right",
             );
             const temporary =
@@ -729,15 +730,15 @@ export function compileMeshIntrinsic(
             context.expectArgumentCount(call, 3, 3);
             const left = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "vec3_left",
             );
             const right = compileVec3Temporary(
                 context,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "vec3_right",
             );
-            const output = context.compileValue(call.arguments[2]!);
+            const output = context.compileValue(argumentAt(call, 2));
             const components = binaryVec3Components(
                 importedName,
                 left,
@@ -746,7 +747,7 @@ export function compileMeshIntrinsic(
             writeVec3Lanes(
                 context,
                 output,
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 components,
             );
             return output;
@@ -755,11 +756,11 @@ export function compileMeshIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const vector = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "scaled_vec3",
             );
             const scalar = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const temporary =
@@ -777,21 +778,21 @@ export function compileMeshIntrinsic(
             context.expectArgumentCount(call, 3, 3);
             const vector = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "scaled_vec3",
             );
             const scalarCpp = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const scalar =
                 context.allocateTemporaryCppName("vec3_scale");
             context.emit(`const double ${scalar} = ${scalarCpp};`);
-            const output = context.compileValue(call.arguments[2]!);
+            const output = context.compileValue(argumentAt(call, 2));
             writeVec3Lanes(
                 context,
                 output,
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 [
                     `${vector}.x * ${scalar}`,
                     `${vector}.y * ${scalar}`,
@@ -804,26 +805,26 @@ export function compileMeshIntrinsic(
             context.expectArgumentCount(call, 4, 4);
             const left = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "lerp_left",
             );
             const right = compileVec3Temporary(
                 context,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "lerp_right",
             );
             const amountCpp = context.compileNumber(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "double",
             );
             const amount =
                 context.allocateTemporaryCppName("lerp_amount");
             context.emit(`const double ${amount} = ${amountCpp};`);
-            const output = context.compileValue(call.arguments[3]!);
+            const output = context.compileValue(argumentAt(call, 3));
             writeVec3Lanes(
                 context,
                 output,
-                call.arguments[3]!,
+                argumentAt(call, 3),
                 [
                     `${left}.x + (${right}.x - ${left}.x) * ${amount}`,
                     `${left}.y + (${right}.y - ${left}.y) * ${amount}`,
@@ -836,7 +837,7 @@ export function compileMeshIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const vector = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "length_vec3",
             );
             return {
@@ -848,12 +849,12 @@ export function compileMeshIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const left = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "dot_left",
             );
             const right = compileVec3Temporary(
                 context,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "dot_right",
             );
             return {
@@ -867,15 +868,15 @@ export function compileMeshIntrinsic(
         case "setMeshVisible":
         case "setSubtreeVisible": {
             context.expectArgumentCount(call, 2, 2);
-            const mesh = context.compileValue(call.arguments[0]!);
-            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const mesh = context.compileValue(argumentAt(call, 0));
+            context.expectKind(mesh, "mesh", argumentAt(call, 0));
             context.reachFeature("mesh:visible", call);
             return {
                 kind: "void",
                 cpp:
                     `bbl::set_mesh_visible(` +
                     `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
-                    `${context.compileCondition(call.arguments[1]!)})`,
+                    `${context.compileCondition(argumentAt(call, 1))})`,
             };
         }
         case "mat4Invert": {
@@ -884,7 +885,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("math:mat4-invert", call);
             return {
                 kind: "data",
-                cpp: `bbl::upstream::mat4_invert_array(${context.compileTypedArrayArgument(call.arguments[0]!, "f32array")})`,
+                cpp: `bbl::upstream::mat4_invert_array(${context.compileTypedArrayArgument(argumentAt(call, 0), "f32array")})`,
                 dataType: { kind: "optional", inner: { kind: "f32array" } },
                 freshData: true,
             };
@@ -938,7 +939,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("math:normalize-vec3", call);
             const input = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "normalize_input",
             );
             const temporary =
@@ -956,14 +957,14 @@ export function compileMeshIntrinsic(
             context.expectArgumentCount(call, 2, 3);
             const input = compileVec3Temporary(
                 context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "normalize_input",
             );
-            const output = context.compileValue(call.arguments[1]!);
+            const output = context.compileValue(argumentAt(call, 1));
             const lanes = writableVec3Lanes(
                 context,
                 output,
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const epsilonCpp = call.arguments[2]
                 ? context.compileNumber(call.arguments[2], "double")
@@ -981,7 +982,7 @@ export function compileMeshIntrinsic(
             writeVec3Lanes(
                 context,
                 output,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 ["0.0", "0.0", "0.0"],
             );
             context.emit("} else {");
@@ -1034,12 +1035,12 @@ export function compileMeshIntrinsic(
         }
         case "setParent": {
             context.expectArgumentCount(call, 2, 2);
-            const child = context.compileValue(call.arguments[0]!);
-            const parent = context.compileValue(call.arguments[1]!);
+            const child = context.compileValue(argumentAt(call, 0));
+            const parent = context.compileValue(argumentAt(call, 1));
 
             if (child.kind !== "mesh" && child.kind !== "asset-root") {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     `setParent's reached scene-graph slice accepts a Mesh or imported root, received ${child.kind}.`,
                 );
             }
@@ -1049,7 +1050,7 @@ export function compileMeshIntrinsic(
                 parent.kind !== "json-null"
             ) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     `setParent's reached scene-graph slice accepts a Mesh, TransformNode, or null parent, received ${parent.kind}.`,
                 );
             }
@@ -1069,7 +1070,7 @@ export function compileMeshIntrinsic(
             if (child.kind === "asset-root") {
                 context.markAssetRootReparented(
                     child,
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 );
                 return {
                     kind: "void",
@@ -1084,14 +1085,14 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::set_mesh_parent(` +
                     `${context.requireEngine(child, call)}, ${child.cpp}, ` +
-                    `${parent.kind === "json-null" ? "bbl::MeshHandle{}" : parent.cpp})`,
+                    `${parent.kind === "json-null" ? `${handleCppType("mesh")}{}` : parent.cpp})`,
             };
         }
 
         case "cloneTransformNode": {
             context.expectArgumentCount(call, 1, 1);
             const source = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (source.kind === "mesh") {
                 context.reachFeature("mesh:clone", call);
@@ -1116,7 +1117,7 @@ export function compileMeshIntrinsic(
             }
             if (source.kind !== "asset-root") {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "cloneTransformNode is lowered for an imported glTF root hierarchy; another node shape has no native hierarchy representation.",
                 );
             }
@@ -1134,15 +1135,15 @@ export function compileMeshIntrinsic(
         case "createMeshFromData": {
             context.expectArgumentCount(call, 5, 9);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // The record carries the pinned Mesh name; scene code finds
             // meshes by it.
-            const name = context.compileValue(call.arguments[1]!);
+            const name = context.compileValue(argumentAt(call, 1));
             if (
                 name.kind !== "string" &&
                 !(
@@ -1151,23 +1152,23 @@ export function compileMeshIntrinsic(
                 )
             ) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     `Mesh names must be strings, received ${name.kind}.`,
                 );
             }
             const positions =
                 context.compileTypedArrayArgument(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "f32array",
                 );
             const normals =
                 context.compileTypedArrayArgument(
-                    call.arguments[3]!,
+                    argumentAt(call, 3),
                     "f32array",
                 );
             const indices =
                 context.compileTypedArrayArgument(
-                    call.arguments[4]!,
+                    argumentAt(call, 4),
                     "u32array",
                 );
             // The demo modules skip optional slots with literal
@@ -1267,13 +1268,13 @@ export function compileMeshIntrinsic(
 
         case "updateMeshPositions": {
             context.expectArgumentCount(call, 3, 6);
-            const engine = context.compileValue(call.arguments[0]!);
-            const mesh = context.compileValue(call.arguments[1]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            context.expectKind(mesh, "mesh", call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            const mesh = context.compileValue(argumentAt(call, 1));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            context.expectKind(mesh, "mesh", argumentAt(call, 1));
             context.expectSameEngine(engine, mesh, call);
             const positions = context.compileTypedArrayArgument(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "f32array",
             );
             const vertexOffset = call.arguments[3]
@@ -1297,19 +1298,19 @@ export function compileMeshIntrinsic(
 
         case "createHierarchyInstancePool": {
             context.expectArgumentCount(call, 2, 2);
-            const root = context.compileValue(call.arguments[0]!);
+            const root = context.compileValue(argumentAt(call, 0));
             if (
                 root.kind !== "asset-root" ||
                 !root.assetRootClone
             ) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "createHierarchyInstancePool currently lowers a cloned imported glTF root hierarchy.",
                 );
             }
             context.assertAssetRootWritable(root, call);
             const capacity = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const engine = context.requireEngine(root, call);
@@ -1324,7 +1325,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:parenting", call);
             context.recordThinInstanceMesh(undefined);
             context.emit(
-                `const bbl::HierarchyInstancePoolHandle ${pool} = ` +
+                `const ${handleCppType("hierarchy-instance-pool")} ${pool} = ` +
                     `bbl::create_hierarchy_instance_pool(` +
                     `${engine}, ${root.cpp}, ${capacity});`,
             );
@@ -1344,17 +1345,17 @@ export function compileMeshIntrinsic(
                 updatesExisting ? 3 : 2,
                 updatesExisting ? 3 : 2,
             );
-            const pool = context.compileValue(call.arguments[0]!);
+            const pool = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 pool,
                 "hierarchy-instance-pool",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const index = updatesExisting
-                ? context.compileNumber(call.arguments[1]!, "double")
+                ? context.compileNumber(argumentAt(call, 1), "double")
                 : undefined;
             const matrix = context.compileTypedArrayArgument(
-                call.arguments[updatesExisting ? 2 : 1]!,
+                argumentAt(call, updatesExisting ? 2 : 1),
                 "f32array",
             );
             const invocation = updatesExisting
@@ -1376,14 +1377,14 @@ export function compileMeshIntrinsic(
         case "setHierarchyInstanceCount":
         case "removeHierarchyInstance": {
             context.expectArgumentCount(call, 2, 2);
-            const pool = context.compileValue(call.arguments[0]!);
+            const pool = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 pool,
                 "hierarchy-instance-pool",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const value = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const helper =
@@ -1401,11 +1402,11 @@ export function compileMeshIntrinsic(
         case "setThinInstances": {
             context.expectArgumentCount(call, 3, 3);
             const mesh =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 mesh,
                 "mesh",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // The pinned setThinInstances adopts the caller's array by
             // reference so setThinInstanceCount/flushThinInstances can
@@ -1420,11 +1421,11 @@ export function compileMeshIntrinsic(
             // instances from a literal identity matrix inside the setup
             // block, and that pool is what gives it a frame-loop lifetime.
             const matricesArgument = context.unwrap(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const matricesExpression =
                 context.compileTypedArrayArgument(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "f32array",
                 );
             let matrices = matricesExpression;
@@ -1443,7 +1444,7 @@ export function compileMeshIntrinsic(
                     staticFloatArrayArgument(context, matricesArgument);
                 if (!context.isEntryBodyScope() && !constantPool) {
                     context.fail(
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                         "setThinInstances takes a named Float32Array binding, or a constant one, inside a block; the mesh keeps referencing it for the whole frame loop.",
                     );
                 }
@@ -1456,7 +1457,7 @@ export function compileMeshIntrinsic(
                 );
             }
             const count = context.compileNumber(
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             context.reachFeature("mesh:thin-instances", call);
             context.recordThinInstanceMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
@@ -1476,15 +1477,15 @@ export function compileMeshIntrinsic(
             // `setThinInstances` needs.
             context.expectArgumentCount(call, 2, 2);
             const mesh =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 mesh,
                 "mesh",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const colors =
                 context.compileTypedArrayArgument(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "f32array",
                 );
             context.reachFeature("mesh:thin-instance-colors", call);
@@ -1502,14 +1503,14 @@ export function compileMeshIntrinsic(
         case "setThinInstanceCount": {
             context.expectArgumentCount(call, 2, 2);
             const mesh =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 mesh,
                 "mesh",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const count = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.reachFeature("mesh:thin-instances", call);
             context.reachFeature("mesh:thin-instances-dynamic", call);
@@ -1524,14 +1525,14 @@ export function compileMeshIntrinsic(
 
         case "setThinInstanceMatrix": {
             context.expectArgumentCount(call, 3, 3);
-            const mesh = context.compileValue(call.arguments[0]!);
-            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const mesh = context.compileValue(argumentAt(call, 0));
+            context.expectKind(mesh, "mesh", argumentAt(call, 0));
             const index = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             const matrix = context.compileTypedArrayArgument(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "f32array",
             );
             context.reachFeature("mesh:thin-instances-dynamic", call);
@@ -1548,11 +1549,11 @@ export function compileMeshIntrinsic(
         case "flushThinInstances": {
             context.expectArgumentCount(call, 1, 1);
             const mesh =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 mesh,
                 "mesh",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("mesh:thin-instances", call);
             context.reachFeature("mesh:thin-instances-dynamic", call);
@@ -1571,10 +1572,10 @@ export function compileMeshIntrinsic(
             // `matrices.set(matrix, index * 16)` reads it once -- so an
             // inline `mat4Identity()` needs no named binding here.
             context.expectArgumentCount(call, 2, 2);
-            const mesh = context.compileValue(call.arguments[0]!);
-            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const mesh = context.compileValue(argumentAt(call, 0));
+            context.expectKind(mesh, "mesh", argumentAt(call, 0));
             const matrix = context.compileTypedArrayArgument(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "f32array",
             );
             context.reachFeature("mesh:thin-instances", call);
@@ -1592,10 +1593,10 @@ export function compileMeshIntrinsic(
 
         case "removeThinInstance": {
             context.expectArgumentCount(call, 2, 2);
-            const mesh = context.compileValue(call.arguments[0]!);
-            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const mesh = context.compileValue(argumentAt(call, 0));
+            context.expectKind(mesh, "mesh", argumentAt(call, 0));
             const index = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             context.reachFeature("mesh:thin-instances", call);
@@ -1619,8 +1620,8 @@ export function compileMeshIntrinsic(
             // the flag lands on the record as an explicit marker and the
             // compute culler itself is a recorded omission.
             context.expectArgumentCount(call, 1, 2);
-            const mesh = context.compileValue(call.arguments[0]!);
-            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const mesh = context.compileValue(argumentAt(call, 0));
+            context.expectKind(mesh, "mesh", argumentAt(call, 0));
             const enabled = call.arguments[1]
                 ? context.compileCondition(call.arguments[1])
                 : pinnedParameterFlag(
@@ -1683,7 +1684,7 @@ export function compileMeshIntrinsic(
             // engine the way every light factory does.
             context.expectArgumentCount(call, 1, 11);
             const engine = context.requireDefaultEngine(call);
-            const name = context.compileValue(call.arguments[0]!);
+            const name = context.compileValue(argumentAt(call, 0));
             if (
                 name.kind !== "string" &&
                 !(
@@ -1692,7 +1693,7 @@ export function compileMeshIntrinsic(
                 )
             ) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     `TransformNode names must be strings, received ${name.kind}.`,
                 );
             }
@@ -1739,11 +1740,11 @@ export function compileMeshIntrinsic(
             const sceneMeshIndex = context.recordSceneMesh("box");
             context.expectArgumentCount(call, 1, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options = call.arguments[1]
                 ? context.compileBoxOptions(call.arguments[1])
@@ -1765,11 +1766,11 @@ export function compileMeshIntrinsic(
             const sceneMeshIndex = context.recordSceneMesh("ground");
             context.expectArgumentCount(call, 1, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options = call.arguments[1]
                 ? context.compileGroundOptions(call.arguments[1])
@@ -1793,14 +1794,14 @@ export function compileMeshIntrinsic(
             const sceneMeshIndex = context.recordSceneMesh("ground");
             context.expectArgumentCount(call, 2, 3);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const asset = context.registerAsset(
-                context.compileStringLiteral(call.arguments[1]!),
+                context.compileStringLiteral(argumentAt(call, 1)),
                 "texture",
             );
             const options = call.arguments[2]
@@ -1834,11 +1835,11 @@ export function compileMeshIntrinsic(
             const sceneMeshIndex = context.recordSceneMesh("plane");
             context.expectArgumentCount(call, 1, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options = call.arguments[1]
                 ? context.compilePlaneOptions(call.arguments[1])
@@ -1860,11 +1861,11 @@ export function compileMeshIntrinsic(
             const sceneMeshIndex = context.recordSceneMesh("sphere");
             context.expectArgumentCount(call, 1, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options = call.arguments[1]
                 ? context.compileSphereOptions(call.arguments[1])
@@ -1891,14 +1892,14 @@ export function compileMeshIntrinsic(
         // in `src/pinned-csg.ts`.
         case "createCsgFromMesh": {
             context.expectArgumentCount(call, 1, 2);
-            const mesh = context.compileValue(call.arguments[0]!);
-            context.expectKind(mesh, "mesh", call.arguments[0]!);
-            const builder = csgSourceCall(context, call.arguments[0]!);
+            const mesh = context.compileValue(argumentAt(call, 0));
+            context.expectKind(mesh, "mesh", argumentAt(call, 0));
+            const builder = csgSourceCall(context, argumentAt(call, 0));
             const source =
                 builder && csgSourceFromCall(context, builder);
             if (!source) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "createCsgFromMesh replays the pinned factory that " +
                         "built the mesh's retained CPU geometry and bakes " +
                         "its world matrix into every polygon, so the " +
@@ -1915,7 +1916,7 @@ export function compileMeshIntrinsic(
                 : 0;
             if (materialSlot === undefined) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "A CSG material slot tags every polygon the solid " +
                         "carries, so it is generation-known.",
                 );
@@ -1935,8 +1936,8 @@ export function compileMeshIntrinsic(
             const op = csgBooleanNames.find(
                 (name) => name === importedName,
             )!;
-            const left = requireCsgSolid(context, call.arguments[0]!);
-            const right = requireCsgSolid(context, call.arguments[1]!);
+            const left = requireCsgSolid(context, argumentAt(call, 0));
+            const right = requireCsgSolid(context, argumentAt(call, 1));
             context.reachFeature("mesh:csg", call);
             return {
                 kind: "csg-solid",
@@ -1949,13 +1950,13 @@ export function compileMeshIntrinsic(
 
         case "createMeshFromCsg": {
             context.expectArgumentCount(call, 2, 3);
-            const engine = context.compileValue(call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const plan = requireCsgSolid(context, call.arguments[1]!);
+            const plan = requireCsgSolid(context, argumentAt(call, 1));
             // `createMeshFromCsg(engine, solid, name = "csg")`: the name
             // reaches `createMeshFromData` and nothing else, so it is the
             // mesh record's name here exactly as it is upstream.
@@ -1964,7 +1965,7 @@ export function compileMeshIntrinsic(
                 : undefined;
             if (name && name.staticString === undefined) {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "A CSG mesh's name is generation-known: the solid is " +
                         "replayed at generation and the mesh it produces " +
                         "is named there.",
@@ -2069,15 +2070,15 @@ export function compileMeshIntrinsic(
         case "createMorphTargets": {
             context.expectArgumentCount(call, 4, 4);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const targets =
                 context.expectStaticArrayLiteral(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             if (targets.elements.length !== 1) {
                 context.fail(
@@ -2131,7 +2132,7 @@ export function compileMeshIntrinsic(
                           "f32array",
                       );
             const weights = context.unwrap(
-                call.arguments[3]!,
+                argumentAt(call, 3),
             );
             let weight = "0.0f";
             if (
@@ -2167,7 +2168,7 @@ export function compileMeshIntrinsic(
                     normalsCpp: normalValue,
                     vertexCountCpp:
                         context.compileNumber(
-                            call.arguments[2]!,
+                            argumentAt(call, 2),
                         ),
                     weightCpp: weight,
                 },
@@ -2177,18 +2178,18 @@ export function compileMeshIntrinsic(
         case "setMorphTargetWeights": {
             context.expectArgumentCount(call, 3, 3);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const morph =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 morph,
                 "morph-targets",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             if (
                 morph.engineCpp !==
@@ -2202,13 +2203,13 @@ export function compileMeshIntrinsic(
             const mesh = morph.morphTarget?.meshCpp;
             if (!mesh) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "Morph targets must be attached to a mesh before their weights are updated.",
                 );
             }
             const weights =
                 context.compileTypedArrayArgument(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "f32array",
                 );
             context.reachFeature("mesh:morph-targets", call);
@@ -2233,14 +2234,14 @@ export function compileMeshIntrinsic(
             });
             context.expectArgumentCount(call, 2, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options = context.expectObjectLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             validateObjectProperties(
                 context,
@@ -2259,7 +2260,7 @@ export function compileMeshIntrinsic(
             );
             if (!pathExpression || !radius || !tessellation) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "Reached tubes name their path, radius and tessellation explicitly.",
                 );
             }
@@ -2294,9 +2295,9 @@ export function compileMeshIntrinsic(
                 hasColors: false,
             });
             context.expectArgumentCount(call, 2, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const options = context.expectObjectLiteral(call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const options = context.expectObjectLiteral(argumentAt(call, 1));
             validateObjectProperties(
                 context,
                 options,
@@ -2308,7 +2309,7 @@ export function compileMeshIntrinsic(
             const curve = context.objectProperty(options, "path");
             if (!shape || !curve) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "An extrusion needs its shape and its path.",
                 );
             }
@@ -2355,9 +2356,9 @@ export function compileMeshIntrinsic(
                 hasColors: false,
             });
             context.expectArgumentCount(call, 2, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const options = context.expectObjectLiteral(call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const options = context.expectObjectLiteral(argumentAt(call, 1));
             validateObjectProperties(
                 context,
                 options,
@@ -2368,7 +2369,7 @@ export function compileMeshIntrinsic(
             const pathArray = context.objectProperty(options, "pathArray");
             if (!pathArray) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "A ribbon needs its pathArray.",
                 );
             }
@@ -2396,8 +2397,8 @@ export function compileMeshIntrinsic(
                 hasColors: false,
             });
             context.expectArgumentCount(call, 1, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             const polyhedronDefault = (local: string): number =>
                 pinnedMeshOptionDefault(
                     "src/mesh/create-polyhedron.ts",
@@ -2520,8 +2521,8 @@ export function compileMeshIntrinsic(
                 hasColors: false,
             });
             context.expectArgumentCount(call, 1, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             const cylinderDefault = (local: string): string =>
                 doubleLiteral(
                     pinnedMeshOptionDefault(
@@ -2614,8 +2615,8 @@ export function compileMeshIntrinsic(
                 hasColors: false,
             });
             context.expectArgumentCount(call, 1, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             // The pin's own option order, which is the record's.
             const fields = [
                 "height",
@@ -2678,8 +2679,8 @@ export function compileMeshIntrinsic(
                 hasColors: false,
             });
             context.expectArgumentCount(call, 1, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             const fields = ["radius", "tessellation", "arc"] as const;
             const resolved: Record<string, string> = Object.fromEntries(
                 fields.map((name) => [
@@ -2738,8 +2739,8 @@ export function compileMeshIntrinsic(
                 hasColors: false,
             });
             context.expectArgumentCount(call, 1, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             const fields = [
                 "radius",
                 "tube",
@@ -2796,11 +2797,11 @@ export function compileMeshIntrinsic(
             const sceneMeshIndex = context.recordSceneMesh("torus");
             context.expectArgumentCount(call, 1, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options = call.arguments[1]
                 ? context.compileTorusOptions(call.arguments[1])
@@ -2836,7 +2837,7 @@ function staticFloatArrayArgument(
 ): boolean {
     const literal = ts.isNewExpression(argument) &&
         argument.arguments?.length === 1
-        ? context.resolveStaticExpression(argument.arguments[0]!)
+        ? context.resolveStaticExpression(argumentAt(argument, 0))
         : context.resolveStaticExpression(argument);
     if (!ts.isArrayLiteralExpression(literal)) return false;
     return literal.elements.every((element) => {

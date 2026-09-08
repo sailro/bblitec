@@ -177,19 +177,28 @@ inline bool request_renderer_restart_if_scene_set_changed(
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /**
  * Native presents every browser canvas through one operating-system window.
- * Retained layout supplies each canvas's actual rectangle. The scene's render
- * targets use that canvas extent; only presentation applies its page offset.
+ * Retained layout supplies each canvas's actual rectangle when the page
+ * attached the canvas to the projected document (scenes 227 and 228). A
+ * canvas the source created and appended to host chrome outside that
+ * document -- antigravity-racer's second player -- is never laid out, so
+ * the primary scene and every registered auxiliary surface scene without a
+ * rectangle share the window in equal horizontal panes, in registration
+ * order. The scene's render targets use the pane extent; only presentation
+ * applies its offset.
  */
-inline std::optional<PixelViewport> surface_canvas_pane(
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {
+    if (canvas.value >= engine.ui_elements.size()) throw std::runtime_error("Invalid surface canvas.");
+    const auto& rect = engine.ui_elements[canvas.value].client_rect;
+    return rect.width > 0.0 && rect.height > 0.0;
+}
+
+inline PixelViewport laid_out_canvas_pane(
     const Engine& engine,
-    std::optional<UiElementHandle> surface_canvas,
+    UiElementHandle canvas,
     std::uint32_t target_width,
     std::uint32_t target_height) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    if (!surface_canvas) return std::nullopt;
-    const auto canvas = surface_canvas->value;
-    if (canvas >= engine.ui_elements.size()) throw std::runtime_error("Invalid surface canvas.");
-    const auto& rect = engine.ui_elements[canvas].client_rect;
+    const auto& rect = engine.ui_elements[canvas.value].client_rect;
     const double scale_x = target_width / engine.canvas_client_width;
     const double scale_y = target_height / engine.canvas_client_height;
     return PixelViewport{
@@ -198,15 +207,85 @@ inline std::optional<PixelViewport> surface_canvas_pane(
         std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.width * scale_x)),
         std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.height * scale_y)),
     };
+}
+
+/** An auxiliary registered scene whose surface canvas retained layout never placed. */
+inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {
+    return scene.surface_canvas.has_value() &&
+        !surface_canvas_laid_out(engine, *scene.surface_canvas);
+}
+#endif
+
+/**
+ * The equal pane of `scene` among the primary scene and the unplaced
+ * auxiliary surface scenes, or nullopt when there is no such split (one
+ * pane only) or `scene` is not one of them (a utility-layer overlay).
+ */
+inline std::optional<PixelViewport> equal_surface_pane(
+    const Engine& engine,
+    const Scene& scene,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (engine.registered_scenes.empty()) return std::nullopt;
+    std::size_t pane_count = 1;
+    std::size_t pane_index = npos;
+    const std::shared_ptr<Scene>& primary = engine.registered_scenes.front();
+    if (primary && primary->shares_identity(scene)) pane_index = 0;
+    for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
+        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+        if (!registered || !unplaced_surface_scene(engine, *registered)) continue;
+        if (registered->shares_identity(scene)) pane_index = pane_count;
+        ++pane_count;
+    }
+    if (pane_count == 1 || pane_index == npos) return std::nullopt;
+    const std::uint64_t width = target_width;
+    const auto x0 = static_cast<std::int32_t>(width * pane_index / pane_count);
+    const auto x1 = static_cast<std::int32_t>(width * (pane_index + 1) / pane_count);
+    return PixelViewport{
+        x0,
+        0,
+        std::max<std::int32_t>(1, x1 - x0),
+        std::max<std::int32_t>(1, static_cast<std::int32_t>(target_height)),
+    };
 #else
-    (void)engine; (void)surface_canvas; (void)target_width; (void)target_height;
+    (void)engine; (void)scene; (void)target_width; (void)target_height;
     return std::nullopt;
 #endif
 }
 
 inline std::optional<PixelViewport> scene_surface_pane(
     const Engine& engine, const Scene& scene, std::uint32_t width, std::uint32_t height) {
-    return surface_canvas_pane(engine, scene.surface_canvas, width, height);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (scene.surface_canvas && surface_canvas_laid_out(engine, *scene.surface_canvas)) {
+        return laid_out_canvas_pane(engine, *scene.surface_canvas, width, height);
+    }
+#endif
+    return equal_surface_pane(engine, scene, width, height);
+}
+
+/** The pane of the registered scene presenting through `surface_canvas`. */
+inline std::optional<PixelViewport> surface_canvas_pane(
+    const Engine& engine,
+    std::optional<UiElementHandle> surface_canvas,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (!surface_canvas) return std::nullopt;
+    if (surface_canvas_laid_out(engine, *surface_canvas)) {
+        return laid_out_canvas_pane(engine, *surface_canvas, target_width, target_height);
+    }
+    for (std::size_t i = 0; i < engine.registered_scenes.size(); ++i) {
+        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+        if (!registered || !registered->surface_canvas) continue;
+        if (registered->surface_canvas->value != surface_canvas->value) continue;
+        return equal_surface_pane(engine, *registered, target_width, target_height);
+    }
+    return std::nullopt;
+#else
+    (void)engine; (void)surface_canvas; (void)target_width; (void)target_height;
+    return std::nullopt;
+#endif
 }
 
 inline std::pair<std::uint32_t, std::uint32_t> surface_target_extent(
@@ -478,9 +557,7 @@ inline std::size_t variant_pipeline_key(
  * generators whose factories returned different formats must not share a
  * pipeline. Folding the generator's ESM ordinal into the VARIANT rather
  * than into the key is what keeps that fold independent of how many flags
- * `variant_pipeline_key` happens to pack -- the arithmetic used to be
- * restated per call site, each with its own list of `false`s to keep in
- * step.
+ * `variant_pipeline_key` happens to pack.
  */
 inline std::size_t esm_keyed_variant(
     std::size_t variant,
@@ -1399,13 +1476,15 @@ struct PickBillboardCandidate {
  * consumes its ids"). Both halves live here; each backend keeps only its
  * pipeline and bind mechanics.
  */
-inline std::vector<PickBillboardCandidate>
-collect_pick_billboard_candidates(
+inline void collect_pick_billboard_candidates(
     const Engine& engine,
     const Scene& scene,
     std::vector<PickRange>& ranges,
-    std::uint32_t& next_id) {
-    std::vector<PickBillboardCandidate> candidates;
+    std::uint32_t& next_id,
+    // The caller's scratch, cleared here and refilled: a pick runs per
+    // pointer event, so the list keeps its capacity across picks.
+    std::vector<PickBillboardCandidate>& candidates) {
+    candidates.clear();
     for (std::size_t index = 0; index < scene.billboard_systems.size();
          ++index) {
         const BillboardSystemHandle handle =
@@ -1430,7 +1509,6 @@ collect_pick_billboard_candidates(
              system.orientation,
              system.axis});
     }
-    return candidates;
 }
 
 /** `encodeIdToColor`: the id's three bytes as unit floats. */
@@ -3979,6 +4057,37 @@ inline BonePaletteLayout bone_palette_layout(std::uint32_t bones) {
     const std::uint32_t width = bones * 4u;
     return BonePaletteLayout{width, 1u, width * 16u};
 }
+
+/** A palette texture whose bytes no record version has been streamed to yet. */
+inline constexpr std::uint64_t unsynced_bone_palette = ~std::uint64_t{0};
+
+/**
+ * One mesh's pinned bone palette, brought in step with its record: the
+ * texture is rebuilt when the bone count moved and rewritten when the
+ * palette's version did. `MeshRecord::bone_matrices` already holds the
+ * pin's `invMeshWorld * jointWorld * IBM` product, so the bytes travel
+ * unchanged. The backend supplies its texture creation
+ * (`recreate(layout)`, releasing the previous texture) and its upload
+ * (`upload(floats, layout)`).
+ */
+template <typename GpuMesh, typename Recreate, typename Upload>
+inline void sync_pinned_bone_palette(
+    GpuMesh& mesh,
+    const MeshRecord& record,
+    Recreate&& recreate,
+    Upload&& upload) {
+    const auto bones = static_cast<std::uint32_t>(record.bone_matrices.size());
+    if (bones == 0) return;
+    const BonePaletteLayout palette = bone_palette_layout(bones);
+    if (mesh.pinned_bone_count != bones) {
+        recreate(palette);
+        mesh.pinned_bone_count = bones;
+        mesh.pinned_bone_version = unsynced_bone_palette;
+    }
+    if (mesh.pinned_bone_version == record.bone_matrices_version) return;
+    upload(record.bone_matrices.data()->data(), palette);
+    mesh.pinned_bone_version = record.bone_matrices_version;
+}
 #endif
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
@@ -4472,9 +4581,9 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
     // src/loader-env/rgbd-decode.ts: the pin decodes into a
     // `texture_storage_2d<rgba16float, write>`, so a half is the decode's
     // result type, not a packing step a caller may skip. Returning halves
-    // is what keeps every caller on the pin's precision -- the SDL_GPU
-    // BRDF-LUT path used to upload these as RGBA32Float while the cube and
-    // both Dawn paths packed to half, a silent backend delta.
+    // is what keeps every caller on the pin's precision: an RGBA32Float
+    // upload on one path beside a half-packed one on another would be a
+    // silent backend delta.
     if (texture_data.bytes.empty()) {
         width = height = 1;
         return {0, 0, 0, float_to_half(1.0f)};
@@ -5841,6 +5950,32 @@ inline void require_geometry_target_count(
 }
 
 /**
+ * The colour formats a geometry task's pipeline renders into, in
+ * attachment order: one per composed class and, when the task keeps
+ * `emitColor`'s output, the frame's colour format last. `format` maps a
+ * class onto the backend's own format enum and `trailing` is that
+ * backend's frame colour format, so both backends build their MRT target
+ * descriptions from this one list.
+ */
+template <typename Format, typename FormatOf>
+inline std::vector<Format> geometry_color_target_formats(
+    const FrameTaskRecord& task,
+    std::size_t entry_color_target_count,
+    const char* family,
+    FormatOf&& format,
+    Format trailing) {
+    const GeometryTargetClasses classes = geometry_target_classes(task);
+    require_geometry_target_count(classes, entry_color_target_count, family);
+    std::vector<Format> formats;
+    formats.reserve(classes.attachments.size() + 1u);
+    for (const TextureFormatClass format_class : classes.attachments) {
+        formats.push_back(format(format_class));
+    }
+    if (classes.trailing_output) formats.push_back(trailing);
+    return formats;
+}
+
+/**
  * The skybox stage in sub-draw order: load-env.ts pushes the solid cube
  * before the DDS and .env arms, every background renderable carries
  * order 0, and the image-skybox cube draws after the environment arm.
@@ -6640,28 +6775,27 @@ inline void print_memory_frame_profile(
 /**
  * Refuse a flag this backend does not implement rather than rendering
  * something else: a silent no-op would be measured as a backend delta.
- * `supported_backend` names the backend the refusal redirects to, so the
- * error text cannot claim SDL_GPU support from a backend that has none.
+ * `backend` is the caller's own label; the text names no other backend,
+ * because which one implements a diagnostic is that backend's to state.
  */
 inline void reject_unsupported_frame_options(
     const FrameOptions& options,
     const char* backend,
     bool supports_single_sample,
-    bool supports_copy_task,
-    const char* supported_backend = "SDL_GPU") {
+    bool supports_copy_task) {
     if (options.single_sample && !supports_single_sample) {
         throw std::runtime_error(
             std::string("BBLITE_MSAA is not supported by the ") +
             backend +
-            " backend; run the single-sample diagnostic through " +
-            supported_backend + ".");
+            " backend; run the single-sample diagnostic through a scene "
+            "renderer that supports it.");
     }
     if (!options.copy_task_filter.empty() && !supports_copy_task) {
         throw std::runtime_error(
             std::string("BBLITE_COPY_TASK is not supported by the ") +
             backend +
-            " backend; the geometry copy-task diagnostic runs through " +
-            supported_backend + ".");
+            " backend; the geometry copy-task diagnostic runs through a "
+            "scene renderer that supports it.");
     }
 }
 

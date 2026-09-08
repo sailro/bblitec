@@ -1,7 +1,8 @@
 import ts from "typescript";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
-import { unwrapPin } from "./lowering/gltf/shared.js";
+import { createRecordingDevice } from "./recording-device.js";
+import { unwrapExpression } from "./lowering/context.js";
 
 /**
  * Which lights a shadow-receiving mesh samples, and with which filter.
@@ -70,7 +71,7 @@ export function pinnedShadowFilter(
             // bare literal and the directional PCF writes `"pcf" as const`.
             // The assertion is a type-level narrowing with no value in it,
             // so it is unwrapped rather than being a second shape to accept.
-            const value = unwrapPin(node.initializer);
+            const value = unwrapExpression(node.initializer);
             if (ts.isStringLiteral(value)) filter = value.text;
             return;
         }
@@ -100,11 +101,11 @@ export function pinnedShadowFilter(
  * registering them here — a second detector would decide reachability
  * differently from the pin's own.
  *
- * The device it is handed records nothing: what generation wants from this
- * call is the registration side effect alone. The map's extent, its layer
- * count and its format are the record's and the emitted constants', and the
- * receiver block is written by `_writeCsmUbo`, whose float order generation
- * asserts.
+ * Nothing is read off the device it is handed: what generation wants from
+ * this call is the registration side effect alone. The map's extent, its
+ * layer count and its format are the record's and the emitted constants',
+ * and the receiver block is written by `_writeCsmUbo`, whose float order
+ * generation asserts.
  */
 let csmReceiverFactories: Promise<void> | undefined;
 
@@ -122,15 +123,13 @@ export function reachCsmReceiverFactories(
                 cfg: Record<string, never>,
             ) => unknown;
         }>("shadow/csm-directional-shadow-generator.js");
+        const { device } = createRecordingDevice({
+            producer: "csm-receiver-registration",
+            device: ["createTexture", "createSampler", "createBuffer"],
+            queue: ["writeBuffer"],
+        });
         module.createCsmDirectionalShadowGenerator(
-            {
-                _device: {
-                    createTexture: () => ({ createView: () => ({}) }),
-                    createSampler: () => ({}),
-                    createBuffer: () => ({}),
-                    queue: { writeBuffer: () => undefined },
-                },
-            },
+            { _device: device },
             // The factory stores the light and reads nothing off it.
             { direction: { x: 0, y: -1, z: 0 }, worldMatrixVersion: 0 },
             {},

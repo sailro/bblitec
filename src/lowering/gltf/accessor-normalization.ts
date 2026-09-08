@@ -5,10 +5,10 @@ import {
     identifierParameters,
     pinnedDoubleLiteral,
     refuseNode,
-    signedNumericValue,
+    pinnedNumericValue,
     singleBinding,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /*
@@ -91,7 +91,7 @@ function pinnedAccessorClauses(
             "no longer dispatches through a single componentType switch",
         );
     }
-    const dispatch = unwrapPin(only.expression);
+    const dispatch = unwrapExpression(only.expression);
     if (
         !ts.isIdentifier(dispatch) ||
         dispatch.text !== componentTypeName
@@ -104,7 +104,7 @@ function pinnedAccessorClauses(
         );
     }
     const caseConstant = (clause: ts.CaseClause): number => {
-        const label = unwrapPin(clause.expression);
+        const label = unwrapExpression(clause.expression);
         if (ts.isNumericLiteral(label)) {
             return Number(label.text);
         }
@@ -118,7 +118,7 @@ function pinnedAccessorClauses(
                         binding.name.text === label.text &&
                         binding.initializer
                     ) {
-                        const value = unwrapPin(binding.initializer);
+                        const value = unwrapExpression(binding.initializer);
                         if (ts.isNumericLiteral(value)) {
                             return Number(value.text);
                         }
@@ -135,7 +135,7 @@ function pinnedAccessorClauses(
     };
     /** `view.getX(offset)` / `view.getX(offset, true)` → the getter. */
     const readGetter = (expression: ts.Expression): string => {
-        const call = unwrapPin(expression);
+        const call = unwrapExpression(expression);
         const getter = ts.isCallExpression(call) &&
                 ts.isPropertyAccessExpression(call.expression) &&
                 ts.isIdentifier(call.expression.expression) &&
@@ -163,7 +163,7 @@ function pinnedAccessorClauses(
             );
         }
         const first = call.arguments[0]
-            ? unwrapPin(call.arguments[0])
+            ? unwrapExpression(call.arguments[0])
             : undefined;
         const offsetOk = first !== undefined &&
             ts.isIdentifier(first) &&
@@ -203,7 +203,7 @@ function pinnedAccessorClauses(
                 trailing !== undefined &&
                 ts.isReturnStatement(trailing) &&
                 trailing.expression
-            ? unwrapPin(trailing.expression)
+            ? unwrapExpression(trailing.expression)
             : undefined;
         if (!conditional || !ts.isConditionalExpression(conditional)) {
             refuseNode(
@@ -213,8 +213,8 @@ function pinnedAccessorClauses(
                 "no longer normalizes behind the accessor's flag",
             );
         }
-        const condition = unwrapPin(conditional.condition);
-        const raw = unwrapPin(conditional.whenFalse);
+        const condition = unwrapExpression(conditional.condition);
+        const raw = unwrapExpression(conditional.whenFalse);
         if (
             !ts.isIdentifier(condition) ||
             condition.text !== normalizedName ||
@@ -228,7 +228,7 @@ function pinnedAccessorClauses(
                 "no longer keeps the raw component when unnormalized",
             );
         }
-        let scaled = unwrapPin(conditional.whenTrue);
+        let scaled = unwrapExpression(conditional.whenTrue);
         let clamp: number | undefined;
         if (ts.isCallExpression(scaled)) {
             const callee = scaled.expression;
@@ -244,20 +244,20 @@ function pinnedAccessorClauses(
                     "clamps through a call this lowering cannot carry",
                 );
             }
-            clamp = signedNumericValue(
+            clamp = pinnedNumericValue(
                 symbol,
                 file,
                 scaled.arguments[1]!,
             );
-            scaled = unwrapPin(scaled.arguments[0]!);
+            scaled = unwrapExpression(scaled.arguments[0]!);
         }
         const divisor = ts.isBinaryExpression(scaled) &&
                 scaled.operatorToken.kind === ts.SyntaxKind.SlashToken &&
-                ts.isIdentifier(unwrapPin(scaled.left)) &&
-                (unwrapPin(scaled.left) as ts.Identifier).text ===
+                ts.isIdentifier(unwrapExpression(scaled.left)) &&
+                (unwrapExpression(scaled.left) as ts.Identifier).text ===
                     binding.name &&
-                ts.isNumericLiteral(unwrapPin(scaled.right))
-            ? Number((unwrapPin(scaled.right) as ts.NumericLiteral).text)
+                ts.isNumericLiteral(unwrapExpression(scaled.right))
+            ? Number((unwrapExpression(scaled.right) as ts.NumericLiteral).text)
             : undefined;
         if (divisor === undefined) {
             refuseNode(
@@ -397,16 +397,16 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
         statements[0],
         declaration,
     );
-    const outNew = unwrapPin(outBinding.initializer);
+    const outNew = unwrapExpression(outBinding.initializer);
     const outStride = ts.isNewExpression(outNew) &&
             ts.isIdentifier(outNew.expression) &&
             outNew.expression.text === "Float32Array" &&
             outNew.arguments?.length === 1 &&
-            ts.isBinaryExpression(unwrapPin(outNew.arguments[0]!)) &&
-            (unwrapPin(outNew.arguments[0]!) as ts.BinaryExpression)
+            ts.isBinaryExpression(unwrapExpression(outNew.arguments[0]!)) &&
+            (unwrapExpression(outNew.arguments[0]!) as ts.BinaryExpression)
                     .operatorToken.kind === ts.SyntaxKind.AsteriskToken
-        ? unwrapPin(
-            (unwrapPin(outNew.arguments[0]!) as ts.BinaryExpression)
+        ? unwrapExpression(
+            (unwrapExpression(outNew.arguments[0]!) as ts.BinaryExpression)
                 .right,
         )
         : undefined;
@@ -432,16 +432,16 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
         statements[1],
         declaration,
     );
-    const alphaShape = unwrapPin(alphaBinding.initializer);
+    const alphaShape = unwrapExpression(alphaBinding.initializer);
     const alphaShapeOk = ts.isBinaryExpression(alphaShape) &&
         alphaShape.operatorToken.kind ===
             ts.SyntaxKind.GreaterThanEqualsToken &&
-        ts.isIdentifier(unwrapPin(alphaShape.left)) &&
-        (unwrapPin(alphaShape.left) as ts.Identifier).text ===
+        ts.isIdentifier(unwrapExpression(alphaShape.left)) &&
+        (unwrapExpression(alphaShape.left) as ts.Identifier).text ===
             compsName &&
-        ts.isNumericLiteral(unwrapPin(alphaShape.right)) &&
+        ts.isNumericLiteral(unwrapExpression(alphaShape.right)) &&
         Number(
-            (unwrapPin(alphaShape.right) as ts.NumericLiteral).text,
+            (unwrapExpression(alphaShape.right) as ts.NumericLiteral).text,
         ) === 4;
     if (!alphaShapeOk) {
         refuseNode(
@@ -464,16 +464,16 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
         loopName: string,
         scaleName: string | undefined,
     ): number => {
-        let read = unwrapPin(expression);
+        let read = unwrapExpression(expression);
         if (scaleName !== undefined) {
             const product = read;
             const scaledRead = ts.isBinaryExpression(product) &&
                     product.operatorToken.kind ===
                         ts.SyntaxKind.AsteriskToken &&
-                    ts.isIdentifier(unwrapPin(product.right)) &&
-                    (unwrapPin(product.right) as ts.Identifier).text ===
+                    ts.isIdentifier(unwrapExpression(product.right)) &&
+                    (unwrapExpression(product.right) as ts.Identifier).text ===
                         scaleName
-                ? unwrapPin(product.left)
+                ? unwrapExpression(product.left)
                 : undefined;
             if (scaledRead === undefined) {
                 refuseNode(
@@ -497,17 +497,17 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
                 "no longer reads the source component the lowered way",
             );
         }
-        const index = unwrapPin(read.argumentExpression);
+        const index = unwrapExpression(read.argumentExpression);
         const base = (node: ts.Expression): boolean => {
-            const product = unwrapPin(node);
+            const product = unwrapExpression(node);
             return ts.isBinaryExpression(product) &&
                 product.operatorToken.kind ===
                     ts.SyntaxKind.AsteriskToken &&
-                ts.isIdentifier(unwrapPin(product.left)) &&
-                (unwrapPin(product.left) as ts.Identifier).text ===
+                ts.isIdentifier(unwrapExpression(product.left)) &&
+                (unwrapExpression(product.left) as ts.Identifier).text ===
                     loopName &&
-                ts.isIdentifier(unwrapPin(product.right)) &&
-                (unwrapPin(product.right) as ts.Identifier).text ===
+                ts.isIdentifier(unwrapExpression(product.right)) &&
+                (unwrapExpression(product.right) as ts.Identifier).text ===
                     compsName;
         };
         if (base(index)) return 0;
@@ -515,10 +515,10 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
             ts.isBinaryExpression(index) &&
             index.operatorToken.kind === ts.SyntaxKind.PlusToken &&
             base(index.left) &&
-            ts.isNumericLiteral(unwrapPin(index.right))
+            ts.isNumericLiteral(unwrapExpression(index.right))
         ) {
             return Number(
-                (unwrapPin(index.right) as ts.NumericLiteral).text,
+                (unwrapExpression(index.right) as ts.NumericLiteral).text,
             );
         }
         refuseNode(
@@ -545,18 +545,18 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
                 anchor,
             );
             cursor += 1;
-            const inverse = unwrapPin(invBinding.initializer);
+            const inverse = unwrapExpression(invBinding.initializer);
             const inverseDivisor = ts.isBinaryExpression(inverse) &&
                     inverse.operatorToken.kind ===
                         ts.SyntaxKind.SlashToken &&
-                    ts.isNumericLiteral(unwrapPin(inverse.left)) &&
+                    ts.isNumericLiteral(unwrapExpression(inverse.left)) &&
                     Number(
-                        (unwrapPin(inverse.left) as ts.NumericLiteral)
+                        (unwrapExpression(inverse.left) as ts.NumericLiteral)
                             .text,
                     ) === 1 &&
-                    ts.isNumericLiteral(unwrapPin(inverse.right))
+                    ts.isNumericLiteral(unwrapExpression(inverse.right))
                 ? Number(
-                    (unwrapPin(inverse.right) as ts.NumericLiteral).text,
+                    (unwrapExpression(inverse.right) as ts.NumericLiteral).text,
                 )
                 : undefined;
             if (inverseDivisor === undefined) {
@@ -583,8 +583,8 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
             !ts.isBinaryExpression(loop.condition) ||
             loop.condition.operatorToken.kind !==
                 ts.SyntaxKind.LessThanToken ||
-            !ts.isIdentifier(unwrapPin(loop.condition.right)) ||
-            (unwrapPin(loop.condition.right) as ts.Identifier).text !==
+            !ts.isIdentifier(unwrapExpression(loop.condition.right)) ||
+            (unwrapExpression(loop.condition.right) as ts.Identifier).text !==
                 countName ||
             !ts.isBlock(loop.statement) ||
             cursor !== branch.length
@@ -608,18 +608,18 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
             ) {
                 return undefined;
             }
-            const index = unwrapPin(target.argumentExpression);
+            const index = unwrapExpression(target.argumentExpression);
             const stride = (node: ts.Expression): boolean => {
-                const product = unwrapPin(node);
+                const product = unwrapExpression(node);
                 return ts.isBinaryExpression(product) &&
                     product.operatorToken.kind ===
                         ts.SyntaxKind.AsteriskToken &&
-                    ts.isIdentifier(unwrapPin(product.left)) &&
-                    (unwrapPin(product.left) as ts.Identifier).text ===
+                    ts.isIdentifier(unwrapExpression(product.left)) &&
+                    (unwrapExpression(product.left) as ts.Identifier).text ===
                         loopName &&
-                    ts.isNumericLiteral(unwrapPin(product.right)) &&
+                    ts.isNumericLiteral(unwrapExpression(product.right)) &&
                     Number(
-                        (unwrapPin(product.right) as ts.NumericLiteral)
+                        (unwrapExpression(product.right) as ts.NumericLiteral)
                             .text,
                     ) === 4;
             };
@@ -628,10 +628,10 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
                 ts.isBinaryExpression(index) &&
                 index.operatorToken.kind === ts.SyntaxKind.PlusToken &&
                 stride(index.left) &&
-                ts.isNumericLiteral(unwrapPin(index.right))
+                ts.isNumericLiteral(unwrapExpression(index.right))
             ) {
                 return Number(
-                    (unwrapPin(index.right) as ts.NumericLiteral).text,
+                    (unwrapExpression(index.right) as ts.NumericLiteral).text,
                 );
             }
             return undefined;
@@ -656,14 +656,14 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
             .map((expression) =>
                 componentOf(expression, loopName, scaleName)
             ) as [number, number, number];
-        const alpha = unwrapPin(stores.expressions[3]!);
+        const alpha = unwrapExpression(stores.expressions[3]!);
         const fallback = ts.isConditionalExpression(alpha) &&
-                ts.isIdentifier(unwrapPin(alpha.condition)) &&
-                (unwrapPin(alpha.condition) as ts.Identifier).text ===
+                ts.isIdentifier(unwrapExpression(alpha.condition)) &&
+                (unwrapExpression(alpha.condition) as ts.Identifier).text ===
                     hasAlphaName &&
-                ts.isNumericLiteral(unwrapPin(alpha.whenFalse))
+                ts.isNumericLiteral(unwrapExpression(alpha.whenFalse))
             ? Number(
-                (unwrapPin(alpha.whenFalse) as ts.NumericLiteral).text,
+                (unwrapExpression(alpha.whenFalse) as ts.NumericLiteral).text,
             )
             : undefined;
         if (!ts.isConditionalExpression(alpha) || fallback === undefined) {
@@ -697,15 +697,15 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
                 "no longer selects the source layout by instanceof",
             );
         }
-        const condition = unwrapPin(chain.expression);
+        const condition = unwrapExpression(chain.expression);
         const typeName = ts.isBinaryExpression(condition) &&
                 condition.operatorToken.kind ===
                     ts.SyntaxKind.InstanceOfKeyword &&
-                ts.isIdentifier(unwrapPin(condition.left)) &&
-                (unwrapPin(condition.left) as ts.Identifier).text ===
+                ts.isIdentifier(unwrapExpression(condition.left)) &&
+                (unwrapExpression(condition.left) as ts.Identifier).text ===
                     dataName &&
-                ts.isIdentifier(unwrapPin(condition.right))
-            ? (unwrapPin(condition.right) as ts.Identifier).text
+                ts.isIdentifier(unwrapExpression(condition.right))
+            ? (unwrapExpression(condition.right) as ts.Identifier).text
             : undefined;
         if (typeName === undefined) {
             refuseNode(
@@ -738,8 +738,8 @@ function pinnedColorBuild(file: ts.SourceFile): PinnedColorBuild {
         !trailing ||
         !ts.isReturnStatement(trailing) ||
         !trailing.expression ||
-        !ts.isIdentifier(unwrapPin(trailing.expression)) ||
-        (unwrapPin(trailing.expression) as ts.Identifier).text !==
+        !ts.isIdentifier(unwrapExpression(trailing.expression)) ||
+        (unwrapExpression(trailing.expression) as ts.Identifier).text !==
             outBinding.name
     ) {
         refuseNode(

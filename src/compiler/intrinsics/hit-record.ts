@@ -22,7 +22,7 @@ import type { Value } from "../types.js";
  */
 
 /** One member of the record, and the native expression that fills it. */
-export interface HitRecordField {
+interface HitRecordField {
     /** The C++ expression, in terms of the probe's own local. */
     readonly cpp: string;
     /** Whether the pin's declared type for it is one this port fills. */
@@ -45,7 +45,7 @@ export interface HitRecordContext {
     fail(node: ts.Node, message: string): never;
 }
 
-export interface NullableHitRecord {
+interface NullableHitRecord {
     /** The intrinsic's own name, for the refusals below. */
     readonly intrinsic: string;
     /** The record type at the call site, already unwrapped from a promise. */

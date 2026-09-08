@@ -36,12 +36,15 @@
 //   values name the same record.
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
-import type { DataType } from "./data-types.js";
-import { requireGroupSource } from "./intrinsics/animation.js";
+import { handleCppType, type DataType } from "./data-types.js";
+import { requireGltfGroupSource } from "./intrinsics/animation.js";
+import { resolveFunctionDeclaration } from "./user-functions.js";
 import {
-    resolveFunctionDeclaration,
+    argumentAt,
+    identifierText,
     unwrapExpression as unwrapWalkExpression,
-} from "./user-functions.js";
+} from "./syntax.js";
+import { CompileError } from "./compile-error.js";
 import {
     isHandleCollectionProperty,
     nativeLocation,
@@ -81,7 +84,7 @@ import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 export type HandleCollectionTarget = HandleCollectionInfo;
 
 /** What emitting a loop over one of those collections needs. */
-export interface HandleCollectionLoopContext {
+interface HandleCollectionLoopContext {
     allocateTemporaryCppName(label: string): string;
     allocateBlockPrefix(): string;
     emit(line: string): void;
@@ -162,7 +165,9 @@ function assetOwnerMapBuilder(
             fn.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) ||
             fn.parameters.length !== count || fn.parameters.some(parameter =>
                 !ts.isIdentifier(parameter.name) || parameter.initializer || parameter.dotDotDotToken || parameter.questionToken)) return undefined;
-        const names = fn.parameters.map(parameter => parameter.name as ts.Identifier);
+        const names = fn.parameters.flatMap((parameter) =>
+            ts.isIdentifier(parameter.name) ? [parameter.name] : [],
+        );
         return new Set(names.map(name => name.text)).size === count ? names : undefined;
     };
     const loopBinding = (statement: ts.Statement): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
@@ -189,8 +194,8 @@ function assetOwnerMapBuilder(
     if (!rootGuard || !guardedBy(rootGuard.test, rootLoop.name, resolve, fn => isChildrenPresenceGuard(fn, isGlobal))) return undefined;
     const call = singleExpressionStatement(rootGuard.body);
     if (!call || !ts.isCallExpression(call) || !ts.isIdentifier(call.expression) || call.arguments.length !== 3 ||
-        !isIdentifierRead(call.arguments[0]!, rootLoop.name) || !isPropertyReadOf(call.arguments[1]!, rootLoop.name, "name") ||
-        !isIdentifierRead(call.arguments[2]!, map.name)) return undefined;
+        !isIdentifierRead(argumentAt(call, 0), rootLoop.name) || !isPropertyReadOf(argumentAt(call, 1), rootLoop.name, "name") ||
+        !isIdentifierRead(argumentAt(call, 2), map.name)) return undefined;
     const visitor = resolve(call.expression);
     const visitorParams = visitor && parameters(visitor, 3);
     if (!visitor || !visitorParams || visitor.body!.statements.length !== 1) return undefined;
@@ -210,17 +215,17 @@ function assetOwnerMapBuilder(
     const initial = unwrapWalkExpression(list.initializer);
     if (!ts.isBinaryExpression(initial) || initial.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken ||
         !ts.isCallExpression(initial.left) || initial.left.arguments.length !== 1 ||
-        !isPropertyReadOf(initial.left.expression, output, "get") || !isIdentifierRead(initial.left.arguments[0]!, ownerName) ||
+        !isPropertyReadOf(initial.left.expression, output, "get") || !isIdentifierRead(argumentAt(initial.left, 0), ownerName) ||
         !ts.isArrayLiteralExpression(initial.right) || initial.right.elements.length !== 0 ||
         !isIdentifierRead(pushedArgument(singleExpressionStatement(pushed!), list.name, false), children.name)) return undefined;
     const set = singleExpressionStatement(stored!);
     if (!set || !ts.isCallExpression(set) || set.arguments.length !== 2 || !isPropertyReadOf(set.expression, output, "set") ||
-        !isIdentifierRead(set.arguments[0]!, ownerName) || !isIdentifierRead(set.arguments[1]!, list.name)) return undefined;
+        !isIdentifierRead(argumentAt(set, 0), ownerName) || !isIdentifierRead(argumentAt(set, 1), list.name)) return undefined;
     const recursive = singleExpressionStatement(descend.body);
     if (!recursive || !ts.isCallExpression(recursive) || !ts.isIdentifier(recursive.expression) ||
         resolve(recursive.expression) !== visitor || recursive.arguments.length !== 3 ||
-        !isIdentifierRead(recursive.arguments[0]!, children.name) || !isIdentifierRead(recursive.arguments[2]!, output)) return undefined;
-    const nextOwner = unwrapWalkExpression(recursive.arguments[1]!);
+        !isIdentifierRead(argumentAt(recursive, 0), children.name) || !isIdentifierRead(argumentAt(recursive, 2), output)) return undefined;
+    const nextOwner = unwrapWalkExpression(argumentAt(recursive, 1));
     if (!ts.isConditionalExpression(nextOwner) || !guardedBy(nextOwner.condition, children.name, resolve, isRenderablePresenceGuard) ||
         !isIdentifierRead(nextOwner.whenTrue, ownerName) || !isPropertyReadOf(nextOwner.whenFalse, children.name, "name")) return undefined;
     const helpers = new Set<ts.FunctionDeclaration>([visitor]);
@@ -232,7 +237,7 @@ function assetOwnerMapBuilder(
     return { mapStatement: mapStatement!, map: map.name, meshArray: list.name, child: children.name, ownerName, output, collect: collect.body, helpers: [...helpers] };
 }
 
-export interface HandleCollectionsContext
+interface HandleCollectionsContext
     extends HandleCollectionLoopContext {
     guardStaticConstructionRead(operation: string): void;
     readonly meshWalks: CompiledMeshWalk[];
@@ -336,7 +341,7 @@ export class HandleCollections {
         const proof = assetOwnerMapBuilder(declaration, resolve,
             name => this.context.isDefaultLibraryIdentifier(name));
         if (!proof) return undefined;
-        const owner = this.context.compileValue(call.arguments[0]!);
+        const owner = this.context.compileValue(argumentAt(call, 0));
         if (owner.kind !== "asset" || owner.asset?.kind !== "gltf") return undefined;
         const target = this.assetMeshCollection(owner, proof.meshArray).handleCollection!;
         const walk = this.sourceMeshWalk(owner, target, {
@@ -684,7 +689,7 @@ export class HandleCollections {
             return undefined;
         }
         const owner = this.context.compileValue(
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         if (owner.kind !== "asset") {
             return undefined;
@@ -870,9 +875,9 @@ export class HandleCollections {
             !ts.isCallExpression(visit) ||
             !ts.isIdentifier(visit.expression) ||
             visit.arguments.length !== 2 ||
-            !isIdentifierRead(visit.arguments[0]!, entity) ||
+            !isIdentifierRead(argumentAt(visit, 0), entity) ||
             !isIdentifierRead(
-                visit.arguments[1]!,
+                argumentAt(visit, 1),
                 declaration.name,
             )
         ) {
@@ -1252,7 +1257,7 @@ export class HandleCollections {
             containerCpp:
                 `${engineCpp}.assets[${owner.cpp}.value].meshes`,
             elementKind: "mesh",
-            elementCppType: "bbl::MeshHandle",
+            elementCppType: handleCppType("mesh"),
             engineCpp,
         };
     }
@@ -1301,12 +1306,11 @@ export class HandleCollections {
                 "animation-group",
                 element,
             );
-            requireGroupSource(
+            requireGltfGroupSource(
                 this.context,
                 value,
                 element,
                 "addAnimationGroups",
-                "gltf",
             );
         }
         const engineCpp = groups[0]
@@ -1320,7 +1324,7 @@ export class HandleCollections {
               );
         return {
             cpp:
-                `std::vector<bbl::AnimationGroupHandle>{` +
+                `std::vector<${handleCppType("animation-group")}>{` +
                 `${groups.map((group) => group.cpp).join(", ")}}`,
             engineCpp,
         };
@@ -1407,12 +1411,12 @@ export class HandleCollections {
         );
         if (scene.kind !== "scene") return undefined;
         this.context.expectArgumentCount(call, 1, 1);
-        const light = this.context.compileValue(call.arguments[0]!);
-        this.context.expectKind(light, "light", call.arguments[0]!);
+        const light = this.context.compileValue(argumentAt(call, 0));
+        this.context.expectKind(light, "light", argumentAt(call, 0));
         this.context.expectSameEngine(scene, light, call);
         if (!light.lightKind) {
             this.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "A scene light is missing its generated light kind.",
             );
         }
@@ -1450,11 +1454,11 @@ export class HandleCollections {
         );
         if (set.kind !== "node-particle-set") return undefined;
         this.context.expectArgumentCount(call, 1, 1);
-        const system = this.context.compileValue(call.arguments[0]!);
+        const system = this.context.compileValue(argumentAt(call, 0));
         this.context.expectKind(
             system,
             "node-particle-system",
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         if (
             set.nodeParticleSetIndex === undefined ||
@@ -1527,11 +1531,11 @@ export class HandleCollections {
             return undefined;
         }
         this.context.expectArgumentCount(call, 1, 1);
-        const pushed = this.context.compileValue(call.arguments[0]!);
+        const pushed = this.context.compileValue(argumentAt(call, 0));
         if (!compileTimeListKinds.includes(pushed.kind)) return undefined;
         if (kind !== undefined && pushed.kind !== kind) {
             this.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 `'${owner.text}' holds ${kind} values; pushing a ` +
                     `${pushed.kind} would leave two shapes in one list.`,
             );
@@ -1575,7 +1579,7 @@ export class HandleCollections {
         }
         this.context.expectArgumentCount(call, 1, 1);
         const predicate = this.context.unwrap(
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         if (
             !ts.isArrowFunction(predicate) ||
@@ -1639,7 +1643,7 @@ export class HandleCollections {
         if (!target) return undefined;
         this.context.expectArgumentCount(mapCall, 1, 1);
         const selector = this.context.unwrap(
-            mapCall.arguments[0]!,
+            argumentAt(mapCall, 0),
         );
         if (
             !ts.isArrowFunction(selector) ||
@@ -1648,7 +1652,7 @@ export class HandleCollections {
             ts.isBlock(selector.body)
         ) {
             this.context.fail(
-                mapCall.arguments[0]!,
+                argumentAt(mapCall, 0),
                 "Mapped handle searches take an expression-bodied arrow with one element parameter.",
             );
         }
@@ -1667,7 +1671,7 @@ export class HandleCollections {
         const found = this.context.allocateTemporaryCppName(
             "material_found",
         );
-        this.context.emit(`bbl::MaterialHandle ${result}{};`);
+        this.context.emit(`${handleCppType("material")} ${result}{};`);
         this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
         let assetPbrMaterial = false;
         emitHandleCollectionLoop(
@@ -1733,7 +1737,7 @@ export class HandleCollections {
         if (callee.text !== "findNode" || call.arguments.length !== 2) {
             return undefined;
         }
-        const root = this.context.compileValue(call.arguments[0]!);
+        const root = this.context.compileValue(argumentAt(call, 0));
         if (root.kind !== "asset-root") return undefined;
         const declaration = resolveFunctionDeclaration(
             this.context.checker,
@@ -1750,10 +1754,10 @@ export class HandleCollections {
                 "findNode over a glTF root is lowered only for the exact depth-first helper that tests root.name, recurses through root.children, returns the first hit, and otherwise returns undefined.",
             );
         }
-        const name = this.context.compileStringLiteral(call.arguments[1]!);
+        const name = this.context.compileStringLiteral(argumentAt(call, 1));
         if (!root.asset || root.asset.kind !== "gltf") {
             this.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "Asset descendant name search requires a materialized glTF root.",
             );
         }
@@ -1768,10 +1772,10 @@ export class HandleCollections {
         const item = this.context.allocateTemporaryCppName(
             "asset_descendant_mesh",
         );
-        this.context.emit(`bbl::MeshHandle ${result}{};`);
+        this.context.emit(`${handleCppType("mesh")} ${result}{};`);
         this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
         this.context.emit(
-            `for (const bbl::MeshHandle ${item} : ` +
+            `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${engine}.assets[${root.cpp}.value].meshes) {`,
         );
         this.context.increaseIndent();
@@ -1842,11 +1846,11 @@ export class HandleCollections {
         ) {
             return undefined;
         }
-        const root = this.context.compileValue(call.arguments[0]!);
+        const root = this.context.compileValue(argumentAt(call, 0));
         if (root.kind !== "asset-root") return undefined;
         if (!root.asset || root.asset.kind !== "gltf") {
             this.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "The first-skinned descendant search requires a materialized glTF root.",
             );
         }
@@ -1861,10 +1865,10 @@ export class HandleCollections {
         const item = this.context.allocateTemporaryCppName(
             "asset_skinned_mesh",
         );
-        this.context.emit(`bbl::MeshHandle ${result}{};`);
+        this.context.emit(`${handleCppType("mesh")} ${result}{};`);
         this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
         this.context.emit(
-            `for (const bbl::MeshHandle ${item} : ` +
+            `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${engine}.assets[${root.cpp}.value].meshes) {`,
         );
         this.context.increaseIndent();
@@ -2085,14 +2089,7 @@ export class HandleCollections {
         if (
             !ts.isPropertyAccessExpression(left) ||
             left.name.text !== "name" ||
-            !ts.isIdentifier(
-                this.context.unwrap(left.expression),
-            ) ||
-            (
-                this.context.unwrap(
-                    left.expression,
-                ) as ts.Identifier
-            ).text !== parameter
+            identifierText(this.context.unwrap(left.expression)) !== parameter
         ) {
             return undefined;
         }
@@ -2180,7 +2177,8 @@ export class HandleCollections {
                 const argument =
                     ts.isNewExpression(thrown) &&
                     ts.isIdentifier(thrown.expression) &&
-                    thrown.expression.text === "Error"
+                    thrown.expression.text === "Error" &&
+                    this.context.isDefaultLibraryIdentifier(thrown.expression)
                         ? thrown.arguments?.[0]
                         : undefined;
                 if (argument) {
@@ -2189,8 +2187,11 @@ export class HandleCollections {
                             this.context.compileStringLiteral(
                                 argument,
                             );
-                    } catch {
-                        // Not static in this scope; keep looking.
+                    } catch (error) {
+                        // A refusal means the message is not static in
+                        // this scope, so the search keeps looking; any
+                        // other error is the compiler's own and escapes.
+                        if (!(error instanceof CompileError)) throw error;
                     }
                 }
                 return;
@@ -2472,29 +2473,30 @@ function isPropertyPresenceProbe(
     );
 }
 
-function singleExpressionStatement(
+/** The one statement a block-wrapped or bare arm holds, when it is of the asked shape. */
+function singleStatement<T extends ts.Statement>(
     statement: ts.Statement,
-): ts.Expression | undefined {
+    is: (node: ts.Node) => node is T,
+): T | undefined {
     const statements = ts.isBlock(statement)
         ? statement.statements
         : [statement];
-    return statements.length === 1 &&
-        ts.isExpressionStatement(statements[0]!)
-        ? statements[0]!.expression
-        : undefined;
+    const only = statements.length === 1 ? statements[0] : undefined;
+    return only && is(only) ? only : undefined;
+}
+
+/** A block-wrapped or bare expression-statement arm's expression. */
+function singleExpressionStatement(
+    statement: ts.Statement,
+): ts.Expression | undefined {
+    return singleStatement(statement, ts.isExpressionStatement)?.expression;
 }
 
 /** A block-wrapped or bare `return <expression>` arm. */
 function singleReturnExpression(
     statement: ts.Statement,
 ): ts.Expression | undefined {
-    const statements = ts.isBlock(statement)
-        ? statement.statements
-        : [statement];
-    return statements.length === 1 &&
-        ts.isReturnStatement(statements[0]!)
-        ? statements[0]!.expression
-        : undefined;
+    return singleStatement(statement, ts.isReturnStatement)?.expression;
 }
 
 /**
@@ -2934,12 +2936,12 @@ export function isRecursiveImportedMeshWalk(
     ) {
         return undefined;
     }
-    const first = unwrapWalkExpression(recursive.arguments[0]!);
+    const first = unwrapWalkExpression(argumentAt(recursive, 0));
     if (!ts.isIdentifier(first) || first.text !== binding.text) {
         return undefined;
     }
     const recursiveMaterial = unwrapWalkExpression(
-        recursive.arguments[1]!,
+        argumentAt(recursive, 1),
     );
     if (
         !ts.isIdentifier(recursiveMaterial) ||
@@ -3034,7 +3036,7 @@ function pushedArgument(
     ) {
         return undefined;
     }
-    const argument = current.arguments[0]!;
+    const argument = argumentAt(current, 0);
     if (ts.isSpreadElement(argument) !== spread) {
         return undefined;
     }
@@ -3373,7 +3375,7 @@ function isClosureMeshFlattenCollector(
         !ts.isCallExpression(seedCall) ||
         seedCall.arguments.length !== 1 ||
         !isIdentifierRead(seedCall.expression, bound.name) ||
-        !isIdentifierRead(seedCall.arguments[0]!, entity)
+        !isIdentifierRead(argumentAt(seedCall, 0), entity)
     ) {
         return false;
     }
@@ -3449,7 +3451,7 @@ function isClosureMeshFlattenCollector(
         ts.isCallExpression(call) &&
         call.arguments.length === 1 &&
         isIdentifierRead(call.expression, bound.name) &&
-        isIdentifierRead(call.arguments[0]!, child)
+        isIdentifierRead(argumentAt(call, 0), child)
     );
 }
 
@@ -3525,7 +3527,7 @@ function isChildrenArrayProbe(
         return false;
     }
     return isPropertyReadOf(
-        current.arguments[0]!,
+        argumentAt(current, 0),
         parameter,
         "children",
     );
@@ -3665,7 +3667,7 @@ function guardedBy(
         !ts.isCallExpression(current) ||
         current.arguments.length !== 1 ||
         !ts.isIdentifier(current.expression) ||
-        !isIdentifierRead(current.arguments[0]!, node)
+        !isIdentifierRead(argumentAt(current, 0), node)
     ) {
         return false;
     }
@@ -3789,8 +3791,8 @@ function isRecursiveMeshFlattenVisitor(
         ts.isIdentifier(call.expression) &&
         call.expression.text === declaration.name.text &&
         call.arguments.length === 2 &&
-        isIdentifierRead(call.arguments[0]!, child) &&
-        isIdentifierRead(call.arguments[1]!, out)
+        isIdentifierRead(argumentAt(call, 0), child) &&
+        isIdentifierRead(argumentAt(call, 1), out)
     );
 }
 

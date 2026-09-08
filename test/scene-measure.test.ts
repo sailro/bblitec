@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PNG } from "pngjs";
+import { parseRgbTriple } from "../src/tooling/flags.js";
 import {
     formatPngMeasurement,
     measurePng,
-    parseRgbTriple,
-} from "../src/parity-scene.js";
+} from "../src/tooling/png-measure.js";
 
 // `scene -- measure <png>`: the measure-the-PNG rule as a command. The
 // bar is the recipe it institutionalizes — "exactly 7200 px at

@@ -17,7 +17,7 @@ const stridedPosition = chunk.accessor({ ...chunk.accessors[position], bufferVie
 const stridedNormal = chunk.accessor({ ...chunk.accessors[normal], bufferView: interleaved, byteOffset: 12 });
 const stridedUv = chunk.accessor({ ...chunk.accessors[texcoord], bufferView: interleaved, byteOffset: 24 });
 const document = {
-    asset: { version: "2.0", generator: "bblitec node local attributes control" },
+    asset: { version: "2.0", generator: "bblitec tools/fixtures/build-node-local-attributes.mjs" },
     scene: 0, scenes: [{ nodes: [0, 2] }],
     nodes: [
         { name: "tight-parent", translation: [-1.4, -0.2, 0.1], rotation: [0, 0, Math.sin(0.13), Math.cos(0.13)], scale: [1.3, 0.7, 1.1], children: [1] },

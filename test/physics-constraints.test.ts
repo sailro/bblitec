@@ -90,6 +90,7 @@ test("native constraint configurations match all pinned factories and hinge life
     emitUpstreamGenerated(output, ["core", "camera:free", "renderer:scene", "physics:world", "physics:constraints"]);
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
+        "/DBBLITE_HAS_PHYSICS_CONSTRAINTS=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include", "/I", output, "/I", join(output, "upstream/include"), "/I", join(output, "upstream/src"),
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0", "test/fixtures/physics-hinge-check.cpp", join(output, "upstream/src/scene_core.cpp"),
         "/link", "/OPT:REF", `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`, "BulletDynamics.lib", "BulletCollision.lib", "LinearMath.lib"]);

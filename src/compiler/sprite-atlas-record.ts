@@ -6,7 +6,7 @@ import type {
 } from "./data-types.js";
 import type { Feature, Value } from "./types.js";
 
-export interface SpriteAtlasRecordContext {
+interface SpriteAtlasRecordContext {
     readonly dataTypes: DataTypeRegistry;
     dataValue(cpp: string, dataType: DataType): Value;
     requireDefaultEngine(node: ts.Node): string;
