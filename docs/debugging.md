@@ -82,6 +82,7 @@ when a missing small object or changed buffer could pass an image gate.
 | Shared-engine canvases | `check-surface-input.mjs`: scenes 227/228 left/right drags, divider-crossing capture, idle isolation and geometry after resize. |
 | Worker windows | `check-offscreen-window.mjs`: held presses, worker progress, resize, shutdown. |
 | Physics timing | `check-break-meshes-timing.mjs`: unchanged fixed overrides and live timing. |
+| Heightfields | `observe-scene47.mjs` then `check-scene47-controls.mjs`: free-fall, terrain contact, live viewer poses, unhandled input and resize. The native checker requires a processed byte-identical `artifacts/scene47-live.ts` copy without a capture query. |
 | KHR_interactivity | `check-calculator-input.mjs [calculator\|scene304]`: press control, "7" then "x" taps at the scene's golden pose; display digits and dispatched nodes by name on both backends. |
 
 Scripts are under `tools/`. Checkers use scene defaults or take an executable, generated

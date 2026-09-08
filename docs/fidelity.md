@@ -207,6 +207,12 @@ trigger events and combine modes are explicit library boundaries. Degenerate
 boxes expand below Bullet's margin with a positive-face limitation.
 Triangle-mesh storage outlives its shapes. Static bodies use Bullet's BVH;
 dynamic bodies use GImpact with its approximate inertia over the same triangles.
+Heightfield extraction translates pinned world-space bounds, Float32 stores and sample remapping.
+Bullet uses a static triangle BVH with the measured Havok grid orientation and cell diagonal.
+Rectangular HP heightfields read inconsistent/out-of-range samples in the pin and refuse.
+Scene47 uses the upstream spec's frame 1. Its 60-frame free-fall coordinate difference is at most 0.002526 m;
+later contact coordinates differ by up to 5.389 m at frame 240. Terrain contact and live viewer poses
+are checked separately; the capture gate does not establish matching collision trajectories.
 Container placement translates the pinned inverse/product/decomposition path. Bullet convex support
 instances preserve child-local offsets, rotation and nonuniform scale without mutating shared geometry.
 Container inertia uses Bullet's approximation; child material/filter/trigger differences refuse.

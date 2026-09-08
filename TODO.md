@@ -7,12 +7,11 @@ its scene.
 
 ## Unregistered numbered scenes
 
-The corpus/registry comparison leaves **5** numbered scenes unregistered.
+The corpus/registry comparison leaves **4** numbered scenes unregistered.
 
 | Scene | Remaining integration |
 | --- | --- |
 | 46 | Module-scope mutable state and all six pinned constraint types; map solver differences explicitly, including LINEAR_DISTANCE |
-| 47 | Physics viewer, heightfields and switch-assigned meshes |
 | 104, 105 | Structural hierarchy/owner grouping and character controller |
 | 180 | Standalone text renderer/layer, range controls, dynamic color and weight updates |
 
@@ -86,7 +85,7 @@ The corpus/registry comparison leaves **5** numbered scenes unregistered.
 | Lines/instances | Runtime point lists, lines/dashes/color changes, fast dynamic draw count and GPU culling/LOD |
 | Particles | Wider evaluators/providers/bridges/snippets, texture flip, lifecycle and mixed-set random/buffer ownership |
 | Navigation | Tiled builds without obstacles, broader queries/random state and disposal |
-| Physics | Constraints, characters/viewer, heightfields, broader query shapes/options, inertia orientation/conversion and remaining lifecycle/options |
+| Physics | Constraints, characters/viewer, explicit or rectangular heightfields, broader query shapes/options, inertia orientation/conversion and remaining lifecycle/options |
 | Audio | Browser/native offline PCM gate, master-volume ramps and broader sound/bus/spatial APIs |
 | UI | General forms/text input, additional drivers and multi-surface source shapes |
 

@@ -321,8 +321,13 @@ Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/stat
 velocities, motion/prestep, aggregates, centre of mass, masks, collisions/triggers, raycasts and floating origin.
 Convex proximity/cast queries return local input and world target contacts, distance/fraction, trigger/mask
 filtering and cast body exclusion. Query bags and quaternions require inline objects; concave/compound proximity
-targets refuse. Dynamic triangle meshes use GImpact. Constraints, characters and heightfields remain incomplete.
+targets refuse. Dynamic triangle meshes use GImpact. Constraints and characters remain incomplete.
 Inertia overrides and non-Y-aligned capsule/cylinder segments refuse. See [physics fidelity](fidelity.md#physics-contract).
+
+Heightfields accept ground meshes with square vertex grids and static bodies. Explicit sample bags and
+rectangular grids refuse. Shape geometry options retain nullable scalar/vector fields through typed helper
+returns; primitive family selection must be construction-known. Gravity setters support ordinary worlds,
+all floating-origin regions or one region selected by world position.
 
 Container shapes retain child ownership and source-derived relative TRS. Convex children support finite
 nonzero scale per placement. Construction must finish before attachment; mixed child materials/masks,

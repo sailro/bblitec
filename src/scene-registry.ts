@@ -2288,6 +2288,21 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene47",
+        name: "Scene 47 - Physics Heightfield",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene47.ts",
+        title: "Babylon Lite Native - Physics Heightfield",
+        parity: {
+            // The pinned spec captures frame 1; the scene stops its own physics.
+            referenceSearch: "?captureFrame=1",
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "20", BBLITE_FRAME_DELTA_MS: "16.666666666666668" },
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene48",
         name: "Scene 48 - Physics Centre of Mass",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene48.ts",
