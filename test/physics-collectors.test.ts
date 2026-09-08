@@ -16,6 +16,7 @@ test("shape collectors preserve Havok capsule features, mesh edges, body identit
     const executable = join(output, "physics-collectors-check.exe");
     runNativeFixtureCompiler(tools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2",
+        "/DBBLITE_HAS_PHYSICS_CHARACTER=1", "/DBBLITE_HAS_PHYSICS_TRIGGER=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0",
         "test/fixtures/physics-collectors-check.cpp", "/link",

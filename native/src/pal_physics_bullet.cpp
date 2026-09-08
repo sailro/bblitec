@@ -32,18 +32,26 @@
 #include <type_traits>
 
 #include <btBulletDynamicsCommon.h>
-#include <LinearMath/btAabbUtil2.h>
-#include "pal_physics_distance.hpp"
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
-#include <BulletCollision/CollisionShapes/btTriangleShape.h>
 #include <BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
 #include <BulletCollision/Gimpact/btGImpactShape.h>
+// The six family gates are the runtime features `pal_physics.hpp` names,
+// written 0/1 by the build; each family below sits behind its own.
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
+#include "pal_physics_distance.hpp"
+#endif
+#if BBLITE_HAS_PHYSICS_QUERIES || BBLITE_HAS_PHYSICS_CHARACTER
 #include <BulletCollision/NarrowPhaseCollision/btGjkPairDetector.h>
 #include <BulletCollision/NarrowPhaseCollision/btPointCollector.h>
 #include <BulletCollision/NarrowPhaseCollision/btGjkEpaPenetrationDepthSolver.h>
+#endif
+#if BBLITE_HAS_PHYSICS_CHARACTER
+#include <LinearMath/btAabbUtil2.h>
+#include <BulletCollision/CollisionShapes/btTriangleShape.h>
+#endif
 #if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
 #include <bblite/pal_physics_debug.hpp>
 #endif
@@ -155,7 +163,9 @@ struct PhysicsShapeState {
     // Dynamic users retain a GImpact view of the same triangles. Static
     // users keep their BVH and its existing query/contact behavior.
     std::unique_ptr<btGImpactMeshShape> moving_mesh;
+#if BBLITE_HAS_PHYSICS_HEIGHTFIELD
     bool heightfield = false;
+#endif
     /**
      * Transform from Bullet's centre-of-mass/principal-axis body frame into
      * the node-local frame the pin exposes. A primitive contributes its
@@ -163,13 +173,17 @@ struct PhysicsShapeState {
      * inertia orientation.
      */
     btTransform node_from_body{btTransform::getIdentity()};
+#if BBLITE_HAS_PHYSICS_CHARACTER
+    /** The capsule endpoint the pin's support map prefers on a tie. */
     std::optional<btVector3> capsule_first_endpoint;
+#endif
     std::optional<double> authored_box_volume;
     PhysicsMassProperties mass_properties{};
     bool has_exact_mass_properties = false;
     ShapeMaterial material{};
     std::uint32_t membership_mask = 0xffffffffu;
     std::uint32_t collide_mask = 0xffffffffu;
+#if BBLITE_HAS_PHYSICS_TRIGGER
     /**
      * `HP_Shape_SetTrigger`. Havok flags the SHAPE; Bullet's equivalent --
      * `CF_NO_CONTACT_RESPONSE` -- is a property of the collision object, so
@@ -177,6 +191,7 @@ struct PhysicsShapeState {
      * shape.
      */
     bool is_trigger = false;
+#endif
     ~PhysicsShapeState() {
         for (const auto& child : children) --child->container_parents;
     }
@@ -313,6 +328,7 @@ struct PhysicsWorldState {
     // Includes pending additions. Sorted handle order preserves the solver's
     // insertion order when bodies migrate between floating-origin regions.
     std::vector<std::shared_ptr<PhysicsBodyState>> members;
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
     struct Hinge {
         std::shared_ptr<PhysicsBodyState> parent;
         std::shared_ptr<PhysicsBodyState> child;
@@ -327,11 +343,13 @@ struct PhysicsWorldState {
         Kind kind = Kind::hinge;
     };
     std::vector<Hinge> hinges;
-    std::size_t trigger_body_count = 0;
+#endif
     std::uint64_t stabilized_total = 0;
     std::unordered_map<std::uint64_t, ContactSnapshot> previous_contacts;
     std::unordered_map<std::uint64_t, bool> recovering_overlaps;
     std::vector<PhysicsCollisionEvent> collision_events;
+#if BBLITE_HAS_PHYSICS_TRIGGER
+    std::size_t trigger_body_count = 0;
     /**
      * The trigger pairs that overlapped at the end of the previous step.
      * Havok reports an ENTERED and an EXITED edge; Bullet reports the
@@ -343,7 +361,7 @@ struct PhysicsWorldState {
     /**
      * Scratch for the current step's pairs, kept here rather than built
      * per call: a default-constructed `unordered_set` allocates its
-     * sentinel on the Microsoft STL, so a fresh one every step was one
+     * sentinel on the Microsoft STL, so a fresh one every step is one
      * malloc and one free per world per step even with no trigger in the
      * scene. Swapped with `previous_triggers` and cleared, both tables'
      * buckets survive the frame.
@@ -351,6 +369,7 @@ struct PhysicsWorldState {
     std::unordered_set<std::uint64_t> current_triggers;
 
     std::vector<PhysicsTriggerEvent> trigger_events;
+#endif
     /**
      * Rebounds scheduled by this step's landings, applied through every
      * sub-step of the next one.
@@ -367,10 +386,12 @@ struct PhysicsWorldState {
     btScalar max_angular_speed = default_max_angular_speed;
     ~PhysicsWorldState() { close(); }
     void close() {
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
         for (auto& hinge : hinges) {
             if (hinge.attached && world) world->removeConstraint(hinge.joint.get());
         }
         hinges.clear();
+#endif
         for (const auto& member : members) {
             if (member->in_world && world) world->removeRigidBody(member->body.get());
             member->in_world = false;
@@ -379,7 +400,6 @@ struct PhysicsWorldState {
             member->owner_world.reset();
         }
         std::vector<std::shared_ptr<PhysicsBodyState>>().swap(members);
-        trigger_body_count = 0;
         world.reset();
         solver.reset();
         broadphase.reset();
@@ -387,14 +407,18 @@ struct PhysicsWorldState {
         configuration.reset();
         previous_contacts.clear();
         collision_events.clear();
+#if BBLITE_HAS_PHYSICS_TRIGGER
+        trigger_body_count = 0;
         previous_triggers.clear();
         current_triggers.clear();
         trigger_events.clear();
+#endif
         scheduled_bounces.clear();
         active_bounces.clear();
     }
 };
 
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
 namespace {
 void sync_constraint_membership(PhysicsWorldState& owner) {
     std::erase_if(owner.hinges, [](const auto& hinge) {
@@ -423,6 +447,7 @@ void sync_constraint_membership(PhysicsWorldState& owner) {
     }
 }
 }
+#endif
 
 namespace {
 
@@ -649,11 +674,13 @@ void clamp_world_velocities(PhysicsWorldState& entry) {
     }
 }
 
+#if BBLITE_HAS_PHYSICS_TRIGGER
 /** Whether an object wears the trigger flag `HP_Shape_SetTrigger` sets. */
 bool is_trigger_object(const btCollisionObject* object) {
     return (object->getCollisionFlags() &
             btCollisionObject::CF_NO_CONTACT_RESPONSE) != 0;
 }
+#endif
 
 int stabilize_contacting_bodies(
     PhysicsWorldState& world_entry,
@@ -671,6 +698,7 @@ int stabilize_contacting_bodies(
         const btPersistentManifold* manifold =
             world_entry.dispatcher->getManifoldByIndexInternal(
                 manifold_index);
+#if BBLITE_HAS_PHYSICS_TRIGGER
         // Passing through a trigger volume is not resting on anything, so
         // it must not count toward the contact-rest timer that puts a body
         // to sleep.
@@ -681,6 +709,7 @@ int stabilize_contacting_bodies(
                 manifold->getBody1()))) {
             continue;
         }
+#endif
         // Touching means within the threshold Bullet itself gives the
         // pair, which is what this timer's envelope was measured under
         // before thresholds became speculative.
@@ -747,6 +776,7 @@ int stabilize_contacting_bodies(
     return stabilized;
 }
 
+#if BBLITE_HAS_PHYSICS_TRIGGER
 /**
  * `HP_World_GetTriggerEvents`' stream.
  *
@@ -814,6 +844,7 @@ void collect_trigger_events(PhysicsWorldState& world_entry) {
     }
     world_entry.previous_triggers.swap(current);
 }
+#endif
 
 void collect_collision_events(PhysicsWorldState& world_entry) {
     std::unordered_map<std::uint64_t, ContactSnapshot> current;
@@ -827,11 +858,13 @@ void collect_collision_events(PhysicsWorldState& world_entry) {
             manifold->getBody0());
         const auto* object_b = static_cast<const btCollisionObject*>(
             manifold->getBody1());
+#if BBLITE_HAS_PHYSICS_TRIGGER
         // A trigger volume reports through the trigger stream and produces
         // no collision upstream, so it is not a collision here either.
         if (is_trigger_object(object_a) || is_trigger_object(object_b)) {
             continue;
         }
+#endif
         const auto* body_a = body_entry_of(object_a);
         const auto* body_b = body_entry_of(object_b);
         if (!body_a || !body_b || (!body_a->collision_events_enabled && !body_b->collision_events_enabled)) continue;
@@ -900,6 +933,7 @@ void mark_body_dirty(PhysicsBodyState& entry) {
     entry.needs_readd = true;
 }
 
+#if BBLITE_HAS_PHYSICS_TRIGGER
 /**
  * `HP_Shape_SetTrigger` reaching the object that wears the shape. Havok
  * keeps the flag on the shape; Bullet's `CF_NO_CONTACT_RESPONSE` is the
@@ -913,6 +947,7 @@ void apply_trigger_flag(PhysicsBodyState& entry, bool is_trigger) {
             ? flags | btCollisionObject::CF_NO_CONTACT_RESPONSE
             : flags & ~btCollisionObject::CF_NO_CONTACT_RESPONSE);
 }
+#endif
 
 void flush_pending_readds(PhysicsWorldState& world_entry) {
     for (const auto& member : world_entry.members) {
@@ -1164,7 +1199,9 @@ void schedule_landing_bounces(
         if (manifold->getNumContacts() == 0) continue;
         const auto* object_a = static_cast<const btCollisionObject*>(manifold->getBody0());
         const auto* object_b = static_cast<const btCollisionObject*>(manifold->getBody1());
+#if BBLITE_HAS_PHYSICS_TRIGGER
         if (is_trigger_object(object_a) || is_trigger_object(object_b)) continue;
+#endif
         PhysicsBodyState* entry_a = body_entry_of(object_a);
         PhysicsBodyState* entry_b = body_entry_of(object_b);
         if (entry_a == nullptr || entry_b == nullptr) continue;
@@ -1386,6 +1423,7 @@ void physics_world_set_gravity(
     world_at(world).world->setGravity(to_bt(gravity));
 }
 
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
 namespace {
 std::array<btVector3, 3> constraint_anchor_axes(const PhysicsConstraintAnchor& anchor) {
     auto axis = to_bt(anchor.axis);
@@ -1464,7 +1502,9 @@ void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle
     owner.hinges.push_back({parent.ownership, child.ownership, std::move(joint), anchor_a, anchor_b, a.node_from_body, b.node_from_body, collisions, false, radial.mode == PhysicsConstraintAxisMode::free ? PhysicsWorldState::Hinge::Kind::six_dof : PhysicsWorldState::Hinge::Kind::radial});
     sync_constraint_membership(owner);
 }
+#endif
 
+#if BBLITE_HAS_PHYSICS_FLOATING_ORIGIN
 PhysicsSpeedLimit physics_world_get_speed_limit(PhysicsWorldHandle world) {
     const PhysicsWorldState& entry = world_at(world);
     return PhysicsSpeedLimit{
@@ -1480,6 +1520,7 @@ void physics_world_set_speed_limit(
     entry.max_linear_speed = static_cast<btScalar>(max_linear);
     entry.max_angular_speed = static_cast<btScalar>(max_angular);
 }
+#endif
 
 void physics_world_add_body(PhysicsWorldHandle world, PhysicsBodyHandle body, bool start_asleep) {
     auto& entry = body_at(body);
@@ -1491,7 +1532,9 @@ void physics_world_add_body(PhysicsWorldHandle world, PhysicsBodyHandle body, bo
         if (auto previous = entry.owner_world.lock()) {
             physics_world_remove_body(PhysicsWorldHandle{previous->identity, previous}, body);
         }
+#if BBLITE_HAS_PHYSICS_TRIGGER
         if (entry.shape && entry.shape->is_trigger) ++target.trigger_body_count;
+#endif
     }
     entry.world = world.value;
     entry.owner_world = world.ownership;
@@ -1511,13 +1554,17 @@ void physics_world_remove_body(PhysicsWorldHandle world, PhysicsBodyHandle body)
     };
     std::erase_if(owner.scheduled_bounces, involves);
     std::erase_if(owner.active_bounces, involves);
+#if BBLITE_HAS_PHYSICS_TRIGGER
     if (entry.shape && entry.shape->is_trigger) --owner.trigger_body_count;
+#endif
     std::erase(owner.members, body.ownership);
     entry.in_world = false;
     entry.needs_readd = false;
     entry.world = 0;
     entry.owner_world.reset();
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
     sync_constraint_membership(owner);
+#endif
 }
 
 void physics_world_release(PhysicsWorldHandle world) {
@@ -1533,12 +1580,17 @@ void validate_container_children(const PhysicsShapeState& root, const PhysicsSha
         if (child->triangle_mesh) {
             throw std::runtime_error("Triangle meshes nested in physics containers are not lowered.");
         }
+#if BBLITE_HAS_PHYSICS_TRIGGER
+        const bool trigger_mismatch = child->is_trigger != root.is_trigger;
+#else
+        const bool trigger_mismatch = false;
+#endif
         if (child->material.friction != root.material.friction ||
             child->material.restitution != root.material.restitution ||
             child->material.friction_combine != root.material.friction_combine ||
             child->material.restitution_combine != root.material.restitution_combine ||
             child->membership_mask != root.membership_mask ||
-            child->collide_mask != root.collide_mask || child->is_trigger != root.is_trigger) {
+            child->collide_mask != root.collide_mask || trigger_mismatch) {
             throw std::runtime_error("Physics container children require matching material, masks and trigger state.");
         }
         validate_container_children(root, *child);
@@ -1572,7 +1624,9 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         }
     }
     flush_pending_readds(entry);
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
     sync_constraint_membership(entry);
+#endif
     // An impulse is clamped at its write below. This pass also covers any
     // velocity written by another reached body operation before this step.
     clamp_world_velocities(entry);
@@ -1590,11 +1644,13 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         1, static_cast<int>(std::lround(seconds / havok_substep_seconds)));
     const btScalar substep_seconds =
         static_cast<btScalar>(seconds / substeps);
+#if BBLITE_HAS_PHYSICS_CONSTRAINTS
     const btScalar step_ratio = btMin(btScalar(1), substep_seconds / static_cast<btScalar>(havok_substep_seconds));
     for (auto& joint : entry.hinges) {
         if (joint.attached && joint.kind == PhysicsWorldState::Hinge::Kind::radial)
             static_cast<RadialDistanceConstraint&>(*joint.joint).begin_frame(step_ratio * step_ratio);
     }
+#endif
     cache_velocities(entry, &PhysicsBodyState::step_start);
     // The landings of the previous step rebound during this one; the active
     // list is emptied below once they have, so the swap leaves the schedule
@@ -1630,7 +1686,9 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
     // too before transforms and counters are read.
     clamp_world_velocities(entry);
     collect_collision_events(entry);
+#if BBLITE_HAS_PHYSICS_TRIGGER
     collect_trigger_events(entry);
+#endif
     const int stabilized_bodies =
         stabilize_contacting_bodies(entry, seconds);
     entry.stabilized_total += static_cast<std::uint64_t>(stabilized_bodies);
@@ -1716,6 +1774,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         std::getenv("BBLITE_PHYSICS_TRACE") != nullptr;
     if (trace) {
         static int step_index = 0;
+#if BBLITE_HAS_PHYSICS_TRIGGER
         // A trigger event carries no pixels — the pin's own handler for it
         // writes a dataset flag, which erases — so the trace is the only
         // place its two edges are observable at all.
@@ -1727,6 +1786,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
                 event.type == PhysicsTriggerEventType::entered ? "ENTERED"
                                                                : "EXITED");
         }
+#endif
         const btDiscreteDynamicsWorld& stepped = *entry.world;
         for (int i = 0; i < stepped.getNumCollisionObjects(); ++i) {
             const btVector3 origin = stepped.getCollisionObjectArray()[i]
@@ -1749,10 +1809,12 @@ const std::vector<PhysicsCollisionEvent>& physics_world_collision_events(
     return world_at(world).collision_events;
 }
 
+#if BBLITE_HAS_PHYSICS_TRIGGER
 const std::vector<PhysicsTriggerEvent>& physics_world_trigger_events(
     PhysicsWorldHandle world) {
     return world_at(world).trigger_events;
 }
+#endif
 
 PhysicsRaycastResult physics_world_raycast(
     PhysicsWorldHandle world,
@@ -1763,6 +1825,7 @@ PhysicsRaycastResult physics_world_raycast(
     bool should_hit_triggers) {
     const btVector3 ray_from = to_bt(from);
     const btVector3 ray_to = to_bt(to);
+#if BBLITE_HAS_PHYSICS_TRIGGER
     struct FilteredRayCallback final : btCollisionWorld::ClosestRayResultCallback {
         bool include_triggers;
 
@@ -1775,6 +1838,11 @@ PhysicsRaycastResult physics_world_raycast(
                     static_cast<const btCollisionObject*>(proxy->m_clientObject)));
         }
     } callback(ray_from, ray_to, should_hit_triggers);
+#else
+    // No shape wears the trigger flag, so the option has nothing to exclude.
+    static_cast<void>(should_hit_triggers);
+    btCollisionWorld::ClosestRayResultCallback callback(ray_from, ray_to);
+#endif
     callback.m_collisionFilterGroup = static_cast<int>(membership);
     callback.m_collisionFilterMask = static_cast<int>(collide_with);
     world_at(world).world->rayTest(ray_from, ray_to, callback);
@@ -1803,6 +1871,7 @@ PhysicsRaycastResult physics_world_raycast(
     };
 }
 
+#if BBLITE_HAS_PHYSICS_QUERIES || BBLITE_HAS_PHYSICS_CHARACTER
 namespace {
 
 btTransform query_transform(const PhysicsTransform& transform) {
@@ -1842,9 +1911,11 @@ private:
 };
 
 bool query_accepts(const PhysicsShapeState& query, const PhysicsBodyState& body,
-                   bool include_triggers, std::uint32_t ignored = 0) {
+                   [[maybe_unused]] bool include_triggers, std::uint32_t ignored = 0) {
     return body.in_world && body.shape && body.identity != ignored &&
+#if BBLITE_HAS_PHYSICS_TRIGGER
         (include_triggers || !body.shape->is_trigger) &&
+#endif
         (query.membership_mask & body.shape->collide_mask) != 0 &&
         (body.shape->membership_mask & query.collide_mask) != 0;
 }
@@ -1905,7 +1976,9 @@ void select_parallel_capsule_feature(btPointCollector& point,
     }
 }
 }
+#endif
 
+#if BBLITE_HAS_PHYSICS_QUERIES
 PhysicsShapeQueryResult physics_world_shape_proximity(
     PhysicsWorldHandle world, PhysicsShapeHandle shape, const PhysicsTransform& transform,
     double max_distance, bool should_hit_triggers) {
@@ -1976,7 +2049,9 @@ PhysicsShapeQueryResult physics_world_shape_cast(
     if (const auto* body = body_entry_of(callback.m_hitCollisionObject)) result.body_identity = body->identity;
     return result;
 }
+#endif
 
+#if BBLITE_HAS_PHYSICS_CHARACTER
 namespace {
 
 // The pin's capsule support map selects its first endpoint when both ends
@@ -2163,6 +2238,7 @@ std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_cast(
     limit_collector(collector.hits, capacity);
     return std::move(collector.hits);
 }
+#endif
 
 // --- Shapes ----------------------------------------------------------
 
@@ -2247,7 +2323,9 @@ PhysicsShapeHandle physics_shape_create_capsule(
             static_cast<btScalar>(radius),
             segment.half_height * btScalar(2)),
         translated_frame(segment.center)), "CAPSULE", point_a, point_b, radius);
+#if BBLITE_HAS_PHYSICS_CHARACTER
     shape_at(handle).capsule_first_endpoint = to_bt(point_a);
+#endif
     return handle;
 }
 
@@ -2391,6 +2469,7 @@ PhysicsShapeHandle physics_shape_create_container() {
         btTransform::getIdentity()), "CONTAINER");
 }
 
+#if BBLITE_HAS_PHYSICS_HEIGHTFIELD
 PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
     std::array<double, 3> scale, const std::vector<float>& heights) {
     if (samples_x < 2 || samples_x != samples_z || samples_x > 65535u ||
@@ -2422,6 +2501,7 @@ PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std
 #endif
     return record_debug_inputs(shape, "HEIGHTFIELD", samples_x, samples_z, scale, heights);
 }
+#endif
 
 namespace {
 // A container's scale belongs to this placement, not the shared child.
@@ -2553,6 +2633,7 @@ void physics_shape_set_filter_collide_mask(
     for (auto* body : shape_entry.users) mark_body_dirty(*body);
 }
 
+#if BBLITE_HAS_PHYSICS_TRIGGER
 void physics_shape_set_trigger(PhysicsShapeHandle shape, bool is_trigger) {
     PhysicsShapeState& shape_entry = shape_at(shape);
     if (shape_entry.is_trigger == is_trigger) return;
@@ -2565,6 +2646,7 @@ void physics_shape_set_trigger(PhysicsShapeHandle shape, bool is_trigger) {
         apply_trigger_flag(*body, is_trigger);
     }
 }
+#endif
 
 // --- Bodies ----------------------------------------------------------
 
@@ -2680,9 +2762,11 @@ void physics_body_set_motion_type(
     PhysicsBodyHandle body,
     PhysicsMotionType motion_type) {
     PhysicsBodyState& entry = body_at(body);
+#if BBLITE_HAS_PHYSICS_HEIGHTFIELD
     if (entry.shape && entry.shape->heightfield && motion_type != PhysicsMotionType::immovable) {
         throw std::runtime_error("Physics heightfields require a static body.");
     }
+#endif
     int flags = entry.body->getCollisionFlags();
     flags &= ~(btCollisionObject::CF_STATIC_OBJECT |
                btCollisionObject::CF_KINEMATIC_OBJECT);
@@ -2708,14 +2792,18 @@ void physics_body_set_shape(
     PhysicsShapeHandle shape) {
     PhysicsBodyState& entry = body_at(body);
     PhysicsShapeState& shape_entry = shape_at(shape);
+#if BBLITE_HAS_PHYSICS_HEIGHTFIELD
     if (shape_entry.heightfield && !entry.body->isStaticObject()) throw std::runtime_error("Physics heightfields require a static body.");
+#endif
     const bool shape_changed = entry.shape != shape.ownership;
     if (shape_changed) {
         shape_entry.users.push_back(&entry);
+#if BBLITE_HAS_PHYSICS_TRIGGER
         if (auto world = entry.owner_world.lock()) {
             if (entry.shape && entry.shape->is_trigger) --world->trigger_body_count;
             if (shape_entry.is_trigger) ++world->trigger_body_count;
         }
+#endif
         if (entry.shape) std::erase(entry.shape->users, &entry);
         entry.shape = shape.ownership;
     }
@@ -2726,7 +2814,9 @@ void physics_body_set_shape(
     // shape before the mass. Re-attaching the shape the body already wears
     // is the second half of that reset, so both arms are the one call.
     if (shape_changed || entry.mass_frame_shape) wear_shared_shape(entry);
+#if BBLITE_HAS_PHYSICS_TRIGGER
     apply_trigger_flag(entry, shape_entry.is_trigger);
+#endif
     // The pin writes the node transform before the shape, so the shape's
     // own centre offset was not known then. Re-apply it now.
     write_world_transform(entry, entry.requested);

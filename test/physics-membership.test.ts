@@ -15,6 +15,7 @@ test("physics regions own pending and active bodies through migration and releas
     const executable = join(output, "physics-membership-check.exe");
     runNativeFixtureCompiler(tools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2",
+        "/DBBLITE_HAS_PHYSICS_TRIGGER=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0",
         "test/fixtures/physics-membership-check.cpp", "/link",

@@ -225,6 +225,7 @@ std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) {
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
+        "/DBBLITE_HAS_PHYSICS_TRIGGER=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
         "/I", join(output, "upstream/include"), "/I", join(output, "upstream/src"),
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0",

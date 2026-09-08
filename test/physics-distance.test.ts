@@ -45,6 +45,7 @@ test("radial constraints preserve measured limit correction, predicted anchors a
     writeFileSync(join(output, "radial-cases.inc"), checks.join("\n"));
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
+        "/DBBLITE_HAS_PHYSICS_CONSTRAINTS=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include", "/I", output,
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0", "test/fixtures/physics-distance-check.cpp",
         "/link", "/OPT:REF", `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`, "BulletDynamics.lib", "BulletCollision.lib", "LinearMath.lib"]);

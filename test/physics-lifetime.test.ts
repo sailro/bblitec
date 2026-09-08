@@ -11,10 +11,13 @@ const tools = optionalNativeFixtureTools();
 test("generated physics follows engine ownership across teardown and retained callbacks", { skip: !tools }, () => {
     const output = resolve("artifacts/physics-lifetime-check");
     mkdirSync(output, { recursive: true });
-    emitUpstreamGenerated(output, ["core", "camera:free", "renderer:scene", "physics:world"]);
+    // The fixture migrates a body between regions, which is the
+    // floating-origin module's arm.
+    emitUpstreamGenerated(output, ["core", "camera:free", "renderer:scene", "physics:world", "physics:floating-origin"]);
     const executable = join(output, "physics-lifetime-check.exe");
     runNativeFixtureCompiler(tools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
+        "/DBBLITE_HAS_PHYSICS_FLOATING_ORIGIN=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
         "/I", join(output, "upstream/include"), "/I", join(output, "upstream/src"),
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0",

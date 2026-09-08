@@ -19,7 +19,18 @@ import { PhysicsLowerer } from "../src/lowering/physics-lowerer.js";
  * declaration and hands back a plausible number.
  */
 
+/** The plain tree: `physics:world` and `physics:aggregate` alone. */
 const lowered = new PhysicsLowerer(new LoweringContext()).lowerPhysics();
+
+/**
+ * The tree that also reaches the two standalone pinned modules,
+ * `havok-trigger.ts` and `havok-floating-origin.ts`, whose arms the plain
+ * emission leaves out.
+ */
+const reachingModules = new PhysicsLowerer(new LoweringContext()).lowerPhysics({
+    trigger: true,
+    floatingOrigin: true,
+});
 
 /**
  * One emitted function's body, from its signature to its own closing brace.
@@ -28,12 +39,12 @@ const lowered = new PhysicsLowerer(new LoweringContext()).lowerPhysics();
  * occurrence happens to sit in the right order, and the standalone entry
  * points now make the same PAL calls the aggregate does.
  */
-function emittedBody(signature: string): string {
-    const start = lowered.source.indexOf(signature);
+function emittedBody(signature: string, source = lowered.source): string {
+    const start = source.indexOf(signature);
     assert.ok(start >= 0, `expected the emitted source to define ${signature}`);
-    const end = lowered.source.indexOf("\n}\n", start);
+    const end = source.indexOf("\n}\n", start);
     assert.ok(end > start, `expected ${signature} to close`);
-    return lowered.source.slice(start, end);
+    return source.slice(start, end);
 }
 
 test("the step clamp flows from the pinned MAX_STEP_MS", () => {
@@ -501,23 +512,50 @@ test("the trigger stream carries the pin's own two event names", () => {
     // compares against those strings, so the generated name function is
     // what a comparison reads and it must spell them the pin's way.
     assert.match(
-        lowered.header,
+        reachingModules.header,
         /enum class PhysicsTriggerType \{\n    ENTERED,\n    EXITED,\n\};/,
     );
     assert.match(
-        lowered.source,
+        reachingModules.source,
         /case PhysicsTriggerType::ENTERED: return "ENTERED";/,
     );
     assert.match(
-        lowered.source,
+        reachingModules.source,
         /case PhysicsTriggerType::EXITED: return "EXITED";/,
     );
     // `registerTriggerDrain` drains through the post-step hook rather than
     // through a channel of its own, which is what orders a trigger event
     // after the step that produced it.
     assert.match(
-        lowered.source,
+        reachingModules.source,
         /void on_physics_trigger\([\s\S]*?on_physics_after_step\(/,
+    );
+});
+
+test("a tree that reaches neither standalone module emits neither arm", () => {
+    // `havok-trigger.ts` and `havok-floating-origin.ts` are the pin's own
+    // opt-in modules -- a bundler drops each from a scene that never
+    // imports it -- and the PAL compiles their families behind
+    // `BBLITE_HAS_PHYSICS_TRIGGER` / `_FLOATING_ORIGIN`. So the plain tree
+    // must neither declare nor call either family, or it would name PAL
+    // entry points that its build leaves out.
+    for (const text of [lowered.header, lowered.source]) {
+        assert.doesNotMatch(text, /PhysicsTriggerType|PhysicsTriggerInfo|on_physics_trigger|set_physics_shape_is_trigger|physics_world_trigger_events|physics_shape_set_trigger/);
+        assert.doesNotMatch(text, /PhysicsRegion|PhysicsFloatingOrigin|enable_havok_floating_origin|pinned_floating_origin_radius|fo_step_world|get_or_create_region|physics_world_get_speed_limit|physics_world_set_speed_limit|world\.fo|body\.region/);
+    }
+    // The plain factory keeps the pin's add-then-transform pair and its
+    // rollback, with no region to consult.
+    const factory = emittedBody("PhysicsBody create_physics_body(");
+    assert.match(
+        factory,
+        /try \{\n        pal::physics_world_add_body\(\n            world\.handle, body\.handle, starts_asleep\);\n        sync_node_to_body\(engine, body, false\);\n    \} catch \(\.\.\.\) \{\n        pal::physics_world_remove_body\(world\.handle, body\.handle\);/,
+    );
+    // `setPhysicsGravity` takes the pin's absent-`_fo` arm alone.
+    const gravity = emittedBody("void set_physics_gravity(PhysicsWorldHandle handle");
+    assert.match(gravity, /static_cast<void>\(world_position\);\n    pal::physics_world_set_gravity\(world\.handle, values\);/);
+    assert.match(
+        emittedBody("void set_physics_gravity(PhysicsWorldHandle handle", reachingModules.source),
+        /if \(world\.fo\) \{[\s\S]*?get_or_create_region\(world, \*world_position\)[\s\S]*?\n    pal::physics_world_set_gravity\(world\.handle, values\);/,
     );
 });
 
@@ -527,7 +565,7 @@ test("the floating-origin radius flows from the pin's own parameter", () => {
     // argument, which is where the pin applies the default too, so a bump
     // that moved the radius would move every far-from-origin simulation.
     assert.match(
-        lowered.header,
+        reachingModules.header,
         /inline constexpr double pinned_floating_origin_radius = 100000\.0;/,
     );
 });
@@ -537,13 +575,14 @@ test("a floating-origin world replaces the single-world frame", () => {
     // neither the prestep gate nor the after-step hooks. Both are the pin's
     // and both are observable, so the emitted arm has to return too.
     assert.match(
-        emittedBody("void step_world(PhysicsWorld& world, double delta_ms)"),
+        emittedBody("void step_world(PhysicsWorld& world, double delta_ms)", reachingModules.source),
         /if \(world\.fo\) \{\n        fo_step_world\(world, dt\);\n        return;\n    \}/,
     );
     // `createPhysicsBody`'s own `_fo` arm: `placeBody` REPLACES the plain
     // add-then-transform pair rather than running before it.
     const factory = emittedBody(
         "PhysicsBody create_physics_body(",
+        reachingModules.source,
     );
     assert.match(
         factory,
@@ -557,7 +596,7 @@ test("the region phases keep the pin's own order", () => {
     // re-based after its node sync would be stepped from the previous
     // region's frame, so the first edge is as observable as the last.
     assert.match(
-        emittedBody("void fo_step_world(PhysicsWorld& world, double dt)"),
+        emittedBody("void fo_step_world(PhysicsWorld& world, double dt)", reachingModules.source),
         /re_region_body\([\s\S]*?fo_sync_node_to_body\([\s\S]*?physics_world_step\([\s\S]*?fo_sync_body_to_node\([\s\S]*?gc_regions\(world\);/,
     );
     // `_getOrCreateRegion` seeds a new region from the CONTEXT's gravity
@@ -566,6 +605,7 @@ test("the region phases keep the pin's own order", () => {
     assert.match(
         emittedBody(
             "[[nodiscard]] pal::PhysicsWorldHandle get_or_create_region(",
+            reachingModules.source,
         ),
         /physics_world_create\(\);\n    pal::physics_world_set_gravity\(new_world, fo\.gravity\);\n[\s\S]*?physics_world_get_speed_limit\(world\.handle\);\n    pal::physics_world_set_speed_limit\(/,
     );
@@ -574,6 +614,7 @@ test("the region phases keep the pin's own order", () => {
 test("a migrating body carries its velocity and the 20% margin", () => {
     const body = emittedBody(
         "void re_region_body(PhysicsWorld& world, PhysicsBody& body)",
+        reachingModules.source,
     );
     // `const margin = fo.radius * 1.2` and the squared test it feeds: the
     // hysteresis is what stops a body on a boundary re-regioning every step.
@@ -591,11 +632,11 @@ test("the node keeps true world coordinates under floating origin", () => {
     // and the node holds the real one, so the render path -- which
     // subtracts the camera's own offset -- is untouched.
     assert.match(
-        emittedBody("void fo_sync_body_to_node("),
+        emittedBody("void fo_sync_body_to_node(", reachingModules.source),
         /transform\.position\[0\] \+ origin\.x,\n            transform\.position\[1\] \+ origin\.y,\n            transform\.position\[2\] \+ origin\.z,/,
     );
     assert.match(
-        emittedBody("void fo_sync_node_to_body("),
+        emittedBody("void fo_sync_node_to_body(", reachingModules.source),
         /pose\.position\.x - origin\.x,\n             pose\.position\.y - origin\.y,\n             pose\.position\.z - origin\.z/,
     );
 });
@@ -611,7 +652,7 @@ test("no solver is named in generated code", () => {
             .split("\n")
             .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
             .join("\n");
-    for (const text of [lowered.header, lowered.source]) {
+    for (const text of [lowered.header, lowered.source, reachingModules.header, reachingModules.source]) {
         assert.doesNotMatch(
             code(text),
             /bullet|btRigidBody|btVector3|hknp/i,
