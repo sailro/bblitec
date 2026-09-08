@@ -10590,11 +10590,16 @@ SceneRun run_dawn_engine(Engine& engine) {
         [&](const upstream::RenderItem& item) {
         const ModelGeometry& geometry = engine.geometries[item.geometry];
         const MeshRecord& mesh_record = engine.meshes[item.mesh.value];
-        std::vector<std::uint32_t> clone_indices;
-        if (mesh_record.detached_imported_mesh && geometry.source_indices_reversed) {
-            node_source_indices(geometry, clone_indices);
+        const bool use_source_indices = mesh_record.detached_imported_mesh
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            || item.material_kind == upstream::RenderMaterialKind::node
+#endif
+            ;
+        std::vector<std::uint32_t> source_indices;
+        if (use_source_indices && geometry.source_indices_reversed) {
+            node_source_indices(geometry, source_indices);
         }
-        const auto& upload_indices = clone_indices.empty() ? geometry.indices : clone_indices;
+        const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
         const bool shader_material =
             item.material_kind ==
             upstream::RenderMaterialKind::shader;
@@ -10658,13 +10663,6 @@ SceneRun run_dawn_engine(Engine& engine) {
             mesh.indices = mesh.shared_geometry->index_buffer;
 #endif
         } else {
-            std::vector<std::uint32_t> source_indices;
-            std::span<const std::uint32_t> indices = upload_indices;
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-            if (item.material_kind == upstream::RenderMaterialKind::node) {
-                indices = node_source_indices(geometry, source_indices);
-            }
-#endif
             mesh.vertices = create_buffer(
                 state,
                 WGPUBufferUsage_Vertex,
@@ -10673,11 +10671,11 @@ SceneRun run_dawn_engine(Engine& engine) {
             mesh.indices = create_buffer(
                 state,
                 WGPUBufferUsage_Index,
-                indices.data(), indices.size_bytes());
+                upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
             if (item.material_kind == upstream::RenderMaterialKind::node) {
                 state.node_capture.upload(mesh.vertices, "node-vertices", vertices.data(), vertices.size() * sizeof(GpuVertex));
-                state.node_capture.upload(mesh.indices, "node-indices", indices.data(), indices.size_bytes());
+                state.node_capture.upload(mesh.indices, "node-indices", upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
             }
 #endif
         }
