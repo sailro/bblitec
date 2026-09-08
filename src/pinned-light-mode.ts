@@ -13,12 +13,73 @@
  * half is not a second spelling — `pinnedLightModeCpp` enumerates THIS
  * function over its whole domain and emits the answers.
  */
+import ts from "typescript";
+import { LoweringContext } from "./lowering/context.js";
+import { sharedUpstreamStore } from "./upstream-source.js";
+
 export type PinnedLightMode = 0 | 1 | 2;
+
+const pbrRenderableModule = "src/material/pbr/pbr-renderable.ts";
+
+/**
+ * The rule as `rebuildSingle` spells it. `pinnedPbrLightMode` below is
+ * its restatement, and this text is what anchors that restatement to the
+ * pin: the initializer is compared structurally on first use, so a pin
+ * that changes the arm selection fails generation instead of leaving
+ * both consumers agreeing with each other and not with upstream.
+ */
+const pinnedLightModeRule =
+    "lightCount === 0 ? 0 : lightCount === 1 && !receiveShadows ? 1 : 2";
+
+let anchored = false;
+
+function anchorPinnedLightMode(): void {
+    if (anchored) return;
+    const context = new LoweringContext(sharedUpstreamStore());
+    const file = context.sourceFile(pbrRenderableModule);
+    const declarations = (
+        root: ts.Node,
+        name: string,
+    ): (ts.VariableDeclaration & { initializer: ts.Expression })[] =>
+        context.findNodes(
+            root,
+            (node): node is ts.VariableDeclaration & {
+                initializer: ts.Expression;
+            } =>
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === name &&
+                node.initializer !== undefined,
+        );
+    const rebuilds = declarations(file, "rebuildSingle");
+    const rebuild = rebuilds[0];
+    if (rebuilds.length !== 1 || !rebuild) {
+        return context.contractError(
+            file,
+            "Expected pbr-renderable.ts to declare rebuildSingle once.",
+        );
+    }
+    const lightModes = declarations(rebuild, "lightMode");
+    const lightMode = lightModes[0];
+    if (lightModes.length !== 1 || !lightMode) {
+        return context.contractError(
+            rebuild,
+            "Expected rebuildSingle to derive lightMode once.",
+        );
+    }
+    context.assertExpressionShape(
+        lightMode.initializer,
+        pinnedLightModeRule,
+        "rebuildSingle's light mode",
+    );
+    anchored = true;
+}
 
 export function pinnedPbrLightMode(
     lightCount: number,
     receivesShadows: boolean,
 ): PinnedLightMode {
+    anchorPinnedLightMode();
     if (lightCount === 0) return 0;
     return lightCount === 1 && !receivesShadows ? 1 : 2;
 }
