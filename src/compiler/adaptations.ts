@@ -71,8 +71,8 @@ export function compileAdaptations(
         adaptations.push({
             id: "retained-canvas-surfaces", category: "platform", risk: "medium",
             sourceSemantics: "Each canvas has its own swapchain, scene targets, projection and pointer controls on a shared device.",
-            nativeSemantics: "Scene targets follow retained host canvas rectangles and are composed into one OS window. Mouse capture remains with the canvas where the drag began. Reviewed host companions provide layout and labels; native target resize follows layout each frame.",
-            validation: ["surface admission tests", "scene227 and scene228 full-page/canvas gates and independent camera/resize replay"],
+            nativeSemantics: "Scene targets follow retained host canvas rectangles and are composed into one OS window; a surface canvas the source appended to host chrome outside the projected document has no rectangle and shares the window in equal horizontal panes with the primary scene, in registration order. Mouse capture remains with the canvas where the drag began. Reviewed host companions provide layout and labels; native target resize follows layout each frame.",
+            validation: ["surface admission tests", "scene227 and scene228 full-page/canvas gates and independent camera/resize replay", "antigravity-racer split-screen check (both equal panes present on both backends)"],
         });
     }
     if (features.includes("platform:workers")) {

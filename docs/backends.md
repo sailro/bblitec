@@ -97,7 +97,10 @@ for every multi-canvas source shape.
 ## Retained UI
 
 Same-engine canvas scenes render to independent targets sized from retained canvas rectangles;
-presentation applies each page offset once and layout changes recreate affected targets.
+presentation applies each page offset once and layout changes recreate affected targets. A
+surface canvas the source appended to host chrome outside the projected document has no
+rectangle, so it shares the window in equal horizontal panes with the primary scene, in
+registration order (antigravity-racer's second player).
 
 RmlUi emits backend-neutral geometry, texture updates, scissors, transforms and
 blur stages. Backend caches own uploads, multisample UI targets and premultiplied
