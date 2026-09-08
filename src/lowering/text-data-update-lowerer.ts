@@ -271,9 +271,9 @@ inline void replace_default_text_run(const TextData& data,const TextRun& previou
 }
 inline void update_default_text_data(const TextData& data, std::string_view text) {
     if(!data || !data->live)throw std::runtime_error("Default text data lacks a compiled live font repertoire.");
-    const auto layout=layout_text(*data->live->font,text,data->live->font_size,data->live->options);
+    auto layout=layout_text(*data->live->font,text,data->live->font_size,data->live->options);
     (void)text_data_runs(data);
-    auto run=std::make_shared<TextRunState>();run->layout=layout;run->color=data->live->runs->front()->color;
+    auto run=std::make_shared<TextRunState>();run->layout=std::move(layout);run->color=data->live->runs->front()->color;
     replace_default_text_run(data,data->live->runs->front(),run);
 }
 TextData create_compiled_text_data(std::uint32_t index);
@@ -281,7 +281,7 @@ inline TextData create_live_text_data(std::uint32_t index, std::string_view text
     auto data=create_compiled_text_data(index);
     auto& live=*data->live;
     if(color)for(std::size_t i=0;i<4;++i)live.color[i]=(*color)[i];
-    const auto layout=layout_text(*live.font,text,live.font_size,live.options);
+    auto layout=layout_text(*live.font,text,live.font_size,live.options);
     live.instances.assign(${numeric("TEXT_INSTANCE_FLOATS")},0);
     live.styles.assign(${numeric("TEXT_STYLE_FLOATS")},0);
     live.version=1; live.style_version=2; live.layout_version=0;
@@ -298,7 +298,7 @@ inline TextData create_live_text_data(std::uint32_t index, std::string_view text
     ++live.version; ++live.layout_version;
     data->payload->width=layout.width; data->payload->height=layout.height;
     text_update_detail::publish(*data);
-    auto run=std::make_shared<TextRunState>();run->layout=layout;run->color=color?*color:js::Tuple<4>{live.color};live.runs->push_back(run);
+    auto run=std::make_shared<TextRunState>();run->layout=std::move(layout);run->color=color?*color:js::Tuple<4>{live.color};live.runs->push_back(run);
     return data;
 }
 } // namespace bbl

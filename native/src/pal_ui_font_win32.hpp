@@ -139,7 +139,7 @@ class Win32UiFontEngine final : public Rml::FontEngineInterface {
     }
     // Skia's three-bit luminance buckets and sRGB pre-blend. Coverage is
     // premultiplied once by RmlUi; the source foreground color stays separate.
-    static std::array<std::uint8_t, 256> coverage_table(unsigned green) {
+    static std::array<std::uint8_t, 256> make_coverage_table(unsigned green) {
         const unsigned bucket = green >> 5;
         const float source = static_cast<float>((bucket << 5) | (bucket << 2) | (bucket >> 1)) / 255.f;
         const auto linear = [](float value) { return value <= .04045f ? value / 12.92f : std::pow((value + .055f) / 1.055f, 2.4f); };
@@ -154,6 +154,15 @@ class Win32UiFontEngine final : public Rml::FontEngineInterface {
             result[i] = static_cast<std::uint8_t>(std::clamp(std::lround(corrected * 255.f), 0l, 255l));
         }
         return result;
+    }
+    static const std::array<std::uint8_t, 256>& coverage_table(unsigned green) {
+        static const auto tables = [] {
+            std::array<std::array<std::uint8_t, 256>, 8> result{};
+            for (unsigned bucket = 0; bucket < result.size(); ++bucket)
+                result[bucket] = make_coverage_table(bucket << 5);
+            return result;
+        }();
+        return tables[green >> 5];
     }
     Glyph& glyph(Face& face, UINT16 index, int quarter, unsigned green) {
         const auto key = std::tuple{index, quarter, green >> 5};
@@ -172,7 +181,7 @@ class Win32UiFontEngine final : public Rml::FontEngineInterface {
         if (width && height) {
             std::vector<std::uint8_t> mask(static_cast<std::size_t>(width) * height * 3);
             check(analysis->CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &rect, mask.data(), static_cast<UINT32>(mask.size())), "glyph coverage");
-            const auto table = coverage_table(green);
+            const auto& table = coverage_table(green);
             std::vector<Rml::byte> pixels(static_cast<std::size_t>(width) * height * 4);
             for (std::size_t p = 0; p < mask.size() / 3; ++p) {
                 const auto alpha = table[(static_cast<unsigned>(mask[p * 3]) + mask[p * 3 + 1] + mask[p * 3 + 2]) / 3];

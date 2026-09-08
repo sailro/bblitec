@@ -474,6 +474,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
     },
   ): void;
   recordUnknownSceneMeshMaterial(materialIndex: number): void;
+  recordUnknownStandardMeshMaterial(): void;
   recordUnknownSceneMaterialAssignment(): void;
   recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
   /** Marks a scene-code mesh as carrying a skeleton for its feature word. */
@@ -2028,6 +2029,9 @@ export function emitPropertyAssignment(
       }
       if (target.sceneMeshIndex === undefined && material.scenePbrMaterialIndex !== undefined) {
         context.recordUnknownSceneMeshMaterial(material.scenePbrMaterialIndex);
+      }
+      if (meshProfile === undefined && material.standardMaterial) {
+        context.recordUnknownStandardMeshMaterial();
       }
       if (material.scenePbrMaterialIndex === undefined && !material.standardMaterial &&
           material.nodeMaterialIndex === undefined && material.shaderVariant === undefined) {

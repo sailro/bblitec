@@ -107,11 +107,6 @@ std::array<float, 16> physics_matrix_product(const std::array<float, 16>& a, con
     mat4_multiply_into(result, 0, a, 0, b, 0);
     return result;
 }
-std::array<float, 16> physics_node_world(const Engine& engine, PhysicsNodeRef node) {
-    if (node.kind == PhysicsNodeKind::mesh) return mesh_world_matrix(engine, engine.meshes.at(node.value));
-    if (node.value >= engine.transform_nodes.size()) throw std::runtime_error("Physics geometry requires a live node.");
-    return transform_node_world(engine, TransformNodeHandle{node.value});
-}
 std::array<float, 16> physics_root_scale(double x, double y, double z) {
     std::array<float, 16> out{};
 ${scaleBody}
@@ -164,6 +159,11 @@ void append_physics_mesh_geometry(
 }
 `,
         source: `
+std::array<float, 16> physics_node_world(const Engine& engine, PhysicsNodeRef node) {
+    if (node.kind == PhysicsNodeKind::mesh) return mesh_world_matrix(engine, engine.meshes.at(node.value));
+    if (node.value >= engine.transform_nodes.size()) throw std::runtime_error("Physics geometry requires a live node.");
+    return transform_node_world(engine, TransformNodeHandle{node.value});
+}
 PhysicsShape create_physics_mesh_shape(
     PhysicsWorldHandle handle, PhysicsShapeType type, PhysicsNodeRef root, bool include_child_meshes) {
     const bool collect_indices = type == PhysicsShapeType::MESH;

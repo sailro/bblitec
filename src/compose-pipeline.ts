@@ -1063,7 +1063,9 @@ export async function composeScenePipeline({
                 sceneMeshFeatureValues: [
                     ...new Set(
                         expandRuntimeMeshFeatureSets(
-                            renderableMeshFeatures,
+                            result.manifest.standardMaterialUnknownMesh
+                                ? renderableMeshFeatures
+                                : standardSceneMeshFeatures,
                             dynamicReceiverBits,
                         ),
                     ),

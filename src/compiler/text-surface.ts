@@ -2,6 +2,7 @@
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";
+import { unwrapExpression } from "./user-functions.js";
 
 export type TextTransform = "position" | "scaling" | "rotation" | "rotationQuaternion" | "positionPx";
 const transforms: readonly string[] = ["position", "scaling", "rotation", "rotationQuaternion"];
@@ -29,8 +30,7 @@ export interface TextSurfaceContext {
  * install the pin's style seams until its setter receives a changed offset. */
 export function compileTextModuleValue(context: TextSurfaceContext, expression: ts.PropertyAccessExpression): Value | undefined {
     if (expression.name.text !== "setFontWeightOffset") return undefined;
-    let awaited: ts.Expression = expression.expression;
-    while (ts.isParenthesizedExpression(awaited) || ts.isAsExpression(awaited) || ts.isNonNullExpression(awaited)) awaited = awaited.expression;
+    const awaited = unwrapExpression(expression.expression);
     if (!ts.isAwaitExpression(awaited)) return undefined;
     const call = context.unwrap(awaited.expression);
     if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword || call.arguments.length !== 1 ||

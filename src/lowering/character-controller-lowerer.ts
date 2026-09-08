@@ -88,7 +88,7 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
     };
     for (const helper of helpers) functions.set(helper.name!.text, signature(helper.name!.text, helper));
     for (const method of methods) functions.set(`this.${method.name.getText(file)}`, signature(method.name.getText(file), method));
-    for (const name of ["_getPointVelocity", "_createSurfaceConstraint"]) {
+    if (!full) for (const name of ["_getPointVelocity", "_createSurfaceConstraint"]) {
         const declaration = controller.members.find((member): member is ts.MethodDeclaration => ts.isMethodDeclaration(member) && member.name.getText(file) === name)!;
         functions.set(`this.${name}`, signature(name, declaration));
     }

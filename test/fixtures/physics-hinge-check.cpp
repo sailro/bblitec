@@ -34,7 +34,7 @@ int main() {
     p::physics_world_add_body(world, b, false);
     u::PhysicsBody source_a; source_a.handle = a;
     u::PhysicsBody source_b; source_b.handle = b;
-    u::create_physics_hinge(source_handle, source_a, source_b, {
+    u::create_physics_constraint(source_handle, source_a, source_b, hinge_type, {
         .pivot_a = Vec3d{0,0,-0.5}, .pivot_b = Vec3d{0,0,0.5},
         .axis_a = Vec3d{1,0,0}, .axis_b = Vec3d{1,0,0}});
     assert(world.ownership->hinges.size() == 1);

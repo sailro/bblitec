@@ -152,7 +152,6 @@ struct PhysicsConstraintOptions {
     bool collision = false;
 };
 struct PhysicsConstraintLimit { double axis, minimum, maximum; };
-void create_physics_hinge(PhysicsWorldHandle world, PhysicsBody body_a, PhysicsBody body_b, const PhysicsConstraintOptions& options = {});
 pal::PhysicsConstraintAxes physics_constraint_axes(double type, const PhysicsConstraintOptions& options, const std::vector<PhysicsConstraintLimit>& limits);
 void create_physics_constraint(PhysicsWorldHandle world, PhysicsBody body_a, PhysicsBody body_b, double type, const PhysicsConstraintOptions& options = {}, const std::vector<PhysicsConstraintLimit>& limits = {});
 `;
@@ -167,9 +166,6 @@ ${configurations}
     throw std::runtime_error("Unknown constraint type.");
 }
 // ${context.provenance(module, "createPhysicsConstraint", "anchor defaults and source-selected axes; PAL joint solver")}
-void create_physics_hinge(PhysicsWorldHandle world, PhysicsBody body_a, PhysicsBody body_b, const PhysicsConstraintOptions& options) {
-    create_physics_constraint(world, body_a, body_b, ${typeMembers.find(([name]) => name === "HINGE")![1]}.0, options);
-}
 void create_physics_constraint(PhysicsWorldHandle world, PhysicsBody body_a, PhysicsBody body_b, double type, const PhysicsConstraintOptions& options, const std::vector<PhysicsConstraintLimit>& limits) {
     const Vec3d pivot_a = options.pivot_a ? *options.pivot_a : Vec3d{0, 0, 0};
     const Vec3d pivot_b = options.pivot_b ? *options.pivot_b : Vec3d{0, 0, 0};

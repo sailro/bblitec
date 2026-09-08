@@ -82,7 +82,7 @@ All numbered corpus scenes are registered.
 | Lines/instances | Runtime point lists, lines/dashes/color changes, fast dynamic draw count and GPU culling/LOD |
 | Particles | Wider evaluators/providers/bridges/snippets, texture flip, lifecycle and mixed-set random/buffer ownership |
 | Navigation | Tiled builds without obstacles, broader queries/random state and disposal |
-| Physics | Constraint springs/motors and retained handles, characters/viewer, explicit or rectangular heightfields, broader query shapes/options, inertia orientation/conversion and remaining lifecycle/options |
+| Physics | Constraint springs/motors and retained handles, broader character/viewer APIs, explicit or rectangular heightfields, broader query shapes/options, inertia orientation/conversion and remaining lifecycle/options |
 | Audio | Browser/native offline PCM gate, master-volume ramps and broader sound/bus/spatial APIs |
 | UI | General forms/text input, additional drivers and multi-surface source shapes |
 

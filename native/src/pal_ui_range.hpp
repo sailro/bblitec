@@ -21,7 +21,8 @@ namespace bbl::pal {
 // default light control palette. RmlUi still owns slider layout and input.
 class UiRangeDecorator final : public Rml::Decorator {
     struct Data {
-        std::tuple<int, int, float, int, float> key{};
+        std::tuple<int, int, float, int> key{};
+        float opacity = 0;
         Rml::CallbackTexture texture;
         Rml::Geometry geometry;
         bool initialized = false;
@@ -84,17 +85,21 @@ public:
         const float thumb = bar->GetAbsoluteOffset(Rml::BoxArea::Border).x - origin.x + bar->GetBox().GetSize(Rml::BoxArea::Border).x * .5f;
         const int state = element->IsPseudoClassSet("disabled") ? 3 : element->IsPseudoClassSet("active") ? 2 : element->IsPseudoClassSet("hover") ? 1 : 0;
         const float opacity = element->GetComputedValues().opacity();
-        const auto key = std::tuple{width, height, thumb, state, opacity};
+        const auto key = std::tuple{width, height, thumb, state};
+        const bool geometry_changed = !data.initialized || width != std::get<0>(data.key) ||
+            height != std::get<1>(data.key) || opacity != data.opacity;
+        auto& manager = element->GetContext()->GetRenderManager();
         if (!data.initialized || key != data.key) {
-            auto& manager = element->GetContext()->GetRenderManager();
             data.texture = manager.MakeCallbackTexture([bytes = pixels(width, height, thumb, state), width, height](const Rml::CallbackTextureInterface& out) {
                 return out.GenerateTexture(bytes, {width, height});
             });
+        }
+        if (geometry_changed) {
             Rml::Mesh mesh;
             Rml::MeshUtilities::GenerateQuad(mesh, {0,0}, {static_cast<float>(width),static_cast<float>(height)}, Rml::Colourb{255,255,255}.ToPremultiplied(opacity), {0,0}, {1,1});
             data.geometry = manager.MakeGeometry(std::move(mesh));
-            data.key = key; data.initialized = true;
         }
+        data.key = key; data.opacity = opacity; data.initialized = true;
         data.geometry.Render(origin, data.texture);
     }
 };

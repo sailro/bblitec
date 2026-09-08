@@ -72,7 +72,7 @@ test("native constraint configurations match all pinned factories and hinge life
         configureConstraintAxes(api: AxisApi, joint: object, type: number, options: { maxDistance?: number }, limits: Limit[]): void;
     }>("physics/havok.js", ["configureConstraintAxes"]);
     const names = ["LINEAR_X", "LINEAR_Y", "LINEAR_Z", "ANGULAR_X", "ANGULAR_Y", "ANGULAR_Z", "LINEAR_DISTANCE"];
-    const cases: string[] = [];
+    const cases: string[] = [`constexpr double hinge_type = ${pin.PhysicsConstraintType.HINGE};`];
     for (const type of Object.values(pin.PhysicsConstraintType)) for (const distance of [undefined, 2]) {
         const axes = names.map(() => ({ mode: "free" as Mode, minimum: 0, maximum: 0 }));
         const limits = names.map((name, index) => ({ axis: pin.PhysicsConstraintAxis[name]!, minLimit: index / 10, maxLimit: 1 + index / 10 }));

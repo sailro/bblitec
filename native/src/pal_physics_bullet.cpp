@@ -1386,6 +1386,19 @@ void physics_world_set_gravity(
     world_at(world).world->setGravity(to_bt(gravity));
 }
 
+namespace {
+std::array<btVector3, 3> constraint_anchor_axes(const PhysicsConstraintAnchor& anchor) {
+    auto axis = to_bt(anchor.axis);
+    auto perpendicular = to_bt(anchor.perpendicular);
+    if (axis.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint axis must be nonzero.");
+    axis.normalize();
+    perpendicular -= axis * perpendicular.dot(axis);
+    if (perpendicular.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint perpendicular must be independent of its axis.");
+    perpendicular.normalize();
+    return {axis, perpendicular, axis.cross(perpendicular)};
+}
+} // namespace
+
 void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
     const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions) {
     auto& owner = world_at(world);
@@ -1395,14 +1408,7 @@ void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle pare
         throw std::runtime_error("A physics constraint requires two different bodies in its world.");
     }
     const auto frame = [](const PhysicsConstraintAnchor& anchor) {
-        btVector3 axis = to_bt(anchor.axis);
-        btVector3 perpendicular = to_bt(anchor.perpendicular);
-        if (axis.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint axis must be nonzero.");
-        axis.normalize();
-        perpendicular -= axis * perpendicular.dot(axis);
-        if (perpendicular.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint perpendicular must be independent of its axis.");
-        perpendicular.normalize();
-        const btVector3 second = axis.cross(perpendicular);
+        const auto [axis, perpendicular, second] = constraint_anchor_axes(anchor);
         // Bullet's hinge axis is frame Z; the two other columns set its reference angle.
         const btMatrix3x3 basis(perpendicular.x(), second.x(), axis.x(),
             perpendicular.y(), second.y(), axis.y(), perpendicular.z(), second.z(), axis.z());
@@ -1433,14 +1439,7 @@ void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle
     const auto frame = [oriented](const PhysicsConstraintAnchor& anchor) {
         btMatrix3x3 basis = btMatrix3x3::getIdentity();
         if (oriented) {
-            auto axis = to_bt(anchor.axis);
-            auto perpendicular = to_bt(anchor.perpendicular);
-            if (axis.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint axis must be nonzero.");
-            axis.normalize();
-            perpendicular -= axis * perpendicular.dot(axis);
-            if (perpendicular.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint perpendicular must be independent of its axis.");
-            perpendicular.normalize();
-            const auto third = axis.cross(perpendicular);
+            const auto [axis, perpendicular, third] = constraint_anchor_axes(anchor);
             basis.setValue(axis.x(), perpendicular.x(), third.x(), axis.y(), perpendicular.y(), third.y(), axis.z(), perpendicular.z(), third.z());
         }
         return btTransform(basis, to_bt(anchor.pivot));

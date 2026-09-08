@@ -2024,6 +2024,8 @@ struct PhysicsNodeRef {
     std::uint32_t value = 0;
 };
 
+[[nodiscard]] std::array<float, 16> physics_node_world(const Engine& engine, PhysicsNodeRef node);
+
 [[nodiscard]] inline PhysicsNodeRef physics_node(MeshHandle mesh) {
     return PhysicsNodeRef{PhysicsNodeKind::mesh, mesh.value};
 }

@@ -160,6 +160,8 @@ export interface CompileManifest {
   standardMaterialPlugins: MaterialPluginManifest[][];
   /** Actual Standard material states observed for each plugin signature. */
   standardMaterialPluginInputs: PinnedStandardMaterialInput[][];
+  /** A Standard assignment targets a mesh without a scene composition profile. */
+  standardMaterialUnknownMesh?: true;
   /** Scene-material record count; physical creation count when no runtime profiles exist. */
   sceneMaterialCount: number;
   /** glTF load count at each scene material creation, across all families. */

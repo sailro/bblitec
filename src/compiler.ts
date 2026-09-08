@@ -920,6 +920,7 @@ class Compiler
     private readonly scenePbrMaterialMeshes = new Map<number, Set<number>>();
     private readonly scenePbrMaterialsWithUnknownMesh = new Set<number>();
     private unknownSceneMaterialAssignment = false;
+    private standardMaterialUnknownMesh = false;
     private readonly runtimeMaterialProfiles = new Set<number>();
     private runtimeMeshProfileCount = 0;
     private readonly runtimeShaderProfiles = new Set<number>();
@@ -1181,6 +1182,10 @@ class Compiler
                     this.sceneMaterials.standardMaterialPlugins,
                 standardMaterialPluginInputs:
                     this.sceneMaterials.standardMaterialPluginInputs,
+                ...(this.standardMaterialUnknownMesh ||
+                    (this.unknownSceneMaterialAssignment && this.features.has("material:standard"))
+                    ? { standardMaterialUnknownMesh: true as const }
+                    : {}),
                 sceneMaterialCount: this.sceneMaterials.count,
                 sceneMaterialGltfAssetsBefore:
                     this.sceneMaterialGltfAssetsBefore,
@@ -3763,10 +3768,11 @@ class Compiler
                 { ...this.dataLowerer.leafValue(`(*${cppName})`, annotated), sharedStorageCpp: cppName },
             );
         }
-        const literalSnapshot =
+        const initializerSnapshot =
             spreadTarget &&
-            ts.isObjectLiteralExpression(initializer) &&
-            !initializer.properties.some(ts.isSpreadAssignment)
+            ((ts.isObjectLiteralExpression(initializer) &&
+                !initializer.properties.some(ts.isSpreadAssignment)) ||
+                ts.isConditionalExpression(initializer))
                 ? this.compileValue(initializer)
                 : undefined;
         const boundCpp =
@@ -3798,9 +3804,9 @@ class Compiler
             }
         } else {
             const initializerCpp =
-                literalSnapshot?.kind === "record"
+                initializerSnapshot
                     ? this.dataLowerer.compileKnownValueForSink(
-                          literalSnapshot,
+                          initializerSnapshot,
                           annotated,
                           declaration.initializer,
                       )
@@ -3838,7 +3844,7 @@ class Compiler
                 : "copy",
         );
         const staticRecordProperties: Record<string, Value> = {
-            ...(literalSnapshot?.recordProperties ?? {}),
+            ...(initializerSnapshot?.recordProperties ?? {}),
         };
         if (
             Object.keys(staticRecordProperties).length === 0 &&
@@ -3865,6 +3871,12 @@ class Compiler
             cpp: boundCpp,
             ...((sharedDataBinding || selfReferentialStruct) ? { sharedStorageCpp: cppName } : {}),
             dataType: annotated,
+            // Shared storage does not change a selected object's presence.
+            ...(ts.isConditionalExpression(initializer) && initializerSnapshot &&
+                !this.identifierIsRebound(declaration.name as ts.Identifier) &&
+                (initializerSnapshot.kind === "record" || initializerSnapshot.kind === "json-null")
+                ? { optionalFoundCpp: initializerSnapshot.kind === "json-null" ? "false" : "true" }
+                : {}),
             ...(annotated.kind === "map" &&
             ts.isObjectLiteralExpression(initializer) &&
             initializer.properties.length === 0
@@ -19827,6 +19839,10 @@ class Compiler
 
     public recordUnknownSceneMaterialAssignment(): void {
         this.unknownSceneMaterialAssignment = true;
+    }
+
+    public recordUnknownStandardMeshMaterial(): void {
+        this.standardMaterialUnknownMesh = true;
     }
 
     public recordSceneMeshAssetPbrMaterial(meshIndex: number): void {
