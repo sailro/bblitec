@@ -84,3 +84,37 @@ test("text GPU capture retains actual write ranges, allocation identities and in
         assert.equal(ordinary[`${part}Operation`], "add");
     }
 });
+
+test("a build without visual capture keeps the text capture interface and no storage", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    const directory = resolve("artifacts/test-text-gpu-capture-stub");
+    mkdirSync(directory, { recursive: true });
+    const source = resolve(directory, "stub.cpp");
+    writeFileSync(source, [
+        '#include "pal_text_capture.hpp"',
+        "#include <vector>",
+        "using namespace bbl::pal;",
+        "int main() {",
+        "    TextGpuCapture capture(true);",
+        "    static_assert(!TextGpuCapture::enabled(), \"shipping capture is never enabled\");",
+        "    static_assert(sizeof(TextGpuCapture) == 1, \"shipping capture keeps no receipts\");",
+        "    capture.begin_frame(1);",
+        "    const std::uint64_t id = capture.create_resource(\"text-instance\", 16, 4, 1);",
+        "    const std::vector<std::uint8_t> bytes(4);",
+        "    capture.write(id, 0, bytes);",
+        "    capture.draw(TextGpuDrawCapture{});",
+        "    capture.destroy(id);",
+        "    capture.stop();",
+        "    return id == 0 ? 0 : 1;",
+        "}",
+        "",
+    ].join("\n"));
+    const executable = resolve(directory, "stub.exe");
+    runNativeFixtureCompiler(native, [
+        "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/DBBLITE_VISUAL_CAPTURE=0",
+        `/I${resolve("native/src")}`, `/I${resolve("native/include")}`,
+        source, `/Fo${resolve(directory, "stub.obj")}`, `/Fe${executable}`,
+    ]);
+    execFileSync(executable, [], { cwd: directory, encoding: "utf8" });
+});

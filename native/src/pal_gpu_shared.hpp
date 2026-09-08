@@ -3978,6 +3978,37 @@ inline BonePaletteLayout bone_palette_layout(std::uint32_t bones) {
     const std::uint32_t width = bones * 4u;
     return BonePaletteLayout{width, 1u, width * 16u};
 }
+
+/** A palette texture whose bytes no record version has been streamed to yet. */
+inline constexpr std::uint64_t unsynced_bone_palette = ~std::uint64_t{0};
+
+/**
+ * One mesh's pinned bone palette, brought in step with its record: the
+ * texture is rebuilt when the bone count moved and rewritten when the
+ * palette's version did. `MeshRecord::bone_matrices` already holds the
+ * pin's `invMeshWorld * jointWorld * IBM` product, so the bytes travel
+ * unchanged. The backend supplies its texture creation
+ * (`recreate(layout)`, releasing the previous texture) and its upload
+ * (`upload(floats, layout)`).
+ */
+template <typename GpuMesh, typename Recreate, typename Upload>
+inline void sync_pinned_bone_palette(
+    GpuMesh& mesh,
+    const MeshRecord& record,
+    Recreate&& recreate,
+    Upload&& upload) {
+    const auto bones = static_cast<std::uint32_t>(record.bone_matrices.size());
+    if (bones == 0) return;
+    const BonePaletteLayout palette = bone_palette_layout(bones);
+    if (mesh.pinned_bone_count != bones) {
+        recreate(palette);
+        mesh.pinned_bone_count = bones;
+        mesh.pinned_bone_version = unsynced_bone_palette;
+    }
+    if (mesh.pinned_bone_version == record.bone_matrices_version) return;
+    upload(record.bone_matrices.data()->data(), palette);
+    mesh.pinned_bone_version = record.bone_matrices_version;
+}
 #endif
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER

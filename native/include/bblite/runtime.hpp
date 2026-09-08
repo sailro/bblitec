@@ -2398,6 +2398,12 @@ struct MeshRecord {
     bool pickable = true;
     std::vector<std::array<float, 16>> bone_matrices;
     /**
+     * Moves with every rewrite of `bone_matrices`; both backends upload
+     * the palette texture only when it differs from the version they
+     * last streamed, so a still skeleton costs no upload.
+     */
+    std::uint64_t bone_matrices_version = 0;
+    /**
      * The animated node's own world matrix, in this port's convention.
      *
      * A skinned mesh's transform travels inside its palette, so

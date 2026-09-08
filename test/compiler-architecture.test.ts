@@ -62,7 +62,7 @@ test("preserves SceneContext identity across native value copies", () => {
     const runtime = source("native/include/bblite/runtime.hpp");
     const scene = source("src/lowering/scene-lowerer.ts");
     assert.match(runtime, /struct Scene \{\s+std::shared_ptr<SceneState> state;/);
-    assert.match(runtime, /Scene\(const Scene& other\)\s+: Scene\(other\.state\)/);
+    assert.match(runtime, /Scene\(const Scene& other\) noexcept\s+: Scene\(other\.state\)/);
     assert.match(
         runtime,
         /SnapshotList<std::shared_ptr<Scene>> registered_scenes;/,

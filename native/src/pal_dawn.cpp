@@ -335,6 +335,7 @@ struct DawnMeshResources {
     WGPUTexture pinned_bone_texture = nullptr;
     WGPUTextureView pinned_bone_view = nullptr;
     std::uint32_t pinned_bone_count = 0;
+    std::uint64_t pinned_bone_version = unsynced_bone_palette;
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -4347,39 +4348,34 @@ void write_pinned_bone_texture(
     DawnState& state,
     DawnMesh& mesh,
     const MeshRecord& record) {
-    const std::uint32_t bones =
-        static_cast<std::uint32_t>(record.bone_matrices.size());
-    if (bones == 0) return;
-    const BonePaletteLayout palette = bone_palette_layout(bones);
-    if (mesh.pinned_bone_count != bones) {
-        if (mesh.pinned_bone_view) {
-            wgpuTextureViewRelease(mesh.pinned_bone_view);
-        }
-        if (mesh.pinned_bone_texture) {
-            wgpuTextureRelease(mesh.pinned_bone_texture);
-        }
-        mesh.pinned_bone_texture = create_pinned_float_texture(
-            state,
-            palette.width,
-            palette.height,
-            "pinned bone texture creation failed.");
-        mesh.pinned_bone_view =
-            wgpuTextureCreateView(mesh.pinned_bone_texture, nullptr);
-        mesh.pinned_bone_count = bones;
-    }
-    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    destination.texture = mesh.pinned_bone_texture;
-    WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
-    layout.bytesPerRow = palette.bytes;
-    layout.rowsPerImage = palette.height;
-    WGPUExtent3D extent{palette.width, palette.height, 1};
-    wgpuQueueWriteTexture(
-        state.queue,
-        &destination,
-        record.bone_matrices.data(),
-        palette.bytes,
-        &layout,
-        &extent);
+    sync_pinned_bone_palette(
+        mesh,
+        record,
+        [&](const BonePaletteLayout& palette) {
+            if (mesh.pinned_bone_view) {
+                wgpuTextureViewRelease(mesh.pinned_bone_view);
+            }
+            if (mesh.pinned_bone_texture) {
+                wgpuTextureRelease(mesh.pinned_bone_texture);
+            }
+            mesh.pinned_bone_texture = create_pinned_float_texture(
+                state,
+                palette.width,
+                palette.height,
+                "pinned bone texture creation failed.");
+            mesh.pinned_bone_view =
+                wgpuTextureCreateView(mesh.pinned_bone_texture, nullptr);
+        },
+        [&](const float* floats, const BonePaletteLayout& palette) {
+            WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+            destination.texture = mesh.pinned_bone_texture;
+            WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
+            layout.bytesPerRow = palette.bytes;
+            layout.rowsPerImage = palette.height;
+            WGPUExtent3D extent{palette.width, palette.height, 1};
+            wgpuQueueWriteTexture(
+                state.queue, &destination, floats, palette.bytes, &layout, &extent);
+        });
 }
 
 #endif

@@ -4504,6 +4504,7 @@ ${deformPicking ? `                // The pin's detailed pick reads \`mesh.world
                     mesh_record.bone_matrices.push_back(
                         native_matrix(mesh_world));
                 }
+                ++mesh_record.bone_matrices_version;
                 mesh_record.morph_weights = {};
                 const std::vector<float>& node_weights =
                     animation_runtime

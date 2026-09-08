@@ -213,6 +213,7 @@ struct GpuMesh {
     // Both material families sample the pin's rgba32float bone palette.
     SDL_GPUTexture* pinned_bone_texture = nullptr;
     std::uint32_t pinned_bone_count = 0;
+    std::uint64_t pinned_bone_version = unsynced_bone_palette;
 #endif
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* instances = nullptr;
@@ -2786,29 +2787,29 @@ void write_pinned_bone_texture(
     GpuState& state,
     GpuMesh& mesh,
     const MeshRecord& record) {
-    const std::uint32_t bones =
-        static_cast<std::uint32_t>(record.bone_matrices.size());
-    if (bones == 0) return;
-    const BonePaletteLayout palette = bone_palette_layout(bones);
     ensure_pinned_bone_sampler(state);
-    if (mesh.pinned_bone_count != bones) {
-        if (mesh.pinned_bone_texture) {
-            SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
-        }
-        mesh.pinned_bone_texture = create_pinned_float_texture(
-            state,
-            palette.width,
-            palette.height,
-            "SDL_CreateGPUTexture pinned bone palette");
-        mesh.pinned_bone_count = bones;
-    }
-    upload_pinned_float_texture(
-        state,
-        mesh.pinned_bone_texture,
-        record.bone_matrices.data()->data(),
-        palette.width,
-        palette.height,
-        palette.bytes);
+    sync_pinned_bone_palette(
+        mesh,
+        record,
+        [&](const BonePaletteLayout& palette) {
+            if (mesh.pinned_bone_texture) {
+                SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
+            }
+            mesh.pinned_bone_texture = create_pinned_float_texture(
+                state,
+                palette.width,
+                palette.height,
+                "SDL_CreateGPUTexture pinned bone palette");
+        },
+        [&](const float* floats, const BonePaletteLayout& palette) {
+            upload_pinned_float_texture(
+                state,
+                mesh.pinned_bone_texture,
+                floats,
+                palette.width,
+                palette.height,
+                palette.bytes);
+        });
 }
 
 #endif

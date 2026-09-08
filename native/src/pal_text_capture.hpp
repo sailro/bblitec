@@ -31,6 +31,9 @@ struct TextGpuDrawCapture {
     std::vector<std::uint8_t> pushed_uniform_bytes;
 };
 
+// Direct native fixtures include this header without pal.hpp's default and
+// use the full capture, as they use the full PAL.
+#if !defined(BBLITE_VISUAL_CAPTURE) || BBLITE_VISUAL_CAPTURE
 /** Observations of actual PAL operations, never a source-data reconstruction.
  * Enable only for a requested render capture, and stop after its serialization. */
 class TextGpuCapture : public GpuUploadCapture {
@@ -49,5 +52,26 @@ public:
 private:
     std::vector<TextGpuDrawCapture> draws_;
 };
+#else
+/**
+ * The shipping shape: no receipt is kept and `enabled()` is a constant
+ * false, so every `capture.enabled()` branch of the text resource headers
+ * folds away and a text record carries no capture storage.
+ */
+class TextGpuCapture {
+public:
+    explicit TextGpuCapture(bool = false) noexcept {}
+    static constexpr bool enabled() noexcept { return false; }
+    void stop() noexcept {}
+    void begin_frame(std::uint64_t) noexcept {}
+    std::uint64_t create_resource(
+        std::string_view, std::size_t, std::size_t = 0, std::size_t = 0) noexcept {
+        return 0;
+    }
+    void write(std::uint64_t, std::size_t, std::span<const std::uint8_t>) noexcept {}
+    void destroy(std::uint64_t) noexcept {}
+    void draw(TextGpuDrawCapture) noexcept {}
+};
+#endif
 
 } // namespace bbl::pal
