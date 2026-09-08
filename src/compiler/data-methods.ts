@@ -3,6 +3,9 @@
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { compileArrayValueMethod } from "./array-methods.js";
+import { compileStringValueMethod } from "./string-methods.js";
+import { compileCollectionForEach } from "./collection-methods.js";
 
 import {
     dataTypesEqual,
@@ -108,6 +111,7 @@ export const readOnlyDataMethods: ReadonlySet<string> = new Set([
     "every",
     "filter",
     "flat",
+    "flatMap",
     "find",
     "findIndex",
     "findLast",
@@ -127,6 +131,24 @@ export const readOnlyDataMethods: ReadonlySet<string> = new Set([
     "some",
     "values",
 ]);
+
+interface ArrayCallbackReceiverPolicy {
+    readonly snapshotIdentity: boolean;
+    readonly skipRemoved: boolean;
+    readonly invalidatesFacts: boolean;
+}
+
+const existingCallbackReceiver: ArrayCallbackReceiverPolicy = {
+    snapshotIdentity: false, skipRemoved: false, invalidatesFacts: false,
+};
+const mutableCallbackReceiver: ArrayCallbackReceiverPolicy = {
+    snapshotIdentity: true, skipRemoved: true, invalidatesFacts: true,
+};
+
+/** Receiver rules shared by callback emission and source-level fact analysis. */
+export function arrayCallbackReceiverPolicy(method: string): ArrayCallbackReceiverPolicy {
+    return method === "flatMap" ? mutableCallbackReceiver : existingCallbackReceiver;
+}
 
 /** Array methods that can change its length and invalidate element aliases. */
 export const resizingArrayMethods: ReadonlySet<string> = new Set([
@@ -149,11 +171,22 @@ export const mutatingArrayMethods: ReadonlySet<string> = new Set([
 /** Methods that retain argument identity without mutating the argument itself. */
 export const storingDataMethods: ReadonlySet<string> = new Set([
     "add",
+    "concat",
+    "fill",
+    "of",
     "push",
     "set",
     "splice",
     "unshift",
 ]);
+
+/** Syntactic retention proof used conservatively by the alias analyses. */
+export function isStoringDataCall(node: ts.Node): node is ts.CallExpression | ts.NewExpression {
+    return (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+        storingDataMethods.has(node.expression.name.text)) ||
+        (ts.isNewExpression(node) && ts.isIdentifier(node.expression) &&
+            (node.expression.text === "Map" || node.expression.text === "Set"));
+}
 
 const writeReceiverMethods: ReadonlySet<string> = new Set([
     "pop",
@@ -171,6 +204,7 @@ const writeReceiverMethods: ReadonlySet<string> = new Set([
 ]);
 
 const constantArrayMethods: ReadonlySet<string> = new Set([
+    "at", "concat", "lastIndexOf", "flatMap",
     "indexOf",
     "includes",
     "find",
@@ -302,7 +336,8 @@ export function compileDataMethodCall(
         ts.isCallExpression(ownerExpression) ||
         ts.isNewExpression(ownerExpression) ||
         ts.isArrayLiteralExpression(ownerExpression) ||
-        ts.isConditionalExpression(ownerExpression)
+        ts.isConditionalExpression(ownerExpression) ||
+        ts.isBinaryExpression(ownerExpression)
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.lookupIdentifierValue(ownerExpression) ??
@@ -697,6 +732,7 @@ export function compileDataMethodCall(
         }
     }
     if (dataType?.kind === "map") {
+        if (method === "forEach") return compileCollectionForEach(lowerer, call, narrowed, dataType);
         lowerer.context.reachJsData();
         if (method === "clear") {
             if (call.arguments.length !== 0) {
@@ -907,6 +943,7 @@ export function compileDataMethodCall(
         );
     }
     if (dataType?.kind === "set") {
+        if (method === "forEach") return compileCollectionForEach(lowerer, call, narrowed, dataType);
         lowerer.context.reachJsData();
         if (method === "clear") {
             if (call.arguments.length !== 0) {
@@ -969,6 +1006,8 @@ export function compileDataMethodCall(
     }
     if (dataType?.kind === "string") {
         lowerer.context.reachJsData();
+        const stringValue = compileStringValueMethod(lowerer, call, method, narrowed);
+        if (stringValue) return stringValue;
         if (method === "match" || method === "matchAll") {
             if (call.arguments.length !== 1) {
                 lowerer.context.fail(
@@ -1137,16 +1176,25 @@ export function compileDataMethodCall(
                 },
             };
         }
-        if (method === "replace") {
+        if (method === "replace" || method === "replaceAll") {
             if (call.arguments.length !== 2) {
                 lowerer.context.fail(
                     call,
                     "String.replace expects a pattern and replacement.",
                 );
             }
+            const source = lowerer.context.allocateTemporaryCppName("replace_source");
+            lowerer.context.emit(`[[maybe_unused]] const std::string ${source} = ${narrowed.cpp};`);
             const pattern = lowerer.context.compileValue(
                 argumentAt(call, 0),
             );
+            if (pattern.kind === "string" || pattern.dataType?.kind === "string") {
+                const search = lowerer.context.allocateTemporaryCppName("replace_search");
+                lowerer.context.emit(`const std::string ${search} = ${pattern.cpp};`);
+                const replacement = lowerer.compileForSink(argumentAt(call, 1), { kind: "string" });
+                return lowerer.leafValue(`bbl::js::string_replace(${source}, ${search}, ${replacement}, ${method === "replaceAll"})`, { kind: "string" });
+            }
+            if (method === "replaceAll") lowerer.context.fail(call, "String.replaceAll currently requires a string pattern.");
             if (pattern.kind !== "regexp") {
                 lowerer.context.fail(
                     argumentAt(call, 0),
@@ -1196,7 +1244,7 @@ export function compileDataMethodCall(
             const replacement = replacementValue.cpp;
             return {
                 kind: "data",
-                cpp: `${pattern.cpp}.replace(${narrowed.cpp}, ${replacement})`,
+                cpp: `${pattern.cpp}.replace(${source}, ${replacement})`,
                 dataType: { kind: "string" },
             };
         }
@@ -1540,6 +1588,8 @@ export function compileDataMethodCall(
     ) {
         return undefined;
     }
+    const arrayValue = compileArrayValueMethod(lowerer, call, method, narrowed, dataType);
+    if (arrayValue) return arrayValue;
     if (
         dataType.kind === "span" &&
         ![
@@ -1561,14 +1611,14 @@ export function compileDataMethodCall(
     lowerer.context.reachJsData();
     if (method === "join") {
         if (
-            !["string", "enum"].includes(
+            !["string", "enum", "number", "boolean"].includes(
                 dataType.element.kind,
             ) ||
             call.arguments.length > 1
         ) {
             lowerer.context.fail(
                 call,
-                "Array.join supports string arrays with at most one separator.",
+                "Array.join supports scalar arrays with at most one separator.",
             );
         }
         const separator = call.arguments[0]
@@ -1600,7 +1650,11 @@ export function compileDataMethodCall(
                           "value",
                           call,
                       )}; }`
-                    : ""
+                    : dataType.element.kind === "number"
+                      ? ", [](double value) { return bbl::js::number_to_string(value); }"
+                      : dataType.element.kind === "boolean"
+                        ? ', [](bool value) { return value ? "true" : "false"; }'
+                        : ""
             })`,
             dataType: { kind: "string" },
         };
@@ -1951,19 +2005,19 @@ export function compileDataMethodCall(
             dataType: { kind: "boolean" },
         };
     }
-    if (method === "map") {
+    if (method === "map" || method === "flatMap") {
         const mappedType = lowerer.dataTypeAt(call);
         if (mappedType?.kind !== "vector") {
             lowerer.context.fail(
                 call,
-                "Array.map callback results must belong to the native data model.",
+                `Array.${method} callback results must belong to the native data model.`,
             );
         }
         const callback = call.arguments[0]
             ? lowerer.context.unwrap(call.arguments[0])
             : undefined;
         if (
-            call.arguments.length === 1 &&
+            method === "map" && call.arguments.length === 1 &&
             callback &&
             ts.isIdentifier(callback) &&
             callback.text === "Number" &&
@@ -2007,7 +2061,7 @@ export function compileDataMethodCall(
             );
         lowerer.emitArrayCallbackLoop(
             call,
-            "map",
+            method,
             narrowed,
             dataType,
             true,
@@ -2020,6 +2074,14 @@ export function compileDataMethodCall(
                 );
             },
             (result, callback) => {
+                if (method === "flatMap" && (result.kind === "tuple" || result.dataType?.kind === "tuple" ||
+                    result.dataType?.kind === "vector" || result.dataType?.kind === "span")) {
+                    if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(mappedType.element))
+                        lowerer.context.refuseBorrowedPlatformEventEscape(result, callback, "Array.flatMap result");
+                    const values = lowerer.compileKnownValueForSink(result, mappedType, callback);
+                    lowerer.context.emit(`bbl::js::array_append(${output}, ${values});`);
+                    return;
+                }
                 let value: string;
                 if (
                     result.kind === "void" &&
@@ -2333,48 +2395,6 @@ export function compileDataMethodCall(
             kind: "data",
             cpp: `bbl::js::array_reverse(${narrowed.cpp})`,
             dataType,
-        };
-    }
-    if (method === "fill") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                "Array.fill expects one argument.",
-            );
-        }
-        const value = lowerer.compileForRetainedSink(
-            argumentAt(call, 0),
-            dataType.element,
-            "Array.fill",
-        );
-        return {
-            kind: "void",
-            cpp: `bbl::js::array_fill(${narrowed.cpp}, ${value})`,
-        };
-    }
-    if (method === "splice") {
-        // The reached removal form: splice(index, 1). Insertions
-        // and multi-element removals stay unreached.
-        const removalCount =
-            call.arguments.length === 2
-                ? lowerer.context.resolveStaticExpression(
-                      argumentAt(call, 1),
-                  )
-                : undefined;
-        if (
-            !removalCount ||
-            !ts.isNumericLiteral(removalCount) ||
-            Number(removalCount.text) !== 1
-        ) {
-            lowerer.context.fail(
-                call,
-                "Array.splice supports removing exactly one element.",
-            );
-        }
-        lowerer.invalidateAliases(narrowed.cpp);
-        return {
-            kind: "void",
-            cpp: `bbl::js::array_splice_one(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`,
         };
     }
     lowerer.context.fail(

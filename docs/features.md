@@ -61,6 +61,29 @@ async functions. Worker codecs support typed plain data, cycles, repeated refere
 buffers. Transfer lists admit OffscreenCanvas; ArrayBuffer transfer, MessagePort, shared memory,
 classic workers and runtime-selected scripts refuse. Graphics realms need identical rendering products.
 
+### Core TypeScript library
+
+User code supports `Math.fround`, `acos`, `asin`, `log`, `log2`, `cbrt`, `sinh` and
+`clz32`; Number constants and `isFinite`, `isNaN`, `isInteger`, `isSafeInteger` retain
+their non-coercing predicates. Transcendental operations execute at native double precision.
+
+Dense `T[]` arrays of user data support `flatMap`, `concat`, `at`, `lastIndexOf`,
+`copyWithin`, `join` for strings/numbers/booleans/enums, ranged `fill` and `splice` with removal/insertion.
+`fill` and `copyWithin` return the original array; `splice` returns a fresh array
+of removed values. `Array.of`, `Array.from(arrayOrSet)`, and length-only
+`Array.from({ length }, (value, index) => ...)` are admitted. Callback overloads
+require a local function or function literal and omit `thisArg`.
+
+Map construction accepts literal key/value pairs or another Map with matching
+types. Map/Set `forEach` observes insertion order, deletion and appended entries,
+and receives the original collection as its third argument.
+
+Strings support string-pattern `replace`/`replaceAll` with string replacements
+and substitution tokens, `substring`, `repeat`, string-argument `concat`, `at`
+and `codePointAt`. These indexed methods and string length use UTF-16 code units;
+native storage is UTF-8, with WTF-8 for lone surrogates. Regex `replaceAll`,
+replacement callbacks, locale collation and normalization remain unsupported.
+
 ## Asset materialization
 
 Reached local/remote URLs become packaged assets; glTF buffers/images are embedded as needed.

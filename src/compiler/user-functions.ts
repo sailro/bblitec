@@ -8,7 +8,7 @@ import {
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./closure-captures.js";
-import { readOnlyDataMethods, storingDataMethods } from "./data-methods.js";
+import { readOnlyDataMethods, storingDataMethods, isStoringDataCall } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { staticNumberValue, type PositiveIntegerContext } from "./option-helpers.js";
 import { CompilerSymbols, isDefaultLibraryIdentifier } from "./symbols.js";
@@ -309,14 +309,8 @@ export function parameterIsMutated(
                 ) {
                     return true;
                 }
+                if (isStoringDataCall(node) && node.arguments?.some(scan.containsAlias)) return true;
                 if (!ts.isCallExpression(node)) return false;
-                if (
-                    ts.isPropertyAccessExpression(node.expression) &&
-                    storingDataMethods.has(node.expression.name.text) &&
-                    node.arguments.some(scan.containsAlias)
-                ) {
-                    return true;
-                }
                 const called = checker.getResolvedSignature(node)?.declaration;
                 if (!isSupportedFunction(called)) return false;
                 for (const [index, argument] of node.arguments.entries()) {

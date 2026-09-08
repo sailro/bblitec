@@ -38,7 +38,7 @@ test("editor proxy registers identity-preserving listeners and live drag predica
     assert.equal((cpp.match(/pointer_drag_listener\(/g) ?? []).length, 5);
     assert.match(cpp, /set_pointer_drag_cleanup\(/);
     assert.match(cpp, /array_index_of\(/);
-    assert.match(cpp, /array_splice_one\(/);
+    assert.match(cpp, /array_splice\(/);
     assert.match(cpp, /pointer_drag_state\([^\n]+0u\)/);
     assert.match(cpp, /dispose_pointer = bbl::register_pointer_drag/);
 });
