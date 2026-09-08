@@ -7,13 +7,21 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
-import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { importPinnedModule, importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
 import { materialTextureSlotsHeader, pinnedSharedVariantDecls, pinnedStandardVariantsHeader } from "../src/pinned-pbr-variant-cpp.js";
 import { composePinnedStandardVariant, pinnedStandardMaterialFeatures, pinnedStandardSupportBlock, pinnedStandardVariantManifestEntry } from "../src/pinned-standard-variants.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const setterFeatures = { diffuse: false, emissive: false, pixels: false, solid: false, diffuseFile: false, emissiveFile: false, lightmapFile: true, uvTransform: false, plugins: false, pluginTextures: false };
+interface LightmapTexture { uScale: number; vScale: number; uOffset: number; vOffset: number; uAng: number; invertY: boolean }
+interface LightmapMaterial {
+    lightmapLevel: number;
+    lightmapCoordIndex: number;
+    useLightmapAsShadowmap: boolean;
+    uvScale: [number, number];
+    uvOffset: [number, number];
+}
 const program = `import {createEngine,createStandardMaterial,loadTexture2D,setStandardLightmapTexture,registerScene,createSceneContext} from "@babylonjs/lite";
 async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);const material=createStandardMaterial();
 const texture=await loadTexture2D(engine,"https://example.com/lightmap.jpg");texture.uAng=Math.PI;
@@ -52,14 +60,12 @@ test("native Standard lightmap features, material uniforms and UV lanes match th
     writeFileSync(join(directory,"bblite/upstream/pinned_variant_bindings.hpp"), pinnedSharedVariantDecls(context,"lightmap control"));
     writeFileSync(join(directory,"bblite/upstream/material_texture_slots.hpp"), materialTextureSlotsHeader({ transmission:false,clearcoat:false,sheen:false,iridescence:false,lightmap:true,metallicReflectanceMap:false,reflectanceMap:false,specularGlossiness:false,occlusionUv2:false,standardBump:false,standardReflection:false,clusteredLights:false,vat:false,vatInstances:false }, [], "lightmap control"));
     writeFileSync(join(directory,"standard.hpp"), pinnedStandardVariantsHeader(context,"lightmap control",[variant]) + pinnedStandardSupportBlock(context,{selectors:[],uvTransform:true,plugins:false,renderableMeshFeatures:[]}));
-    const { createStandardMaterial } = await importPinnedModule<{createStandardMaterial():any}>("material/standard/create-standard-material.js");
-    const { setStandardLightmapTexture } = await importPinnedModule<{setStandardLightmapTexture(material:any,texture:any):void}>("material/standard/set-std-lightmap.js");
-    const { writeStdMaterialData } = await importPinnedModule<{writeStdMaterialData(data:Float32Array,material:any,level:number):void}>("material/standard/standard-pipeline.js");
-    const flags = await importPinnedModule<object>("material/standard/standard-flags.js");
-    const wgsl = await importPinnedModule<object>("shader/wgsl.js");
-    const uvSource = store.getSource("src/material/standard/fragments/std-uv-transform-fragment.ts") + "\nexport { writeUvTransformData };";
-    const exports:Record<string,any> = {};
-    new Function("exports","require",ts.transpileModule(uvSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText)(exports,()=>({...flags,...wgsl}));
+    const { createStandardMaterial } = await importPinnedModule<{createStandardMaterial():LightmapMaterial}>("material/standard/create-standard-material.js");
+    const { setStandardLightmapTexture } = await importPinnedModule<{setStandardLightmapTexture(material:LightmapMaterial,texture:LightmapTexture|null):void}>("material/standard/set-std-lightmap.js");
+    const { writeStdMaterialData } = await importPinnedModule<{writeStdMaterialData(data:Float32Array,material:LightmapMaterial,level:number):void}>("material/standard/standard-pipeline.js");
+    const { writeUvTransformData } = await importPinnedModuleWithExports<{
+        writeUvTransformData(data:Float32Array,material:LightmapMaterial):void;
+    }>("material/standard/fragments/std-uv-transform-fragment.js", ["writeUvTransformData"]);
     const expected:number[][] = [], runs:string[] = [];
     for (const coord of [0,1]) for (const shadowmap of [false,true]) for (const angle of [0,.37,Math.PI]) for (const inverted of [false,true]) {
         const material = createStandardMaterial();
@@ -67,7 +73,7 @@ test("native Standard lightmap features, material uniforms and UV lanes match th
         setStandardLightmapTexture(material,texture);
         Object.assign(material,{lightmapLevel:3.2,lightmapCoordIndex:coord,useLightmapAsShadowmap:shadowmap,uvScale:[2,.5],uvOffset:[.3,-.7]});
         const data = new Float32Array(24), uv = new Float32Array(56);
-        writeStdMaterialData(data,material,1);exports.writeUvTransformData(uv,material);
+        writeStdMaterialData(data,material,1);writeUvTransformData(uv,material);
         expected.push([await pinnedStandardMaterialFeatures({lightmapTexture:texture,lightmapCoordIndex:coord,useLightmapAsShadowmap:shadowmap}),data[17]!,...uv.slice(40,48)]);
         runs.push(`{auto handle=bbl::create_standard_material(engine);bbl::FileTexture texture;texture.data.bytes={1,2,3,4};texture.data.rgba_width=1;texture.data.rgba_height=1;
             texture.data.uv_transform={1.7,.65,.12,-.2,${angle}};texture.data.uv_invert_y=${inverted};texture.srgb=${inverted};

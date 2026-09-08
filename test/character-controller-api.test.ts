@@ -9,6 +9,7 @@ import { characterControllerModule } from "../src/lowering/character-controller-
 import { characterCollisionObservableSource, characterControllerHeader } from "../src/lowering/character-controller-runtime.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
+import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 test("public character APIs transport collision values, vector aliases and disposer identity", () => {
@@ -42,18 +43,19 @@ test("public character APIs transport collision values, vector aliases and dispo
     assert.match(result.cpp, /physics_body_node_name/);
     assert.match(result.cpp, /onTriggerCollisionObservable\.add/);
     assert.match(result.cpp, /setShapeOptions/);
-    assert.match(result.cpp, /getPosition\(\)->x/);
-    assert.match(result.cpp, /getVelocity\(\)->x/);
+    assert.match(result.cpp, /const auto v_bblite_character_vector_\d+ = v_controller->getPosition\(\)/);
+    assert.match(result.cpp, /const auto v_bblite_character_vector_\d+ = v_controller->getVelocity\(\)/);
+    assert.match(result.cpp, /v_bblite_character_vector_\d+->x/);
 });
 
 const tools = optionalNativeFixtureTools(false);
-test("character observers match pinned live iteration and duplicate callback removal", { skip: !tools }, () => {
+test("character observers match pinned live iteration and duplicate callback removal", { skip: !tools }, async () => {
     const store = new UpstreamSourceStore();
-    const source = store.getSource(characterControllerModule);
-    const output = ts.transpileModule(source + "\nexport { CharacterCollisionObservable };", { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-    const exports: Record<string, any> = {};
-    new Function("exports", "require", output)(exports, () => ({}));
-    const observable = new exports.CharacterCollisionObservable();
+    interface Observable { add(callback: () => void): () => void; notify(event: object): void }
+    const { CharacterCollisionObservable } = await importPinnedModule<{
+        CharacterCollisionObservable: new () => Observable;
+    }>("physics/character-controller.js");
+    const observable = new CharacterCollisionObservable();
     const expected: number[] = [];
     let first = true;
     const removeA = observable.add(() => { expected.push(1); if (first) { first = false; observable.add(() => expected.push(4)); } });

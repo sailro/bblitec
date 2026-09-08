@@ -32,6 +32,21 @@ test("character vectors retain returned references across controller rebinding a
         returnedPosition.z = 11; returnedVelocity.x = 12; returnedUp.y = 13;
         if (calls !== 3 || first.getPosition().z !== 11 || first.getVelocity().x !== 12 || first.up.y !== 13)
             throw new Error("A vector owner was evaluated more than once or lost its alias");
+        controller = first;
+        function readPosition() { return controller.getPosition(); }
+        function forwardPosition() { return readPosition(); }
+        function readVelocity() { calls++; return controller.getVelocity(); }
+        function readUp() { return controller.up; }
+        const helperPosition = forwardPosition();
+        const helperVelocity = readVelocity();
+        const helperUp = readUp();
+        controller = second;
+        helperPosition.x = 21; helperVelocity.y = 22; helperUp.z = 23;
+        if (calls !== 4 || first.getPosition().x !== 21 || first.getVelocity().y !== 22 || first.up.z !== 23 || second.getPosition().x !== 9)
+            throw new Error("A helper return copied the character vector instead of retaining its reference");
+        first.setPosition({x:31,y:32,z:33}); first.setVelocity({x:41,y:42,z:43});
+        if (helperPosition.x !== 31 || helperVelocity.y !== 42)
+            throw new Error("A helper return stopped observing changes to the character's owned vector");
     `);
     const output = resolve("artifacts/character-controller-vector-alias");
     mkdirSync(output, { recursive: true });

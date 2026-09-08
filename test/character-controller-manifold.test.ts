@@ -17,35 +17,84 @@ const cppVector = (v: Vector): string => `v(${lanes(v).map(doubleLiteral).join("
 const cppNumbers = (values: number[]): string => `{${values.map(doubleLiteral).join(",")}}`;
 const matrix = (angle: number, x: number, y: number): Float32Array => new Float32Array([Math.cos(angle), 0, -Math.sin(angle), 0, 0, 1, 0, 0, Math.sin(angle), 0, Math.cos(angle), 0, x, y, 0, 1]);
 const body = (id: number, motionType: number) => ({ _hkBody: [id], motionType, node: { worldMatrix: matrix(0, 0, 0) }, mass: 1, com: [0, 0, 0], linear: [0, 0, 0], angular: [0, 0, 0] });
-const hit = (value: number, id: number, point: Vector, normal: Vector) => [value, null, [[id], null, null, lanes(point), lanes(normal)]];
+type Body = ReturnType<typeof body>;
+type ControllerNode = { position: { set(x: number, y: number, z: number): void } };
+type WorldBody = Body | { _hkBody: number[]; node: ControllerNode };
+type Hit = [number, null, [number[], null, null, number[], number[]]];
+type Shape = { _hkShape: { height: number; radius: number; released: boolean } };
+type ShapeOptions = { capsuleHeight?: number; capsuleRadius?: number };
+type Contact = { body: Body | null; distance: number; fraction: number; allowedPenetration: number; position: Vector; normal: Vector };
+interface World {
+    _bodies: WorldBody[];
+    dt: number;
+    proximity: Hit[];
+    casts: Hit[];
+    events: number[];
+    queries: number[];
+    lifecycle: number[];
+    collectors: Map<number, number>;
+}
+interface Kernel {
+    _position: Vector;
+    _velocity: Vector;
+    _frameId: number;
+    _manifold: Contact[];
+    _shape: Shape;
+    _startCollector: number;
+    _castCollector: number;
+    characterMass: number;
+    up: Vector;
+    onTriggerCollisionObservable: { add(callback: (event: { collider: WorldBody; impulsePosition: Vector; impulse: Vector }) => void): () => void };
+    _updateManifold(displacement: Vector): number;
+    _createSurfaceConstraint(deltaTime: number, contact: Contact, time: number): { priority: number; planeDistance: number; velocity: Vector };
+    _resolveContacts(deltaTime: number, gravity: Vector): void;
+    moveWithCollisions(displacement: Vector): void;
+    checkSupport(deltaTime: number, direction: Vector): { supportedState: number; averageSurfaceNormal: Vector };
+    getPosition(): Vector;
+    getVelocity(): Vector;
+    setPosition(value: Vector): void;
+    setVelocity(value: Vector): void;
+    setShapeOptions(options: ShapeOptions, preserveFootPosition?: boolean): void;
+    dispose(): void;
+}
+const hit = (value: number, id: number, point: Vector, normal: Vector): Hit => [value, null, [[id], null, null, lanes(point), lanes(normal)]];
 const cppHit = (value: number, id: number, point: Vector, normal: Vector) => `hit(${doubleLiteral(value)},${id},${cppVector(point)},${cppVector(normal)})`;
 
-function pinned(initial = vector(), options: { capsuleHeight?: number; capsuleRadius?: number } = { capsuleHeight: 1.8, capsuleRadius: .6 }) {
+function pinned(initial = vector(), options: ShapeOptions = { capsuleHeight: 1.8, capsuleRadius: .6 }) {
     const store = new UpstreamSourceStore();
     const evaluate = (module: string, imports: object) => {
         const output = ts.transpileModule(store.getSource(module), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-        const exports: Record<string, any> = {};
+        const exports: Record<string, unknown> = {};
         new Function("exports", "require", output)(exports, () => imports);
         return exports;
     };
     const inverse = evaluate("src/math/mat4-invert.ts", { allocateMat4: () => new Float32Array(16) });
-    const world: any = { _bodies: [], dt: 1 / 60, proximity: [], casts: [], events: [], queries: [], lifecycle: [], collectors: new Map() };
-    const lookup = (id: number[]) => world._bodies.find((b: any) => b._hkBody[0] === id[0]);
+    const world: World = { _bodies: [], dt: 1 / 60, proximity: [], casts: [], events: [], queries: [], lifecycle: [], collectors: new Map() };
+    const lookup = (id: number[]): Body => {
+        const result = world._bodies.find(b => b._hkBody[0] === id[0]);
+        assert(result && "mass" in result, "Collector body must have a mass and velocity transport record");
+        return result;
+    };
+    const collectorCapacity = (id: number): number => {
+        const capacity = world.collectors.get(id);
+        assert.notEqual(capacity, undefined, "Collector must exist before release");
+        return capacity!;
+    };
     let collector = 0;
-    world._hknp = {
+    Object.assign(world, { _hknp: {
         HP_QueryCollector_Create: (capacity: number) => { world.lifecycle.push(9, capacity); world.collectors.set(collector, capacity); return [0, collector++]; },
-        HP_QueryCollector_Release: (id: number) => { world.lifecycle.push(10, world.collectors.get(id)); world.collectors.set(id, 0); },
-        HP_Shape_Release: (shape: any) => { world.lifecycle.push(8, shape.height); shape.released = true; },
+        HP_QueryCollector_Release: (id: number) => { world.lifecycle.push(10, collectorCapacity(id)); world.collectors.set(id, 0); },
+        HP_Shape_Release: (shape: Shape["_hkShape"]) => { world.lifecycle.push(8, shape.height); shape.released = true; },
         HP_QueryCollector_GetNumHits: (id: number) => [0, (id === 0 ? world.proximity : world.casts).length],
         HP_QueryCollector_GetShapeProximityResult: (_id: number, i: number) => [0, world.proximity[i]],
         HP_QueryCollector_GetShapeCastResult: (_id: number, i: number) => [0, world.casts[i]],
-        HP_World_ShapeProximityWithCollector: (_world: any, _collector: any, query: any[]) => world.queries.push(0, ...query[1], ...query[2], query[3], Number(query[4])),
-        HP_World_ShapeCastWithCollector: (_world: any, _collector: any, query: any[]) => world.queries.push(1, ...query[1], ...query[2], ...query[3], Number(query[4])),
+        HP_World_ShapeProximityWithCollector: (_world: unknown, _collector: unknown, query: [unknown, number[], number[], number, boolean, ...unknown[]]) => world.queries.push(0, ...query[1], ...query[2], query[3], Number(query[4])),
+        HP_World_ShapeCastWithCollector: (_world: unknown, _collector: unknown, query: [unknown, number[], number[], number[], boolean, ...unknown[]]) => world.queries.push(1, ...query[1], ...query[2], ...query[3], Number(query[4])),
         HP_Body_GetMassProperties: (id: number[]) => { const b = lookup(id); return [0, [b.com, b.mass, [1, 1, 1], [0, 0, 0, 1]]]; },
         HP_Body_GetAngularVelocity: (id: number[]) => [0, lookup(id).angular],
         HP_Body_GetLinearVelocity: (id: number[]) => [0, lookup(id).linear],
-        HP_Body_ApplyImpulse: (id: number[], position: number[], impulse: number[]) => world.events.push(1, id[0], ...position, ...impulse),
-    };
+        HP_Body_ApplyImpulse: (id: number[], position: number[], impulse: number[]) => world.events.push(1, id[0]!, ...position, ...impulse),
+    } });
     const position = vector();
     const exports = evaluate(characterControllerModule, {
         ...inverse, worldStepSeconds: () => world.dt,
@@ -53,19 +102,21 @@ function pinned(initial = vector(), options: { capsuleHeight?: number; capsuleRa
             world.lifecycle.push(2,x,y,z); Object.assign(position, { x,y,z });
             return { position: { set(x: number, y: number, z: number) { Object.assign(position, { x, y, z }); } } };
         },
-        createPhysicsShape: (_world: any, shape: any) => {
+        createPhysicsShape: (_world: unknown, shape: { parameters: { pointA: Vector; pointB: Vector; radius: number } }): Shape => {
             const p = shape.parameters, height = p.pointA.y - p.pointB.y + 2*p.radius;
             world.lifecycle.push(1,height,p.radius); return { _hkShape: { height, radius: p.radius, released: false } };
         },
-        createPhysicsBody: (_world: any, node: any, motion: number) => { world.lifecycle.push(3,motion); const result={ _hkBody:[0], node }; world._bodies.push(result); return result; },
-        setPhysicsBodyShape(_world: any, _body: any, shape: any) { world.lifecycle.push(4,shape._hkShape.height); },
-        setPhysicsBodyMassProperties(_world: any, _body: any, properties: any) { world.lifecycle.push(5,...lanes(properties.inertia)); },
-        setPhysicsBodyPreStep(_body: any, enabled: boolean) { world.lifecycle.push(6,Number(enabled)); },
-        removePhysicsBody(_world: any, body: any) { world.lifecycle.push(7); world._bodies.splice(world._bodies.indexOf(body), 1); },
+        createPhysicsBody: (_world: unknown, node: ControllerNode, motion: number) => { world.lifecycle.push(3,motion); const result={ _hkBody:[0], node }; world._bodies.push(result); return result; },
+        setPhysicsBodyShape(_world: unknown, _body: unknown, shape: Shape) { world.lifecycle.push(4,shape._hkShape.height); },
+        setPhysicsBodyMassProperties(_world: unknown, _body: unknown, properties: { inertia: Vector }) { world.lifecycle.push(5,...lanes(properties.inertia)); },
+        setPhysicsBodyPreStep(_body: unknown, enabled: boolean) { world.lifecycle.push(6,Number(enabled)); },
+        removePhysicsBody(_world: unknown, body: WorldBody) { world.lifecycle.push(7); world._bodies.splice(world._bodies.indexOf(body), 1); },
         PhysicsShapeType: { CAPSULE: 3 }, PhysicsMotionType: { STATIC: 0, ANIMATED: 1, DYNAMIC: 2 },
     });
-    const kernel = new exports.PhysicsCharacterController(world, initial, options);
-    kernel.onTriggerCollisionObservable.add((event: any) => world.events.push(0, event.collider._hkBody[0], ...lanes(event.impulsePosition), ...lanes(event.impulse)));
+    assert.equal(typeof exports.PhysicsCharacterController, "function");
+    const Controller = exports.PhysicsCharacterController as new (world: World, position: Vector, options: ShapeOptions) => Kernel;
+    const kernel = new Controller(world, initial, options);
+    kernel.onTriggerCollisionObservable.add(event => world.events.push(0, event.collider._hkBody[0]!, ...lanes(event.impulsePosition), ...lanes(event.impulse)));
     return { kernel, world, position };
 }
 
@@ -84,7 +135,7 @@ test("manifold updates, dynamic impulses, support and moving-body tracking match
             world.proximity = i === 3 ? [] : [hit(distance, 1, point, normal), hit(distance + .03, 2, vector(0, .2, .5), vector(0, 0, -1))];
             world.casts = i === 2 ? [hit(.2, 1, point, normal), hit(.3, 2, vector(0, .2, .5), vector(0, 0, -1))] : [];
             const status = kernel._updateManifold(vector(.1, -.03, .05));
-            expected.push([status, ...kernel._manifold.flatMap((c: any) => [c.body?._hkBody[0] ?? -1, c.distance, c.fraction, c.allowedPenetration, ...lanes(c.position), ...lanes(c.normal)])]);
+            expected.push([status, ...kernel._manifold.flatMap(c => [c.body?._hkBody[0] ?? -1, c.distance, c.fraction, c.allowedPenetration, ...lanes(c.position), ...lanes(c.normal)])]);
             runs.push(`kernel.proximity={${i === 3 ? "" : [cppHit(distance, 1, point, normal), cppHit(distance + .03, 2, vector(0, .2, .5), vector(0, 0, -1))].join(",")}};
                 kernel.casts={${i === 2 ? [cppHit(.2, 1, point, normal), cppHit(.3, 2, vector(0, .2, .5), vector(0, 0, -1))].join(",") : ""}};
                 print(manifold(kernel,kernel._updateManifold(v(.1,-.03,.05))));`);
@@ -134,7 +185,7 @@ test("manifold updates, dynamic impulses, support and moving-body tracking match
         const snapshot = () => expected.push([
             ...lanes(kernel.getPosition()), ...lanes(kernel.getVelocity()), ...lanes(position),
             kernel._shape._hkShape.height, kernel._shape._hkShape.radius, Number(kernel._shape._hkShape.released),
-            world.collectors.get(kernel._startCollector), world.collectors.get(kernel._castCollector), world._bodies.length,
+            world.collectors.get(kernel._startCollector)!, world.collectors.get(kernel._castCollector)!, world._bodies.length,
             Number(retainedPosition === kernel.getPosition()), Number(retainedVelocity === kernel.getVelocity()), ...world.lifecycle,
         ]);
         runs.push(`{Kernel kernel;auto options=js::make_ref<PhysicsCharacterControllerOptions>();

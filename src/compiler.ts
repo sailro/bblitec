@@ -18571,6 +18571,7 @@ class Compiler
         preserveIdentity = false,
         node?: ts.Expression,
     ): Value {
+        if (record.retainedNativeRecord) return record;
         if (record.cameraVector) {
             return this.bindCameraVector(record);
         }

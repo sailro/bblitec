@@ -13,6 +13,17 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 type Vector = { x: number; y: number; z: number };
 type Constraint = { planeNormal: Vector; planeDistance: number; velocity: Vector; angularVelocity: Vector; priority: number;
     staticFriction: number; dynamicFriction: number; extraUpStaticFriction: number; extraDownStaticFriction: number };
+interface SolverOutput {
+    position: Vector;
+    velocity: Vector;
+    deltaTime: number;
+    planeInteractions: Array<{ touched: boolean; stopped: boolean; surfaceTime: number; penaltyDistance: number; status: number }>;
+}
+interface Kernel {
+    _solve1d(constraint: Constraint, velocity: Vector, output: Vector): void;
+    _simplexSolverSolve(constraints: Constraint[], velocity: Vector, deltaTime: number, minimumDeltaTime: number, maximumVelocity: Vector): SolverOutput;
+    calculateMovement(deltaTime: number, forward: Vector, normal: Vector, velocity: Vector, surfaceVelocity: Vector, desiredVelocity: Vector, up: Vector): Vector;
+}
 const vector = (x = 0, y = 0, z = 0): Vector => ({ x, y, z });
 const plane = (normal: Vector, options: Partial<Constraint> = {}): Constraint => ({ planeNormal: normal, planeDistance: 0,
     velocity: vector(), angularVelocity: vector(), priority: 0, staticFriction: 0, dynamicFriction: 1,
@@ -22,7 +33,7 @@ const plane = (normal: Vector, options: Partial<Constraint> = {}): Constraint =>
 function pinnedKernel() {
     const source = new UpstreamSourceStore().getSource(characterControllerModule);
     const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-    const exports: Record<string, any> = {};
+    const exports: { PhysicsCharacterController?: new (world: object, position: Vector, options: { capsuleHeight: number; capsuleRadius: number }) => Kernel } = {};
     const transport = {
         createTransformNode: () => ({ position: { set() {} } }),
         createPhysicsShape: () => ({}), createPhysicsBody: () => ({}),
@@ -30,6 +41,7 @@ function pinnedKernel() {
         PhysicsShapeType: { CAPSULE: 3 }, PhysicsMotionType: { STATIC: 0, ANIMATED: 1, DYNAMIC: 2 },
     };
     new Function("exports", "require", output)(exports, () => transport);
+    assert(exports.PhysicsCharacterController);
     return new exports.PhysicsCharacterController({ _hknp: { HP_QueryCollector_Create: () => [0, {}] } }, vector(), { capsuleHeight: 1.8, capsuleRadius: 0.6 });
 }
 
@@ -76,7 +88,7 @@ test("reference-preserving simplex, friction and movement kernels match unchange
         for (const velocity of [vector(1, -2, 3), vector(-2, -1, -0.5), vector(0, 0, 0), vector(0.2, 1, -2)]) {
             const output = kernel._simplexSolverSolve(constraints, velocity, 0.1, 0.03, vector(10, 10, 10));
             expected.push([output.position.x, output.position.y, output.position.z, output.velocity.x, output.velocity.y, output.velocity.z, output.deltaTime,
-                ...output.planeInteractions.flatMap((interaction: any) => [Number(interaction.touched), Number(interaction.stopped), interaction.surfaceTime, interaction.penaltyDistance, interaction.status])]);
+                ...output.planeInteractions.flatMap(interaction => [Number(interaction.touched), Number(interaction.stopped), interaction.surfaceTime, interaction.penaltyDistance, interaction.status])]);
             runs.push(`{ auto output = kernel._simplexSolverSolve({${constraints.map(cppPlane).join(", ")}}, ${cppVector(velocity)}, 0.1, 0.03, v(10, 10, 10)); print(output); }`);
         }
     }

@@ -2312,6 +2312,8 @@ export interface Value {
   staticJson?: unknown;
   tupleElements?: Value[];
   recordProperties?: Record<string, Value>;
+  /** Fields alias an already-retained native object; escaping must preserve those field references. */
+  retainedNativeRecord?: true;
   /**
    * Record properties that carry a function: either an identifier
    * naming a local one, or a function literal written in place. The

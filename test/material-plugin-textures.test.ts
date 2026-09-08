@@ -885,7 +885,7 @@ test("reads the refused built-in names from the generated binding table", () => 
             `${name} is a row of the generated table`,
         );
     }
-    assert.equal(standardBuiltinBindingNames().size, 17);
+    assert.equal(standardBuiltinBindingNames().size, 19);
 });
 
 test("refuses two plugins on one material declaring the same names", () => {

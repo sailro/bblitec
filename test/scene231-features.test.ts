@@ -144,17 +144,17 @@ test("Standard texture transforms retain live material offsets and the pinned UV
         stdUvTransformExt: { _bind(material: unknown, entries: unknown[], binding: number, mesh: unknown, scene: unknown): number };
     }>("material/standard/fragments/std-uv-transform-fragment.js");
     const context = new LoweringContext();
-    const channels = ["diffuseTexture", "_bumpTexture", "_specularTexture", "_ambientTexture", "_opacityTexture"];
+    const channels = ["diffuseTexture", "_bumpTexture", "_specularTexture", "_ambientTexture", "_opacityTexture", "_lightmapTexture"];
     const lowered = lowerStandardUvTransformWriter(context, {
         presence: Object.fromEntries(channels.map((name) => [name, "true"])),
-        coordIndex: { diffuseCoordIndex: "material.diffuse_coord_index" },
+        coordIndex: { diffuseCoordIndex: "material.diffuse_coord_index", lightmapCoordIndex: "material.lightmap_coord_index" },
     });
     const checks: string[] = [];
     for (const offset of [[0, 0], [0.13, 0.07], [1 / 3, -1 / 7]]) {
         for (const invertY of [false, true]) for (const coordIndex of [0, 1]) {
             const texture = { uScale: 1.3, vScale: 0.7, uOffset: 0.17, vOffset: -0.11, uAng: 0.4, invertY };
             const material = { uvScale: [2, 0.5], uvOffset: offset,
-                diffuseCoordIndex: coordIndex,
+                diffuseCoordIndex: coordIndex, lightmapCoordIndex: coordIndex,
                 ...Object.fromEntries(channels.map((name) => [name, texture])) };
             let expected = new Uint32Array();
             const scene = { surface: { engine: { _device: {
@@ -171,6 +171,7 @@ test("Standard texture transforms retain live material offsets and the pinned UV
                 material.standard_uv_offset_x = ${offset[0]};
                 material.standard_uv_offset_y = ${offset[1]};
                 material.diffuse_coord_index = ${coordIndex};
+                material.lightmap_coord_index = ${coordIndex};
                 bbl::TextureData texture{};
                 texture.uv_transform = {1.3, 0.7, 0.17, -0.11, 0.4};
                 texture.uv_invert_y = ${invertY};
@@ -179,6 +180,7 @@ test("Standard texture transforms retain live material offsets and the pinned UV
                 material.specular_texture = texture;
                 material.ambient_texture = texture;
                 material.opacity_texture = texture;
+                material.lightmap_texture = texture;
                 bbl::upstream::StandardMaterialProps props{{2.0f, 0.5f}};
                 bbl::upstream::StandardUvTxUniforms actual{};
                 bbl::upstream::write_std_uv_transform_data(material, props, actual);

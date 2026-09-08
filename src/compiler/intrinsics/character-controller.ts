@@ -25,7 +25,7 @@ export function characterVectorValue(cpp: string): Value {
 function retainCharacterVector(context: PhysicsIntrinsicContext, cpp: string): Value {
     const owner = context.allocateTemporaryCppName("character_vector");
     context.emit(`[[maybe_unused]] const auto ${owner} = ${cpp};`);
-    return characterVectorValue(owner);
+    return { ...characterVectorValue(owner), retainedNativeRecord: true };
 }
 
 export function compileCharacterIntrinsic(context: PhysicsIntrinsicContext, name: string, call: ts.CallExpression): Value | undefined {
