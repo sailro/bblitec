@@ -6,13 +6,12 @@ import { createCompilerProgram, type CompilerProgram } from "./program.js";
 import type { CompileManifest, CompileResult, Feature, WorkerCompilation } from "./types.js";
 import { featureOrder, featureSources, renderFeaturesCmake } from "./output-projection.js";
 import { reachedGeneratedSources } from "../generated-sources.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 
 function globalNamed(frontend: CompilerProgram, expression: ts.Expression, name: string): boolean {
     const identifier = ts.isPropertyAccessExpression(expression) ? expression.name : expression;
     return ts.isIdentifier(identifier) && identifier.text === name &&
-        (frontend.checker.getSymbolAtLocation(identifier)?.declarations?.some(
-            declaration => frontend.program.isSourceFileDefaultLibrary(declaration.getSourceFile()),
-        ) ?? false);
+        isDefaultLibraryIdentifier(frontend.checker, identifier);
 }
 
 /** Discovery follows resolved browser constructors, never a filename or demo protocol. */

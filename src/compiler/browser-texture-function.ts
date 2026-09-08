@@ -78,10 +78,11 @@ import type {
     Value,
 } from "./types.js";
 import {
-    rootIdentifier,
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
 } from "./user-functions.js";
+import { rootIdentifier, argumentAt } from "./syntax.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
 const supportedFactories = ["createTexture2DFromPixels", "loadTexture2D"] as const;
@@ -101,7 +102,7 @@ export interface BrowserTextureFunctionShape {
     returns: "value" | "record";
 }
 /** One texture the executed function handed a pinned factory. */
-export type BakedBrowserTexture =
+type BakedBrowserTexture =
     | {
           factory: "createTexture2DFromPixels";
           /** Raw RGBA8, exactly as the call passed it. */
@@ -119,7 +120,7 @@ export type BakedBrowserTexture =
       };
 
 /** What one executed function produced: its textures and what it returned. */
-export interface BrowserTextureBake {
+interface BrowserTextureBake {
     textures: readonly BakedBrowserTexture[];
     result:
         | { kind: "texture"; index: number }
@@ -143,7 +144,7 @@ function mayOwnBrowserTextures(source: ts.SourceFile): boolean {
 }
 
 /** Walk `node`'s value positions; type annotations are not executed. */
-export function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
+function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
     ts.forEachChild(node, (child) => {
         if (ts.isTypeNode(child) || ts.isTypeAliasDeclaration(child)) return;
         visit(child);
@@ -163,28 +164,36 @@ export function containsValueNode(
     return found;
 }
 
-/** A function body that allocates a browser canvas of either spelling. */
-export function ownsCanvas(node: ts.Node): boolean {
+/**
+ * A function body that allocates a browser canvas of either spelling,
+ * through the DOM library's own `OffscreenCanvas` or `document`.
+ */
+export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
     let found = false;
     forEachValueNode(node, (child) => {
         if (found) return;
         if (
             ts.isNewExpression(child) &&
             ts.isIdentifier(child.expression) &&
-            child.expression.text === "OffscreenCanvas"
+            child.expression.text === "OffscreenCanvas" &&
+            isDefaultLibraryIdentifier(checker, child.expression)
         ) {
             found = true;
             return;
         }
+        const firstArgument = ts.isCallExpression(child)
+            ? child.arguments[0]
+            : undefined;
         if (
             ts.isCallExpression(child) &&
             ts.isPropertyAccessExpression(child.expression) &&
             child.expression.name.text === "createElement" &&
             ts.isIdentifier(child.expression.expression) &&
             child.expression.expression.text === "document" &&
-            child.arguments.length >= 1 &&
-            ts.isStringLiteral(child.arguments[0]!) &&
-            (child.arguments[0] as ts.StringLiteral).text === "canvas"
+            isDefaultLibraryIdentifier(checker, child.expression.expression) &&
+            firstArgument !== undefined &&
+            ts.isStringLiteral(firstArgument) &&
+            firstArgument.text === "canvas"
         ) {
             found = true;
         }
@@ -244,7 +253,7 @@ export function browserTextureFunctionShape(
     });
     if (!closure) return undefined;
     if (factories === 0) return undefined;
-    if (!closure.some((member) => ownsCanvas(member))) return undefined;
+    if (!closure.some((member) => ownsCanvas(member, checker))) return undefined;
 
     const returns = returnShape(declaration);
     if (!returns) return undefined;
@@ -340,7 +349,7 @@ export function sameFileClosure(
  * still reached, and leaving it out of the closure would leave its canvas,
  * its pinned reaches and its module-level writes unexamined.
  */
-export function localFunctionDeclaration(
+function localFunctionDeclaration(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
     sourceFile: ts.SourceFile,
@@ -402,7 +411,7 @@ function returnShape(
 
 // ── Execution ────────────────────────────────────────────────────────────────
 
-export interface ClosureModule {
+interface ClosureModule {
     /** Repository-relative, forward-slashed: the module's identity. */
     key: string;
     javascript: string;
@@ -942,7 +951,7 @@ export { pngDimensions } from "./asset-bytes-sync.js";
 // ── Lowering ─────────────────────────────────────────────────────────────────
 
 /** What the lowering reads off the compiler; the walk is a superset. */
-export interface BrowserTextureCallContext {
+interface BrowserTextureCallContext {
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
     /** The names this compilation executed, for the fidelity adaptation. */
@@ -998,10 +1007,10 @@ export function compileBrowserTextureFunctionCall(
     // than returning undefined: falling back to the inliner here would
     // compile the argument a second time, on top of the lines the first
     // compile already emitted.
-    const engine = context.compileValue(call.arguments[0]!);
+    const engine = context.compileValue(argumentAt(call, 0));
     if (engine.kind !== "engine") {
         context.fail(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             `'${shape.name}' produces its textures in a browser canvas at ` +
                 `generation, so its one argument is the engine; received ${engine.kind}.`,
         );

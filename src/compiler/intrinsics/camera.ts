@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import {
     staticNumberValue,
     staticVec3Value,
@@ -96,11 +97,11 @@ function arcRotateProgram(
     // program -- these arguments and the property writes that follow -- go
     // through the same folder, so one cannot accept what the other drops.
     const scalar = (index: number): number | undefined =>
-        staticNumberValue(context, call.arguments[index]!);
+        staticNumberValue(context, argumentAt(call, index));
     const alpha = scalar(0);
     const beta = scalar(1);
     const radius = scalar(2);
-    const target = staticVec3Value(context, call.arguments[3]!);
+    const target = staticVec3Value(context, argumentAt(call, 3));
     if (
         alpha === undefined ||
         beta === undefined ||
@@ -184,10 +185,10 @@ export function compileCameraIntrinsic(
                     // composed view matrix (see CameraRecord).
                     `bbl::create_arc_rotate_camera(` +
                     `${engine}, ` +
-                    `${context.compileNumber(call.arguments[0]!, "double")}, ` +
-                    `${context.compileNumber(call.arguments[1]!, "double")}, ` +
-                    `${context.compileNumber(call.arguments[2]!, "double")}, ` +
-                    `${context.compileVec3(call.arguments[3]!, "double")})`,
+                    `${context.compileNumber(argumentAt(call, 0), "double")}, ` +
+                    `${context.compileNumber(argumentAt(call, 1), "double")}, ` +
+                    `${context.compileNumber(argumentAt(call, 2), "double")}, ` +
+                    `${context.compileVec3(argumentAt(call, 3), "double")})`,
                 engineCpp: engine,
                 cameraKind: "arc-rotate",
             };
@@ -196,11 +197,11 @@ export function compileCameraIntrinsic(
         case "createDefaultCamera": {
             context.expectArgumentCount(call, 1, 1);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const engine = context.requireEngine(scene, call);
             context.reachFeature("camera:arc-rotate", call);
@@ -224,8 +225,8 @@ export function compileCameraIntrinsic(
                 cpp:
                     `bbl::create_free_camera(` +
                     `${engine}, ` +
-                    `${context.compileVec3(call.arguments[0]!, "double")}, ` +
-                    `${context.compileVec3(call.arguments[1]!, "double")})`,
+                    `${context.compileVec3(argumentAt(call, 0), "double")}, ` +
+                    `${context.compileVec3(argumentAt(call, 1), "double")})`,
                 engineCpp: engine,
                 cameraKind: "free",
             };
@@ -240,9 +241,9 @@ export function compileCameraIntrinsic(
                 cpp:
                     `bbl::create_banked_free_camera(` +
                     `${engine}, ` +
-                    `${context.compileVec3(call.arguments[0]!, "double")}, ` +
-                    `${context.compileVec3(call.arguments[1]!, "double")}, ` +
-                    `${call.arguments[2] ? context.compileVec3(call.arguments[2]!, "double") : "bbl::Vec3d{0.0, 1.0, 0.0}"})`,
+                    `${context.compileVec3(argumentAt(call, 0), "double")}, ` +
+                    `${context.compileVec3(argumentAt(call, 1), "double")}, ` +
+                    `${call.arguments[2] ? context.compileVec3(argumentAt(call, 2), "double") : "bbl::Vec3d{0.0, 1.0, 0.0}"})`,
                 engineCpp: engine,
                 cameraKind: "free",
             };
@@ -255,14 +256,14 @@ export function compileCameraIntrinsic(
         case "createGeospatialCamera": {
             context.expectArgumentCount(call, 1, 1);
             const engine = context.requireDefaultEngine(call);
-            const options = context.expectObjectLiteral(call.arguments[0]!);
+            const options = context.expectObjectLiteral(argumentAt(call, 0));
             const planetRadius = context.objectProperty(
                 options,
                 "planetRadius",
             );
             if (!planetRadius) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "createGeospatialCamera requires a planetRadius.",
                 );
             }
@@ -282,16 +283,16 @@ export function compileCameraIntrinsic(
         // the same present mask `setCameraLimits` uses.
         case "setGeospatialOrientation": {
             context.expectArgumentCount(call, 2, 2);
-            const camera = context.compileValue(call.arguments[0]!);
-            context.expectKind(camera, "camera", call.arguments[0]!);
+            const camera = context.compileValue(argumentAt(call, 0));
+            context.expectKind(camera, "camera", argumentAt(call, 0));
             if (camera.cameraKind !== "geospatial") {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "setGeospatialOrientation requires a GeospatialCamera.",
                 );
             }
             const orientation = context.expectObjectLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const scalars = ["yaw", "pitch", "radius"] as const;
             let presentMask = 0;
@@ -322,16 +323,16 @@ export function compileCameraIntrinsic(
         // platform layer beside the other two cameras'.
         case "attachGeospatialControls": {
             context.expectArgumentCount(call, 3, 3);
-            const camera = context.compileValue(call.arguments[0]!);
-            context.expectKind(camera, "camera", call.arguments[0]!);
+            const camera = context.compileValue(argumentAt(call, 0));
+            context.expectKind(camera, "camera", argumentAt(call, 0));
             if (camera.cameraKind !== "geospatial") {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "attachGeospatialControls requires a GeospatialCamera.",
                 );
             }
-            const scene = context.compileValue(call.arguments[2]!);
-            context.expectKind(scene, "scene", call.arguments[2]!);
+            const scene = context.compileValue(argumentAt(call, 2));
+            context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(camera, scene, call);
             context.reachFeature("camera:geospatial", call);
             const engine = context.requireEngine(camera, call);
@@ -356,11 +357,11 @@ export function compileCameraIntrinsic(
             // silently derived.
             context.expectArgumentCount(call, 1, 2);
             const camera =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 camera,
                 "camera",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             let halfHeight = "1.0";
             const options = call.arguments[1];
@@ -414,8 +415,8 @@ export function compileCameraIntrinsic(
         // is the record the scene sees.
         case "getCameraPosition": {
             context.expectArgumentCount(call, 1, 1);
-            const camera = context.compileValue(call.arguments[0]!);
-            context.expectKind(camera, "camera", call.arguments[0]!);
+            const camera = context.compileValue(argumentAt(call, 0));
+            context.expectKind(camera, "camera", argumentAt(call, 0));
             const resultType = context.dataTypes.fromTsType(
                 context.checker.getTypeAtLocation(call),
                 call,
@@ -474,7 +475,7 @@ export function compileCameraIntrinsic(
 
         case "getViewProjectionMatrix": {
             context.expectArgumentCount(call, 2, 2);
-            const cameraExpression = call.arguments[0]!;
+            const cameraExpression = argumentAt(call, 0);
             const camera = context.compileValue(cameraExpression);
             context.expectKind(camera, "camera", cameraExpression);
             if (
@@ -488,7 +489,7 @@ export function compileCameraIntrinsic(
             }
             const engine = context.requireEngine(camera, call);
             const aspect = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "double",
             );
             context.reachJsData();
@@ -525,15 +526,15 @@ export function compileCameraIntrinsic(
 
         case "setCameraLimits": {
             context.expectArgumentCount(call, 2, 3);
-            const camera = context.compileValue(call.arguments[0]!);
-            context.expectKind(camera, "camera", call.arguments[0]!);
+            const camera = context.compileValue(argumentAt(call, 0));
+            context.expectKind(camera, "camera", argumentAt(call, 0));
             if (camera.cameraKind && camera.cameraKind !== "arc-rotate") {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "setCameraLimits requires an ArcRotateCamera.",
                 );
             }
-            const limits = context.expectObjectLiteral(call.arguments[1]!);
+            const limits = context.expectObjectLiteral(argumentAt(call, 1));
             const fields = [
                 "lowerAlphaLimit",
                 "upperAlphaLimit",

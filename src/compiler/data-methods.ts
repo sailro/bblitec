@@ -2,6 +2,7 @@
 // mutation walk consults, and the dispatcher that lowers a data-method
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 
 import {
     dataTypesEqual,
@@ -32,7 +33,7 @@ export function compileIsArrayOverData(
     ) {
         return undefined;
     }
-    const value = lowerer.context.compileValue(call.arguments[0]!);
+    const value = lowerer.context.compileValue(argumentAt(call, 0));
     const decided = (answer: boolean): Value => ({
         kind: "boolean",
         cpp: answer ? "true" : "false",
@@ -77,19 +78,18 @@ export function compileIsArrayOverData(
 /**
  * The `[start, end]` pair a ranged builtin takes, as native doubles.
  *
- * `slice`, `fill` and `copyWithin` all resolve their endpoints through the
- * same relative-index rule, and all three read an omitted end as the
- * receiver's length. `startIndex` says where in the argument list the pair
- * begins, which is the only thing that differs between them.
+ * `fill` and `copyWithin` both resolve their endpoints through the same
+ * relative-index rule, both read an omitted end as the receiver's length,
+ * and both take the pair after one leading argument (the fill value, the
+ * copy target).
  */
 function relativeRangeArguments(
     lowerer: DataLowerer,
     call: ts.CallExpression,
     receiverCpp: string,
-    startIndex: number,
 ): [start: string, end: string] {
-    const startArgument = call.arguments[startIndex];
-    const endArgument = call.arguments[startIndex + 1];
+    const startArgument = call.arguments[1];
+    const endArgument = call.arguments[2];
     return [
         startArgument
             ? lowerer.context.compileNumber(startArgument, "double")
@@ -248,7 +248,7 @@ export function compileDataMethodCall(
             }
             lowerer.context.reachJsData();
             const value = lowerer.compileForRetainedSink(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 created.element,
                 "Array.fill",
             );
@@ -280,7 +280,7 @@ export function compileDataMethodCall(
                 );
             lowerer.context.emit(`auto ${temporary} = ${typed.cpp};`);
             const number = lowerer.context.compileNumber(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "double",
             );
             const value = typedArrayStoreExpression(
@@ -371,7 +371,7 @@ export function compileDataMethodCall(
                 `Tuple Array.${method} requires exactly one callback.`,
             );
         }
-        const callback = lowerer.context.unwrap(call.arguments[0]!);
+        const callback = lowerer.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(callback) &&
             !ts.isArrowFunction(callback) &&
@@ -436,7 +436,7 @@ export function compileDataMethodCall(
                 "Tuple Array.map requires exactly one callback.",
             );
         }
-        const callback = lowerer.context.unwrap(call.arguments[0]!);
+        const callback = lowerer.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(callback) &&
             !ts.isArrowFunction(callback) &&
@@ -586,7 +586,7 @@ export function compileDataMethodCall(
         lowerer.context.enterRuntimeControlFlow();
         try {
             const value = lowerer.compileForSink(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 optionalSetType.element,
             );
             lowerer.context.emit(
@@ -726,12 +726,12 @@ export function compileDataMethodCall(
                 );
             }
             const keyValue = lowerer.context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const key = lowerer.compileKnownValueForSink(
                 keyValue,
                 dataType.key,
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const staticKey =
                 keyValue.staticString ??
@@ -823,35 +823,35 @@ export function compileDataMethodCall(
                 );
             }
             const keyValue = lowerer.context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const assignedValue = lowerer.context.compileValue(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             lowerer.context.recordCollectionKey(narrowed, keyValue);
             if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.key)) {
                 lowerer.context.refuseBorrowedPlatformEventEscape(
                     keyValue,
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "Map.set key",
                 );
             }
             if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.value)) {
                 lowerer.context.refuseBorrowedPlatformEventEscape(
                     assignedValue,
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "Map.set value",
                 );
             }
             const key = lowerer.compileKnownValueForSink(
                 keyValue,
                 dataType.key,
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const value = lowerer.compileKnownValueForSink(
                 assignedValue,
                 dataType.value,
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const staticKey =
                 keyValue.staticString ??
@@ -928,8 +928,8 @@ export function compileDataMethodCall(
                     `Set.${method} expects exactly one value.`,
                 );
             }
-            const member = lowerer.context.compileValue(call.arguments[0]!);
-            const value = lowerer.compileKnownValueForSink(member, dataType.element, call.arguments[0]!);
+            const member = lowerer.context.compileValue(argumentAt(call, 0));
+            const value = lowerer.compileKnownValueForSink(member, dataType.element, argumentAt(call, 0));
             if (method === "delete") lowerer.context.recordCollectionKey(narrowed, member, true);
             return {
                 kind: "boolean",
@@ -949,11 +949,11 @@ export function compileDataMethodCall(
                     "Set.add expects exactly one value.",
                 );
             }
-            const member = lowerer.context.compileValue(call.arguments[0]!);
+            const member = lowerer.context.compileValue(argumentAt(call, 0));
             if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.element)) {
-                lowerer.context.refuseBorrowedPlatformEventEscape(member, call.arguments[0]!, "Set.add");
+                lowerer.context.refuseBorrowedPlatformEventEscape(member, argumentAt(call, 0), "Set.add");
             }
-            const value = lowerer.compileKnownValueForSink(member, dataType.element, call.arguments[0]!);
+            const value = lowerer.compileKnownValueForSink(member, dataType.element, argumentAt(call, 0));
             lowerer.context.recordCollectionKey(narrowed, member);
             return {
                 kind: "data",
@@ -977,11 +977,11 @@ export function compileDataMethodCall(
                 );
             }
             const pattern = lowerer.context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (pattern.kind !== "regexp") {
                 lowerer.context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     `Reached String.${method} uses a RegExp pattern.`,
                 );
             }
@@ -1016,7 +1016,7 @@ export function compileDataMethodCall(
                 );
             }
             const search = lowerer.compileForSink(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 { kind: "string" },
             );
             const index =
@@ -1068,7 +1068,7 @@ export function compileDataMethodCall(
                 lowerer.context.fail(call, "String.slice expects one or two arguments.");
             }
             const staticBegin = lowerer.context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const staticEnd = call.arguments[1]
                 ? lowerer.context.compileValue(call.arguments[1])
@@ -1112,7 +1112,7 @@ export function compileDataMethodCall(
                 );
             }
             const separatorValue = lowerer.context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (separatorValue.kind === "regexp") {
                 return {
@@ -1125,7 +1125,7 @@ export function compileDataMethodCall(
                 };
             }
             const separator = lowerer.compileForSink(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 { kind: "string" },
             );
             return {
@@ -1145,19 +1145,19 @@ export function compileDataMethodCall(
                 );
             }
             const pattern = lowerer.context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (pattern.kind !== "regexp") {
                 lowerer.context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "Reached String.replace uses a RegExp pattern.",
                 );
             }
             const replacementValue = lowerer.context.compileValue(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const patternExpression = lowerer.context.unwrap(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (
                 narrowed.staticString !== undefined &&
@@ -1189,7 +1189,7 @@ export function compileDataMethodCall(
                 )
             ) {
                 lowerer.context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "String.replace expects a string replacement.",
                 );
             }
@@ -1205,7 +1205,7 @@ export function compileDataMethodCall(
                 lowerer.context.fail(call, "String.startsWith expects one argument.");
             }
             const prefixValue = lowerer.context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (
                 narrowed.staticString !== undefined &&
@@ -1229,7 +1229,7 @@ export function compileDataMethodCall(
                 )
             ) {
                 lowerer.context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "String.startsWith expects a string argument.",
                 );
             }
@@ -1244,7 +1244,7 @@ export function compileDataMethodCall(
                 lowerer.context.fail(call, "String.endsWith expects one argument.");
             }
             const suffix = lowerer.compileForSink(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 { kind: "string" },
             );
             return {
@@ -1258,7 +1258,7 @@ export function compileDataMethodCall(
             }
             return {
                 kind: "number",
-                cpp: `bbl::js::string_char_code_at(${narrowed.cpp}, ${lowerer.context.compileNumber(call.arguments[0]!, "double")})`,
+                cpp: `bbl::js::string_char_code_at(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`,
                 dataType: { kind: "number" },
             };
         }
@@ -1271,7 +1271,7 @@ export function compileDataMethodCall(
                 : lowerer.context.cppString(" ");
             return {
                 kind: "data",
-                cpp: `bbl::js::string_pad_start(${narrowed.cpp}, ${lowerer.context.compileNumber(call.arguments[0]!, "double")}, ${fill})`,
+                cpp: `bbl::js::string_pad_start(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")}, ${fill})`,
                 dataType: { kind: "string" },
             };
         }
@@ -1348,7 +1348,7 @@ export function compileDataMethodCall(
         }
         lowerer.context.reachJsData();
         const number = lowerer.context.compileNumber(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             "double",
         );
         const stored = typedArrayStoreExpression(
@@ -1368,7 +1368,6 @@ export function compileDataMethodCall(
             lowerer,
             call,
             narrowed.cpp,
-            1,
         );
         return {
             kind: "void",
@@ -1392,14 +1391,13 @@ export function compileDataMethodCall(
         }
         lowerer.context.reachJsData();
         const target = lowerer.context.compileNumber(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             "double",
         );
         const [start, end] = relativeRangeArguments(
             lowerer,
             call,
             narrowed.cpp,
-            1,
         );
         return {
             kind: "void",
@@ -1492,7 +1490,7 @@ export function compileDataMethodCall(
             );
         }
         const offset = lowerer.context.compileNumber(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             "double",
         );
         const nativeMethod = method
@@ -1518,7 +1516,7 @@ export function compileDataMethodCall(
             );
         }
         const offset = lowerer.context.compileNumber(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             "double",
         );
         const littleEndian = call.arguments[1]
@@ -1574,7 +1572,7 @@ export function compileDataMethodCall(
             );
         }
         const separator = call.arguments[0]
-            ? lowerer.context.compileValue(call.arguments[0]!)
+            ? lowerer.context.compileValue(argumentAt(call, 0))
             : undefined;
         if (
             separator &&
@@ -1585,7 +1583,7 @@ export function compileDataMethodCall(
             )
         ) {
             lowerer.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "Array.join separator must be a string.",
             );
         }
@@ -1633,7 +1631,7 @@ export function compileDataMethodCall(
                 "Array.sort currently requires one comparator callback.",
             );
         }
-        const callback = lowerer.context.unwrap(call.arguments[0]!);
+        const callback = lowerer.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(callback) &&
             !ts.isArrowFunction(callback) &&
@@ -1806,7 +1804,7 @@ export function compileDataMethodCall(
                 "Array.reduce currently requires a callback and an initial value.",
             );
         }
-        const callback = lowerer.context.unwrap(call.arguments[0]!);
+        const callback = lowerer.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(callback) &&
             !ts.isArrowFunction(callback) &&
@@ -1837,7 +1835,7 @@ export function compileDataMethodCall(
             `const std::size_t ${count} = ${source}.size();`,
         );
         lowerer.context.emit(
-            `${lowerer.context.dataTypes.cppType(resultType)} ${accumulator} = ${lowerer.compileForSink(call.arguments[1]!, resultType)};`,
+            `${lowerer.context.dataTypes.cppType(resultType)} ${accumulator} = ${lowerer.compileForSink(argumentAt(call, 1), resultType)};`,
         );
         lowerer.context.emit(
             `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
@@ -2345,7 +2343,7 @@ export function compileDataMethodCall(
             );
         }
         const value = lowerer.compileForRetainedSink(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             dataType.element,
             "Array.fill",
         );
@@ -2360,7 +2358,7 @@ export function compileDataMethodCall(
         const removalCount =
             call.arguments.length === 2
                 ? lowerer.context.resolveStaticExpression(
-                      call.arguments[1]!,
+                      argumentAt(call, 1),
                   )
                 : undefined;
         if (
@@ -2376,7 +2374,7 @@ export function compileDataMethodCall(
         lowerer.invalidateAliases(narrowed.cpp);
         return {
             kind: "void",
-            cpp: `bbl::js::array_splice_one(${narrowed.cpp}, ${lowerer.context.compileNumber(call.arguments[0]!, "double")})`,
+            cpp: `bbl::js::array_splice_one(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`,
         };
     }
     lowerer.context.fail(

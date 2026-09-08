@@ -30,13 +30,7 @@ export function pbrNoColorView(
     source: ScenePbrMaterialManifest,
     materialsBefore: number,
 ): ScenePbrMaterialManifest {
-    return {
-        ...source,
-        materialsBefore,
-        sourceMaterialsBefore:
-            source.sourceMaterialsBefore ?? source.materialsBefore,
-        noColorView: true,
-    };
+    return pbrMaterialView(source, materialsBefore, "noColorView");
 }
 
 /**
@@ -53,13 +47,28 @@ export function pbrEsmShadowView(
     source: ScenePbrMaterialManifest,
     materialsBefore: number,
 ): ScenePbrMaterialManifest {
-    return {
+    return pbrMaterialView(source, materialsBefore, "esmShadowView");
+}
+
+/**
+ * A derived view of one scene PBR material: its source record copied whole
+ * to a new slot, remembering the slot it was derived from, with the one
+ * view bit set that names which fragment the copy composes.
+ */
+function pbrMaterialView(
+    source: ScenePbrMaterialManifest,
+    materialsBefore: number,
+    view: "noColorView" | "esmShadowView",
+): ScenePbrMaterialManifest {
+    const derived: ScenePbrMaterialManifest = {
         ...source,
         materialsBefore,
         sourceMaterialsBefore:
             source.sourceMaterialsBefore ?? source.materialsBefore,
-        esmShadowView: true,
     };
+    return view === "noColorView"
+        ? { ...derived, noColorView: true }
+        : { ...derived, esmShadowView: true };
 }
 
 /**

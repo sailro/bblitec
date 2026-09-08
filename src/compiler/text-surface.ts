@@ -2,7 +2,14 @@
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";
-import { unwrapExpression } from "./user-functions.js";
+import {
+    argumentAt,
+    isAssignmentExpression,
+    isUpdateExpression,
+    stringLiteralText,
+    unwrapExpression,
+} from "./syntax.js";
+import { babylonPackages } from "./symbols.js";
 
 export type TextTransform = "position" | "scaling" | "rotation" | "rotationQuaternion" | "positionPx";
 const transforms: readonly string[] = ["position", "scaling", "rotation", "rotationQuaternion"];
@@ -10,7 +17,7 @@ const field = (name: string): string => ({rotationQuaternion:"rotation_quaternio
 const axes = (name: TextTransform): readonly string[] => name === "rotationQuaternion" ? ["x", "y", "z", "w"] : name === "positionPx" ? ["x","y"] : ["x", "y", "z"];
 const textKinds = ["text-data", "text-renderable", "text-layer", "text-renderer", "text-run", "text-vector"];
 
-export interface TextSurfaceContext {
+interface TextSurfaceContext {
     readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     compileValue(expression: ts.Expression): Value;
@@ -33,8 +40,13 @@ export function compileTextModuleValue(context: TextSurfaceContext, expression: 
     const awaited = unwrapExpression(expression.expression);
     if (!ts.isAwaitExpression(awaited)) return undefined;
     const call = context.unwrap(awaited.expression);
-    if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword || call.arguments.length !== 1 ||
-        !ts.isStringLiteralLike(call.arguments[0]!) || !["babylon-lite", "@babylonjs/lite"].includes(call.arguments[0]!.text)) return undefined;
+    const specifier =
+        ts.isCallExpression(call) &&
+        call.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        call.arguments.length === 1
+            ? stringLiteralText(argumentAt(call, 0))
+            : undefined;
+    if (specifier === undefined || !(babylonPackages as readonly string[]).includes(specifier)) return undefined;
     context.reachFeature("text:weight", expression);
     context.promoteTextData(expression);
     return {kind:"data", cpp:"[](bbl::TextData data, bbl::TextRunRef run, double offset) { bbl::set_font_weight_offset(data, run, offset); }",
@@ -129,9 +141,8 @@ export function compileTextMutation(context: TextSurfaceContext, expression: ts.
         });
         return { kind: "void", cpp: `bbl::text_set_${field(owner.textTransform!)}(*(${owner.cpp}), ${args.join(", ")})` };
     }
-    const assignment = ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment ? node : undefined;
-    const increment = (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-        [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator) ? node : undefined;
+    const assignment = isAssignmentExpression(node) ? node : undefined;
+    const increment = isUpdateExpression(node) ? node : undefined;
     const target = assignment?.left ?? increment?.operand;
     if (!target) return undefined;
     const left = context.unwrap(target);

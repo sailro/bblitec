@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type {
     CompileAsset,
     ResolvedCompileOptions,
@@ -128,7 +129,7 @@ function compileSplatFragments(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
 ): SplatFragmentManifest[] {
-    const list = context.expectStaticArrayLiteral(call.arguments[2]!);
+    const list = context.expectStaticArrayLiteral(argumentAt(call, 2));
     return list.elements.map((element) => {
         const unwrapped = context.unwrap(element);
         if (ts.isIdentifier(unwrapped)) {
@@ -228,10 +229,10 @@ function ktxContainerUrl(
     call: ts.CallExpression,
     baseUrl: string,
 ): string {
-    const suffixes = context.unwrap(call.arguments[2]!);
+    const suffixes = context.unwrap(argumentAt(call, 2));
     if (!ts.isArrayLiteralExpression(suffixes)) {
         context.fail(
-            call.arguments[2]!,
+            argumentAt(call, 2),
             "A reached loadKtxTexture2D takes its suffixes as an array " +
                 "literal: generation resolves which one the compiled " +
                 "backends can sample.",
@@ -243,7 +244,7 @@ function ktxContainerUrl(
     const url = compressedTextureUrl(baseUrl, listed);
     if (url === undefined) {
         context.fail(
-            call.arguments[2]!,
+            argumentAt(call, 2),
             `A reached loadKtxTexture2D lists no block-compression suffix ` +
                 `(${listed.join(", ")}); the compiled backends report no ` +
                 "other compressed-format feature, and packaging the pin's " +
@@ -263,12 +264,12 @@ export function compileAssetIntrinsic(
         case "releaseTexture": {
             context.expectArgumentCount(call, 1, 1);
             const texture = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 texture,
                 "texture",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // The browser pool counts ownership of a standalone GPUTexture.
             // Native retains the CPU texture record and lets each backend
@@ -278,22 +279,22 @@ export function compileAssetIntrinsic(
         }
         case "getContainerMeshes": {
             context.expectArgumentCount(call, 1, 1);
-            const container = context.compileValue(call.arguments[0]!);
+            const container = context.compileValue(argumentAt(call, 0));
             return context.assetMeshCollection(container, call);
         }
 
         case "loadGltf": {
             context.expectArgumentCount(call, 2, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const source =
                 context.compileStringLiteral(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             const asset = context.registerAsset(
                 source,
@@ -322,14 +323,14 @@ export function compileAssetIntrinsic(
             // for them tree-shakes away, with some the pin's own splicer
             // builds the module at generation.
             context.expectArgumentCount(call, 2, 3);
-            const scene = context.compileValue(call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const source = context.compileStringLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const asset = context.registerAsset(source, "splat");
             if (call.arguments.length === 3) {
@@ -350,7 +351,7 @@ export function compileAssetIntrinsic(
                     `bbl::load_splat(${scene.cpp}, ` +
                     `bbl::asset_path(` +
                     `${context.cppString(asset.output)}))`,
-                engineCpp: context.requireEngine(scene, call.arguments[0]!),
+                engineCpp: context.requireEngine(scene, argumentAt(call, 0)),
                 asset,
             };
         }
@@ -376,9 +377,9 @@ export function compileAssetIntrinsic(
             // is what makes the lookup total.
             const container = splatContainerByLoader(importedName)!;
             context.expectArgumentCount(call, 2, 2);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
-            const source = context.compileStringLiteral(call.arguments[1]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
+            const source = context.compileStringLiteral(argumentAt(call, 1));
             const asset = context.registerAsset(source, container.kind);
             context.reachFeature("loader:splat", call);
             // The entry point's own feature, reached at the call the way
@@ -393,7 +394,7 @@ export function compileAssetIntrinsic(
                     `bbl::${container.entryPoint}(${scene.cpp}, ` +
                     `bbl::asset_path(` +
                     `${context.cppString(asset.output)}))`,
-                engineCpp: context.requireEngine(scene, call.arguments[0]!),
+                engineCpp: context.requireEngine(scene, argumentAt(call, 0)),
                 asset,
             };
         }
@@ -409,11 +410,11 @@ export function compileAssetIntrinsic(
             // upstream keeps it on every cloud, and this port keeps it for a
             // scene that reads it back.
             context.expectArgumentCount(call, 1, 1);
-            const splat = context.compileValue(call.arguments[0]!);
+            const splat = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 splat,
                 "splat-mesh",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("loader:splat-bake", call);
             return {
@@ -434,21 +435,21 @@ export function compileAssetIntrinsic(
             // has no reached mutation to serve.
             context.expectArgumentCount(call, 2, 2);
             const container =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 container,
                 "asset",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (container.asset?.kind !== "gltf") {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "selectVariant requires the container a glTF load returned.",
                 );
             }
             context.selectGltfVariant(
                 container.asset,
-                context.compileStringLiteral(call.arguments[1]!),
+                context.compileStringLiteral(argumentAt(call, 1)),
                 call,
             );
             context.reachFeature("loader:gltf-variants", call);
@@ -474,15 +475,15 @@ export function compileAssetIntrinsic(
         case "loadBabylon": {
             context.expectArgumentCount(call, 2, 3);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const source =
                 context.compileStringLiteral(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             if (call.arguments[2]) {
                 // `maxMeshes` stops the pinned loader's node pass partway
@@ -532,21 +533,21 @@ export function compileAssetIntrinsic(
         case "loadTexture2D": {
             context.expectArgumentCount(call, 2, 3);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const dynamic = compileDynamicPackagedAsset(
                 context,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "texture",
                 (source) => /\.(?:png|jpe?g|webp)(?:[?#]|$)/i.test(source),
             );
             const url = dynamic
                 ? undefined
-                : context.compileStringLiteral(call.arguments[1]!);
+                : context.compileStringLiteral(argumentAt(call, 1));
             const asset = url === undefined
                 ? undefined
                 : context.registerAsset(url, "texture");
@@ -760,9 +761,9 @@ export function compileAssetIntrinsic(
             // unmeasured sampler.
             const basis = importedName === "loadBasisTexture2D";
             context.expectArgumentCount(call, basis ? 2 : 3, basis ? 2 : 3);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const url = context.compileStringLiteral(call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const url = context.compileStringLiteral(argumentAt(call, 1));
             const asset = basis
                 ? context.registerAsset(url, "basis")
                 : context.registerAsset(
@@ -789,18 +790,18 @@ export function compileAssetIntrinsic(
         case "loadSkybox": {
             context.expectArgumentCount(call, 3, 4);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const baseUrl = context.compileStringLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const extension =
                 context.compileStringLiteral(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                 );
             // Pinned loadCubeTexture face suffix order: layers 0-5.
             const faceAssets = [
@@ -838,15 +839,15 @@ export function compileAssetIntrinsic(
         case "loadEnvironment": {
             context.expectArgumentCount(call, 2, 3);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const environmentUrl =
                 context.compileStringLiteral(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             const environmentAsset =
                 context.registerAsset(
@@ -960,11 +961,11 @@ export function compileAssetIntrinsic(
             // arms are unconditional and both background features are
             // reached here.
             context.expectArgumentCount(call, 2, 2);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             const options =
                 context.compileDdsEnvironmentBackgroundOptions(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             const groundAsset = context.registerAsset(
                 options.groundTextureUrl,
@@ -1006,15 +1007,15 @@ export function compileAssetIntrinsic(
             // but deliberately ignored by both the pin and this adapter.
             context.expectArgumentCount(call, 2, 3);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const source =
                 context.compileStringLiteral(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             const brdfUrl = call.arguments[2]
                 ? context.compileDdsEnvironmentOptions(
@@ -1049,15 +1050,15 @@ export function compileAssetIntrinsic(
         case "loadHdrEnvironment": {
             context.expectArgumentCount(call, 2, 3);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const source =
                 context.compileStringLiteral(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             const options = call.arguments[2]
                 ? context.compileHdrEnvironmentOptions(

@@ -1,5 +1,6 @@
 import ts from "typescript";
-import type { DataTypeRegistry } from "../data-types.js";
+import { argumentAt } from "../syntax.js";
+import { handleCppType, type DataTypeRegistry } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -62,12 +63,12 @@ export function compilePickingIntrinsic(
         case "createGpuPicker": {
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("picking:gpu", call);
             return {
@@ -85,7 +86,7 @@ export function compilePickingIntrinsic(
             context.expectArgumentCount(call, 3, 4);
             if (call.arguments.length === 4) {
                 context.fail(
-                    call.arguments[3]!,
+                    argumentAt(call, 3),
                     "pickAsync options are not lowered: `filter` is a " +
                         "scene closure the candidate collector would call " +
                         "per mesh, `discard` and `ignore` select a " +
@@ -94,12 +95,12 @@ export function compilePickingIntrinsic(
                 );
             }
             const picker = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 picker,
                 "gpu-picker",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "picking-info",
@@ -108,8 +109,8 @@ export function compilePickingIntrinsic(
                     `bbl::gpu_pick(` +
                     `${context.requireEngine(picker, call)}, ` +
                     `${picker.cpp}, ` +
-                    `${context.compileNumber(call.arguments[1]!, "double")}, ` +
-                    `${context.compileNumber(call.arguments[2]!, "double")})`,
+                    `${context.compileNumber(argumentAt(call, 1), "double")}, ` +
+                    `${context.compileNumber(argumentAt(call, 2), "double")})`,
                 ...(picker.engineCpp === undefined
                     ? {}
                     : { engineCpp: picker.engineCpp, pickingEngineKnown: true as const }),
@@ -119,12 +120,12 @@ export function compilePickingIntrinsic(
         case "disposePicker": {
             context.expectArgumentCount(call, 1, 1);
             const picker = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 picker,
                 "gpu-picker",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "void",
@@ -147,7 +148,7 @@ export function compilePickingIntrinsic(
             context.expectArgumentCount(call, 3, 4);
             if (call.arguments.length === 4) {
                 context.fail(
-                    call.arguments[3]!,
+                    argumentAt(call, 3),
                     "pickBillboardSprite's optional picker is the pin's " +
                         "own reuse path for high-frequency picking; the " +
                         "reached slice passes none, and the default arm " +
@@ -155,8 +156,8 @@ export function compilePickingIntrinsic(
                         "does.",
                 );
             }
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             const engine = context.requireEngine(scene, call);
             const promised = context.checker.getTypeAtLocation(call);
             context.reachFeature("picking:gpu", call);
@@ -177,7 +178,7 @@ export function compilePickingIntrinsic(
                     // the two that identify the sprite.
                     fields: {
                         system: {
-                            cpp: "bbl::BillboardSystemHandle{info.picked_index}",
+                            cpp: `${handleCppType("billboard-system")}{info.picked_index}`,
                             accepts: (type) =>
                                 type.kind === "handle" &&
                                 type.handle === "billboard-system",
@@ -202,8 +203,8 @@ export function compilePickingIntrinsic(
                         `const bbl::PickingInfo info = ` +
                         `bbl::pick_billboard_sprite(${engine}, ` +
                         `${scene.cpp}, ` +
-                        `${context.compileNumber(call.arguments[1]!, "double")}, ` +
-                        `${context.compileNumber(call.arguments[2]!, "double")});`,
+                        `${context.compileNumber(argumentAt(call, 1), "double")}, ` +
+                        `${context.compileNumber(argumentAt(call, 2), "double")});`,
                     miss:
                         "info.picked_kind != " +
                         "bbl::PickedNodeKind::billboard_sprite",
@@ -222,8 +223,8 @@ export function compilePickingIntrinsic(
         // module graph does.
         case "enableDetailedPicking": {
             context.expectArgumentCount(call, 1, 1);
-            const picker = context.compileValue(call.arguments[0]!);
-            context.expectKind(picker, "gpu-picker", call.arguments[0]!);
+            const picker = context.compileValue(argumentAt(call, 0));
+            context.expectKind(picker, "gpu-picker", argumentAt(call, 0));
             context.reachFeature("picking:detailed", call);
             context.reachFeature("math:normalize-vec3", call);
             context.reachFeature("mesh:geometry-access", call);
@@ -250,15 +251,15 @@ export function compilePickingIntrinsic(
             context.reachFeature("picking:detailed", call);
             context.reachFeature("math:normalize-vec3", call);
             context.reachFeature("mesh:geometry-access", call);
-            const info = context.compileValue(call.arguments[0]!);
-            context.expectKind(info, "picking-info", call.arguments[0]!);
+            const info = context.compileValue(argumentAt(call, 0));
+            context.expectKind(info, "picking-info", argumentAt(call, 0));
             return {
                 kind: "data",
                 cpp:
                     `bbl::picked_normal(${info.cpp}, ` +
                     `${
                         call.arguments.length === 2
-                            ? context.compileCondition(call.arguments[1]!)
+                            ? context.compileCondition(argumentAt(call, 1))
                             : "false"
                     })`,
                 dataType: {

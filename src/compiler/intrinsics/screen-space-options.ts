@@ -9,6 +9,7 @@
 // (`pinned-screen-space.ts`) -- so a default or a range the pin changes is
 // the pin's answer, not this file's.
 import ts from "typescript";
+import { handleCppType } from "../data-types.js";
 import { screenSpaceFacts } from "../../pinned-screen-space.js";
 import { doubleLiteral } from "../../cpp-literals.js";
 import { compileStaticNumber } from "../option-helpers.js";
@@ -41,7 +42,7 @@ export function compileScreenSpaceTaskOptions(
     expression: ts.Expression,
     taskIndex: number,
 ): CompiledScreenSpaceTask {
-    const { kind } = screenSpaceFacts(intrinsic);
+    const { kind, module } = screenSpaceFacts(intrinsic);
     const object = context.expectObjectLiteral(expression);
     const nameExpression = context.objectProperty(object, "name");
     const name = nameExpression
@@ -76,7 +77,7 @@ export function compileScreenSpaceTaskOptions(
     const options = compileDescriptorOptions(
         context,
         object,
-        intrinsic,
+        { module, factory: intrinsic },
         HANDLE_OPTIONS,
     );
 
@@ -140,7 +141,7 @@ function compileLightDirection(
             );
         };
         return (
-            `bbl::ScreenSpaceLightDirection{bbl::LightHandle{}, bbl::Vec3d{` +
+            `bbl::ScreenSpaceLightDirection{${handleCppType("light")}{}, bbl::Vec3d{` +
             `${component("x")}, ${component("y")}, ${component("z")}}}`
         );
     }

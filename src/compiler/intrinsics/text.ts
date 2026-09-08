@@ -1,5 +1,6 @@
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import { materializePinnedText, textSha256, type CompiledTextData, type StaticTextLayout, type TextBlob } from "../../pinned-text-data.js";
 import { readAssetBytesSync } from "../asset-bytes-sync.js";
 import { compileStaticNumber, type PositiveIntegerContext } from "../option-helpers.js";
@@ -33,20 +34,20 @@ export interface TextIntrinsicContext extends IntrinsicCallContext, PositiveInte
 export function compileTextIntrinsic(context: TextIntrinsicContext, name: string, call: ts.CallExpression): Value | undefined {
     if (name === "setFontWeightOffset") {
         context.expectArgumentCount(call,3,3);
-        const data=context.compileValue(call.arguments[0]!);
-        context.expectKind(data,"text-data",call.arguments[0]!);
+        const data=context.compileValue(argumentAt(call, 0));
+        context.expectKind(data,"text-data",argumentAt(call, 0));
         const owner=retainTextValue(context,data);
         const run=context.allocateTemporaryCppName("text_run_ref");
-        context.emit(`const auto ${run}=${context.compileForDataSink(call.arguments[1]!,{kind:"handle",handle:"text-run-ref"})};`);
-        const offset=context.compileNumber(call.arguments[2]!,"double");
+        context.emit(`const auto ${run}=${context.compileForDataSink(argumentAt(call, 1),{kind:"handle",handle:"text-run-ref"})};`);
+        const offset=context.compileNumber(argumentAt(call, 2),"double");
         promoteLiveTextData(context);
         context.reachFeature("text:layout",call);context.reachFeature("text:weight",call);
         return {kind:"void",cpp:`bbl::set_font_weight_offset(${owner.cpp},${run},${offset})`};
     }
     if (name === "updateTextData") {
         context.expectArgumentCount(call,2,2);
-        const data = context.compileValue(call.arguments[0]!);
-        context.expectKind(data,"text-data",call.arguments[0]!);
+        const data = context.compileValue(argumentAt(call, 0));
+        context.expectKind(data,"text-data",argumentAt(call, 0));
         const owner = retainTextValue(context,data);
         let operation: string | undefined, previous: Value | undefined, run: string | undefined;
         for (const [name, expression] of textOptionEntries(context,call.arguments[1])) {
@@ -77,8 +78,8 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     }
     if (name === "createTextLayer") {
         context.expectArgumentCount(call, 1, 2);
-        const data = context.compileValue(call.arguments[0]!);
-        context.expectKind(data, "text-data", call.arguments[0]!);
+        const data = context.compileValue(argumentAt(call, 0));
+        context.expectKind(data, "text-data", argumentAt(call, 0));
         const owner = retainTextValue(context, data);
         const options = context.allocateTemporaryCppName("text_layer_options");
         context.emit(`bbl::TextLayerOptions ${options};`);
@@ -99,8 +100,8 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     }
     if (name === "createTextRenderer") {
         context.expectArgumentCount(call, 2, 2);
-        const engine = context.compileValue(call.arguments[0]!);
-        context.expectKind(engine, "engine", call.arguments[0]!);
+        const engine = context.compileValue(argumentAt(call, 0));
+        context.expectKind(engine, "engine", argumentAt(call, 0));
         const options = context.allocateTemporaryCppName("text_renderer_options");
         context.emit(`bbl::TextRendererOptions ${options};`);
         let hasLayers = false;
@@ -119,19 +120,19 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     }
     if (name === "registerTextRenderer") {
         context.expectArgumentCount(call,1,1);
-        const value = context.compileValue(call.arguments[0]!);
-        context.expectKind(value,"text-renderer",call.arguments[0]!);
+        const value = context.compileValue(argumentAt(call, 0));
+        context.expectKind(value,"text-renderer",argumentAt(call, 0));
         context.reachFeature("renderer:text",call);
         return { kind:"void", cpp:`bbl::register_text_renderer(${value.cpp})` };
     }
     if (name === "updateDefaultTextData") {
         context.expectArgumentCount(call, 2, 3);
-        const owner = context.compileValue(call.arguments[0]!);
-        context.expectKind(owner, "text-data", call.arguments[0]!);
+        const owner = context.compileValue(argumentAt(call, 0));
+        context.expectKind(owner, "text-data", argumentAt(call, 0));
         const retained = retainTextValue(context, owner);
-        const text = context.compileValue(call.arguments[1]!);
-        expectTextString(context, text, call.arguments[1]!);
-        if (call.arguments[2] && !omitted(context, call.arguments[2]!)) context.fail(call.arguments[2]!, "Live text color arguments are not yet represented.");
+        const text = context.compileValue(argumentAt(call, 1));
+        expectTextString(context, text, argumentAt(call, 1));
+        if (call.arguments[2] && !omitted(context, argumentAt(call, 2))) context.fail(argumentAt(call, 2), "Live text color arguments are not yet represented.");
         promoteLiveTextData(context);
         context.reachFeature("text:layout", call);
         return { kind: "void", cpp: `bbl::update_default_text_data(${retained.cpp}, ${text.cpp})` };
@@ -146,12 +147,12 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
         const owner = retainTextValue(context, value);
         if (name === "getAlphaToCoverage") return { kind: "boolean", cpp: `bbl::get_text_alpha_to_coverage(*${owner.cpp})`, dataType: { kind: "boolean" } };
         context.assertTextPipelineMutable(call);
-        return { kind: "void", cpp: `bbl::set_text_alpha_to_coverage(*${owner.cpp}, ${context.compileBoolean(call.arguments[1]!)})` };
+        return { kind: "void", cpp: `bbl::set_text_alpha_to_coverage(*${owner.cpp}, ${context.compileBoolean(argumentAt(call, 1))})` };
     }
     if (name === "createTextRenderable") {
         context.expectArgumentCount(call, 1, 2);
-        const value = context.compileValue(call.arguments[0]!);
-        context.expectKind(value, "text-data", call.arguments[0]!);
+        const value = context.compileValue(argumentAt(call, 0));
+        context.expectKind(value, "text-data", argumentAt(call, 0));
         const data = retainTextValue(context, value);
         const options = compileRenderableOptions(context, call.arguments[1]);
         context.reachFeature("text:data", call);
@@ -162,12 +163,12 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     }
     if (name === "addTextRenderable") {
         context.expectArgumentCount(call, 2, 2);
-        const originalScene = context.compileValue(call.arguments[0]!);
-        context.expectKind(originalScene, "scene", call.arguments[0]!);
+        const originalScene = context.compileValue(argumentAt(call, 0));
+        context.expectKind(originalScene, "scene", argumentAt(call, 0));
         const scene = { ...originalScene, cpp: context.allocateTemporaryCppName("text_scene") };
         context.emit(`auto ${scene.cpp} = ${originalScene.cpp};`);
-        const renderable = context.compileValue(call.arguments[1]!);
-        context.expectKind(renderable, "text-renderable", call.arguments[1]!);
+        const renderable = context.compileValue(argumentAt(call, 1));
+        context.expectKind(renderable, "text-renderable", argumentAt(call, 1));
         context.recordTextAttachment(call);
         context.reachFeature("text:data", call);
         context.reachFeature("text:renderable", call);
@@ -180,8 +181,8 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     if (name in dispose) {
         const [kind, helper] = dispose[name as keyof typeof dispose];
         context.expectArgumentCount(call, 1, 1);
-        const value = context.compileValue(call.arguments[0]!);
-        context.expectKind(value, kind, call.arguments[0]!);
+        const value = context.compileValue(argumentAt(call, 0));
+        context.expectKind(value, kind, argumentAt(call, 0));
         context.assertTextDisposal(call);
         context.reachFeature("text:data", call);
         return { kind: "void", cpp: `bbl::${helper}(${value.cpp})` };
@@ -192,7 +193,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     }
     if (name === "loadFont") {
         context.expectArgumentCount(call, 1, 1);
-        const source = context.compileStaticString(call.arguments[0]!);
+        const source = context.compileStaticString(argumentAt(call, 0));
         const asset = context.registerAsset(source, "binary");
         const payload = context.assetPayloads.get(asset.source) ?? asset.source;
         const bytes = readAssetBytesSync(payload, context.options.fileName);
@@ -203,13 +204,13 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
         } };
     }
     context.expectArgumentCount(call, 3, 5);
-    const font = context.compileValue(call.arguments[0]!);
-    context.expectKind(font, "text-font", call.arguments[0]!);
-    const fontSizePx = finiteNumber(context, call.arguments[1]!, "Text font size");
-    const textInput = context.compileValue(call.arguments[2]!);
+    const font = context.compileValue(argumentAt(call, 0));
+    context.expectKind(font, "text-font", argumentAt(call, 0));
+    const fontSizePx = finiteNumber(context, argumentAt(call, 1), "Text font size");
+    const textInput = context.compileValue(argumentAt(call, 2));
     const textValue = textInput.staticString === undefined
-        ? context.pinValueToTemporary(textInput,"text_content",call.arguments[2]!) : textInput;
-    expectTextString(context, textValue, call.arguments[2]!);
+        ? context.pinValueToTemporary(textInput,"text_content",argumentAt(call, 2)) : textInput;
+    expectTextString(context, textValue, argumentAt(call, 2));
     // A retained helper can accept any TextData owner, including one created
     // after that helper was lowered. Keep later owners eligible for live input.
     const live = textValue.staticString === undefined || context.reachedTextData.some(row => row.layout.live);

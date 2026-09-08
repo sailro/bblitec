@@ -33,8 +33,9 @@ import {
 } from "./browser-texture-function.js";
 import type { ResolvedCompileOptions, Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 
-export interface ExecutedUrlCallContext {
+interface ExecutedUrlCallContext {
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
     /** The producers the browser ran; the adaptation record names them. */
@@ -42,7 +43,7 @@ export interface ExecutedUrlCallContext {
     fail(node: ts.Node, message: string): never;
 }
 
-function createsObjectUrl(node: ts.Node): boolean {
+function createsObjectUrl(node: ts.Node, checker: ts.TypeChecker): boolean {
     return containsValueNode(
         node,
         (child) =>
@@ -50,7 +51,8 @@ function createsObjectUrl(node: ts.Node): boolean {
             ts.isPropertyAccessExpression(child.expression) &&
             child.expression.name.text === "createObjectURL" &&
             ts.isIdentifier(child.expression.expression) &&
-            child.expression.expression.text === "URL",
+            child.expression.expression.text === "URL" &&
+            isDefaultLibraryIdentifier(checker, child.expression.expression),
     );
 }
 
@@ -71,8 +73,8 @@ function isExecutedUrlFunction(
     const closure = sameFileClosure(checker, declaration, () => false);
     return (
         closure !== undefined &&
-        closure.some((member) => ownsCanvas(member)) &&
-        closure.some((member) => createsObjectUrl(member))
+        closure.some((member) => ownsCanvas(member, checker)) &&
+        closure.some((member) => createsObjectUrl(member, checker))
     );
 }
 

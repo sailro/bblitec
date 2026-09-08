@@ -25,8 +25,10 @@
 //     Nothing here is stepped by the renderer, which is also why a
 //     capture render is the measurable one.
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 
 import { readProperty, type PropertyContext } from "./properties.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 import type { CompileAsset, Feature, Value } from "./types.js";
 
 /**
@@ -34,7 +36,7 @@ import type { CompileAsset, Feature, Value } from "./types.js";
  * satisfies it, which is what lets a receiver walk run through the same
  * rule table a direct read takes.
  */
-export interface AudioReceiverContext extends PropertyContext {
+interface AudioReceiverContext extends PropertyContext {
     lookupOptional(identifier: ts.Identifier): Value | undefined;
     resolveThisField(name: string): Value | undefined;
     compileValue(expression: ts.Expression): Value;
@@ -42,7 +44,7 @@ export interface AudioReceiverContext extends PropertyContext {
 }
 
 /** What a property write needs. `AssignmentContext` satisfies it. */
-export interface AudioWriteContext extends AudioReceiverContext {
+interface AudioWriteContext extends AudioReceiverContext {
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -53,7 +55,7 @@ export interface AudioWriteContext extends AudioReceiverContext {
 }
 
 /** What a method call needs. The expression compiler satisfies it. */
-export interface AudioCallContext extends AudioWriteContext {
+interface AudioCallContext extends AudioWriteContext {
     readonly checker: ts.TypeChecker;
     expectKind(value: Value, kind: Value["kind"], node: ts.Node): void;
     allocateTemporaryCppName(label: string): string;
@@ -278,7 +280,8 @@ export function compileAudioDecodeAssetCall(
         if (ts.isCallExpression(node)) {
             if (
                 ts.isIdentifier(node.expression) &&
-                node.expression.text === "fetch"
+                node.expression.text === "fetch" &&
+                isDefaultLibraryIdentifier(context.checker, node.expression)
             ) {
                 fetches = true;
             } else if (
@@ -297,12 +300,12 @@ export function compileAudioDecodeAssetCall(
         return undefined;
     }
 
-    const audioContext = context.compileValue(call.arguments[0]!);
-    context.expectKind(audioContext, "audio-context", call.arguments[0]!);
-    const url = context.compileValue(call.arguments[1]!);
+    const audioContext = context.compileValue(argumentAt(call, 0));
+    context.expectKind(audioContext, "audio-context", argumentAt(call, 0));
+    const url = context.compileValue(argumentAt(call, 1));
     if (url.kind !== "string" || url.staticString === undefined) {
         context.fail(
-            call.arguments[1]!,
+            argumentAt(call, 1),
             "Encoded audio decode requires a generation-known asset URL.",
         );
     }
@@ -349,7 +352,7 @@ export function compileAudioMethodCall(
         method === "decodeAudioData" &&
         call.arguments.length === 1
     ) {
-        const encoded = context.compileValue(call.arguments[0]!);
+        const encoded = context.compileValue(argumentAt(call, 0));
         if (encoded.dynamicAssetPathCpp) {
             context.reachFeature("audio:buffer-source", call);
             context.reachFeature("audio:decoded-buffer", call);
@@ -384,9 +387,9 @@ export function compileAudioMethodCall(
                 kind: "audio-buffer",
                 cpp:
                     `bbl::pal::audio_create_buffer(${receiver.cpp}, ` +
-                    `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[0]!)}), ` +
-                    `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[1]!)}), ` +
-                    `${context.compileNumber(call.arguments[2]!, "double")})`,
+                    `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 0))}), ` +
+                    `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 1))}), ` +
+                    `${context.compileNumber(argumentAt(call, 2), "double")})`,
                 dataType: { kind: "handle", handle: "audio-buffer" },
             };
         }
@@ -422,7 +425,7 @@ export function compileAudioMethodCall(
             kind: "data",
             cpp:
                 `bbl::pal::audio_buffer_channel(${receiver.cpp}, ` +
-                `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[0]!)}))`,
+                `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 0))}))`,
             dataType: { kind: "f32array" },
         };
     }
@@ -436,7 +439,7 @@ export function compileAudioMethodCall(
                         "connect(destination) is the reached form.",
                     );
                 }
-                const destination = context.compileValue(call.arguments[0]!);
+                const destination = context.compileValue(argumentAt(call, 0));
                 if (destination.kind === "audio-param") {
                     return {
                         kind: "void",
@@ -447,7 +450,7 @@ export function compileAudioMethodCall(
                 }
                 if (destination.kind !== "audio-node") {
                     context.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         "connect expects an audio node or AudioParam.",
                     );
                 }
@@ -478,7 +481,7 @@ export function compileAudioMethodCall(
                 // the engine reads as "now".
                 const when =
                     call.arguments.length > 0
-                        ? context.compileNumber(call.arguments[0]!, "double")
+                        ? context.compileNumber(argumentAt(call, 0), "double")
                         : "0.0";
                 const maximum = method === "start" ? 3 : 1;
                 if (call.arguments.length > maximum) {
@@ -513,8 +516,8 @@ export function compileAudioMethodCall(
                     `${method}(value, time) is the reached form.`,
                 );
             }
-            const value = context.compileNumber(call.arguments[0]!, "float");
-            const time = context.compileNumber(call.arguments[1]!, "double");
+            const value = context.compileNumber(argumentAt(call, 0), "float");
+            const time = context.compileNumber(argumentAt(call, 1), "double");
             return {
                 kind: "void",
                 cpp: `bbl::pal::${schedule}(${receiver.cpp}, ${value}, ${time})`,
@@ -523,7 +526,7 @@ export function compileAudioMethodCall(
         if (method === "cancelScheduledValues") {
             const time =
                 call.arguments.length > 0
-                    ? context.compileNumber(call.arguments[0]!, "double")
+                    ? context.compileNumber(argumentAt(call, 0), "double")
                     : "0.0";
             return {
                 kind: "void",

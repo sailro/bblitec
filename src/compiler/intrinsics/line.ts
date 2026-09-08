@@ -8,6 +8,7 @@
 // shader variant like any other. What the compiler owns is the reach — which
 // permutation each call settles, and which shapes refuse.
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type {
     LineMaterialPermutation,
     ReachedLineMaterial,
@@ -91,7 +92,7 @@ export function compileLineIntrinsic(
             context.expectArgumentCount(call, 0, 1);
             const engine = context.requireDefaultEngine(call);
             const options = call.arguments[0]
-                ? context.expectObjectLiteral(call.arguments[0]!)
+                ? context.expectObjectLiteral(argumentAt(call, 0))
                 : undefined;
             if (options) {
                 validateObjectProperties(
@@ -117,9 +118,9 @@ export function compileLineIntrinsic(
 
         case "createLineSystem": {
             context.expectArgumentCount(call, 2, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const options = context.expectObjectLiteral(call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const options = context.expectObjectLiteral(argumentAt(call, 1));
             validateObjectProperties(
                 context,
                 options,
@@ -214,11 +215,11 @@ export function compileLineIntrinsic(
 
         case "updateLineSystem": {
             context.expectArgumentCount(call, 3, 3);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const mesh = context.compileValue(call.arguments[1]!);
-            context.expectKind(mesh, "mesh", call.arguments[1]!);
-            const options = context.expectObjectLiteral(call.arguments[2]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const mesh = context.compileValue(argumentAt(call, 1));
+            context.expectKind(mesh, "mesh", argumentAt(call, 1));
+            const options = context.expectObjectLiteral(argumentAt(call, 2));
             validateObjectProperties(
                 context,
                 options,

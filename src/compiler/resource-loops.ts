@@ -9,17 +9,22 @@ import {
     aliasedMutationScan,
     callArgumentIsReadOnly,
     isSupportedFunction,
-    rootIdentifier,
     tryResolveFunctionDeclaration,
-    unwrapExpression,
     writesThroughTrackedRoot,
     type SupportedFunction,
 } from "./user-functions.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    rootIdentifier,
+    unwrapExpression,
+} from "./syntax.js";
 import { nativeDataIterationIntrinsics, runtimeOnlyIntrinsics } from "./intrinsics/registry.js";
+import { declarationInDefaultLibrary } from "./symbols.js";
 import { resizingArrayMethods } from "./data-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
-export interface ResourceLoopContext extends PositiveIntegerContext {
+interface ResourceLoopContext extends PositiveIntegerContext {
     readonly checker: ts.TypeChecker;
     readonly symbols: CompilerSymbols;
     canvasSizeProperty(expression: ts.Expression): "width" | "height" | undefined;
@@ -207,13 +212,9 @@ export function requiresStaticDataIteration(
                 return false;
             }
         }
-        const target = ts.isBinaryExpression(node) &&
-            node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-            node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+        const target = isAssignmentExpression(node)
             ? node.left
-            : (ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node)) &&
-                (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                    node.operator === ts.SyntaxKind.MinusMinusToken)
+            : isUpdateExpression(node)
                 ? node.operand
                 : undefined;
         if (!target) return;
@@ -299,7 +300,7 @@ export function loopBoundMayChange(
     ));
 }
 
-export interface StaticIndexLoop {
+interface StaticIndexLoop {
     indexBinding: ts.Identifier;
     start: number;
     end: ts.Expression;
@@ -340,7 +341,7 @@ export function staticIndexLoopShape(
         !declaration.initializer ||
         !ts.isNumericLiteral(declaration.initializer) ||
         !ts.isIdentifier(statement.condition.left) ||
-        !(ts.isPostfixUnaryExpression(incrementor) || ts.isPrefixUnaryExpression(incrementor)) ||
+        !isUpdateExpression(incrementor) ||
         incrementor.operator !== ts.SyntaxKind.PlusPlusToken ||
         !ts.isIdentifier(incrementor.operand)
     ) {
@@ -701,13 +702,9 @@ export function parameterizedResourceLoop(
             safe = false;
             return 0;
         }
-        const assignment = ts.isBinaryExpression(node) &&
-            node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-            node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+        const assignment = isAssignmentExpression(node)
             ? { target: node.left, value: node.right }
-            : (ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node)) &&
-                (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                    node.operator === ts.SyntaxKind.MinusMinusToken)
+            : isUpdateExpression(node)
                 ? { target: node.operand, value: undefined }
                 : undefined;
         if (assignment) {
@@ -795,7 +792,12 @@ export function parameterizedResourceLoop(
             }
             // Native data/Math methods have library signatures. An unresolved
             // callback or opaque method might conceal generation-time effects.
-            if (!called?.getSourceFile().hasNoDefaultLib && !nativeTransformSet(context, node)) safe = false;
+            if (
+                !(called !== undefined && declarationInDefaultLibrary(called)) &&
+                !nativeTransformSet(context, node)
+            ) {
+                safe = false;
+            }
             return work + 1;
         }
         const guarded = conditional || ts.isIfStatement(node) ||

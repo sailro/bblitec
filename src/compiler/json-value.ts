@@ -12,7 +12,7 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 
 /** The two members both converter owners already expose. */
-export interface JsonValueContext {
+interface JsonValueContext {
     cppString(value: string): string;
     fail(node: ts.Node, message: string): never;
 }

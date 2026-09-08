@@ -6,6 +6,7 @@
 // values an equivalent literal would have produced. No browser Response or
 // JSON parser leaks into the native program.
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 import { readdirSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 
@@ -50,20 +51,21 @@ export function compileStaticFetch(
     }
     const dynamic = compileDynamicPackagedAsset(
         context,
-        call.arguments[0]!,
+        argumentAt(call, 0),
         "binary",
     );
     if (dynamic) return dynamic;
-    if (ts.isIdentifier(call.arguments[0]!)) {
-        const bound = context.lookupOptional(call.arguments[0]!);
+    const url = argumentAt(call, 0);
+    if (ts.isIdentifier(url)) {
+        const bound = context.lookupOptional(url);
         if (bound && bound.staticString === undefined) {
             context.fail(
-                call.arguments[0]!,
-                `Generation-time fetch URL '${call.arguments[0]!.text}' lost its static value (${bound.kind}: ${bound.cpp}).`,
+                url,
+                `Generation-time fetch URL '${url.text}' lost its static value (${bound.kind}: ${bound.cpp}).`,
             );
         }
     }
-    const logicalSource = context.compileStringLiteral(call.arguments[0]!);
+    const logicalSource = context.compileStringLiteral(argumentAt(call, 0));
     const source = resolveBundledAsset(
         logicalSource,
         context.options.fileName,

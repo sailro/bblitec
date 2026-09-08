@@ -13,6 +13,20 @@ import {
     staticNumberValue,
 } from "./option-helpers.js";
 import { isJsonValue } from "./json-bridge.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    objectProperty,
+    unwrapExpression,
+    argumentAt,
+} from "./syntax.js";
+import { PINNED_ARITHMETIC_OPERATORS } from "../lowering/pinned-operators.js";
+import {
+    MATH_CONSTANTS,
+    MATH_MEMBERS,
+    mathMemberAccess,
+    mathMemberCall,
+} from "./math-intrinsics.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
@@ -69,13 +83,6 @@ const bitwiseFunctions = new Map<ts.SyntaxKind, string>([
         ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
         "shift_right_unsigned",
     ],
-]);
-
-const arithmeticOperators = new Map<ts.SyntaxKind, string>([
-    [ts.SyntaxKind.PlusToken, "+"],
-    [ts.SyntaxKind.MinusToken, "-"],
-    [ts.SyntaxKind.AsteriskToken, "*"],
-    [ts.SyntaxKind.SlashToken, "/"],
 ]);
 
 /**
@@ -158,7 +165,7 @@ export class StaticEvaluator {
         // scene 166 draws each component from a PRNG -- is a data tuple
         // rather than a compile-time one, so its lanes are read by index at
         // the sink's own width rather than folded.
-        const dataTuple = this.dataTupleComponents(unwrapped, 3, precision);
+        const dataTuple = this.dataTupleComponents(unwrapped, precision);
         if (dataTuple) {
             return `${type}{${dataTuple.join(", ")}}`;
         }
@@ -284,7 +291,7 @@ export class StaticEvaluator {
                 )
                 .join(", ")}}`;
         }
-        const data = this.dataTupleComponents(unwrapped, 3);
+        const data = this.dataTupleComponents(unwrapped);
         if (data) {
             return `bbl::Color3{${data.join(", ")}}`;
         }
@@ -538,10 +545,7 @@ export class StaticEvaluator {
             );
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
-            if (
-                unwrapped.operator === ts.SyntaxKind.PlusPlusToken ||
-                unwrapped.operator === ts.SyntaxKind.MinusMinusToken
-            ) {
+            if (isUpdateExpression(unwrapped)) {
                 const value = this.resolveValue(unwrapped);
                 if (value.kind === "number") {
                     return this.castNumber(value, precision);
@@ -687,7 +691,7 @@ export class StaticEvaluator {
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
-            const operator = arithmeticOperators.get(
+            const operator = PINNED_ARITHMETIC_OPERATORS.get(
                 unwrapped.operatorToken.kind,
             );
             if (!operator) {
@@ -707,52 +711,22 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "Math" &&
-            unwrapped.name.text === "PI"
-        ) {
+        // The constants a float sink has a single-precision spelling for
+        // are spelled that way; every other `Math` constant reads at
+        // double width through the property arm below.
+        const mathConstant = mathMemberAccess(unwrapped, this.isDefaultLibraryIdentifier);
+        const constant = mathConstant && MATH_CONSTANTS.get(mathConstant.name.text);
+        if (constant?.floatCpp !== undefined) {
             return precision === "float"
-                ? "bbl::pi"
-                : this.doubleLiteral(Math.PI);
+                ? constant.floatCpp
+                : this.doubleLiteral(constant.value);
         }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "Math" &&
-            unwrapped.name.text === "SQRT2"
-        ) {
-            return precision === "float"
-                ? "std::sqrt(2.0f)"
-                : this.doubleLiteral(Math.SQRT2);
-        }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "Math" &&
-            unwrapped.name.text === "SQRT1_2"
-        ) {
-            return precision === "float"
-                ? "std::sqrt(0.5f)"
-                : this.doubleLiteral(Math.SQRT1_2);
-        }
-        if (
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(
-                unwrapped.expression,
-            ) &&
-            ts.isIdentifier(
-                unwrapped.expression.expression,
-            ) &&
-            unwrapped.expression.expression.text === "Math" &&
-            unwrapped.expression.name.text === "sqrt" &&
-            unwrapped.arguments.length === 1
-        ) {
-            const compiled = `std::sqrt(${this.compileNumber(
-                unwrapped.arguments[0]!,
-                "double",
-            )})`;
+        const mathCall = mathMemberCall(unwrapped, this.isDefaultLibraryIdentifier);
+        const sqrt = mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
+        if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
+            const compiled = sqrt.cpp([
+                this.compileNumber(argumentAt(mathCall.call, 0), "double"),
+            ]);
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;
@@ -932,6 +906,14 @@ export class StaticEvaluator {
         ) {
             return false;
         }
+        const mathConstant = mathMemberAccess(
+            unwrapped,
+            this.isDefaultLibraryIdentifier,
+        );
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.isDefaultLibraryIdentifier,
+        );
         return (
             ts.isNumericLiteral(unwrapped) ||
             (ts.isIdentifier(unwrapped) &&
@@ -962,21 +944,10 @@ export class StaticEvaluator {
                     ts.SyntaxKind.BarBarToken,
                 ].includes(unwrapped.operatorToken.kind) &&
                 !this.isBooleanExpression(unwrapped)) ||
-            (ts.isPropertyAccessExpression(unwrapped) &&
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "Math" &&
-                (unwrapped.name.text === "PI" ||
-                    unwrapped.name.text === "SQRT1_2")) ||
-            (ts.isCallExpression(unwrapped) &&
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.text === "Math" &&
-                unwrapped.expression.name.text === "sqrt" &&
-                unwrapped.arguments.length === 1)
+            (mathConstant !== undefined &&
+                (mathConstant.name.text === "PI" ||
+                    mathConstant.name.text === "SQRT1_2")) ||
+            (mathCall?.name === "sqrt" && mathCall.call.arguments.length === 1)
         );
     }
 
@@ -1319,19 +1290,9 @@ export class StaticEvaluator {
             const parent = node.parent;
             if (throughBinding(node)) {
                 const assigned =
-                    ts.isBinaryExpression(parent) &&
-                    parent.left === node &&
-                    parent.operatorToken.kind >=
-                        ts.SyntaxKind.FirstAssignment &&
-                    parent.operatorToken.kind <=
-                        ts.SyntaxKind.LastAssignment;
-                const stepped =
-                    (ts.isPrefixUnaryExpression(parent) ||
-                        ts.isPostfixUnaryExpression(parent)) &&
-                    (parent.operator ===
-                        ts.SyntaxKind.PlusPlusToken ||
-                        parent.operator ===
-                            ts.SyntaxKind.MinusMinusToken);
+                    isAssignmentExpression(parent) &&
+                    parent.left === node;
+                const stepped = isUpdateExpression(parent);
                 const deleted =
                     ts.isDeleteExpression(parent);
                 const called =
@@ -1418,27 +1379,6 @@ export class StaticEvaluator {
             initializer,
             new Set([...resolving, symbol]),
         );
-    }
-
-    private objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined {
-        for (const property of object.properties) {
-            if (
-                ts.isPropertyAssignment(property) &&
-                this.propertyName(property.name) === name
-            ) {
-                return property.initializer;
-            }
-            if (
-                ts.isShorthandPropertyAssignment(property) &&
-                property.name.text === name
-            ) {
-                return property.name;
-            }
-        }
-        return undefined;
     }
 
     private tupleElements(
@@ -1534,9 +1474,10 @@ export class StaticEvaluator {
      */
     private dataTupleComponents(
         expression: ts.Expression,
-        length: number,
         precision: "float" | "double" = "float",
     ): string[] | undefined {
+        // Both readers (a Vector3 and a Color3) take a three-component tuple.
+        const length = 3;
         const call = ts.isCallExpression(expression);
         if (
             !call &&
@@ -1685,7 +1626,7 @@ export class StaticEvaluator {
         name: string,
         precision: "float" | "double" = "float",
     ): string {
-        const value = this.objectProperty(object, name);
+        const value = objectProperty(object, name);
         if (!value) {
             this.fail(
                 object,
@@ -1695,38 +1636,15 @@ export class StaticEvaluator {
         return this.compileNumber(value, precision);
     }
 
-    private propertyName(
-        name: ts.PropertyName,
-    ): string | undefined {
-        if (
-            ts.isIdentifier(name) ||
-            ts.isStringLiteral(name) ||
-            ts.isNumericLiteral(name)
-        ) {
-            return name.text;
-        }
-        return undefined;
-    }
-
     public unwrap(
         expression: ts.Expression,
     ): ts.Expression {
         let current = expression;
         for (;;) {
-            if (
-                ts.isAsExpression(current) ||
-                ts.isTypeAssertionExpression(current) ||
-                ts.isParenthesizedExpression(current) ||
-                ts.isNonNullExpression(current) ||
-                ts.isSatisfiesExpression(current) ||
-                ts.isAwaitExpression(current)
-            ) {
-                if (ts.isAwaitExpression(current)) {
-                    this.onAwait(current);
-                }
-                current = current.expression;
-                continue;
-            }
+            current = unwrapExpression(current, {
+                await: true,
+                onAwait: this.onAwait,
+            });
             // The pin's `wgsl` tag is the identity over its template.
             const template = this.pinnedWgslTemplate(current);
             if (template) {

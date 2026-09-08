@@ -9,6 +9,13 @@
 // does not resolve statically is refused; one that does reaches the composer,
 // so an option the pin starts branching on needs no compiler change.
 import ts from "typescript";
+import { handleCppType } from "../data-types.js";
+import {
+    pinnedOptionKind,
+    pinnedOptionNames,
+    type PinnedFactory,
+    type PinnedOptionKind,
+} from "./pinned-options.js";
 import {
     COMPOSITE_PASS_SETTINGS,
     POST_PROCESS_PASS_SETTINGS,
@@ -115,7 +122,7 @@ export function compilePostProcessTaskOptions(
     );
 
     const cameraExpression = context.objectProperty(object, "camera");
-    let camera = "bbl::CameraHandle{}";
+    let camera = `${handleCppType("camera")}{}`;
     if (effect.usesCamera) {
         if (!cameraExpression) {
             context.fail(object, `${intrinsic} requires a camera.`);
@@ -129,7 +136,6 @@ export function compilePostProcessTaskOptions(
         context,
         object,
         effect,
-        intrinsic,
         POST_PROCESS_PASS_SETTINGS,
     );
     const params = effect.params.map((slot) =>
@@ -219,7 +225,7 @@ export function compilePostProcessCompositeOptions(
         compileTextureReference(context, object, option, "color"),
     );
 
-    let camera = "bbl::CameraHandle{}";
+    let camera = `${handleCppType("camera")}{}`;
     if (composite.usesCamera) {
         const cameraExpression = context.objectProperty(object, "camera");
         if (!cameraExpression) {
@@ -238,7 +244,6 @@ export function compilePostProcessCompositeOptions(
         context,
         object,
         composite,
-        intrinsic,
         [...COMPOSITE_PASS_SETTINGS, ...(composite.sourceTasks ?? [])],
     );
     return {
@@ -261,7 +266,6 @@ function compileEffectOptions(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
     effect: PostProcessEffect | PostProcessComposite,
-    intrinsic: string,
     handledSettings: readonly string[],
 ): Record<string, PostProcessOptionValue> {
     const handled = new Set([
@@ -269,39 +273,57 @@ function compileEffectOptions(
         ...effect.extraTextures,
         ...(effect.usesCamera ? ["camera"] : []),
     ]);
-    return compileDescriptorOptions(context, object, intrinsic, handled);
+    return compileDescriptorOptions(
+        context,
+        object,
+        { module: effect.module, factory: effect.intrinsic },
+        handled,
+    );
 }
 
 /**
  * Every named property of a task descriptor the caller did not read
  * itself, statically resolved: the settings a pinned factory receives
- * whole. A computed or spread member has no name to forward under and is
- * refused.
+ * whole. Each is compiled as the shape the factory's config interface
+ * declares for it, and a key the config does not declare is refused by
+ * name — the factory would take its default for it silently. A computed
+ * or spread member has no name to forward under and is refused.
  */
 export function compileDescriptorOptions(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
-    intrinsic: string,
+    factory: PinnedFactory,
     handled: ReadonlySet<string>,
 ): Record<string, PostProcessOptionValue> {
     const options: Record<string, PostProcessOptionValue> = {};
     for (const property of object.properties) {
-        const key =
-            ts.isPropertyAssignment(property) ||
-            ts.isShorthandPropertyAssignment(property)
-                ? context.propertyName(property.name)
-                : undefined;
-        if (!key) {
+        const named = ts.isPropertyAssignment(property)
+            ? { key: context.propertyName(property.name), value: property.initializer }
+            : ts.isShorthandPropertyAssignment(property)
+              ? { key: context.propertyName(property.name), value: property.name }
+              : undefined;
+        if (!named || named.key === undefined) {
             context.fail(
                 property,
                 "Reached task descriptors support named properties only.",
             );
         }
+        const key = named.key;
+        const value = named.value;
         if (handled.has(key)) continue;
+        const kind = pinnedOptionKind(factory, key);
+        if (!kind) {
+            context.fail(
+                property,
+                `${factory.factory} does not declare option '${key}'; its ` +
+                    `config declares [${pinnedOptionNames(factory).join(", ")}].`,
+            );
+        }
         options[key] = compileOptionValue(
             context,
-            context.objectProperty(object, key)!,
-            `${intrinsic} option '${key}'`,
+            value,
+            `${factory.factory} option '${key}'`,
+            kind,
         );
     }
     return options;
@@ -346,89 +368,102 @@ function paramValue(
 
 /**
  * One effect option, as the pin's own factory would receive it: a number, a
- * boolean, the `{x, y}` pair its vector options are written as, or the
- * four-field normalized viewport a composite forwards to its last pass.
+ * boolean, a string, the `{x, y}` pair its vector options are written as,
+ * the four-field normalized viewport a composite forwards to its last pass,
+ * a numeric triple, or a member of one of the pin's enums.
  *
- * The two record shapes are told apart by what the literal declares, and a
- * literal that is neither is refused. Reading only `x` and `y` out of every
- * record is what used to happen, and a viewport went through it losing its
- * extent: the pass then covered the whole target instead of the half the
- * scene asked for, with nothing said.
+ * Which of those the option IS comes from the pin's config interface
+ * (`pinnedOptionKind`), never from the literal's shape: a viewport read as
+ * the vector its first two fields spell would cover the whole target
+ * instead of the half the scene asked for, with nothing said, so a literal
+ * that does not spell the declared shape is refused by name.
  */
-export function compileOptionValue(
+function compileOptionValue(
     context: EngineOptionContext,
     expression: ts.Expression,
     label: string,
+    kind: PinnedOptionKind,
 ): PostProcessOptionValue {
     const unwrapped = context.unwrap(expression);
-    // The contact shadows' `tint` triple: a numeric array forwarded whole.
-    if (ts.isArrayLiteralExpression(unwrapped)) {
-        return unwrapped.elements.map((element) =>
-            compileStaticNumber(context, element, label),
-        );
-    }
-    if (ts.isObjectLiteralExpression(unwrapped)) {
-        const component = (field: string): number => {
-            const value = context.objectProperty(unwrapped, field);
-            if (!value) {
-                context.fail(unwrapped, `${label} is missing '${field}'.`);
+    switch (kind.kind) {
+        case "triple": {
+            // The contact shadows' `tint`: a numeric array forwarded whole.
+            if (!ts.isArrayLiteralExpression(unwrapped)) {
+                context.fail(unwrapped, `${label} is a numeric triple.`);
             }
-            return compileStaticNumber(context, value, label);
-        };
-        const fields = new Set(
-            unwrapped.properties.map((property) =>
-                property.name
-                    ? context.propertyName(property.name)
-                    : undefined,
-            ),
-        );
-        if (fields.has("width") || fields.has("height")) {
-            if (fields.size !== 4) {
-                context.fail(
-                    unwrapped,
-                    `${label} names a viewport, which is exactly ` +
-                        "'x', 'y', 'width' and 'height'.",
-                );
-            }
-            return {
-                x: component("x"),
-                y: component("y"),
-                width: component("width"),
-                height: component("height"),
-            };
-        }
-        if (fields.size !== 2) {
-            context.fail(
-                unwrapped,
-                `${label} is neither a vector ('x', 'y') nor a viewport ` +
-                    "('x', 'y', 'width', 'height').",
+            return unwrapped.elements.map((element) =>
+                compileStaticNumber(context, element, label),
             );
         }
-        return { x: component("x"), y: component("y") };
-    }
-    if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return true;
-    if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) return false;
-    // A composite forwards its own pass settings to the pass it ends on, and
-    // `sourceSamplingMode` is a string among them. It reaches the factory
-    // unread: which of its options the composed text branches on is the
-    // pin's question, not this table's. The evaluator resolves a bound
-    // constant and a concatenation too, which is what every other string
-    // this file reads goes through.
-    if (ts.isStringLiteralLike(unwrapped)) {
-        return context.compileStringLiteral(unwrapped);
-    }
-    // `DepthOfFieldBlurLevel.High`: an enum the scene imported from Babylon
-    // Lite, whose value the pinned module decides at composition.
-    if (
-        ts.isPropertyAccessExpression(unwrapped) &&
-        ts.isIdentifier(unwrapped.expression)
-    ) {
-        const imported = context.symbols.importedName(unwrapped.expression);
-        if (imported) {
-            return { pinnedEnum: imported, member: unwrapped.name.text };
+        case "vector":
+        case "viewport": {
+            const fields =
+                kind.kind === "vector"
+                    ? ["x", "y"]
+                    : ["x", "y", "width", "height"];
+            const spelled = fields.map((field) => `'${field}'`).join(", ");
+            if (
+                !ts.isObjectLiteralExpression(unwrapped) ||
+                unwrapped.properties.length !== fields.length
+            ) {
+                context.fail(
+                    unwrapped,
+                    `${label} names a ${kind.kind}, which is exactly ${spelled}.`,
+                );
+            }
+            const component = (field: string): number => {
+                const value = context.objectProperty(unwrapped, field);
+                if (!value) {
+                    context.fail(unwrapped, `${label} is missing '${field}'.`);
+                }
+                return compileStaticNumber(context, value, label);
+            };
+            return kind.kind === "vector"
+                ? { x: component("x"), y: component("y") }
+                : {
+                      x: component("x"),
+                      y: component("y"),
+                      width: component("width"),
+                      height: component("height"),
+                  };
         }
+        case "boolean":
+            if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return true;
+            if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) return false;
+            return context.fail(unwrapped, `${label} is a boolean.`);
+        case "string":
+            // A composite forwards its own pass settings to the pass it ends
+            // on, and `sourceSamplingMode` is a string among them. It reaches
+            // the factory unread: which of its options the composed text
+            // branches on is the pin's question, not this table's. The
+            // evaluator resolves a bound constant and a concatenation too,
+            // which is what every other string this file reads goes through.
+            return context.compileStringLiteral(unwrapped);
+        case "enum": {
+            // `DepthOfFieldBlurLevel.High`: an enum the scene imported from
+            // Babylon Lite, whose value the pinned module decides at
+            // composition.
+            const access = ts.isPropertyAccessExpression(unwrapped)
+                ? unwrapped
+                : undefined;
+            const owner =
+                access && ts.isIdentifier(access.expression)
+                    ? access.expression
+                    : undefined;
+            const imported = owner
+                ? context.symbols.importedName(owner)
+                : undefined;
+            if (!access || imported !== kind.name) {
+                context.fail(
+                    unwrapped,
+                    `${label} is a member of the pin's ${kind.name}.`,
+                );
+            }
+            return { pinnedEnum: imported, member: access.name.text };
+        }
+        case "number":
+            return compileStaticNumber(context, unwrapped, label);
     }
-    return compileStaticNumber(context, unwrapped, label);
 }
 
 /**

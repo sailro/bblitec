@@ -38,7 +38,7 @@ export interface PropertyAnimationContext {
     fail(node: ts.Node, message: string): never;
 }
 
-export interface PropertyAnimationTargetContext {
+interface PropertyAnimationTargetContext {
     readonly dataTypes: DataTypeRegistry;
     fail(node: ts.Node, message: string): never;
     allocateTemporaryCppName(label: string): string;
@@ -195,7 +195,7 @@ export class PropertyAnimationTargetLowerer {
 
 export type PropertyAnimationTargetKind = "mesh" | "camera" | "record";
 
-export interface PropertyAnimationLane {
+interface PropertyAnimationLane {
     /** The native `PropertyAnimationPath` enumerator this lane lowers to. */
     native: string;
     /** How wide the lane's value is: the pin's stride for its whole-lane path. */
@@ -307,7 +307,7 @@ export function laneComponents(
         : propertyAnimationComponents.slice(0, lane.components);
 }
 
-export interface ResolvedPropertyAnimationPath {
+interface ResolvedPropertyAnimationPath {
     lane: PropertyAnimationLane;
     /** The native `PropertyAnimationComponent` enumerator. */
     component: string;
@@ -322,7 +322,7 @@ export interface ResolvedPropertyAnimationPath {
  * static property names use scalar callback tracks; group construction
  * validates the actual target's path and retains its resolved owner.
  */
-export function resolvePropertyAnimationPath(
+function resolvePropertyAnimationPath(
     path: string,
 ): ResolvedPropertyAnimationPath | undefined {
     const whole = propertyAnimationLanes.get(path);

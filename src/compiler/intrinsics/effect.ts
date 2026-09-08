@@ -13,6 +13,7 @@
 // generation composes and deploys them, and what stays at run time is the
 // uniform bytes, the bound textures, and the pass.
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type { EffectBindingManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -253,10 +254,10 @@ export function compileEffectIntrinsic(
         case "createUniformEffectWrapper": {
             context.expectArgumentCount(call, 2, 2);
             const engine = context.requireEngine(
-                context.compileValue(call.arguments[0]!),
+                context.compileValue(argumentAt(call, 0)),
                 call,
             );
-            const object = context.expectObjectLiteral(call.arguments[1]!);
+            const object = context.expectObjectLiteral(argumentAt(call, 1));
             validateObjectProperties(
                 context,
                 object,
@@ -323,10 +324,10 @@ export function compileEffectIntrinsic(
         case "createEffectWrapper": {
             context.expectArgumentCount(call, 2, 2);
             const engine = context.requireEngine(
-                context.compileValue(call.arguments[0]!),
+                context.compileValue(argumentAt(call, 0)),
                 call,
             );
-            const object = context.expectObjectLiteral(call.arguments[1]!);
+            const object = context.expectObjectLiteral(argumentAt(call, 1));
             validateObjectProperties(
                 context,
                 object,
@@ -377,16 +378,16 @@ export function compileEffectIntrinsic(
             // the wrapper's first uniform slot. The record arm keys by
             // binding name or index and no reached scene writes one.
             context.expectArgumentCount(call, 2, 2);
-            const wrapper = context.compileValue(call.arguments[0]!);
+            const wrapper = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 wrapper,
                 "effect-wrapper",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const data = context.compileValue(call.arguments[1]!);
+            const data = context.compileValue(argumentAt(call, 1));
             if (data.kind !== "data" || data.dataType?.kind !== "f32array") {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "Reached effect uniforms come from a Float32Array; the " +
                         "per-binding record form is not lowered.",
                 );
@@ -402,18 +403,18 @@ export function compileEffectIntrinsic(
 
         case "setEffectTexture": {
             context.expectArgumentCount(call, 3, 3);
-            const wrapper = context.compileValue(call.arguments[0]!);
+            const wrapper = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 wrapper,
                 "effect-wrapper",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const name = context.compileStaticString(call.arguments[1]!);
-            const texture = context.compileValue(call.arguments[2]!);
-            context.expectKind(texture, "texture", call.arguments[2]!);
+            const name = context.compileStaticString(argumentAt(call, 1));
+            const texture = context.compileValue(argumentAt(call, 2));
+            context.expectKind(texture, "texture", argumentAt(call, 2));
             if (texture.textureFile) {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "Reached effect textures come from createSolidTexture2D.",
                 );
             }
@@ -430,13 +431,13 @@ export function compileEffectIntrinsic(
 
         case "createEffectRenderer": {
             context.expectArgumentCount(call, 2, 3);
-            const surface = context.compileValue(call.arguments[0]!);
-            context.expectKind(surface, "engine", call.arguments[0]!);
-            const wrapper = context.compileValue(call.arguments[1]!);
+            const surface = context.compileValue(argumentAt(call, 0));
+            context.expectKind(surface, "engine", argumentAt(call, 0));
+            const wrapper = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 wrapper,
                 "effect-wrapper",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const object = call.arguments[2]
                 ? context.expectObjectLiteral(call.arguments[2])
@@ -465,11 +466,11 @@ export function compileEffectIntrinsic(
 
         case "registerEffectRenderer": {
             context.expectArgumentCount(call, 1, 1);
-            const renderer = context.compileValue(call.arguments[0]!);
+            const renderer = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 renderer,
                 "effect-renderer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("renderer:effect", call);
             return {
@@ -483,7 +484,7 @@ export function compileEffectIntrinsic(
         case "createUniformEffectRenderTask":
         case "createEffectRenderTask": {
             context.expectArgumentCount(call, 2, 3);
-            const object = context.expectObjectLiteral(call.arguments[0]!);
+            const object = context.expectObjectLiteral(argumentAt(call, 0));
             validateObjectProperties(
                 context,
                 object,
@@ -492,14 +493,14 @@ export function compileEffectIntrinsic(
                     "and clear state.",
             );
             const engine = context.requireEngine(
-                context.compileValue(call.arguments[1]!),
+                context.compileValue(argumentAt(call, 1)),
                 call,
             );
             const scene = call.arguments[2]
                 ? context.compileValue(call.arguments[2])
                 : undefined;
             if (scene) {
-                context.expectKind(scene, "scene", call.arguments[2]!);
+                context.expectKind(scene, "scene", argumentAt(call, 2));
             }
             const nameExpression = context.objectProperty(object, "name");
             const effectExpression = context.objectProperty(object, "effect");

@@ -82,13 +82,25 @@ test("uses TypeScript semantic symbols instead of import-name text matching", ()
     );
 });
 
-test("delegates default-library identity to the TypeScript program", () => {
-    const compiler = source("src/compiler.ts");
-    assert.match(
-        compiler,
-        /this\.program\.isSourceFileDefaultLibrary/,
-    );
-    assert.doesNotMatch(compiler, /hasNoDefaultLib/);
+test("resolves default-library identity in one place", () => {
+    // The marker every lib.*.d.ts carries is read by symbols.ts alone;
+    // every other compiler file asks it rather than spelling its own test.
+    const symbols = source("src/compiler/symbols.ts");
+    assert.match(symbols, /file\.isDeclarationFile && file\.hasNoDefaultLib/);
+    const axis = [
+        "src/compiler.ts",
+        ...readdirSync("src/compiler")
+            .filter((name) => name.endsWith(".ts") && name !== "symbols.ts")
+            .map((name) => `src/compiler/${name}`),
+        ...readdirSync("src/compiler/intrinsics")
+            .filter((name) => name.endsWith(".ts"))
+            .map((name) => `src/compiler/intrinsics/${name}`),
+    ];
+    for (const path of axis) {
+        const text = source(path);
+        assert.doesNotMatch(text, /hasNoDefaultLib/, path);
+        assert.doesNotMatch(text, /\.isSourceFileDefaultLibrary\(/, path);
+    }
 });
 
 test("keeps migrated upstream contracts AST-driven", () => {

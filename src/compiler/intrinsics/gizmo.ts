@@ -3,9 +3,10 @@
 // including source-defined canvas proxies; other editing families retain the
 // documented display-only adaptation. Camera deferral callbacks remain live.
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import { validateObjectProperties } from "../option-helpers.js";
 import type { Feature, Value, ValueKind } from "../types.js";
-import type { DataType } from "../data-types.js";
+import { handleCppType, type DataType } from "../data-types.js";
 import type { CapturedClosure, NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { compilePointerDragRegistration, pointerDispatcherCpp } from "../pointer-drag.js";
@@ -61,12 +62,13 @@ export interface GizmoIntrinsicContext
 function refuseOptions(
     context: GizmoIntrinsicContext,
     call: ts.CallExpression,
-    index: number,
     factory: string,
 ): void {
-    if (call.arguments.length > index) {
+    // Every reached factory takes its options bag as its third argument.
+    const options = call.arguments[2];
+    if (options) {
         context.fail(
-            call.arguments[index]!,
+            options,
             `${factory} options are not supported: the generated gizmo ` +
                 "family is built from the pinned factory's own defaults, " +
                 "so a supplied colour, light intensity or display flag " +
@@ -225,12 +227,12 @@ function compileEditGizmo(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 3, 3);
-    const engine = context.compileValue(call.arguments[0]!);
-    const layer = context.compileValue(call.arguments[1]!);
-    context.expectKind(engine, "engine", call.arguments[0]!);
-    context.expectKind(layer, "utility-layer", call.arguments[1]!);
+    const engine = context.compileValue(argumentAt(call, 0));
+    const layer = context.compileValue(argumentAt(call, 1));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    context.expectKind(layer, "utility-layer", argumentAt(call, 1));
     context.expectSameEngine(engine, layer, call);
-    const options = context.expectObjectLiteral(call.arguments[2]!);
+    const options = context.expectObjectLiteral(argumentAt(call, 2));
     validateObjectProperties(
         context,
         options,
@@ -394,10 +396,10 @@ function compileCompositeGizmo(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 3);
-    const engine = context.compileValue(call.arguments[0]!);
-    const layer = context.compileValue(call.arguments[1]!);
-    context.expectKind(engine, "engine", call.arguments[0]!);
-    context.expectKind(layer, "utility-layer", call.arguments[1]!);
+    const engine = context.compileValue(argumentAt(call, 0));
+    const layer = context.compileValue(argumentAt(call, 1));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    context.expectKind(layer, "utility-layer", argumentAt(call, 1));
     context.expectSameEngine(engine, layer, call);
     const options = call.arguments[2]
         ? context.expectObjectLiteral(call.arguments[2])
@@ -450,10 +452,10 @@ function compileCompositeAttach(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const gizmo = context.compileValue(call.arguments[0]!);
-    const node = context.compileValue(call.arguments[1]!);
-    context.expectKind(gizmo, shape.kind, call.arguments[0]!);
-    context.expectKind(node, "mesh", call.arguments[1]!);
+    const gizmo = context.compileValue(argumentAt(call, 0));
+    const node = context.compileValue(argumentAt(call, 1));
+    context.expectKind(gizmo, shape.kind, argumentAt(call, 0));
+    context.expectKind(node, "mesh", argumentAt(call, 1));
     context.expectSameEngine(gizmo, node, call);
     return {
         kind: "void",
@@ -471,12 +473,12 @@ function compileCompositeLocalCoordinates(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const gizmo = context.compileValue(call.arguments[0]!);
-    context.expectKind(gizmo, shape.kind, call.arguments[0]!);
-    const useLocal = context.compileValue(call.arguments[1]!);
+    const gizmo = context.compileValue(argumentAt(call, 0));
+    context.expectKind(gizmo, shape.kind, argumentAt(call, 0));
+    const useLocal = context.compileValue(argumentAt(call, 1));
     if (useLocal.kind !== "boolean") {
         context.fail(
-            call.arguments[1]!,
+            argumentAt(call, 1),
             `${shape.setLocal} takes a boolean, received ` +
                 `${useLocal.kind}.`,
         );
@@ -497,10 +499,10 @@ function compileCompositeDispose(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const gizmo = context.compileValue(call.arguments[0]!);
-    const layer = context.compileValue(call.arguments[1]!);
-    context.expectKind(gizmo, shape.kind, call.arguments[0]!);
-    context.expectKind(layer, "utility-layer", call.arguments[1]!);
+    const gizmo = context.compileValue(argumentAt(call, 0));
+    const layer = context.compileValue(argumentAt(call, 1));
+    context.expectKind(gizmo, shape.kind, argumentAt(call, 0));
+    context.expectKind(layer, "utility-layer", argumentAt(call, 1));
     context.expectSameEngine(gizmo, layer, call);
     return {
         kind: "void",
@@ -527,7 +529,7 @@ function compileCompositeDispose(
 function attachedNodeCpp(node: Value): string {
     return node.optionalFoundCpp === undefined
         ? node.cpp
-        : `(${node.optionalFoundCpp} ? ${node.cpp} : bbl::MeshHandle{})`;
+        : `(${node.optionalFoundCpp} ? ${node.cpp} : ${handleCppType("mesh")}{})`;
 }
 
 /** `attach<Widget>GizmoToNode(gizmo, node)`. */
@@ -537,10 +539,10 @@ function compileEditGizmoAttach(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const gizmo = context.compileValue(call.arguments[0]!);
-    const node = context.compileValue(call.arguments[1]!);
-    context.expectKind(gizmo, shape.kind, call.arguments[0]!);
-    context.expectKind(node, "mesh", call.arguments[1]!);
+    const gizmo = context.compileValue(argumentAt(call, 0));
+    const node = context.compileValue(argumentAt(call, 1));
+    context.expectKind(gizmo, shape.kind, argumentAt(call, 0));
+    context.expectKind(node, "mesh", argumentAt(call, 1));
     context.expectSameEngine(gizmo, node, call);
     return {
         kind: "void",
@@ -578,10 +580,10 @@ function compileBoundingBoxGizmo(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 3);
-    const engine = context.compileValue(call.arguments[0]!);
-    const layer = context.compileValue(call.arguments[1]!);
-    context.expectKind(engine, "engine", call.arguments[0]!);
-    context.expectKind(layer, "utility-layer", call.arguments[1]!);
+    const engine = context.compileValue(argumentAt(call, 0));
+    const layer = context.compileValue(argumentAt(call, 1));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    context.expectKind(layer, "utility-layer", argumentAt(call, 1));
     context.expectSameEngine(engine, layer, call);
     const options = call.arguments[2]
         ? context.expectObjectLiteral(call.arguments[2])
@@ -644,12 +646,12 @@ function compileBoundingBoxAttach(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const gizmo = context.compileValue(call.arguments[0]!);
-    const node = context.compileValue(call.arguments[1]!);
-    context.expectKind(gizmo, "bounding-box-gizmo", call.arguments[0]!);
+    const gizmo = context.compileValue(argumentAt(call, 0));
+    const node = context.compileValue(argumentAt(call, 1));
+    context.expectKind(gizmo, "bounding-box-gizmo", argumentAt(call, 0));
     if (node.kind !== "transform-node") {
         context.fail(
-            call.arguments[1]!,
+            argumentAt(call, 1),
             "attachBoundingBoxGizmoToNode binds a transform node here, " +
                 `received ${node.kind}. The pinned parameter is a ` +
                 "SceneNode, which upstream covers a mesh as well; this " +
@@ -711,7 +713,7 @@ export function compileGizmoIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             return {
                 kind: "boolean",
-                cpp: `bbl::pointer_drag_state(${pointerDispatcherCpp(context, context.compileValue(call.arguments[0]!), call)}, ${importedName === "isGizmoDragging" ? 0 : importedName === "isGizmoPickPending" ? 1 : 2}u)`,
+                cpp: `bbl::pointer_drag_state(${pointerDispatcherCpp(context, context.compileValue(argumentAt(call, 0)), call)}, ${importedName === "isGizmoDragging" ? 0 : importedName === "isGizmoPickPending" ? 1 : 2}u)`,
             };
 
         case "createBoundingBoxGizmo":
@@ -722,11 +724,11 @@ export function compileGizmoIntrinsic(
 
         case "createUtilityLayer": {
             context.expectArgumentCount(call, 2, 3);
-            refuseOptions(context, call, 2, "createUtilityLayer");
-            const engine = context.compileValue(call.arguments[0]!);
-            const scene = context.compileValue(call.arguments[1]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[1]!);
+            refuseOptions(context, call, "createUtilityLayer");
+            const engine = context.compileValue(argumentAt(call, 0));
+            const scene = context.compileValue(argumentAt(call, 1));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 1));
             context.reachFeature("gizmo:utility-layer", call);
             // The pin's own default light, created by this factory.
             context.reachFeature("light:hemispheric", call);
@@ -745,11 +747,11 @@ export function compileGizmoIntrinsic(
 
         case "registerUtilityLayer": {
             context.expectArgumentCount(call, 1, 1);
-            const layer = context.compileValue(call.arguments[0]!);
+            const layer = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 layer,
                 "utility-layer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // Registration order is what makes the layer an overlay: the
             // pin's `configureSwapchainOverlayScene` reads the surface's
@@ -768,11 +770,11 @@ export function compileGizmoIntrinsic(
 
         case "disposeUtilityLayer": {
             context.expectArgumentCount(call, 1, 1);
-            const layer = context.compileValue(call.arguments[0]!);
+            const layer = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 layer,
                 "utility-layer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "void",
@@ -784,14 +786,14 @@ export function compileGizmoIntrinsic(
 
         case "createCameraGizmo": {
             context.expectArgumentCount(call, 2, 3);
-            refuseOptions(context, call, 2, "createCameraGizmo");
-            const engine = context.compileValue(call.arguments[0]!);
-            const layer = context.compileValue(call.arguments[1]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            refuseOptions(context, call, "createCameraGizmo");
+            const engine = context.compileValue(argumentAt(call, 0));
+            const layer = context.compileValue(argumentAt(call, 1));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             context.expectKind(
                 layer,
                 "utility-layer",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectSameEngine(engine, layer, call);
             context.reachFeature("gizmo:camera", call);
@@ -812,14 +814,14 @@ export function compileGizmoIntrinsic(
 
         case "attachCameraGizmoToCamera": {
             context.expectArgumentCount(call, 2, 2);
-            const gizmo = context.compileValue(call.arguments[0]!);
-            const camera = context.compileValue(call.arguments[1]!);
+            const gizmo = context.compileValue(argumentAt(call, 0));
+            const camera = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 gizmo,
                 "camera-gizmo",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            context.expectKind(camera, "camera", call.arguments[1]!);
+            context.expectKind(camera, "camera", argumentAt(call, 1));
             context.expectSameEngine(gizmo, camera, call);
             return {
                 kind: "void",
@@ -832,14 +834,14 @@ export function compileGizmoIntrinsic(
 
         case "createLightGizmo": {
             context.expectArgumentCount(call, 2, 3);
-            refuseOptions(context, call, 2, "createLightGizmo");
-            const engine = context.compileValue(call.arguments[0]!);
-            const layer = context.compileValue(call.arguments[1]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            refuseOptions(context, call, "createLightGizmo");
+            const engine = context.compileValue(argumentAt(call, 0));
+            const layer = context.compileValue(argumentAt(call, 1));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             context.expectKind(
                 layer,
                 "utility-layer",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectSameEngine(engine, layer, call);
             context.reachFeature("gizmo:light", call);
@@ -860,14 +862,14 @@ export function compileGizmoIntrinsic(
 
         case "attachLightGizmoToLight": {
             context.expectArgumentCount(call, 2, 2);
-            const gizmo = context.compileValue(call.arguments[0]!);
-            const light = context.compileValue(call.arguments[1]!);
+            const gizmo = context.compileValue(argumentAt(call, 0));
+            const light = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 gizmo,
                 "light-gizmo",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            context.expectKind(light, "light", call.arguments[1]!);
+            context.expectKind(light, "light", argumentAt(call, 1));
             context.expectSameEngine(gizmo, light, call);
             // Which geometry the attach builds follows the light's TYPE,
             // and the record carries it -- the same tag the per-frame

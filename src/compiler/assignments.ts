@@ -1,6 +1,6 @@
-export type AssignmentValueKind = "color3" | "number";
+type AssignmentValueKind = "color3" | "number";
 
-export interface DirectPropertyAssignment {
+interface DirectPropertyAssignment {
   collection: "lights";
   nativeProperty: string;
   valueKind: AssignmentValueKind;
@@ -259,8 +259,8 @@ function emitFrameGraphTransmission(
       "Reached frame-graph transmission requires copyCount: 1.",
     );
   }
-  const scene = context.compileValue(frameGraph.arguments[0]!);
-  context.expectKind(scene, "scene", frameGraph.arguments[0]!);
+  const scene = context.compileValue(argumentAt(frameGraph, 0));
+  context.expectKind(scene, "scene", argumentAt(frameGraph, 0));
   context.reachFeature("renderer:scene", expression);
   context.reachFeature("renderer:transmission", expression);
   context.reachFeature("material:pbr-linear-image-processing", expression);
@@ -378,7 +378,7 @@ const lightProperties: Readonly<
   },
 };
 
-export function directPropertyAssignment(
+function directPropertyAssignment(
   owner: Value,
   property: string,
 ): DirectPropertyAssignment | undefined {
@@ -409,19 +409,6 @@ const lightVectors: Readonly<Record<LightKind, readonly string[]>> = {
   spot: ["position", "direction"],
 };
 
-/** The emitted entry point for `light.<vector>.set(...)`, if there is one. */
-export function lightVectorSetter(
-  owner: Value,
-  vector: string,
-): string | undefined {
-  if (owner.kind !== "light" || !owner.lightKind) {
-    return undefined;
-  }
-  return lightVectors[owner.lightKind].includes(vector)
-    ? `set_${owner.lightKind}_light_${vector}`
-    : undefined;
-}
-
 /**
  * The light scalars whose write is more than one record store, and the
  * emitted entry point each takes.
@@ -441,20 +428,37 @@ const lightScalars: Readonly<Record<LightKind, readonly string[]>> = {
   spot: ["angle"],
 };
 
-/** The emitted entry point for `light.<scalar> = ...`, if there is one. */
-export function lightScalarSetter(
+/**
+ * The emitted entry point for a light property write, if there is one:
+ * `light.<vector>.set(...)` for the `vector` family and `light.<scalar> =
+ * ...` for the `scalar` family. Both families spell the same
+ * `set_<kind>_light_<property>` symbol; which properties each light kind
+ * offers is the only difference between them.
+ */
+export function lightSetter(
   owner: Value,
   property: string,
+  family: "vector" | "scalar",
 ): string | undefined {
   if (owner.kind !== "light" || !owner.lightKind) {
     return undefined;
   }
-  return lightScalars[owner.lightKind].includes(property)
+  const properties = family === "vector" ? lightVectors : lightScalars;
+  return properties[owner.lightKind].includes(property)
     ? `set_${owner.lightKind}_light_${property}`
     : undefined;
 }
 
+/** The vector family of {@link lightSetter}, as the pin audit reads it. */
+export function lightVectorSetter(
+  owner: Value,
+  vector: string,
+): string | undefined {
+  return lightSetter(owner, vector, "vector");
+}
+
 export interface AssignmentContext extends DeterministicRandomContext {
+  isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
   noteNodeInputAdmissionFailure(node: ts.Node, message: string): void;
   noteTextSceneCameraAssignment(node: ts.Node): void;
   noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
@@ -1117,10 +1121,11 @@ function emitBridgeOriginWrite(
   ) {
     return false;
   }
+  const originIdentifier = unwrappedIdentifier(origin.expression, (wrapped) =>
+    context.unwrap(wrapped),
+  );
   const owner = context.resolveRecordValue(origin.expression) ??
-    (ts.isIdentifier(context.unwrap(origin.expression))
-      ? context.lookupOptional(context.unwrap(origin.expression) as ts.Identifier)
-      : undefined);
+    (originIdentifier ? context.lookupOptional(originIdentifier) : undefined);
   if (owner?.kind !== "node-particle-2d-bridge") return false;
   if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
     context.fail(
@@ -2550,7 +2555,7 @@ export function emitPropertyAssignment(
       }
     }
 
-    const scalarSetter = lightScalarSetter(target, property);
+    const scalarSetter = lightSetter(target, property, "scalar");
     if (scalarSetter) {
       requireSimpleAssignment(context, expression, `light ${property}`);
       // The pin recomputes the cone cosine from the JavaScript-number
@@ -2598,7 +2603,7 @@ export function emitPropertyAssignment(
       );
       return;
     }
-    requireGroupSource(context, group, left, "loopAnimation", "gltf");
+    requireGltfGroupSource(context, group, left, "loopAnimation");
     context.reachFeature("animation:gltf-groups", left);
     context.emit(
       `bbl::set_animation_loop(${context.requireEngine(
@@ -2623,7 +2628,7 @@ export function emitPropertyAssignment(
       );
       return;
     }
-    requireGroupSource(context, group, left, "speedRatio", "gltf");
+    requireGltfGroupSource(context, group, left, "speedRatio");
     context.reachFeature("animation:gltf-groups", left);
     context.reachFeature("animation:gltf-group-speed", left);
     context.emit(
@@ -2674,7 +2679,7 @@ export function emitPropertyAssignment(
       context.emit(`${group.cpp}->current_time = ${value.cpp};`);
       return;
     }
-    requireGroupSource(context, group, left, "currentTime", "gltf");
+    requireGltfGroupSource(context, group, left, "currentTime");
     context.reachFeature("animation:gltf-groups", left);
     context.reachFeature("animation:gltf-group-time", left);
     context.emit(
@@ -2697,7 +2702,7 @@ export function emitPropertyAssignment(
     }
     if (mesh.kind === "light") {
       const vector = left.expression.name.text;
-      const setter = lightVectorSetter(mesh, vector);
+      const setter = lightSetter(mesh, vector, "vector");
       if (!setter) {
         context.fail(
           left.expression,
@@ -2901,27 +2906,24 @@ export function emitPropertyAssignment(
   context.fail(left, `Unsupported property assignment '${left.getText()}'.`);
 }
 
+/**
+ * The C++ spelling of a property write's operator: the same five forms a
+ * pinned body may state, so scene code and pinned code agree on them.
+ */
 function assignmentOperator(
   context: AssignmentContext,
   expression: ts.BinaryExpression,
-): "=" | "+=" | "-=" | "*=" | "/=" {
-  switch (expression.operatorToken.kind) {
-    case ts.SyntaxKind.EqualsToken:
-      return "=";
-    case ts.SyntaxKind.PlusEqualsToken:
-      return "+=";
-    case ts.SyntaxKind.MinusEqualsToken:
-      return "-=";
-    case ts.SyntaxKind.AsteriskEqualsToken:
-      return "*=";
-    case ts.SyntaxKind.SlashEqualsToken:
-      return "/=";
-    default:
-      return context.fail(
-        expression.operatorToken,
-        `Unsupported assignment operator '${expression.operatorToken.getText()}'.`,
-      );
+): string {
+  const operator = PINNED_ASSIGNMENT_OPERATORS.get(
+    expression.operatorToken.kind,
+  );
+  if (operator === undefined) {
+    context.fail(
+      expression.operatorToken,
+      `Unsupported assignment operator '${expression.operatorToken.getText()}'.`,
+    );
   }
+  return operator;
 }
 
 /**
@@ -2940,7 +2942,7 @@ function gltfGroupWriteTarget(
 ): Value {
   const group = context.compileValue(left.expression);
   context.expectKind(group, "animation-group", left.expression);
-  requireGroupSource(context, group, left, field, "gltf");
+  requireGltfGroupSource(context, group, left, field);
   requireSimpleAssignment(context, expression, field);
   context.reachFeature("animation:gltf-groups", left);
   return group;
@@ -2965,6 +2967,7 @@ function staticMeshIdSet(
     !ts.isNewExpression(unwrapped) ||
     !ts.isIdentifier(unwrapped.expression) ||
     unwrapped.expression.text !== "Set" ||
+    !context.isDefaultLibraryIdentifier(unwrapped.expression) ||
     unwrapped.arguments?.length !== 1
   ) {
     context.fail(
@@ -2972,7 +2975,7 @@ function staticMeshIdSet(
       "A light's includedOnlyMeshIds must be `new Set(<mesh ids>)`.",
     );
   }
-  return staticStringList(context, unwrapped.arguments[0]!);
+  return staticStringList(context, argumentAt(unwrapped, 0));
 }
 
 /** A generation-known list of strings, spreads of such lists included. */
@@ -3085,14 +3088,17 @@ function requireSimpleAssignment(
   }
 }
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
-import { requireGroupSource } from "./intrinsics/animation.js";
+import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import { emitParticleBufferWrite, requireParticleBakeWritable } from "./particle-buffer.js";
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { stringLiteral } from "../cpp-literals.js";
+import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
+import { unwrappedIdentifier } from "./syntax.js";
 import {
   emitDeterministicRandomInstall,
   type DeterministicRandomContext,

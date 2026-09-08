@@ -1,9 +1,10 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import { validateObjectProperties } from "../option-helpers.js";
 import type { PhysicsIntrinsicContext } from "./physics.js";
 
-export interface CharacterIntrinsicContext extends PhysicsIntrinsicContext {
+interface CharacterIntrinsicContext extends PhysicsIntrinsicContext {
     compilePhysicsCharacterCallback(expression: ts.Expression): string;
 }
 
@@ -31,18 +32,18 @@ function retainCharacterVector(context: PhysicsIntrinsicContext, cpp: string): V
 export function compileCharacterIntrinsic(context: PhysicsIntrinsicContext, name: string, call: ts.CallExpression): Value | undefined {
     if (name === "createPhysicsCharacterController") {
         context.expectArgumentCount(call, 3, 3);
-        const world = context.compileValue(call.arguments[0]!);
-        context.expectKind(world, "physics-world", call.arguments[0]!);
+        const world = context.compileValue(argumentAt(call, 0));
+        context.expectKind(world, "physics-world", argumentAt(call, 0));
         context.reachFeature("physics:character-controller", call);
         context.reachFeature("physics:world", call);
         context.reachFeature("mesh:transform-node", call);
-        return { kind: "physics-character-controller", cpp: `bbl::character::create_physics_character_controller(${world.cpp}, ${context.compileVec3(call.arguments[1]!, "double")}, ${options(context, call.arguments[2]!)})`,
+        return { kind: "physics-character-controller", cpp: `bbl::character::create_physics_character_controller(${world.cpp}, ${context.compileVec3(argumentAt(call, 1), "double")}, ${options(context, argumentAt(call, 2))})`,
             dataType: { kind: "handle", handle: "physics-character-controller" }, ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}) };
     }
     if (name === "getPhysicsCharacterControllerBody") {
         context.expectArgumentCount(call, 1, 1);
-        const controller = context.compileValue(call.arguments[0]!);
-        context.expectKind(controller, "physics-character-controller", call.arguments[0]!);
+        const controller = context.compileValue(argumentAt(call, 0));
+        context.expectKind(controller, "physics-character-controller", argumentAt(call, 0));
         return { kind: "physics-body", cpp: `${controller.cpp}->getBody()->value`, ...(controller.engineCpp ? { engineCpp: controller.engineCpp } : {}) };
     }
 }
@@ -51,12 +52,12 @@ export function compileCharacterMethod(context: CharacterIntrinsicContext, call:
     if (owner.kind === "physics-character-observable") {
         if (name !== "add") context.fail(call, `Character observable method '${name}' is not represented.`);
         context.expectArgumentCount(call, 1, 1);
-        return { kind: "data", cpp: `${owner.cpp}->onTriggerCollisionObservable.add(${context.compilePhysicsCharacterCallback(call.arguments[0]!)})`, dataType: { kind: "function", parameters: [] } };
+        return { kind: "data", cpp: `${owner.cpp}->onTriggerCollisionObservable.add(${context.compilePhysicsCharacterCallback(argumentAt(call, 0))})`, dataType: { kind: "function", parameters: [] } };
     }
     if (owner.kind !== "physics-character-controller") return;
     if (["moveWithCollisions", "setPosition", "setVelocity"].includes(name)) {
         context.expectArgumentCount(call, 1, 1);
-        return { kind: "void", cpp: `${owner.cpp}->${name}(bbl::character::vector(${context.compileVec3(call.arguments[0]!, "double")}))` };
+        return { kind: "void", cpp: `${owner.cpp}->${name}(bbl::character::vector(${context.compileVec3(argumentAt(call, 0), "double")}))` };
     }
     if (["getPosition", "getVelocity"].includes(name)) {
         context.expectArgumentCount(call, 0, 0);
@@ -68,7 +69,7 @@ export function compileCharacterMethod(context: CharacterIntrinsicContext, call:
     }
     if (name === "setShapeOptions") {
         context.expectArgumentCount(call, 1, 2);
-        return { kind: "void", cpp: `${owner.cpp}->setShapeOptions(${options(context, call.arguments[0]!)}${call.arguments[1] ? `, ${context.compileBoolean(call.arguments[1])}` : ""})` };
+        return { kind: "void", cpp: `${owner.cpp}->setShapeOptions(${options(context, argumentAt(call, 0))}${call.arguments[1] ? `, ${context.compileBoolean(call.arguments[1])}` : ""})` };
     }
     if (name === "dispose") {
         context.expectArgumentCount(call, 0, 0);

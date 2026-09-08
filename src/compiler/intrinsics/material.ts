@@ -1,9 +1,10 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import { floatLiteral } from "../../cpp-literals.js";
 import {compileLocalCubemapIntrinsic, type LocalCubemapIntrinsicContext} from "./local-cubemap.js";
 import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { enclosingLoopControl } from "../statements.js";
+import { enclosingLoopControl } from "../loop-control.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
 import {
     requiredStaticColor3,
@@ -302,7 +303,7 @@ function compileMeshNamePredicate(
         node.arguments.length === 1 &&
         readsName(node.expression.expression)
     ) {
-        const value = literal(node.arguments[0]!);
+        const value = literal(argumentAt(node, 0));
         if (value !== undefined) return { kind: "startsWith", value };
     }
     context.fail(
@@ -451,12 +452,12 @@ function compileShaderUniformWrite(
 ): Value {
     const { offset, count } = context.resolveShaderUniform(
         material,
-        call.arguments[1]!,
+        argumentAt(call, 1),
         expectedCounts,
     );
     const components =
         context.compileShaderUniformComponents(
-            call.arguments[2]!,
+            argumentAt(call, 2),
             count,
         );
     const engine = context.requireEngine(material, call);
@@ -505,19 +506,19 @@ export function compileMaterialIntrinsic(
         case "isPbrMaterial": {
             context.expectArgumentCount(call, 1, 1);
             const material = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const isPbr =
                 material.scenePbrMaterialIndex !== undefined ||
                 material.assetPbrMaterial === true;
             if (!isPbr && !material.standardMaterial) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "isPbrMaterial requires a material whose family is known at generation.",
                 );
             }
@@ -531,11 +532,11 @@ export function compileMaterialIntrinsic(
         case "createSolidTexture2D": {
             context.expectArgumentCount(call, 4, 5);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const channels = call.arguments
                 .slice(1)
@@ -590,7 +591,7 @@ export function compileMaterialIntrinsic(
                 usePhysicalLightFalloff,
                 scenePbrMaterialIndex,
             } = context.compilePbrMaterialOptions(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectSameEngine(baseColor, orm, call);
             context.reachFeature("material:pbr", call);
@@ -704,18 +705,18 @@ export function compileMaterialIntrinsic(
         case "enableSceneTransmission": {
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             const engine =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectSameEngine(scene, engine, call);
             context.reachFeature("renderer:scene", call);
@@ -769,11 +770,11 @@ export function compileMaterialIntrinsic(
         case "createPbrNoColorMaterialView": {
             context.expectArgumentCount(call, 1, 1);
             const source =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 source,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const engineCpp = context.requireEngine(source, call);
             context.reachFeature("material:no-color-view", call);
@@ -802,13 +803,13 @@ export function compileMaterialIntrinsic(
         case "setStandardLightmapTexture": {
             context.expectArgumentCount(call, 2, 2);
             if (context.hasRegisteredScene() || context.engineHasStarted()) context.fail(call, "Standard lightmap texture binding requires setup before scene registration.");
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
-            const texture = context.compileValue(call.arguments[1]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
+            const texture = context.compileValue(argumentAt(call, 1));
             const empty = texture.kind === "json-null";
             if (!empty) {
-                context.expectKind(texture, "texture", call.arguments[1]!);
-                if (!texture.textureFile) context.fail(call.arguments[1]!, "Standard lightmaps require a loaded file texture or null.");
+                context.expectKind(texture, "texture", argumentAt(call, 1));
+                if (!texture.textureFile) context.fail(argumentAt(call, 1), "Standard lightmaps require a loaded file texture or null.");
                 context.expectSameEngine(material, texture, call);
                 context.boundPixelsTextures.add(texture.cpp);
             }
@@ -823,9 +824,9 @@ export function compileMaterialIntrinsic(
             // extension is generation's own (`pinned-standard-variants.ts`
             // registers all eight before composing anything).
             context.expectArgumentCount(call, 2, 2);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
-            const texture = context.compileValue(call.arguments[1]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
+            const texture = context.compileValue(argumentAt(call, 1));
             context.expectSameEngine(material, texture, call);
             // The slot takes either source the pin's one Texture2D can be.
             // Which arm the composed variant takes follows from that: only
@@ -847,7 +848,7 @@ export function compileMaterialIntrinsic(
             context.expectKind(
                 texture,
                 "render-texture",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.reachFeature(
                 "material:standard-emissive-render-texture",
@@ -865,11 +866,11 @@ export function compileMaterialIntrinsic(
         case "markMaterialUboDirty": {
             context.expectArgumentCount(call, 1, 1);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const engine = context.requireEngine(
                 material,
@@ -897,7 +898,7 @@ export function compileMaterialIntrinsic(
                 context.requireDefaultEngine(call);
             const variant =
                 context.compileShaderMaterialOptions(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 );
             context.reachFeature("material:shader", call);
             context.reachFeature("renderer:scene", call);
@@ -931,17 +932,17 @@ export function compileMaterialIntrinsic(
 
         case "createStorageBuffer": {
             context.expectArgumentCount(call, 2, 3);
-            const engineValue = context.compileValue(call.arguments[0]!);
-            context.expectKind(engineValue, "engine", call.arguments[0]!);
+            const engineValue = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engineValue, "engine", argumentAt(call, 0));
             const engine = context.requireDefaultEngine(call);
             const data = compileStorageBufferData(
                 context,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "createStorageBuffer",
             );
             const label = call.arguments[2]
                 ? context.cppString(
-                      context.compileStringLiteral(call.arguments[2]!),
+                      context.compileStringLiteral(argumentAt(call, 2)),
                   )
                 : '""';
             context.reachFeature("material:shader-storage", call);
@@ -956,18 +957,18 @@ export function compileMaterialIntrinsic(
 
         case "updateStorageBuffer": {
             context.expectArgumentCount(call, 3, 4);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const buffer = context.compileValue(call.arguments[1]!);
-            context.expectKind(buffer, "storage-buffer", call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const buffer = context.compileValue(argumentAt(call, 1));
+            context.expectKind(buffer, "storage-buffer", argumentAt(call, 1));
             const data = compileStorageBufferData(
                 context,
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "updateStorageBuffer",
             );
             const engineCpp = context.requireEngine(buffer, call);
             const byteOffset = call.arguments[3]
-                ? context.compileNumber(call.arguments[3]!)
+                ? context.compileNumber(argumentAt(call, 3))
                 : "0.0f";
             context.reachFeature("material:shader-storage", call);
             return {
@@ -980,8 +981,8 @@ export function compileMaterialIntrinsic(
 
         case "disposeStorageBuffer": {
             context.expectArgumentCount(call, 1, 1);
-            const buffer = context.compileValue(call.arguments[0]!);
-            context.expectKind(buffer, "storage-buffer", call.arguments[0]!);
+            const buffer = context.compileValue(argumentAt(call, 0));
+            context.expectKind(buffer, "storage-buffer", argumentAt(call, 0));
             context.reachFeature("material:shader-storage", call);
             return {
                 kind: "void",
@@ -993,14 +994,14 @@ export function compileMaterialIntrinsic(
 
         case "setShaderStorageBuffer": {
             context.expectArgumentCount(call, 3, 3);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
             const slot = context.resolveShaderStorageBufferSlot(
                 material,
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
-            const buffer = context.compileValue(call.arguments[2]!);
-            context.expectKind(buffer, "storage-buffer", call.arguments[2]!);
+            const buffer = context.compileValue(argumentAt(call, 2));
+            context.expectKind(buffer, "storage-buffer", argumentAt(call, 2));
             context.expectSameEngine(material, buffer, call);
             context.reachFeature("material:shader-storage", call);
             return {
@@ -1014,10 +1015,10 @@ export function compileMaterialIntrinsic(
 
         case "setShadowCasterMaterial": {
             context.expectArgumentCount(call, 2, 2);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
-            const caster = context.compileValue(call.arguments[1]!);
-            context.expectKind(caster, "material", call.arguments[1]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
+            const caster = context.compileValue(argumentAt(call, 1));
+            context.expectKind(caster, "material", argumentAt(call, 1));
             context.expectSameEngine(material, caster, call);
             return {
                 kind: "void",
@@ -1039,7 +1040,7 @@ export function compileMaterialIntrinsic(
             const engine = context.requireDefaultEngine(call);
             const defaults = linearDepthDefaultPlanes();
             const options = call.arguments[0]
-                ? context.expectObjectLiteral(call.arguments[0]!)
+                ? context.expectObjectLiteral(argumentAt(call, 0))
                 : undefined;
             if (options) {
                 // `name` refuses rather than being accepted and dropped:
@@ -1088,11 +1089,11 @@ export function compileMaterialIntrinsic(
         case "setShaderUniform": {
             context.expectArgumentCount(call, 3, 3);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return compileShaderUniformWrite(
                 context,
@@ -1111,22 +1112,22 @@ export function compileMaterialIntrinsic(
             // texture itself.
             context.expectArgumentCount(call, 3, 3);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const slot = context.resolveShaderTextureSlot(
                 material,
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const texture =
-                context.compileValue(call.arguments[2]!);
+                context.compileValue(argumentAt(call, 2));
             context.expectKind(
                 texture,
                 "texture",
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             const cachedPixelsTexture =
                 texture.dataType?.kind === "handle" &&
@@ -1141,7 +1142,7 @@ export function compileMaterialIntrinsic(
                   : undefined;
             if (!setter) {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "Reached shader-material textures come from loadTexture2D, createTexture2DFromPixels, or getCsmReceiverTexture.",
                 );
             }
@@ -1158,11 +1159,11 @@ export function compileMaterialIntrinsic(
         case "setShaderFloat": {
             context.expectArgumentCount(call, 3, 3);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return compileShaderUniformWrite(
                 context,
@@ -1175,11 +1176,11 @@ export function compileMaterialIntrinsic(
         case "setShaderVector3": {
             context.expectArgumentCount(call, 3, 3);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return compileShaderUniformWrite(
                 context,
@@ -1197,13 +1198,13 @@ export function compileMaterialIntrinsic(
             // emissive extension's `detect` reads to compose the arm.
             context.expectArgumentCount(call, 2, 2);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const colorExpression = call.arguments[1]!;
+            const colorExpression = argumentAt(call, 1);
             const channels = staticColor3Value(context, colorExpression);
             const color = context.compileColor3(colorExpression);
             const bindings =
@@ -1235,8 +1236,8 @@ export function compileMaterialIntrinsic(
             // `pow(baseColorSample.rgb, 2.2)`, and the slot it decodes is
             // linear because the scene loaded a linear texture into it.
             context.expectArgumentCount(call, 1, 1);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
             context.recordScenePbrGammaAlbedo(
                 material.scenePbrMaterialIndex,
             );
@@ -1246,8 +1247,8 @@ export function compileMaterialIntrinsic(
 
         case "setShadowOnly": {
             context.expectArgumentCount(call, 1, 2);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
             if (context.engineHasStarted() || context.hasRegisteredScene() || context.isRuntimeResourceConstruction()) context.fail(call, "Shadow-only composition requires unconditional construction before scene registration.");
             const options = call.arguments[1] ? context.expectObjectLiteral(call.arguments[1]) : undefined;
             if (options) validateObjectProperties(context, options, ["color", "opacity", "falloff"], "setShadowOnly");
@@ -1269,11 +1270,11 @@ export function compileMaterialIntrinsic(
             // colour by — the pin guarding that store, so an omitted tint
             // leaves whatever the material already carries.
             context.expectArgumentCount(call, 1, 2);
-            const material = context.compileValue(call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // The setters are emitted into the PBR material factory's own
             // translation unit, so a scene that only stamps a loaded
@@ -1320,11 +1321,11 @@ export function compileMaterialIntrinsic(
             // src/material/pbr/set-skybox.ts: the same shape as
             // `setPbrUnlit` above, taking the material alone.
             context.expectArgumentCount(call, 1, 1);
-            const material = context.compileValue(call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("material:pbr", call);
             context.recordScenePbrSkybox(
@@ -1352,15 +1353,15 @@ export function compileMaterialIntrinsic(
             // alpha-only metallic-map arm; setter-side F0/specular overrides
             // stay outside this bounded slice.
             context.expectArgumentCount(call, 2, 2);
-            const material = context.compileValue(call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const reflectance =
                 context.compileMetallicReflectanceOptions(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             for (const texture of [
                 reflectance.texture,
@@ -1393,10 +1394,10 @@ export function compileMaterialIntrinsic(
 
         case "setPbrSubsurface": {
             context.expectArgumentCount(call, 2, 2);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
             const subsurface = context.compileSubsurfaceOptions(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             if (subsurface.thicknessTexture) {
                 context.expectSameEngine(
@@ -1431,14 +1432,14 @@ export function compileMaterialIntrinsic(
             // writer.
             context.expectArgumentCount(call, 2, 2);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const clearCoat = context.compileClearCoatOptions(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.recordScenePbrClearCoat(
                 clearCoat.manifest,
@@ -1470,14 +1471,14 @@ export function compileMaterialIntrinsic(
             // writer.
             context.expectArgumentCount(call, 2, 2);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const iridescence = context.compileIridescenceOptions(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.recordScenePbrIridescence(
                 iridescence.manifest,
@@ -1527,13 +1528,13 @@ export function compileMaterialIntrinsic(
             // at generation; only the level stays a record lane, because
             // the pin's `writeLightmapUBO` reads it live.
             context.expectArgumentCount(call, 2, 3);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
-            const texture = context.compileValue(call.arguments[1]!);
-            context.expectKind(texture, "texture", call.arguments[1]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
+            const texture = context.compileValue(argumentAt(call, 1));
+            context.expectKind(texture, "texture", argumentAt(call, 1));
             if (texture.textureStorage !== "file") {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "A reached lightmap is a `loadTexture2D` image: the " +
                         "extension binds the texture's own view and sampler, " +
                         "and its V-flip arm folds the texture-object " +
@@ -1643,10 +1644,10 @@ export function compileMaterialIntrinsic(
             // and `KHR_materials_anisotropy` reaches the same extension
             // from an asset, which no corpus asset does today.
             context.expectArgumentCount(call, 2, 2);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
             const anisotropy = context.compileAnisotropyOptions(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.recordScenePbrAnisotropy(
                 anisotropy.manifest,
@@ -1681,8 +1682,8 @@ export function compileMaterialIntrinsic(
             // corpus scene calls it, so it fails by name rather than being
             // lowered on an unmeasured guess.
             context.expectArgumentCount(call, 1, 1);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
             context.reachFeature("material:tracking", call);
             return { kind: "void", cpp: "" };
         }
@@ -1695,14 +1696,14 @@ export function compileMaterialIntrinsic(
             // pinned UBO writer.
             context.expectArgumentCount(call, 2, 2);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 material,
                 "material",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const sheen = context.compileSheenOptions(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.recordScenePbrSheen(
                 sheen.manifest,
@@ -1739,7 +1740,7 @@ export function compileMaterialIntrinsic(
         case "setAlphaToCoverage": {
             context.expectArgumentCount(call, 2, 2);
             const material =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             if (material.kind !== "material") {
                 // Another family owns this target; the registry asks each in
                 // turn, so yielding is how a shared name reaches it.
@@ -1748,10 +1749,10 @@ export function compileMaterialIntrinsic(
             context.expectShaderVariant(
                 material,
                 "alpha-card",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const enabled =
-                context.compileBoolean(call.arguments[1]!);
+                context.compileBoolean(argumentAt(call, 1));
             return {
                 kind: "void",
                 cpp:
@@ -1789,11 +1790,11 @@ export function compileMaterialIntrinsic(
             context.recordSceneMaterialSlot();
             context.expectArgumentCount(call, 2, 3);
             const engine = context.requireEngine(
-                context.compileValue(call.arguments[0]!),
+                context.compileValue(argumentAt(call, 0)),
                 call,
             );
             const graph = context.compileNodeMaterialOptions(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 call.arguments[2],
             );
             context.reachFeature("material:node", call);
@@ -1830,8 +1831,8 @@ export function compileMaterialIntrinsic(
             // what reaches the record is the mark, which is exactly what
             // `stdUvTransformExt._meshFeatures` reads back.
             context.expectArgumentCount(call, 1, 1);
-            const material = context.compileValue(call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[0]!);
+            const material = context.compileValue(argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 0));
             context.reachFeature("material:standard", call);
             context.reachFeature("material:standard-uv-transform", call);
             context.reachFeature("renderer:scene", call);
@@ -1859,8 +1860,8 @@ export function compileMaterialIntrinsic(
             // never calls this composes exactly what it composed before,
             // because nothing registered the bridges.
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             context.reachFeature("material:plugins", call);
             return { kind: "void", cpp: "" };
         }
@@ -1890,10 +1891,10 @@ export function compileMaterialIntrinsic(
 
         case "rebuildMaterial": {
             context.expectArgumentCount(call, 2, 3);
-            const scene = context.compileValue(call.arguments[0]!);
-            const material = context.compileValue(call.arguments[1]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
-            context.expectKind(material, "material", call.arguments[1]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            const material = context.compileValue(argumentAt(call, 1));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
+            context.expectKind(material, "material", argumentAt(call, 1));
             context.expectSameEngine(scene, material, call);
             if (context.engineHasStarted()) {
                 context.fail(

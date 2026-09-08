@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { browserGlobalNamed } from "./browser-erasure.js";
-import { rootIdentifier } from "./user-functions.js";
+import { rootIdentifier, argumentAt } from "./syntax.js";
 import { validateObjectProperties } from "./option-helpers.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataTypeRegistry } from "./data-types.js";
@@ -102,7 +102,7 @@ export function compileWorkerValue(context: WorkerLoweringContext, expression: t
     const receiver = worker ? `${owner.cpp}->` : `${realm}.`;
     if ((worker || workerScope) && member === "postMessage") {
         if (node.arguments.length < 1 || node.arguments.length > 2) return context.fail(node, "Worker postMessage requires a message and optional transfer list.");
-        const argument = node.arguments[0]!;
+        const argument = argumentAt(node, 0);
         const type = context.dataLowerer.dataTypeAt(argument);
         if (!type) return context.fail(argument, "Worker messages require a supported structured-clone data shape.");
         const data = context.dataLowerer.compileForSink(argument, type);
@@ -156,17 +156,17 @@ export function compileWorkerValue(context: WorkerLoweringContext, expression: t
     }
     if ((global || workerScope) && (member === "setTimeout" || member === "setInterval")) {
         if (node.arguments.length < 1 || node.arguments.length > 2) return context.fail(node, "Native timers require a callback and optional delay.");
-        const callback = context.compileFrameCallback(node.arguments[0]!, member === "setInterval" ? "interval" : "void");
+        const callback = context.compileFrameCallback(argumentAt(node, 0), member === "setInterval" ? "interval" : "void");
         const delay = node.arguments[1] ? context.compileNumber(node.arguments[1], "double") : "0.0";
         return { kind: "number", cpp: `static_cast<double>(${loop}.set_timeout(${callback}, ${delay}, ${member === "setInterval"}))`, impure: true };
     }
     if ((global || workerScope) && (member === "clearTimeout" || member === "clearInterval")) {
         if (node.arguments.length !== 1) return context.fail(node, "Timer cancellation requires its numeric identifier.");
-        return { kind: "void", cpp: `${loop}.clear_timer(static_cast<bbl::pal::EventLoop::TimerId>(${context.compileNumber(node.arguments[0]!, "double")}))` };
+        return { kind: "void", cpp: `${loop}.clear_timer(static_cast<bbl::pal::EventLoop::TimerId>(${context.compileNumber(argumentAt(node, 0), "double")}))` };
     }
     if ((global || workerScope) && member === "queueMicrotask") {
         if (node.arguments.length !== 1) return context.fail(node, "queueMicrotask requires one callback.");
-        return { kind: "void", cpp: `${loop}.queue_microtask(${context.compileFrameCallback(node.arguments[0]!, "void")})` };
+        return { kind: "void", cpp: `${loop}.queue_microtask(${context.compileFrameCallback(argumentAt(node, 0), "void")})` };
     }
     return undefined;
 }
