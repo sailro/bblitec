@@ -672,13 +672,14 @@ window.${SOG_PAGE_GLOBAL} = async () => {
  * GPU mesh — through the same recorder text, served over the pinned module's
  * own path so the pin's `load-sog.js` imports it unmodified.
  *
- * Bake-cached, unlike the whole-loader run `packageSpz` performs. What the
- * cache stores is the CAPTURED OBJECT — the JSON that crossed the page
- * boundary — not the packaged bytes, so a replay still answers the four
- * contracts below from that object: exactly one cloud attached, the returned
- * cloud is the attached one, no shader fragments, and the only lane written is
- * the rotation. `basis-transcode.ts` caches its own browser capture on exactly
- * that boundary, with its contract assertion after it.
+ * Bake-cached like `packageSpz`. What the cache stores is the CAPTURED
+ * OBJECT — the JSON that crossed the page boundary — not the packaged bytes,
+ * so a replay still answers the four contracts from that object: exactly one
+ * cloud attached, the returned cloud is the attached one, no shader
+ * fragments, and the only lane written is the rotation. A run whose capture
+ * fails them is refused before anything is stored. `basis-transcode.ts`
+ * caches its own browser capture on exactly that boundary, with its contract
+ * assertion after it.
  *
  * The trade it buys is a whole Chromium launch: the run is 1.65 s on the
  * reached container (412 ms of it inside the loader) against a 126 ms replay
@@ -700,8 +701,8 @@ export async function packageSog(
             parameters: {},
             inputs: [bytes],
         },
-        async () =>
-            (await runPageGlobal(
+        async () => {
+            const observed = (await runPageGlobal(
                 createSuiteSceneServer(sogPageModule(), {
                     virtualAssets: { [SOG_SERVED_PATH]: bytes },
                     // Ahead of the repository lookup, so the pinned loader's
@@ -723,7 +724,10 @@ export async function packageSog(
                     // profile.
                     browserArgs: screenshotCaptureBrowserArgs,
                 },
-            )) as CapturedSog,
+            )) as CapturedSog;
+            observedContainerRotation(observed, "Pinned loadSOG");
+            return observed;
+        },
     );
     return {
         rotation: observedContainerRotation(captured, "Pinned loadSOG"),
