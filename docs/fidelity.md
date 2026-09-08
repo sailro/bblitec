@@ -189,6 +189,9 @@ Source/assets/compiler/native/tool identities and descriptors are recorded in `p
 native matching compares every descriptor field. No body poses, trajectories, frames or reference pixels are baked.
 
 The generated Babylon layer targets Bullet; the browser uses Havok.
+
+HINGE anchors and default perpendicular vectors come from the pin; Bullet supplies the hinge solver.
+Degenerate anchor axes and constraints between bodies in different worlds refuse.
 Identical trajectories are not guaranteed. Solver substitutions include substeps,
 speculative contacts, rebound reconstruction, damping/speed conversion and rest
 stabilization. The rebound rule is fitted behavior, not ported Havok internals.

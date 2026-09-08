@@ -1055,6 +1055,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/physics/physics-viewer.ts body lifecycle + physics-debug-line-material.ts pipeline",
         consumers: CMAKE,
     },
+    "physics:constraints": {
+        provenance: "src/physics/havok.ts createPhysicsConstraint HINGE anchors and axis locks",
+        consumers: CMAKE,
+    },
     "physics:trigger": {
         provenance:
             "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +

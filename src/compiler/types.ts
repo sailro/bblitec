@@ -2524,6 +2524,7 @@ export type Feature =
   | "physics:queries"
   | "physics:container"
   | "physics:viewer"
+  | "physics:constraints"
   | "physics:trigger"
   | "physics:floating-origin"
   | "scene:remove"

@@ -183,6 +183,7 @@ export const featureSources: Record<Feature, string[]> = {
     "physics:queries": [],
     "physics:container": [],
     "physics:viewer": ["src/pal_physics_debug.cpp"],
+    "physics:constraints": [],
     // The trigger drain rides in the same generated physics module the
     // world already brings, and in the same PAL translation unit; what
     // the feature records is which pinned module a scene reached.

@@ -307,6 +307,18 @@ struct PhysicsWorldState {
     // Includes pending additions. Sorted handle order preserves the solver's
     // insertion order when bodies migrate between floating-origin regions.
     std::vector<std::shared_ptr<PhysicsBodyState>> members;
+    struct Hinge {
+        std::shared_ptr<PhysicsBodyState> parent;
+        std::shared_ptr<PhysicsBodyState> child;
+        std::unique_ptr<btHingeConstraint> joint;
+        btTransform parent_anchor;
+        btTransform child_anchor;
+        btTransform parent_mass_frame;
+        btTransform child_mass_frame;
+        bool collisions = false;
+        bool attached = false;
+    };
+    std::vector<Hinge> hinges;
     std::size_t trigger_body_count = 0;
     std::uint64_t stabilized_total = 0;
     std::unordered_map<std::uint64_t, ContactSnapshot> previous_contacts;
@@ -346,6 +358,10 @@ struct PhysicsWorldState {
     btScalar max_angular_speed = default_max_angular_speed;
     ~PhysicsWorldState() { close(); }
     void close() {
+        for (auto& hinge : hinges) {
+            if (hinge.attached && world) world->removeConstraint(hinge.joint.get());
+        }
+        hinges.clear();
         for (const auto& member : members) {
             if (member->in_world && world) world->removeRigidBody(member->body.get());
             member->in_world = false;
@@ -369,6 +385,27 @@ struct PhysicsWorldState {
         active_bounces.clear();
     }
 };
+
+namespace {
+void sync_constraint_membership(PhysicsWorldState& owner) {
+    for (auto& hinge : owner.hinges) {
+        const auto changed = [](const btTransform& before, const btTransform& after) {
+            return before.getOrigin() != after.getOrigin() || before.getBasis() != after.getBasis();
+        };
+        if (changed(hinge.parent_mass_frame, hinge.parent->node_from_body) || changed(hinge.child_mass_frame, hinge.child->node_from_body)) {
+            hinge.parent_mass_frame = hinge.parent->node_from_body;
+            hinge.child_mass_frame = hinge.child->node_from_body;
+            hinge.joint->setFrames(hinge.parent_mass_frame.inverse() * hinge.parent_anchor, hinge.child_mass_frame.inverse() * hinge.child_anchor);
+        }
+        const bool attach = hinge.parent->world == owner.identity && hinge.child->world == owner.identity &&
+            hinge.parent->in_world && hinge.child->in_world;
+        if (attach == hinge.attached) continue;
+        if (attach) owner.world->addConstraint(hinge.joint.get(), !hinge.collisions);
+        else owner.world->removeConstraint(hinge.joint.get());
+        hinge.attached = attach;
+    }
+}
+}
 
 namespace {
 
@@ -1296,6 +1333,35 @@ void physics_world_set_gravity(
     world_at(world).world->setGravity(to_bt(gravity));
 }
 
+void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions) {
+    auto& owner = world_at(world);
+    const auto& a = body_at(parent);
+    const auto& b = body_at(child);
+    if (parent.value == child.value || a.world != owner.identity || b.world != owner.identity) {
+        throw std::runtime_error("A physics constraint requires two different bodies in its world.");
+    }
+    const auto frame = [](const PhysicsConstraintAnchor& anchor) {
+        btVector3 axis = to_bt(anchor.axis);
+        btVector3 perpendicular = to_bt(anchor.perpendicular);
+        if (axis.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint axis must be nonzero.");
+        axis.normalize();
+        perpendicular -= axis * perpendicular.dot(axis);
+        if (perpendicular.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint perpendicular must be independent of its axis.");
+        perpendicular.normalize();
+        const btVector3 second = axis.cross(perpendicular);
+        // Bullet's hinge axis is frame Z; the two other columns set its reference angle.
+        const btMatrix3x3 basis(perpendicular.x(), second.x(), axis.x(),
+            perpendicular.y(), second.y(), axis.y(), perpendicular.z(), second.z(), axis.z());
+        return btTransform(basis, to_bt(anchor.pivot));
+    };
+    const btTransform anchor_a = frame(parent_anchor);
+    const btTransform anchor_b = frame(child_anchor);
+    auto hinge = std::make_unique<btHingeConstraint>(*a.body, *b.body, a.node_from_body.inverse() * anchor_a, b.node_from_body.inverse() * anchor_b);
+    owner.hinges.push_back({parent.ownership, child.ownership, std::move(hinge), anchor_a, anchor_b, a.node_from_body, b.node_from_body, collisions, false});
+    sync_constraint_membership(owner);
+}
+
 PhysicsSpeedLimit physics_world_get_speed_limit(PhysicsWorldHandle world) {
     const PhysicsWorldState& entry = world_at(world);
     return PhysicsSpeedLimit{
@@ -1348,6 +1414,7 @@ void physics_world_remove_body(PhysicsWorldHandle world, PhysicsBodyHandle body)
     entry.needs_readd = false;
     entry.world = 0;
     entry.owner_world.reset();
+    sync_constraint_membership(owner);
 }
 
 void physics_world_release(PhysicsWorldHandle world) {
@@ -1402,6 +1469,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         }
     }
     flush_pending_readds(entry);
+    sync_constraint_membership(entry);
     // An impulse is clamped at its write below. This pass also covers any
     // velocity written by another reached body operation before this step.
     clamp_world_velocities(entry);

@@ -198,6 +198,35 @@ export function compilePhysicsIntrinsic(
   call: ts.CallExpression,
 ): Value | undefined {
   switch (importedName) {
+    case "createPhysicsConstraint": {
+      context.expectArgumentCount(call, 4, 5);
+      if (!ts.isExpressionStatement(call.parent)) context.fail(call, "The reached HINGE constraint requires a discarded factory result.");
+      const world = context.compileValue(call.arguments[0]!);
+      const parent = context.compileValue(call.arguments[1]!);
+      const child = context.compileValue(call.arguments[2]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(parent, "physics-body", call.arguments[1]!);
+      context.expectKind(child, "physics-body", call.arguments[2]!);
+      context.expectSameEngine(world, parent, call);
+      context.expectSameEngine(world, child, call);
+      const type = pinnedEnumMemberName(context, call.arguments[3]!, "PhysicsConstraintType");
+      if (type !== "HINGE") context.fail(call.arguments[3]!, `PhysicsConstraintType.${type} is not admitted by the HINGE constraint slice.`);
+      const vectors = [["pivotA", "pivot_a"], ["pivotB", "pivot_b"], ["axisA", "axis_a"], ["axisB", "axis_b"], ["perpAxisA", "perp_axis_a"], ["perpAxisB", "perp_axis_b"]] as const;
+      const fields: string[] = [];
+      if (call.arguments[4]) {
+        const options = context.expectObjectLiteral(call.arguments[4]);
+        validateObjectProperties(context, options, [...vectors.map(([name]) => name), "collision"], "HINGE constraints support anchor vectors and collision only.");
+        for (const [name, field] of vectors) {
+          const value = context.objectProperty(options, name);
+          if (value) fields.push(`.${field} = ${compileNullableVec3(context, value)}`);
+        }
+        const collision = context.objectProperty(options, "collision");
+        if (collision) fields.push(`.collision = ${context.compileBoolean(collision)}`);
+      }
+      context.reachFeature("physics:constraints", call);
+      context.emit(`bbl::upstream::create_physics_hinge(${world.cpp}, ${parent.cpp}, ${child.cpp}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}});`);
+      return { kind: "void", cpp: "" };
+    }
     case "createPhysicsViewer": {
       context.expectArgumentCount(call, 2, 3);
       const scene = context.compileValue(call.arguments[0]!);

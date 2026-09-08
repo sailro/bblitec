@@ -314,6 +314,9 @@ update in parent coordinates. Utility layers rematch GPU resources when lazy con
 
 ## Physics
 
+HINGE constraint factories accept body-local pivots/axes and collision opt-in with discarded results.
+Joints retain their bodies, follow mass-frame changes and detach while either body is outside their world.
+
 Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/static-mesh shapes, forces,
 velocities, motion/prestep, aggregates, centre of mass, masks, collisions/triggers, raycasts and floating origin.
 Convex proximity/cast queries return local input and world target contacts, distance/fraction, trigger/mask

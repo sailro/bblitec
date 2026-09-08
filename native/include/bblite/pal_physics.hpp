@@ -69,6 +69,16 @@ struct PhysicsTransform {
     std::array<double, 4> rotation{0.0, 0.0, 0.0, 1.0};
 };
 
+/** Body-local position and orthogonal frame passed to HP_Constraint_SetAnchor*. */
+struct PhysicsConstraintAnchor {
+    std::array<double, 3> pivot{};
+    std::array<double, 3> axis{};
+    std::array<double, 3> perpendicular{};
+};
+
+void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions);
+
 /**
  * The pair `HP_World_GetSpeedLimit` returns and `HP_World_SetSpeedLimit`
  * takes.
