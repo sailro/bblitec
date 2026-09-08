@@ -333,6 +333,30 @@ if(NOT BBLITE_BACKEND_SDL_GPU)
     list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
 endif()
 
+# The PAL units whose preprocessed text is independent of the generated
+# tree: none of them includes a header under <generated>/upstream/include
+# (verified unit by unit with the preprocessor; the two backend families,
+# the window realm and the build stamp do include one). They compile in
+# their own object library without the generated include directory, so
+# their compile lines are the same in every scene reaching the same
+# features. An object library rather than an archive: the executable
+# links every object exactly as before, where an archive would drop an
+# unreferenced object and the static registrations it carries.
+set(
+    BBLITE_PAL_COMMON_PATTERN
+    "/src/(pal|pal_sdl|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_navigation_recast|pal_file|pal_storage|pal_text_layout)\\.cpp$"
+)
+set(BBLITE_PAL_COMMON_SOURCES ${BBLITE_RUNTIME_SOURCES})
+list(FILTER BBLITE_PAL_COMMON_SOURCES INCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")
+list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")
+
+# The usage requirements every unit of the executable shares -- the
+# feature macros, the include directories, the linked libraries and the
+# warning and size options -- carried by one interface target both the
+# object library and the executable consume.
+add_library(bblite_features INTERFACE)
+add_library(bblite_pal_common OBJECT ${BBLITE_PAL_COMMON_SOURCES})
+target_link_libraries(bblite_pal_common PRIVATE bblite_features)
 add_executable(
     bblite_native
     "${BBLITE_GENERATED_DIR}/main.cpp"
@@ -343,6 +367,9 @@ add_executable(
     ${BBLITE_RUNTIME_SOURCES}
     ${BBLITE_GENERATED_SOURCES}
 )
+target_link_libraries(bblite_native PRIVATE bblite_features bblite_pal_common)
+# Only the executable's own units read the generated headers.
+target_include_directories(bblite_native PRIVATE "${BBLITE_GENERATED_DIR}/upstream/include")
 
 # One feature, one macro. Every macro named here is defined in every
 # translation unit -- 1 when the generated tree reached any of the listed
@@ -355,7 +382,7 @@ function(bblite_feature_define macro)
             set(value 1)
         endif()
     endforeach()
-    target_compile_definitions(bblite_native PRIVATE "${macro}=${value}")
+    target_compile_definitions(bblite_features INTERFACE "${macro}=${value}")
 endfunction()
 
 set(BBLITE_OFFSCREEN_SURFACES OFF)
@@ -370,7 +397,7 @@ if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_sources(bblite_native PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_window_presenter_dawn.cpp")
     endif()
 endif()
-target_compile_definitions(bblite_native PRIVATE BBLITE_OFFSCREEN_SURFACES=$<BOOL:${BBLITE_OFFSCREEN_SURFACES}>)
+target_compile_definitions(bblite_features INTERFACE BBLITE_OFFSCREEN_SURFACES=$<BOOL:${BBLITE_OFFSCREEN_SURFACES}>)
 
 if(MSVC)
     # Lowered value-returning lambdas keep a defensive fallthrough throw after
@@ -410,19 +437,14 @@ if(BBLITE_GENERATED_SHADER_FILES)
     add_dependencies(bblite_native bblite_shader_snapshot)
 endif()
 
-target_compile_features(bblite_native PRIVATE cxx_std_20)
-target_include_directories(
-    bblite_native
-    PRIVATE
-    "${BBLITE_NATIVE_ROOT}/include"
-    "${BBLITE_GENERATED_DIR}/upstream/include"
-)
-target_compile_definitions(bblite_native PRIVATE BBLITE_ASSET_DIR="assets")
-target_compile_definitions(bblite_native PRIVATE
+target_compile_features(bblite_features INTERFACE cxx_std_20)
+target_include_directories(bblite_features INTERFACE "${BBLITE_NATIVE_ROOT}/include")
+target_compile_definitions(bblite_features INTERFACE BBLITE_ASSET_DIR="assets")
+target_compile_definitions(bblite_features INTERFACE
     BBLITE_VISUAL_CAPTURE=$<BOOL:${BBLITE_VISUAL_CAPTURE}>
     BBLITE_HAS_IMAGE_DECODER=$<BOOL:${BBLITE_HAS_IMAGE_DECODER}>
 )
-target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="shaders")
+target_compile_definitions(bblite_features INTERFACE BBLITE_GPU_SHADER_DIR="shaders")
 bblite_feature_define(BBLITE_MESH_POSITION_UPDATE "mesh:update-positions")
 
 if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
@@ -523,11 +545,11 @@ if(NOT SDL3_FOUND)
         "BBLITE_SDL_DIR) and configure this build directory again."
     )
 endif()
-target_link_libraries(bblite_native PRIVATE SDL3::SDL3)
+target_link_libraries(bblite_features INTERFACE SDL3::SDL3)
 bblite_feature_define(BBLITE_HAS_GAMEPAD "input:gamepad")
 bblite_feature_define(BBLITE_HAS_BROWSER_FILE "browser:file")
 
-target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL_GPU=$<BOOL:${BBLITE_BACKEND_SDL_GPU}>)
+target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_SDL_GPU=$<BOOL:${BBLITE_BACKEND_SDL_GPU}>)
 
 # Runtime libraries the executable loads beside itself, placed after each
 # link (the vcpkg install's DLLs join them at the end of this file).
@@ -555,8 +577,8 @@ if(BBLITE_BACKEND_DAWN)
     )
     # The Dawn twins of the selected SDL_GPU units (derived above).
     target_sources(bblite_native PRIVATE ${BBLITE_DAWN_SOURCES})
-    target_link_libraries(bblite_native PRIVATE dawn::webgpu_dawn)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
+    target_link_libraries(bblite_features INTERFACE dawn::webgpu_dawn)
+    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_DAWN=1)
     get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
     if(BBLITE_DAWN_LIBRARY_TYPE STREQUAL "SHARED_LIBRARY")
         # Dawn resolves its DXC and validator DLLs relative to the
@@ -580,12 +602,12 @@ if(BBLITE_BACKEND_DAWN)
     # request is only worth making when DXC is actually present.
     if(EXISTS "${BBLITE_DAWN_DIR}/bin/dxcompiler.dll" AND
        EXISTS "${BBLITE_DAWN_DIR}/bin/dxil.dll")
-        target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_DXC=1)
+        target_compile_definitions(bblite_features INTERFACE BBLITE_DAWN_DXC=1)
     else()
-        target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_DXC=0)
+        target_compile_definitions(bblite_features INTERFACE BBLITE_DAWN_DXC=0)
     endif()
 else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=0)
+    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_DAWN=0)
 endif()
 
 if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
@@ -595,14 +617,14 @@ if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
         find_package(WebP CONFIG REQUIRED)
     endif()
     find_package(SDL3_image CONFIG REQUIRED)
-    target_link_libraries(bblite_native PRIVATE
+    target_link_libraries(bblite_features INTERFACE
         $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
     )
 endif()
 
 if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES)
     find_package(harfbuzz CONFIG REQUIRED)
-    target_link_libraries(bblite_native PRIVATE harfbuzz::harfbuzz)
+    target_link_libraries(bblite_features INTERFACE harfbuzz::harfbuzz)
 endif()
 
 # BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
@@ -727,7 +749,7 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
 
     target_sources(
-        bblite_native
+        bblite_pal_common
         PRIVATE
         "${BBLITE_NATIVE_ROOT}/src/pal_system_fonts.cpp"
         # RmlUi builds Backends/ only under its samples and installs none
@@ -735,36 +757,30 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
         # the artifact and the translation unit compiles here, as before.
         "${BBLITE_RMLUI_DIR}/Backends/RmlUi_Platform_SDL.cpp"
     )
-    target_include_directories(
-        bblite_native PRIVATE "${BBLITE_RMLUI_DIR}/Backends"
+    target_include_directories(bblite_features INTERFACE "${BBLITE_RMLUI_DIR}/Backends"
     )
-    target_compile_definitions(
-        bblite_native PRIVATE BBLITE_HAS_UI=1 RMLUI_SDL_VERSION_MAJOR=3
+    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_UI=1 RMLUI_SDL_VERSION_MAJOR=3
     )
-    target_link_libraries(
-        bblite_native
-        PRIVATE
+    target_link_libraries(bblite_features INTERFACE
         RmlUi::Core
         Freetype::Freetype
     )
     if(WIN32)
-        target_link_libraries(bblite_native PRIVATE dwrite)
+        target_link_libraries(bblite_features INTERFACE dwrite)
     elseif(APPLE)
         find_library(BBLITE_CORE_FOUNDATION CoreFoundation REQUIRED)
         find_library(BBLITE_CORE_TEXT CoreText REQUIRED)
-        target_link_libraries(
-            bblite_native
-            PRIVATE
+        target_link_libraries(bblite_features INTERFACE
             "${BBLITE_CORE_FOUNDATION}"
             "${BBLITE_CORE_TEXT}"
         )
     else()
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
-        target_link_libraries(bblite_native PRIVATE PkgConfig::FONTCONFIG)
+        target_link_libraries(bblite_features INTERFACE PkgConfig::FONTCONFIG)
     endif()
 else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_UI=0)
+    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_UI=0)
 endif()
 
 bblite_feature_define(BBLITE_HAS_SPRITE_RENDERER "renderer:sprite")
@@ -785,9 +801,9 @@ bblite_feature_define(BBLITE_HAS_STANDARD_UV_TRANSFORM "material:standard-uv-tra
 # and compiles none of this, exactly as it renders none of it.
 if("material:plugin-textures" IN_LIST BBLITE_RUNTIME_FEATURES AND
    "material:plugins" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=1)
+    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=1)
 else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=0)
+    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=0)
 endif()
 bblite_feature_define(BBLITE_HAS_EFFECT_TASK "effect:task")
 bblite_feature_define(BBLITE_HAS_TEXT "text:renderable" "renderer:text")
@@ -817,9 +833,7 @@ bblite_feature_define(BBLITE_HAS_CLUSTERED_LIGHTS "light:clustered")
 # follow the physics features the scene reached, one macro each.
 if("physics:world" IN_LIST BBLITE_RUNTIME_FEATURES)
     find_package(Bullet CONFIG REQUIRED)
-    target_link_libraries(
-        bblite_native
-        PRIVATE BulletDynamics BulletCollision LinearMath
+    target_link_libraries(bblite_features INTERFACE BulletDynamics BulletCollision LinearMath
     )
 endif()
 bblite_feature_define(BBLITE_PHYSICS_VIEWER "physics:viewer")
@@ -836,22 +850,19 @@ bblite_feature_define(BBLITE_HAS_PHYSICS_FLOATING_ORIGIN "physics:floating-origi
 # names Recast.
 if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
     find_package(recastnavigation CONFIG REQUIRED)
-    target_link_libraries(
-        bblite_native
-        PRIVATE
+    target_link_libraries(bblite_features INTERFACE
             RecastNavigation::Recast
             RecastNavigation::Detour
     )
     if("navigation:crowd" IN_LIST BBLITE_RUNTIME_FEATURES)
-        target_link_libraries(bblite_native PRIVATE RecastNavigation::DetourCrowd)
+        target_link_libraries(bblite_features INTERFACE RecastNavigation::DetourCrowd)
     endif()
     # The tile-cache arm's own dependency: the two RecastDemo files the
     # overlay port builds into a library from the same pinned commit. Only
     # a scene that asked for obstacles links it, which is the same fact
     # that decided which build call was emitted.
     if("navigation:tile-cache" IN_LIST BBLITE_RUNTIME_FEATURES)
-        target_link_libraries(
-            bblite_native PRIVATE RecastNavigation::DetourTileCache RecastNavigation::RecastNavigationTileCache
+        target_link_libraries(bblite_features INTERFACE RecastNavigation::DetourTileCache RecastNavigation::RecastNavigationTileCache
         )
     endif()
     bblite_feature_define(BBLITE_HAS_NAV_CROWD "navigation:crowd")
@@ -910,13 +921,9 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
     # SYSTEM: LabSound's headers are not warning-clean under /W4, and
     # this project's own sources must stay so.
-    target_include_directories(
-        bblite_native
-        SYSTEM PRIVATE "${BBLITE_LABSOUND_DIR}/include"
+    target_include_directories(bblite_features SYSTEM INTERFACE "${BBLITE_LABSOUND_DIR}/include"
     )
-    target_link_libraries(
-        bblite_native
-        PRIVATE
+    target_link_libraries(bblite_features INTERFACE
             "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib"
     )
     if(BBLITE_AUDIO_CAPTURE OR BBLITE_AUDIO_DECODE_FILE)
@@ -927,13 +934,11 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
                 "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib."
             )
         endif()
-        target_link_libraries(
-            bblite_native PRIVATE
+        target_link_libraries(bblite_features INTERFACE
             "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
         )
     endif()
-    target_compile_definitions(
-        bblite_native PRIVATE
+    target_compile_definitions(bblite_features INTERFACE
         BBLITE_HAS_AUDIO_CAPTURE=$<BOOL:${BBLITE_AUDIO_CAPTURE}>
         BBLITE_HAS_AUDIO_DECODE_FILE=$<BOOL:${BBLITE_AUDIO_DECODE_FILE}>
     )
@@ -941,10 +946,9 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     bblite_feature_define(BBLITE_HAS_AUDIO_OSCILLATOR "audio:oscillator")
     bblite_feature_define(BBLITE_HAS_AUDIO_BIQUAD_FILTER "audio:biquad-filter")
     bblite_feature_define(BBLITE_HAS_AUDIO_STEREO_PANNER "audio:stereo-panner")
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO=1)
+    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_AUDIO=1)
 else()
-    target_compile_definitions(
-        bblite_native PRIVATE
+    target_compile_definitions(bblite_features INTERFACE
         BBLITE_HAS_AUDIO=0
         BBLITE_HAS_AUDIO_CAPTURE=0
         BBLITE_HAS_AUDIO_DECODE_FILE=0
@@ -965,13 +969,13 @@ if(
     "data:json" IN_LIST BBLITE_RUNTIME_FEATURES
 )
     find_package(nlohmann_json CONFIG REQUIRED)
-    target_link_libraries(bblite_native PRIVATE nlohmann_json::nlohmann_json)
+    target_link_libraries(bblite_features INTERFACE nlohmann_json::nlohmann_json)
 endif()
 
 if(MSVC)
-    target_compile_options(bblite_native PRIVATE /W4 /WX /permissive- /EHsc)
+    target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc)
 else()
-    target_compile_options(bblite_native PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 # The optimization level of the generated application unit alone. The
@@ -1002,6 +1006,14 @@ if(BBLITE_MAIN_OPT STREQUAL "O1")
             SOURCE "${BBLITE_GENERATED_DIR}/main.cpp"
             APPEND PROPERTY COMPILE_OPTIONS ${BBLITE_MAIN_OPT_FLAGS}
         )
+        # A unit compiled at another level cannot consume the tree's PCH
+        # (clang refuses a precompiled file whose OptimizationLevel differs);
+        # the generated unit includes what it needs itself, as the shipping
+        # build without a PCH proves every time.
+        set_property(
+            SOURCE "${BBLITE_GENERATED_DIR}/main.cpp"
+            PROPERTY SKIP_PRECOMPILE_HEADERS ON
+        )
     endif()
 elseif(NOT BBLITE_MAIN_OPT STREQUAL "configuration")
     message(
@@ -1016,17 +1028,14 @@ if(BBLITE_MINSIZE)
             # clang-cl needs LLVM LTO rather than MSVC's /GL. Keep the
             # Microsoft ABI and COFF section switches so the same static
             # dependencies remain link-compatible.
-            target_compile_options(
-                bblite_native
-                PRIVATE /clang:-Oz /clang:-flto /Gy /Gw /Zc:inline
+            target_compile_options(bblite_features INTERFACE /clang:-Oz /clang:-flto /Gy /Gw /Zc:inline
             )
             target_link_options(
                 bblite_native
                 PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
             )
         else()
-            target_compile_options(
-                bblite_native PRIVATE -Oz -flto -ffunction-sections
+            target_compile_options(bblite_features INTERFACE -Oz -flto -ffunction-sections
                 -fdata-sections
             )
             target_link_options(
@@ -1037,8 +1046,7 @@ if(BBLITE_MINSIZE)
         # The scene command configures Release even for this opt-in shape.
         # Override Release's /O2 /Ob2 for the application just as the trimmed
         # dependency builds do; the later options win in MSVC's command line.
-        target_compile_options(
-            bblite_native PRIVATE /O1 /Ob1 /GL /Gw /Zc:inline
+        target_compile_options(bblite_features INTERFACE /O1 /Ob1 /GL /Gw /Zc:inline
         )
         # /MAP emits the linker map beside the executable for
         # tools/map-size-report.mjs attribution.
@@ -1047,9 +1055,7 @@ if(BBLITE_MINSIZE)
             PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
         )
     else()
-        target_compile_options(
-            bblite_native
-            PRIVATE -Os -ffunction-sections -fdata-sections
+        target_compile_options(bblite_features INTERFACE -Os -ffunction-sections -fdata-sections
         )
         target_link_options(bblite_native PRIVATE -Wl,--gc-sections)
     endif()
@@ -1115,7 +1121,11 @@ if(BBLITE_PCH)
     )
         list(APPEND BBLITE_PCH_HEADERS <bblite/ts_runtime.hpp>)
     endif()
-    target_precompile_headers(bblite_native PRIVATE ${BBLITE_PCH_HEADERS})
+    # Built once, on the object library, and reused by the executable's
+    # units: both consume the same interface requirements, and the PCH
+    # closure reaches no generated header.
+    target_precompile_headers(bblite_pal_common PRIVATE ${BBLITE_PCH_HEADERS})
+    target_precompile_headers(bblite_native REUSE_FROM bblite_pal_common)
 endif()
 
 # Runtime libraries beside the executable: the Dawn DLLs collected above

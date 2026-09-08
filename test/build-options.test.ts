@@ -224,7 +224,7 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
         cmake,
         /main\.cpp"\s+PROPERTIES COMPILE_OPTIONS "\/wd4702"/,
     );
-    assert.match(block, /PRIVATE -Os -ffunction-sections/);
+    assert.match(block, /INTERFACE -Os -ffunction-sections/);
 });
 
 test("shipping packages require the trimmed static build", () => {
@@ -372,6 +372,41 @@ test("feature macros come from one CMake function", () => {
     assert.equal((cmake.match(/\/STACK:8388608/g) ?? []).length, 1);
     // A generated tree without a codec list is refused, not defaulted.
     assert.match(cmake, /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/);
+});
+
+test("the scene-invariant PAL units compile in their own object library", () => {
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    const pattern = /BBLITE_PAL_COMMON_PATTERN\s*"([^"]+)"/.exec(cmake)?.[1];
+    assert.ok(pattern, "no PAL-common pattern");
+    const selector = new RegExp(pattern.replaceAll("\\\\", "\\"));
+    // Verified with the preprocessor: these units include no header under
+    // the generated tree, the backend families, the window realm and the
+    // build stamp do.
+    for (const unit of [
+        "pal", "pal_sdl", "pal_ui_rml", "pal_audio_labsound", "pal_physics_bullet",
+        "pal_physics_debug", "pal_navigation_recast", "pal_file", "pal_storage",
+        "pal_text_layout",
+    ]) {
+        assert.match(`/src/${unit}.cpp`, selector, `${unit} is not PAL-common`);
+        assert.ok(existsSync(`native/src/${unit}.cpp`), `${unit}.cpp is missing`);
+    }
+    for (const unit of [
+        "pal_sdl_gpu", "pal_sdl_gpu_sprite", "pal_dawn", "pal_window_realm",
+        "pal_window_presenter_sdl", "pal_build_stamp",
+    ]) {
+        assert.doesNotMatch(`/src/${unit}.cpp`, selector, `${unit} reaches generated headers`);
+    }
+    assert.match(cmake, /add_library\(bblite_features INTERFACE\)/);
+    assert.match(cmake, /add_library\(bblite_pal_common OBJECT \$\{BBLITE_PAL_COMMON_SOURCES\}\)/);
+    assert.match(cmake, /target_link_libraries\(bblite_native PRIVATE bblite_features bblite_pal_common\)/);
+    // Only the executable's own units see the generated include directory;
+    // every other usage requirement rides the interface target.
+    assert.match(cmake, /target_include_directories\(bblite_native PRIVATE "\$\{BBLITE_GENERATED_DIR\}\/upstream\/include"\)/);
+    assert.doesNotMatch(cmake, /target_compile_definitions\(\s*bblite_native/);
+    assert.doesNotMatch(cmake, /target_link_libraries\(\s*bblite_native\s+PRIVATE\s+(?!bblite_features)/);
+    assert.match(cmake, /target_precompile_headers\(bblite_pal_common PRIVATE \$\{BBLITE_PCH_HEADERS\}\)/);
+    assert.match(cmake, /target_precompile_headers\(bblite_native REUSE_FROM bblite_pal_common\)/);
+    assert.match(cmake, /target_sources\(\s*bblite_pal_common\s+PRIVATE\s+"\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_system_fonts\.cpp"/);
 });
 
 test("the shipping presets spell the documented minimal recipe", () => {
