@@ -1864,8 +1864,11 @@ test("does not idle either GPU backend for runtime scene topology updates", () =
     assert.doesNotMatch(sdl, /SDL_WaitForGPUIdle topology update/);
     assert.match(
         dawn,
-        /std::vector<DawnMesh> updated_meshes =[\s\S]{0,1200}rematch_render_meshes\([\s\S]{0,1200}rebuild_task_draw_lists\(\);/,
+        /std::vector<DawnMesh> updated_meshes =\s*rematch_render_meshes\(/,
     );
+    for (const backend of [sdl, dawn]) {
+        assert.match(backend, /if \(topology_updated \|\| engine\.draw_list_epoch != synced_draw_list_epoch\) \{\s*rebuild_task_draw_lists\(\);\s*\}\s*synced_draw_list_epoch = engine\.draw_list_epoch;/);
+    }
     assert.doesNotMatch(dawn, /wgpuQueueOnSubmittedWorkDone/);
 });
 

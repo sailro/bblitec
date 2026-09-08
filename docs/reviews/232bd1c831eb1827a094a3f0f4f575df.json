@@ -1,9 +1,0 @@
-{
-  "angles": ["reuse", "simplification", "efficiency", "altitude"],
-  "findings": [
-    {"summary": "Reuse the quaternion to_bt conversion for physics query transforms.", "applied": true},
-    {"summary": "Use shared AST traversal and statement-shape validation for query and rotation contracts.", "applied": true},
-    {"summary": "Rebuild task draw lists once after combined base and overlay updates on both backends.", "applied": true},
-    {"summary": "Validate complete query tuples, results, defaults and rotation state/lifecycle boundaries; keep arithmetic source-translated.", "applied": true}
-  ]
-}
