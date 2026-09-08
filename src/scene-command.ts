@@ -5,17 +5,22 @@ import { availableParallelism, totalmem } from "node:os";
 import {
     cpSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     readFileSync,
     readdirSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
     type DifferentialReportSummary,
+    MEMORY_FLAGS,
+    PARITY_FLAGS,
     type ParityReportSummary,
+    STABILITY_FLAGS,
     parseParityArguments,
     parseMemoryArguments,
     parseStabilityArguments,
@@ -25,9 +30,12 @@ import {
     runStabilityReport,
 } from "./parity-scene.js";
 import {
+    type FlagSpec,
+    type ParsedFlags,
     flagNumber,
     parseFlags,
     parseRgbTriple,
+    usageFromSpec,
 } from "./tooling/flags.js";
 import {
     backendFileToken,
@@ -36,11 +44,25 @@ import {
     captureNativePaths,
     captureSeekBracketDirectory,
     defaultCaptureDirectory,
+    optionalBackend,
     parityReportPath,
     readCaptureMeta,
     resolveBackend,
     seekBracketPlan,
 } from "./tooling/artifacts.js";
+import { readCheckSpec } from "./tooling/check-spec.js";
+import { runCheck } from "./tooling/check-run.js";
+import { runObserve } from "./tooling/observe-run.js";
+import {
+    formatAdaptations,
+    formatFeatureActivation,
+    formatProvenance,
+    formatSceneStatus,
+    readAdaptations,
+    readFeatureActivation,
+    readProvenance,
+    readSceneStatus,
+} from "./tooling/generated-readers.js";
 import { writeReport } from "./tooling/reports.js";
 import {
     defaultExecutable,
@@ -260,7 +282,10 @@ function coldBuild(): boolean {
 }
 
 async function compile(idOrSource: string): Promise<void> {
-    const selected = idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
+    await compileScenes(idOrSource === "all" ? scenes : [resolveScene(idOrSource)]);
+}
+
+async function compileScenes(selected: readonly SceneDefinition[]): Promise<void> {
     // A scene whose recorded inputs are unchanged is not generated again:
     // its tree already holds what the compiler would write. What a hit
     // still owes is the build stamp, which follows the native sources the
@@ -318,6 +343,47 @@ async function compile(idOrSource: string): Promise<void> {
         await specializePhysicsDebugGeometry(scene);
         recordGeneration(scene, compilerArguments(scene), generationStartedAt.get(scene.id)!);
     }
+}
+
+/**
+ * The byte-identical no-query twin of a registry scene: the same source
+ * compiled without the pinned parity query (`--search`), so the branch the
+ * corpus source takes for a live page — a running physics world, an
+ * animating manager, a spawning emitter — is the branch the native run
+ * takes. It lands in `generated/<id>-live` and builds into
+ * `native/build-<id>-live-release`, both of which `clean --orphans`
+ * recognises as owned. An interaction check declares `twin: true` to run
+ * against it.
+ */
+function twinScene(scene: SceneDefinition): SceneDefinition {
+    if (scene.parity === undefined) {
+        return { ...scene, id: `${scene.id}-live`, output: `generated/${scene.id}-live`, buildDirectory: `native/build-${scene.id}-live-release` };
+    }
+    const { referenceSearch, ...parity } = scene.parity;
+    void referenceSearch;
+    return {
+        ...scene,
+        id: `${scene.id}-live`,
+        output: `generated/${scene.id}-live`,
+        buildDirectory: `native/build-${scene.id}-live-release`,
+        parity,
+    };
+}
+
+/** `process` for a twin: generate, compile shaders, build — each stage
+ *  skipped when its record says the tree is current. */
+async function processTwin(twin: SceneDefinition): Promise<void> {
+    requireDevelopmentPreflight({
+        browser: false,
+        labSound: sceneUsesNativeFeature(twin, "audio:engine"),
+        rmlUi: sceneUsesNativeFeature(twin, "ui:rml"),
+        shaders: true,
+    });
+    await compileScenes([twin]);
+    if (await runStage(shaderStage([twin]))) {
+        console.log(`shaders: ${twin.id} up to date.`);
+    }
+    await buildScenes([twin]);
 }
 
 async function specializePhysicsDebugGeometry(scene: SceneDefinition): Promise<void> {
@@ -1990,7 +2056,7 @@ async function runProbeVariants(
 function runGeneratedNeutrality(
     baselinePath: string,
     write: boolean,
-): void {
+): boolean {
     const { lines, strays } = digestGeneratedTree(
         "generated",
         scenes.map((scene) => scene.output),
@@ -2015,7 +2081,7 @@ function runGeneratedNeutrality(
         console.log(
             `Baseline written: ${lines.length} file(s) -> ${baselinePath}`,
         );
-        return;
+        return true;
     }
     if (!existsSync(baselinePath)) {
         throw new Error(
@@ -2050,7 +2116,7 @@ function runGeneratedNeutrality(
             "\nNeutral: the generated tree digests identically, so the build stamps, " +
                 "binaries and measurements cannot have moved.",
         );
-        return;
+        return true;
     }
     list("Changed", comparison.changed);
     list("Added", comparison.added);
@@ -2060,7 +2126,7 @@ function runGeneratedNeutrality(
             "Confirm both digests followed a full 'scene -- compile all' — " +
             "but if it moves again, it is not neutral.",
     );
-    process.exitCode = 1;
+    return false;
 }
 
 /**
@@ -2186,7 +2252,7 @@ async function runValidate(idOrSource: string): Promise<void> {
 async function runDiagnose(
     idOrSource: string,
     rest: string[],
-): Promise<void> {
+): Promise<boolean> {
     const parsed = parseFlags(
         rest,
         {
@@ -2329,14 +2395,14 @@ async function runDiagnose(
     for (const rung of rungs) {
         console.log(`  ${rung.name}: ${rung.verdict}`);
     }
-    if (rungs.some((rung) => !rung.ok)) {
-        process.exitCode = 1;
-    } else if (diffFindings !== undefined) {
+    const ok = rungs.every((rung) => rung.ok);
+    if (ok && diffFindings !== undefined) {
         console.log(
             "  every rung is clean at this pose; a remaining residual is " +
                 "below these instruments (docs/debugging.md, rungs 5+).",
         );
     }
+    return ok;
 }
 
 /** The parity rung's numbers for the diagnose summary, from the report
@@ -2374,184 +2440,35 @@ function parityVerdict(
 }
 
 /**
- * `scene -- clean --orphans [--all]`: delete what no registry entry
- * owns.
+ * `scene -- uniforms <id>`: decode the captured browser uniform buffers.
  *
- * A corpus sweep or a deregistered scene leaves build trees under
- * `native/` and top-level entries under `generated/` that nothing will
- * ever build again — the shader sweep still processes the generated
- * strays, and `neutrality-generated` has to list them loudly on every
- * digest. The ownership rule is the registry's own: a build tree is
- * owned when some scene's `buildDirectory` names it, and a `generated/`
- * top-level entry is owned when it is a directory some scene's `output`
- * names — the same stray rule `digestGeneratedTree` applies, so this
- * cannot delete anything the digest counts. `--all` additionally
- * removes the OWNED build trees (a full native rebuild); the owned
- * `generated/` directories are never touched — they are compiler
- * output, not build state.
+ * The same staleness discipline `diff` applies before trusting a
+ * capture: a capture from a scene module that has since moved decodes
+ * plausible values for a scene that no longer exists. Without `--seek`
+ * the pose is informational — the decoded uploads are evidence at
+ * whatever pose they were taken; with `--seek` the capture must describe
+ * that pose and is recaptured otherwise, as `diff --seek` does.
  */
-function runClean(orphans: boolean, all: boolean): void {
-    if (!orphans && !all) {
-        throw new Error(
-            "clean: pass --orphans (delete build trees and generated/ entries " +
-                "no registry entry owns) and/or --all (also delete every owned " +
-                "build tree; owned generated/ directories always stay).",
-        );
-    }
-    let removed = 0;
-    const removeTree = (path: string, label: string): void => {
-        console.log(`clean: removing ${label} ${path}`);
-        rmSync(path, { recursive: true, force: true });
-        removed += 1;
-    };
-    const nativeRoot = resolve("native");
-    const ownedBuilds = new Set(
-        scenes.map((scene) => resolve(scene.buildDirectory)),
+async function runUniforms(idOrSource: string, parsed: ParsedFlags): Promise<void> {
+    const scene = resolveScene(idOrSource);
+    const directory =
+        parsed.values.get("--capture") ?? defaultCaptureDirectory(scene.id);
+    const sizes = parsed.values.get("--size");
+    const module = parsed.values.get("--module");
+    const seek = flagNumber(parsed, "--seek", "uniforms");
+    const { browserCaptureStaleness, runInstrumentedCapture } = await import(
+        "./capture-instrumented.js"
     );
-    if (existsSync(nativeRoot)) {
-        for (const entry of readdirSync(nativeRoot, {
-            withFileTypes: true,
-        })) {
-            if (!entry.isDirectory() || !entry.name.startsWith("build-")) {
-                continue;
-            }
-            const path = resolve(nativeRoot, entry.name);
-            if (ownedBuilds.has(path)) {
-                if (all) removeTree(path, "owned build tree");
-                continue;
-            }
-            removeTree(path, "orphan build tree");
+    if (seek !== undefined) {
+        const reason = browserCaptureStaleness(scene, directory, { requireSeek: seek });
+        if (reason !== undefined) {
+            if (reason !== "missing") console.log(`Browser capture ${reason}; recapturing.`);
+            await runInstrumentedCapture(idOrSource, {
+                seekSeconds: seek,
+                outputDirectory: directory,
+            });
         }
-    }
-    const generatedRoot = resolve("generated");
-    const ownedGenerated = new Set(
-        scenes.map((scene) => resolve(scene.output)),
-    );
-    if (existsSync(generatedRoot)) {
-        for (const entry of readdirSync(generatedRoot, {
-            withFileTypes: true,
-        })) {
-            const path = resolve(generatedRoot, entry.name);
-            if (entry.isDirectory() && ownedGenerated.has(path)) {
-                continue;
-            }
-            removeTree(path, "stray generated entry");
-        }
-    }
-    console.log(
-        removed === 0
-            ? "clean: nothing to remove."
-            : `clean: removed ${removed} entr${removed === 1 ? "y" : "ies"}.`,
-    );
-}
-
-async function main(): Promise<void> {
-    const [command, id, ...rest] = process.argv.slice(2);
-    // Every `npm run scene` runs `npm run build` first, so any build started
-    // while this one is working deletes the `dist/` it is executing from.
-    // `tools/clean-dist.mjs` refuses to cross this lock.
-    holdDistLock([command, id].filter(Boolean).join(" "));
-    if (command === "doctor") {
-        parseFlags(
-            [id, ...rest].filter(
-                (argument): argument is string => argument !== undefined,
-            ),
-            {},
-            "doctor",
-        );
-        runDoctor();
-        return;
-    }
-    if (command === "setup") {
-        parseFlags(
-            [id, ...rest].filter(
-                (argument): argument is string => argument !== undefined,
-            ),
-            {},
-            "setup",
-        );
-        runDevelopmentSetup();
-        return;
-    }
-    if (command === "list") {
-        parseFlags(
-            [id, ...rest].filter(
-                (argument): argument is string => argument !== undefined,
-            ),
-            {},
-            "list",
-        );
-        for (const scene of scenes) {
-            console.log(
-                `${scene.id}\t${scene.name}\t${scene.source}\t${scene.buildDirectory}`,
-            );
-        }
-        return;
-    }
-    if (command === "show" && id) {
-        parseFlags(rest, {}, "show");
-        console.log(JSON.stringify(resolveScene(id), null, 2));
-        return;
-    }
-    if (command === "compile" && id) {
-        parseFlags(rest, { boolean: ["--cold"] }, "compile");
-        await withColdBuild(rest, () => compile(id));
-        return;
-    }
-    if (command === "build" && id) {
-        await withBuildOptions("build", rest, () => build(id));
-        return;
-    }
-    if (command === "process" && id) {
-        await withBuildOptions("process", rest, () => processScene(id));
-        return;
-    }
-    if (command === "parity" && id) {
-        await parity(id, rest);
-        return;
-    }
-    if (command === "geometry" && id) {
-        const parsed = parseFlags(
-            rest,
-            {
-                value: ["--backend", "--seek", "--exe"],
-                boolean: ["--recapture-reference", "--gpu-debug"],
-            },
-            "geometry",
-        );
-        const backend = parsed.values.get("--backend");
-        const seek = flagNumber(parsed, "--seek", "geometry");
-        const executable = parsed.values.get("--exe");
-        await runGeometryOutputDiagnostics(id, {
-            recaptureReference: parsed.flags.has("--recapture-reference"),
-            gpuDebug: parsed.flags.has("--gpu-debug"),
-            ...(executable !== undefined ? { executable } : {}),
-            ...(backend !== undefined ? { backend } : {}),
-            ...(seek !== undefined ? { seekSeconds: seek } : {}),
-        });
-        return;
-    }
-    if (command === "uniforms" && id) {
-        const parsed = parseFlags(
-            rest,
-            { value: ["--capture", "--size", "--module"] },
-            "uniforms",
-        );
-        const scene = resolveScene(id);
-        const directory =
-            parsed.values.get("--capture") ??
-            defaultCaptureDirectory(scene.id);
-        const sizes = parsed.values.get("--size");
-        const module = parsed.values.get("--module");
-        // The same staleness discipline diff applies before trusting a
-        // capture: a capture from a scene module that has since moved
-        // decodes plausible values for a scene that no longer exists.
-        // The pose is informational rather than refused — the decoded
-        // uploads are evidence at whatever pose they were taken, and
-        // this reader takes no --seek to express another intent.
-        const { browserCaptureStaleness } = await import(
-            "./capture-instrumented.js"
-        );
+    } else {
         const staleness = browserCaptureStaleness(scene, directory, {});
         if (staleness !== undefined && staleness !== "missing") {
             throw new Error(
@@ -2560,11 +2477,8 @@ async function main(): Promise<void> {
                     "(or 'scene -- diff', which recaptures on its own).",
             );
         }
-        const meta = readCaptureMeta(
-            captureMetaPath(resolve(directory)),
-        );
-        const registryPose =
-            scene.parity?.referenceTimeSeconds ?? null;
+        const meta = readCaptureMeta(captureMetaPath(resolve(directory)));
+        const registryPose = scene.parity?.referenceTimeSeconds ?? null;
         if (meta && meta.seekSeconds !== registryPose) {
             console.warn(
                 `uniforms: capture pose is ${meta.seekSeconds ?? "unseeked"}` +
@@ -2572,221 +2486,682 @@ async function main(): Promise<void> {
                     "the values below describe that pose.",
             );
         }
-        const { decodeCapturedUniforms, formatDecodedUniforms } =
-            await import("./capture-uniforms.js");
-        const decoded = decodeCapturedUniforms(directory, {
-            ...(sizes !== undefined
-                ? {
-                      sizes: sizes.split(",").map((value) => {
-                          const numeric = Number(value);
-                          if (!Number.isFinite(numeric)) {
-                              // A NaN would filter every buffer out
-                              // silently: the tool would answer "no
-                              // buffers" to a mistyped size.
-                              throw new Error(
-                                  `uniforms: --size must be comma-separated numbers (got '${value}').`,
-                              );
-                          }
-                          return numeric;
-                      }),
-                  }
-                : {}),
-            ...(module !== undefined ? { module } : {}),
-        });
-        console.log(formatDecodedUniforms(decoded));
-        return;
     }
-    if (command === "capture" && id) {
-        const parsed = parseFlags(
-            rest,
-            {
-                value: ["--seek", "--skip-draw", "--capture", "--backend"],
-                boolean: ["--native", "--gpu-debug", "--seek-bracket"],
-                alias: { "--out": "--capture" },
-            },
-            "capture",
-        );
-        const native = parsed.flags.has("--native");
-        const seekBracket = parsed.flags.has("--seek-bracket");
-        const seek = flagNumber(parsed, "--seek", "capture");
-        const skipDraw = flagNumber(parsed, "--skip-draw", "capture");
-        const output = parsed.values.get("--capture");
-        if (seekBracket) {
-            if (native) {
-                throw new Error(
-                    "capture: --seek-bracket brackets the browser capture; the native pose is what gets judged against the three, so it does not compose with --native.",
-                );
-            }
-            if (skipDraw !== undefined) {
-                throw new Error(
-                    "capture: --seek-bracket does not compose with --skip-draw; a filtered capture cannot serve as the motion baseline.",
-                );
-            }
-        }
-        // `--native` asks the same question of our renderer that the
-        // browser hooks ask of Babylon Lite's, so the two captures land
-        // in one directory and `diff` can pair them.
-        if (native) {
-            if (skipDraw !== undefined) {
-                throw new Error(
-                    "capture: --skip-draw filters the browser capture and does not compose with --native.",
-                );
-            }
-            if (parsed.flags.has("--gpu-debug")) enableGpuDebug();
-            const backend = resolveBackend(
-                parsed.values.get("--backend"),
-                "capture",
-            );
-            const result = runNativeCapture(id, {
-                backend,
-                ...(seek !== undefined ? { seekSeconds: seek } : {}),
-                ...(output !== undefined ? { outputDirectory: output } : {}),
-            });
-            console.log(
-                `Native ${result.backend} capture written to ${result.capturePath}`,
-            );
-            return;
-        }
-        for (const [flag, present] of [
-            ["--backend", parsed.values.has("--backend")],
-            ["--gpu-debug", parsed.flags.has("--gpu-debug")],
-        ] as const) {
-            if (present) {
-                throw new Error(
-                    `capture: ${flag} selects the native renderer and needs --native beside it.`,
-                );
-            }
-        }
-        if (seekBracket) {
-            await runSeekBracketCapture(id, seek, output);
-            return;
-        }
-        const { runInstrumentedCapture } = await import(
-            "./capture-instrumented.js"
-        );
-        await runInstrumentedCapture(id, {
-            ...(seek !== undefined
-                ? { seekSeconds: seek }
-                : {}),
-            ...(skipDraw !== undefined
-                ? { skipDrawIndexCount: skipDraw }
-                : {}),
-            ...(output !== undefined
-                ? { outputDirectory: output }
-                : {}),
-        });
-        return;
-    }
-    if (command === "diff" && id) {
-        await runRenderDiff(id, rest);
-        return;
-    }
-    if (command === "probe-variants" && id) {
-        await runProbeVariants(id, rest);
-        return;
-    }
-    if (command === "measure" && id) {
-        // The measure-the-PNG rule as a command: the non-background
-        // bounding box, pixel count and per-channel means of any PNG,
-        // native render or otherwise. Takes a path, not a scene id.
-        const parsed = parseFlags(
-            rest,
-            { value: ["--background"] },
-            "measure",
-        );
-        const backgroundFlag = parsed.values.get("--background");
-        const background =
-            backgroundFlag === undefined
-                ? undefined
-                : parseRgbTriple(backgroundFlag, "--background", "measure");
-        const imagePath = resolve(id);
-        if (!existsSync(imagePath)) {
-            throw new Error(`measure: no image at ${imagePath}.`);
-        }
-        console.log(
-            formatPngMeasurement(imagePath, measurePng(imagePath, background)),
-        );
-        return;
-    }
-    if (command === "compose" && id) {
-        const parsed = parseFlags(
-            rest,
-            { value: ["--capture"] },
-            "compose",
-        );
-        const captureDirectory = parsed.values.get("--capture");
-        if (captureDirectory !== undefined && id === "all") {
-            throw new Error(
-                "compose: --capture names one scene's capture directory and does not compose with 'all'.",
-            );
-        }
-        const { runComposeReport } = await import(
-            "./scene-compose-report.js"
-        );
-        await runComposeReport(id, scenes, resolveScene, {
-            ...(captureDirectory !== undefined
-                ? { captureDirectory }
-                : {}),
-        });
-        return;
-    }
-    if (command === "diagnose" && id) {
-        await runDiagnose(id, rest);
-        return;
-    }
-    if (command === "clean") {
-        const parsed = parseFlags(
-            [id, ...rest].filter(
-                (argument): argument is string => argument !== undefined,
-            ),
-            { boolean: ["--orphans", "--all"] },
-            "clean",
-        );
-        runClean(
-            parsed.flags.has("--orphans"),
-            parsed.flags.has("--all"),
-        );
-        return;
-    }
-    if (command === "stability" && id) {
-        runStabilityReport(id, parseStabilityArguments(rest));
-        return;
-    }
-    if (command === "memory" && id) {
-        runMemoryReport(id, parseMemoryArguments(rest));
-        return;
-    }
-    if (command === "validate" && id) {
-        parseFlags(rest, {}, "validate");
-        await runValidate(id);
-        return;
-    }
-    if (command === "neutrality" && id) {
-        parseFlags(rest, {}, "neutrality");
-        runNeutralityReport(id);
-        return;
-    }
-    if (command === "neutrality-generated" && id) {
-        const parsed = parseFlags(
-            rest,
-            { boolean: ["--write"] },
-            "neutrality-generated",
-        );
-        runGeneratedNeutrality(id, parsed.flags.has("--write"));
-        return;
-    }
-    throw new Error(
-        "Usage: scene-command <doctor | setup | list | show <id|source.ts> | " +
-            "compile|build|process|parity|compose|validate <id|source.ts|all> [options] | " +
-            "geometry|capture|uniforms|diff|stability|diagnose <id|source.ts> [options] | " +
-            "memory <id|source.ts|all (the application demos)> [--frames N] [--max-growth-mb M] [--replay <tape> | --replay-file <path>] [--backend b] | " +
-            "probe-variants <id|source.ts> --shader <name> (--term <text> --with <replacement> | --replace-file <path>) | " +
-            "measure <image.png> [--background r,g,b] | " +
-            "clean --orphans [--all] | " +
-            "neutrality <baseline-parity-directory> (compares report-differential.json only — " +
-            "a single-backend sweep produces nothing comparable) | " +
-            "neutrality-generated <baseline.txt> [--write] (digests generated/ as it stands; compile first)>",
+    const { decodeCapturedUniforms, formatDecodedUniforms } = await import(
+        "./capture-uniforms.js"
     );
+    const decoded = decodeCapturedUniforms(directory, {
+        ...(sizes !== undefined
+            ? {
+                  sizes: sizes.split(",").map((value) => {
+                      const numeric = Number(value);
+                      if (!Number.isFinite(numeric)) {
+                          // A NaN would filter every buffer out silently:
+                          // the tool would answer "no buffers" to a
+                          // mistyped size.
+                          throw new Error(
+                              `uniforms: --size must be comma-separated numbers (got '${value}').`,
+                          );
+                      }
+                      return numeric;
+                  }),
+              }
+            : {}),
+        ...(module !== undefined ? { module } : {}),
+    });
+    console.log(formatDecodedUniforms(decoded));
+}
+
+/** `scene -- capture <id>`: the instrumented browser capture, the native
+ *  render capture (`--native`), or the ±1-frame bracket. */
+async function runCapture(idOrSource: string, parsed: ParsedFlags): Promise<void> {
+    const native = parsed.flags.has("--native");
+    const seekBracket = parsed.flags.has("--seek-bracket");
+    const seek = flagNumber(parsed, "--seek", "capture");
+    const skipDraw = flagNumber(parsed, "--skip-draw", "capture");
+    const output = parsed.values.get("--capture");
+    if (seekBracket) {
+        if (native) {
+            throw new Error(
+                "capture: --seek-bracket brackets the browser capture; the native pose is what gets judged against the three, so it does not compose with --native.",
+            );
+        }
+        if (skipDraw !== undefined) {
+            throw new Error(
+                "capture: --seek-bracket does not compose with --skip-draw; a filtered capture cannot serve as the motion baseline.",
+            );
+        }
+    }
+    // `--native` asks the same question of our renderer that the browser
+    // hooks ask of Babylon Lite's, so the two captures land in one
+    // directory and `diff` can pair them.
+    if (native) {
+        if (skipDraw !== undefined) {
+            throw new Error(
+                "capture: --skip-draw filters the browser capture and does not compose with --native.",
+            );
+        }
+        if (parsed.flags.has("--gpu-debug")) enableGpuDebug();
+        const backend = resolveBackend(parsed.values.get("--backend"), "capture");
+        const result = runNativeCapture(idOrSource, {
+            backend,
+            ...(seek !== undefined ? { seekSeconds: seek } : {}),
+            ...(output !== undefined ? { outputDirectory: output } : {}),
+        });
+        console.log(`Native ${result.backend} capture written to ${result.capturePath}`);
+        return;
+    }
+    for (const [flag, present] of [
+        ["--backend", parsed.values.has("--backend")],
+        ["--gpu-debug", parsed.flags.has("--gpu-debug")],
+    ] as const) {
+        if (present) {
+            throw new Error(
+                `capture: ${flag} selects the native renderer and needs --native beside it.`,
+            );
+        }
+    }
+    if (seekBracket) {
+        await runSeekBracketCapture(idOrSource, seek, output);
+        return;
+    }
+    const { runInstrumentedCapture } = await import("./capture-instrumented.js");
+    await runInstrumentedCapture(idOrSource, {
+        ...(seek !== undefined ? { seekSeconds: seek } : {}),
+        ...(skipDraw !== undefined ? { skipDrawIndexCount: skipDraw } : {}),
+        ...(output !== undefined ? { outputDirectory: output } : {}),
+    });
+}
+
+
+/**
+ * `scene -- clean`: disk hygiene over what this checkout owns.
+ *
+ * `--orphans` deletes the build trees under `native/` and the top-level
+ * entries under `generated/` that no registry entry owns — a corpus
+ * sweep or a deregistered scene leaves trees nothing will ever build
+ * again, the shader sweep still processes the generated strays, and
+ * `neutrality-generated` has to list them loudly on every digest. The
+ * ownership rule is the registry's, extended by the trees the registry
+ * implies: a scene's `buildDirectory` and `output`; its check twin
+ * (`generated/<id>-live`, `native/build-<id>-live-release`); and its
+ * shipping trees (`native/build-<id>-min-sdl|-min-dawn`, the packaging
+ * input `docs/development.md` names). `--all` additionally removes the
+ * OWNED build trees (a full native rebuild); owned `generated/`
+ * directories are never touched — they are compiler output, not build
+ * state.
+ *
+ * `--report` lists what the deletions would touch and the duplicated
+ * payloads no deletion targets by default: every build tree of this
+ * checkout and of every linked worktree, the precompiled headers and the
+ * DLL copies inside the owned trees, and the `artifacts/` entries no
+ * tool owns. `--pch` and `--dlls` delete those duplicated payloads in
+ * this checkout's `native/build-*` (the next build restores them; an
+ * executable without its DLLs does not start until then); `--artifacts`
+ * deletes the unowned `artifacts/` entries. Nothing outside
+ * `native/build-*`, `generated/` and `artifacts/` is ever deleted, and a
+ * junction or symbolic link is never followed nor removed.
+ */
+interface CleanOptions {
+    orphans: boolean;
+    all: boolean;
+    report: boolean;
+    dlls: boolean;
+    pch: boolean;
+    artifacts: boolean;
+}
+
+/** The `artifacts/` entries a tool of this repository writes or reads. */
+const OWNED_ARTIFACTS = new Set([
+    ".scene-command.lock",
+    "bake-cache",
+    "capture",
+    "check",
+    "generation-stamps",
+    "memory",
+    "parity",
+    "parity-canvas",
+    "physics-constructor-inputs",
+    "releases",
+    "shader-cache",
+    "tools",
+    "validate",
+    "vcpkg-installed",
+]);
+
+function isLink(path: string): boolean {
+    try {
+        return lstatSync(path).isSymbolicLink();
+    } catch {
+        return false;
+    }
+}
+
+/** Bytes under a directory, never following links. */
+function directorySize(path: string): number {
+    let total = 0;
+    const stack = [path];
+    while (stack.length > 0) {
+        const directory = stack.pop()!;
+        let entries;
+        try {
+            entries = readdirSync(directory, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const entry of entries) {
+            const full = join(directory, entry.name);
+            if (entry.isSymbolicLink()) continue;
+            if (entry.isDirectory()) stack.push(full);
+            else if (entry.isFile()) {
+                try {
+                    total += statSync(full).size;
+                } catch {
+                    // A file that vanished mid-walk counts nothing.
+                }
+            }
+        }
+    }
+    return total;
+}
+
+/** Files under a directory matching `test`, never following links. */
+function findFiles(path: string, test: (name: string) => boolean): string[] {
+    const found: string[] = [];
+    const stack = [path];
+    while (stack.length > 0) {
+        const directory = stack.pop()!;
+        let entries;
+        try {
+            entries = readdirSync(directory, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const entry of entries) {
+            const full = join(directory, entry.name);
+            if (entry.isSymbolicLink()) continue;
+            if (entry.isDirectory()) stack.push(full);
+            else if (entry.isFile() && test(entry.name)) found.push(full);
+        }
+    }
+    return found;
+}
+
+const gigabytes = (bytes: number): string => `${(bytes / 1e9).toFixed(2)} GB`;
+
+function buildTreesUnder(nativeRoot: string): string[] {
+    if (!existsSync(nativeRoot)) return [];
+    return readdirSync(nativeRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && entry.name.startsWith("build-"))
+        .map((entry) => resolve(nativeRoot, entry.name));
+}
+
+/** The native roots of every linked worktree, this checkout excluded. */
+function worktreeNativeRoots(): string[] {
+    const here = resolve(".");
+    const roots: string[] = [];
+    try {
+        const listing = spawnSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8" });
+        if (listing.status === 0) {
+            for (const line of listing.stdout.split(/\r?\n/)) {
+                if (!line.startsWith("worktree ")) continue;
+                const path = resolve(line.slice("worktree ".length));
+                if (path !== here) roots.push(resolve(path, "native"));
+            }
+        }
+    } catch {
+        // No git: only the .claude worktrees below are visible.
+    }
+    const claudeWorktrees = resolve(".claude", "worktrees");
+    if (existsSync(claudeWorktrees)) {
+        for (const entry of readdirSync(claudeWorktrees, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const root = resolve(claudeWorktrees, entry.name, "native");
+            if (!roots.includes(root)) roots.push(root);
+        }
+    }
+    return roots.filter((root) => existsSync(root));
+}
+
+const isPchFile = (name: string): boolean => /^cmake_pch\..*\.pch$/.test(name);
+const isDllFile = (name: string): boolean => name.toLowerCase().endsWith(".dll");
+
+function runClean(options: CleanOptions): void {
+    if (!options.orphans && !options.all && !options.report && !options.dlls && !options.pch && !options.artifacts) {
+        throw new Error(
+            "clean: pass --report (list sizes, delete nothing), --orphans (delete build trees and generated/ entries " +
+                "no registry entry owns), --all (also delete every owned build tree; owned generated/ directories always stay), " +
+                "--pch / --dlls (delete the precompiled headers / DLL copies inside native/build-*; the next build restores them), " +
+                "and/or --artifacts (delete the artifacts/ entries no tool owns).",
+        );
+    }
+    let removed = 0;
+    let removedBytes = 0;
+    const removeTree = (path: string, label: string): void => {
+        if (isLink(path)) {
+            console.log(`clean: leaving ${label} ${path} (a link)`);
+            return;
+        }
+        console.log(`clean: removing ${label} ${path}`);
+        rmSync(path, { recursive: true, force: true });
+        removed += 1;
+    };
+    const nativeRoot = resolve("native");
+    const ownedBuilds = new Set(scenes.map((scene) => resolve(scene.buildDirectory)));
+    for (const scene of scenes) {
+        for (const suffix of ["live-release", "min-sdl", "min-dawn"]) {
+            ownedBuilds.add(resolve(nativeRoot, `build-${scene.id}-${suffix}`));
+        }
+    }
+    const generatedRoot = resolve("generated");
+    const ownedGenerated = new Set(scenes.map((scene) => resolve(scene.output)));
+    for (const scene of scenes) ownedGenerated.add(resolve(generatedRoot, `${scene.id}-live`));
+    const artifactsRoot = resolve("artifacts");
+    const unownedArtifacts = existsSync(artifactsRoot)
+        ? readdirSync(artifactsRoot, { withFileTypes: true })
+              .filter((entry) => !OWNED_ARTIFACTS.has(entry.name) && !entry.isSymbolicLink())
+              .map((entry) => resolve(artifactsRoot, entry.name))
+        : [];
+
+    if (options.report) {
+        const trees = buildTreesUnder(nativeRoot);
+        let owned = 0;
+        let orphan = 0;
+        let pchBytes = 0;
+        let pchFiles = 0;
+        let dllBytes = 0;
+        let dllFiles = 0;
+        for (const tree of trees) {
+            const size = directorySize(tree);
+            if (ownedBuilds.has(tree)) owned += size;
+            else orphan += size;
+            for (const file of findFiles(tree, isPchFile)) {
+                pchFiles += 1;
+                pchBytes += statSync(file).size;
+            }
+            for (const file of findFiles(tree, isDllFile)) {
+                dllFiles += 1;
+                dllBytes += statSync(file).size;
+            }
+        }
+        console.log(`clean --report (${resolve(".")})`);
+        console.log(
+            `  native/build-*: ${trees.length} tree(s), ${gigabytes(owned + orphan)} ` +
+                `(owned ${gigabytes(owned)}, orphan ${gigabytes(orphan)} in ${trees.filter((tree) => !ownedBuilds.has(tree)).length})`,
+        );
+        console.log(`    precompiled headers: ${pchFiles} file(s), ${gigabytes(pchBytes)} (--pch)`);
+        console.log(`    DLL copies: ${dllFiles} file(s), ${gigabytes(dllBytes)} (--dlls)`);
+        for (const tree of trees.filter((tree) => !ownedBuilds.has(tree))) {
+            console.log(`    orphan: ${tree} (${gigabytes(directorySize(tree))})`);
+        }
+        const strays = existsSync(generatedRoot)
+            ? readdirSync(generatedRoot, { withFileTypes: true })
+                  .map((entry) => resolve(generatedRoot, entry.name))
+                  .filter((path) => !ownedGenerated.has(path))
+            : [];
+        console.log(`  generated/: ${strays.length} stray entr${strays.length === 1 ? "y" : "ies"} (--orphans)`);
+        for (const stray of strays) console.log(`    stray: ${stray} (${gigabytes(directorySize(stray))})`);
+        for (const root of worktreeNativeRoots()) {
+            const worktreeTrees = buildTreesUnder(root);
+            const size = worktreeTrees.reduce((total, tree) => total + directorySize(tree), 0);
+            console.log(`  worktree ${root}: ${worktreeTrees.length} build tree(s), ${gigabytes(size)} (not touched by clean; run clean there)`);
+        }
+        console.log(`  artifacts/: ${unownedArtifacts.length} unowned entr${unownedArtifacts.length === 1 ? "y" : "ies"} (--artifacts)`);
+        for (const entry of unownedArtifacts) {
+            console.log(`    unowned: ${entry} (${gigabytes(directorySize(entry))})`);
+        }
+    }
+    if (options.orphans || options.all) {
+        for (const tree of buildTreesUnder(nativeRoot)) {
+            if (ownedBuilds.has(tree)) {
+                if (options.all) removeTree(tree, "owned build tree");
+                continue;
+            }
+            if (options.orphans) removeTree(tree, "orphan build tree");
+        }
+        if (options.orphans && existsSync(generatedRoot)) {
+            for (const entry of readdirSync(generatedRoot, { withFileTypes: true })) {
+                const path = resolve(generatedRoot, entry.name);
+                if (entry.isDirectory() && ownedGenerated.has(path)) continue;
+                removeTree(path, "stray generated entry");
+            }
+        }
+    }
+    if (options.pch || options.dlls) {
+        for (const tree of buildTreesUnder(nativeRoot)) {
+            const files = [
+                ...(options.pch ? findFiles(tree, isPchFile) : []),
+                ...(options.dlls ? findFiles(tree, isDllFile) : []),
+            ];
+            for (const file of files) {
+                removedBytes += statSync(file).size;
+                rmSync(file, { force: true });
+                removed += 1;
+            }
+        }
+        if (removedBytes > 0) {
+            console.log(`clean: removed ${gigabytes(removedBytes)} of precompiled headers and DLL copies; the next 'scene -- build' restores them.`);
+        }
+    }
+    if (options.artifacts) {
+        for (const entry of unownedArtifacts) removeTree(entry, "unowned artifacts entry");
+    }
+    console.log(
+        removed === 0
+            ? "clean: nothing removed."
+            : `clean: removed ${removed} entr${removed === 1 ? "y" : "ies"}.`,
+    );
+}
+
+/**
+ * `scene -- show <id> [--activation|--adaptations|--provenance]`: the
+ * registry entry, or one of the records generation writes beside the
+ * tree — which features are on and why, which adaptations the tree
+ * carries and at what risk, which pinned symbols were lowered.
+ */
+function runShow(idOrSource: string, parsed: ParsedFlags): void {
+    const scene = resolveScene(idOrSource);
+    const views = ["--activation", "--adaptations", "--provenance"].filter((flag) => parsed.flags.has(flag));
+    if (views.length === 0) {
+        console.log(JSON.stringify(scene, null, 2));
+        return;
+    }
+    for (const view of views) {
+        if (view === "--activation") {
+            console.log(formatFeatureActivation(readFeatureActivation(scene.output, scene.id)));
+        } else if (view === "--adaptations") {
+            console.log(formatAdaptations(readAdaptations(scene.output, scene.id)));
+        } else {
+            console.log(formatProvenance(readProvenance(scene.output, scene.id)));
+        }
+    }
+}
+
+/**
+ * `scene -- status <id> [--run]`: is the generated tree current for the
+ * registry entry, is the payload beside the executable the tree's, and
+ * does the binary carry the tree's build stamp — read from the binary's
+ * bytes, so no window opens; `--run` renders one frame under the
+ * measured-run identity gate as well.
+ */
+function runStatus(idOrSource: string, run: boolean): boolean {
+    const scene = resolveScene(idOrSource);
+    const executable = resolveNativeExecutable(undefined, scene.buildDirectory);
+    const status = readSceneStatus(
+        scene.output,
+        scene.buildDirectory,
+        executable,
+        generationIsCurrent(scene, compilerArguments(scene)),
+    );
+    console.log(formatSceneStatus(scene.id, status));
+    if (run && status.executableExists) {
+        const screenshot = resolve("artifacts", "status", `${scene.id}.png`);
+        runMeasured(executable, {
+            generatedDirectory: scene.output,
+            ...(scene.parity?.nativeEnvironment !== undefined
+                ? { environment: scene.parity.nativeEnvironment }
+                : {}),
+            frame: 0,
+            screenshot,
+        });
+        console.log(`  one-frame run under the identity gate: ok (${screenshot})`);
+    }
+    return status.current;
+}
+
+/**
+ * `scene -- check <check-id>`: the declared interaction check, against
+ * the scene's own tree or — for a check declaring `twin: true` — the
+ * byte-identical no-query twin this command generates and builds first.
+ */
+async function runDeclaredCheck(checkId: string, parsed: ParsedFlags): Promise<boolean> {
+    const spec = readCheckSpec(checkId);
+    const scene = resolveScene(spec.scene);
+    const tree = spec.twin ? twinScene(scene) : scene;
+    if (spec.twin) await processTwin(tree);
+    const backend = optionalBackend(parsed, "check");
+    const phase = parsed.values.get("--phase");
+    const verdict = await runCheck({
+        checkId,
+        scene,
+        spec,
+        target: {
+            output: tree.output,
+            buildDirectory: tree.buildDirectory,
+            executable: resolveNativeExecutable(undefined, tree.buildDirectory),
+        },
+        ...(backend !== undefined ? { backends: [backend] } : {}),
+        ...(phase !== undefined ? { phase } : {}),
+        keep: parsed.flags.has("--keep"),
+    });
+    return verdict.ok;
+}
+
+async function runDeclaredObserve(checkId: string, parsed: ParsedFlags): Promise<void> {
+    const spec = readCheckSpec(checkId);
+    if (spec.observe === undefined) {
+        throw new Error(`check ${checkId} declares no browser observation ('observe').`);
+    }
+    await runObserve({
+        checkId,
+        scene: resolveScene(spec.scene),
+        spec: spec.observe,
+        headed: parsed.flags.has("--headed"),
+    });
+}
+
+/** One dispatcher command: its bare argument, flags, one-line summary,
+ *  and whether it runs out of `dist/` long enough to hold the lock. */
+interface CommandSpec {
+    name: string;
+    argument?: string;
+    flags: FlagSpec;
+    summary: string;
+    lock: boolean;
+}
+
+const SCENE_ARGUMENT = "<id|source.ts>";
+const SCENE_OR_ALL_ARGUMENT = "<id|source.ts|all>";
+
+const COMMANDS: readonly CommandSpec[] = [
+    { name: "help", flags: {}, summary: "print this usage", lock: false },
+    { name: "doctor", flags: {}, summary: "toolchain preflight report", lock: true },
+    { name: "setup", flags: {}, summary: "install the vcpkg manifest and build the pinned Dawn, Tint, LabSound and RmlUi", lock: true },
+    { name: "list", flags: { boolean: ["--json"] }, summary: "id, name, source and build directory of every registered scene", lock: false },
+    { name: "show", argument: SCENE_ARGUMENT, flags: { boolean: ["--activation", "--adaptations", "--provenance"] }, summary: "the registry entry; --activation (active features and why), --adaptations (by risk), --provenance (lowered pinned symbols) read the generated tree", lock: false },
+    { name: "status", argument: SCENE_ARGUMENT, flags: { boolean: ["--run"] }, summary: "generation record current, payload deployed, binary carries the tree's stamp (from its bytes); --run renders one frame under the identity gate", lock: false },
+    { name: "compile", argument: SCENE_OR_ALL_ARGUMENT, flags: { boolean: ["--cold"] }, summary: "generate C++, WGSL, assets and manifests", lock: true },
+    { name: "build", argument: SCENE_OR_ALL_ARGUMENT, flags: { value: ["--backend", "--compiler"], boolean: ["--cold"] }, summary: "configure, build and deploy the generated tree (--backend sdl_gpu|dawn|both, --compiler auto|clangcl|msvc)", lock: true },
+    { name: "process", argument: SCENE_OR_ALL_ARGUMENT, flags: { value: ["--backend", "--compiler", "--shader"], boolean: ["--cold"] }, summary: "compile, compile shaders (--shader d3d12|vulkan|metal|all) and build", lock: true },
+    { name: "parity", argument: SCENE_OR_ALL_ARGUMENT, flags: PARITY_FLAGS, summary: "golden vs native MAD gate; --differential measures both backends and diffs them", lock: true },
+    { name: "geometry", argument: SCENE_ARGUMENT, flags: { value: ["--backend", "--seek", "--exe"], boolean: ["--recapture-reference", "--gpu-debug"] }, summary: "impostor copy-task attachments, browser vs native", lock: true },
+    { name: "uniforms", argument: SCENE_ARGUMENT, flags: { value: ["--capture", "--size", "--module", "--seek"] }, summary: "decode captured browser uniform buffers by WGSL struct size; --seek recaptures at that pose", lock: true },
+    { name: "capture", argument: SCENE_ARGUMENT, flags: { value: ["--seek", "--skip-draw", "--capture", "--backend"], boolean: ["--native", "--gpu-debug", "--seek-bracket"], alias: { "--out": "--capture" } }, summary: "instrumented browser capture (--native: the native render capture; --seek-bracket: +-1 frame)", lock: true },
+    { name: "diff", argument: SCENE_ARGUMENT, flags: { value: ["--backend", "--capture", "--seek"], boolean: ["--recapture", "--gpu-debug"] }, summary: "pair the browser and native captures: values, draws, shaders, palettes", lock: true },
+    { name: "probe-variants", argument: SCENE_ARGUMENT, flags: { value: ["--shader", "--term", "--with", "--replace-file", "--seek", "--backend"], boolean: ["--gpu-debug"] }, summary: "neutralize one WGSL term (or replace a file) in the deployed Dawn payload and re-render", lock: true },
+    { name: "measure", argument: "<image.png>", flags: { value: ["--background"] }, summary: "non-background bounding box, pixel count and channel means of a PNG", lock: false },
+    { name: "compose", argument: SCENE_OR_ALL_ARGUMENT, flags: { value: ["--capture"] }, summary: "compose every glTF material through the pin and byte-compare with the captured fragments", lock: true },
+    { name: "diagnose", argument: SCENE_ARGUMENT, flags: { value: ["--backend", "--seek"], boolean: ["--gpu-debug"] }, summary: "parity, diff and compose in one run", lock: true },
+    { name: "check", argument: "<check-id>", flags: { value: ["--backend", "--phase"], boolean: ["--keep"] }, summary: "the declared interaction check (checks/<check-id>.json) on both backends; --keep reuses current phase outputs", lock: true },
+    { name: "observe", argument: "<check-id>", flags: { boolean: ["--headed"] }, summary: "the check's browser observation into artifacts/check/<check-id>/browser/", lock: true },
+    { name: "clean", flags: { boolean: ["--report", "--orphans", "--all", "--pch", "--dlls", "--artifacts"] }, summary: "disk hygiene: --report sizes; --orphans unowned trees; --all owned build trees; --pch/--dlls duplicated payloads; --artifacts unowned artifacts/ entries", lock: true },
+    { name: "stability", argument: SCENE_ARGUMENT, flags: STABILITY_FLAGS, summary: "N native re-renders vs run 1 and the golden", lock: true },
+    { name: "memory", argument: SCENE_OR_ALL_ARGUMENT, flags: MEMORY_FLAGS, summary: "working-set growth after warm-up (all = the application demos)", lock: true },
+    { name: "validate", argument: SCENE_OR_ALL_ARGUMENT, flags: { boolean: ["--cold"] }, summary: "compile, shaders, build, parity and the published-status check", lock: true },
+    { name: "neutrality", argument: "<baseline-parity-directory>", flags: {}, summary: "cell-by-cell compare of report-differential.json against a saved baseline", lock: true },
+    { name: "neutrality-generated", argument: "<baseline.txt>", flags: { boolean: ["--write"] }, summary: "digest generated/ as it stands (compile first) and write or compare the baseline", lock: true },
+];
+
+/** The usage text, generated from the command table so it cannot drift
+ *  from what the parser accepts. */
+function usage(): string {
+    const lines = ["Usage: scene-command <command> [argument] [options]", ""];
+    for (const command of COMMANDS) {
+        const invocation = [command.name, command.argument, usageFromSpec(command.flags)]
+            .filter((part) => part !== undefined && part !== "")
+            .join(" ");
+        lines.push(`  ${invocation}`);
+        lines.push(`      ${command.summary}`);
+    }
+    lines.push("", "Backends are spelled sdl_gpu|dawn (gpu accepted for sdl_gpu); artifact filenames use gpu|dawn.");
+    return lines.join("\n");
+}
+
+async function main(): Promise<void> {
+    const [command, ...arguments_] = process.argv.slice(2);
+    if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+        console.log(usage());
+        return;
+    }
+    const spec = COMMANDS.find((entry) => entry.name === command);
+    if (spec === undefined) {
+        throw new Error(`Unknown command '${command}'.\n\n${usage()}`);
+    }
+    // Every `npm run scene` runs `npm run build` first, so any build started
+    // while this one is working deletes the `dist/` it is executing from.
+    // `tools/clean-dist.mjs` refuses to cross this lock; a read-only command
+    // that returns at once does not hold it.
+    if (spec.lock) holdDistLock([command, arguments_[0]].filter(Boolean).join(" "));
+    let id: string | undefined;
+    let rest = arguments_;
+    if (spec.argument !== undefined) {
+        id = arguments_[0];
+        if (id === undefined || id.startsWith("--")) {
+            throw new Error(`${command} needs ${spec.argument}.\n\n  ${command} ${spec.argument} ${usageFromSpec(spec.flags)}`);
+        }
+        rest = arguments_.slice(1);
+    }
+    // parity, stability and memory parse their own flags (the same specs);
+    // every other command parses here, once.
+    const parsed = ["parity", "stability", "memory"].includes(command)
+        ? undefined
+        : parseFlags(rest, spec.flags, command);
+    switch (command) {
+        case "doctor":
+            runDoctor();
+            return;
+        case "setup":
+            runDevelopmentSetup();
+            return;
+        case "list":
+            if (parsed!.flags.has("--json")) {
+                console.log(JSON.stringify(scenes, null, 2));
+            } else {
+                for (const scene of scenes) {
+                    console.log(`${scene.id}\t${scene.name}\t${scene.source}\t${scene.buildDirectory}`);
+                }
+            }
+            return;
+        case "show":
+            runShow(id!, parsed!);
+            return;
+        case "status":
+            if (!runStatus(id!, parsed!.flags.has("--run"))) process.exitCode = 1;
+            return;
+        case "compile":
+            await withColdBuild(rest, () => compile(id!));
+            return;
+        case "build":
+            await withBuildOptions("build", rest, () => build(id!));
+            return;
+        case "process":
+            await withBuildOptions("process", rest, () => processScene(id!));
+            return;
+        case "parity":
+            await parity(id!, rest);
+            return;
+        case "geometry": {
+            const backend = parsed!.values.get("--backend");
+            const seek = flagNumber(parsed!, "--seek", "geometry");
+            const executable = parsed!.values.get("--exe");
+            await runGeometryOutputDiagnostics(id!, {
+                recaptureReference: parsed!.flags.has("--recapture-reference"),
+                gpuDebug: parsed!.flags.has("--gpu-debug"),
+                ...(executable !== undefined ? { executable } : {}),
+                ...(backend !== undefined ? { backend } : {}),
+                ...(seek !== undefined ? { seekSeconds: seek } : {}),
+            });
+            return;
+        }
+        case "uniforms":
+            await runUniforms(id!, parsed!);
+            return;
+        case "capture":
+            await runCapture(id!, parsed!);
+            return;
+        case "diff":
+            await runRenderDiff(id!, rest);
+            return;
+        case "probe-variants":
+            await runProbeVariants(id!, rest);
+            return;
+        case "measure": {
+            // The measure-the-PNG rule as a command: the non-background
+            // bounding box, pixel count and per-channel means of any PNG,
+            // native render or otherwise. Takes a path, not a scene id.
+            const backgroundFlag = parsed!.values.get("--background");
+            const background =
+                backgroundFlag === undefined
+                    ? undefined
+                    : parseRgbTriple(backgroundFlag, "--background", "measure");
+            const imagePath = resolve(id!);
+            if (!existsSync(imagePath)) {
+                throw new Error(`measure: no image at ${imagePath}.`);
+            }
+            console.log(formatPngMeasurement(imagePath, measurePng(imagePath, background)));
+            return;
+        }
+        case "compose": {
+            const captureDirectory = parsed!.values.get("--capture");
+            if (captureDirectory !== undefined && id === "all") {
+                throw new Error(
+                    "compose: --capture names one scene's capture directory and does not compose with 'all'.",
+                );
+            }
+            const { runComposeReport } = await import("./scene-compose-report.js");
+            const outcome = await runComposeReport(id!, scenes, resolveScene, {
+                ...(captureDirectory !== undefined ? { captureDirectory } : {}),
+            });
+            if (outcome.gaps > 0) process.exitCode = 1;
+            return;
+        }
+        case "diagnose":
+            if (!(await runDiagnose(id!, rest))) process.exitCode = 1;
+            return;
+        case "check":
+            if (!(await runDeclaredCheck(id!, parsed!))) process.exitCode = 1;
+            return;
+        case "observe":
+            await runDeclaredObserve(id!, parsed!);
+            return;
+        case "clean":
+            runClean({
+                orphans: parsed!.flags.has("--orphans"),
+                all: parsed!.flags.has("--all"),
+                report: parsed!.flags.has("--report"),
+                dlls: parsed!.flags.has("--dlls"),
+                pch: parsed!.flags.has("--pch"),
+                artifacts: parsed!.flags.has("--artifacts"),
+            });
+            return;
+        case "stability":
+            runStabilityReport(id!, parseStabilityArguments(rest));
+            return;
+        case "memory":
+            runMemoryReport(id!, parseMemoryArguments(rest));
+            return;
+        case "validate":
+            await withColdBuild(rest, () => runValidate(id!));
+            return;
+        case "neutrality":
+            if (!runNeutralityReport(id!).neutral) process.exitCode = 1;
+            return;
+        case "neutrality-generated":
+            if (!runGeneratedNeutrality(id!, parsed!.flags.has("--write"))) process.exitCode = 1;
+            return;
+        default:
+            throw new Error(`Unknown command '${command}'.\n\n${usage()}`);
+    }
 }
 
 main().catch((error: unknown) => {

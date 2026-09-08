@@ -32,7 +32,7 @@ import {
     generateIdVisualization,
     imageDimensions,
 } from "./parity.js";
-import { flagNumber, parseFlags } from "./tooling/flags.js";
+import { type FlagSpec, flagNumber, parseFlags } from "./tooling/flags.js";
 import {
     applyGpuBackendEnvironment,
     backendFileToken,
@@ -179,21 +179,20 @@ export function withoutVariable(
  * process or build-stamp check spends time on a flag combination that
  * cannot mean anything.
  */
+/** The parity flags, shared with the dispatcher's usage text. */
+export const PARITY_FLAGS: FlagSpec = {
+    value: ["--exe", "--actual", "--backend", "--seek", "--without"],
+    boolean: [
+        "--recapture-reference",
+        "--no-fail",
+        "--differential",
+        "--gpu-debug",
+    ],
+    positionals: 1,
+};
+
 export function parseParityArguments(rest: string[]): ParityArguments {
-    const parsed = parseFlags(
-        rest,
-        {
-            value: ["--exe", "--actual", "--backend", "--seek", "--without"],
-            boolean: [
-                "--recapture-reference",
-                "--no-fail",
-                "--differential",
-                "--gpu-debug",
-            ],
-            positionals: 1,
-        },
-        "parity",
-    );
+    const parsed = parseFlags(rest, PARITY_FLAGS, "parity");
     const backend = optionalBackend(parsed, "parity");
     const sceneId = parsed.positionals[0];
     const executable = parsed.values.get("--exe");
@@ -269,6 +268,17 @@ export function parseParityArguments(rest: string[]): ParityArguments {
 /** The frame loops print one `[mem][frame]` line every this many frames. */
 const memoryProfileFrames = 30;
 
+/** The memory flags, shared with the dispatcher's usage text. */
+export const MEMORY_FLAGS: FlagSpec = {
+    value: [
+        "--frames",
+        "--backend",
+        "--replay",
+        "--replay-file",
+        "--max-growth-mb",
+    ],
+};
+
 export interface MemoryArguments {
     /** Frames to run; at least three samples, so the warm-up third has one. */
     frames: number;
@@ -282,19 +292,7 @@ export interface MemoryArguments {
 export function parseMemoryArguments(
     rest: readonly string[],
 ): MemoryArguments {
-    const parsed = parseFlags(
-        rest,
-        {
-            value: [
-                "--frames",
-                "--backend",
-                "--replay",
-                "--replay-file",
-                "--max-growth-mb",
-            ],
-        },
-        "memory",
-    );
+    const parsed = parseFlags(rest, MEMORY_FLAGS, "memory");
     const frames = flagNumber(parsed, "--frames", "memory") ?? 6000;
     const minimumFrames = 3 * memoryProfileFrames;
     if (!Number.isInteger(frames) || frames < minimumFrames) {
@@ -1220,6 +1218,12 @@ export async function runSceneParityDifferential(
 // golden and both columns always print.
 // ---------------------------------------------------------------------------
 
+/** The stability flags, shared with the dispatcher's usage text. */
+export const STABILITY_FLAGS: FlagSpec = {
+    value: ["--runs", "--backend", "--seek"],
+    boolean: ["--single-sample", "--gpu-debug"],
+};
+
 export interface StabilityArguments {
     runs: number;
     singleSample: boolean;
@@ -1235,14 +1239,7 @@ export interface StabilityArguments {
 export function parseStabilityArguments(
     rest: readonly string[],
 ): StabilityArguments {
-    const parsed = parseFlags(
-        rest,
-        {
-            value: ["--runs", "--backend", "--seek"],
-            boolean: ["--single-sample", "--gpu-debug"],
-        },
-        "stability",
-    );
+    const parsed = parseFlags(rest, STABILITY_FLAGS, "stability");
     const seekSeconds = flagNumber(parsed, "--seek", "stability");
     const runsValue = parsed.values.get("--runs");
     let runs = 5;

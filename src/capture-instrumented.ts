@@ -525,10 +525,6 @@ export async function runInstrumentedCapture(
                         `usage=0x${buffer.usage.toString(16)} writes=${buffer.writeCount}`,
                 )
                 .join("\n");
-            writeFileSync(
-                join(outputDirectory, "buffers-summary.txt"),
-                summary,
-            );
             console.log(`Instrumented capture written to ${outputDirectory}`);
             console.log(`Draw calls: ${JSON.stringify(draws)}`);
             console.log(summary);
