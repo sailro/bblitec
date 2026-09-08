@@ -11,7 +11,7 @@
 // erased outright.
 import ts from "typescript";
 import { promiseExecutor } from "./promise-executor.js";
-import { foldableMathUnary } from "./option-helpers.js";
+import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 
 /**
@@ -1201,8 +1201,7 @@ export class BrowserErasure {
                 // a resolved value alike -- cannot disagree about which
                 // ones resolve. A transcendental is deliberately absent
                 // from that table, and stays unfoldable here too.
-                const fold =
-                    foldableMathUnary[unwrapped.expression.name.text];
+                const fold = mathUnaryFold(unwrapped.expression.name.text);
                 if (fold === undefined) return undefined;
                 const argument = this.evaluateBrowserValue(
                     unwrapped.arguments[0]!,

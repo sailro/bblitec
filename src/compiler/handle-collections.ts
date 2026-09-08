@@ -36,7 +36,7 @@
 //   values name the same record.
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
-import type { DataType } from "./data-types.js";
+import { handleCppType, type DataType } from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import { resolveFunctionDeclaration } from "./user-functions.js";
 import { unwrapExpression as unwrapWalkExpression } from "./syntax.js";
@@ -1250,7 +1250,7 @@ export class HandleCollections {
             containerCpp:
                 `${engineCpp}.assets[${owner.cpp}.value].meshes`,
             elementKind: "mesh",
-            elementCppType: "bbl::MeshHandle",
+            elementCppType: handleCppType("mesh"),
             engineCpp,
         };
     }
@@ -1317,7 +1317,7 @@ export class HandleCollections {
               );
         return {
             cpp:
-                `std::vector<bbl::AnimationGroupHandle>{` +
+                `std::vector<${handleCppType("animation-group")}>{` +
                 `${groups.map((group) => group.cpp).join(", ")}}`,
             engineCpp,
         };
@@ -1664,7 +1664,7 @@ export class HandleCollections {
         const found = this.context.allocateTemporaryCppName(
             "material_found",
         );
-        this.context.emit(`bbl::MaterialHandle ${result}{};`);
+        this.context.emit(`${handleCppType("material")} ${result}{};`);
         this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
         let assetPbrMaterial = false;
         emitHandleCollectionLoop(
@@ -1765,10 +1765,10 @@ export class HandleCollections {
         const item = this.context.allocateTemporaryCppName(
             "asset_descendant_mesh",
         );
-        this.context.emit(`bbl::MeshHandle ${result}{};`);
+        this.context.emit(`${handleCppType("mesh")} ${result}{};`);
         this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
         this.context.emit(
-            `for (const bbl::MeshHandle ${item} : ` +
+            `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${engine}.assets[${root.cpp}.value].meshes) {`,
         );
         this.context.increaseIndent();
@@ -1858,10 +1858,10 @@ export class HandleCollections {
         const item = this.context.allocateTemporaryCppName(
             "asset_skinned_mesh",
         );
-        this.context.emit(`bbl::MeshHandle ${result}{};`);
+        this.context.emit(`${handleCppType("mesh")} ${result}{};`);
         this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
         this.context.emit(
-            `for (const bbl::MeshHandle ${item} : ` +
+            `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${engine}.assets[${root.cpp}.value].meshes) {`,
         );
         this.context.increaseIndent();

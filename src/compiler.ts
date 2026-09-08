@@ -173,6 +173,7 @@ import {
     passesByReferenceKind,
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
+    handleCppType,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
@@ -534,7 +535,7 @@ const NULLABLE_RESOURCE_TYPES = new Map<
     ],
     [
         "AudioBuffer",
-        { kind: "audio-buffer", cppType: "bbl::pal::AudioBufferHandle" },
+        { kind: "audio-buffer", cppType: handleCppType("audio-buffer") },
     ],
     [
         "SpriteRenderer",
@@ -542,30 +543,30 @@ const NULLABLE_RESOURCE_TYPES = new Map<
     ],
     [
         "Sprite2DLayer",
-        { kind: "sprite-layer", cppType: "bbl::Sprite2DLayerHandle" },
+        { kind: "sprite-layer", cppType: handleCppType("sprite-layer") },
     ],
-    ["Element", { kind: "ui-element", cppType: "bbl::UiElementHandle" }],
-    ["HTMLElement", { kind: "ui-element", cppType: "bbl::UiElementHandle" }],
+    ["Element", { kind: "ui-element", cppType: handleCppType("ui-element") }],
+    ["HTMLElement", { kind: "ui-element", cppType: handleCppType("ui-element") }],
     [
         "HTMLDivElement",
-        { kind: "ui-element", cppType: "bbl::UiElementHandle" },
+        { kind: "ui-element", cppType: handleCppType("ui-element") },
     ],
     [
         "HTMLCanvasElement",
-        { kind: "ui-element", cppType: "bbl::UiElementHandle" },
+        { kind: "ui-element", cppType: handleCppType("ui-element") },
     ],
     [
         "ObstacleHandle",
         {
             kind: "navigation-obstacle",
-            cppType: "bbl::pal::NavObstacleHandle",
+            cppType: handleCppType("navigation-obstacle"),
         },
     ],
-    ["Mesh", { kind: "mesh", cppType: "bbl::MeshHandle" }],
+    ["Mesh", { kind: "mesh", cppType: handleCppType("mesh") }],
     ["AssetContainer", { kind: "asset", cppType: "bbl::AssetHandle" }],
     [
         "StorageBuffer",
-        { kind: "storage-buffer", cppType: "bbl::StorageBufferHandle" },
+        { kind: "storage-buffer", cppType: handleCppType("storage-buffer") },
     ],
 ]);
 
@@ -589,6 +590,12 @@ const NULLABLE_VAT_RESOURCE_TYPES = new Map<
 >([
     ["VatHandle", { kind: "vat-handle", cppType: "bbl::VatHandle" }],
     ["VatClip", { kind: "vat-clip", cppType: "bbl::VatClipRow" }],
+]);
+
+/** The two DOM types a drawing surface is declared as. */
+const CANVAS_TYPE_NAMES: ReadonlySet<string> = new Set([
+    "HTMLCanvasElement",
+    "OffscreenCanvas",
 ]);
 
 /** The closure key for a callback the program evaluates once, at module scope. */
@@ -1895,7 +1902,7 @@ class Compiler
         if (this.typeIsOrExtendsNamed(members[0]!, "Material")) {
             return {
                 kind: "material",
-                cppType: "bbl::MaterialHandle",
+                cppType: handleCppType("material"),
             };
         }
         const vat = name ? NULLABLE_VAT_RESOURCE_TYPES.get(name) : undefined;
@@ -14910,18 +14917,7 @@ class Compiler
         if (element?.uiCanvas) {
             return element.uiPrimaryCanvas && axis.client ? axis : undefined;
         }
-        const ownerType = this.checker.getTypeAtLocation(unwrapped.expression);
-        const members =
-            (ownerType.flags & ts.TypeFlags.Union) !== 0
-                ? (ownerType as ts.UnionType).types
-                : [ownerType];
-        const canvases = new Set(["HTMLCanvasElement", "OffscreenCanvas"]);
-        return members.length > 0 &&
-            members.every((member) =>
-                canvases.has(member.getSymbol()?.getName() ?? ""),
-            )
-            ? axis
-            : undefined;
+        return this.isCanvasElement(unwrapped.expression) ? axis : undefined;
     }
 
     public canvasSizeProperty(
@@ -16506,18 +16502,20 @@ class Compiler
         );
     }
 
+    /**
+     * Whether every member of an expression's type is one of the two canvas
+     * types. A member whose symbol has no name is not a canvas, so it fails
+     * the test rather than being compared under an empty name.
+     */
     public isCanvasElement(expression: ts.Expression): boolean {
         const type = this.checker.getTypeAtLocation(expression);
-        const members =
-            (type.flags & ts.TypeFlags.Union) !== 0
-                ? (type as ts.UnionType).types
-                : [type];
-        const canvases = new Set(["HTMLCanvasElement", "OffscreenCanvas"]);
+        const members = type.isUnion() ? type.types : [type];
         return (
             members.length > 0 &&
-            members.every((member) =>
-                canvases.has(member.getSymbol()?.getName() ?? ""),
-            )
+            members.every((member) => {
+                const name = member.getSymbol()?.getName();
+                return name !== undefined && CANVAS_TYPE_NAMES.has(name);
+            })
         );
     }
 
@@ -17557,7 +17555,7 @@ class Compiler
                 const cpp = `${owner.cpp}.parts[${part.index}]`;
                 const drag: Value = {
                     kind: "pointer-drag",
-                    cpp: `bbl::PointerDragHandle{${cpp}.value}`,
+                    cpp: `${handleCppType("pointer-drag")}{${cpp}.value}`,
                     engineCpp: engine,
                     dataType: { kind: "handle", handle: "pointer-drag" },
                 };
@@ -17608,8 +17606,8 @@ class Compiler
                         includes: {
                             kind: "data",
                             cpp:
-                                `std::function<bool(bbl::MeshHandle)>{` +
-                                `[&](bbl::MeshHandle mesh) { return ` +
+                                `std::function<bool(${handleCppType("mesh")})>{` +
+                                `[&](${handleCppType("mesh")} mesh) { return ` +
                                 `bbl::pointer_drag_has_collider(${engine}, ` +
                                 `${owner.cpp}, mesh); }}`,
                             dataType: {
@@ -20156,7 +20154,7 @@ class Compiler
                     "        engine.render_targets[resolve_target.value].surface_canvas = scene.surface_canvas;",
                     "        auto render_task = bbl::create_render_task(engine, scene, " +
                         'bbl::RenderTaskOptions{"default-render-task", target, scene.clear_color, true, ' +
-                        "bbl::CameraHandle{}, false, true, true, true});",
+                        `${handleCppType("camera")}{}, false, true, true, true});`,
                     "        bbl::add_task(scene, render_task);",
                     "        auto resolve_task = bbl::create_copy_to_texture_task(engine, scene, " +
                         'bbl::CopyTaskOptions{"default-resolve", bbl::render_target_texture(target), ' +

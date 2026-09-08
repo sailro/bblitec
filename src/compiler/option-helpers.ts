@@ -8,26 +8,12 @@
 // same rule instead of carrying its own copy.
 import ts from "typescript";
 import type { Value } from "./types.js";
-
-/**
- * The one-argument `Math` functions that fold at generation.
- *
- * All five are integer-valued, so the folded result and the emitted call
- * agree exactly. The transcendental ones are deliberately absent: V8 and a
- * native maths library need not agree on them, and a value folded here can
- * end up in generation-time state a native call could not reproduce.
- * `round` is JavaScript's own rule, which ties toward +Infinity where C
- * ties away from zero.
- */
-export const foldableMathUnary: Readonly<
-    Record<string, (value: number) => number>
-> = {
-    abs: Math.abs,
-    ceil: Math.ceil,
-    floor: Math.floor,
-    round: Math.round,
-    trunc: Math.trunc,
-};
+import {
+    MATH_CONSTANTS,
+    mathMemberAccess,
+    mathMemberCall,
+    mathUnaryFold,
+} from "./math-intrinsics.js";
 
 export interface ObjectValidationContext {
     propertyName(
@@ -412,40 +398,28 @@ export function staticNumberValue(
         const element = target.elements[index];
         return element ? staticNumberValue(context, element) : undefined;
     }
-    if (
-        ts.isPropertyAccessExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "Math" &&
-        context.isDefaultLibraryIdentifier(node.expression)
-    ) {
+    const constant = mathMemberAccess(node, (identifier) =>
+        context.isDefaultLibraryIdentifier(identifier),
+    );
+    if (constant) {
         // The constants `StaticEvaluator.compileNumber` folds when it emits
-        // one of these as text; a Math CALL is folded by the arm above.
-        if (node.name.text === "PI") return Math.PI;
-        if (node.name.text === "E") return Math.E;
-        if (node.name.text === "SQRT2") return Math.SQRT2;
-        if (node.name.text === "SQRT1_2") return Math.SQRT1_2;
-        return undefined;
+        // one of these as text; a Math CALL is folded by the arm below.
+        return MATH_CONSTANTS.get(constant.name.text)?.value;
     }
-    if (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Math" &&
-        context.isDefaultLibraryIdentifier(node.expression.expression)
-    ) {
-        if (node.arguments.length === 1) {
-            const fold = foldableMathUnary[node.expression.name.text];
+    const mathCall = mathMemberCall(node, (identifier) =>
+        context.isDefaultLibraryIdentifier(identifier),
+    );
+    if (mathCall) {
+        const { name, call } = mathCall;
+        if (call.arguments.length === 1) {
+            const fold = mathUnaryFold(name);
             if (fold) {
-                const argument = staticNumberValue(context, node.arguments[0]!);
+                const argument = staticNumberValue(context, call.arguments[0]!);
                 return argument === undefined ? undefined : fold(argument);
             }
         }
-        if (
-            (node.expression.name.text === "max" ||
-                node.expression.name.text === "min") &&
-            node.arguments.length >= 2
-        ) {
-            const values = node.arguments.map((argument) =>
+        if ((name === "max" || name === "min") && call.arguments.length >= 2) {
+            const values = call.arguments.map((argument) =>
                 staticNumberValue(context, argument),
             );
             if (
@@ -456,7 +430,7 @@ export function staticNumberValue(
                         !Object.is(value, -0),
                 )
             ) {
-                return Math[node.expression.name.text](...values);
+                return Math[name](...values);
             }
         }
         return undefined;

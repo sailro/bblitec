@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { DataType } from "../data-types.js";
+import { handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { handleFoundCpp } from "../properties.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -122,7 +122,7 @@ export function compileSkeletonIntrinsic(
             const skeleton =
                 context.allocateTemporaryCppName("skeleton");
             context.emit(
-                `const bbl::SceneSkeletonHandle ${skeleton} = ` +
+                `const ${handleCppType("scene-skeleton")} ${skeleton} = ` +
                     `bbl::create_scene_skeleton(${engineCpp}, ` +
                     `${joints}, ${weights}, ${boneCount}, ${boneData});`,
             );
@@ -215,7 +215,7 @@ export function compileSkeletonIntrinsic(
             const bone =
                 context.allocateTemporaryCppName("bone");
             context.emit(
-                `const bbl::BoneHandle ${bone} = ` +
+                `const ${handleCppType("bone")} ${bone} = ` +
                     `bbl::get_bone_by_name(` +
                     `${engine}, ` +
                     `${skeleton.cpp}, ${context.cppString(name)});`,

@@ -5,7 +5,7 @@
 import ts from "typescript";
 import { validateObjectProperties } from "../option-helpers.js";
 import type { Feature, Value, ValueKind } from "../types.js";
-import type { DataType } from "../data-types.js";
+import { handleCppType, type DataType } from "../data-types.js";
 import type { CapturedClosure, NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { compilePointerDragRegistration, pointerDispatcherCpp } from "../pointer-drag.js";
@@ -528,7 +528,7 @@ function compileCompositeDispose(
 function attachedNodeCpp(node: Value): string {
     return node.optionalFoundCpp === undefined
         ? node.cpp
-        : `(${node.optionalFoundCpp} ? ${node.cpp} : bbl::MeshHandle{})`;
+        : `(${node.optionalFoundCpp} ? ${node.cpp} : ${handleCppType("mesh")}{})`;
 }
 
 /** `attach<Widget>GizmoToNode(gizmo, node)`. */

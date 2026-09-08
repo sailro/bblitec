@@ -7,6 +7,7 @@
 // wrapper's wasm compiles — so unlike physics, nothing is substituted
 // and the answers are expected to match the browser reference.
 import ts from "typescript";
+import { handleCppType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -238,7 +239,7 @@ export function compileNavigationIntrinsic(
                 cpp:
                     `bbl::upstream::create_nav_mesh(${engine}, ` +
                     `${plugin.cpp}, ` +
-                    `std::vector<bbl::MeshHandle>{${meshes
+                    `std::vector<${handleCppType("mesh")}>{${meshes
                         .map((mesh) => mesh.cpp)
                         .join(", ")}}, ` +
                     `${parameters})`,

@@ -26,6 +26,11 @@ import {
 } from "./browser-file.js";
 import { isNumberParserCallee, isParseFloatCallee } from "./browser-erasure.js";
 import { hasNonNullAssertion } from "./syntax.js";
+import {
+    FORMATTED_MATH_FOLDS,
+    mathMemberAccess,
+    mathMemberCall,
+} from "./math-intrinsics.js";
 import type { ClassLowerer } from "./classes.js";
 import {
     compileCompressedJsonCall,
@@ -551,8 +556,9 @@ export class ExpressionLowerer {
                 return json;
             }
             if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "Math" &&
+                mathMemberAccess(unwrapped, (identifier) =>
+                    this.context.isDefaultLibraryIdentifier(identifier),
+                ) &&
                 (unwrapped.name.text === "PI" ||
                     unwrapped.name.text === "SQRT1_2")
             ) {
@@ -2037,37 +2043,23 @@ export class ExpressionLowerer {
             const resolved = this.generationTimeNumber(node);
             if (resolved !== undefined) return resolved;
         }
-        if (
-            !ts.isCallExpression(node) ||
-            !ts.isPropertyAccessExpression(node.expression) ||
-            !ts.isIdentifier(node.expression.expression) ||
-            node.expression.expression.text !== "Math"
-        ) {
+        const mathCall = mathMemberCall(node, (identifier) =>
+            this.context.isDefaultLibraryIdentifier(identifier),
+        );
+        const formatted = mathCall && FORMATTED_MATH_FOLDS.get(mathCall.name);
+        if (!mathCall || !formatted) {
             return undefined;
         }
-        const values = node.arguments.map((argument) =>
+        const values = mathCall.call.arguments.map((argument) =>
             this.generationTimeNumber(argument),
         );
-        if (values.some((value) => value === undefined)) {
-            return undefined;
-        }
-        const numbers = values as number[];
-        switch (node.expression.name.text) {
-            case "atan2":
-                return numbers.length === 2
-                    ? Math.atan2(numbers[0]!, numbers[1]!)
-                    : undefined;
-            case "cos":
-                return numbers.length === 1
-                    ? Math.cos(numbers[0]!)
-                    : undefined;
-            case "sin":
-                return numbers.length === 1
-                    ? Math.sin(numbers[0]!)
-                    : undefined;
-            default:
-                return undefined;
-        }
+        const numbers = values.filter(
+            (value): value is number => value !== undefined,
+        );
+        return numbers.length === values.length &&
+            numbers.length === formatted.arity
+            ? formatted.fold(...numbers)
+            : undefined;
     }
 
     private compileTemplate(

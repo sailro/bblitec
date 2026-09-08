@@ -1,11 +1,13 @@
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { pinnedHypotCall, pinnedMathSpelling } from "../lowering/pinned-operators.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
+import { staticNumberValue } from "./option-helpers.js";
 import {
-    foldableMathUnary,
-    staticNumberValue,
-} from "./option-helpers.js";
+    describeMathArity,
+    MATH_MEMBERS,
+    mathMemberAccess,
+    mathUnaryFold,
+} from "./math-intrinsics.js";
 import {
     DataTypeRegistry,
     dataTypesEqual,
@@ -38,25 +40,6 @@ import {
     rootExpression,
     rootIdentifier,
 } from "./syntax.js";
-
-/**
- * The one-argument `Math` members scene code may call, each a `<cmath>`
- * function of the same arity over doubles. The members the pinned-body
- * layer also accepts spell through the shared pinned table, so the
- * scene-code compiler and the pinned-body translator cannot disagree about
- * what a shared member lowers to; the compiler-only extras follow the same
- * `std::` rule and stay here because no pinned body reaches them. Members
- * with different semantics (`Math.round`'s tie rule, the seeded
- * `Math.random`) are dispatched separately below and say why.
- */
-const mathUnaryCalls: ReadonlyMap<string, string> = new Map([
-    ...(["abs", "ceil", "cos", "floor", "sin", "sqrt", "tan"] as const).map(
-        (name): [string, string] => [name, pinnedMathSpelling(name)],
-    ),
-    ["atan", "std::atan"],
-    ["exp", "std::exp"],
-    ["trunc", "std::trunc"],
-]);
 
 
 /**
@@ -3497,17 +3480,13 @@ export class DataLowerer {
     public compileMathCall(
         call: ts.CallExpression,
     ): Value | undefined {
-        const callee = this.context.unwrap(
-            call.expression,
+        // Resolved, not spelled: a scene's own binding named `Math` is not
+        // the library object, however the compiler came to know it.
+        const callee = mathMemberAccess(
+            this.context.unwrap(call.expression),
+            (identifier) => this.context.isDefaultLibraryIdentifier(identifier),
         );
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "Math" ||
-            this.context.lookupIdentifierValue(
-                callee.expression,
-            )
-        ) {
+        if (!callee) {
             return undefined;
         }
         const method = callee.name.text;
@@ -3519,12 +3498,12 @@ export class DataLowerer {
                 ),
             );
         // The integer-valued one-argument functions fold over a static
-        // argument: the result is exact in both engines, so the folded value
-        // and the emitted call agree, and a scene that hands one to
-        // generation-time state (a particle column) needs the value rather
-        // than the expression. The transcendental ones deliberately do NOT
-        // fold: V8 and a native maths library need not agree on them.
-        if (foldableMathUnary[method] && call.arguments.length === 1) {
+        // argument (the table says which): the result is exact in both
+        // engines, so the folded value and the emitted call agree, and a
+        // scene that hands one to generation-time state (a particle
+        // column) needs the value rather than the expression.
+        const fold = mathUnaryFold(method);
+        if (fold && call.arguments.length === 1) {
             // Folded from the SOURCE, never from a compiled value: this arm
             // runs before the runtime path compiles the argument, and
             // compiling it speculatively would emit an inlined body twice
@@ -3535,7 +3514,7 @@ export class DataLowerer {
                 call.arguments[0]!,
             );
             if (argument !== undefined) {
-                const folded = foldableMathUnary[method]!(argument);
+                const folded = fold(argument);
                 return {
                     kind: "number",
                     cpp: doubleLiteral(folded),
@@ -3544,76 +3523,23 @@ export class DataLowerer {
                 };
             }
         }
-        const unary = mathUnaryCalls.get(method);
-        if (unary) {
-            if (call.arguments.length !== 1) {
+        const member = MATH_MEMBERS.get(method);
+        if (member) {
+            const count = call.arguments.length;
+            if (member.variadic ? count < member.arity : count !== member.arity) {
                 this.context.fail(
                     call,
-                    `Math.${method} expects one argument.`,
+                    `Math.${method} expects ${describeMathArity(member)}.`,
                 );
             }
+            const cpp = member.cpp(numbers());
+            if (member.reach !== undefined) this.context.reachJsData();
+            if (member.reach === "js-random") this.context.reachJsRandom();
             return {
                 kind: "number",
-                cpp: `${unary}(${numbers()[0]})`,
+                cpp,
                 dataType: { kind: "number" },
-            };
-        }
-        if (method === "imul") {
-            if (call.arguments.length !== 2) {
-                this.context.fail(
-                    call,
-                    "Math.imul expects two arguments.",
-                );
-            }
-            const [left, right] = numbers();
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::math_imul(${left}, ${right})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "pow" || method === "atan2") {
-            if (call.arguments.length !== 2) {
-                this.context.fail(
-                    call,
-                    `Math.${method} expects two arguments.`,
-                );
-            }
-            const [left, right] = numbers();
-            // `pow` is a shared member, spelled through the pinned table;
-            // `atan2` is compiler-only (no pinned body reaches it) and
-            // follows the same std:: rule here.
-            const spelling = method === "pow"
-                ? pinnedMathSpelling(method)
-                : `std::${method}`;
-            return {
-                kind: "number",
-                cpp: `${spelling}(${left}, ${right})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "hypot") {
-            if (call.arguments.length < 2) {
-                this.context.fail(
-                    call,
-                    "Math.hypot expects at least two arguments.",
-                );
-            }
-            // Not `std::hypot`: it is two- or three-argument, so a
-            // quaternion length has no spelling there at all, and it
-            // rounds differently from JavaScript's besides. `hypot_js`
-            // is the whole-list root of the sum of squares every pinned
-            // lowering already reaches through
-            // `pinnedNumericMathCallsWithHypot`, and the one spelling
-            // `fidelity.md` records as `splat-hypot-approximation` --
-            // so scene code and pinned code agree on it rather than
-            // this one call site being the exception.
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: pinnedHypotCall(numbers()),
-                dataType: { kind: "number" },
+                ...(member.impure ? { impure: true } : {}),
             };
         }
         if (method === "max" || method === "min") {
@@ -3700,53 +3626,6 @@ export class DataLowerer {
                 kind: "number",
                 cpp,
                 dataType: { kind: "number" },
-            };
-        }
-        if (method === "round") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Math.round expects one argument.",
-                );
-            }
-            // Not `std::round`: JavaScript rounds a tie toward +Infinity
-            // and C rounds it away from zero, so the two disagree on every
-            // negative half. `round_js` carries the spec's own rule.
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::round_js(${numbers()[0]})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "sign") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Math.sign expects one argument.",
-                );
-            }
-            this.context.reachJsData();
-            return {
-                kind: "number",
-                cpp: `bbl::js::math_sign(${numbers()[0]})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "random") {
-            if (call.arguments.length !== 0) {
-                this.context.fail(
-                    call,
-                    "Math.random expects no arguments.",
-                );
-            }
-            this.context.reachJsData();
-            this.context.reachJsRandom();
-            return {
-                kind: "number",
-                cpp: "bbl::js::random_js()",
-                dataType: { kind: "number" },
-                impure: true,
             };
         }
         this.context.fail(

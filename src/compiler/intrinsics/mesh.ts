@@ -4,7 +4,7 @@ import ts from "typescript";
 
 import type { CompileAsset, Value } from "../types.js";
 import type { CompilerSymbols } from "../symbols.js";
-import type { DataTypeRegistry } from "../data-types.js";
+import { handleCppType, type DataTypeRegistry } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { AssignmentContext } from "../assignments.js";
 import {
@@ -1084,7 +1084,7 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::set_mesh_parent(` +
                     `${context.requireEngine(child, call)}, ${child.cpp}, ` +
-                    `${parent.kind === "json-null" ? "bbl::MeshHandle{}" : parent.cpp})`,
+                    `${parent.kind === "json-null" ? `${handleCppType("mesh")}{}` : parent.cpp})`,
             };
         }
 
@@ -1324,7 +1324,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:parenting", call);
             context.recordThinInstanceMesh(undefined);
             context.emit(
-                `const bbl::HierarchyInstancePoolHandle ${pool} = ` +
+                `const ${handleCppType("hierarchy-instance-pool")} ${pool} = ` +
                     `bbl::create_hierarchy_instance_pool(` +
                     `${engine}, ${root.cpp}, ${capacity});`,
             );

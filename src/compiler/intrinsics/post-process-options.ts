@@ -9,6 +9,7 @@
 // does not resolve statically is refused; one that does reaches the composer,
 // so an option the pin starts branching on needs no compiler change.
 import ts from "typescript";
+import { handleCppType } from "../data-types.js";
 import {
     COMPOSITE_PASS_SETTINGS,
     POST_PROCESS_PASS_SETTINGS,
@@ -115,7 +116,7 @@ export function compilePostProcessTaskOptions(
     );
 
     const cameraExpression = context.objectProperty(object, "camera");
-    let camera = "bbl::CameraHandle{}";
+    let camera = `${handleCppType("camera")}{}`;
     if (effect.usesCamera) {
         if (!cameraExpression) {
             context.fail(object, `${intrinsic} requires a camera.`);
@@ -219,7 +220,7 @@ export function compilePostProcessCompositeOptions(
         compileTextureReference(context, object, option, "color"),
     );
 
-    let camera = "bbl::CameraHandle{}";
+    let camera = `${handleCppType("camera")}{}`;
     if (composite.usesCamera) {
         const cameraExpression = context.objectProperty(object, "camera");
         if (!cameraExpression) {

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { DataTypeRegistry } from "../data-types.js";
+import { handleCppType, type DataTypeRegistry } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -177,7 +177,7 @@ export function compilePickingIntrinsic(
                     // the two that identify the sprite.
                     fields: {
                         system: {
-                            cpp: "bbl::BillboardSystemHandle{info.picked_index}",
+                            cpp: `${handleCppType("billboard-system")}{info.picked_index}`,
                             accepts: (type) =>
                                 type.kind === "handle" &&
                                 type.handle === "billboard-system",

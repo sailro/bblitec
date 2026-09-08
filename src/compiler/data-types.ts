@@ -122,6 +122,15 @@ export function isHandleKind(kind: string): kind is HandleKind {
   return Object.prototype.hasOwnProperty.call(handleCppTypes, kind);
 }
 
+/**
+ * The C++ type one handle kind is stored as — the same spelling
+ * `DataTypeRegistry.cppType` gives a `handle` data type, for an emitter
+ * that names a handle without a registry in hand.
+ */
+export function handleCppType(kind: HandleKind): string {
+  return handleCppTypes[kind];
+}
+
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
   DeviceLostRecoveryHandle: "device-recovery",

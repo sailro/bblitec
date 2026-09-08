@@ -20,6 +20,12 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { PINNED_ARITHMETIC_OPERATORS } from "../lowering/pinned-operators.js";
+import {
+    MATH_CONSTANTS,
+    MATH_MEMBERS,
+    mathMemberAccess,
+    mathMemberCall,
+} from "./math-intrinsics.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
@@ -704,52 +710,22 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "Math" &&
-            unwrapped.name.text === "PI"
-        ) {
+        // The constants a float sink has a single-precision spelling for
+        // are spelled that way; every other `Math` constant reads at
+        // double width through the property arm below.
+        const mathConstant = mathMemberAccess(unwrapped, this.isDefaultLibraryIdentifier);
+        const constant = mathConstant && MATH_CONSTANTS.get(mathConstant.name.text);
+        if (constant?.floatCpp !== undefined) {
             return precision === "float"
-                ? "bbl::pi"
-                : this.doubleLiteral(Math.PI);
+                ? constant.floatCpp
+                : this.doubleLiteral(constant.value);
         }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "Math" &&
-            unwrapped.name.text === "SQRT2"
-        ) {
-            return precision === "float"
-                ? "std::sqrt(2.0f)"
-                : this.doubleLiteral(Math.SQRT2);
-        }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "Math" &&
-            unwrapped.name.text === "SQRT1_2"
-        ) {
-            return precision === "float"
-                ? "std::sqrt(0.5f)"
-                : this.doubleLiteral(Math.SQRT1_2);
-        }
-        if (
-            ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(
-                unwrapped.expression,
-            ) &&
-            ts.isIdentifier(
-                unwrapped.expression.expression,
-            ) &&
-            unwrapped.expression.expression.text === "Math" &&
-            unwrapped.expression.name.text === "sqrt" &&
-            unwrapped.arguments.length === 1
-        ) {
-            const compiled = `std::sqrt(${this.compileNumber(
-                unwrapped.arguments[0]!,
-                "double",
-            )})`;
+        const mathCall = mathMemberCall(unwrapped, this.isDefaultLibraryIdentifier);
+        const sqrt = mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
+        if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
+            const compiled = sqrt.cpp([
+                this.compileNumber(mathCall.call.arguments[0]!, "double"),
+            ]);
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;
@@ -929,6 +905,14 @@ export class StaticEvaluator {
         ) {
             return false;
         }
+        const mathConstant = mathMemberAccess(
+            unwrapped,
+            this.isDefaultLibraryIdentifier,
+        );
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.isDefaultLibraryIdentifier,
+        );
         return (
             ts.isNumericLiteral(unwrapped) ||
             (ts.isIdentifier(unwrapped) &&
@@ -959,21 +943,10 @@ export class StaticEvaluator {
                     ts.SyntaxKind.BarBarToken,
                 ].includes(unwrapped.operatorToken.kind) &&
                 !this.isBooleanExpression(unwrapped)) ||
-            (ts.isPropertyAccessExpression(unwrapped) &&
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "Math" &&
-                (unwrapped.name.text === "PI" ||
-                    unwrapped.name.text === "SQRT1_2")) ||
-            (ts.isCallExpression(unwrapped) &&
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.text === "Math" &&
-                unwrapped.expression.name.text === "sqrt" &&
-                unwrapped.arguments.length === 1)
+            (mathConstant !== undefined &&
+                (mathConstant.name.text === "PI" ||
+                    mathConstant.name.text === "SQRT1_2")) ||
+            (mathCall?.name === "sqrt" && mathCall.call.arguments.length === 1)
         );
     }
 
