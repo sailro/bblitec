@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { packageHdrEnvironment, parseRgbe } from "../src/hdr-packager.js";
+import {
+    packageHdrEnvironment,
+    parseRgbe,
+    preScalePolynomial,
+} from "../src/hdr-packager.js";
 import {
     getHdrGgxPrefilterProvenance,
     prefilterCubemapGgx,
 } from "../src/hdr-prefilter-gpu.js";
-import {
-    UpstreamSourceStore,
-    readUpstreamPin,
-} from "../src/upstream-source.js";
+import { importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
+import { readUpstreamPin } from "../src/upstream-source.js";
 
 function smallHdr(): Uint8Array {
     const header = new TextEncoder().encode(
@@ -97,31 +99,34 @@ test("decodes valid HDR scanline RLE", () => {
     }
 });
 
-test("preScalePolynomial's constants are the pinned function's", () => {
-    // `polynomialToPreScaledHarmonics` is module-local upstream, so it cannot
-    // be imported the way the parser is; this anchors the ported constants to
-    // the pinned source instead, making a pin bump that moves one fail here
-    // rather than drift silently.
-    const source = new UpstreamSourceStore().getSource(
-        "src/loader-gltf/ibl-env-assembly.ts",
+test("preScalePolynomial is the pinned pre-scale repacked to Color3 slots", async () => {
+    // The pin executes `polynomialToPreScaledHarmonics` at stride four; the
+    // package stores nine Color3 slots at stride three. Every lane must be
+    // the pin's own store, moved and not recomputed.
+    const { polynomialToPreScaledHarmonics } =
+        await importPinnedModuleWithExports<{
+            polynomialToPreScaledHarmonics: (
+                polynomial: Float32Array,
+            ) => Float32Array;
+        }>("loader-gltf/ibl-env-assembly.js", [
+            "polynomialToPreScaledHarmonics",
+        ]);
+    const polynomial = Float32Array.from(
+        { length: 27 },
+        (_, lane) => Math.sin(lane + 1) * (lane % 2 === 0 ? 1 : -0.5),
     );
-    const body = source.match(
-        /polynomialToPreScaledHarmonics[\s\S]*?\n\}/,
-    )?.[0];
-    assert.ok(body, "the pinned prescale function was found");
-    for (const constant of [
-        "0.3333338747897695",
-        "0.33333298856284405",
-        "1.4999984284682104",
-        "3.999982863580422",
-        "1.3333326611423701",
-        "0.6666653397393608",
-        "1.999991431790211",
-    ]) {
-        assert.ok(
-            body.includes(constant),
-            `the pinned prescale carries ${constant}`,
-        );
+    const pinned = polynomialToPreScaledHarmonics(polynomial);
+    const repacked = preScalePolynomial(polynomial);
+    assert.equal(pinned.length, 36);
+    assert.equal(repacked.length, 27);
+    for (let slot = 0; slot < 9; slot += 1) {
+        for (let channel = 0; channel < 3; channel += 1) {
+            assert.equal(
+                repacked[slot * 3 + channel],
+                pinned[slot * 4 + channel],
+                `harmonic ${slot} channel ${channel}`,
+            );
+        }
     }
 });
 

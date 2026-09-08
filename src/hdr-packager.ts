@@ -1,5 +1,8 @@
 import { prefilterCubemapGgx } from "./hdr-prefilter-gpu.js";
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "./pinned-shader-composer.js";
 
 /**
  * The HDR package is the pin executed, not transcribed. RGBE parsing and the
@@ -28,6 +31,17 @@ const pinnedHdrParser = await importPinnedModule<{
 const pinnedSphericalHarmonics = await importPinnedModule<{
     shToPolynomial: (sh: Float64Array) => Float32Array;
 }>("math/spherical-harmonics.js");
+/**
+ * `polynomialToPreScaledHarmonics` is module-local to the pin, so it is
+ * reached by re-exporting it out of the pinned module's own text, the way
+ * the DDS packager reaches `computeSH`. The IBL assembly module carries the
+ * copy the glTF environment feature executes; the pin keeps it
+ * byte-for-byte against the `.env` loader's canonical, and the glTF
+ * lowering compares the two at generation.
+ */
+const pinnedIblAssembly = await importPinnedModuleWithExports<{
+    polynomialToPreScaledHarmonics: (polynomial: Float32Array) => Float32Array;
+}>("loader-gltf/ibl-env-assembly.js", ["polynomialToPreScaledHarmonics"]);
 
 export const parseRgbe = pinnedHdrParser.parseRGBE;
 /** The pin's own `shToPolynomial`, re-exported for the DDS packager. */
@@ -42,35 +56,28 @@ interface HdrImage {
 }
 
 /**
- * `polynomialToPreScaledHarmonics`, ported term for term from
- * `loader-gltf/ibl-env-assembly.ts`. The pinned function is module-local —
- * not exported — so it cannot be imported the way the parser above is; the
- * constants are anchored instead by a test that reads them out of the pinned
- * source, so a pin bump that moves one fails the suite rather than drifting.
+ * The pin's `polynomialToPreScaledHarmonics`, executed, then repacked.
+ *
+ * The pin lays its nine harmonics out at stride four -- the UBO layout the
+ * shader reads, one pad lane per harmonic -- and the package stores them
+ * as nine Color3 slots at stride three, which is the layout the native
+ * environment loader fills. The repack is this port's only step, and it
+ * moves lanes without touching a value, so the package carries the pin's
+ * own float32 stores.
  */
 export function preScalePolynomial(polynomial: Float32Array): Float32Array {
+    const scaled = pinnedIblAssembly.polynomialToPreScaledHarmonics(polynomial);
+    if (scaled.length !== 36) {
+        throw new Error(
+            "Pinned polynomialToPreScaledHarmonics no longer produces nine " +
+                `stride-four harmonics (got ${scaled.length} lanes).`,
+        );
+    }
     const result = new Float32Array(27);
-    for (let channel = 0; channel < 3; channel += 1) {
-        const x = polynomial[channel]!;
-        const y = polynomial[3 + channel]!;
-        const z = polynomial[6 + channel]!;
-        const xx = polynomial[9 + channel]!;
-        const yy = polynomial[12 + channel]!;
-        const zz = polynomial[15 + channel]!;
-        const yz = polynomial[18 + channel]!;
-        const zx = polynomial[21 + channel]!;
-        const xy = polynomial[24 + channel]!;
-        result[channel] =
-            (xx + yy) * 0.3333338747897695 + zz * 0.33333298856284405;
-        result[3 + channel] = y * 1.4999984284682104;
-        result[6 + channel] = z * 1.4999984284682104;
-        result[9 + channel] = x * 1.4999984284682104;
-        result[12 + channel] = xy * 3.999982863580422;
-        result[15 + channel] = yz * 3.999982863580422;
-        result[18 + channel] =
-            zz * 1.3333326611423701 - (xx + yy) * 0.6666653397393608;
-        result[21 + channel] = zx * 3.999982863580422;
-        result[24 + channel] = (xx - yy) * 1.999991431790211;
+    for (let slot = 0; slot < 9; slot += 1) {
+        for (let channel = 0; channel < 3; channel += 1) {
+            result[slot * 3 + channel] = scaled[slot * 4 + channel]!;
+        }
     }
     return result;
 }
