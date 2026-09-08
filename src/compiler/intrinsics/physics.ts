@@ -465,7 +465,9 @@ export function compilePhysicsIntrinsic(
         );
       }
       const mesh = context.compileValue(meshExpression);
-      context.expectKind(mesh, "mesh", meshExpression);
+      if (mesh.kind !== "mesh" && mesh.kind !== "transform-node") {
+        context.fail(meshExpression, "Physics geometry requires a mesh or transform node.");
+      }
       context.expectSameEngine(world, mesh, call);
       const includeChildren = context.objectProperty(
         options,
@@ -477,7 +479,7 @@ export function compilePhysicsIntrinsic(
         cpp:
           `bbl::upstream::create_physics_mesh_shape(` +
           `${world.cpp}, ` +
-          `bbl::upstream::PhysicsShapeType::${shapeType}, ${mesh.cpp}, ` +
+          `bbl::upstream::PhysicsShapeType::${shapeType}, bbl::upstream::physics_node(${mesh.cpp}), ` +
           `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
         ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
       };

@@ -480,7 +480,7 @@ test("the accumulator addresses and winds each triangle the pin's way", () => {
     assert.ok(offsetAt >= 0 && verticesAt > offsetAt);
     assert.match(
         body,
-        /indices\.push_back\(geometry\.indices\[i \+ 2\] \+ index_offset\);\n\s*indices\.push_back\(geometry\.indices\[i \+ 1\] \+ index_offset\);\n\s*indices\.push_back\(geometry\.indices\[i\] \+ index_offset\);/,
+        /indices\.push_back\(c\); indices\.push_back\(b\); indices\.push_back\(a\);/,
     );
 });
 

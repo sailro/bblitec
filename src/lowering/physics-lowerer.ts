@@ -53,6 +53,7 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { lowerPhysicsQueries } from "./physics-query-lowerer.js";
 import { lowerPhysicsContainer } from "./physics-container-lowerer.js";
+import { lowerPhysicsMesh } from "./physics-mesh-lowerer.js";
 import { lowerPhysicsViewer } from "./physics-viewer-lowerer.js";
 import { lowerPhysicsConstraints } from "./physics-constraint-lowerer.js";
 import { lowerPhysicsGravity } from "./physics-gravity-lowerer.js";
@@ -1813,6 +1814,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       hknp.HP_Body_Release(body._hkBody);
     `, "physics body removal and release order");
     const queries = includeQueries ? lowerPhysicsQueries(this.context) : undefined;
+    const mesh = lowerPhysicsMesh(this.context);
     const container = containerShapes ? lowerPhysicsContainer(this.context) : undefined;
     const viewer = includeViewer ? lowerPhysicsViewer(this.context) : undefined;
     const constraints = includeConstraints ? lowerPhysicsConstraints(this.context) : undefined;
@@ -2219,7 +2221,7 @@ void set_physics_timestep_ms(
 PhysicsShape create_physics_mesh_shape(
     PhysicsWorldHandle world,
     PhysicsShapeType type,
-    MeshHandle mesh,
+    PhysicsNodeRef mesh,
     bool include_child_meshes);
 [[nodiscard]] PhysicsShape create_physics_primitive_shape(
     PhysicsWorldHandle world,
@@ -2343,6 +2345,7 @@ ${viewer ? "#include <bblite/pal_physics_debug.hpp>" : ""}
 namespace bbl::upstream {
 namespace {
 
+${mesh.helpers}
 ${container?.helpers ?? ""}
 
 PhysicsWorld& physics_world_record(PhysicsWorldHandle handle) {
@@ -2379,90 +2382,6 @@ MeshBounds mesh_bounds(const Engine& engine, const MeshRecord& mesh) {
     MeshBounds bounds{true, geometry.bounds_min, geometry.bounds_max};
     apply_mesh_bound_overrides(mesh, bounds.minimum, bounds.maximum);
     return bounds;
-}
-
-/**
- * MeshAccumulator.addNodeMeshes for the reached runtime-created hierarchy.
- * The pin maps every vertex through rootScale * inverse(rootWorld) *
- * nodeWorld. For a node below this tagged mesh root, cancelling rootWorld
- * leaves rootScale followed by the child's local chain, which is what this
- * recursive form composes. Imported glTF hierarchy mutation remains outside
- * this slice; those vertices keep the loader's bake-to-world model.
- *
- * One accumulator serves both mesh arms, as the pin's one class does:
- * \`collect_indices\` is \`options.type === PhysicsShapeType.MESH\`, and a
- * convex hull needs the points alone.
- */
-void append_physics_mesh_geometry(
-    const Engine& engine,
-    MeshHandle mesh,
-    const std::array<float, 16>& mesh_to_body,
-    bool include_children,
-    bool collect_indices,
-    std::vector<std::array<double, 3>>& positions,
-    std::vector<std::uint32_t>& indices) {
-    if (mesh.value >= engine.meshes.size()) return;
-    const MeshRecord& record = engine.meshes[mesh.value];
-    if (record.geometry < engine.geometries.size()) {
-        const ModelGeometry& geometry = engine.geometries[record.geometry];
-        // \`const indexOffset = this._vertices.length / 3\`, read BEFORE
-        // this node's own vertices join them.
-        const std::uint32_t index_offset =
-            static_cast<std::uint32_t>(positions.size());
-        positions.reserve(positions.size() + geometry.vertices.size());
-        for (const ModelVertex& vertex : geometry.vertices) {
-            const Vec3& position = record.detached_imported_mesh ? vertex.local_position : vertex.position;
-            const double x = position.x;
-            const double y = position.y;
-            const double z = position.z;
-            positions.push_back({
-                mesh_to_body[0] * x + mesh_to_body[4] * y +
-                    mesh_to_body[8] * z + mesh_to_body[12],
-                mesh_to_body[1] * x + mesh_to_body[5] * y +
-                    mesh_to_body[9] * z + mesh_to_body[13],
-                mesh_to_body[2] * x + mesh_to_body[6] * y +
-                    mesh_to_body[10] * z + mesh_to_body[14],
-            });
-        }
-        if (collect_indices && !geometry.indices.empty()) {
-            // The pin reads \`node._cpuIndices\` as triangles. A geometry
-            // whose index list means anything else -- a line list, a strip
-            // -- would build a soup of unrelated triangles, so it refuses.
-            if (geometry.topology != MeshTopology::triangles) {
-                throw std::runtime_error(
-                    "A physics mesh shape over a non-triangle mesh "
-                    "topology is not lowered by this prototype.");
-            }
-            indices.reserve(indices.size() + geometry.indices.size());
-            for (std::size_t i = 0; i + 2 < geometry.indices.size();
-                 i += 3) {
-                // \`this._indices.push(c, b, a)\`: the pin reverses each
-                // triangle because Lite scenes carry Babylon's
-                // left-handed winding and Havok's mesh shape optimizes
-                // its interior from the other one. It is carried rather
-                // than dropped -- it is the pin's own data -- but nothing
-                // downstream reads it today: Bullet's triangle ray test
-                // and its convex-versus-triangle contact are both
-                // double-sided unless a backface-culling flag is set,
-                // and none is.
-                indices.push_back(geometry.indices[i + 2] + index_offset);
-                indices.push_back(geometry.indices[i + 1] + index_offset);
-                indices.push_back(geometry.indices[i] + index_offset);
-            }
-        }
-    }
-    if (!include_children) return;
-    for (const MeshHandle child : record.children) {
-        if (child.value >= engine.meshes.size()) continue;
-        const std::array<float, 16> local =
-            mesh_local_matrix(engine.meshes[child.value]);
-        std::array<float, 16> child_to_body{};
-        mat4_multiply_into(
-            child_to_body, 0, mesh_to_body, 0, local, 0);
-        append_physics_mesh_geometry(
-            engine, child, child_to_body, true, collect_indices,
-            positions, indices);
-    }
 }
 
 // ${this.context.provenance(
@@ -2963,50 +2882,7 @@ void set_physics_timestep_ms(
     physics_world_record(handle).fixed_delta_ms = fixed_delta_ms;
 }
 
-PhysicsShape create_physics_mesh_shape(
-    PhysicsWorldHandle handle,
-    PhysicsShapeType type,
-    MeshHandle mesh,
-    bool include_child_meshes) {
-    // \`createPhysicsShape\`'s CONVEX_HULL and MESH arms share one
-    // accumulator and one throw list; what separates them is whether it
-    // collects the triangles as well as the points, and which back-end
-    // factory the result goes to.
-    const bool collect_indices = type == PhysicsShapeType::MESH;
-    PhysicsWorld& world = physics_world_record(handle);
-    Engine& engine = *world.engine;
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error(
-            "Physics mesh shapes require a live mesh hierarchy.");
-    }
-    const MeshRecord& root = engine.meshes[mesh.value];
-    const std::array<float, 16> root_scale{
-        root.scaling.x, 0.0f, 0.0f, 0.0f,
-        0.0f, root.scaling.y, 0.0f, 0.0f,
-        0.0f, 0.0f, root.scaling.z, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    std::vector<std::array<double, 3>> positions;
-    std::vector<std::uint32_t> indices;
-    append_physics_mesh_geometry(
-        engine, mesh, root_scale, include_child_meshes, collect_indices,
-        positions, indices);
-    if (positions.empty()) {
-        throw std::runtime_error(
-            "Cannot create physics mesh shape without vertex positions.");
-    }
-    if (collect_indices) {
-        if (indices.empty()) {
-            throw std::runtime_error(
-                "Cannot create physics mesh shape without triangle indices.");
-        }
-        return PhysicsShape{
-            pal::physics_shape_create_mesh(positions, indices)};
-    }
-    return PhysicsShape{
-        pal::physics_shape_create_convex_hull(positions)};
-}
-
+${mesh.source}
 ${container?.source ?? ""}PhysicsShape create_physics_primitive_shape(
     PhysicsWorldHandle handle,
     PhysicsShapeType type,
