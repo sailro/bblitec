@@ -33,6 +33,12 @@ import {
     importPinnedModuleWithExports,
 } from "./pinned-shader-composer.js";
 import { LoweringContext } from "./lowering/context.js";
+import {
+    createRecordingDevice,
+    writtenFloats,
+    type DescriptorShapes,
+    type Recorder,
+} from "./recording-device.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 
 /** One vertex input the composed module declares, at its own location. */
@@ -425,25 +431,18 @@ interface PinnedNodeParserModule {
     findBlockByClassName: (graph: unknown, className: string) => unknown;
 }
 
-/** The queue writes a recording device hands back to its caller. */
-interface RecordedBufferWrite {
-    offset: number;
-    data: Float32Array;
-}
-
-/** A recording device, plus the writes the pin asked it to make. */
+/** A recording device, plus the engine the pinned compiler is handed. */
 interface CompositionEngine {
     engine: unknown;
-    writes: RecordedBufferWrite[];
+    recorder: Recorder<DescriptorShapes>;
 }
 
 /**
  * A device that records instead of allocating.
  *
  * `compileNodePipeline` assembles the whole module before it touches one, and
- * the first four entry points below are every device call on that path. A
- * descriptor is returned as itself so a caller that wanted to read one still
- * can; nothing in this port does.
+ * the first four device calls below are every call on that path; nothing in
+ * this port reads the handles back.
  *
  * The buffer pair beside them is for the geometry view's uniform block:
  * `ensureGeometryNodeUBO` scatters the graph's values into a scratch array and
@@ -452,30 +451,21 @@ interface CompositionEngine {
  * the colour or caster paths reaches either.
  */
 function compositionEngine(): CompositionEngine {
-    const record = (kind: string) => (descriptor: unknown) => ({
-        kind,
-        descriptor,
+    const { device, recorder } = createRecordingDevice({
+        producer: "node-material",
+        device: [
+            "createShaderModule",
+            "createBindGroupLayout",
+            "createPipelineLayout",
+            "createRenderPipeline",
+            "createBuffer",
+        ],
+        queue: ["writeBuffer"],
     });
-    const writes: RecordedBufferWrite[] = [];
     return {
-        writes,
+        recorder,
         engine: {
-            _device: {
-                createShaderModule: record("shaderModule"),
-                createBindGroupLayout: record("bindGroupLayout"),
-                createPipelineLayout: record("pipelineLayout"),
-                createRenderPipeline: record("renderPipeline"),
-                createBuffer: record("buffer"),
-                queue: {
-                    writeBuffer: (
-                        _buffer: unknown,
-                        offset: number,
-                        data: Float32Array,
-                    ): void => {
-                        writes.push({ offset, data });
-                    },
-                },
-            },
+            _device: device,
             // The two the pipeline descriptor reads. The format decides
             // nothing in the text; the sample count reaches the descriptor
             // alone.
@@ -902,20 +892,20 @@ async function composeNodeGeometryViews(
         // offsets THIS compile's layout gave them -- which are not the colour
         // view's. Running it against the recording device is what makes the
         // block the pin's bytes.
-        device.writes.length = 0;
+        const writesBefore = device.recorder.bufferWrites.length;
         renderable.ensureGeometryNodeUBO(
             resources,
             compile,
             device.engine,
             material,
         );
-        const written = device.writes;
+        const written = device.recorder.bufferWrites.slice(writesBefore);
         const expected = compile._nodeUboSize > 0 ? 1 : 0;
         if (
             written.length !== expected ||
             (written[0] !== undefined &&
                 (written[0].offset !== 0 ||
-                    written[0].data.length * 4 !== compile._nodeUboSize))
+                    written[0].bytes.byteLength !== compile._nodeUboSize))
         ) {
             throw new Error(
                 `The pinned node geometry uniform block for '${viewLabel}' ` +
@@ -923,7 +913,7 @@ async function composeNodeGeometryViews(
                     "what this port reads it back as.",
             );
         }
-        const uboFloats = [...(written[0]?.data ?? [])];
+        const uboFloats = written[0] ? writtenFloats(written[0]) : [];
         composed.push({
             taskIndex: task.index,
             wgsl: compile._wgsl,

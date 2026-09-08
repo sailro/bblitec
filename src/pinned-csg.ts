@@ -38,6 +38,7 @@
  */
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
+import { createRecordingDevice } from "./recording-device.js";
 import {
     cppArrayDeclaration,
     float32Literal,
@@ -183,29 +184,25 @@ const pinnedMeshFactories = await importPinnedModule<
 >("mesh/mesh-factories.js");
 
 /**
- * A device that answers the one call the mesh upload makes.
+ * An engine that answers the one call the mesh upload makes.
  *
  * `createMeshFromData` uploads through `createMappedBuffer`, which creates
  * a mapped buffer, copies into its range and unmaps it. None of that
  * reaches the bake — what does is the CPU geometry the same function
- * retains — so the range is a plain `ArrayBuffer` and the rest is inert.
+ * retains — so the device records and nothing reads the recording.
+ *
+ * The CSG2 bake serializes this function into its Chromium page with
+ * `toString()`, beside a served copy of the recorder module: the body may
+ * reference nothing but `createRecordingDevice`, which the page imports
+ * under that name.
  */
 export function recordingCsgEngine(): unknown {
     return {
-        _device: {
-            createBuffer({ size }: { size: number }) {
-                let range: ArrayBuffer = new ArrayBuffer(size);
-                return {
-                    size,
-                    getMappedRange: () => range,
-                    unmap() {
-                        range = new ArrayBuffer(0);
-                    },
-                    destroy() {},
-                };
-            },
-            queue: { writeBuffer() {} },
-        },
+        _device: createRecordingDevice({
+            producer: "csg",
+            device: ["createBuffer"],
+            queue: ["writeBuffer"],
+        }).device,
         _renderingContexts: [],
     };
 }

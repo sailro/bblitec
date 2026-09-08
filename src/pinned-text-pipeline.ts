@@ -1,5 +1,6 @@
 /** Records the actual pin's text GPU descriptors without a device or shader transcription. */
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import { createRecordingDevice } from "./recording-device.js";
 import type { ShaderStageConstant } from "./shader-ir.js";
 
 interface TextShaderStage {
@@ -74,19 +75,20 @@ export async function composeTextPipeline(options: TextPipelineOptions): Promise
     const { setAlphaToCoverage } = await importPinnedModule<{
         setAlphaToCoverage(owner: object, enabled: boolean): void;
     }>("render/alpha-to-coverage.js");
-    const buffers: ArrayBuffer[] = [];
-    const device = {
-        createBindGroupLayout: (descriptor: TextBindingLayout) => descriptor,
-        createPipelineLayout: (descriptor: TextPipelineDescriptor["layout"]) => descriptor,
-        createShaderModule: (descriptor: { code: string }) => descriptor,
-        createRenderPipeline: (descriptor: TextPipelineDescriptor) => descriptor,
-        createBuffer: (descriptor: { size: number; mappedAtCreation: boolean }) => {
-            if (!descriptor.mappedAtCreation) throw new Error("Pinned text quad is no longer mapped at creation.");
-            const bytes = new ArrayBuffer(descriptor.size);
-            buffers.push(bytes);
-            return { getMappedRange: () => bytes, unmap: () => {} };
-        },
-    };
+    // Every handle is its descriptor: the pipeline the pin stores is read
+    // back below as the descriptor it was built from, module code and layout
+    // entries included.
+    const { device, recorder } = createRecordingDevice<{
+        sampler: object;
+        shaderModule: TextShaderStage["module"];
+        bindGroupLayout: TextBindingLayout;
+        pipelineLayout: TextPipelineDescriptor["layout"];
+        renderPipeline: TextPipelineDescriptor;
+        bindGroup: object;
+    }>({
+        producer: "text-pipeline",
+        device: ["createBindGroupLayout", "createPipelineLayout", "createShaderModule", "createRenderPipeline", "createBuffer"],
+    });
     const engine = { _device: device };
     const owner = {};
     setAlphaToCoverage(owner, options.alphaToCoverage);
@@ -102,13 +104,15 @@ export async function composeTextPipeline(options: TextPipelineOptions): Promise
         }
         const result = module.getOrCreateTextPipeline(engine, options.format, options.sampleCount,
             options.depthStencilFormat, options.depthWrite, owner);
-        if ((!options.weighted && result._pipeline !== result._variantPipeline) || buffers.length !== 1) {
+        const quad = recorder.buffers[0];
+        if ((!options.weighted && result._pipeline !== result._variantPipeline) || recorder.buffers.length !== 1 || !quad) {
             throw new Error("Pinned base text pipeline requires one quad buffer and no installed style variant.");
         }
+        if (!quad.mappedAtCreation) throw new Error("Pinned text quad is no longer mapped at creation.");
         const descriptor = options.weighted ? result._variantPipeline : result._pipeline;
         return {
             descriptor,
-            quadCorners: Array.from(new Float32Array(buffers[0]!)),
+            quadCorners: Array.from(new Float32Array(quad.bytes)),
             vertexConstants: stageConstants(descriptor.vertex),
             fragmentConstants: stageConstants(descriptor.fragment),
             ...(options.weighted ? { weighted: true as const } : {}),

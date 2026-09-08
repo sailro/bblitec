@@ -5,6 +5,7 @@ import {cachedBakeSync, moduleClosureBytes, moduleIdentity} from "./bake-cache.j
 import {LoweringContext} from "./lowering/context.js";
 import {readAssetBytesSync} from "./compiler/asset-bytes-sync.js";
 import {runGenerationChild} from "./compiler/generation-child.js";
+import {createRecordingDevice, RecordedBuffer, RecordedTexture, type RecordedTextureView} from "./recording-device.js";
 
 export type LocalCubemapJson = number | string | boolean | null | LocalCubemapJson[] | {[key: string]: LocalCubemapJson};
 export interface LocalCubemapPlan {
@@ -14,42 +15,6 @@ export interface LocalCubemapPlan {
     environments: string[];
     options: {[key: string]: LocalCubemapJson};
     debug?: boolean;
-}
-interface TextureDescriptor {
-    size: readonly number[];
-    mipLevelCount?: number;
-    format: string;
-    usage: number;
-}
-class RecordedTexture {
-    readonly width: number;
-    readonly height: number;
-    readonly depthOrArrayLayers: number;
-    readonly mipLevelCount: number;
-    readonly format: string;
-    readonly usage: number;
-    constructor(descriptor: TextureDescriptor, readonly source = -1) {
-        this.width = descriptor.size[0]!;
-        this.height = descriptor.size[1]!;
-        this.depthOrArrayLayers = descriptor.size[2] ?? 1;
-        this.mipLevelCount = descriptor.mipLevelCount ?? 1;
-        this.format = descriptor.format;
-        this.usage = descriptor.usage;
-    }
-    createView(descriptor: {dimension?: string} = {}) { return {texture: this, descriptor}; }
-    destroy() {}
-}
-class RecordedBuffer {
-    readonly bytes: ArrayBuffer;
-    constructor(size: number) { this.bytes = new ArrayBuffer(size); }
-    getMappedRange() { return this.bytes; }
-    unmap() {}
-    destroy() {}
-}
-interface TextureCopy {
-    texture: RecordedTexture;
-    mipLevel: number;
-    origin: readonly number[];
 }
 export interface LocalCubemapPacket {
     overridesEnvironment: boolean;
@@ -63,7 +28,7 @@ export interface LocalCubemapPacket {
 }
 interface RecordedEnvironment {
     specularCube: RecordedTexture;
-    specularCubeView: ReturnType<RecordedTexture["createView"]>;
+    specularCubeView: RecordedTextureView;
     cubeSampler: object;
     sphericalHarmonics: Float32Array;
     lodGenerationScale: number;
@@ -109,27 +74,14 @@ export async function applyPinnedLocalCubemap(material: object, maxCandidates: n
 }
 
 export async function packLocalCubemap(plan: LocalCubemapPlan): Promise<LocalCubemapPacket> {
-    const copies: LocalCubemapPacket["copies"] = [];
-    const device = {
-        limits: {maxTextureArrayLayers: 2048, maxUniformBufferBindingSize: 65536,
-            maxStorageBufferBindingSize: 128 * 1024 * 1024, maxBufferSize: 256 * 1024 * 1024},
-        createBuffer: (descriptor: {size: number}) => new RecordedBuffer(descriptor.size),
-        createSampler: (descriptor: object) => ({...descriptor}),
-        createTexture: (descriptor: TextureDescriptor) => new RecordedTexture(descriptor),
-        createCommandEncoder: () => ({
-            copyTextureToTexture: (source: TextureCopy, destination: TextureCopy, size: readonly number[]) => {
-                copies.push({source: source.texture.source, sourceMip: source.mipLevel,
-                    sourceLayer: source.origin[2]!, mip: destination.mipLevel, layer: destination.origin[2]!, size: size[0]!});
-            },
-            finish: () => ({}),
-        }),
-        queue: {
-            submit: (_commands: object[]) => {},
-            writeBuffer: (buffer: RecordedBuffer, offset: number, data: ArrayBuffer, start = 0, size = data.byteLength - start) => {
-                new Uint8Array(buffer.bytes, offset, size).set(new Uint8Array(data, start, size));
-            },
-        },
-    };
+    const {device, recorder} = createRecordingDevice({
+        producer: "local-cubemap",
+        device: ["createBuffer", "createSampler", "createTexture", "createCommandEncoder"],
+        queue: ["submit", "writeBuffer"],
+        encoder: ["copyTextureToTexture", "finish"],
+        deviceFields: {limits: {maxTextureArrayLayers: 2048, maxUniformBufferBindingSize: 65536,
+            maxStorageBufferBindingSize: 128 * 1024 * 1024, maxBufferSize: 256 * 1024 * 1024}},
+    });
     const engine = {_device: device};
     const pin = await importPinnedModule<LocalCubemapModule>("material/pbr/enable-pbr-local-cubemap.js");
     await pin.enablePbrLocalCubemap({maxCandidates: plan.maxCandidates});
@@ -145,11 +97,16 @@ export async function packLocalCubemap(plan: LocalCubemapPlan): Promise<LocalCub
     const lod = context.callExpression(loader.declaration, "assembleEnvironmentTextures").arguments[3];
     if (!lod) throw new Error("Pinned .env loader has no LOD-generation scale.");
     const lodGenerationScale = context.numericValue(lod, loader.file);
+    // Each environment's cube is a texture of this port's making, keyed to the
+    // plan index a copy out of it names; a copy out of any other texture
+    // names no environment.
+    const environmentIndices = new Map<RecordedTexture, number>();
     const environments = plan.environments.map((source, index) => {
         const bytes = readAssetBytesSync(source, plan.entryFileName);
         const parsed = parser.parseEnvFile(Uint8Array.from(bytes).buffer);
         const texture = new RecordedTexture({size: [parsed.width, parsed.width, 6], mipLevelCount: parsed.mipCount,
-            format: "rgba16float", usage: flags.TU.TEXTURE_BINDING | flags.TU.COPY_SRC}, index);
+            format: "rgba16float", usage: flags.TU.TEXTURE_BINDING | flags.TU.COPY_SRC});
+        environmentIndices.set(texture, index);
         return assembler.assembleEnvironmentTextures(texture, texture, parsed.irradianceSH, lodGenerationScale, engine);
     });
     if (environments.length === 0) throw new Error("Local cubemap has no environment.");
@@ -185,6 +142,9 @@ export async function packLocalCubemap(plan: LocalCubemapPlan): Promise<LocalCub
         return Array.from(new Uint32Array(resource.buffer.bytes));
     };
     const texture = set?._texture ?? environments[0]!.specularCube;
+    const copies: LocalCubemapPacket["copies"] = recorder.textureCopies.map(copy => ({
+        source: environmentIndices.get(copy.source.texture) ?? -1, sourceMip: copy.source.mipLevel,
+        sourceLayer: copy.source.origin.z, mip: copy.destination.mipLevel, layer: copy.destination.origin.z, size: copy.size.width}));
     if (!set) for (let mip = 0; mip < texture.mipLevelCount; mip++) for (let layer = 0; layer < 6; layer++)
         copies.push({source: 0, sourceMip: mip, sourceLayer: layer, mip, layer, size: Math.max(1, texture.width >> mip)});
     return {overridesEnvironment: plan.kind !== "probes", uniform: buffer(0), grid: buffer(1), width: texture.width, mipCount: texture.mipLevelCount,

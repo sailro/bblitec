@@ -30,6 +30,7 @@ import {
     importPinnedModuleObserving,
     importPinnedModuleWithExports,
 } from "./pinned-shader-composer.js";
+import { createRecordingDevice } from "./recording-device.js";
 
 export interface PostProcessCompositionRequest {
     /** The Babylon Lite entry point the pass was created through. */
@@ -649,32 +650,27 @@ function resolveCompositeTexture(
  * Composition runs the graph rather than reading a half-built one, because
  * a composite is allowed to settle its targets there — so the device has to
  * survive `createPostProcessGpuState`, not just `getShaderModule`. Only the
- * shader module's code is ever read back; the rest are opaque handles whose
+ * shader module's code is ever read back; the rest are handles whose
  * identity is all the pin does with them. Anything the pin started calling
- * beyond this list is a `TypeError` rather than a quietly different
- * composition, which is the property that makes the stub safe.
+ * beyond this list refuses rather than composing quietly differently, which
+ * is the property that makes the recording safe.
  */
-function compositionEngine() {
-    const handle = (): unknown => ({});
-    return {
-        scRT: null as PinnedRenderTarget | null,
-        _device: {
-            createShaderModule: (descriptor: { code: string }) => ({
-                code: descriptor.code,
-            }),
-            createTexture: () => ({
-                createView: handle,
-                destroy: () => {},
-            }),
-            createBuffer: () => ({ destroy: () => {} }),
-            createSampler: handle,
-            createBindGroupLayout: handle,
-            createPipelineLayout: handle,
-            createRenderPipeline: handle,
-            createBindGroup: handle,
-            queue: { writeBuffer: () => {} },
-        },
-    };
+function compositionEngine(): { scRT: PinnedRenderTarget | null; _device: unknown } {
+    const { device } = createRecordingDevice({
+        producer: "post-process",
+        device: [
+            "createShaderModule",
+            "createTexture",
+            "createBuffer",
+            "createSampler",
+            "createBindGroupLayout",
+            "createPipelineLayout",
+            "createRenderPipeline",
+            "createBindGroup",
+        ],
+        queue: ["writeBuffer"],
+    });
+    return { scRT: null, _device: device };
 }
 
 /**
