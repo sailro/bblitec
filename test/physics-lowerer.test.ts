@@ -203,20 +203,15 @@ test("the mass-properties setter overrides only the terms it is given", () => {
     const body = emittedBody("void set_physics_body_mass_properties(");
     assert.match(
         body,
-        /pal::physics_shape_build_mass_properties\(\n *live\.shape\.handle, overrides\.mass\)/,
+        /pal::physics_shape_build_mass_properties\(\n *live\.shape\.handle, mass\)/,
     );
-    assert.match(body, /properties\.mass = overrides\.mass;/);
+    assert.match(body, /const double mass = overrides\.mass \? \*overrides\.mass : pal::physics_shape_default_mass\(live\.shape\.handle\);/);
+    assert.match(body, /properties\.mass = mass;/);
     assert.match(
         body,
         /if \(overrides\.center_of_mass\) \{[\s\S]*?properties\.center_of_mass = \{center\.x, center\.y, center\.z\};/,
     );
-    // `inertia` and `inertiaOrientation` have no lane: Havok's inertia term
-    // is per unit mass and the PAL's is the absolute tensor, so the
-    // intrinsic refuses them rather than converting without an observer.
-    assert.match(
-        lowered.header,
-        /struct PhysicsMassPropertyOverrides \{\n    js::Nullable<Vec3d> center_of_mass\{\};\n    double mass = 0\.0;\n\};/,
-    );
+    assert.match(body, /if \(overrides\.inertia\)/);
 });
 
 test("shape parameters are translated from _buildShapeParams", () => {

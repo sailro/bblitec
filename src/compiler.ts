@@ -3581,7 +3581,7 @@ class Compiler
         const mutablePlainObject =
             ts.isIdentifier(declaration.name) &&
             inferredPlainObject &&
-            (ts.isObjectLiteralExpression(initializer)
+            (ts.isObjectLiteralExpression(initializer) || ts.isConditionalExpression(initializer)
                 ? this.inferredObjectIsMutated(declaration.name)
                 : this.identifierIsRebound(declaration.name));
         const inferredMutableObject = !declaration.type && mutablePlainObject;

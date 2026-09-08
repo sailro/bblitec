@@ -1063,7 +1063,7 @@ export async function composeScenePipeline({
                 sceneMeshFeatureValues: [
                     ...new Set(
                         expandRuntimeMeshFeatureSets(
-                            standardSceneMeshFeatures,
+                            renderableMeshFeatures,
                             dynamicReceiverBits,
                         ),
                     ),

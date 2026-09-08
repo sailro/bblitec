@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
+import { cppCondition } from "../cpp-expressions.js";
 import type { LoweringContext } from "./context.js";
 import { PINNED_ASSIGNMENT_OPERATORS, PINNED_BOOLEAN_OPERATORS, pinnedNumericMathCalls } from "./pinned-operators.js";
 
@@ -113,8 +114,8 @@ export class PinnedReferenceLowerer {
         if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.map(declaration => `${indent}${this.declaration(declaration)};`).join("\n");
         if (ts.isExpressionStatement(statement)) return `${indent}${this.expression(statement.expression).cpp};`;
         if (ts.isReturnStatement(statement)) return `${indent}return${statement.expression ? ` ${this.expression(statement.expression, this.schema.returnType).cpp}` : ""};`;
-        if (ts.isIfStatement(statement)) return `${indent}if (${this.expression(statement.expression).cpp}) {\n${this.branch(statement.thenStatement, indent + "    ")}\n${indent}}${statement.elseStatement ? ` else {\n${this.branch(statement.elseStatement, indent + "    ")}\n${indent}}` : ""}`;
-        if (ts.isWhileStatement(statement)) return `${indent}while (${this.expression(statement.expression).cpp}) {\n${this.branch(statement.statement, indent + "    ")}\n${indent}}`;
+        if (ts.isIfStatement(statement)) return `${indent}if (${cppCondition(this.expression(statement.expression).cpp)}) {\n${this.branch(statement.thenStatement, indent + "    ")}\n${indent}}${statement.elseStatement ? ` else {\n${this.branch(statement.elseStatement, indent + "    ")}\n${indent}}` : ""}`;
+        if (ts.isWhileStatement(statement)) return `${indent}while (${cppCondition(this.expression(statement.expression).cpp)}) {\n${this.branch(statement.statement, indent + "    ")}\n${indent}}`;
         if (ts.isForOfStatement(statement)) return this.scoped(() => {
             if (statement.awaitModifier || !ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1 ||
                 !ts.isIdentifier(statement.initializer.declarations[0]!.name)) return this.context.contractError(statement, "Pinned for-of loop requires one ordinary binding.");
@@ -270,7 +271,7 @@ export class PinnedReferenceLowerer {
                 if (callback.parameters.length !== 1 || !parameter || !ts.isIdentifier(parameter.name) || ts.isBlock(callback.body)) return this.context.contractError(callback, "Pinned array predicate requires one named argument and expression.");
                 const item = `predicate_${this.temporary++}`, array = `values_${this.temporary++}`, index = `index_${this.temporary++}`;
                 this.schema.bindings.set(parameter.name.text, { cpp: item, type: owner.type.slice(0, -2) });
-                const predicate = this.expression(callback.body).cpp;
+                const predicate = cppCondition(this.expression(callback.body).cpp);
                 const output = method === "filter" ? "filtered" : "found";
                 const initial = method === "filter" ? `${this.storage(owner.type)} filtered;` : "double found = -1;";
                 const accept = method === "filter" ? `filtered.push_back(${item});` : `found = static_cast<double>(${index}); break;`;
