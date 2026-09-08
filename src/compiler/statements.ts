@@ -272,7 +272,7 @@ export interface StatementLoweringContext {
     ): void;
     increaseIndent(): void;
     decreaseIndent(): void;
-    pushScope(cppPrefix: string): void;
+    pushScope(cppPrefix: string, propagateRebindings?: boolean): void;
     popScope(): void;
     allocateBlockPrefix(): string;
     fail(node: ts.Node, message: string): never;
@@ -1285,11 +1285,13 @@ export class StatementLowerer {
                 this.emitScopedBody(
                     context,
                     statement.thenStatement,
+                    true,
                 );
             } else if (statement.elseStatement) {
                 this.emitScopedBody(
                     context,
                     statement.elseStatement,
+                    true,
                 );
             }
             if (selected && terminatesFlow(selected)) {
@@ -3205,10 +3207,12 @@ export class StatementLowerer {
     private emitScopedBody(
         context: StatementLoweringContext,
         statement: ts.Statement,
+        propagateRebindings = false,
     ): void {
         context.increaseIndent();
         context.pushScope(
             context.allocateBlockPrefix(),
+            propagateRebindings,
         );
         try {
             const statements = ts.isBlock(statement)

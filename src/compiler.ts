@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
@@ -764,6 +765,7 @@ class Compiler
     public throwReached = false;
     private readonly staticConstants = new Map<ts.Symbol, ts.Expression>();
     private readonly sourceCppNames = new Set<string>();
+    private readonly transparentRebindingScopes = new WeakSet<Map<ts.Symbol, VariableBinding>>();
     public readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>> = [
         new Map(),
     ];
@@ -2475,6 +2477,7 @@ class Compiler
                 this.checker.getTypeAtLocation(declaration.name),
                 declaration.name,
             );
+            dataType ??= inferUninitializedHandle(declaration, this.checker, this.dataTypes);
             if (
                 !dataType &&
                 declaration.type?.kind === ts.SyntaxKind.UnknownKeyword
@@ -18039,7 +18042,10 @@ class Compiler
             ...binding,
             value: destination,
         };
-        if (owner === innermost) {
+        // Selected static branches run in the surrounding execution path.
+        // A callback, runtime branch or loop still separates handle metadata.
+        if (owner === innermost || this.variableScopes.slice(this.variableScopes.indexOf(owner) + 1)
+            .every(scope => this.transparentRebindingScopes.has(scope))) {
             owner.set(symbol, rebound);
             return;
         }
@@ -19225,8 +19231,10 @@ class Compiler
      */
     private escapingPlatformEventCaptureFloor: number | undefined;
 
-    public pushScope(cppPrefix: string): void {
-        this.variableScopes.push(new Map());
+    public pushScope(cppPrefix: string, propagateRebindings = false): void {
+        const scope = new Map<ts.Symbol, VariableBinding>();
+        if (propagateRebindings) this.transparentRebindingScopes.add(scope);
+        this.variableScopes.push(scope);
         this.cppNamePrefixes.push(cppPrefix);
     }
 

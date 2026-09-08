@@ -111,3 +111,24 @@ test("exact scene106 lowers enum array sinks and its physics-step vector alias",
         "presteps[prestep]!", "9",
     ), { fileName }), /Expected a value of the pinned PhysicsPrestepType enum/);
 });
+
+test("untyped handles keep native storage and metadata after selected static branches", { skip: !tools }, () => {
+    runProgram("untyped-handle", `
+        import { createEngine, createBox } from "babylon-lite";
+        const engine = await createEngine({});
+        let mesh;
+        if (true) { mesh = createBox(engine); } else { mesh = createBox(engine); }
+        mesh.position.set(1, 2, 3);
+        const original = mesh;
+        if (false) { mesh = original; } else { mesh = createBox(engine); }
+        mesh.position.set(4, 5, 6);
+        if (original.position.x !== 1 || mesh.position.x !== 4) throw new Error("selected handle identity changed");
+    `);
+});
+
+test("untyped handle inference refuses mixed writes and reads before assignment", () => {
+    const prefix = `import { createEngine, createBox } from "babylon-lite"; const engine = await createEngine({});`;
+    assert.throws(() => compileSource(`${prefix} let mesh; mesh = createBox(engine); mesh = 3;`), /native data type/);
+    assert.throws(() => compileSource(`${prefix} let mesh; if (mesh) throw new Error("early read"); mesh = createBox(engine); mesh.position.x = 1;`));
+    assert.throws(() => compileSource(`${prefix} let mesh = createBox(engine); const other = createBox(engine); const callbacks: (() => void)[] = []; callbacks.push(() => { if (true) { mesh = other; } }); mesh.position.x = 1;`), /nested callback/);
+});
