@@ -82,6 +82,16 @@ void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle pare
 
 PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
     std::array<double, 3> scale, const std::vector<float>& heights);
+enum class PhysicsConstraintAxisMode { free, limited, locked };
+struct PhysicsConstraintAxisLimit {
+    PhysicsConstraintAxisMode mode = PhysicsConstraintAxisMode::free;
+    double minimum = 0;
+    double maximum = 0;
+};
+using PhysicsConstraintAxes = std::array<PhysicsConstraintAxisLimit, 7>;
+void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor,
+    const PhysicsConstraintAxes& axes, bool collisions);
 
 /**
  * The pair `HP_World_GetSpeedLimit` returns and `HP_World_SetSpeedLimit`

@@ -224,8 +224,8 @@ export function compilePhysicsIntrinsic(
       return { kind: "physics-shape", cpp: `bbl::upstream::create_physics_heightfield_from_ground(${world.cpp}, ${mesh.cpp})`, ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}) };
     }
     case "createPhysicsConstraint": {
-      context.expectArgumentCount(call, 4, 5);
-      if (!ts.isExpressionStatement(call.parent)) context.fail(call, "The reached HINGE constraint requires a discarded factory result.");
+      context.expectArgumentCount(call, 4, 6);
+      if (!ts.isExpressionStatement(call.parent)) context.fail(call, "The reached constraint requires a discarded factory result.");
       const world = context.compileValue(call.arguments[0]!);
       const parent = context.compileValue(call.arguments[1]!);
       const child = context.compileValue(call.arguments[2]!);
@@ -234,22 +234,42 @@ export function compilePhysicsIntrinsic(
       context.expectKind(child, "physics-body", call.arguments[2]!);
       context.expectSameEngine(world, parent, call);
       context.expectSameEngine(world, child, call);
-      const type = pinnedEnumMemberName(context, call.arguments[3]!, "PhysicsConstraintType");
-      if (type !== "HINGE") context.fail(call.arguments[3]!, `PhysicsConstraintType.${type} is not admitted by the HINGE constraint slice.`);
+      const compileType = (expression: ts.Expression): string => {
+        const node = context.resolveStaticExpression(expression);
+        if (ts.isConditionalExpression(node)) return `(${context.compileBoolean(node.condition)} ? ${compileType(node.whenTrue)} : ${compileType(node.whenFalse)})`;
+        pinnedEnumMemberName(context, node, "PhysicsConstraintType");
+        return context.compileNumber(node, "double");
+      };
+      const type = compileType(call.arguments[3]!);
       const vectors = [["pivotA", "pivot_a"], ["pivotB", "pivot_b"], ["axisA", "axis_a"], ["axisB", "axis_b"], ["perpAxisA", "perp_axis_a"], ["perpAxisB", "perp_axis_b"]] as const;
       const fields: string[] = [];
       if (call.arguments[4]) {
         const options = context.expectObjectLiteral(call.arguments[4]);
-        validateObjectProperties(context, options, [...vectors.map(([name]) => name), "collision"], "HINGE constraints support anchor vectors and collision only.");
+        validateObjectProperties(context, options, [...vectors.map(([name]) => name), "maxDistance", "collision"], "Constraint options support anchor vectors, maximum distance and collision.");
         for (const [name, field] of vectors) {
           const value = context.objectProperty(options, name);
           if (value) fields.push(`.${field} = ${compileNullableVec3(context, value)}`);
         }
+        const maximum = context.objectProperty(options, "maxDistance");
+        if (maximum) fields.push(`.max_distance = ${compileNullableNumber(context, maximum)}`);
         const collision = context.objectProperty(options, "collision");
         if (collision) fields.push(`.collision = ${context.compileBoolean(collision)}`);
       }
+      const limits: string[] = [];
+      if (call.arguments[5]) {
+        const array = context.unwrap(call.arguments[5]);
+        if (!ts.isArrayLiteralExpression(array)) context.fail(array, "Constraint limits require an inline array.");
+        for (const element of array.elements) {
+          const limit = context.expectObjectLiteral(element);
+          validateObjectProperties(context, limit, ["axis", "minLimit", "maxLimit"], "Constraint limits require both bounds; stiffness and damping are not represented.");
+          const axis = context.objectProperty(limit, "axis"), minimum = context.objectProperty(limit, "minLimit"), maximum = context.objectProperty(limit, "maxLimit");
+          if (!axis || !minimum || !maximum) context.fail(limit, "Constraint limits require an axis, minLimit and maxLimit.");
+          pinnedEnumMemberName(context, context.resolveStaticExpression(axis), "PhysicsConstraintAxis");
+          limits.push(`{${context.compileNumber(axis, "double")}, ${context.compileNumber(minimum, "double")}, ${context.compileNumber(maximum, "double")}}`);
+        }
+      }
       context.reachFeature("physics:constraints", call);
-      context.emit(`bbl::upstream::create_physics_hinge(${world.cpp}, ${parent.cpp}, ${child.cpp}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}});`);
+      context.emit(`bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}});`);
       return { kind: "void", cpp: "" };
     }
     case "createPhysicsViewer": {

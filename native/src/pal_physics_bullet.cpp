@@ -33,6 +33,7 @@
 
 #include <btBulletDynamicsCommon.h>
 #include <LinearMath/btAabbUtil2.h>
+#include "pal_physics_distance.hpp"
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
@@ -315,13 +316,15 @@ struct PhysicsWorldState {
     struct Hinge {
         std::shared_ptr<PhysicsBodyState> parent;
         std::shared_ptr<PhysicsBodyState> child;
-        std::unique_ptr<btHingeConstraint> joint;
+        std::unique_ptr<btTypedConstraint> joint;
         btTransform parent_anchor;
         btTransform child_anchor;
         btTransform parent_mass_frame;
         btTransform child_mass_frame;
         bool collisions = false;
         bool attached = false;
+        enum class Kind { hinge, six_dof, radial };
+        Kind kind = Kind::hinge;
     };
     std::vector<Hinge> hinges;
     std::size_t trigger_body_count = 0;
@@ -406,7 +409,10 @@ void sync_constraint_membership(PhysicsWorldState& owner) {
         if (changed(hinge.parent_mass_frame, hinge.parent->node_from_body) || changed(hinge.child_mass_frame, hinge.child->node_from_body)) {
             hinge.parent_mass_frame = hinge.parent->node_from_body;
             hinge.child_mass_frame = hinge.child->node_from_body;
-            hinge.joint->setFrames(hinge.parent_mass_frame.inverse() * hinge.parent_anchor, hinge.child_mass_frame.inverse() * hinge.child_anchor);
+            const auto parent_frame = hinge.parent_mass_frame.inverse() * hinge.parent_anchor;
+            const auto child_frame = hinge.child_mass_frame.inverse() * hinge.child_anchor;
+            if (hinge.kind == PhysicsWorldState::Hinge::Kind::hinge) static_cast<btHingeConstraint&>(*hinge.joint).setFrames(parent_frame, child_frame);
+            else static_cast<btGeneric6DofSpring2Constraint&>(*hinge.joint).setFrames(parent_frame, child_frame);
         }
         const bool attach = hinge.parent->world == owner.identity && hinge.child->world == owner.identity &&
             hinge.parent->in_world && hinge.child->in_world;
@@ -1409,6 +1415,57 @@ void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle pare
     sync_constraint_membership(owner);
 }
 
+void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor,
+    const PhysicsConstraintAxes& axes, bool collisions) {
+    auto& owner = world_at(world);
+    const auto& a = body_at(parent);
+    const auto& b = body_at(child);
+    if (parent.value == child.value || a.world != owner.identity || b.world != owner.identity)
+        throw std::runtime_error("A physics constraint requires two different bodies in its world.");
+    for (const auto& axis : axes) {
+        if (axis.mode == PhysicsConstraintAxisMode::limited &&
+            (!std::isfinite(axis.minimum) || !std::isfinite(axis.maximum) || axis.minimum > axis.maximum))
+            throw std::runtime_error("Constraint limits require finite, ordered bounds.");
+    }
+    const bool oriented = std::any_of(axes.begin(), axes.begin() + 6,
+        [](const auto& axis) { return axis.mode != PhysicsConstraintAxisMode::free; });
+    const auto frame = [oriented](const PhysicsConstraintAnchor& anchor) {
+        btMatrix3x3 basis = btMatrix3x3::getIdentity();
+        if (oriented) {
+            auto axis = to_bt(anchor.axis);
+            auto perpendicular = to_bt(anchor.perpendicular);
+            if (axis.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint axis must be nonzero.");
+            axis.normalize();
+            perpendicular -= axis * perpendicular.dot(axis);
+            if (perpendicular.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint perpendicular must be independent of its axis.");
+            perpendicular.normalize();
+            const auto third = axis.cross(perpendicular);
+            basis.setValue(axis.x(), perpendicular.x(), third.x(), axis.y(), perpendicular.y(), third.y(), axis.z(), perpendicular.z(), third.z());
+        }
+        return btTransform(basis, to_bt(anchor.pivot));
+    };
+    const auto anchor_a = frame(parent_anchor), anchor_b = frame(child_anchor);
+    const auto frame_a = a.node_from_body.inverse() * anchor_a, frame_b = b.node_from_body.inverse() * anchor_b;
+    std::unique_ptr<btGeneric6DofSpring2Constraint> joint;
+    const auto& radial = axes[6];
+    if (radial.mode == PhysicsConstraintAxisMode::free) {
+        joint = std::make_unique<btGeneric6DofSpring2Constraint>(*a.body, *b.body, frame_a, frame_b);
+    } else {
+        const auto minimum = radial.mode == PhysicsConstraintAxisMode::locked ? 0 : radial.minimum;
+        const auto maximum = radial.mode == PhysicsConstraintAxisMode::locked ? 0 : radial.maximum;
+        joint = std::make_unique<RadialDistanceConstraint>(*a.body, *b.body, frame_a, frame_b, static_cast<btScalar>(minimum), static_cast<btScalar>(maximum));
+    }
+    for (int index = 0; index < 6; ++index) {
+        const auto& axis = axes[static_cast<std::size_t>(index)];
+        if (axis.mode == PhysicsConstraintAxisMode::free) joint->setLimit(index, 1, -1);
+        else if (axis.mode == PhysicsConstraintAxisMode::locked) joint->setLimit(index, 0, 0);
+        else joint->setLimit(index, static_cast<btScalar>(axis.minimum), static_cast<btScalar>(axis.maximum));
+    }
+    owner.hinges.push_back({parent.ownership, child.ownership, std::move(joint), anchor_a, anchor_b, a.node_from_body, b.node_from_body, collisions, false, radial.mode == PhysicsConstraintAxisMode::free ? PhysicsWorldState::Hinge::Kind::six_dof : PhysicsWorldState::Hinge::Kind::radial});
+    sync_constraint_membership(owner);
+}
+
 PhysicsSpeedLimit physics_world_get_speed_limit(PhysicsWorldHandle world) {
     const PhysicsWorldState& entry = world_at(world);
     return PhysicsSpeedLimit{
@@ -1534,6 +1591,11 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         1, static_cast<int>(std::lround(seconds / havok_substep_seconds)));
     const btScalar substep_seconds =
         static_cast<btScalar>(seconds / substeps);
+    const btScalar step_ratio = btMin(btScalar(1), substep_seconds / static_cast<btScalar>(havok_substep_seconds));
+    for (auto& joint : entry.hinges) {
+        if (joint.attached && joint.kind == PhysicsWorldState::Hinge::Kind::radial)
+            static_cast<RadialDistanceConstraint&>(*joint.joint).begin_frame(step_ratio * step_ratio);
+    }
     cache_velocities(entry, &PhysicsBodyState::step_start);
     // The landings of the previous step rebound during this one; the active
     // list is emptied below once they have, so the swap leaves the schedule

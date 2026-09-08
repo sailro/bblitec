@@ -14,6 +14,7 @@ int main() {
     using namespace bbl;
     namespace p = bbl::pal;
     namespace u = bbl::upstream;
+    #include "constraint-axis-cases.inc"
     auto source_world = std::make_shared<u::PhysicsWorld>();
     source_world->handle = p::physics_world_create();
     const auto world = source_world->handle;
@@ -41,8 +42,9 @@ int main() {
     double maximum_pivot_error = 0;
     const auto pivot_error = [&]() {
         const auto& hinge = world.ownership->hinges.front();
-        const auto aw = a.ownership->body->getWorldTransform() * hinge.joint->getAFrame();
-        const auto bw = b.ownership->body->getWorldTransform() * hinge.joint->getBFrame();
+        const auto& joint = static_cast<const btHingeConstraint&>(*hinge.joint);
+        const auto aw = a.ownership->body->getWorldTransform() * joint.getAFrame();
+        const auto bw = b.ownership->body->getWorldTransform() * joint.getBFrame();
         maximum_pivot_error = std::max(maximum_pivot_error, static_cast<double>((aw.getOrigin() - bw.getOrigin()).length()));
         assert(aw.getBasis().getColumn(2).dot(bw.getBasis().getColumn(2)) > 0.9999);
     };
