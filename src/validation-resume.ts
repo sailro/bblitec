@@ -137,7 +137,7 @@ export function metadataFingerprint(
  * One walk, several digests: each predicate selects the files its digest
  * covers, so two views of one directory tree cost one `readdir` pass.
  */
-export function metadataFingerprints(
+function metadataFingerprints(
     roots: readonly string[],
     includes: readonly ((relativePath: string) => boolean)[],
 ): string[] {
