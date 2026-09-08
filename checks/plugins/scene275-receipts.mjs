@@ -45,13 +45,15 @@ function verifyReceipts(capture, observed, backend, where) {
             let used = 0;
             for (const write of writes) {
                 assert(write.bytes, `${where}: a ${label} upload was too large to record`);
-                Buffer.from(write.bytes).copy(bytes, write.offset);
-                used = Math.max(used, write.offset + write.bytes.length);
+                // A buffer write carries `offset`; a texture write carries its data layout's.
+                const offset = write.offset ?? write.layout?.offset ?? 0;
+                Buffer.from(write.bytes).copy(bytes, offset);
+                used = Math.max(used, offset + write.bytes.length);
             }
             assert.deepEqual(native.writtenRanges, [{ offset: 0, bytes: used }], `${where}: ${role} observed ranges`);
             assert.deepEqual(Buffer.from(native.uploadedBytes), bytes.subarray(0, used), `${where}: ${role}[${index}] uploaded bytes`);
             assert.deepEqual(native.writes.map((write) => ({ offset: write.offset, bytes: write.bytes })),
-                writes.map((write) => ({ offset: write.offset, bytes: write.bytes.length })), `${where}: ${role}[${index}] write count/order/ranges`);
+                writes.map((write) => ({ offset: write.offset ?? write.layout?.offset ?? 0, bytes: write.bytes.length })), `${where}: ${role}[${index}] write count/order/ranges`);
             summaries.push({ role: native.role, id: native.id, allocationBytes: size, uploadedBytes: used, sha256: sha256(bytes.subarray(0, used)), writes: native.writes });
         });
     }

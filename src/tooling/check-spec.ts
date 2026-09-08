@@ -208,6 +208,13 @@ export interface ObserveSpec {
     /** Navigate with `?captureFrame=<n>` and observe each frozen frame. */
     captureFrames?: number[];
     /**
+     * Load the page afresh (at the declared viewport) before every step
+     * instead of carrying state from one step to the next, so each step
+     * is the control it names applied to the scene's initial state — the
+     * way a native phase replays its tape from frame zero.
+     */
+    reloadEachStep?: boolean;
+    /**
      * Whether the first page screenshot must be byte-identical to the
      * registry golden (default true): an observer that changes the image
      * it observes is not evidence. The comparison is recorded either way.
@@ -655,7 +662,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
     if (!isRecord(value)) fail(location, "must be an object");
     refuseUnknown(
         value,
-        ["hooks", "initScriptFile", "state", "ready", "hostPage", "viewport", "headless", "captureFrames", "golden", "steps", "notes"],
+        ["hooks", "initScriptFile", "state", "ready", "hostPage", "viewport", "headless", "captureFrames", "reloadEachStep", "golden", "steps", "notes"],
         location,
     );
     const hooks = value.hooks;
@@ -675,6 +682,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
     const ready = optionalString(value, "ready", location);
     const hostPage = optionalBoolean(value, "hostPage", location);
     const headless = optionalBoolean(value, "headless", location);
+    const reloadEachStep = optionalBoolean(value, "reloadEachStep", location);
     const golden = optionalBoolean(value, "golden", location);
     const notes = optionalString(value, "notes", location);
     return {
@@ -705,6 +713,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
             : {}),
         ...(headless !== undefined ? { headless } : {}),
         ...(captureFrames !== undefined ? { captureFrames: captureFrames as number[] } : {}),
+        ...(reloadEachStep !== undefined ? { reloadEachStep } : {}),
         ...(golden !== undefined ? { golden } : {}),
         steps: (steps as unknown[]).map((step, index) =>
             readStep(step, `${location}.steps[${index}]`),

@@ -142,6 +142,7 @@
         "inject": "window.__observe = () => { const group = data._groups[0]; const ids = new Map([...group._curveSet._atlas._glyphSlots].map(([id, slot]) => [slot._index, id])); const instances = Array.from({ length: data._instanceCount }, (_, i) => { const word = data._instancesU32[i * 3 + 2]; return word === 0xffffffff ? null : [ids.get(word & 0xffff), data._instances[i * 3], data._instances[i * 3 + 1], word >>> 16]; }); const rectangle = document.getElementById('textInput').getBoundingClientRect(); return { width: data.width, height: data.height, instances, styles: Array.from(data._styles), camera: { alpha: camera.alpha, beta: camera.beta, radius: camera.radius }, position: { x: text.position.x, y: text.position.y, z: text.position.z }, viewport: { width: engine.canvas.width, height: engine.canvas.height }, form: { width: rectangle.width, height: rectangle.height } }; };"
       }
     ],
+    "reloadEachStep": true,
     "steps": [
       {
         "id": "initial",
