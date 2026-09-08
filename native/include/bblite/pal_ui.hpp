@@ -20,6 +20,8 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
 UiElementHandle ui_get_element_by_id(
     Engine& engine,
     std::string_view id);
+std::string ui_get_form_value(Engine& engine, UiElementHandle element);
+void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value);
 UiClientRect ui_get_client_rect(
     Engine& engine,
     UiElementHandle element);

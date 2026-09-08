@@ -375,13 +375,15 @@ uses the pinned linear-frame and trailing image-processing contract.
 
 ## Text
 
-Static font loading/default layout run the pinned parser, shaper and packer at generation. Text data and
-native renderables retain identity through aliases/helpers/containers. Transform setters and opacity are
-live; pipeline membership, depth and order must settle before attachment. Dynamic layout, late attachment/
-disposal, conditional transform copies, reflective/internal-buffer writes and high-precision matrices refuse.
+Static font loading/default layout run the pinned parser, shaper and packer at generation. Runtime strings
+and `updateDefaultTextData` retain the packaged font, layout options, single run, palette and live dimensions.
+Font size/options/color are static; explicit live color arguments and arbitrary run edits refuse.
+Text data/renderables retain identity through aliases/helpers/containers. Transform setters and opacity are
+live; pipeline membership, depth and order settle before attachment. Late attachment/disposal, conditional
+transform copies, reflective/internal-buffer writes and high-precision matrices refuse.
 
-Rendering activates `BBLITE_HAS_TEXT` and supports one text-only default scene with a static FreeCamera.
-Mixed ordering, custom tasks and camera mutation/controls refuse. Both PALs use composed Slug shaders,
+Rendering activates `BBLITE_HAS_TEXT` and supports one text-only default scene with a static FreeCamera or
+ArcRotate camera controls. Mixed ordering, custom tasks and other camera writes refuse. Both PALs use composed Slug shaders,
 packed resources and pinned alpha-to-coverage or premultiplied blending; shared data retains its group-cache behavior.
 
 ## Runtime scene mutation

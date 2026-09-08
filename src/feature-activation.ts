@@ -163,6 +163,7 @@ const CMAKE: readonly FeatureActivationConsumer[] = ["features.cmake"];
  */
 const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "text:data": { provenance: "src/text/default-text-data.ts#createDefaultTextData", consumers: CMAKE },
+    "text:layout": { provenance: "src/text/layout.ts#layoutText + src/text/default-text-data.ts#updateDefaultTextData", consumers: CMAKE },
     "text:renderable": { provenance: "src/text/text-renderable.ts#createTextRenderable + addTextRenderable", consumers: CMAKE },
     "animation:gltf-groups": {
         provenance:

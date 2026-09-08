@@ -218,6 +218,11 @@ Pinned producers shape/pack static text. Lowered transforms retain doubles until
 source float stores; uniform updates preserve their independent invalidation
 conditions. TextData retains distinct mutable identity even when blobs deduplicate.
 
+Live layout uses HarfBuzz over the packaged font and pinned AST layout/packing.
+Generation runs the pinned extractor/atlas packer over the complete font repertoire;
+atlas allocation and indices therefore precede input. DefaultTextData keeps its
+single run, slot reuse, dirty ranges, palette versions and live dimensions.
+
 Group caches belong to TextData. Shared data can retain the first renderable's
 UBO/style bindings until source invalidation rebuilds a group. Disposal releases
 the appropriate buffer/atlas leases while retained CPU data follows source

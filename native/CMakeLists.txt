@@ -127,6 +127,10 @@ if(
     )
 endif()
 
+if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES AND NOT "text-layout" IN_LIST VCPKG_MANIFEST_FEATURES)
+    list(APPEND VCPKG_MANIFEST_FEATURES "text-layout")
+endif()
+
 project(babylon_lite_native LANGUAGES CXX)
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
@@ -587,6 +591,11 @@ if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
     )
 endif()
 
+if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES)
+    find_package(harfbuzz CONFIG REQUIRED)
+    target_link_libraries(bblite_native PRIVATE harfbuzz::harfbuzz)
+endif()
+
 if("renderer:scene" IN_LIST BBLITE_RUNTIME_FEATURES)
     # BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
     # because a loaded asset reaches scene transmission on its own and the
@@ -681,6 +690,7 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
         bblite_native
         PRIVATE
         RmlUi::Core
+        Freetype::Freetype
     )
     if(WIN32)
         target_link_libraries(bblite_native PRIVATE dwrite)

@@ -170,6 +170,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | Iridescence Sphere |
 | 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | 0.018 / 0.016 | 0.018 / 0.016 | Iridescence Abalone |
 | 179 | <img src="images/scenes/scene179.png" alt="Scene 179 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Lights |
+| 181 | <img src="images/scenes/scene181.png" alt="Scene 181 rendering" width="160"> | 0.021 / 0.399 | 0.021 / 0.399 | Live Text Editor |
 | 186 | <img src="images/scenes/scene186.png" alt="Scene 186 rendering" width="160"> | 0.002 / 0.004 | 0.002 / 0.004 | Local Cubemap Blending |
 | 187 | <img src="images/scenes/scene187.png" alt="Scene 187 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | SMAA |
 | 200 | <img src="images/scenes/scene200.png" alt="Scene 200 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix Off |

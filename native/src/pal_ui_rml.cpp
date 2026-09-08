@@ -10,6 +10,7 @@
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/EventListener.h>
 #include <RmlUi/Core/ElementText.h>
+#include <RmlUi/Core/Elements/ElementFormControl.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/FontEngineInterface.h>
@@ -29,6 +30,7 @@
 #include "pal_ui_backdrop.hpp"
 #include "pal_ui_canvas.hpp"
 #include "pal_ui_defaults.hpp"
+#include "pal_ui_form.hpp"
 #include "pal_ui_text.hpp"
 
 #include <algorithm>
@@ -221,6 +223,21 @@ UiClientRect ui_get_client_rect(
     UiElementRecord& record = ui_element(engine, element);
     record.client_rect_requested = true;
     return record.client_rect;
+}
+
+std::string ui_get_form_value(Engine& engine, UiElementHandle element) {
+    const auto& record = ui_element(engine, element);
+    const auto type = record.attributes.find("type");
+    if ((record.tag != "input" && record.tag != "textarea") ||
+        (type != record.attributes.end() && type->second == "file"))
+        throw std::runtime_error("Form value requires an editable input or textarea.");
+    const auto value = record.attributes.find("value");
+    return value != record.attributes.end() ? value->second : record.tag == "textarea" ? record.text : std::string{};
+}
+
+void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value) {
+    static_cast<void>(ui_get_form_value(engine, element));
+    ui_set_attribute(engine, element, "value", std::move(value));
 }
 
 void ui_set_text(
@@ -1345,6 +1362,11 @@ public:
           default_prevented(default_prevented) {}
 
     void ProcessEvent(Rml::Event& event) override {
+        if (event_type == "input") {
+            auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(event.GetCurrentElement());
+            if (!control) throw std::runtime_error("Native input event requires a form control.");
+            ui_set_form_value(engine, element, control->GetValue());
+        }
         if (::bbl::pal::runtime_trace_enabled()) {
             std::cerr << "[bblite trace] ui-event type=" << event_type
                 << " element=" << element.value
@@ -2277,6 +2299,7 @@ struct ProjectedUiElement {
     std::string intrinsic_min_width;
     std::string crosshair_color;
     std::string inset_outline;
+    std::optional<float> form_spacing;
     Rml::Element* inset_outline_element = nullptr;
     bool inset_outline_positioned_parent = false;
     bool text_wrapped = false;
@@ -3167,6 +3190,7 @@ struct UiRmlRuntime {
     }
 
     std::string project_css(std::string value) const {
+        static_cast<void>(take_css_declaration(value, "resize"));
         replace_all(value, "--bbl-text-gradient", "bbl-text-gradient");
         replace_all(value, "system-ui", css_font_family);
         replace_all(value, "sans-serif", css_sans_family);
@@ -3604,7 +3628,7 @@ struct UiRmlRuntime {
                 handle,
                 event,
                 default_prevented);
-            projected.element->AddEventListener(event, listener.get());
+            projected.element->AddEventListener(event == "input" ? "change" : event, listener.get());
             listeners.push_back(std::move(listener));
             projected.event_listeners_attached[event] = true;
         }
@@ -3741,6 +3765,10 @@ struct UiRmlRuntime {
             raw->SetInnerRML(
                 normalize_html_entities_for_rml(record.inner_rml));
             bind_markup_descendants(handle, *raw);
+        } else if (record.tag == "textarea") {
+            auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(raw);
+            if (!control) throw std::runtime_error("RmlUi textarea lacks form control support.");
+            control->SetValue(ui_get_form_value(engine, handle));
         } else if (!record.text.empty()) {
             projected.text_wrapped = text_needs_flex_wrapper(
                 resolved_display);
@@ -3860,6 +3888,13 @@ struct UiRmlRuntime {
         };
         const bool selector_changed =
             attribute_changed("class") || attribute_changed("id");
+        if ((record.tag == "textarea" || record.tag == "input") &&
+            ui_get_attribute(engine, handle, "type") != "file" && attribute_changed("value")) {
+            auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(&raw);
+            if (!control) throw std::runtime_error("RmlUi editable element lacks form control support.");
+            const auto value = ui_get_form_value(engine, handle);
+            if (control->GetValue() != value) control->SetValue(value);
+        }
         const bool text_changed = projected.text != record.text;
         const bool inner_rml_changed =
             projected.inner_rml != record.inner_rml;
@@ -4139,6 +4174,24 @@ struct UiRmlRuntime {
                 projected.element->IsPseudoClassSet("hover");
             if (projected.hovered == hovered) continue;
             projected.hovered = hovered;
+            changed = true;
+        }
+        return changed;
+    }
+
+    bool sync_text_form_metrics() {
+        bool changed = false;
+        for (auto& projected : projected_elements) {
+            auto* element = projected.element;
+            if (!element || element->GetTagName() != "textarea") continue;
+            const auto& style = element->GetComputedValues();
+            // An authored nonzero tracking value takes precedence.
+            if (std::abs(style.letter_spacing() - projected.form_spacing.value_or(0.f)) > 0.000001f) continue;
+            if (!text_form_metrics) text_form_metrics.emplace();
+            const auto spacing = text_form_metrics->spacing(style.font_family(), static_cast<int>(style.font_weight()), style.font_size());
+            if (!spacing || spacing == projected.form_spacing) continue;
+            element->SetProperty("letter-spacing", std::to_string(*spacing) + "px");
+            projected.form_spacing = spacing;
             changed = true;
         }
         return changed;
@@ -4787,11 +4840,15 @@ struct UiRmlRuntime {
     std::string css_font_family;
     std::string css_sans_family;
     std::string css_monospace_family;
+    std::optional<TextFormMetrics> text_form_metrics;
     std::string projected_style_sheet_source;
     float density_ratio = 0.0f;
     std::uint32_t viewport_width = 0;
     std::uint32_t viewport_height = 0;
     bool default_prevented = false;
+    UiElementHandle resizing{};
+    float resize_start_y = 0;
+    float resize_start_height = 0;
     bool initialized = false;
 };
 
@@ -4808,6 +4865,39 @@ void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept {
 }
 
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
+        for (std::uint32_t i = 0; i < runtime.projected_elements.size(); ++i) {
+            const auto& record = runtime.engine.ui_elements.at(i);
+            auto* element = runtime.projected_elements[i].element;
+            if (!element || record.tag != "textarea") continue;
+            const auto style_attribute = record.attributes.find("style");
+            auto style = style_attribute == record.attributes.end() ? std::string{} : style_attribute->second;
+            auto resize = take_css_declaration(style, "resize");
+            if (const auto found = record.style_properties.find("resize"); found != record.style_properties.end()) resize = found->second;
+            if (trim_css_token(resize) != "vertical") continue;
+            const auto position = element->GetAbsoluteOffset(Rml::BoxArea::Border);
+            const auto dimensions = element->GetBox().GetSize(Rml::BoxArea::Border);
+            const auto pointer = Rml::Vector2f{event.button.x, event.button.y} * runtime.density_ratio;
+            const auto grip = 16 * runtime.density_ratio;
+            if (pointer.x < position.x + dimensions.x - grip || pointer.x > position.x + dimensions.x ||
+                pointer.y < position.y + dimensions.y - grip || pointer.y > position.y + dimensions.y) continue;
+            runtime.resizing = UiElementHandle{i}; runtime.resize_start_y = pointer.y;
+            const auto area = element->GetComputedValues().box_sizing() == Rml::Style::BoxSizing::BorderBox
+                ? Rml::BoxArea::Border : Rml::BoxArea::Content;
+            runtime.resize_start_height = element->GetBox().GetSize(area).y;
+            SDL_CaptureMouse(true);
+            return false;
+        }
+    }
+    if (runtime.resizing.value != invalid_handle) {
+        if (event.type == SDL_EVENT_MOUSE_MOTION) {
+            const auto height = std::max(20.0f * runtime.density_ratio,
+                runtime.resize_start_height + event.motion.y * runtime.density_ratio - runtime.resize_start_y);
+            ui_set_style_property(runtime.engine, runtime.resizing, "height", std::to_string(height / runtime.density_ratio) + "px");
+            return false;
+        }
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) { runtime.resizing = {}; SDL_CaptureMouse(false); return false; }
+    }
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         const bool visible = event.type == SDL_EVENT_KEY_DOWN;
         if (runtime.engine.ui_focus_visible != visible) {
@@ -4829,8 +4919,13 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
     }
     runtime.default_prevented = false;
     Rml::Element* previous_focus = runtime.context->GetFocusElement();
-    const bool result =
-        RmlSDL::InputEventHandler(runtime.context, runtime.window, event);
+    const bool replay_key = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && event.key.which == ~0u;
+    const int replay_modifiers = replay_key && (event.key.mod & SDL_KMOD_CTRL) ? Rml::Input::KM_CTRL : 0;
+    const bool result = replay_key
+        ? event.type == SDL_EVENT_KEY_DOWN
+            ? runtime.context->ProcessKeyDown(RmlSDL::ConvertKey(event.key.key), replay_modifiers)
+            : runtime.context->ProcessKeyUp(RmlSDL::ConvertKey(event.key.key), replay_modifiers)
+        : RmlSDL::InputEventHandler(runtime.context, runtime.window, event);
     if (
         runtime.default_prevented &&
         event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
@@ -4864,6 +4959,7 @@ void update_ui_rml_runtime(
         runtime.sync_tree();
     }
     runtime.context->Update();
+    if (runtime.sync_text_form_metrics()) runtime.context->Update();
     const bool focus_changed = runtime.sync_focus();
     if (focus_changed) runtime.context->Update();
     const bool hover_changed = runtime.sync_hover_states();

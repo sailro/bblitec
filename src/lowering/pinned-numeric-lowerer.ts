@@ -290,6 +290,8 @@ export interface PinnedBinding {
 }
 
 export interface PinnedNumericScope {
+    /** Domain-owned records and library values; arithmetic still recurses through this lowerer. */
+    expression?: (expression: ts.Expression, lowerer: PinnedNumericLowerer) => string | undefined;
     /** An explicitly validated platform boundary within an otherwise lowered
      * body. Undefined retains the ordinary translator and its refusals. */
     statement?: (statement: ts.Statement, lowerer: PinnedNumericLowerer, indent: string) => readonly string[] | undefined;
@@ -664,8 +666,7 @@ export class PinnedNumericLowerer {
                     : undefined;
             if (
                 (!assigned && !declaring) ||
-                !statement.condition ||
-                !statement.incrementor
+                !statement.condition
             ) {
                 this.fail(statement, "for statement");
             }
@@ -682,7 +683,7 @@ export class PinnedNumericLowerer {
                 return [
                     `${indent}for (${declared}; ` +
                         `${this.condition(condition)}; ` +
-                        `${this.expressionStatement(incrementor)}) {`,
+                        `${incrementor ? this.expressionStatement(incrementor) : ""}) {`,
                     ...this.branch(statement.statement, indent),
                     `${indent}}`,
                 ];
@@ -812,32 +813,25 @@ export class PinnedNumericLowerer {
     }
 
     private loopVariable(list: ts.VariableDeclarationList): string {
-        if (list.declarations.length !== 1) {
-            this.fail(list, "for initializer");
-        }
-        const declaration = list.declarations[0]!;
-        if (
-            !ts.isIdentifier(declaration.name) ||
-            !declaration.initializer
-        ) {
-            this.fail(declaration, "for initializer");
-        }
-        return this.declaredLoopVariable(
-            declaration.name.text,
-            declaration.initializer,
-        );
+        if (!list.declarations.length) this.fail(list, "for initializer");
+        return list.declarations.map((declaration,index) => {
+            if (!ts.isIdentifier(declaration.name) || !declaration.initializer)
+                this.fail(declaration, "for initializer");
+            return this.declaredLoopVariable(declaration.name.text,declaration.initializer,index===0);
+        }).join(", ");
     }
 
     /** `for (<name> = <initial>; ...)`, whichever spelling declared it. */
     private declaredLoopVariable(
         name: string,
         initial: ts.Expression,
+        declareType = true,
     ): string {
         const cpp = this.localName(name);
         const value = this.expression(initial);
         this.scope.bindings.set(name, { cpp, type: "index" });
         return (
-            `std::int64_t ${cpp} = ` +
+            `${declareType ? "std::int64_t " : ""}${cpp} = ` +
             `static_cast<std::int64_t>(${value})`
         );
     }
@@ -1673,6 +1667,10 @@ export class PinnedNumericLowerer {
         if (binding?.type === "index") {
             return `static_cast<std::int64_t>(${text})`;
         }
+        if (binding?.type === "scalar" && ts.isIdentifier(literal) &&
+            this.scope.bindings.get(literal.text)?.type === "index") {
+            return `static_cast<double>(${text})`;
+        }
         const element = this.elementType(target);
         if (element === "float") return `static_cast<float>(${text})`;
         if (element === "std::uint32_t") {
@@ -2101,6 +2099,8 @@ export class PinnedNumericLowerer {
 
     public expression(expression: ts.Expression): string {
         const node = this.unwrap(expression);
+        const adapted = this.scope.expression?.(node, this);
+        if (adapted !== undefined) return adapted;
         if (ts.isNumericLiteral(node)) {
             return doubleLiteral(Number(node.text));
         }

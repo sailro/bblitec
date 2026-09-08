@@ -1038,7 +1038,7 @@ class Compiler
                 "Numeric material-color reads currently support one registered scene; independent material-group UBO snapshots are not represented.");
         }
         if (this.features.has("text:renderable")) {
-            const camera = this.textCameraMutation ?? this.temporalControlAttachment ?? this.untrackedTaaCameraWrites[0]?.node;
+            const camera = this.textCameraMutation ?? this.untrackedTaaCameraWrites[0]?.node;
             if (camera) this.fail(camera, "Text currently requires a static camera; live camera writers and controls are not represented.");
             if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
                 "Text currently supports one registered scene; layered text update/draw ordering is not represented.");
@@ -2005,6 +2005,10 @@ class Compiler
 
     private textAttachmentReached = false;
     private textCameraMutation: ts.Node | undefined;
+
+    public noteTextCameraControl(node: ts.Node, camera: Value, arcRotate: boolean): void {
+        if (!arcRotate || (camera.cameraKind !== undefined && camera.cameraKind !== "arc-rotate")) this.textCameraMutation ??= node;
+    }
 
     public noteTextSceneLifecycle(node: ts.Node, message = "Text scene disposal, removal and explicit rebuilding require retained binding topology that is not represented."): void {
         this.deferredAdmissionFailures.push({ capability: "text", node, message });
@@ -5373,6 +5377,7 @@ class Compiler
         "pointer-events",
         "position",
         "right",
+        "resize",
         "text-align",
         "text-shadow",
         "top",
@@ -5865,6 +5870,7 @@ class Compiler
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (property === "resize" && literalValue !== "vertical" && literalValue !== "none") this.uiStyleRefusal(site, property, "only vertical or none form-control resizing is represented");
             if (property === "mix-blend-mode") {
                 if (literalValue !== "difference") {
                     this.uiStyleRefusal(
@@ -8824,6 +8830,10 @@ class Compiler
         const directElement = this.uiElementValue(expression.left.expression);
         if (directElement) {
             const engine = this.requireEngine(directElement, expression.left);
+            if (property === "value" && (directElement.uiTag === "textarea" || directElement.uiTag === "input") && !directElement.uiFileInput) {
+                this.emit(`bbl::ui_set_form_value(${engine}, ${directElement.cpp}, ${this.uiStringCpp(expression.right, "Form value")});`);
+                return true;
+            }
             const browserFile = this.compileUiBrowserFileAttribute(
                 directElement,
                 engine,
@@ -9576,6 +9586,10 @@ class Compiler
         }
         if (owner.kind === "ui-element" && property === "dataset") {
             return { ...owner, uiDataset: true };
+        }
+        if (owner.kind === "ui-element" && property === "value" && (owner.uiTag === "textarea" || owner.uiTag === "input") && !owner.uiFileInput) {
+            return { kind: "string", cpp: `bbl::ui_get_form_value(${this.requireEngine(owner, expression)}, ${owner.cpp})`,
+                dataType: { kind: "string" }, freshData: true };
         }
         if (owner.kind === "ui-element" && owner.uiDataset) {
             const dataName = property.replace(
@@ -16278,6 +16292,7 @@ class Compiler
                 event !== "pointercancel" &&
                 event !== "lostpointercapture" &&
                 event !== "change" &&
+                event !== "input" &&
                 event !== "contextmenu"
             ) {
                 this.fail(

@@ -152,6 +152,9 @@ inline void dispatch_platform_mouse_button(
  * user's pointer or foreground focus.
  * `UiMove@x:y` and `+UiMouseLeft@x:y`/`-UiMouseLeft@x:y` use that same
  * SDL path for hover and held drags, including camera controls.
+ * `UiKey@Ctrl+A` (SDL key names, optional Ctrl+) queues a key press/release;
+ * `UiText@hex` queues UTF-8 bytes as an SDL text input event.
+ * `UiWheelUp`/`UiWheelDown` queue SDL wheel packets at the canvas center.
  * `WheelUp`/`WheelDown` dispatch a browser-sized wheel notch, and
  * `WindowResize@width:height` resizes this application's window, while
  * `WindowClose` queues the host close request. All forms reach the ordinary
@@ -225,6 +228,56 @@ public:
             return;
         }
 #endif
+        if (code == "UiWheelUp" || code == "UiWheelDown") {
+            SDL_Event wheel{};
+            wheel.type = SDL_EVENT_MOUSE_WHEEL;
+            wheel.wheel.windowID = window ? SDL_GetWindowID(window) : 0;
+            wheel.wheel.which = replay_ui_mouse_id;
+            wheel.wheel.y = code == "UiWheelUp" ? 1.f : -1.f;
+            wheel.wheel.mouse_x = static_cast<float>(engine.canvas_client_width / 2);
+            wheel.wheel.mouse_y = static_cast<float>(engine.canvas_client_height / 2);
+            if (!SDL_PushEvent(&wheel)) throw std::runtime_error("Unable to queue deterministic UI wheel input.");
+            return;
+        }
+        if (code.starts_with("UiText@")) {
+            const auto hex = std::string_view(code).substr(7);
+            if (hex.size() % 2) throw std::runtime_error("Text input replay requires pairs of hexadecimal digits.");
+            replay_text_.clear();
+            for (std::size_t i = 0; i < hex.size(); i += 2) {
+                unsigned int byte = 0;
+                const auto parsed = std::from_chars(hex.data() + i, hex.data() + i + 2, byte, 16);
+                if (parsed.ec != std::errc{} || parsed.ptr != hex.data() + i + 2 || byte == 0)
+                    throw std::runtime_error("Text input replay contains invalid UTF-8 byte encoding.");
+                replay_text_.push_back(static_cast<char>(byte));
+            }
+            SDL_Event input{};
+            input.type = SDL_EVENT_TEXT_INPUT;
+            input.text.reserved = ~0u;
+            input.text.windowID = window ? SDL_GetWindowID(window) : 0;
+            input.text.text = replay_text_.c_str();
+            if (!SDL_PushEvent(&input)) throw std::runtime_error("Unable to queue deterministic text input.");
+            return;
+        }
+        if (code.starts_with("UiKey@")) {
+            std::string name = code.substr(6);
+            const bool control = name.starts_with("Ctrl+");
+            if (control) name.erase(0, 5);
+            const auto scancode = SDL_GetScancodeFromName(name.c_str());
+            if (scancode == SDL_SCANCODE_UNKNOWN) throw std::runtime_error("Unknown SDL key name in UI input replay.");
+            SDL_Event key{};
+            key.type = SDL_EVENT_KEY_DOWN;
+            key.key.windowID = window ? SDL_GetWindowID(window) : 0;
+            key.key.which = ~0u;
+            key.key.scancode = scancode;
+            key.key.mod = control ? SDL_KMOD_CTRL : SDL_KMOD_NONE;
+            key.key.key = SDL_GetKeyFromScancode(scancode, key.key.mod, false);
+            key.key.down = true;
+            if (!SDL_PushEvent(&key)) throw std::runtime_error("Unable to queue deterministic UI key down.");
+            key.type = SDL_EVENT_KEY_UP;
+            key.key.down = false;
+            if (!SDL_PushEvent(&key)) throw std::runtime_error("Unable to queue deterministic UI key up.");
+            return;
+        }
         if (const auto size = pointer_position(code, "WindowResize@")) {
             if (!window || size->first <= 0 || size->second <= 0 || size->first > 16384 || size->second > 16384 ||
                 !SDL_SetWindowSize(window, static_cast<int>(size->first), static_cast<int>(size->second))) {
@@ -422,10 +475,14 @@ private:
     }
 
     std::vector<std::string> codes_;
+    std::string replay_text_;
     long last_frame_ = -1;
 };
 
 inline bool is_replayed_ui_event(const SDL_Event& event) {
+    if (event.type == SDL_EVENT_MOUSE_WHEEL) return event.wheel.which == replay_ui_mouse_id;
+    if (event.type == SDL_EVENT_TEXT_INPUT) return event.text.reserved == ~0u;
+    if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) return event.key.which == ~0u;
     if (event.type == SDL_EVENT_MOUSE_MOTION) {
         return event.motion.which == replay_ui_mouse_id;
     }

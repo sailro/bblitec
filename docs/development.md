@@ -115,6 +115,7 @@ Never reconcile one install concurrently. `BBLITE_VCPKG_INSTALLED_ROOT`
 relocates it. `tools/setup-worktree.ps1 -Path <path> -Branch <branch>` creates
 isolated outputs and shared caches; `-SharedVcpkg` requires coordinated install
 access. Use the script's `-Remove` to unlink cache junctions before deletion.
+`text:layout` selects the manifest's HarfBuzz `text-layout` feature.
 
 ### Concurrency
 

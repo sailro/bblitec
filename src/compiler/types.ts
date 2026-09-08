@@ -2385,6 +2385,7 @@ export interface Value {
 
 export type Feature =
   | "text:data"
+  | "text:layout"
   | "text:renderable"
   | "animation:gltf-groups"
   | "animation:property"

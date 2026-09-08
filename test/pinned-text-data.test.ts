@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { readNativeHostUi } from "../src/native-host-ui.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
 import { resolveBundledAsset } from "../src/compiler/assets.js";
 import { sameCompiledValue } from "../src/compiler/types.js";
@@ -124,12 +125,10 @@ test("ordinary CLI asset packaging writes the font and every referenced text blo
     assert.ok(manifest.inputs.some((input) => input.endsWith("Roboto-Regular.ttf")));
 });
 
-test("dynamic layouts and internal updates retain explicit source refusals", () => {
+test("dynamic fonts, layout options and internal writes retain explicit source refusals", () => {
     for (const [body, refusal] of [
         [`const data=createDefaultTextData(font,Math.random()*40,"A");`, /Text font size must be a static number/],
-        [`const data=createDefaultTextData(font,40,String(Math.random()));`, /static|string|literal/i],
         [`const scene=createSceneContext(engine); onBeforeRender(scene,()=>{const data=createDefaultTextData(font,40,"A");});`, /definite initialization/],
-        [`const data=createDefaultTextData(font,40,"A");updateDefaultTextData(data,"B");`, /updateDefaultTextData.*not supported/],
         [`const data=createDefaultTextData(font,40,"A",undefined,{maxWidth:Math.random()});`, /Text layout maxWidth must be a static number/],
         [`const color:[number,number,number,number]=[1,0,0,1];const alias=color;alias[0]=Math.random();createDefaultTextData(font,40,"A",color);`, /mutated or dynamic arrays/],
         [`const options={lineHeight:1.2};const alias=options;alias.lineHeight=Math.random();createDefaultTextData(font,40,"A",undefined,options);`, /direct static object literal/],
@@ -140,8 +139,21 @@ test("dynamic layouts and internal updates retain explicit source refusals", () 
     const exact = compileSource(readFileSync(source, "utf8"), { fileName: source });
     assert.ok(exact.manifest.features.includes("text:renderable"));
     assert.equal(exact.manifest.textData!.length, 2);
-    for (const id of [180, 181]) {
-        const source = `corpus/babylon-lite/lab/lite/src/lite/scene${id}.ts`;
-        assert.throws(() => compileSource(readFileSync(source, "utf8"), { fileName: source }), /Unsupported property value 'textarea.value'/);
-    }
+});
+
+test("runtime text values and updates retain live fonts and unchanged textarea callbacks", () => {
+    const dynamic=compile('const data=createDefaultTextData(font,40,String(Math.random()));updateDefaultTextData(data,"new text");');
+    assert(dynamic.manifest.features.includes("text:layout"));
+    assert(dynamic.manifest.textData![0]!.live!.glyphSlots.length>100);
+    assert.match(dynamic.cpp,/create_live_text_data/);
+    assert.match(dynamic.cpp,/update_default_text_data/);
+    const later = compile('const first=createDefaultTextData(font,40,"A");updateDefaultTextData(first,String(Math.random()));const later=createDefaultTextData(font,40,"B");');
+    assert(later.manifest.textData!.every(row => row.live), "Later owners remain eligible for retained update helpers");
+    const fileName="corpus/babylon-lite/lab/lite/src/lite/scene181.ts";
+    const result=compileSource(readFileSync(fileName,"utf8"),{fileName,nativeHostUi:readNativeHostUi("ui/scene181-host.json")});
+    assert(result.manifest.features.includes("text:layout"));
+    assert(result.manifest.features.includes("ui:rml"));
+    assert.match(result.cpp,/ui_on_event[\s\S]*"input"/);
+    assert.match(result.cpp,/ui_get_form_value/);
+    assert.match(result.cpp,/attach_control/);
 });

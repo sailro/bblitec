@@ -43,6 +43,14 @@ export function compileAdaptations(
     features: Feature[],
 ): CompileAdaptation[] {
     const adaptations: CompileAdaptation[] = [];
+    if (features.includes("text:layout")) {
+        adaptations.push({
+            id: "native-live-text-shaping", category: "platform", risk: "medium",
+            sourceSemantics: "The pinned text-shaper library shapes live text and extracts newly reached glyph curves into each DefaultTextData atlas.",
+            nativeSemantics: "HarfBuzz shapes the packaged font at native runtime; layout and numeric packing use pinned AST. Generation executes the pinned curve extractor and atlas packer over the complete font repertoire. Atlas allocation and glyph indices are materialized ahead of input; DefaultTextData retains its single run, live slot allocator, palette and dimensions.",
+            validation: ["text-layout native/pinned shaping differential", "text-data-update byte, slot and version differential", "scene181 text input, camera and resize observations on both backends"],
+        });
+    }
     if (features.includes("material:local-cubemap")) {
         adaptations.push({
             id: "static-local-cubemap-packets", category: "asset-materialization", risk: "medium",

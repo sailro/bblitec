@@ -152,7 +152,7 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
 test("text projection refuses mixed draw and custom task families in either feature order", () => {
     for (const feature of ["material:standard", "material:no-color-view", "loader:splat", "particle:node",
         "sprite:billboard", "renderer:sprite", "renderer:frame-graph", "renderer:post-process",
-        "background:ground", "camera:arc-rotate", "camera:geospatial", "platform:workers"]) {
+        "background:ground", "camera:geospatial", "platform:workers"]) {
         for (const features of [["core", "text:renderable", feature], ["core", feature, "text:renderable"]])
             assert.throws(() => emitUpstreamGenerated(resolve(directory, "refused"), features), /merged draw ordering or camera\/task transport/);
     }

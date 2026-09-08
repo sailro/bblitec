@@ -7,6 +7,10 @@
     "sdl3"
   ],
   "features": {
+    "text-layout": {
+      "description": "Native HarfBuzz shaping for runtime default text layouts.",
+      "dependencies": [{ "name": "harfbuzz", "default-features": false }]
+    },
     "png": {
       "description": "PNG texture decoding or optional visual capture",
       "dependencies": [{ "name": "sdl3-image", "default-features": false, "features": ["png"] }]

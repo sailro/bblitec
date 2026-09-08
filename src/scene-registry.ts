@@ -2919,6 +2919,21 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene181",
+        name: "Scene 181 - Live Text Editor",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene181.ts",
+        title: "Babylon Lite Native - Live Text Editor",
+        nativeHostUi: "ui/scene181-host.json",
+        parity: {
+            referenceHostPage: "corpus/babylon-lite/lab/lite/scene181.html",
+            canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
+            maxFullMad: 0.025,
+            maxForegroundMad: 0.45,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene275",
         name: "Scene 275 - Text Alpha-to-Coverage",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene275.ts",

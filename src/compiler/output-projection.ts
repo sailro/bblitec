@@ -11,6 +11,7 @@ import { reachesShadowGenerator } from "../shadow-capabilities.js";
 
 export const featureSources: Record<Feature, string[]> = {
     "text:data": [],
+    "text:layout": ["src/pal_text_layout.cpp"],
     "text:renderable": [],
     "animation:gltf-groups": [],
     "animation:property": [],
@@ -384,7 +385,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
         ? "#include <bblite/upstream/sprite_layer.hpp>\n"
         : "";
     const textInclude = features.includes("text:data") || features.includes("text:renderable")
-        ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n"
+        ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n" + (features.includes("text:layout") ? "#include <bblite/upstream_text_update.hpp>\n" : "")
         : "";
     const billboardInclude = features.includes(
         "sprite:billboard",
