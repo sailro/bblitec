@@ -20,6 +20,7 @@ import {
     sharedUpstreamStore,
     UpstreamSourceStore,
 } from "./upstream-source.js";
+import { refuseGeneration } from "./generation-refusal.js";
 
 interface GltfSpecialization {
     asset: string;
@@ -46,9 +47,7 @@ interface GltfSpecialization {
         transmissiveMaterial: boolean;
         specularReflectance: boolean;
         extras: boolean;
-        occlusionUv2: boolean;
         eightInfluenceSkinning: boolean;
-        dispersionReached: boolean;
         /** The packaged document carries converted Gaussian-splat clouds. */
         gaussianSplats: boolean;
         /** Packaging transcoded this asset's KHR_texture_basisu images. */
@@ -274,7 +273,8 @@ function refuseUnsupportedGltf(
     // which this port does not lower; the pin selects it by the document
     // predicate rather than by an extension name, so it is refused here.
     if (asObject(document.extensions)?.["BABYLON_flow_graph"] !== undefined) {
-        throw new Error(
+        refuseGeneration(
+            assetName,
             `${assetName}: BABYLON_flow_graph editor JSON is run by the ` +
                 `pinned loader (flow-graph/editor-serialization.ts) and not ` +
                 `lowered by this port.`,
@@ -285,7 +285,8 @@ function refuseUnsupportedGltf(
         if (metadataExtensions.has(extension)) continue;
         const pinModule = extensionModules.get(extension);
         if (pinModule !== undefined) {
-            throw new Error(
+            refuseGeneration(
+                assetName,
                 `${assetName}: glTF extension ${extension} is implemented by ` +
                     `the pinned loader${
                         pinModule !== undefined ? ` (${pinModule})` : ""
@@ -313,7 +314,8 @@ function refuseUnsupportedGltf(
     // pinned `resolveAccessor` does -- would read the unpatched base values
     // and render a plausible wrong mesh.
     if (accessors.some((accessor) => accessor.sparse !== undefined)) {
-        throw new Error(
+        refuseGeneration(
+            assetName,
             `${assetName}: a sparse glTF accessor survived packaging, so ` +
                 `the pinned gltf-feature-sparse preParse did not run over ` +
                 `this document.`,
@@ -323,7 +325,8 @@ function refuseUnsupportedGltf(
     // generated loader carries no reader for a POINTS primitive whose
     // ellipsoid lives in custom vertex attributes.
     if (extensionsUsed.includes(GAUSSIAN_SPLATTING_EXTENSION)) {
-        throw new Error(
+        refuseGeneration(
+            assetName,
             `${assetName}: ${GAUSSIAN_SPLATTING_EXTENSION} survived ` +
                 `packaging, so the pinned Gaussian-splatting conversion did ` +
                 `not run over this document.`,
@@ -337,7 +340,8 @@ function refuseUnsupportedGltf(
         );
         const texCoord = asNumber(occlusion.texCoord) ?? 0;
         if (texCoord > 1) {
-            throw new Error(
+            refuseGeneration(
+                assetName,
                 `${assetName}: a glTF occlusion texture on TEXCOORD_${texCoord} ` +
                     `is not lowered.`,
             );
@@ -359,7 +363,8 @@ function refuseUnsupportedGltf(
             asObject(occlusion.extensions)?.["KHR_texture_transform"] ===
                 undefined
         ) {
-            throw new Error(
+            refuseGeneration(
+                assetName,
                 `${assetName}: a glTF occlusion texture on TEXCOORD_1 that ` +
                     `names the same texture object as the ` +
                     `metallic-roughness slot composes an occlusion binding ` +
@@ -371,7 +376,8 @@ function refuseUnsupportedGltf(
             textureImageIndex(document, occlusion.index) !==
                 textureImageIndex(document, metallicRoughness.index)
         ) {
-            throw new Error(
+            refuseGeneration(
+                assetName,
                 `${assetName}: distinct glTF occlusion and metallic-roughness ` +
                     `images are not lowered (upstream composites them on a ` +
                     `canvas — gltf-ext-orm.ts).`,
@@ -446,7 +452,8 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
         ) {
             const prefix = constants.get(name.left.text);
             if (prefix === undefined) {
-                throw new Error(
+                refuseGeneration(
+                    path,
                     `${path}: the registry prefix ${name.left.text} did not ` +
                         `resolve to a string constant.`,
                 );
@@ -466,13 +473,15 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
         ) {
             continue;
         }
-        throw new Error(
+        refuseGeneration(
+            path,
             `${path}: a registry row's name expression has an unrecognized ` +
                 `shape.`,
         );
     }
     if (result.size === 0) {
-        throw new Error(
+        refuseGeneration(
+            path,
             `${path}: no extension registry rows were found; the registry ` +
                 `shape changed.`,
         );
@@ -626,54 +635,7 @@ export function specializeGltf(
                 (color[0] !== 1 || color[1] !== 1 || color[2] !== 1))
         );
     });
-    // The pinned `needsDispersion`, term for term (`gltf-ext-dielectric.ts`):
-    // `dispersion > 0 && (!!eIor || needsTransmission) && !!eVol &&
-    // (thicknessFactor > 0 || !!eVol.thicknessTexture)`, with
-    // `needsTransmission = !!eTx && (intensity > 0 ||
-    // !!eTx.transmissionTexture)`. Keying the capability on extension
-    // presence instead shipped dispersion arms for assets whose declared
-    // extension the pin never imports.
-    const dispersionReached = asRecords(document.materials).some((material) => {
-        const extensions = asObject(material.extensions);
-        const dispersionExtension = asObject(
-            extensions?.["KHR_materials_dispersion"],
-        );
-        const dispersion =
-            typeof dispersionExtension?.dispersion === "number"
-                ? dispersionExtension.dispersion
-                : 0;
-        if (!(dispersion > 0)) return false;
-        const ior = asObject(extensions?.["KHR_materials_ior"]);
-        const transmission = asObject(
-            extensions?.["KHR_materials_transmission"],
-        );
-        const transmissionFactor =
-            typeof transmission?.transmissionFactor === "number"
-                ? transmission.transmissionFactor
-                : 0;
-        const needsTransmission =
-            transmission !== undefined &&
-            (transmissionFactor > 0 ||
-                transmission.transmissionTexture !== undefined);
-        const volume = asObject(extensions?.["KHR_materials_volume"]);
-        const thicknessFactor =
-            typeof volume?.thicknessFactor === "number"
-                ? volume.thicknessFactor
-                : 0;
-        return (
-            (ior !== undefined || needsTransmission) &&
-            volume !== undefined &&
-            (thicknessFactor > 0 || volume.thicknessTexture !== undefined)
-        );
-    });
     const extras = hasExtras(document);
-    // Babylon Lite's pbr-template-ext appends a dedicated occlusion
-    // texture pair sampled at uv2 when a material's occlusionTexture
-    // selects TEXCOORD_1.
-    const occlusionUv2 = asRecords(document.materials).some(
-        (material) =>
-            asObject(material.occlusionTexture)?.texCoord === 1,
-    );
 
     if (animations) modules.add("./gltf-feature-animations.js");
     if (morphTargets) modules.add("./gltf-feature-morph.js");
@@ -703,9 +665,7 @@ export function specializeGltf(
             transmissiveMaterial,
             specularReflectance,
             extras,
-            occlusionUv2,
             eightInfluenceSkinning,
-            dispersionReached,
             gaussianSplats: hasGaussianSplats(document),
             compressedImages: hasCompressedImages(document),
             interactivity: gltfInteractivity(document) !== undefined,
@@ -787,13 +747,6 @@ export interface AssetSpecializationFeatures {
     textureTransform: boolean;
     gpuInstancing: boolean;
     punctualLights: boolean;
-    clearcoat: boolean;
-    sheen: boolean;
-    iridescence: boolean;
-    /** Any material replaces metallic-roughness with the spec-gloss pair. */
-    specularGlossiness: boolean;
-    dispersion: boolean;
-    occlusionUv2: boolean;
     /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
     eightInfluenceSkinning: boolean;
     /** Any asset carries transcoded KHR_texture_basisu images. */
@@ -835,12 +788,6 @@ export function emitAssetSpecializations(
             textureTransform: false,
             gpuInstancing: false,
             punctualLights: false,
-            clearcoat: false,
-            sheen: false,
-            iridescence: false,
-            specularGlossiness: false,
-            dispersion: false,
-            occlusionUv2: false,
             eightInfluenceSkinning: false,
             gaussianSplats: false,
             compressedImages: false,
@@ -921,8 +868,6 @@ export function emitAssetSpecializations(
                 specialization.features.pointOrLinePrimitives,
         ),
         nodeVisibility: usesExtension("KHR_node_visibility"),
-        // (Dispersion keys on the evaluated pinned predicate below, not on
-        // extension presence — see `dispersionReached`.)
         animationPointer: usesExtension("KHR_animation_pointer"),
         animationPointerMaterials: specializations.some(
             (specialization) =>
@@ -940,21 +885,6 @@ export function emitAssetSpecializations(
             usesExtension("KHR_materials_diffuse_transmission"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
         punctualLights: usesExtension("KHR_lights_punctual"),
-        clearcoat: usesExtension("KHR_materials_clearcoat"),
-        sheen: usesExtension("KHR_materials_sheen"),
-        iridescence: usesExtension("KHR_materials_iridescence"),
-        // The spec-gloss workflow binds its own texture pair, so the slot
-        // table needs the row whenever any material declares it.
-        specularGlossiness: usesExtension(
-            "KHR_materials_pbrSpecularGlossiness",
-        ),
-        dispersion: specializations.some(
-            (specialization) => specialization.features.dispersionReached,
-        ),
-        occlusionUv2: specializations.some(
-            (specialization) =>
-                specialization.features.occlusionUv2,
-        ),
         eightInfluenceSkinning: specializations.some(
             (specialization) =>
                 specialization.features.eightInfluenceSkinning,

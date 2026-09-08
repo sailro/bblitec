@@ -78,8 +78,7 @@ import { GeneratedTree } from "./generated-tree.js";
 import { downloadCached } from "./asset-download-cache.js";
 import {
     gltfHasImageBasedLight,
-    gltfLightKinds,
-    gltfLightNodeCount,
+    gltfNodeLights,
 } from "./pinned-material-arms.js";
 import {
     emitAssetSpecializations,
@@ -94,14 +93,13 @@ import {
 import {
     babylonLights,
     reachedDiffuseUv2,
-    reachedStandardBump,
     reachedStandardLightLists,
-    reachedStandardLights,
     type BabylonLight,
 } from "./babylon-asset-features.js";
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
+import { refuseGeneration } from "./generation-refusal.js";
 import { composeDefaultTextPipelines, composeStandaloneTextPipelines } from "./pinned-text-pipeline-cpp.js";
 import { holdDistLock } from "./dist-lock.js";
 import {
@@ -265,7 +263,8 @@ async function materializeAsset(
         asset.source.startsWith("generated:data-url:") &&
         inlineSource === undefined
     ) {
-        throw new Error(
+        refuseGeneration(
+            asset.source,
             `Missing materialization payload for '${asset.source}'.`,
         );
     }
@@ -654,13 +653,15 @@ async function main(): Promise<void> {
             .map((facts) => facts.splatHarmonicDegree),
     );
     if (splatHarmonicDegrees.size > 1) {
-        throw new Error(
+        refuseGeneration(
+            "loader:splat",
             "This scene loads Gaussian clouds at spherical-harmonic " +
                 `degrees ${[...splatHarmonicDegrees]
                     .sort()
                     .join(" and ")}; generation deploys one splat stage ` +
                 "pair, and the pin builds a distinct module per degree " +
                 "(degree 0 being the stock pipeline).",
+            result.manifest.featureSites,
         );
     }
     const splatHarmonicDegree = [...splatHarmonicDegrees].find(
@@ -687,13 +688,15 @@ async function main(): Promise<void> {
             observed.map((rotation) => rotation.join(",")),
         );
         if (distinct.size > 1) {
-            throw new Error(
+            refuseGeneration(
+                "loader:splat",
                 `This scene's ${container.kind.toUpperCase()} containers ` +
                     `attach clouds at different rotations (${[
                         ...distinct,
                     ].join("; ")}); the pinned ${container.loader} writes ` +
                     "one, so a difference means it now forks on the " +
                     "container.",
+                result.manifest.featureSites,
             );
         }
         return observed[0];
@@ -878,8 +881,10 @@ async function main(): Promise<void> {
                 (program) => program.name === name,
             );
             if (!predeclared) {
-                throw new Error(
+                refuseGeneration(
+                    "material:shader",
                     `Unknown shader variant '${name}'.`,
+                    result.manifest.featureSites,
                 );
             }
             return predeclaredShaderProgram(predeclared);
@@ -888,45 +893,6 @@ async function main(): Promise<void> {
         outputPath,
         result.manifest.assets,
     );
-    const emittedArms = {
-        clearcoat:
-            specializationFeatures.clearcoat ||
-            result.manifest.features.includes("material:clearcoat"),
-        // The coat's base-F0 remap is composed for every clearcoat except a
-        // glTF one: `gltf-ext-clearcoat.ts` is the single caller passing
-        // `useF0Remap: false`. So it follows the scene-code setter and not
-        // the asset specializer's `KHR_materials_clearcoat` flag.
-        clearcoatF0Remap: result.manifest.features.includes(
-            "material:clearcoat-f0-remap",
-        ),
-        sheen:
-            specializationFeatures.sheen ||
-            result.manifest.features.includes("material:sheen"),
-        // The two pinned sheen models are composed, not switched at run time,
-        // so one fragment cannot serve both. A glTF KHR_materials_sheen
-        // material takes the albedo-scaling arm; `setPbrSheen` defaults to
-        // the legacy one and can ask for the other explicitly.
-        sheenAlbedoScaling:
-            specializationFeatures.sheen ||
-            result.manifest.features.includes(
-                "material:sheen-albedo-scaling",
-            ),
-        iridescence:
-            specializationFeatures.iridescence ||
-            result.manifest.features.includes("material:iridescence"),
-        dispersion: specializationFeatures.dispersion,
-        // Spec-gloss has no scene-code entry point: the pin reaches it only
-        // through the glTF extension, so the asset alone decides.
-        specularGlossiness: specializationFeatures.specularGlossiness,
-        occlusionUv2: specializationFeatures.occlusionUv2,
-        // The same derivation `upstream-lower.ts` uses for the compiled
-        // define: transmission is reached from scene code and from a loaded
-        // asset alike, because the pin enables it for any transmissive
-        // surface the asset carries without the scene naming it.
-        transmission:
-            result.manifest.features.includes("renderer:transmission") ||
-            specializationFeatures.assetTransmission,
-    };
     // An asset's own KHR_lights_punctual lights are the scene's lights: the
     // pin's loader creates them exactly like scene code does, and every
     // consumer keyed on the light features -- the composed arms, the pinned
@@ -943,11 +909,11 @@ async function main(): Promise<void> {
         // The pin grows MAX_LIGHTS from this count at run time; the frozen
         // constant makes exceeding it a generation refusal instead
         // (`emitUpstreamGenerated` checks it beside the pinned constant).
-        const lightNodeCount = gltfLightNodeCount(assetPath);
-        if (lightNodeCount > (assetLightNodes?.count ?? 0)) {
-            assetLightNodes = { count: lightNodeCount, asset: asset.output };
+        const nodeLights = gltfNodeLights(assetPath);
+        if (nodeLights.count > (assetLightNodes?.count ?? 0)) {
+            assetLightNodes = { count: nodeLights.count, asset: asset.output };
         }
-        const assetFeatures = gltfLightKinds(assetPath).map(
+        const assetFeatures = nodeLights.kinds.map(
             (kind) => `light:${kind}` as Feature,
         );
         // EXT_lights_image_based installs the asset's own environment, which
@@ -1176,11 +1142,11 @@ async function main(): Promise<void> {
         standardRuntimeMeshFeatures,
         standardPluginBindings,
         nodeVariants,
+        composedArms,
     } = await composeScenePipeline({
         result,
         outputPath,
         specializationFeatures,
-        emittedArms,
         tree,
     });
     // Whether anything in this scene deforms on the GPU. Named once
@@ -1352,13 +1318,15 @@ async function main(): Promise<void> {
         !pinnedSkeletonPalette &&
         specializationFeatures.maxSkinJoints > DEFORMATION_BONE_SLOTS
     ) {
-        throw new Error(
+        refuseGeneration(
+            "loader:gltf",
             `A skin of ${specializationFeatures.maxSkinJoints} joints exceeds ` +
                 `the ${DEFORMATION_BONE_SLOTS}-matrix bone palette of the ` +
                 "transcribed vertex stage, which is this scene's transport " +
                 "because it composes no pinned skeleton variant. The pin's " +
                 "own per-bone palette texture caps nothing; there is no CPU " +
                 "deformation path to fall back to.",
+            result.manifest.featureSites,
         );
     }
     // A points or lines primitive reaches the pipeline as itself, and only
@@ -1374,10 +1342,12 @@ async function main(): Promise<void> {
             specializationFeatures.assetTransmission ||
             result.manifest.geometryOutputTasks.length > 0)
     ) {
-        throw new Error(
+        refuseGeneration(
+            "loader:gltf",
             "A glTF point or line primitive in a scene that also reaches " +
                 "transmission or a geometry-output task is not lowered: " +
                 "those passes build their pipelines at a triangle list.",
+            result.manifest.featureSites,
         );
     }
     const emitOptions: UpstreamEmitOptions = {
@@ -1438,15 +1408,10 @@ async function main(): Promise<void> {
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
-        standardLights: reachedStandardLights(reachedBabylonLights),
         standardLightLists: reachedStandardLightLists(
             reachedBabylonLights,
         ),
         standardDiffuseUv2: reachedDiffuseUv2(
-            outputPath,
-            result.manifest.assets,
-        ),
-        standardBump: reachedStandardBump(
             outputPath,
             result.manifest.assets,
         ),
@@ -1474,8 +1439,12 @@ async function main(): Promise<void> {
         ),
         punctualLights:
             specializationFeatures.punctualLights,
-        clearcoat: emittedArms.clearcoat,
-        sheen: emittedArms.sheen,
+        // The arms the composed set carries, read off the composition
+        // itself: a glTF material's, a scene-code material's and a caster
+        // view's variants all report through `pinnedVariantArms`, so what
+        // the pin spliced is what the defines and the slot table declare.
+        clearcoat: composedArms.clearcoat,
+        sheen: composedArms.sheen,
         pinnedVariants,
         ...(nodeVariants.length > 0 ? { nodeVariants } : {}),
         ...(standardComposition !== undefined
@@ -1506,10 +1475,10 @@ async function main(): Promise<void> {
         ...(runtimeMeshFeatures !== undefined
             ? { runtimeMeshFeatures }
             : {}),
-        iridescence: emittedArms.iridescence,
-        specularGlossiness: emittedArms.specularGlossiness,
-        dispersion: emittedArms.dispersion,
-        occlusionUv2: emittedArms.occlusionUv2,
+        iridescence: composedArms.iridescence,
+        specularGlossiness: composedArms.specularGlossiness,
+        dispersion: composedArms.dispersion,
+        occlusionUv2: composedArms.occlusionUv2,
     };
     emitUpstreamGenerated(
         outputPath,
@@ -1583,7 +1552,6 @@ ${imageCodecLines || '    ""'}
                 assetJoinedFeatures,
                 specialization: specializationFeatures,
                 emit: emitOptions,
-                transmission: emittedArms.transmission,
                 imageCodecs,
                 gltfAssetNames: gltfAssets.map((asset) => asset.output),
                 pinnedMaxLights: readPinnedMaxLights(),

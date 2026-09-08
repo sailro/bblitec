@@ -5,6 +5,7 @@ import test from "node:test";
 import {
     assertArmsCovered,
     composeGltfMaterials,
+    composeRenderableVariants,
     composeScenePbrVariants,
     materialSubjects,
     unionArms,
@@ -21,6 +22,7 @@ const armNames: (keyof PinnedMaterialArms)[] = [
     "occlusionUv2",
     "transmission",
     "dispersion",
+    "specularGlossiness",
 ];
 
 /** The .glb a generated scene loads, when that scene has been generated. */
@@ -72,7 +74,7 @@ test("a glTF clearcoat never asks for the base-F0 remap", async (t) => {
     );
 });
 
-test("refuses an emitted fragment missing any arm a material composes", async (t) => {
+test("the composed renderable variants carry every arm the materials compose", async (t) => {
     const asset = sceneAsset("scene253");
     if (!asset) return t.skip("scene253 has not been generated");
     const materials = await composeGltfMaterials(asset);
@@ -80,17 +82,29 @@ test("refuses an emitted fragment missing any arm a material composes", async (t
     const reached = armNames.filter((arm) => union[arm]);
     assert.ok(reached.length > 0);
 
-    // The full union passes, and dropping any single arm from it fails with
-    // that arm named. This is the whole point of the gate: the failure says
-    // which material and which arm, at generation time, instead of arriving
-    // as a shading bias in a parity report.
-    assert.doesNotThrow(() => assertArmsCovered(materials, union, "scene253"));
+    // What generation ships is the union over the composed renderable
+    // variants -- the capability defines and the slot table are derived
+    // from it -- and it must cover what each material's own composition
+    // reports. Dropping any reached arm from that union is refused naming
+    // the material and the arm, which is what `assertArmsCovered` says.
+    const arms = await pinnedSceneArms({
+        lightKinds: [],
+        multiLight: false,
+        noLight: true,
+        toneMapping: [false],
+        environment: true,
+        fog: false,
+    });
+    const emitted = unionArms(await composeRenderableVariants(asset, arms));
+    assert.doesNotThrow(() =>
+        assertArmsCovered(materials, emitted, "scene253")
+    );
     for (const arm of reached) {
         assert.throws(
             () =>
                 assertArmsCovered(
                     materials,
-                    { ...union, [arm]: false },
+                    { ...emitted, [arm]: false },
                     "scene253",
                 ),
             new RegExp(`needs '${arm}'`),
@@ -116,6 +130,7 @@ test("allows an emitted fragment carrying more than the assets need", async (t) 
         occlusionUv2: true,
         transmission: true,
         dispersion: true,
+        specularGlossiness: true,
     };
     assert.doesNotThrow(() =>
         assertArmsCovered(materials, everything, "scene39"),

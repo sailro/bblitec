@@ -23,8 +23,8 @@
  *   `standardDiffuseUv2`) → `DIFFUSE_USES_UV2` (+`NEEDS_UV2`).
  * - `emissiveTexture` → `HAS_EMISSIVE_TEXTURE`; a render-texture source
  *   (`_sampleType === "depth"`) → `HAS_DEPTH_EMISSIVE_TEXTURE`.
- * - `bumpTexture` (`reachedStandardBump` (babylon-asset-features.ts) → `standardBump`) →
- *   `HAS_BUMP_TEXTURE`.
+ * - `bumpTexture` → `HAS_BUMP_TEXTURE` (the composed variant's `bT` binding
+ *   is what `BBLITE_MATERIAL_STANDARD_BUMP` and the loader's bump slot read).
  * - `specularTexture` → `HAS_SPECULAR_TEXTURE`; `coordinatesIndex === 1` →
  *   `SPECULAR_USES_UV2`.
  * - `ambientTexture` → `HAS_AMBIENT_TEXTURE`; `coordinatesIndex === 1` →
@@ -50,12 +50,11 @@
  *   `hasVertexAlpha` adds `VERTEX_ALPHA | MATERIAL_ALPHA_BLEND`.
  * - Feature `renderer:fog` → `scene.fog`: `standard-group-builder.ts` builds
  *   `sceneShader = { _features: STD_SCENE_FOG, _fragments: [fogFragment] }`.
- * - `standardLights` / `standardSpotLights` / `standardLightLists` map to
- *   **no feature bit**: the pinned fragment always declares
- *   `array<LightEntry, MAX_LIGHTS>` and loops `min(mesh.lc, MAX_LIGHTS)`
- *   through `mli()` (`standard-template.ts` LIGHTING_FN + `lights-ubo.ts`),
- *   so light count, kind dispatch and per-mesh lists are UBO data — the
- *   transcription's unrolled slots and its spot empty-slot tagging retire.
+ * - A `.babylon` asset's light count, kinds and per-mesh light lists
+ *   (`standardLightLists`) map to **no feature bit**: the pinned fragment
+ *   always declares `array<LightEntry, MAX_LIGHTS>` and loops
+ *   `min(mesh.lc, MAX_LIGHTS)` through `mli()` (`standard-template.ts`
+ *   LIGHTING_FN + `lights-ubo.ts`), so all three are UBO data.
  * - `geometryOutputTasks` → the pin's own MRT arm,
  *   `composeStandardGeometryShader` (`standard-geometry-output-shader.ts`),
  *   reached through a material view carrying
@@ -88,6 +87,12 @@ import {
     pinnedPluginBakeShift,
     standardPluginFeatureBits,
 } from "./pinned-material-plugins.js";
+import { plainUboSpec } from "./pinned-material-arms.js";
+import { refuseGeneration } from "./generation-refusal.js";
+
+/** The pinned modules the contracts below are keyed on when they refuse. */
+const STANDARD_MATERIAL_MODULE = "src/material/standard/standard-material.ts";
+const SKELETON_FRAGMENT_MODULE = "src/shader/fragments/skeleton-fragment.ts";
 
 /** The material fields the pin's Standard feature derivation reads. */
 export interface PinnedStandardMaterialInput {
@@ -276,7 +281,8 @@ async function registerStandardExtensions(): Promise<void> {
             >(path);
             const ext = module[exportName];
             if (!ext) {
-                throw new Error(
+                refuseGeneration(
+                    path,
                     `Pinned module ${path} no longer exports ` +
                         `${exportName}.`,
                 );
@@ -403,25 +409,6 @@ interface ComposedStandardShader {
     _meshUboSpec: unknown;
 }
 
-/** `_meshUboSpec` as plain data, mirroring `plainMaterialUboSpec` for PBR. */
-function plainMeshUboSpec(spec: unknown): unknown {
-    const record = spec as
-        | { _totalBytes?: number; _offsets?: unknown; _structBody?: string }
-        | undefined;
-    if (!record) return spec;
-    const offsets: Record<string, number> = {};
-    if (record._offsets instanceof Map) {
-        for (const [name, offset] of record._offsets as Map<string, number>) {
-            offsets[name] = offset;
-        }
-    }
-    return {
-        _totalBytes: record._totalBytes,
-        _offsets: offsets,
-        _structBody: record._structBody,
-    };
-}
-
 /**
  * Composes the Standard variant for one material.
  *
@@ -491,15 +478,16 @@ export async function composePinnedStandardVariant(
         ]);
     const meshFeatures = options.meshFeatures ?? 0;
     if (meshFeatures & meshBits.MSH_VAT) {
-        throw new Error("Pinned Standard vertex animation textures are not supported.");
+        refuseGeneration("mesh:vat", "Pinned Standard vertex animation textures are not supported.");
     }
     if ((meshFeatures & (meshBits.MSH_HAS_SKELETON | meshBits.MSH_HAS_SKELETON_8)) && !options.skeleton) {
-        throw new Error("Pinned Standard skeleton composition requires enableStandardSkeleton().");
+        refuseGeneration("material:standard-skeleton", "Pinned Standard skeleton composition requires enableStandardSkeleton().");
     }
     const shadowLights = options.shadowLights ?? [];
     if (meshFeatures & meshBits.MSH_RECEIVE_SHADOWS) {
         if (shadowLights.length === 0) {
-            throw new Error(
+            refuseGeneration(
+                "material:standard",
                 "A Standard receiver variant needs the scene's " +
                     "shadow-light slots: `createStdShadowFragment` names " +
                     "every varying and binding after the light's index in " +
@@ -511,7 +499,8 @@ export async function composePinnedStandardVariant(
         meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR &&
         !(meshFeatures & meshBits.MSH_HAS_THIN_INSTANCES)
     ) {
-        throw new Error(
+        refuseGeneration(
+            "mesh:thin-instance-colors",
             "The pin's instance-colour bit rides its thin-instance one: " +
                 "`_computeMeshFeatures` sets MSH_HAS_INSTANCE_COLOR only " +
                 "from `mesh.thinInstances.colors`, and the colour slot is " +
@@ -657,7 +646,7 @@ export async function composePinnedStandardVariant(
             meshFeatures,
             vertexWgsl: composed._vertexWGSL,
             fragmentWgsl: composed._fragmentWGSL,
-            meshUboSpec: plainMeshUboSpec(composed._meshUboSpec),
+            meshUboSpec: plainUboSpec(composed._meshUboSpec),
         };
     }
     const composed = pipeline.composeStandardShader(
@@ -673,7 +662,7 @@ export async function composePinnedStandardVariant(
         meshFeatures,
         vertexWgsl: composed._vertexWGSL,
         fragmentWgsl: composed._fragmentWGSL,
-        meshUboSpec: plainMeshUboSpec(composed._meshUboSpec),
+        meshUboSpec: plainUboSpec(composed._meshUboSpec),
     };
 }
 
@@ -967,12 +956,12 @@ function lowerStandardFeatureDerivation(
         const value = context.unwrapExpression(only.expression);
         return ts.isNumericLiteral(value) && value.text === "0";
     };
-    const fail = (node: ts.Node, reason: string): never => {
-        throw new Error(
+    const fail = (node: ts.Node, reason: string): never =>
+        refuseGeneration(
+            STANDARD_MATERIAL_MODULE,
             `Cannot lower _computeStandardMaterialFeatures: ${reason} ` +
                 `(${node.getText(file)}).`,
         );
-    };
     /**
      * What names mean inside the body being walked.
      *
@@ -1167,7 +1156,8 @@ function lowerStandardFeatureDerivation(
         );
         const parameter = detect.parameters[0];
         if (!parameter || !ts.isIdentifier(parameter.name)) {
-            throw new Error(
+            refuseGeneration(
+                pinnedSourcePath(runtimeModule),
                 `Pinned ${exportName}._detect takes no named material.`,
             );
         }
@@ -1176,7 +1166,10 @@ function lowerStandardFeatureDerivation(
         lines.push(`${indent}// ${exportName}`);
         const body = detect.body;
         if (!body) {
-            throw new Error(`Pinned ${exportName}._detect has no body.`);
+            refuseGeneration(
+                pinnedSourcePath(runtimeModule),
+                `Pinned ${exportName}._detect has no body.`,
+            );
         }
         if (ts.isBlock(body)) {
             lowerStatements(body.statements, indent);
@@ -1208,7 +1201,8 @@ function lowerStandardFeatureDerivation(
         );
         const parameter = hook.parameters[1];
         if (!parameter || !ts.isIdentifier(parameter.name)) {
-            throw new Error(
+            refuseGeneration(
+                source,
                 `Pinned ${exportName}._meshFeatures takes no named ` +
                     "material as its second parameter.",
             );
@@ -1222,7 +1216,8 @@ function lowerStandardFeatureDerivation(
             meshParameter && ts.isIdentifier(meshParameter.name) &&
             !meshParameter.name.text.startsWith("_")
         ) {
-            throw new Error(
+            refuseGeneration(
+                source,
                 `Pinned ${exportName}._meshFeatures reads its mesh-feature ` +
                     "parameter, which the generated derivation does not " +
                     "carry.",
@@ -1235,7 +1230,8 @@ function lowerStandardFeatureDerivation(
         lines.push(`${indent}// ${exportName}`);
         const body = hook.body;
         if (!body) {
-            throw new Error(
+            refuseGeneration(
+                source,
                 `Pinned ${exportName}._meshFeatures has no body.`,
             );
         }
@@ -1388,7 +1384,8 @@ function lowerStandardFeatureDerivation(
         }
     };
     if (!declaration.body) {
-        throw new Error(
+        refuseGeneration(
+            STANDARD_MATERIAL_MODULE,
             "_computeStandardMaterialFeatures has no body to lower.",
         );
     }
@@ -1402,10 +1399,11 @@ export interface StandardSceneCompositionInput {
     vertexAlpha?: boolean;
     /** Materialized `.babylon` asset paths, in load order. */
     babylonAssets: readonly string[];
-    /** The emit options that shape the generated loader's material records:
-     *  the bump slot exists only under `standardBump`, and the diffuse
-     *  coordinate index is read only under `standardDiffuseUv2`. */
-    bumpTexture: boolean;
+    /** The emit option that shapes the generated loader's material records:
+     *  the diffuse coordinate index is read only under `standardDiffuseUv2`.
+     *  The bump slot needs no option -- it exists exactly when a composed
+     *  variant binds the pin's bump pair, which is read off this
+     *  composition's output. */
     diffuseUv2: boolean;
     fog: boolean;
     /** `material:standard-vertex-colors` reached (the pin's opt-in). */
@@ -1528,15 +1526,16 @@ function babylonTexture2d(
 /**
  * A `.babylon` material as the pin's feature derivation must see it to match
  * the generated loader's record — every absence below mirrors a loader fact
- * (`babylon-loader-cpp.ts`): no emissive/lightmap slots, the bump slot only
- * under its option, the diffuse coordinate index only under its option, and
- * `disableLighting` never read. The opacity `getAlphaFromRGB` and the 2D
- * reflection presence mirror the loader's record fields the same way, which
- * are themselves the pin's own loader writes (`load-babylon.ts` TEX_SLOTS).
+ * (`babylon-loader-cpp.ts`): no emissive/lightmap slots, the diffuse
+ * coordinate index only under its option, and `disableLighting` never read.
+ * The bump, opacity `getAlphaFromRGB` and 2D reflection presences mirror the
+ * loader's record fields the same way, which are themselves the pin's own
+ * loader writes (`load-babylon.ts` TEX_SLOTS); the generated loader's bump
+ * slot in turn follows the variants this input composes.
  */
 function babylonMaterialInput(
     material: BabylonMaterialJson,
-    options: { bumpTexture: boolean; diffuseUv2: boolean },
+    options: { diffuseUv2: boolean },
 ): PinnedStandardMaterialInput {
     const coord = (texture: BabylonTextureJson | undefined): number =>
         texture?.coordinatesIndex === 1 ? 1 : 0;
@@ -1572,7 +1571,7 @@ function babylonMaterialInput(
                 ambientCoordIndex: coord(material.ambientTexture),
             }
             : {}),
-        ...(options.bumpTexture && babylonTexture2d(material.bumpTexture)
+        ...(babylonTexture2d(material.bumpTexture)
             ? { bumpTexture: {} }
             : {}),
         ...(material.reflectionTexture?.isCube === true &&
@@ -1759,7 +1758,6 @@ export async function composeSceneStandardVariants(
         for (const material of document.materials ?? []) {
             materialInputs.push(
                 babylonMaterialInput(material, {
-                    bumpTexture: input.bumpTexture,
                     diffuseUv2: input.diffuseUv2,
                 }),
             );
@@ -2144,16 +2142,16 @@ function standardSkeletonBinding(context: LoweringContext): StandardBuiltinBindi
         ts.isPropertyAssignment(node) && context.propertyName(node.name) === "_vertexBindings");
     const bindings = declarations[0]?.initializer;
     if (declarations.length !== 1 || !bindings || !ts.isArrayLiteralExpression(bindings)) {
-        throw new Error("Pinned skeleton fragment must declare one vertex binding array.");
+        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton fragment must declare one vertex binding array.");
     }
     const entry = bindings.elements[0];
     if (bindings.elements.length !== 1 || !entry || !ts.isObjectLiteralExpression(entry)) {
-        throw new Error("Pinned skeleton fragment must declare one palette binding.");
+        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton fragment must declare one palette binding.");
     }
     const name = entry.properties.find((property): property is ts.PropertyAssignment =>
         ts.isPropertyAssignment(property) && context.propertyName(property.name) === "_name");
     if (!name || !ts.isStringLiteral(name.initializer)) {
-        throw new Error("Pinned skeleton palette binding must have a literal name.");
+        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton palette binding must have a literal name.");
     }
     return { texture: name.initializer.text, sampler: "", source: "bone_palette",
         reflectionCube: false, origin: ["skeleton-fragment.ts; textureLoad reads the live palette."] };
@@ -2237,7 +2235,7 @@ export function pinnedStandardSupportBlock(
     const builtinBindings = [...standardBuiltinBindings];
     if (options.skeleton) {
         const { file, declaration } = context.methodDeclaration(skeletonModule, "stdSkeletonExt._meshFeatures");
-        if (!declaration.body || !ts.isBlock(declaration.body)) throw new Error("Pinned Standard skeleton feature hook has no block body.");
+        if (!declaration.body || !ts.isBlock(declaration.body)) refuseGeneration(skeletonModule, "Pinned Standard skeleton feature hook has no block body.");
         const bindings = new Map<string, PinnedBinding>([
             ["meshFeatures", { cpp: "mesh_features", type: "scalar" }],
             ...["MSH_HAS_SKELETON", "MSH_HAS_SKELETON_8", "MSH_HAS_THIN_INSTANCES"].map((name): [string, PinnedBinding] => [name, { cpp: `${mesh(name)}u`, type: "scalar" }]),
@@ -2245,10 +2243,13 @@ export function pinnedStandardSupportBlock(
         ]);
         const lowerer = new PinnedNumericLowerer(file, { bindings, calls: new Map(), booleanOr: true,
             returnValue: (expression) => {
-                if (!expression) throw new Error("Pinned skeleton feature hook returned no value.");
+                if (!expression) refuseGeneration(skeletonModule, "Pinned skeleton feature hook returned no value.");
                 return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;
             },
         });
+        // Defined only when on: both PALs read it as defined(...), so a
+        // 0 branch would read as on. The inventory row carries the off
+        // state.
         skeletonBlock = `
 #define BBLITE_STANDARD_SKELETON 1
 // ${context.provenance(skeletonModule, "stdSkeletonExt._meshFeatures")}
