@@ -6,10 +6,8 @@ import {
     geometryReferenceStaleness,
     geometryTaskPaths,
 } from "../src/geometry-output-diagnostics.js";
-import {
-    resolveNativeExecutable,
-    writeSeekMeta,
-} from "../src/parity-scene.js";
+import { writeSeekMeta } from "../src/tooling/artifacts.js";
+import { resolveNativeExecutable } from "../src/tooling/native-run.js";
 
 // TL-6's parseable pieces, in the gaps-test style: the per-task path
 // quartet, the diff-rule staleness reader for cached impostor

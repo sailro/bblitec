@@ -3,7 +3,7 @@ import { join } from "node:path";
 import {
     captureBuffersPath,
     captureShadersDirectory,
-} from "./parity-scene.js";
+} from "./tooling/artifacts.js";
 
 /**
  * Reading an instrumented capture's uniform buffers.
@@ -141,8 +141,8 @@ function decodeStruct(
  * accepting both the `bytes` and `data` key spellings — and falling back to
  * the mapped-at-creation range, which is the only content a buffer filled
  * through `mappedAtCreation` ever has. The one copy `render-diff` reads
- * through as well: the two diagnostics used to disagree about which buffers
- * even had bytes.
+ * through as well, so the two diagnostics agree about which buffers hold
+ * bytes.
  */
 export function lastWriteBytes(buffer: {
     writes?: unknown;

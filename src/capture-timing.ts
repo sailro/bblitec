@@ -8,7 +8,7 @@
 export const captureSettleMilliseconds = 3000;
 
 /** Deterministic callback rate for an ad-hoc native measured run. */
-export const adHocCaptureFramesPerSecond = 60;
+const adHocCaptureFramesPerSecond = 60;
 
 /** The deterministic clock shared by explicit and wall-clock capture poses. */
 export function fixedCaptureEnvironment(): Record<string, string> {

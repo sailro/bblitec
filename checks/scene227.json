@@ -1,0 +1,18 @@
+{
+  "scene": "scene227",
+  "notes": "Shared-engine canvases: two panes of one engine; a drag over the left pane orbits only the left camera, a drag over the right pane only the right, a drag crossing the divider stays with the pane it started in, idle changes nothing, and after a resize both panes still hold geometry against their own clear colours. Canvas-only captures.",
+  "base": "adhoc",
+  "capture": false,
+  "env": { "BBLITE_CAPTURE_UI": "0" },
+  "phases": [
+    { "id": "baseline", "frame": 90 },
+    { "id": "idle", "frame": 180 },
+    { "id": "left", "frame": 90, "tape": ["-*20", "+UiMouseLeft@300:360", "UiMove@310:360", "UiMove@320:360", "UiMove@330:360", "UiMove@340:360", "UiMove@350:360", "UiMove@360:360", "UiMove@370:360", "UiMove@380:360", "UiMove@390:360", "UiMove@400:360", "UiMove@410:360", "UiMove@420:360", "-UiMouseLeft@420:360"] },
+    { "id": "right", "frame": 90, "tape": ["-*20", "+UiMouseLeft@940:360", "UiMove@950:360", "UiMove@960:360", "UiMove@970:360", "UiMove@980:360", "UiMove@990:360", "UiMove@1000:360", "UiMove@1010:360", "UiMove@1020:360", "UiMove@1030:360", "UiMove@1040:360", "UiMove@1050:360", "UiMove@1060:360", "-UiMouseLeft@1060:360"] },
+    { "id": "crossing", "frame": 90, "tape": ["-*20", "+UiMouseLeft@580:360", "UiMove@592:360", "UiMove@603:360", "UiMove@615:360", "UiMove@627:360", "UiMove@638:360", "UiMove@650:360", "UiMove@662:360", "UiMove@673:360", "UiMove@685:360", "UiMove@697:360", "UiMove@708:360", "UiMove@720:360", "-UiMouseLeft@720:360", "UiMove@900:360"] },
+    { "id": "resize", "frame": 90, "tape": ["-*20", "WindowResize@1000:600"] }
+  ],
+  "expect": [
+    { "kind": "plugin", "module": "checks/plugins/surface-panes.mjs" }
+  ]
+}

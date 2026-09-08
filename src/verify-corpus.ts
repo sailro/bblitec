@@ -37,6 +37,7 @@ import type {
 } from "./upstream-corpus.js";
 import { readBabylonLiteCorpus } from "./upstream-corpus.js";
 import { findRepositoryRoot } from "./upstream-source.js";
+import { isMainModule, parseFlags } from "./tooling/flags.js";
 
 export type CorpusCheckKind =
     | "upstream-tree"
@@ -601,7 +602,11 @@ async function verifyChecks(
 }
 
 async function main(): Promise<void> {
-    const offline = process.argv.includes("--offline");
+    const offline = parseFlags(
+        process.argv.slice(2),
+        { boolean: ["--offline"] },
+        "verify-corpus",
+    ).flags.has("--offline");
     const root = findRepositoryRoot();
     const manifest = readBabylonLiteCorpus(root);
     const checks = classifyCorpusChecks(
@@ -675,10 +680,6 @@ async function main(): Promise<void> {
     );
 }
 
-if (
-    process.argv[1] &&
-    import.meta.url ===
-        new URL(`file://${process.argv[1].replace(/\\/g, "/")}`).href
-) {
+if (isMainModule(import.meta.url)) {
     await main();
 }

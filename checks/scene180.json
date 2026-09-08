@@ -1,0 +1,645 @@
+{
+  "scene": "scene180",
+  "notes": "Standalone text renderer controls: the host page's weight, colour, rotation, opacity sliders and textarea, the layer drag, wheel scale, window and textarea resize. Every control is observed in the browser (glyph instances, palette, the text-layer uniform bytes, layer state) and replayed natively through the tape; the panel is hidden in both captures except for the full-page phases.",
+  "base": "adhoc",
+  "phases": [
+    {
+      "id": "initial",
+      "frame": 240,
+      "tape": [
+        "-*20"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "1"
+      }
+    },
+    {
+      "id": "weight-zero",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@409:97",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "weight",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@445:97",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "weight-max",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@499:97",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "weight-clear",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@445:97",
+        "-*8",
+        "UiClick@409:97",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "color",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@431:127",
+        "-*8",
+        "UiClick@454:157",
+        "-*8",
+        "UiClick@476:187",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "weighted-color",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@445:97",
+        "-*8",
+        "UiClick@431:127",
+        "-*8",
+        "UiClick@454:157",
+        "-*8",
+        "UiClick@476:187",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "weighted-edit",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@445:97",
+        "-*8",
+        "UiClick@431:127",
+        "-*8",
+        "UiClick@80:50",
+        "UiKey@Ctrl+A",
+        "UiText@41562066666920cea920d0960a4c69766520636f6c6f7220616e64207765696768742e",
+        "UiClick@640:600",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "empty",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@445:97",
+        "-*8",
+        "UiClick@80:50",
+        "UiKey@Ctrl+A",
+        "UiKey@Backspace",
+        "UiClick@640:600",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "regrow",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@445:97",
+        "-*8",
+        "UiClick@80:50",
+        "UiKey@Ctrl+A",
+        "UiKey@Backspace",
+        "UiClick@640:600",
+        "-*8",
+        "UiClick@80:50",
+        "UiKey@Ctrl+A",
+        "UiText@4e657720c3a92052c3a973756dc3a90a5465787420616674657220616e20656d7074792072756e2e",
+        "UiClick@640:600",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "rotation",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@476:37",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "opacity",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiClick@454:67",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "drag",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "+UiMouseLeft@750:600",
+        "UiMove@850:640",
+        "-UiMouseLeft@850:640",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "scale",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "UiWheelUp",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "window-resize",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "WindowResize@960:600",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "0"
+      }
+    },
+    {
+      "id": "textarea-resize",
+      "frame": 240,
+      "tape": [
+        "-*20",
+        "+UiMouseLeft@304:162",
+        "UiMove@304:242",
+        "-UiMouseLeft@304:242",
+        "-*8"
+      ],
+      "env": {
+        "BBLITE_CAPTURE_UI": "1"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "kind": "plugin",
+      "module": "checks/plugins/text-glyphs.mjs",
+      "options": {
+        "background": [
+          13,
+          15,
+          23
+        ],
+        "uniform": true,
+        "gates": {
+          "default": {
+            "full": 0.5,
+            "foreground": 0.5
+          }
+        }
+      }
+    }
+  ],
+  "observe": {
+    "initScriptFile": "checks/plugins/scene180-uniform.init.js",
+    "hooks": [
+      {
+        "marker": "registerTextRenderer(tr);",
+        "inject": "window.__observe = () => { const group = data._groups[0]; const ids = new Map([...group._curveSet._atlas._glyphSlots].map(([id, slot]) => [slot._index, id])); const instances = Array.from({ length: data._instanceCount }, (_, i) => { const word = data._instancesU32[i * 3 + 2]; return word === 0xffffffff ? null : [ids.get(word & 0xffff), data._instances[i * 3], data._instances[i * 3 + 1], word >>> 16]; }); const form = document.getElementById('textInput').getBoundingClientRect(); return { instances, styles: Array.from(data._styles), uniform: Array.from(window.__textUniform), layer: { position: layer.positionPx, scale: layer.scale, rotation: layer.rotationRad, opacity: layer.opacity }, viewport: { width: engine.canvas.width, height: engine.canvas.height }, form: { width: form.width, height: form.height }, values: Object.fromEntries(['weight', 'rot', 'opacity', 'red', 'green', 'blue'].map((id) => [id, document.getElementById(id).value])) }; };"
+      }
+    ],
+    "steps": [
+      {
+        "id": "initial",
+        "settleFrames": 120
+      },
+      {
+        "id": "weight-zero",
+        "actions": [
+          {
+            "click": [
+              409,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "weight",
+        "actions": [
+          {
+            "click": [
+              445,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "weight-max",
+        "actions": [
+          {
+            "click": [
+              499,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "weight-clear",
+        "actions": [
+          {
+            "click": [
+              445,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "click": [
+              409,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "color",
+        "actions": [
+          {
+            "click": [
+              431,
+              127
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "click": [
+              454,
+              157
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "click": [
+              476,
+              187
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "weighted-color",
+        "actions": [
+          {
+            "click": [
+              445,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "click": [
+              431,
+              127
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "click": [
+              454,
+              157
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "click": [
+              476,
+              187
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "weighted-edit",
+        "actions": [
+          {
+            "click": [
+              445,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "click": [
+              431,
+              127
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "fill": {
+              "selector": "#textInput",
+              "text": "AV ffi Ω Ж\nLive color and weight."
+            }
+          },
+          {
+            "click": [
+              640,
+              600
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "empty",
+        "actions": [
+          {
+            "click": [
+              445,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "fill": {
+              "selector": "#textInput",
+              "text": ""
+            }
+          },
+          {
+            "click": [
+              640,
+              600
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "regrow",
+        "actions": [
+          {
+            "click": [
+              445,
+              97
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "fill": {
+              "selector": "#textInput",
+              "text": ""
+            }
+          },
+          {
+            "click": [
+              640,
+              600
+            ]
+          },
+          {
+            "frames": 8
+          },
+          {
+            "fill": {
+              "selector": "#textInput",
+              "text": "New é Résumé\nText after an empty run."
+            }
+          },
+          {
+            "click": [
+              640,
+              600
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "rotation",
+        "actions": [
+          {
+            "click": [
+              476,
+              37
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "opacity",
+        "actions": [
+          {
+            "click": [
+              454,
+              67
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "drag",
+        "actions": [
+          {
+            "drag": [
+              750,
+              600,
+              850,
+              640
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "scale",
+        "actions": [
+          {
+            "move": [
+              640,
+              360
+            ]
+          },
+          {
+            "wheel": -100
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "window-resize",
+        "actions": [
+          {
+            "resize": [
+              960,
+              600
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120,
+        "hideStyle": "#panel{visibility:hidden!important}"
+      },
+      {
+        "id": "textarea-resize",
+        "actions": [
+          {
+            "resize": [
+              1280,
+              720
+            ]
+          },
+          {
+            "drag": [
+              304,
+              162,
+              304,
+              242
+            ]
+          },
+          {
+            "frames": 8
+          }
+        ],
+        "settleFrames": 120
+      }
+    ]
+  }
+}

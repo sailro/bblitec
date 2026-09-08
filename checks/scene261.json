@@ -1,0 +1,34 @@
+{
+  "scene": "scene261",
+  "notes": "TAA, frozen: the corpus source accumulates then stops the engine, so every native phase must hold the exact retained state the browser observation records (executions, Halton index, blend factor, camera version, the clean/drawn/jitter words as uint32 so signed zeros count), the images must not move, and pointer input on the stopped engine must change nothing. The live camera and resize behaviour is scene261-live's, against the no-query twin.",
+  "base": "adhoc",
+  "minFrames": 30,
+  "phases": [
+    { "id": "first-ready", "frame": 0 },
+    { "id": "canonical", "frame": 181 },
+    { "id": "idle", "frame": 362 },
+    { "id": "pointer", "frame": 362, "tape": ["-*181", "-*20", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360"] }
+  ],
+  "expect": [
+    { "kind": "golden-mad", "phase": "*", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "image-mad", "phase": "canonical", "vs": "first-ready", "maxDiff": 0, "notes": "the frozen image does not change" },
+    { "kind": "image-mad", "phase": "idle", "vs": "first-ready", "maxDiff": 0 },
+    { "kind": "image-mad", "phase": "pointer", "vs": "first-ready", "maxDiff": 0 },
+    { "kind": "capture-same", "phase": "canonical", "vs": "first-ready", "path": "temporalTasks" },
+    { "kind": "capture-same", "phase": "idle", "vs": "first-ready", "path": "temporalTasks" },
+    { "kind": "capture-same", "phase": "pointer", "vs": "first-ready", "path": "temporalTasks" },
+    { "kind": "plugin", "module": "checks/plugins/scene261-taa.mjs", "options": { "mode": "frozen" } }
+  ],
+  "observe": {
+    "hooks": [
+      {
+        "marker": "await registerScene(scene);",
+        "inject": "let __taaExecutions = 0; const __taaExecute = taa.execute; taa.execute = () => { __taaExecutions += 1; return __taaExecute(); }; window.__observe = () => { const words = (floats) => Array.from(new Uint32Array(floats.buffer, floats.byteOffset, floats.length)); const clean = Float32Array.from(sourceTask._suData); const drawn = Float32Array.from(clean); drawn.set(taa._jitterScratch, 0); return { executions: __taaExecutions, haltonIndex: taa._haltonIndex, factor: taa._factor, publicFactor: taa.factor, firstUpdate: taa._firstUpdate, lastCameraVersion: taa._lastCamVer, cleanLength: clean.length, cleanWords: words(clean), drawnWords: words(drawn), haltonWords: words(Float32Array.from(taa._halton)), jitterScratchWords: words(taa._jitterScratch), camera: { alpha: camera.alpha, beta: camera.beta, radius: camera.radius } }; };"
+      }
+    ],
+    "steps": [
+      { "id": "first" },
+      { "id": "idle", "settleFrames": 180 }
+    ]
+  }
+}

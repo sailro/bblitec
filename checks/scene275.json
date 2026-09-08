@@ -1,0 +1,37 @@
+{
+  "scene": "scene275",
+  "notes": "Text alpha-to-coverage: the native textGpu receipts (allocations, uploads, draw bindings and pipeline state) are joined against the browser's WebGPU receipts recorded by checks/plugins/gpu-receipts.init.js. The pinned camera is unattached, so pointer and key input must change nothing; a window resize re-lays the text at 960x600.",
+  "base": "adhoc",
+  "minFrames": 30,
+  "phases": [
+    { "id": "canonical", "frame": 181 },
+    { "id": "idle", "frame": 362 },
+    { "id": "input", "frame": 181, "tape": ["-*20", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360", "+KeyW", "-*12", "-KeyW"] },
+    { "id": "resize", "frame": 181, "tape": ["-*20", "WindowResize@960:600"] }
+  ],
+  "expect": [
+    { "kind": "viewport", "phase": "canonical", "equals": [1280, 720] },
+    { "kind": "viewport", "phase": "idle", "equals": [1280, 720] },
+    { "kind": "viewport", "phase": "input", "equals": [1280, 720] },
+    { "kind": "viewport", "phase": "resize", "equals": [960, 600] },
+    { "kind": "golden-mad", "phase": "canonical", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "golden-mad", "phase": "idle", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "golden-mad", "phase": "input", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "golden-mad", "phase": "resize", "reference": "browser:resize", "max": 0.5, "foregroundMax": 0.5 },
+    { "kind": "capture-same", "phase": "idle", "vs": "canonical", "path": "camera", "notes": "the unattached camera does not move" },
+    { "kind": "capture-same", "phase": "input", "vs": "canonical", "path": "camera" },
+    { "kind": "image-mad", "phase": "idle", "vs": "canonical", "maxDiff": 0 },
+    { "kind": "image-mad", "phase": "input", "vs": "canonical", "maxDiff": 0 },
+    { "kind": "plugin", "module": "checks/plugins/scene275-receipts.mjs" }
+  ],
+  "observe": {
+    "initScriptFile": "checks/plugins/gpu-receipts.init.js",
+    "state": "window.__gpuReceipts",
+    "steps": [
+      { "id": "first" },
+      { "id": "idle", "settleFrames": 218 },
+      { "id": "input", "actions": [{ "drag": [640, 360, 760, 360], "steps": 12 }, { "evaluate": "window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', key: 'w' })); window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW', key: 'w' }));" }], "settleFrames": 60 },
+      { "id": "resize", "actions": [{ "resize": [960, 600] }, { "style": "html,body,canvas{width:960px!important;height:600px!important}" }], "settleFrames": 60 }
+    ]
+  }
+}

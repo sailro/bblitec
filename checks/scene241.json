@@ -1,0 +1,21 @@
+{
+  "scene": "scene241",
+  "notes": "Texture animation and camera controls through the tape: the 132 meshes keep their geometry while their pinned material blocks and the rendered image change between frames 5 and 40, and an orbit gesture turns the camera and the image. The registry declares no clock, so the check declares the 16 ms delta it measures at.",
+  "env": { "BBLITE_FRAME_DELTA_MS": "16" },
+  "timeoutMs": 20000,
+  "phases": [
+    { "id": "animating", "frame": 5 },
+    { "id": "frozen", "frame": 40 },
+    { "id": "orbit", "frame": 40, "tape": ["-*20", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360"] }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "meshes.length", "equals": 132 },
+    { "kind": "capture-path", "phase": "*", "path": "draws.length", "equals": 132 },
+    { "kind": "capture-same", "phase": "frozen", "vs": "animating", "path": "camera" },
+    { "kind": "capture-same", "phase": "frozen", "vs": "animating", "path": "meshes", "notes": "texture animation does not change geometry" },
+    { "kind": "capture-differs", "phase": "frozen", "vs": "animating", "path": "pinnedMaterialBlocks", "notes": "the animation updates the material uniforms" },
+    { "kind": "image-mad", "phase": "frozen", "vs": "animating", "min": 0.05 },
+    { "kind": "camera-delta", "phase": "orbit", "vs": "frozen", "key": "alpha", "min": 0.1 },
+    { "kind": "image-mad", "phase": "orbit", "vs": "frozen", "min": 0.05 }
+  ]
+}

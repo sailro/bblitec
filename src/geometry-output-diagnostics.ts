@@ -9,19 +9,20 @@ import {
     pinnedBrowserEntryUrl,
     type SuiteSourceTransform,
 } from "./capture-suite-reference.js";
+import { runNative, usesSeededRandom } from "./parity-scene.js";
 import {
     applyGpuBackendEnvironment,
     backendFileToken,
-    enableGpuDebug,
     parityReportPath,
     readSeekMeta,
     resolveBackend,
-    resolveNativeExecutable,
-    runNative,
-    usesSeededRandom,
-    writeReport,
     writeSeekMeta,
-} from "./parity-scene.js";
+} from "./tooling/artifacts.js";
+import { writeReport } from "./tooling/reports.js";
+import {
+    enableGpuDebug,
+    resolveNativeExecutable,
+} from "./tooling/native-run.js";
 import {
     compareImages,
     generateDiffMap,

@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseParityArguments } from "../src/parity-scene.js";
+import { flagNumber, parseFlags } from "../src/tooling/flags.js";
 import {
     backendFileToken,
     canonicalBackend,
-    flagNumber,
-    parseFlags,
-    parseParityArguments,
     resolveBackend,
-} from "../src/parity-scene.js";
+} from "../src/tooling/artifacts.js";
 
 // The strict parser every scene subcommand shares. These are the
 // behaviors that were each a silent failure before it existed: an

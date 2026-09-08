@@ -45,21 +45,15 @@
 //   also lets the instrumented capture install its WebGPU hooks with
 //   `addInitScript` before any navigation happens.
 //
-// Incidental drift, unified --
-// - A non-numeric listen address now closes the server before throwing
-//   (the two capture copies threw with it open) and uniformly reads
-//   "Unable to start the <serverName>."; the golden capture's message
-//   gains its previously missing "the".
-// - The launch now happens inside the guarded region: a Chromium that
-//   fails to launch closes the server instead of leaking it and hanging
-//   the process (the two capture copies launched before their `try`).
-// - Teardown is uniformly `await browser?.close()` then an awaited
-//   `server.close` whose error propagates -- the shape the two
-//   golden-checked compute harnesses already had, so their observable
-//   behavior is unchanged. The capture copies used to swallow close
-//   errors and the atlas never awaited its close; a close error is only
-//   reachable when closing a server that is not running, which none of
-//   these paths can produce.
+// What every harness shares --
+// - A non-numeric listen address closes the server before throwing and
+//   reads "Unable to start the <serverName>.".
+// - The launch happens inside the guarded region: a Chromium that fails
+//   to launch closes the server instead of leaking it and hanging the
+//   process.
+// - Teardown is `await browser?.close()` then an awaited `server.close`
+//   whose error propagates; a close error is only reachable when closing
+//   a server that is not running, which none of these paths can produce.
 import type { Server } from "node:http";
 import { chromium, type Page } from "playwright-core";
 import { transpileForBrowser } from "./typescript-transpile.js";

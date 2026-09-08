@@ -1,6 +1,9 @@
-// Refresh the default-presentation data from the invoking Node/ICU version.
-// This table is independent of installed font glyph coverage: the latter does
-// not say whether Unicode asks for text or emoji presentation.
+// Generates native/src/pal_ui_emoji.hpp: the Unicode default-presentation
+// ranges (`Emoji_Presentation`) the retained UI's text shaping reads, from
+// the invoking Node/ICU version. This table is independent of installed
+// font glyph coverage: the latter does not say whether Unicode asks for
+// text or emoji presentation. Run from the repository root after a Node
+// (ICU) upgrade: node tools/generate-emoji-presentation.mjs
 import { writeFileSync } from "node:fs";
 
 const ranges = [];

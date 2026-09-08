@@ -29,19 +29,21 @@ import {
     withBrowserPage,
 } from "./browser-harness.js";
 import {
+    goldenFixedFrame,
+    usesRetainedUi,
+    usesSeededRandom,
+} from "./parity-scene.js";
+import {
     captureBuffersPath,
     captureDrawsPath,
     captureMetaPath,
     captureShadersDirectory,
     captureTextureUploadsPath,
     defaultCaptureDirectory,
-    goldenFixedFrame,
     readCaptureMeta,
-    usesRetainedUi,
-    usesSeededRandom,
     writeSeekMeta,
     type CaptureMeta,
-} from "./parity-scene.js";
+} from "./tooling/artifacts.js";
 import {
     resolveScene,
     scenes,
@@ -523,10 +525,6 @@ export async function runInstrumentedCapture(
                         `usage=0x${buffer.usage.toString(16)} writes=${buffer.writeCount}`,
                 )
                 .join("\n");
-            writeFileSync(
-                join(outputDirectory, "buffers-summary.txt"),
-                summary,
-            );
             console.log(`Instrumented capture written to ${outputDirectory}`);
             console.log(`Draw calls: ${JSON.stringify(draws)}`);
             console.log(summary);

@@ -7,6 +7,7 @@ import { suiteBrowserModule } from "./capture-suite-reference.js";
 import { getScene } from "./scene-registry.js";
 import { readBabylonLiteCorpus } from "./upstream-corpus.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
+import { isMainModule, parseFlags } from "./tooling/flags.js";
 
 /**
  * Rewrites `reference/exact-corpus-manifest.json` after an upstream pin bump.
@@ -101,7 +102,7 @@ export interface ManifestRewrite {
  * `previousTree` the git tree whose corpus sources they were composed from;
  * together they are what makes "explained" checkable at all.
  */
-export function rewriteExactCorpusManifest(
+function rewriteExactCorpusManifest(
     previous: UpstreamPinPair,
     repositoryRoot = findRepositoryRoot(),
     previousTree = "HEAD",
@@ -267,14 +268,17 @@ function previousSource(
     });
 }
 
-function flag(name: string): string | undefined {
-    const at = process.argv.indexOf(name);
-    return at >= 0 ? process.argv[at + 1] : undefined;
-}
-
 async function main(): Promise<void> {
-    const version = flag("--previous-version");
-    const sourceVersion = flag("--previous-commit");
+    const parsed = parseFlags(
+        process.argv.slice(2),
+        {
+            value: ["--previous-version", "--previous-commit", "--previous-tree"],
+            boolean: ["--write"],
+        },
+        "corpus:manifest",
+    );
+    const version = parsed.values.get("--previous-version");
+    const sourceVersion = parsed.values.get("--previous-commit");
     if (!version || !sourceVersion) {
         console.error(
             "usage: corpus:manifest --previous-version <v> --previous-commit <sha> " +
@@ -283,7 +287,7 @@ async function main(): Promise<void> {
                 "checkable: composing the previous source and reverting the pin must\n" +
                 "reproduce the committed value, or the move is a finding rather than churn.",
         );
-        process.exitCode = 2;
+        process.exitCode = 1;
         return;
     }
 
@@ -291,7 +295,7 @@ async function main(): Promise<void> {
     const result = rewriteExactCorpusManifest(
         { version, sourceVersion },
         root,
-        flag("--previous-tree") ?? "HEAD",
+        parsed.values.get("--previous-tree") ?? "HEAD",
     );
     console.log(
         `${result.movedModules.length} of ${result.rows} capture module digest(s) ` +
@@ -306,7 +310,7 @@ async function main(): Promise<void> {
         console.log(`${MANIFEST_PATH} is already current.`);
         return;
     }
-    if (!process.argv.includes("--write")) {
+    if (!parsed.flags.has("--write")) {
         console.log("Dry run: pass --write to rewrite.");
         return;
     }
@@ -314,10 +318,6 @@ async function main(): Promise<void> {
     console.log(`Wrote ${MANIFEST_PATH}`);
 }
 
-if (
-    process.argv[1] &&
-    import.meta.url ===
-        new URL(`file://${process.argv[1].replace(/\\/g, "/")}`).href
-) {
+if (isMainModule(import.meta.url)) {
     await main();
 }

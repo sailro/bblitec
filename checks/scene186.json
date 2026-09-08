@@ -1,0 +1,30 @@
+{
+  "scene": "scene186",
+  "notes": "Local cubemaps: the free camera's look input, idle stability, resize, and the eight room faces with the four reflective floors' solid ORM replacement, on both backends. The registry declares no clock, so the ad-hoc capture clock frames the phases.",
+  "base": "adhoc",
+  "phases": [
+    { "id": "baseline", "frame": 90 },
+    { "id": "idle", "frame": 180 },
+    { "id": "look", "frame": 90, "tape": ["-*20", "+UiMouseLeft@640:360", "UiMove@760:390", "-UiMouseLeft@760:390"] },
+    { "id": "resize", "frame": 90, "tape": ["-*20", "WindowResize@1000:600"] }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "meshes.length", "equals": 8, "notes": "room resource factories retain eight faces" },
+    { "kind": "capture-path", "phase": "*", "path": "materials[directIntensity=0].length", "equals": 4, "notes": "reflective floors keep their direct-intensity writes" },
+    { "kind": "capture-path", "phase": "*", "path": "materials[environmentIntensity=0].length", "equals": 4 },
+    { "kind": "capture-path", "phase": "*", "path": "materials[directIntensity=0].textures[slot=metallicRoughness].byteLength", "equals": [[4], [4], [4], [4]], "notes": "the reflective floor ORM is the solid replacement" },
+    { "kind": "capture-path", "phase": "*", "path": "materials[directIntensity=0].textures[slot=metallicRoughness].digest", "equals": [["62a3b2648e85e545"], ["62a3b2648e85e545"], ["62a3b2648e85e545"], ["62a3b2648e85e545"]], "notes": "FNV-1a receipt for the pin's rgba8unorm store of (1, .01, 1, 1): [255, 3, 255, 255]" },
+    { "kind": "capture-same", "phase": "idle", "vs": "baseline", "path": "camera", "notes": "no idle camera drift" },
+    { "kind": "image-mad", "phase": "idle", "vs": "baseline", "maxDiff": 0, "notes": "no idle image drift" },
+    { "kind": "camera-delta", "phase": "look", "vs": "baseline", "key": "freeYaw", "min": 0.05, "notes": "the free camera takes horizontal input" },
+    { "kind": "camera-delta", "phase": "look", "vs": "baseline", "key": "freePitch", "min": 0.01, "notes": "the free camera takes vertical input" },
+    { "kind": "capture-same", "phase": "look", "vs": "baseline", "path": "camera.position", "notes": "looking does not translate the camera" },
+    { "kind": "image-mad", "phase": "look", "vs": "baseline", "min": 1, "notes": "camera input changes the reflections" },
+    { "kind": "viewport", "phase": "resize", "equals": [1000, 600] },
+    { "kind": "capture-same", "phase": "resize", "vs": "baseline", "path": "camera.position" },
+    { "kind": "capture-same", "phase": "resize", "vs": "baseline", "path": "camera.freeYaw" },
+    { "kind": "capture-same", "phase": "resize", "vs": "baseline", "path": "camera.freePitch" },
+    { "kind": "capture-differs", "phase": "resize", "vs": "baseline", "path": "camera.viewProjection", "notes": "resize changes the projection" },
+    { "kind": "backends-agree", "phase": "*", "paths": ["camera"], "imageMad": 0.005, "notes": "backend reflections agree after interaction" }
+  ]
+}

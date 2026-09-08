@@ -1,0 +1,21 @@
+{
+  "scene": "scene302",
+  "twin": true,
+  "notes": "Node particle emitter, live: the no-query twin keeps spawning, so the billboard population grows between frames 80 and 120 and the moving emitter changes more than a hundred pixels; an orbit gesture turns the camera and the particles. Rendered at one sample.",
+  "base": "fixed",
+  "env": { "BBLITE_MSAA": "1" },
+  "phases": [
+    { "id": "early", "frame": 80 },
+    { "id": "later", "frame": 120 },
+    { "id": "orbit", "frame": 120, "tape": ["-*35", "+UiMouseLeft@640:360", "UiMove@650:360", "UiMove@660:360", "UiMove@670:360", "UiMove@680:360", "UiMove@690:360", "UiMove@700:360", "UiMove@710:360", "UiMove@720:360", "UiMove@730:360", "UiMove@740:360", "UiMove@750:360", "UiMove@760:360", "-UiMouseLeft@760:360"] }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "draws[pipeline=billboard].length", "equals": 1 },
+    { "kind": "capture-path", "phase": "*", "path": "draws[pipeline=billboard].instanceCount", "min": 100 },
+    { "kind": "capture-same", "phase": "later", "vs": "early", "path": "camera" },
+    { "kind": "capture-compare", "phase": "later", "vs": "early", "path": "draws[pipeline=billboard][0].instanceCount", "op": ">", "notes": "the live source keeps spawning before its lifetime bound" },
+    { "kind": "image-mad", "phase": "later", "vs": "early", "changedPixelsMin": 101, "notes": "the moving emitter changes visible pixels" },
+    { "kind": "camera-delta", "phase": "orbit", "vs": "later", "key": "alpha", "min": 0.1 },
+    { "kind": "image-mad", "phase": "orbit", "vs": "later", "min": 0.01 }
+  ]
+}

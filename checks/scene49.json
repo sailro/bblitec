@@ -1,0 +1,29 @@
+{
+  "scene": "scene49",
+  "twin": true,
+  "notes": "Cylinder/capsule proximity and shape cast with live rotation gizmos, in the no-query twin: the baseline reproduces the golden exactly and holds while idle; picking a cylinder creates the lazy gizmo; dragging a ring rotates the cylinder and the live proximity marker follows; the lower ring and the cast marker likewise; orbit turns the camera; resize changes the projection. The three markers are recomputed by the pinned Havok WASM from each capture's cylinder transforms.",
+  "base": "adhoc",
+  "phases": [
+    { "id": "baseline", "frame": 90 },
+    { "id": "idle", "frame": 180 },
+    { "id": "picked", "frame": 90, "tape": ["-*20", "+UiMouseLeft@491:210", "-UiMouseLeft@491:210"] },
+    { "id": "rotation", "frame": 120, "tape": ["-*20", "+UiMouseLeft@491:210", "-UiMouseLeft@491:210", "-*12", "UiMove@483:270", "-*12", "+UiMouseLeft@483:270", "-*12", "UiMove@484:272", "UiMove@485:273", "UiMove@486:275", "UiMove@487:277", "UiMove@488:278", "UiMove@489:280", "UiMove@490:282", "UiMove@491:283", "UiMove@492:285", "UiMove@493:287", "UiMove@494:288", "UiMove@495:290", "-UiMouseLeft@495:290"] },
+    { "id": "cast-rotation", "frame": 220, "tape": ["-*20", "+UiMouseLeft@491:210", "-UiMouseLeft@491:210", "-*12", "UiMove@483:270", "-*12", "+UiMouseLeft@483:270", "-*12", "UiMove@484:272", "UiMove@485:273", "UiMove@486:275", "UiMove@487:277", "UiMove@488:278", "UiMove@489:280", "UiMove@490:282", "UiMove@491:283", "UiMove@492:285", "UiMove@493:287", "UiMove@494:288", "UiMove@495:290", "-UiMouseLeft@495:290", "-*12", "+UiMouseLeft@512:476", "-UiMouseLeft@512:476", "-*12", "UiMove@506:515", "-*12", "+UiMouseLeft@506:515", "-*12", "UiMove@507:517", "UiMove@508:519", "UiMove@510:520", "UiMove@511:522", "UiMove@512:524", "UiMove@513:526", "UiMove@514:527", "UiMove@515:529", "UiMove@517:531", "UiMove@518:533", "UiMove@519:534", "UiMove@520:536", "-UiMouseLeft@520:536"] },
+    { "id": "orbit", "frame": 90, "tape": ["-*20", "+UiMouseLeft@850:340", "UiMove@910:355", "-UiMouseLeft@910:355"] },
+    { "id": "resize", "frame": 90, "tape": ["-*20", "WindowResize@1000:600"] }
+  ],
+  "expect": [
+    { "kind": "image-mad", "phase": "baseline", "vs": "golden", "maxDiff": 0, "notes": "the baseline reproduces the golden exactly" },
+    { "kind": "image-mad", "phase": "idle", "vs": "baseline", "maxDiff": 0 },
+    { "kind": "capture-compare", "phase": "picked", "vs": "baseline", "path": "meshes.length", "op": ">", "notes": "the lazy gizmo is created on pick" },
+    { "kind": "capture-differs", "phase": "rotation", "vs": "baseline", "path": "meshes[0].rotationQuaternion", "notes": "the upper gizmo rotates its cylinder" },
+    { "kind": "capture-differs", "phase": "rotation", "vs": "baseline", "path": "meshes[2].position", "notes": "live proximity follows the rotation" },
+    { "kind": "capture-differs", "phase": "cast-rotation", "vs": "baseline", "path": "meshes[4].rotationQuaternion", "notes": "the lower gizmo rotates its cylinder" },
+    { "kind": "capture-differs", "phase": "cast-rotation", "vs": "baseline", "path": "meshes[7].position", "notes": "the live cast follows the rotation" },
+    { "kind": "camera-delta", "phase": "orbit", "vs": "baseline", "key": "alpha", "min": 0.05 },
+    { "kind": "viewport", "phase": "resize", "equals": [1000, 600] },
+    { "kind": "capture-differs", "phase": "resize", "vs": "baseline", "path": "camera.viewProjection" },
+    { "kind": "backends-agree", "phase": "*", "paths": ["meshes[2].position", "meshes[3].position", "meshes[7].position"], "imageMad": 0.005 },
+    { "kind": "plugin", "module": "checks/plugins/scene49-havok.mjs" }
+  ]
+}

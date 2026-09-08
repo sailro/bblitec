@@ -1,0 +1,28 @@
+{
+  "scene": "scene41",
+  "twin": true,
+  "notes": "Physics shape debug viewer, simulated live in the no-query twin: the seven retained overlays draw at order 1000 with their physics-debug-lines uniform packet at the body's position, the overlay meshes share their bodies' transforms and clone geometry, bodies fall then land, the early frame stays within the registry gates against the golden, pointer input does not move the fixed camera, and resize does not disturb the simulation.",
+  "base": "fixed",
+  "phases": [
+    { "id": "early", "frame": 10 },
+    { "id": "falling", "frame": 30 },
+    { "id": "landing", "frame": 90 },
+    { "id": "drag", "frame": 30, "tape": ["-*15", "+UiMouseLeft@850:400", "UiMove@910:415", "-UiMouseLeft@910:415"] },
+    { "id": "resize", "frame": 30, "tape": ["-*15", "WindowResize@1000:600"] }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "*", "path": "meshes.length", "equals": 16 },
+    { "kind": "capture-path", "phase": "*", "path": "draws[pipeline=shader].length", "equals": 7, "notes": "seven retained overlays" },
+    { "kind": "capture-path", "phase": "*", "path": "draws[pipeline=shader].order", "equals": [1000, 1000, 1000, 1000, 1000, 1000, 1000] },
+    { "kind": "capture-path", "phase": "*", "path": "meshes[*].position", "finite": true },
+    { "kind": "golden-mad", "phase": "early", "max": 0.3, "foregroundMax": 0.4 },
+    { "kind": "capture-differs", "phase": "falling", "vs": "early", "path": "meshes[*].position", "notes": "the bodies fall" },
+    { "kind": "capture-differs", "phase": "landing", "vs": "falling", "path": "meshes[*].position", "notes": "the bodies land" },
+    { "kind": "capture-same", "phase": "drag", "vs": "falling", "path": "camera", "notes": "the authored scene does not attach camera controls" },
+    { "kind": "capture-same", "phase": "drag", "vs": "falling", "path": "meshes[*].position" },
+    { "kind": "capture-same", "phase": "resize", "vs": "falling", "path": "meshes[*].position" },
+    { "kind": "viewport", "phase": "resize", "equals": [1000, 600] },
+    { "kind": "backends-agree", "phase": "*", "paths": ["meshes[*].position"], "imageMaxDiff": 1 },
+    { "kind": "plugin", "module": "checks/plugins/scene41-overlays.mjs" }
+  ]
+}
