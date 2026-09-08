@@ -26,6 +26,7 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:workers": [],
     "platform:window": ["src/pal_window_realm.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
+    "engine:device-recovery": [],
     // Browser Gamepad polling maps to SDL's standard gamepad API in the
     // platform translation unit already selected by backend:sdl.
     "input:gamepad": [],

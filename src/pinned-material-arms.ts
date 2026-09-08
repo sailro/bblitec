@@ -989,6 +989,7 @@ interface ScenePbrSetters {
     setPbrMetallicReflectance: PinnedLayerSetter<Record<string, unknown>>;
     /** The only one that takes the material alone: it stamps a boolean. */
     setPbrGammaAlbedo: (material: Record<string, unknown>) => void;
+    setShadowOnly: PinnedLayerSetter<Record<string, unknown>>;
 }
 
 let scenePbrSettersPromise: Promise<ScenePbrSetters> | undefined;
@@ -1005,6 +1006,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             reflectance,
             gammaAlbedo,
             lightmap,
+            shadowOnly,
         ] =
             await Promise.all([
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
@@ -1037,6 +1039,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrLightmap">>(
                     "material/pbr/enable-pbr-lightmap.js",
                 ),
+                importPinnedModule<Pick<ScenePbrSetters, "setShadowOnly">>("material/pbr/set-shadow-only.js"),
             ]);
         return {
             setPbrSheen: sheen.setPbrSheen,
@@ -1049,6 +1052,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
                 reflectance.setPbrMetallicReflectance,
             setPbrGammaAlbedo: gammaAlbedo.setPbrGammaAlbedo,
             setPbrLightmap: lightmap.setPbrLightmap,
+            setShadowOnly: shadowOnly.setShadowOnly,
         };
     })();
     return scenePbrSettersPromise;
@@ -1301,6 +1305,7 @@ export async function composeScenePbrVariants(
         if (material.gammaAlbedo) {
             setters.setPbrGammaAlbedo(input);
         }
+        if (material.shadowOnly) setters.setShadowOnly(input, material.shadowOnly);
         if (material.transmission > 0) {
             throw new Error(
                 "A scene-code transmissive material has no composed arm yet; " +

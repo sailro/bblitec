@@ -250,6 +250,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "upstream targets the browser and has no platform abstraction",
         consumers: CMAKE,
     },
+    "engine:device-recovery": {
+        provenance: "src/engine/device-lost-recovery.ts + src/engine/device-lost-scene-recovery.ts; native device and scene-resource reconstruction",
+        consumers: CMAKE,
+    },
     "input:gamepad": {
         provenance:
             "browser navigator.getGamepads + Gamepad standard mapping; " +

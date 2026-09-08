@@ -20,6 +20,7 @@ import { GeospatialCameraLowerer } from "./lowering/geospatial-camera-lowerer.js
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
 import { EngineLowerer } from "./lowering/engine-lowerer.js";
+import { lowerDeviceRecovery } from "./lowering/device-recovery-lowerer.js";
 import { lowerClusteredLights } from "./lowering/clustered-light-runtime.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
@@ -1090,6 +1091,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             new EngineLowerer(context).lowerCore(features.includes("platform:workers")),
             generated,
         );
+        if (features.includes("engine:device-recovery")) this.writeSource("upstream/src/device_recovery.cpp", lowerDeviceRecovery(context), generated);
         this.writeSource(
             "upstream/src/scene_core.cpp",
             new SceneLowerer(context).lowerCore({

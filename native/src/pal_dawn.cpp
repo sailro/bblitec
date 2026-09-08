@@ -2759,7 +2759,7 @@ void render_ui_dawn_frame(
         } else {
             wgpuRenderPassEncoderSetPipeline(layer_pass, ui.color_pipeline);
         }
-        wgpuRenderPassEncoderDrawIndexed(
+        count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
             layer_pass,
             draw.index_count,
             1,
@@ -2797,7 +2797,7 @@ void render_ui_dawn_frame(
         WGPU_WHOLE_SIZE);
     wgpuRenderPassEncoderSetScissorRect(
         composite_pass, 0, 0, frame.width, frame.height);
-    wgpuRenderPassEncoderDrawIndexed(
+    count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
         composite_pass,
         6,
         1,
@@ -4984,7 +4984,7 @@ void encode_variant_draw(
         WGPUIndexFormat_Uint32,
         0,
         WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderDrawIndexed(
+    count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
         pass,
         index_count,
         instances.count,
@@ -5200,7 +5200,7 @@ void run_esm_blur(
             wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
         wgpuRenderPassEncoderSetPipeline(render, blur.pipeline);
         wgpuRenderPassEncoderSetBindGroup(render, 0, group, 0, nullptr);
-        wgpuRenderPassEncoderDraw(render, 3, 1, 0, 0);
+        count_gpu_draw(wgpuRenderPassEncoderDraw, render, 3, 1, 0, 0);
         wgpuRenderPassEncoderEnd(render);
         wgpuRenderPassEncoderRelease(render);
     };
@@ -8121,7 +8121,7 @@ void encode_transmission_grab(
         pass,
         state.transmission_grab_pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
-    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
     wgpuBindGroupRelease(bind_group);
@@ -8236,7 +8236,7 @@ void encode_image_processing(
         state.image_processing_group,
         0,
         nullptr);
-    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 }
@@ -8317,7 +8317,7 @@ void encode_depth_copy(
         wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
     wgpuRenderPassEncoderSetPipeline(pass, state.depth_copy_pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
-    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
     wgpuBindGroupRelease(bind_group);
@@ -8408,7 +8408,7 @@ void present_stopped_temporal_frame(DawnState& state, WGPUCommandEncoder encoder
     const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
     wgpuRenderPassEncoderSetPipeline(pass, blit_pipeline_for(state, state.surface_format, 1u));
     wgpuRenderPassEncoderSetBindGroup(pass, 2u, state.temporal_presented_group, 0u, nullptr);
-    wgpuRenderPassEncoderDraw(pass, 3u, 1u, 0u, 0u);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3u, 1u, 0u, 0u);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 }
@@ -9185,7 +9185,7 @@ void save_dawn_geometry_id_buffer(
                 WGPUIndexFormat_Uint32,
                 0,
                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderDrawIndexed(
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                 pass,
                 mesh.index_count,
 #if BBLITE_GPU_INSTANCING
@@ -9546,7 +9546,7 @@ void encode_dawn_post_process_pass(WGPUCommandEncoder encoder, WGPUTextureView s
         prepared.group,
         0,
         nullptr);
-    wgpuRenderPassEncoderDraw(post_pass, 3, 1, 0, 0);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, post_pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(post_pass);
     wgpuRenderPassEncoderRelease(post_pass);
 }
@@ -9761,7 +9761,7 @@ void record_screen_space_stage(
     WGPURenderPassEncoder pass = begin_screen_space_pass(encoder, target);
     wgpuRenderPassEncoderSetPipeline(pass, program.pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, stage.group, 0, nullptr);
-    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 }
@@ -12378,7 +12378,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     WGPUIndexFormat_Uint32,
                     0,
                     WGPU_WHOLE_SIZE);
-                wgpuRenderPassEncoderDrawIndexed(
+                count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                     pass,
                     mesh.index_count,
                     candidates[index].instance_count,
@@ -12480,7 +12480,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 WGPUIndexFormat_Uint32,
                 0,
                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderDrawIndexed(
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                 pass, mesh.index_count, 1, 0, 0, 0);
         }
 #if BBLITE_HAS_SPLATS
@@ -12505,7 +12505,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 WGPUIndexFormat_Uint16,
                 0,
                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderDrawIndexed(
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                 pass,
                 static_cast<std::uint32_t>(
                     upstream::splat_quad_indices.size()),
@@ -12650,7 +12650,7 @@ SceneRun run_dawn_engine(Engine& engine) {
     // event the scene receives also reaches the camera -- and none does
     // in a deterministic test pass.
     const auto camera_pointer_hook = [&](const SDL_Event& event) {
-        if (hidden_test_pass) return;
+        if (hidden_test_pass && !is_replayed_ui_event(event)) return;
         dispatch_surface_camera_pointer(engine, event, camera, pointer_state, surface_pointer_state);
     };
 #if BBLITE_OFFSCREEN_SURFACES
@@ -12660,7 +12660,17 @@ SceneRun run_dawn_engine(Engine& engine) {
         throw std::runtime_error("Capture offscreen output from its presentation host.");
     }
 #endif
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+    DrawCountScope draw_count_scope(engine);
+#endif
     while (captures.keep_running(running, frame)) {
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        if (state.device_lost) {
+            force_device_loss(engine);
+            break;
+        }
+        engine.draw_call_count = 0;
+#endif
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
             state.node_capture.capture.begin_frame(static_cast<std::uint64_t>(frame));
 #endif
@@ -14581,7 +14591,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     WGPUIndexFormat_Uint32,
                     0,
                     WGPU_WHOLE_SIZE);
-                wgpuRenderPassEncoderDrawIndexed(
+                count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                     list_pass,
                     mesh.index_count,
 #if BBLITE_GPU_INSTANCING
@@ -14763,7 +14773,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 WGPUIndexFormat_Uint32,
                 0,
                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderDrawIndexed(pass, 6, 1, 0, 0, 0);
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, 6, 1, 0, 0, 0);
         };
         const auto draw_skybox = [&] {
             if (!state.skybox_enabled) return;
@@ -14799,7 +14809,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 WGPUIndexFormat_Uint32,
                 0,
                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, 36, 1, 0, 0, 0);
         };
 #if BBLITE_SOLID_SKYBOX
         const auto draw_solid_skybox = [&] {
@@ -14824,7 +14834,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 WGPUIndexFormat_Uint32,
                 0,
                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, 36, 1, 0, 0, 0);
         };
 #endif
 #if BBLITE_IMAGE_SKYBOX
@@ -14852,7 +14862,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 WGPUIndexFormat_Uint32,
                 0,
                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderDrawIndexed(pass, 36, 1, 0, 0, 0);
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, 36, 1, 0, 0, 0);
         };
 #endif
 #if BBLITE_HAS_BILLBOARDS
@@ -15483,7 +15493,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                                 WGPUIndexFormat_Uint32,
                                 0,
                                 WGPU_WHOLE_SIZE);
-                            wgpuRenderPassEncoderDrawIndexed(
+                            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                                 task_pass,
                                 mesh.index_count,
 #if BBLITE_GPU_INSTANCING
@@ -15682,7 +15692,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                                 WGPUIndexFormat_Uint32,
                                 0,
                                 WGPU_WHOLE_SIZE);
-                            wgpuRenderPassEncoderDrawIndexed(
+                            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                                 task_pass,
                                 36,
                                 1,
@@ -15723,7 +15733,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                                 WGPUIndexFormat_Uint32,
                                 0,
                                 WGPU_WHOLE_SIZE);
-                            wgpuRenderPassEncoderDrawIndexed(
+                            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                                 task_pass,
                                 36,
                                 1,
@@ -15771,7 +15781,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                                 WGPUIndexFormat_Uint32,
                                 0,
                                 WGPU_WHOLE_SIZE);
-                            wgpuRenderPassEncoderDrawIndexed(
+                            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                                 task_pass,
                                 36,
                                 1,
@@ -15859,7 +15869,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         WGPUIndexFormat_Uint32,
                         0,
                         WGPU_WHOLE_SIZE);
-                    wgpuRenderPassEncoderDrawIndexed(
+                    count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
                         task_pass,
                         6,
                         1,
@@ -16460,7 +16470,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     blit_group,
                     0,
                     nullptr);
-                wgpuRenderPassEncoderDraw(blit_pass, 3, 1, 0, 0);
+                count_gpu_draw(wgpuRenderPassEncoderDraw, blit_pass, 3, 1, 0, 0);
                 wgpuRenderPassEncoderEnd(blit_pass);
                 wgpuRenderPassEncoderRelease(blit_pass);
                 wgpuBindGroupRelease(blit_group);
@@ -16703,9 +16713,43 @@ SceneRun run_dawn_engine(Engine& engine) {
         wgpuTextureViewRelease(surface_view);
         wgpuTextureRelease(surface_texture.texture);
         wgpuInstanceProcessEvents(state.instance);
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        if (state.device_lost) {
+            force_device_loss(engine);
+            break;
+        }
+#endif
         if (!state.uncaptured_error.empty()) {
             dawn_error("uncaptured error: " + state.uncaptured_error);
         }
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        if (engine.device_recovery) {
+            auto& recovery = *engine.device_recovery;
+            recovery.environments[scene.state.get()] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment_cube)};
+            recovery.fallback = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.white_texture)};
+            auto& renderable_count = recovery.renderable_counts[scene.state.get()];
+            renderable_count = state.meshes.size() + state.skybox_enabled + state.ground_enabled;
+#if BBLITE_SOLID_SKYBOX
+            renderable_count += state.solid_skybox_enabled;
+#endif
+#if BBLITE_IMAGE_SKYBOX
+            renderable_count += state.image_skybox_enabled;
+#endif
+#if BBLITE_SHADOW_RECEIVERS
+            recovery.shadows.resize(engine.shadow_generators.size());
+            for (std::size_t i = 0; i < engine.shadow_generators.size(); ++i) {
+                const auto& generator = engine.shadow_generators[i];
+                if (generator.map_target.value >= state.render_targets.size()) continue;
+                auto texture = state.render_targets[generator.map_target.value].depth;
+#if BBLITE_SHADOWS_ESM
+                if (generator.filter == ShadowFilter::esm_directional && generator.esm_index < state.esm_blurs.size()) texture = state.esm_blurs[generator.esm_index].blur_v;
+#endif
+                recovery.shadows[i] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(texture)};
+            }
+#endif
+            recovery.resources_ready = true;
+        }
+#endif
         finish_frame(engine);
         ++frame;
         // Profile-only too: this backend's benchmark sample above reads its
@@ -16749,6 +16793,9 @@ SceneRun run_dawn_engine(Engine& engine) {
         BBLITE_FRAME_YIELD(true);
     }
     report_benchmark(benchmark_samples, "Dawn", "D3D12");
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+    if (engine.device_recovery && (engine.device_recovery->requested || engine.device_recovery->disposed)) wgpuDeviceDestroy(state.device);
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     ui_runtime.reset();
 #endif

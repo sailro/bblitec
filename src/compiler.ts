@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { framePollExecutor } from "./compiler/frame-poll.js";
 import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
 import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
@@ -1008,6 +1009,12 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        if (this.features.has("engine:device-recovery")) {
+            if (this.features.has("platform:workers") || this.features.has("platform:window")) this.fail(this.sourceFile,
+                "Device recovery does not represent shared worker/offscreen device ownership.");
+            if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
+                "Device recovery resource observations currently require one registered scene.");
+        }
         if (this.reachedNodeMaterials.length > 0 && this.geometryOutputTasks.length > 0 && this.features.has("loader:gltf")) {
             const boundary = this.deferredAdmissionFailures.find(failure => failure.capability === "node-geometry");
             if (boundary) this.fail(boundary.node, boundary.message);
@@ -2366,6 +2373,15 @@ class Compiler
     }
 
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
+        if (!declaration.initializer && declaration.type && ts.isTypeReferenceNode(declaration.type) &&
+            ts.isIdentifier(declaration.type.typeName) && declaration.type.typeName.text === "GPUTexture" &&
+            !this.checker.getSymbolAtLocation(declaration.type.typeName)?.declarations?.length &&
+            ts.isIdentifier(declaration.name)) {
+            const cpp = this.cppIdentifier(declaration.name.text);
+            this.emit(`bbl::GpuTextureIdentity ${cpp}{};`);
+            this.defineVariable(declaration.name, { kind: "gpu-texture", cpp, dataType: { kind: "handle", handle: "gpu-texture" }, engineCpp: this.requireDefaultEngine(declaration) });
+            return;
+        }
         if (ts.isObjectBindingPattern(declaration.name)) {
             this.emitObjectBindingDeclaration(declaration);
             return;
@@ -4827,6 +4843,7 @@ class Compiler
 
     /** Whether an expression is already known to produce retained UI state. */
     public isNativeUiValueExpression(expression: ts.Expression): boolean {
+        if (this.deviceRecoveryDataset(expression)) return true;
         const value = this.unwrap(expression);
         if (
             ts.isPropertyAccessExpression(value) &&
@@ -8774,6 +8791,20 @@ class Compiler
     }
 
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
+        const globalLeft = this.unwrap(expression.left);
+        if (this.features.has("engine:device-recovery") && ts.isPropertyAccessExpression(globalLeft) &&
+            ts.isIdentifier(this.unwrap(globalLeft.expression)) && this.unwrap(globalLeft.expression).getText() === "globalThis" &&
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            (ts.isArrowFunction(expression.right) || ts.isFunctionExpression(expression.right))) {
+            this.emit(`bbl::set_global_callback(${this.requireDefaultEngine(expression)}, ${this.cppString(globalLeft.name.text)}, ${this.compileVoidCallback(expression.right)});`);
+            return true;
+        }
+        const recoveryDataset = this.deviceRecoveryDataset(expression.left);
+        if (recoveryDataset && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            if (recoveryDataset === "ready") this.deviceRecoveryReadyGate = true;
+            this.emit(`bbl::set_canvas_dataset(${this.requireDefaultEngine(expression)}, ${this.cppString(recoveryDataset)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`);
+            return true;
+        }
         if (
             expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
             !ts.isPropertyAccessExpression(expression.left)
@@ -9347,6 +9378,8 @@ class Compiler
     public compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value {
+        const dataset = this.deviceRecoveryDataset(expression);
+        if (dataset) return { kind: "string", cpp: `bbl::canvas_dataset(${this.requireDefaultEngine(expression)}, ${this.cppString(dataset)})`, dataType: { kind: "string" } };
         const canvas = compileCanvasValue(this, expression);
         if (canvas) return canvas;
         if (
@@ -9518,6 +9551,29 @@ class Compiler
         // receiver was just constructed or came out of an array.
         const owner = this.classLowerer.hydrate(rawOwner) ?? rawOwner;
         const property = expression.name.text;
+        if (owner.kind === "scene" && property === "_envTextures") {
+            this.reachFeature("engine:device-recovery", expression);
+            return { kind: "gpu-environment", cpp: `bbl::environment_identity(${owner.cpp})`, engineCpp: this.requireEngine(owner, expression), dataType: { kind: "handle", handle: "gpu-environment" }, impure: true };
+        }
+        if (owner.kind === "gpu-environment" && property === "specularCube") {
+            return { kind: "gpu-texture", cpp: `bbl::environment_texture_identity(${owner.cpp})`, engineCpp: this.requireEngine(owner, expression), dataType: { kind: "handle", handle: "gpu-texture" }, impure: true };
+        }
+        if (owner.kind === "engine" && property === "_pbrFallbackTex") {
+            this.reachFeature("engine:device-recovery", expression);
+            return { kind: "record", cpp: "", recordProperties: { texture: { kind: "gpu-texture", cpp: `bbl::fallback_texture_identity(${owner.cpp})`, engineCpp: owner.cpp, dataType: { kind: "handle", handle: "gpu-texture" }, impure: true } } };
+        }
+        if (owner.kind === "shadow-generator" && property === "_depthTexture") {
+            this.reachFeature("engine:device-recovery", expression);
+            return { kind: "gpu-texture", cpp: `bbl::shadow_texture_identity(${this.requireEngine(owner, expression)}, ${owner.cpp})`, engineCpp: this.requireEngine(owner, expression), dataType: { kind: "handle", handle: "gpu-texture" }, impure: true };
+        }
+        if (owner.kind === "scene" && property === "_renderables") {
+            this.reachFeature("engine:device-recovery", expression);
+            return { kind: "record", cpp: "", recordProperties: { length: { kind: "number", cpp: `bbl::scene_renderable_count(${owner.cpp})`, impure: true } } };
+        }
+        if (owner.kind === "engine" && property === "drawCallCount") {
+            this.reachFeature("engine:device-recovery", expression);
+            return { kind: "number", cpp: `${owner.cpp}.draw_call_count` };
+        }
         if (owner.kind === "ui-element" && property === "dataset") {
             return { ...owner, uiDataset: true };
         }
@@ -11127,6 +11183,10 @@ class Compiler
                 ts.isIdentifier(unwrapped.right) &&
                 !this.lookupOptional(unwrapped.right)
             ) {
+                if (unwrapped.right.text === "Error") {
+                    const value = this.compileValue(unwrapped.left);
+                    if (value.nativeError) return "true";
+                }
                 const expected = new Map<string, string>([
                     ["ArrayBuffer", "arraybuffer"],
                     ["DataView", "dataview"],
@@ -15067,6 +15127,12 @@ class Compiler
     }
 
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
+        const callee = this.unwrap(call.expression);
+        if (ts.isPropertyAccessExpression(callee) && callee.name.text === "addEventListener") {
+            const device = this.unwrap(callee.expression);
+            if (ts.isPropertyAccessExpression(device) && device.name.text === "_device" &&
+                ts.isIdentifier(device.expression) && this.lookupOptional(device.expression)?.kind === "engine") return false;
+        }
         if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "assign" &&
             ts.isIdentifier(call.expression.expression) && call.expression.expression.text === "Object" &&
             this.isDefaultLibraryIdentifier(call.expression.expression)) {
@@ -15084,6 +15150,26 @@ class Compiler
     /** Platform-backed browser APIs that remain ordinary expression values. */
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
         const callee = this.unwrap(call.expression);
+        if (ts.isPropertyAccessExpression(callee) && callee.name.text === "addEventListener" &&
+            !this.isBrowserOnlyExpression(callee.expression)) {
+            const owner = this.compileValue(callee.expression);
+            if (owner.kind === "gpu-device") {
+                this.expectArgumentCount(call, 2, 2);
+                if (this.compileStringLiteral(call.arguments[0]!) !== "uncapturederror") this.fail(call, "Only GPU uncapturederror listeners are represented.");
+                this.reachFeature("engine:device-recovery", call);
+                const message = this.allocateTemporaryCppName("gpu_error");
+                const value: Value = { kind: "record", cpp: "", recordProperties: { error: { kind: "record", cpp: "", recordProperties: { message: { kind: "string", cpp: message, dataType: { kind: "string" } } } } } };
+                const callback = this.compilePlatformCallback(call.arguments[1]!, { cppType: "const std::string&", name: message }, [value], undefined, false, false);
+                return { kind: "void", cpp: `bbl::add_gpu_error_listener(${owner.cpp}, ${callback.cpp})` };
+            }
+        }
+        if (ts.isPropertyAccessExpression(callee) && callee.name.text === "disable") {
+            const owner = this.compileValue(callee.expression);
+            if (owner.kind === "device-recovery") {
+                this.expectArgumentCount(call, 0, 0);
+                return { kind: "void", cpp: `bbl::disable_device_recovery(${owner.cpp})` };
+            }
+        }
         if (ts.isPropertyAccessExpression(callee)) {
             if (this.browserErasure.isPrimaryCanvas2DContextCall(
                 call, (expression) => this.evaluateBrowserValue(expression),
@@ -16616,6 +16702,34 @@ class Compiler
         expression: ts.Expression,
     ): ts.Expression | undefined {
         return this.browserErasure.frameDrainCondition(expression);
+    }
+
+    public emitFramePollAwait(call: ts.CallExpression): boolean {
+        if (!ts.isIdentifier(call.expression)) return false;
+        const declaration = tryResolveFunctionDeclaration(this.checker, call.expression);
+        if (!declaration?.body || !ts.isBlock(declaration.body) || declaration.body.statements.length !== 1) return false;
+        const returned = declaration.body.statements[0]!;
+        if (!ts.isReturnStatement(returned) || !returned.expression) return false;
+        const poll = framePollExecutor(this.unwrap(returned.expression), this.checker, identifier => this.isDefaultLibraryIdentifier(identifier));
+        if (!poll) return false;
+        if (!this.engineStartMark) this.fail(call, "A polling Promise requires a running engine.");
+        const args = call.arguments.map(argument => this.compileValue(argument));
+        this.pushScope(this.allocateBlockPrefix());
+        let condition: string;
+        try {
+            for (const [index, parameter] of declaration.parameters.entries()) {
+                if (!ts.isIdentifier(parameter.name) || parameter.dotDotDotToken) this.fail(parameter, "Polling helper requires ordinary named parameters.");
+                const argument = args[index] ?? (parameter.initializer ? this.compileValue(parameter.initializer) : undefined);
+                if (!argument) this.fail(call, "Polling helper argument is missing.");
+                this.bindLocalValue(parameter.name, argument);
+            }
+            for (const statement of poll.setup) this.emitStatement(statement);
+            let conditionCpp = "";
+            const lines = this.captureEmittedLines(() => { conditionCpp = this.compileCondition(poll.condition); });
+            condition = lines.length === 0 ? conditionCpp : `([&]() { ${lines.join(" ")} return ${conditionCpp}; }())`;
+        } finally { this.popScope(); }
+        this.emitStartContinuationGate(call, condition);
+        return true;
     }
 
     /**
@@ -19197,6 +19311,10 @@ class Compiler
         this.sceneMaterials.recordScenePbrGammaAlbedo(index);
     }
 
+    public recordScenePbrShadowOnly(index: number | undefined, options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>): void {
+        this.sceneMaterials.recordScenePbrShadowOnly(index, options);
+    }
+
     public recordScenePbrPlugins(
         plugins: readonly MaterialPluginManifest[],
         index: number | undefined,
@@ -20156,7 +20274,68 @@ class Compiler
     /** Native locals initialized by the post-start continuation. */
     private readonly engineContinuationStorage = new Set<string>();
 
+    private readonly deviceRecoveryCallbacks: Array<{ cpp: string; options: Value; node: ts.Expression }> = [];
+    private deviceRecoveryReadyGate = false;
+
+    private deviceRecoveryDataset(expression: ts.Expression): string | undefined {
+        if (!this.features.has("engine:device-recovery")) return undefined;
+        const value = this.unwrap(expression);
+        if (!ts.isPropertyAccessExpression(value)) return undefined;
+        const dataset = this.unwrap(value.expression);
+        return ts.isPropertyAccessExpression(dataset) && dataset.name.text === "dataset" && this.isCanvasElement(dataset.expression)
+            ? value.name.text : undefined;
+    }
+
+    public compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined {
+        if (!["enableDeviceLostSceneRecovery", "forceWebGpuDeviceLossForTesting", "disposeEngine"].includes(name)) return undefined;
+        this.expectArgumentCount(call, 1, name === "enableDeviceLostSceneRecovery" ? 2 : 1);
+        const engine = this.compileValue(call.arguments[0]!);
+        this.expectKind(engine, "engine", call.arguments[0]!);
+        this.reachFeature("engine:device-recovery", call);
+        if (name === "enableDeviceLostSceneRecovery") {
+            if (this.engineHasStarted() || this.isRuntimeResourceConstruction()) this.fail(call, "Device recovery registration requires unconditional construction before engine startup.");
+            const cpp = this.allocateTemporaryCppName("device_recovery");
+            this.emit(`auto ${cpp} = bbl::enable_device_lost_scene_recovery(${engine.cpp});`);
+            if (call.arguments[1]) {
+                const node = call.arguments[1];
+                const options = this.compileValue(node);
+                this.expectKind(options, "record", node);
+                const allowed = new Set(["onLost", "onRecovered", "onRecoveryFailed"]);
+                for (const key of [...Object.keys(options.recordProperties ?? {}), ...Object.keys(options.recordMethods ?? {})]) {
+                    if (!allowed.has(key)) this.fail(node, `Unrepresented device recovery option '${key}'.`);
+                }
+                this.deviceRecoveryCallbacks.push({ cpp, options, node });
+            }
+            return { kind: "device-recovery", cpp, engineCpp: engine.cpp, dataType: { kind: "handle", handle: "device-recovery" } };
+        }
+        return { kind: "void", cpp: name === "disposeEngine" ? `bbl::dispose_engine(${engine.cpp})` : `bbl::force_device_loss(${engine.cpp})` };
+    }
+
+    private emitDeviceRecoveryCallbacks(): void {
+        for (const registration of this.deviceRecoveryCallbacks.splice(0)) {
+            const options = registration.options;
+            for (const [source, target] of [["onLost", "on_lost"], ["onRecovered", "on_recovered"], ["onRecoveryFailed", "on_failed"]] as const) {
+                const callback = options.recordMethods?.[source] ?? options.recordProperties?.[source]?.callbackDeclaration;
+                if (!callback) {
+                    if (options.recordProperties?.[source]) this.fail(registration.node, `Device recovery '${source}' requires a callback declaration.`);
+                    continue;
+                }
+                const declaration = ts.isIdentifier(callback) ? tryResolveFunctionDeclaration(this.checker, callback) : callback;
+                if (!declaration || declaration.parameters.length > (target === "on_failed" ? 1 : 0)) this.fail(callback, `The recovery '${source}' callback parameters are not represented.`);
+                const parameter = target === "on_failed" ? { kind: "record", cpp: "", nativeError: true, truthinessCpp: "true", recordProperties: { message: { kind: "string", cpp: "error", dataType: { kind: "string" } } } } satisfies Value : undefined;
+                const lines = this.captureEmittedLines(() => {
+                    const result = this.compileCallbackWithValues(callback, parameter ? [parameter] : [], registration.node);
+                    this.emitDiscardedValue(result);
+                });
+                this.emit(`${registration.cpp}->${target} = [&](${parameter ? "[[maybe_unused]] const std::string& error" : ""}) {`);
+                this.increaseIndent(); for (const line of lines) this.emit(line); this.decreaseIndent(); this.emit("};");
+            }
+        }
+    }
+
     public markEngineStart(engineCpp: string, node: ts.Node): void {
+        this.emitDeviceRecoveryCallbacks();
+        if (this.deviceRecoveryReadyGate) this.emit(`bbl::defer_capture_until(${engineCpp}, [&]() { return bbl::canvas_dataset(${engineCpp}, "ready") == "true"; });`);
         if (this.engineStartMark) {
             this.fail(
                 node,

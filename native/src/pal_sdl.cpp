@@ -387,26 +387,38 @@ void pal::run_engine(Engine& engine) {
         // route around. Returning false means only that this build compiled
         // the backend out, which is what makes trying the next one correct.
         bool ran = false;
-        if (pal::environment_variable("BBLITE_GPU_BACKEND") == "dawn") {
-            ran = run_dawn(engine, kind);
-            if (!ran) {
-                throw std::runtime_error(
-                    std::string(renderer_name(kind)) +
-                    " was asked for Dawn (BBLITE_GPU_BACKEND=dawn), which this "
-                    "build does not compile (BBLITE_BACKEND=DAWN or BOTH).");
+        try {
+            if (pal::environment_variable("BBLITE_GPU_BACKEND") == "dawn") {
+                ran = run_dawn(engine, kind);
+                if (!ran) {
+                    throw std::runtime_error(
+                        std::string(renderer_name(kind)) +
+                        " was asked for Dawn (BBLITE_GPU_BACKEND=dawn), which this "
+                        "build does not compile (BBLITE_BACKEND=DAWN or BOTH).");
+                }
+            } else {
+                ran = run_sdl_gpu(engine, kind) || run_dawn(engine, kind);
+                if (!ran) {
+                    // Unreachable in a configure-valid build: BBLITE_BACKEND
+                    // compiles at least one backend, and CMake refuses every
+                    // other value.
+                    throw std::runtime_error(
+                        std::string(renderer_name(kind)) +
+                        " requires a GPU backend, and this build compiled none "
+                        "that can draw it (BBLITE_BACKEND selects SDL_GPU, Dawn "
+                        "or BOTH).");
+                }
             }
-        } else {
-            ran = run_sdl_gpu(engine, kind) || run_dawn(engine, kind);
-            if (!ran) {
-                // Unreachable in a configure-valid build: BBLITE_BACKEND
-                // compiles at least one backend, and CMake refuses every
-                // other value.
-                throw std::runtime_error(
-                    std::string(renderer_name(kind)) +
-                    " requires a GPU backend, and this build compiled none "
-                    "that can draw it (BBLITE_BACKEND selects SDL_GPU, Dawn "
-                    "or BOTH).");
-            }
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+            if (engine.device_recovery && engine.device_recovery->requested) begin_device_recovery(engine);
+#endif
+        } catch (const std::exception& error) {
+            static_cast<void>(error);
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+            if (dynamic_cast<const GpuTransportError*>(&error)) report_gpu_error(engine, error.what());
+            if (engine.device_recovery && engine.device_recovery->recovering) fail_device_recovery(engine, error.what());
+#endif
+            throw;
         }
         if (!engine.renderer_restart_requested) return;
     }

@@ -49,7 +49,7 @@ using OwnedSdlPipeline = std::unique_ptr<
     SdlGpuDeleter<SDL_GPUGraphicsPipeline, SDL_ReleaseGPUGraphicsPipeline>>;
 
 [[noreturn]] inline void gpu_error(const char* operation) {
-    throw std::runtime_error(std::string(operation) + ": " + SDL_GetError());
+    throw GpuTransportError(std::string(operation) + ": " + SDL_GetError());
 }
 
 inline SDL_GPUTexture* create_frame_texture(

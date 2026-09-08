@@ -158,6 +158,8 @@ inline void dispatch_platform_mouse_button(
  * platform callbacks without mutating generated source or scene state.
  * The engine owns the tape position and held buttons so a scene replacement
  * resumes the same recording instead of replaying it from the beginning.
+ * Recovery builds also accept `Dataset@key=value`, `GlobalCall@name`, and
+ * `DeviceLoss` for the source's dataset handshake, retained hooks, and loss API.
  */
 inline void sync_pointer_lock(SDL_Window* window, Engine& engine);
 
@@ -205,6 +207,24 @@ public:
         unsigned int& mouse_buttons_ = engine.input_replay_mouse_buttons;
         const std::string& code = codes_[index];
         if (code.empty() || code == "-") return;
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        if (code.starts_with("Dataset@")) {
+            const auto equal = code.find('=', 8);
+            if (equal == std::string::npos || equal == 8) throw std::runtime_error("Dataset replay requires a key and value.");
+            set_canvas_dataset(engine, code.substr(8, equal - 8), code.substr(equal + 1));
+            return;
+        }
+        if (code.starts_with("GlobalCall@")) {
+            if (!engine.device_recovery) throw std::runtime_error("Global replay callback is not registered.");
+            const auto callback = engine.device_recovery->globals.at(code.substr(11));
+            callback();
+            return;
+        }
+        if (code == "DeviceLoss") {
+            force_device_loss(engine);
+            return;
+        }
+#endif
         if (const auto size = pointer_position(code, "WindowResize@")) {
             if (!window || size->first <= 0 || size->second <= 0 || size->first > 16384 || size->second > 16384 ||
                 !SDL_SetWindowSize(window, static_cast<int>(size->first), static_cast<int>(size->second))) {

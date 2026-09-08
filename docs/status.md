@@ -155,6 +155,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 161 | <img src="images/scenes/scene161.png" alt="Scene 161 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Custom Uniforms |
 | 162 | <img src="images/scenes/scene162.png" alt="Scene 162 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Defines |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Alpha Cutout |
+| 164 | <img src="images/scenes/scene164.png" alt="Scene 164 rendering" width="160"> | 0.019 / 0.019 | 0.019 / 0.019 | Device Loss Recovery |
 | 165 | <img src="images/scenes/scene165.png" alt="Scene 165 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Material Thin Instances |
 | 166 | <img src="images/scenes/scene166.png" alt="Scene 166 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Spot Lights |
 | 167 | <img src="images/scenes/scene167.png" alt="Scene 167 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Lightmap |

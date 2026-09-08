@@ -142,6 +142,12 @@ one conductor. Scene, SpriteRenderer, EffectRenderer and scene-less FrameGraphCo
 independently. Immutable engine aliases retain identity; rebinding them or creating multiple engines
 within one entry point refuses.
 
+Device-loss scene recovery retains CPU owners and rebuilds GPU resources on SDL_GPU and Dawn.
+Registration must be unconditional before startup; resource observations support one registered scene.
+Loss/recovered callbacks take no arguments; failure callbacks expose `Error.message`. Worker/offscreen
+device ownership refuses. Forced loss, repeated recovery, resize, controls and disposal are validated.
+Shadow-only PBR color/opacity/falloff must settle unconditionally before scene registration.
+
 Reviewed host canvases can share one engine while retaining separate scene targets, clear colors,
 camera projections and pointer capture. Canvas rectangles drive allocation and resize; default scene
 graphs share the original mesh/material identities. Wider surface options and lifecycle combinations

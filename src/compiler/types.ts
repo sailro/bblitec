@@ -688,6 +688,7 @@ export interface ScenePbrMaterialManifest {
    * `pow(baseColorSample.rgb, 2.2)`.
    */
   gammaAlbedo?: boolean;
+  shadowOnly?: { color: readonly [number, number, number]; opacity: number; falloff: number };
   doubleSided: boolean;
   transmission: number;
   ior: number;
@@ -1310,6 +1311,9 @@ export type ValueKind =
   // thin-instance upload helper can be replaced as a unit. No generic raw
   // device operation is part of the compiled surface.
   | "gpu-device"
+  | "gpu-texture"
+  | "device-recovery"
+  | "gpu-environment"
   | "static-fetch-response"
   | "json-null"
   | "light"
@@ -1563,7 +1567,6 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
     // A worker-global alias resolves to the current realm; it has no copyable
     // native object and must not become a closure capture.
     kind === "worker-scope" ||
-    kind === "gpu-device" ||
     kind === "static-fetch-response" ||
     kind === "json-null" ||
     kind === "morph-targets" ||
@@ -2119,6 +2122,8 @@ export interface Value {
   optionalFoundCpp?: string;
   /** JavaScript truthiness when it differs from mere optional presence. */
   truthinessCpp?: string;
+  /** An Error delivered by native device recovery, with the Error message contract. */
+  nativeError?: true;
   /**
    * A nullable string whose JavaScript falsiness includes the empty
    * string, not only absence. `localStorage.getItem` is the one producer:
@@ -2396,6 +2401,7 @@ export type Feature =
   | "background:skybox"
   | "core"
   | "backend:sdl"
+  | "engine:device-recovery"
   | "input:gamepad"
   | "camera:arc-rotate"
   | "camera:default"

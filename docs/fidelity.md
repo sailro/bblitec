@@ -28,11 +28,16 @@ label an unexplained residual a precision floor or intentional divergence.
 | Workers/Window | AOT factories, typed cloning and native realm loops; snapshotted layout and 16 ms ResizeObserver polling |
 | Plain data | Typed native storage, checked access and bounded sparse/JSON behavior |
 | Storage/files | Host preference storage, native URL tokens and synchronized picker completion |
+| Device recovery | Native device/resource reconstruction retains scene owners; GPU identities name actual backend resources and device generations. SDL_GPU handles forced loss; Dawn also handles its device-lost notification. Driver failures remain fatal when recovery cannot run. |
 | UI | RmlUi/FreeType and retained Canvas2D replace browser layout/rasterization; see [UI](ui.md) |
 | Skinning | Loaded eight-influence skins retain four influences |
 | GPU culling | Reached thin instances can use the pin's all-active fallback |
 | Splats | Sorting is synchronous on the render thread |
 | Physics/audio | Bullet replaces Havok; LabSound replaces browser audio |
+
+Recovery dataset handshakes and global disposal hooks remain live. Closed Promise/RAF predicates
+resume through engine frame boundaries. `drawCallCount` measures native GPU draw commands, including
+transport passes; browser context accounting can differ.
 
 ## Shader contract
 

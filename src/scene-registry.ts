@@ -625,6 +625,22 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene164",
+        name: "Scene 164 - Device Loss Recovery",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene164.ts",
+        title: "Babylon Lite Native - Device Loss Recovery",
+        parity: {
+            maxFullMad: 0.03,
+            maxForegroundMad: 0.03,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_INPUT_REPLAY: "Dataset@captured=true",
+                BBLITE_SCREENSHOT_FRAME: "50",
+            },
+        },
+    },
+    {
         id: "audit-shader-frame-graph",
         name: "Audit - Shader Frame Graph",
         source: "examples/audit-shader-frame-graph.ts",

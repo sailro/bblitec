@@ -1867,7 +1867,7 @@ void render_ui_sdl_frame(
         } else {
             SDL_BindGPUGraphicsPipeline(layer_pass, ui.color_pipeline);
         }
-        SDL_DrawGPUIndexedPrimitives(
+        count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
             layer_pass,
             draw.index_count,
             1,
@@ -1902,7 +1902,7 @@ void render_ui_sdl_frame(
         command, 0, projection.data(), sizeof(projection));
     SDL_PushGPUVertexUniformData(
         command, 1, translation.data(), sizeof(translation));
-    SDL_DrawGPUIndexedPrimitives(
+    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
         composite_pass,
         6,
         1,
@@ -3151,7 +3151,7 @@ void draw_pinned_variant(
         pass,
         &pinned_index_binding,
         SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    SDL_DrawGPUIndexedPrimitives(
+    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
         pass,
         mesh.index_count,
         instanced_draw ? mesh.instance_count : 1,
@@ -3714,7 +3714,7 @@ void draw_node_variant(
         pass,
         &index_binding,
         SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
+    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, mesh.index_count, 1, 0, 0, 0);
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     if (state.node_capture.capture.enabled()) {
         NodeGpuDrawCapture receipt;
@@ -3875,7 +3875,7 @@ void run_esm_blur(
             0,
             direction.data(),
             static_cast<Uint32>(direction.size() * sizeof(float)));
-        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+        count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
         SDL_EndGPURenderPass(pass);
     };
     blur_pass(blur.blur_h, blur.source, resources.blur_directions[0]);
@@ -4529,7 +4529,7 @@ void draw_standard_variant(
         pass,
         &index_binding,
         SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    SDL_DrawGPUIndexedPrimitives(
+    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
         pass,
         mesh.index_count,
         instanced_draw ? mesh.instance_count : 1,
@@ -5621,7 +5621,7 @@ void save_geometry_id_buffer_png(
                 &index_binding,
                 SDL_GPU_INDEXELEMENTSIZE_32BIT);
             SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-            SDL_DrawGPUIndexedPrimitives(
+            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                 pass,
                 mesh.index_count,
                 mesh.instance_count,
@@ -6466,7 +6466,7 @@ void encode_post_process_pass(
             prepared.textures.data(),
             prepared.texture_count);
     }
-    SDL_DrawGPUPrimitives(post_pass, 3, 1, 0, 0);
+    count_gpu_draw(SDL_DrawGPUPrimitives, post_pass, 3, 1, 0, 0);
     SDL_EndGPURenderPass(post_pass);
     if (prepared.presents) {
         SDL_GPURenderPass* present_pass =
@@ -6487,7 +6487,7 @@ void encode_post_process_pass(
             0,
             &present_binding,
             1);
-        SDL_DrawGPUPrimitives(present_pass, 3, 1, 0, 0);
+        count_gpu_draw(SDL_DrawGPUPrimitives, present_pass, 3, 1, 0, 0);
         SDL_EndGPURenderPass(present_pass);
         capture_texture = state.post_process_present;
     }
@@ -6675,7 +6675,7 @@ void record_screen_space_stage(
             bindings.data(),
             static_cast<Uint32>(program.fragment_roles.size()));
     }
-    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
     SDL_EndGPURenderPass(pass);
 }
 
@@ -7166,7 +7166,7 @@ inline void record_cloud_pick_draw(
         0,
         splat.textures.data(),
         static_cast<Uint32>(splat.textures.size()));
-    SDL_DrawGPUIndexedPrimitives(
+    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
         pass,
         static_cast<Uint32>(upstream::splat_quad_indices.size()),
         splat.vertex_count,
@@ -8887,7 +8887,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                         pass,
                         &index_binding,
                         SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                    SDL_DrawGPUIndexedPrimitives(
+                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                         pass,
                         gpu.index_count,
                         candidate.instance_count,
@@ -8975,7 +8975,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     pass,
                     &index_binding,
                     SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                SDL_DrawGPUIndexedPrimitives(
+                count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                     pass, gpu.index_count, 1, 0, 0, 0);
             }
 #if BBLITE_HAS_SPLATS
@@ -9382,6 +9382,11 @@ SceneRun run_gpu_engine(Engine& engine) {
                                     ? data->sampler
                                     : TextureSamplerState{}),
                         });
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+                        if (engine.device_recovery && !engine.device_recovery->fallback.object && (!data || !data->has_image())) {
+                            engine.device_recovery->fallback = {engine.device_generation, reinterpret_cast<std::uintptr_t>(created->bindings.back().texture)};
+                        }
+#endif
                     }
                     gpu_mesh.shared_composed_textures = created.get();
                     state.shared_composed_material_textures.push_back(
@@ -9684,7 +9689,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         // every event the scene receives also reaches the camera -- and
         // none does in a deterministic test pass.
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
-            if (hidden_test_pass) return;
+            if (hidden_test_pass && !is_replayed_ui_event(event)) return;
             dispatch_surface_camera_pointer(engine, event, camera, pointer_state, surface_pointer_state);
         };
         // One batch for the run: its transfer buffer persists across
@@ -9692,7 +9697,13 @@ SceneRun run_gpu_engine(Engine& engine) {
         // shares one copy-pass submission instead of paying a
         // transfer-buffer create/release per frame.
         GpuBufferUploadBatch frame_buffer_uploads(state.device);
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        DrawCountScope draw_count_scope(engine);
+#endif
         while (captures.keep_running(running, frame)) {
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+            engine.draw_call_count = 0;
+#endif
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
             state.node_capture.capture.begin_frame(static_cast<std::uint64_t>(frame));
 #endif
@@ -10734,7 +10745,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                                 0,
                                 &texture_binding,
                                 1);
-                            SDL_DrawGPUIndexedPrimitives(
+                            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                                 task_pass,
                                 36,
                                 1,
@@ -10788,7 +10799,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                                 task_pass,
                                 &index_binding,
                                 SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                            SDL_DrawGPUIndexedPrimitives(
+                            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                                 task_pass,
                                 36,
                                 1,
@@ -10844,7 +10855,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                                 0,
                                 &texture_binding,
                                 1);
-                            SDL_DrawGPUIndexedPrimitives(
+                            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                                 task_pass,
                                 36,
                                 1,
@@ -10963,7 +10974,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                         0,
                         &texture_binding,
                         1);
-                    SDL_DrawGPUIndexedPrimitives(
+                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                         task_pass,
                         6,
                         1,
@@ -11510,7 +11521,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                                 task_pass,
                                 &index_binding,
                                 SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                            SDL_DrawGPUIndexedPrimitives(
+                            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                                 task_pass,
                                 mesh.index_count,
                                 mesh.instance_count,
@@ -11872,7 +11883,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                                         task_pass,
                                         &index_binding,
                                         SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                                    SDL_DrawGPUIndexedPrimitives(
+                                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                                         task_pass,
                                         mesh.index_count,
                                         mesh.instance_count,
@@ -12453,7 +12464,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                         const SDL_GPUTextureSamplerBinding binding{
                             source_texture(copy.source), state.background_sampler};
                         SDL_BindGPUFragmentSamplers(surface_pass, 0, &binding, 1);
-                        SDL_DrawGPUPrimitives(surface_pass, 3, 1, 0, 0);
+                        count_gpu_draw(SDL_DrawGPUPrimitives, surface_pass, 3, 1, 0, 0);
                         SDL_EndGPURenderPass(surface_pass);
                         capture_texture = state.color;
                         continue;
@@ -12551,7 +12562,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                         0,
                         &texture_binding,
                         1);
-                    SDL_DrawGPUPrimitives(blit_pass, 3, 1, 0, 0);
+                    count_gpu_draw(SDL_DrawGPUPrimitives, blit_pass, 3, 1, 0, 0);
                     SDL_EndGPURenderPass(blit_pass);
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
                     if (partial_present) {
@@ -12891,7 +12902,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     &index_binding,
                     SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-                SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
+                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 36, 1, 0, 0, 0);
                 scene_matrix_bound = false;
             };
 #if BBLITE_SOLID_SKYBOX
@@ -12943,7 +12954,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     pass,
                     &index_binding,
                     SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
+                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 36, 1, 0, 0, 0);
                 scene_matrix_bound = false;
             };
 #endif
@@ -12995,7 +13006,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     0,
                     &texture_binding,
                     1);
-                SDL_DrawGPUIndexedPrimitives(
+                count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                     pass,
                     36,
                     1,
@@ -13445,7 +13456,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                         pass,
                         &index_binding,
                         SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                    SDL_DrawGPUIndexedPrimitives(
+                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                         pass,
                         mesh.index_count,
                         mesh.instance_count,
@@ -13534,7 +13545,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     &index_binding,
                     SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-                SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0);
+                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 6, 1, 0, 0, 0);
                 scene_matrix_bound = true;
             };
 #if BBLITE_HAS_BILLBOARDS
@@ -13809,7 +13820,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                         &source_binding,
                         1);
                 }
-                SDL_DrawGPUPrimitives(
+                count_gpu_draw(SDL_DrawGPUPrimitives,
                     image_processing_pass,
                     3,
                     1,
@@ -13948,6 +13959,20 @@ SceneRun run_gpu_engine(Engine& engine) {
                     true);
                 captures.cluster_buffer_saved = true;
             }
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+            if (engine.device_recovery) {
+                auto& recovery = *engine.device_recovery;
+                recovery.environments[scene.state.get()] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment)};
+                recovery.renderable_counts[scene.state.get()] = state.meshes.size() + (state.skybox_pipeline != nullptr) + (state.background_pipeline != nullptr);
+#if BBLITE_SHADOW_RECEIVERS
+                recovery.shadows.resize(state.shadow_generators.size());
+                for (std::size_t i = 0; i < state.shadow_generators.size(); ++i) {
+                    recovery.shadows[i] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.shadow_generators[i].map)};
+                }
+#endif
+                recovery.resources_ready = true;
+            }
+#endif
             finish_frame(engine);
             ++frame;
             const double end = monotonic_milliseconds();

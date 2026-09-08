@@ -91,6 +91,23 @@
 
 namespace bbl::pal {
 
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+inline thread_local Engine* draw_count_engine = nullptr;
+struct DrawCountScope {
+    Engine* previous;
+    explicit DrawCountScope(Engine& engine) : previous(draw_count_engine) { draw_count_engine = &engine; }
+    ~DrawCountScope() { draw_count_engine = previous; }
+};
+#endif
+
+template <typename Function, typename... Args>
+inline void count_gpu_draw(Function function, Args&&... args) {
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+    if (draw_count_engine) ++draw_count_engine->draw_call_count;
+#endif
+    function(std::forward<Args>(args)...);
+}
+
 /**
  * The `std::size_t` sentinel this file's comments already call `npos`: an
  * unresolved variant, an unbuilt program, a draw outside any geometry task.
@@ -148,6 +165,9 @@ inline bool registered_scene_set_changed(
 inline bool request_renderer_restart_if_scene_set_changed(
     Engine& engine,
     const std::vector<std::shared_ptr<Scene>>& planned) {
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+    if (engine.device_recovery && engine.device_recovery->requested) return true;
+#endif
     if (!registered_scene_set_changed(engine, planned)) return false;
     engine.renderer_restart_requested = !engine.registered_scenes.empty();
     return true;
@@ -6246,6 +6266,9 @@ inline void run_animation_frame_callbacks(Engine& engine) {
  * timeout queued anywhere in the turn is then drained at the turn boundary.
  */
 inline void finish_frame(Engine& engine) {
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+    complete_device_recovery(engine);
+#endif
     js::collect_at_frame_boundary();
     if (engine.stopped) return;
     engine.animation_frame_after_render = true;
