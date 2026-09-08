@@ -1126,7 +1126,7 @@ test("generates the Babylon loader adapter from pinned scene semantics", () => {
     );
     assert.match(
         lowered.source,
-        /std::array<float, 16> mesh_world_matrix\(\n    Vec3 position,\n    Vec3 rotation,\n    Vec3 scaling\)/,
+        /std::array<float, 16> node_world_matrix\(\n    Vec3 position,\n    Vec3 rotation,\n    Vec3 scaling\)/,
     );
     assert.match(
         lowered.source,

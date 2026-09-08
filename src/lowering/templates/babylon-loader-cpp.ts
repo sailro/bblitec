@@ -8,7 +8,7 @@
  */
 export interface BabylonLoaderLoweredSegments {
     /**
-     * The body of `mesh_world_matrix`: `composeTrsLocalMatrix` over the
+     * The body of `node_world_matrix`: `composeTrsLocalMatrix` over the
      * node's own TRS, emitted by `pinned-trs.ts` from the pinned
      * `eulerToQuat` and `mat4ComposeInto` writers.
      */
@@ -172,7 +172,7 @@ std::optional<std::array<double, 16>> local_matrix_or_absent(
 // eulerToQuat before the composition. The pin keeps that TRS as mesh.world
 // while this loader bakes it into vertex.position and records it as the
 // instance parent world for the LOCAL_POSITION variant.
-std::array<float, 16> mesh_world_matrix(
+std::array<float, 16> node_world_matrix(
     Vec3 position,
     Vec3 rotation,
     Vec3 scaling) {
@@ -484,7 +484,7 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
             const Vec3 mesh_scaling =
                 vec3_or(source, "scaling", Vec3{1.0f, 1.0f, 1.0f});
             const std::array<float, 16> mesh_world =
-                mesh_world_matrix(mesh_position, mesh_rotation, mesh_scaling);
+                node_world_matrix(mesh_position, mesh_rotation, mesh_scaling);
             // The pin's \`new F32(md.positions)\` and \`new F32(md.normals)\`:
             // the JSON numbers rounded once to the attribute width, then the
             // pivot bake over both buffers in place.
