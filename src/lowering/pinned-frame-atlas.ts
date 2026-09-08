@@ -38,6 +38,20 @@ export function assertFrameAtlasRule(context: LoweringContext): void {
         packerModule,
         "shelfPack",
     );
+    // The shelf packer's statements in the pin's order: the shape checks
+    // below say each initializer is present, and only the inventory notices
+    // a statement the pin adds between them.
+    context.assertStatementInventory(
+        shelf,
+        shelf.body!.statements,
+        "shelfPack",
+        "the native frame-atlas packer restates a body",
+        [
+            "variable statement", "variable statement", "variable statement",
+            "variable statement", "variable statement", "variable statement",
+            "for statement", "variable statement", "return statement",
+        ],
+    );
     const shelfExpressions: ReadonlyArray<readonly [string, string]> = [
         ["xs", "new Array<number>(sources.length)"],
         ["ys", "new Array<number>(sources.length)"],
@@ -69,6 +83,20 @@ export function assertFrameAtlasRule(context: LoweringContext): void {
     const { declaration: create } = context.functionDeclaration(
         packerModule,
         "createSpriteAtlasFromFrames",
+    );
+    context.assertStatementInventory(
+        create,
+        create.body!.statements,
+        "createSpriteAtlasFromFrames",
+        "the native frame-atlas builder restates a body",
+        [
+            "variable statement", "variable statement", "if statement",
+            "variable statement", "variable statement", "variable statement",
+            "variable statement", "if statement", "if statement",
+            "variable statement", "for statement", "variable statement",
+            "variable statement", "variable statement", "for statement",
+            "variable statement", "return statement",
+        ],
     );
     const createExpressions: ReadonlyArray<readonly [string, string]> = [
         ["padding", "options.paddingPx ?? 1"],

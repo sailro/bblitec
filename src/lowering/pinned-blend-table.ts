@@ -13,7 +13,7 @@ import type { LoweringContext } from "./context.js";
  * so the row carries it and the caller refuses on the pin's own field rather
  * than on a descriptor's name.
  */
-export interface PinnedBlendRow {
+interface PinnedBlendRow {
     exportName: string;
     enabled: boolean;
     /** The pin's `_depthMode`, where the family declares one. */

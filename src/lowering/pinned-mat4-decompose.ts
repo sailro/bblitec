@@ -31,7 +31,7 @@ const DETERMINANT_MODULE = "src/math/mat4-determinant3.ts";
 const QUAT_BASIS_MODULE = "src/math/quat-from-rotation-matrix.ts";
 
 /** The pin's own `{x, y, z, w}`, as its math helpers return one. */
-export const PINNED_QUAT_DECLARATION = `/** The pin's own \`{x, y, z, w}\`, as its math helpers return one. */
+const PINNED_QUAT_DECLARATION = `/** The pin's own \`{x, y, z, w}\`, as its math helpers return one. */
 struct PinnedQuat {
     double x;
     double y;

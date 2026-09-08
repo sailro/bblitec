@@ -45,7 +45,7 @@ import { LoweredSource, LoweringContext } from "./context.js";
  * them from the package keeps them flowing from the pin rather than
  * living twice.
  */
-export function pinnedRecastConfigDefaults(): ReadonlyMap<string, number> {
+function pinnedRecastConfigDefaults(): ReadonlyMap<string, number> {
     return wrapperNumericDefaults(
         "recastConfigDefaults",
         "@recast-navigation/core/dist/index.mjs",
@@ -60,7 +60,7 @@ export function pinnedRecastConfigDefaults(): ReadonlyMap<string, number> {
  * `expectedLayersPerTile` and `maxObstacles`; a spread carries no property
  * assignment, so what this reads is exactly the arm's own.
  */
-export function pinnedTileCacheDefaults(): ReadonlyMap<string, number> {
+function pinnedTileCacheDefaults(): ReadonlyMap<string, number> {
     return wrapperNumericDefaults(
         "tileCacheGeneratorConfigDefaults",
         "@recast-navigation/generators/dist/index.mjs",

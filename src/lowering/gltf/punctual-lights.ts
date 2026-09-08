@@ -1,18 +1,17 @@
 import ts from "typescript";
 import { floatLiteral } from "../../cpp-literals.js";
 import {
-    collectNodes,
+    findNodes,
     featureMethod,
     identifierParameters,
     identifierText,
     mathCall,
-    pinnedConstantValue,
+    pinnedNumericValue,
     pinnedRootFlip,
     refuseModule,
     refuseNode,
-    signedNumericValue,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /** Pinned light type string → the record's LightKind, by name only. */
@@ -30,7 +29,7 @@ const lightFactoryByPin: Readonly<Record<string, string>> = {
 };
 
 function containsCall(root: ts.Node, calleeName: string): boolean {
-    return collectNodes(
+    return findNodes(
         root,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -65,7 +64,7 @@ export function lowerPunctualLightsCpp(
     const applyAsset = featureMethod(punctualFile, symbol, "applyAsset");
     // The extension keys the record's JSON walk mirrors.
     for (const property of [symbol, "lights", "light"]) {
-        const carried = collectNodes(
+        const carried = findNodes(
             applyAsset.body,
             (node): node is ts.Node =>
                 (ts.isPropertyAccessExpression(node) ||
@@ -80,7 +79,7 @@ export function lowerPunctualLightsCpp(
         }
     }
     if (
-        collectNodes(
+        findNodes(
             applyAsset.body,
             (node): node is ts.Node =>
                 (ts.isIdentifier(node) ||
@@ -97,17 +96,17 @@ export function lowerPunctualLightsCpp(
         );
     }
     // The type dispatch chain, in the pin's order.
-    const chainHead = collectNodes(
+    const chainHead = findNodes(
         applyAsset.body,
         (node): node is ts.IfStatement =>
             ts.isIfStatement(node) &&
-            ts.isBinaryExpression(unwrapPin(node.expression)) &&
-            (unwrapPin(node.expression) as ts.BinaryExpression)
+            ts.isBinaryExpression(unwrapExpression(node.expression)) &&
+            (unwrapExpression(node.expression) as ts.BinaryExpression)
                     .operatorToken.kind ===
                 ts.SyntaxKind.EqualsEqualsEqualsToken &&
             ts.isStringLiteral(
-                unwrapPin(
-                    (unwrapPin(node.expression) as ts.BinaryExpression)
+                unwrapExpression(
+                    (unwrapExpression(node.expression) as ts.BinaryExpression)
                         .right,
                 ),
             ),
@@ -125,14 +124,14 @@ export function lowerPunctualLightsCpp(
                 "no longer dispatches light types through an if chain",
             );
         }
-        const condition = unwrapPin(current.expression);
+        const condition = unwrapExpression(current.expression);
         const read = ts.isBinaryExpression(condition) &&
                 condition.operatorToken.kind ===
                     ts.SyntaxKind.EqualsEqualsEqualsToken
-            ? unwrapPin(condition.left)
+            ? unwrapExpression(condition.left)
             : undefined;
         const value = ts.isBinaryExpression(condition)
-            ? unwrapPin(condition.right)
+            ? unwrapExpression(condition.right)
             : undefined;
         if (
             read === undefined ||
@@ -210,7 +209,7 @@ export function lowerPunctualLightsCpp(
         shape: (node: ts.ConditionalExpression) => boolean,
         reason: string,
     ): ts.ConditionalExpression => {
-        const found = collectNodes(
+        const found = findNodes(
             applyAsset.body,
             (node): node is ts.ConditionalExpression =>
                 ts.isConditionalExpression(node) && shape(node),
@@ -221,7 +220,7 @@ export function lowerPunctualLightsCpp(
     const propertyKeyOn = (
         expression: ts.Expression,
     ): string | undefined => {
-        const read = unwrapPin(expression);
+        const read = unwrapExpression(expression);
         return (ts.isPropertyAccessExpression(read) ||
                 ts.isPropertyAccessChain(read)) &&
                 identifierText(read.expression) === definitionName
@@ -232,21 +231,21 @@ export function lowerPunctualLightsCpp(
     const colorConditional = defaultConditional(
         (node) =>
             propertyKeyOn(node.condition) !== undefined &&
-            ts.isArrayLiteralExpression(unwrapPin(node.whenTrue)),
+            ts.isArrayLiteralExpression(unwrapExpression(node.whenTrue)),
         "no longer defaults the light color behind a presence test",
     );
     const colorKey = propertyKeyOn(colorConditional.condition)!;
-    const colorTuple = unwrapPin(
+    const colorTuple = unwrapExpression(
         colorConditional.whenTrue,
     ) as ts.ArrayLiteralExpression;
     const colorLanes = colorTuple.elements.map((element, laneIndex) => {
-        const read = unwrapPin(element);
+        const read = unwrapExpression(element);
         const lane = ts.isElementAccessExpression(read) &&
                 propertyKeyOn(read.expression) === colorKey &&
-                ts.isNumericLiteral(unwrapPin(read.argumentExpression))
+                ts.isNumericLiteral(unwrapExpression(read.argumentExpression))
             ? Number(
                 (
-                    unwrapPin(
+                    unwrapExpression(
                         read.argumentExpression,
                     ) as ts.NumericLiteral
                 ).text,
@@ -262,7 +261,7 @@ export function lowerPunctualLightsCpp(
         }
         return lane;
     });
-    const colorFallbackValue = unwrapPin(colorConditional.whenFalse);
+    const colorFallbackValue = unwrapExpression(colorConditional.whenFalse);
     if (
         colorLanes.length !== 3 ||
         !ts.isArrayLiteralExpression(colorFallbackValue) ||
@@ -277,23 +276,23 @@ export function lowerPunctualLightsCpp(
     }
     const colorFallback = colorFallbackValue.elements.map((element) =>
         floatLiteral(
-            signedNumericValue(symbol, punctualFile, element),
+            pinnedNumericValue(symbol, punctualFile, element),
         )
     );
     const colorName = (() => {
-        const declaration = collectNodes(
+        const declaration = findNodes(
             applyAsset.body,
             (node): node is ts.VariableDeclaration =>
                 ts.isVariableDeclaration(node) &&
                 node.initializer !== undefined &&
-                unwrapPin(node.initializer!) === colorConditional,
+                unwrapExpression(node.initializer!) === colorConditional,
         )[0];
         return declaration && ts.isIdentifier(declaration.name)
             ? declaration.name.text
             : undefined;
     })();
     // intensity: def.intensity ?? 1, feeding every factory call.
-    const intensityDefaults = collectNodes(
+    const intensityDefaults = findNodes(
         applyAsset.body,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
@@ -301,7 +300,7 @@ export function lowerPunctualLightsCpp(
                 ts.SyntaxKind.QuestionQuestionToken &&
             propertyKeyOn(node.left) !== undefined &&
             propertyKeyOn(node.left) !== "spot" &&
-            !ts.isPropertyAccessChain(unwrapPin(node.left)),
+            !ts.isPropertyAccessChain(unwrapExpression(node.left)),
     );
     if (intensityDefaults.length !== 1) {
         refuseModule(
@@ -310,18 +309,18 @@ export function lowerPunctualLightsCpp(
         );
     }
     const intensityKey = propertyKeyOn(intensityDefaults[0]!.left)!;
-    const intensityValue = pinnedConstantValue(
+    const intensityValue = pinnedNumericValue(
         symbol,
         punctualFile,
         intensityDefaults[0]!.right,
     );
     const intensityName = (() => {
-        const declaration = collectNodes(
+        const declaration = findNodes(
             applyAsset.body,
             (node): node is ts.VariableDeclaration =>
                 ts.isVariableDeclaration(node) &&
                 node.initializer !== undefined &&
-                unwrapPin(node.initializer!) === intensityDefaults[0],
+                unwrapExpression(node.initializer!) === intensityDefaults[0],
         )[0];
         return declaration && ts.isIdentifier(declaration.name)
             ? declaration.name.text
@@ -330,7 +329,7 @@ export function lowerPunctualLightsCpp(
     // range: def.range !== undefined ? def.range : Number.MAX_VALUE.
     const rangeConditional = defaultConditional(
         (node) => {
-            const condition = unwrapPin(node.condition);
+            const condition = unwrapExpression(node.condition);
             return ts.isBinaryExpression(condition) &&
                 condition.operatorToken.kind ===
                     ts.SyntaxKind.ExclamationEqualsEqualsToken &&
@@ -340,10 +339,10 @@ export function lowerPunctualLightsCpp(
         "no longer defaults the light range behind a presence test",
     );
     const rangeKey = propertyKeyOn(
-        (unwrapPin(rangeConditional.condition) as ts.BinaryExpression)
+        (unwrapExpression(rangeConditional.condition) as ts.BinaryExpression)
             .left,
     )!;
-    const rangeFallback = unwrapPin(rangeConditional.whenFalse);
+    const rangeFallback = unwrapExpression(rangeConditional.whenFalse);
     const rangeIsDoubleMax = ts.isPropertyAccessExpression(rangeFallback) &&
         identifierText(rangeFallback.expression) === "Number" &&
         rangeFallback.name.text === "MAX_VALUE";
@@ -359,12 +358,12 @@ export function lowerPunctualLightsCpp(
         );
     }
     const rangeName = (() => {
-        const declaration = collectNodes(
+        const declaration = findNodes(
             applyAsset.body,
             (node): node is ts.VariableDeclaration =>
                 ts.isVariableDeclaration(node) &&
                 node.initializer !== undefined &&
-                unwrapPin(node.initializer!) === rangeConditional,
+                unwrapExpression(node.initializer!) === rangeConditional,
         )[0];
         return declaration && ts.isIdentifier(declaration.name)
             ? declaration.name.text
@@ -376,17 +375,17 @@ export function lowerPunctualLightsCpp(
     for (const branch of branches) {
         for (const property of ["diffuse", "specular"]) {
             const written = colorName !== undefined &&
-                collectNodes(
+                findNodes(
                     branch.block,
                     (node): node is ts.BinaryExpression =>
                         ts.isBinaryExpression(node) &&
                         node.operatorToken.kind ===
                             ts.SyntaxKind.EqualsToken &&
                         ts.isPropertyAccessExpression(
-                            unwrapPin(node.left),
+                            unwrapExpression(node.left),
                         ) &&
                         (
-                            unwrapPin(
+                            unwrapExpression(
                                 node.left,
                             ) as ts.PropertyAccessExpression
                         ).name.text === property &&
@@ -401,16 +400,16 @@ export function lowerPunctualLightsCpp(
             }
         }
         const writesRange = rangeName !== undefined &&
-            collectNodes(
+            findNodes(
                 branch.block,
                 (node): node is ts.BinaryExpression =>
                     ts.isBinaryExpression(node) &&
                     node.operatorToken.kind ===
                         ts.SyntaxKind.EqualsToken &&
                     ts.isPropertyAccessExpression(
-                        unwrapPin(node.left),
+                        unwrapExpression(node.left),
                     ) &&
-                    (unwrapPin(node.left) as ts.PropertyAccessExpression)
+                    (unwrapExpression(node.left) as ts.PropertyAccessExpression)
                             .name.text === "range" &&
                     identifierText(node.right) === rangeName,
             ).length > 0;
@@ -425,7 +424,7 @@ export function lowerPunctualLightsCpp(
                     : `no longer ranges '${branch.value}' lights`,
             );
         }
-        const factoryCall = collectNodes(
+        const factoryCall = findNodes(
             branch.block,
             (node): node is ts.CallExpression =>
                 ts.isCallExpression(node) &&
@@ -448,13 +447,13 @@ export function lowerPunctualLightsCpp(
     }
     // The spot cone: def.spot?.outerConeAngle ?? Math.PI / 4, doubled
     // into the factory and halved inside the pinned light's cosine.
-    const spotDefaults = collectNodes(
+    const spotDefaults = findNodes(
         spotBranch.block,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind ===
                 ts.SyntaxKind.QuestionQuestionToken &&
-            ts.isPropertyAccessChain(unwrapPin(node.left)),
+            ts.isPropertyAccessChain(unwrapExpression(node.left)),
     );
     if (spotDefaults.length !== 1) {
         refuseModule(
@@ -462,11 +461,11 @@ export function lowerPunctualLightsCpp(
             "no longer coalesces exactly the outer cone default",
         );
     }
-    const outerRead = unwrapPin(
+    const outerRead = unwrapExpression(
         spotDefaults[0]!.left,
     ) as ts.PropertyAccessChain;
     const outerKey = outerRead.name.text;
-    const spotRead = unwrapPin(outerRead.expression);
+    const spotRead = unwrapExpression(outerRead.expression);
     const spotKey = (ts.isPropertyAccessExpression(spotRead) ||
             ts.isPropertyAccessChain(spotRead)) &&
             identifierText(spotRead.expression) === definitionName
@@ -480,31 +479,31 @@ export function lowerPunctualLightsCpp(
             "no longer reads the outer cone through the spot object",
         );
     }
-    const outerValue = pinnedConstantValue(
+    const outerValue = pinnedNumericValue(
         symbol,
         punctualFile,
         spotDefaults[0]!.right,
     );
     const outerName = (() => {
-        const declaration = collectNodes(
+        const declaration = findNodes(
             spotBranch.block,
             (node): node is ts.VariableDeclaration =>
                 ts.isVariableDeclaration(node) &&
                 node.initializer !== undefined &&
-                unwrapPin(node.initializer!) === spotDefaults[0],
+                unwrapExpression(node.initializer!) === spotDefaults[0],
         )[0];
         return declaration && ts.isIdentifier(declaration.name)
             ? declaration.name.text
             : undefined;
     })();
-    const spotCall = collectNodes(
+    const spotCall = findNodes(
         spotBranch.block,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
             identifierText(node.expression) === "createSpotLight",
     )[0]!;
     const angleArgument = spotCall.arguments.length === 5
-        ? unwrapPin(spotCall.arguments[2]!)
+        ? unwrapExpression(spotCall.arguments[2]!)
         : undefined;
     const outerScale = angleArgument !== undefined &&
             ts.isBinaryExpression(angleArgument) &&
@@ -512,9 +511,9 @@ export function lowerPunctualLightsCpp(
                 ts.SyntaxKind.AsteriskToken &&
             outerName !== undefined &&
             identifierText(angleArgument.left) === outerName &&
-            ts.isNumericLiteral(unwrapPin(angleArgument.right))
+            ts.isNumericLiteral(unwrapExpression(angleArgument.right))
         ? Number(
-            (unwrapPin(angleArgument.right) as ts.NumericLiteral).text,
+            (unwrapExpression(angleArgument.right) as ts.NumericLiteral).text,
         )
         : undefined;
     if (outerScale === undefined) {
@@ -525,7 +524,7 @@ export function lowerPunctualLightsCpp(
             "no longer passes the doubled outer cone to the spot factory",
         );
     }
-    const exponentArgument = unwrapPin(spotCall.arguments[3]!);
+    const exponentArgument = unwrapExpression(spotCall.arguments[3]!);
     if (
         !ts.isNumericLiteral(exponentArgument) ||
         Number(exponentArgument.text) !== 1
@@ -554,24 +553,24 @@ export function lowerPunctualLightsCpp(
         );
     }
     const angleName = spotParameters[2]!;
-    const halfFactors = collectNodes(
+    const halfFactors = findNodes(
         spotFactory,
         (node): node is ts.CallExpression =>
             mathCall(node as ts.Expression, "cos") !== undefined,
     )
         .map((call) => {
             const argument = call.arguments.length === 1
-                ? unwrapPin(call.arguments[0]!)
+                ? unwrapExpression(call.arguments[0]!)
                 : undefined;
             return argument !== undefined &&
                     ts.isBinaryExpression(argument) &&
                     argument.operatorToken.kind ===
                         ts.SyntaxKind.AsteriskToken &&
                     identifierText(argument.left) === angleName &&
-                    ts.isNumericLiteral(unwrapPin(argument.right))
+                    ts.isNumericLiteral(unwrapExpression(argument.right))
                 ? Number(
                     (
-                        unwrapPin(argument.right) as ts.NumericLiteral
+                        unwrapExpression(argument.right) as ts.NumericLiteral
                     ).text,
                 )
                 : undefined;
@@ -596,15 +595,15 @@ export function lowerPunctualLightsCpp(
     }
     // The baked world-transform branch: position lanes 12..14 and the
     // negated forward lanes 8..10, in order.
-    const worldDeclaration = collectNodes(
+    const worldDeclaration = findNodes(
         applyAsset.body,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
             ts.isIdentifier(node.name) &&
             node.initializer !== undefined &&
-            ts.isCallExpression(unwrapPin(node.initializer!)) &&
+            ts.isCallExpression(unwrapExpression(node.initializer!)) &&
             identifierText(
-                (unwrapPin(node.initializer!) as ts.CallExpression)
+                (unwrapExpression(node.initializer!) as ts.CallExpression)
                     .expression,
             ) === "computeNodeWorldMatrix",
     )[0];
@@ -616,35 +615,35 @@ export function lowerPunctualLightsCpp(
     }
     const worldName = (worldDeclaration.name as ts.Identifier).text;
     const worldLane = (expression: ts.Expression): number | undefined => {
-        const read = unwrapPin(expression);
+        const read = unwrapExpression(expression);
         return ts.isElementAccessExpression(read) &&
                 identifierText(read.expression) === worldName &&
-                ts.isNumericLiteral(unwrapPin(read.argumentExpression))
+                ts.isNumericLiteral(unwrapExpression(read.argumentExpression))
             ? Number(
                 (
-                    unwrapPin(
+                    unwrapExpression(
                         read.argumentExpression,
                     ) as ts.NumericLiteral
                 ).text,
             )
             : undefined;
     };
-    const positionLanes = collectNodes(
+    const positionLanes = findNodes(
         applyAsset.body,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ts.isIdentifier(unwrapPin(node.left)) &&
+            ts.isIdentifier(unwrapExpression(node.left)) &&
             worldLane(node.right) !== undefined,
     ).map((assignment) => worldLane(assignment.right)!);
-    const forwardDeclarations = collectNodes(
+    const forwardDeclarations = findNodes(
         applyAsset.body,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
             ts.isIdentifier(node.name) &&
             node.initializer !== undefined &&
             (() => {
-                const value = unwrapPin(node.initializer!);
+                const value = unwrapExpression(node.initializer!);
                 return ts.isPrefixUnaryExpression(value) &&
                     value.operator === ts.SyntaxKind.MinusToken &&
                     worldLane(value.operand) !== undefined;
@@ -653,7 +652,7 @@ export function lowerPunctualLightsCpp(
     const forwardLanes = forwardDeclarations.map((declaration) =>
         worldLane(
             (
-                unwrapPin(
+                unwrapExpression(
                     declaration.initializer!,
                 ) as ts.PrefixUnaryExpression
             ).operand,
@@ -672,13 +671,13 @@ export function lowerPunctualLightsCpp(
     const forwardNames = forwardDeclarations.map(
         (declaration) => (declaration.name as ts.Identifier).text,
     );
-    const lengthDeclaration = collectNodes(
+    const lengthDeclaration = findNodes(
         applyAsset.body,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
             node.initializer !== undefined &&
             (() => {
-                const value = unwrapPin(node.initializer!);
+                const value = unwrapExpression(node.initializer!);
                 return ts.isBinaryExpression(value) &&
                     value.operatorToken.kind ===
                         ts.SyntaxKind.BarBarToken &&
@@ -688,7 +687,7 @@ export function lowerPunctualLightsCpp(
     const hypotArguments = lengthDeclaration
         ? mathCall(
             (
-                unwrapPin(
+                unwrapExpression(
                     lengthDeclaration.initializer!,
                 ) as ts.BinaryExpression
             ).left,

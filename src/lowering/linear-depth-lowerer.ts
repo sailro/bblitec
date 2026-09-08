@@ -20,7 +20,7 @@ import type { LoweringContext } from "./context.js";
 import { pinnedReverseDepthCompare } from "./pinned-depth-state.js";
 import type { CompiledShaderProgram } from "../compiler/types.js";
 
-export const linearDepthModule = "src/render/linear-depth-material.ts";
+const linearDepthModule = "src/render/linear-depth-material.ts";
 
 /** What a reached `createLinearDepthMaterial` call settled. */
 export interface LinearDepthMaterialOptions {

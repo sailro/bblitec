@@ -37,22 +37,50 @@ export const PINNED_ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
         [ts.SyntaxKind.SlashEqualsToken, "/="],
     ]);
 
+/** The four orderings, each meaning in C++ what it means over two numbers. */
+export const PINNED_RELATIONAL_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
+    new Map<ts.SyntaxKind, string>([
+        [ts.SyntaxKind.LessThanToken, "<"],
+        [ts.SyntaxKind.LessThanEqualsToken, "<="],
+        [ts.SyntaxKind.GreaterThanToken, ">"],
+        [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
+    ]);
+
+/**
+ * The orderings plus the equalities. `==` covers both `==` and `===`, and
+ * `!=` both `!=` and `!==`: every operand a pinned body compares has
+ * already lowered to a native scalar, so the strict and loose forms are one
+ * operator by the time they reach C++.
+ */
+export const PINNED_COMPARISON_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
+    new Map<ts.SyntaxKind, string>([
+        ...PINNED_RELATIONAL_OPERATORS,
+        [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
+        [ts.SyntaxKind.EqualsEqualsToken, "=="],
+        [ts.SyntaxKind.ExclamationEqualsEqualsToken, "!="],
+        [ts.SyntaxKind.ExclamationEqualsToken, "!="],
+    ]);
+
 /**
  * The arithmetic set plus the comparisons and boolean joins a writer guards
- * with. `==` covers both `==` and `===`: every operand a pinned writer
- * compares has already lowered to a native scalar, so the two are one operator
- * by the time they reach C++.
+ * with.
  */
 export const PINNED_BOOLEAN_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
     new Map<ts.SyntaxKind, string>([
         ...PINNED_ARITHMETIC_OPERATORS,
         [ts.SyntaxKind.AmpersandAmpersandToken, "&&"],
         [ts.SyntaxKind.BarBarToken, "||"],
-        [ts.SyntaxKind.GreaterThanToken, ">"],
-        [ts.SyntaxKind.LessThanToken, "<"],
-        [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
-        [ts.SyntaxKind.EqualsEqualsToken, "=="],
+        ...PINNED_COMPARISON_OPERATORS,
     ]);
+
+/**
+ * JavaScript's `%`, which is the floating-point remainder over numbers.
+ * C++'s `%` is integer modulo, so the operator has no infix row above and
+ * every lowering that reaches it spells `std::fmod` through this.
+ */
+export function pinnedRemainderCall(left: string, right: string): string {
+    return `std::fmod(${left}, ${right})`;
+}
 
 /**
  * The `Math` members that are a `<cmath>` call of the same arity. Every one of

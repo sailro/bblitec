@@ -254,7 +254,7 @@ function nodeGeometryStageStems(
 }
 
 /** One composed geometry view, with the graph and task it belongs to. */
-export interface NodeGeometryVariantManifestEntry {
+interface NodeGeometryVariantManifestEntry {
     /** The graph's index in `node_variants`. */
     variantIndex: number;
     vertexStem: string;

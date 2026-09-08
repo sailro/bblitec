@@ -53,6 +53,11 @@ export class AudioLowerer {
             AUDIO_BUS_MODULE,
             "createMainOut",
         );
+        this.assertInventory(declaration, "createMainOut", [
+            "variable statement",
+            "expression statement",
+            "return statement",
+        ]);
         this.assertStatement(
             declaration,
             "new GainNode(ctx)",
@@ -75,6 +80,11 @@ export class AudioLowerer {
             AUDIO_BUS_MODULE,
             "createMainBus",
         );
+        this.assertInventory(declaration, "createMainBus", [
+            "variable statement",
+            "expression statement",
+            "return statement",
+        ]);
         this.assertStatement(
             declaration,
             "new GainNode(ctx)",
@@ -109,6 +119,14 @@ export class AudioLowerer {
             AUDIO_ENGINE_MODULE,
             "createAudioEngineAsync",
         );
+        // Seven locals, then the seven effects the engine's setup performs
+        // in order -- the two constructions and the volume application are
+        // three of them -- and the engine itself.
+        this.assertInventory(declaration, "createAudioEngineAsync", [
+            ...Array.from({ length: 7 }, () => "variable statement"),
+            ...Array.from({ length: 7 }, () => "expression statement"),
+            "return statement",
+        ]);
         this.assertStatement(
             declaration,
             "engine._mainOut = createMainOut(ctx, engine)",
@@ -131,6 +149,25 @@ export class AudioLowerer {
             volume,
             "options.volume ?? 1",
             "the engine's default master volume",
+        );
+    }
+
+    /**
+     * The statement inventory of a body the emitted graph restates: a
+     * statement the pin adds between the ones asserted below is otherwise
+     * invisible to the shape checks, which only say each is present.
+     */
+    private assertInventory(
+        declaration: ts.FunctionDeclaration,
+        symbolName: string,
+        expected: readonly string[],
+    ): void {
+        this.context.assertStatementInventory(
+            declaration,
+            declaration.body!.statements,
+            symbolName,
+            "the emitted engine graph in src/compiler/intrinsics/audio.ts restates a body",
+            expected,
         );
     }
 

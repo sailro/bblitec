@@ -267,7 +267,7 @@ export interface NodeParticleFrozenBufferRequest {
  * loaded -- with the bytes when the URL was a browser object URL that dies
  * with the page.
  */
-export interface NodeParticleLiveBake {
+interface NodeParticleLiveBake {
     /** Index into the request's `sprite2d` list, and the bridge within it. */
     request?: number;
     bridge?: number;
@@ -300,7 +300,7 @@ export interface NodeParticleRegistration {
  * so the assignment is part of the program, and the driver replays it by
  * calling the same module the native asset bakes from.
  */
-export interface NodeParticleTextureRequest {
+interface NodeParticleTextureRequest {
     set: number;
     system: number;
     /** `generated:pixels:<module>#<export>`, the executed-module source. */
@@ -334,7 +334,7 @@ export interface NodeParticleBakeRequest {
 }
 
 /** The pinned `loadTexture2D` call the graph's texture block made. */
-export interface NodeParticleTexture {
+interface NodeParticleTexture {
     /** The URL the graph's own block loaded, or "" for a scene texture. */
     url: string;
     /** `loadTexture2D`'s own `invertY`, as the block passed it. */
@@ -400,7 +400,7 @@ export interface NodeParticleSystemBake {
  * from another set, so the list is observed rather than predicted: the
  * driver reads `set.systems` at the point the scene registered it.
  */
-export interface NodeParticleExpansion {
+interface NodeParticleExpansion {
     /** Index into the request's `registrations` or `sprite2d` list. */
     request: number;
     /** The request's own `autoStart`, which the identity probe replays. */
@@ -408,7 +408,7 @@ export interface NodeParticleExpansion {
     systems: Array<{ set: number; system: number }>;
 }
 
-export interface NodeParticleBake {
+interface NodeParticleBake {
     systems: NodeParticleSystemBake[];
     /** `registerNodeParticleSet` expansions, in request order. */
     registrations: NodeParticleExpansion[];

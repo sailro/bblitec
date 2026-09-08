@@ -37,6 +37,7 @@
 import ts from "typescript";
 import { doubleLiteral, floatLiteral, snakeCase } from "../cpp-literals.js";
 import { LoweringContext } from "./context.js";
+import { cppVector } from "./cpp-types.js";
 import {
     lowerPinnedFunction,
     lowerPinnedFunctionParts,
@@ -56,6 +57,19 @@ import {
     recordTypeOfMembers,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import {
+    type Callable,
+    type Classified,
+    type Completion,
+    Env,
+    type Frame,
+    frame,
+    type FunctionCallable,
+    PartialEvaluator,
+    type PinnedDeclaration,
+    type RecordEntry,
+    type ValueModel,
+} from "./pinned-partial-evaluator.js";
 import { lowerNodeParticleProviderShared, lowerNodeParticleProviderState } from "./node-particle-provider-lowerer.js";
 
 const buildModule = "src/particle/node/npe-build.ts";
@@ -64,7 +78,7 @@ const bufferModule = "src/particle/particle-buffer.ts";
 const registryModule = "src/particle/node/npe-registry.ts";
 
 /** One parsed input, as the pin's `ParsedParticleInput` serializes. */
-export interface LiveGraphInput {
+interface LiveGraphInput {
     name: string;
     targetBlockId: number | null;
     targetConnectionName: string | null;
@@ -73,7 +87,7 @@ export interface LiveGraphInput {
 }
 
 /** One parsed block, as the pin's `ParsedParticleBlock` serializes. */
-export interface LiveGraphBlock {
+interface LiveGraphBlock {
     id: number;
     className: string;
     name: string;
@@ -102,7 +116,7 @@ export const SLOT_NAMES = [
     "createColor",
     "createColorDead",
 ] as const;
-export type SlotName = (typeof SLOT_NAMES)[number];
+type SlotName = (typeof SLOT_NAMES)[number];
 
 /**
  * The optional hooks a feature installs on a system -- asserted against the `ParticleSystem`
@@ -117,7 +131,7 @@ export const HOOK_NAMES = [
     "_seedLocalPosition",
     "_registerBillboard",
 ] as const;
-export type HookName = (typeof HOOK_NAMES)[number];
+type HookName = (typeof HOOK_NAMES)[number];
 
 /**
  * What the executed pin reported about one live system, read off the
@@ -166,10 +180,10 @@ const COLUMN_STORAGE: Record<
     ColumnSpec["element"],
     { vector: string; binding: PinnedBinding["type"]; zero: string }
 > = {
-    f32: { vector: "std::vector<float>", binding: "f32", zero: "0.0f" },
-    f64: { vector: "std::vector<double>", binding: "f64-buffer", zero: "0.0" },
-    u32: { vector: "std::vector<std::uint32_t>", binding: "u32", zero: "0u" },
-    u8: { vector: "std::vector<std::uint8_t>", binding: "u8", zero: "0u" },
+    f32: { vector: cppVector("f32"), binding: "f32", zero: "0.0f" },
+    f64: { vector: cppVector("f64"), binding: "f64-buffer", zero: "0.0" },
+    u32: { vector: cppVector("u32"), binding: "u32", zero: "0u" },
+    u8: { vector: cppVector("u8"), binding: "u8", zero: "0u" },
 };
 
 const COLUMN_CONSTRUCTORS = new Map<string, ColumnSpec["element"]>([
@@ -195,7 +209,7 @@ interface RecordValue {
 /** A pinned arrow the build installed, with the environment it closed over. */
 interface Closure {
     arrow: ts.ArrowFunction | ts.FunctionExpression;
-    env: Env;
+    env: NpEnv;
     file: ts.SourceFile;
     module: string;
     blockId: number;
@@ -206,11 +220,7 @@ interface Closure {
 }
 
 /** A pinned module function, reachable by import or in its own module. */
-interface PinnedFunction {
-    declaration: ts.FunctionDeclaration;
-    file: ts.SourceFile;
-    module: string;
-}
+type PinnedFunction = PinnedDeclaration;
 
 type StaticValue =
     | { k: "number"; value: number }
@@ -237,27 +247,7 @@ type StaticValue =
     | { k: "constant-getter"; value: number | RecordValue | null }
     | { k: "array-builtin"; name: string };
 
-class Env {
-    private readonly vars = new Map<string, StaticValue>();
-
-    public constructor(public readonly parent?: Env) {}
-
-    public lookup(name: string): StaticValue | undefined {
-        return this.vars.get(name) ?? this.parent?.lookup(name);
-    }
-
-    public declare(name: string, value: StaticValue): void {
-        this.vars.set(name, value);
-    }
-}
-
-/** How a build-time statement list ended. */
-type Completion =
-    | { kind: "normal" }
-    | { kind: "return"; value: StaticValue }
-    | { kind: "break" };
-
-const NORMAL: Completion = { kind: "normal" };
+type NpEnv = Env<StaticValue>;
 
 /** The calls every residual body may make: the Math table and the pinned generator. */
 function pinnedCalls(): Map<string, (args: readonly string[]) => string> {
@@ -279,49 +269,6 @@ function recordDeclaration(cpp: string, type: RecordShapeType, initial: readonly
         .join(", ")}};`;
 }
 
-function isTruthy(value: StaticValue): boolean {
-    switch (value.k) {
-        case "number":
-            return value.value !== 0 && !Number.isNaN(value.value);
-        case "boolean":
-            return value.value;
-        case "string":
-            return value.value.length > 0;
-        case "undefined":
-        case "null":
-            return false;
-        case "json":
-            return Boolean(value.value);
-        default:
-            return true;
-    }
-}
-
-function typeofName(value: StaticValue): string {
-    switch (value.k) {
-        case "number":
-            return "number";
-        case "boolean":
-            return "boolean";
-        case "string":
-            return "string";
-        case "undefined":
-            return "undefined";
-        case "null":
-            return "object";
-        case "json":
-            return value.value === null ? "object" : typeof value.value;
-        case "closure":
-        case "function":
-        case "constant-getter":
-        case "array-builtin":
-        case "ctx-method":
-            return "function";
-        default:
-            return "object";
-    }
-}
-
 /** A plain JSON value as the static value it is, one level at a time. */
 function fromJson(value: unknown): StaticValue {
     if (value === undefined) return { k: "undefined" };
@@ -332,36 +279,15 @@ function fromJson(value: unknown): StaticValue {
     return { k: "json", value };
 }
 
-/** The raw value a primitive static value stands for, for `===`. */
-function primitiveOf(value: StaticValue): unknown {
-    switch (value.k) {
-        case "number":
-        case "boolean":
-        case "string":
-            return value.value;
-        case "undefined":
-            return undefined;
-        case "null":
-            return null;
-        case "json":
-            return value.value;
-        default:
-            return value;
-    }
-}
-
-function strictEquals(left: StaticValue, right: StaticValue): boolean {
-    return primitiveOf(left) === primitiveOf(right);
-}
-
 // ── The lowerer ──────────────────────────────────────────────────────────────
 
 /**
  * One live system's lowering: the partial evaluation of its graph's
- * evaluators and the emission of the state, getters, steps, slots and
+ * evaluators -- this class is the value model the shared evaluator runs
+ * over -- and the emission of the state, getters, steps, slots and
  * simulation loop that result.
  */
-class SystemLowering {
+class SystemLowering implements ValueModel<StaticValue, StaticValue> {
     private readonly outputs = new Map<string, StaticValue>();
     private readonly slots = new Map<SlotName, Closure>();
     private readonly hooks = new Map<HookName, Closure>();
@@ -373,7 +299,7 @@ class SystemLowering {
     private readonly functions: string[] = [];
     private readonly prototypes: string[] = [];
     private readonly blocks: Map<number, LiveGraphBlock>;
-    private readonly moduleEnvs = new Map<string, Env>();
+    private readonly evaluator: PartialEvaluator<StaticValue, StaticValue>;
     private capacity = 0;
     private currentBlockId = -1;
     private instanceCounter = 0;
@@ -389,6 +315,7 @@ class SystemLowering {
         private readonly provider: boolean,
     ) {
         this.blocks = new Map(graph.blocks.map((block) => [block.id, block]));
+        this.evaluator = new PartialEvaluator(context, this);
     }
 
     // ── Traversal ─────────────────────────────────────────────────────────
@@ -457,9 +384,11 @@ class SystemLowering {
     /** The pin's own `isInputConnected`, executed over the parsed input. */
     private connected(input: LiveGraphInput): boolean {
         const fn = this.owner.pinnedFunction(buildModule, "isInputConnected");
-        return isTruthy(
+        const truth = this.evaluator.truthiness(
             this.callFunction(fn, [{ k: "json", value: input }], fn.declaration),
+            fn.declaration,
         );
+        return truth.k === "static" && truth.value;
     }
 
     /**
@@ -471,13 +400,11 @@ class SystemLowering {
             buildModule,
             "buildNodeParticleSet",
         );
-        const env = new Env(this.moduleEnv(buildModule));
+        const env: NpEnv = new Env(this.evaluator.moduleEnv(buildModule));
         env.declare("systemBlock", { k: "block", block: this.systemBlock() });
-        const value = this.expression(
+        const value = this.evaluator.expression(
             this.context.variableInitializer(declaration, "capacity"),
-            env,
-            file,
-            buildModule,
+            frame(env, file, buildModule),
         );
         if (value.k !== "number") {
             this.context.contractError(declaration, "buildNodeParticleSet capacity");
@@ -525,249 +452,147 @@ class SystemLowering {
                 `Expected '${exportName}.build(block, ctx)'.`,
             );
         }
-        const env = new Env(this.moduleEnv(module));
+        const env: NpEnv = new Env(this.evaluator.moduleEnv(module));
         const [blockParameter, ctxParameter] = build.parameters;
         env.declare(blockParameter!.name.getText(file), { k: "block", block });
         env.declare(ctxParameter!.name.getText(file), { k: "ctx" });
         this.currentBlockId = block.id;
-        const completion = this.statements(build.body.statements, env, file, module);
+        const completion = this.evaluator.statements(
+            build.body.statements,
+            frame(env, file, module),
+        );
         if (completion.kind === "break") {
             this.context.contractError(build, "A build body broke out of nothing.");
         }
     }
 
-    /** The module-scope environment: constants and functions resolve lazily. */
-    private moduleEnv(module: string): Env {
-        let env = this.moduleEnvs.get(module);
-        if (!env) {
-            env = new Env();
-            this.moduleEnvs.set(module, env);
-        }
-        return env;
+    /** A pinned module function evaluated at build time over static args. */
+    private callFunction(
+        fn: PinnedFunction,
+        args: readonly StaticValue[],
+        site: ts.Node,
+    ): StaticValue {
+        return this.evaluator.callFunction({ k: "function", ...fn }, [...args], site);
     }
 
-    /**
-     * A name no local declared: `undefined`, `Array`, a module constant, a
-     * same-module function or a named import -- or undefined when the
-     * module declares none of these.
-     */
-    private findFree(
-        name: string,
-        file: ts.SourceFile,
-        module: string,
-    ): StaticValue | undefined {
-        const env = this.moduleEnv(module);
-        const cached = env.lookup(name);
-        if (cached) return cached;
+    // ── The value model ───────────────────────────────────────────────────
+
+    public raw(value: unknown): StaticValue {
+        return fromJson(value);
+    }
+
+    public classify(value: StaticValue): Classified {
+        switch (value.k) {
+            case "number":
+            case "boolean":
+            case "string":
+            case "json":
+                return { k: "value", raw: value.value };
+            case "undefined":
+                return { k: "value", raw: undefined };
+            case "null":
+                return { k: "value", raw: null };
+            case "closure":
+            case "function":
+            case "constant-getter":
+            case "array-builtin":
+            case "ctx-method":
+                return { k: "function" };
+            default:
+                return { k: "object" };
+        }
+    }
+
+    /** A `let` is a cell a closure may capture and mutate; a `const` is its value. */
+    public declared(name: string, value: StaticValue, mutable: boolean): StaticValue {
+        return mutable ? { k: "cell", cell: { name, value } } : value;
+    }
+
+    public parameter(value: StaticValue): StaticValue {
+        return value;
+    }
+
+    public valueOf(binding: StaticValue): StaticValue {
+        return binding.k === "cell" ? binding.cell.value : binding;
+    }
+
+    public assign(binding: StaticValue | undefined, value: StaticValue, target: ts.Identifier): void {
+        if (binding?.k !== "cell") {
+            this.context.contractError(target, "assignment to a non-let binding");
+        }
+        binding.cell.value = value;
+    }
+
+    public builtin(name: string): StaticValue | undefined {
         if (name === "undefined") return { k: "undefined" };
         if (name === "Array") return { k: "array-builtin", name };
         const columnElement = COLUMN_CONSTRUCTORS.get(name);
         if (columnElement) return { k: "column-constructor", element: columnElement };
-        const constant = this.context.moduleScopeConstant(file, name);
-        if (constant) {
-            const value = this.expression(constant, env, file, module);
-            env.declare(name, value);
-            return value;
-        }
-        const declaration = file.statements.find(
-            (statement): statement is ts.FunctionDeclaration =>
-                ts.isFunctionDeclaration(statement) &&
-                statement.name?.text === name &&
-                statement.body !== undefined,
-        );
-        if (declaration) {
-            const value: StaticValue = {
-                k: "function",
-                fn: { declaration, file, module },
-            };
-            env.declare(name, value);
-            return value;
-        }
-        const imported = this.context.moduleOfImport(module, name);
-        if (imported) {
-            const value: StaticValue = {
-                k: "function",
-                fn: this.owner.pinnedFunction(imported, name),
-            };
-            env.declare(name, value);
-            return value;
-        }
         return undefined;
     }
 
-    private resolveFree(
-        name: string,
-        file: ts.SourceFile,
-        module: string,
-        site: ts.Node,
+    public functionValue(fn: PinnedDeclaration): StaticValue {
+        return { k: "function", fn };
+    }
+
+    public closure(
+        node: ts.ArrowFunction | ts.FunctionExpression,
+        at: Frame<StaticValue, StaticValue>,
     ): StaticValue {
-        return (
-            this.findFree(name, file, module) ??
-            this.context.contractError(
-                site,
-                `The live node-particle lowering cannot resolve '${name}'.`,
-            )
-        );
+        return {
+            k: "closure",
+            closure: { arrow: node, env: at.env, file: at.file, module: at.module, blockId: this.currentBlockId },
+        };
     }
 
-    // ── Build-time statements ─────────────────────────────────────────────
-
-    private statements(
-        statements: readonly ts.Statement[],
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-    ): Completion {
-        for (const statement of statements) {
-            const completion = this.statement(statement, env, file, module);
-            if (completion.kind !== "normal") return completion;
+    public callable(value: StaticValue): Callable<StaticValue, StaticValue> | undefined {
+        if (value.k === "closure") {
+            const { arrow, env, file, module } = value.closure;
+            return { k: "closure", node: arrow, env, file, module };
         }
-        return NORMAL;
+        if (value.k === "function") return { k: "function", ...value.fn };
+        return undefined;
     }
 
-    private statement(
-        statement: ts.Statement,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-    ): Completion {
-        if (ts.isVariableStatement(statement)) {
-            const isLet =
-                (statement.declarationList.flags & ts.NodeFlags.Const) === 0;
-            for (const declaration of statement.declarationList.declarations) {
-                const value = declaration.initializer
-                    ? this.expression(declaration.initializer, env, file, module)
-                    : ({ k: "undefined" } as StaticValue);
-                if (ts.isObjectBindingPattern(declaration.name)) {
-                    for (const element of declaration.name.elements) {
-                        if (!ts.isIdentifier(element.name)) {
-                            this.context.contractError(element, "binding element");
-                        }
-                        const property = element.propertyName
-                            ? element.propertyName.getText(file)
-                            : element.name.text;
-                        env.declare(element.name.text, this.member(value, property, element));
-                    }
-                    continue;
-                }
-                if (!ts.isIdentifier(declaration.name)) {
-                    this.context.contractError(declaration, "declaration name");
-                }
-                const name = declaration.name.text;
-                env.declare(
-                    name,
-                    isLet ? { k: "cell", cell: { name, value } } : value,
-                );
-            }
-            return NORMAL;
-        }
-        if (ts.isExpressionStatement(statement)) {
-            this.effect(statement.expression, env, file, module);
-            return NORMAL;
-        }
-        if (ts.isIfStatement(statement)) {
-            const condition = this.expression(statement.expression, env, file, module);
-            if (isTruthy(condition)) {
-                return this.statement(statement.thenStatement, env, file, module);
-            }
-            return statement.elseStatement
-                ? this.statement(statement.elseStatement, env, file, module)
-                : NORMAL;
-        }
-        if (ts.isBlock(statement)) {
-            return this.statements(statement.statements, new Env(env), file, module);
-        }
-        if (ts.isReturnStatement(statement)) {
-            return {
-                kind: "return",
-                value: statement.expression
-                    ? this.expression(statement.expression, env, file, module)
-                    : { k: "undefined" },
-            };
-        }
-        if (ts.isBreakStatement(statement)) return { kind: "break" };
-        if (ts.isSwitchStatement(statement)) {
-            const discriminant = this.expression(statement.expression, env, file, module);
-            const clauses = statement.caseBlock.clauses;
-            let selected = clauses.findIndex(
-                (clause) =>
-                    ts.isCaseClause(clause) &&
-                    strictEquals(
-                        discriminant,
-                        this.expression(clause.expression, env, file, module),
-                    ),
-            );
-            if (selected < 0) selected = clauses.findIndex(ts.isDefaultClause);
-            if (selected < 0) return NORMAL;
-            const scope = new Env(env);
-            for (let index = selected; index < clauses.length; index += 1) {
-                const completion = this.statements(
-                    clauses[index]!.statements,
-                    scope,
-                    file,
-                    module,
-                );
-                if (completion.kind === "break") return NORMAL;
-                if (completion.kind === "return") return completion;
-            }
-            return NORMAL;
-        }
-        if (ts.isThrowStatement(statement)) {
-            const thrown = this.context.unwrapExpression(statement.expression);
-            const message =
-                ts.isNewExpression(thrown) && thrown.arguments?.[0]
-                    ? this.expression(thrown.arguments[0], env, file, module)
-                    : undefined;
-            throw new Error(
-                "The pin's node-particle build threw while lowering block " +
-                    `${this.currentBlockId}: ${
-                        message?.k === "string" ? message.value : thrown.getText(file)
-                    }`,
-            );
-        }
+    public refuse(node: ts.Node, what: string): never {
         return this.context.contractError(
-            statement,
-            "The live node-particle lowering does not evaluate this build-time statement.",
+            node,
+            `The live node-particle lowering does not evaluate this build-time ${what}.`,
         );
     }
 
-    /** An expression statement: an assignment or a call with an effect. */
-    private effect(
-        expression: ts.Expression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-    ): void {
-        const node = this.context.unwrapExpression(expression);
-        if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ) {
-            const value = this.expression(node.right, env, file, module);
-            const target = this.context.unwrapExpression(node.left);
-            if (ts.isIdentifier(target)) {
-                const bound = env.lookup(target.text);
-                if (bound?.k !== "cell") {
-                    this.context.contractError(target, "assignment to a non-let binding");
-                }
-                bound.cell.value = value;
-                return;
-            }
-            if (ts.isPropertyAccessExpression(target)) {
-                const owner = this.expression(target.expression, env, file, module);
-                this.assignMember(owner, target.name.text, value, target);
-                return;
-            }
-            this.context.contractError(target, "assignment target");
-        }
-        if (ts.isCallExpression(node)) {
-            this.expression(node, env, file, module);
-            return;
-        }
-        this.context.contractError(node, "build-time expression statement");
+    /** A pinned throw reached at build time is the pin's own refusal, with its message. */
+    public statement(
+        node: ts.Statement,
+        at: Frame<StaticValue, StaticValue>,
+    ): Completion<StaticValue> | undefined {
+        if (!ts.isThrowStatement(node)) return undefined;
+        const thrown = this.context.unwrapExpression(node.expression);
+        const message =
+            ts.isNewExpression(thrown) && thrown.arguments?.[0]
+                ? this.evaluator.expression(thrown.arguments[0], at)
+                : undefined;
+        throw new Error(
+            "The pin's node-particle build threw while lowering block " +
+                `${this.currentBlockId}: ${
+                    message?.k === "string" ? message.value : thrown.getText(at.file)
+                }`,
+        );
     }
 
     /** `system.<field> = value` at build time: a setting, or an installed slot. */
+    public assignTarget(
+        target: ts.Expression,
+        value: StaticValue,
+        at: Frame<StaticValue, StaticValue>,
+        evaluator: PartialEvaluator<StaticValue, StaticValue>,
+    ): StaticValue | undefined {
+        if (!ts.isPropertyAccessExpression(target)) return undefined;
+        const owner = evaluator.expression(target.expression, at);
+        this.assignMember(owner, target.name.text, value, target);
+        return value;
+    }
+
     private assignMember(
         owner: StaticValue,
         name: string,
@@ -806,202 +631,21 @@ class SystemLowering {
         );
     }
 
-    // ── Build-time expressions ────────────────────────────────────────────
-
-    private expression(
-        expression: ts.Expression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-    ): StaticValue {
-        const node = this.context.unwrapExpression(expression);
-        if (ts.isNumericLiteral(node)) return { k: "number", value: Number(node.text) };
-        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-            return { k: "string", value: node.text };
-        }
-        if (ts.isTemplateExpression(node)) {
-            let text = node.head.text;
-            for (const span of node.templateSpans) {
-                const value = this.expression(span.expression, env, file, module);
-                text += `${String(primitiveOf(value))}${span.literal.text}`;
-            }
-            return { k: "string", value: text };
-        }
-        if (node.kind === ts.SyntaxKind.TrueKeyword) return { k: "boolean", value: true };
-        if (node.kind === ts.SyntaxKind.FalseKeyword) return { k: "boolean", value: false };
-        if (node.kind === ts.SyntaxKind.NullKeyword) return { k: "null" };
-        if (ts.isIdentifier(node)) {
-            const bound = env.lookup(node.text);
-            if (bound) return bound.k === "cell" ? bound.cell.value : bound;
-            return this.resolveFree(node.text, file, module, node);
-        }
-        if (ts.isPropertyAccessExpression(node)) {
-            const owner = this.expression(node.expression, env, file, module);
-            if (
-                node.questionDotToken &&
-                (owner.k === "undefined" || owner.k === "null")
-            ) {
-                return { k: "undefined" };
-            }
-            return this.member(owner, node.name.text, node);
-        }
-        if (ts.isElementAccessExpression(node)) {
-            const owner = this.expression(node.expression, env, file, module);
-            if (
-                node.questionDotToken &&
-                (owner.k === "undefined" || owner.k === "null")
-            ) {
-                return { k: "undefined" };
-            }
-            const index = this.expression(node.argumentExpression, env, file, module);
-            if (owner.k === "json" && Array.isArray(owner.value) && index.k === "number") {
-                return fromJson(owner.value[index.value]);
-            }
-            this.context.contractError(node, "build-time element access");
-        }
-        if (ts.isTypeOfExpression(node)) {
-            return {
-                k: "string",
-                value: typeofName(this.expression(node.expression, env, file, module)),
-            };
-        }
-        if (ts.isPrefixUnaryExpression(node)) {
-            const operand = this.expression(node.operand, env, file, module);
-            if (node.operator === ts.SyntaxKind.ExclamationToken) {
-                return { k: "boolean", value: !isTruthy(operand) };
-            }
-            if (node.operator === ts.SyntaxKind.MinusToken && operand.k === "number") {
-                return { k: "number", value: -operand.value };
-            }
-            this.context.contractError(node, "build-time prefix operator");
-        }
-        if (ts.isConditionalExpression(node)) {
-            return isTruthy(this.expression(node.condition, env, file, module))
-                ? this.expression(node.whenTrue, env, file, module)
-                : this.expression(node.whenFalse, env, file, module);
-        }
-        if (ts.isBinaryExpression(node)) return this.binary(node, env, file, module);
-        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-            return {
-                k: "closure",
-                closure: { arrow: node, env, file, module, blockId: this.currentBlockId },
-            };
-        }
-        if (ts.isObjectLiteralExpression(node)) return this.objectLiteral(node, env, file, module);
-        if (ts.isCallExpression(node)) return this.call(node, env, file, module);
-        return this.context.contractError(
-            node,
-            "The live node-particle lowering does not evaluate this build-time expression.",
-        );
-    }
-
-    private binary(
-        node: ts.BinaryExpression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-    ): StaticValue {
-        const kind = node.operatorToken.kind;
-        if (kind === ts.SyntaxKind.AmpersandAmpersandToken) {
-            const left = this.expression(node.left, env, file, module);
-            return isTruthy(left) ? this.expression(node.right, env, file, module) : left;
-        }
-        if (kind === ts.SyntaxKind.BarBarToken) {
-            const left = this.expression(node.left, env, file, module);
-            return isTruthy(left) ? left : this.expression(node.right, env, file, module);
-        }
-        if (kind === ts.SyntaxKind.QuestionQuestionToken) {
-            const left = this.expression(node.left, env, file, module);
-            return left.k === "undefined" || left.k === "null"
-                ? this.expression(node.right, env, file, module)
-                : left;
-        }
-        const left = this.expression(node.left, env, file, module);
-        const right = this.expression(node.right, env, file, module);
-        switch (kind) {
-            case ts.SyntaxKind.EqualsEqualsEqualsToken:
-                return { k: "boolean", value: strictEquals(left, right) };
-            case ts.SyntaxKind.ExclamationEqualsEqualsToken:
-                return { k: "boolean", value: !strictEquals(left, right) };
-            case ts.SyntaxKind.EqualsEqualsToken:
-            case ts.SyntaxKind.ExclamationEqualsToken: {
-                // The pin writes `!= null`, which is the one loose
-                // comparison its build makes; both nullish values agree.
-                const nullish = (value: StaticValue): boolean =>
-                    value.k === "undefined" || value.k === "null";
-                const equal =
-                    nullish(left) || nullish(right)
-                        ? nullish(left) && nullish(right)
-                        : strictEquals(left, right);
-                return {
-                    k: "boolean",
-                    value: kind === ts.SyntaxKind.EqualsEqualsToken ? equal : !equal,
-                };
-            }
-            case ts.SyntaxKind.InKeyword:
-                if (left.k === "string" && right.k === "record") {
-                    return {
-                        k: "boolean",
-                        value: RECORD_SHAPES.get(right.record.type)!.members.includes(
-                            left.value,
-                        ),
-                    };
-                }
-                break;
-            default:
-                break;
-        }
-        if (left.k === "number" && right.k === "number") {
-            const a = left.value;
-            const b = right.value;
-            switch (kind) {
-                case ts.SyntaxKind.LessThanToken:
-                    return { k: "boolean", value: a < b };
-                case ts.SyntaxKind.LessThanEqualsToken:
-                    return { k: "boolean", value: a <= b };
-                case ts.SyntaxKind.GreaterThanToken:
-                    return { k: "boolean", value: a > b };
-                case ts.SyntaxKind.GreaterThanEqualsToken:
-                    return { k: "boolean", value: a >= b };
-                case ts.SyntaxKind.PlusToken:
-                    return { k: "number", value: a + b };
-                case ts.SyntaxKind.MinusToken:
-                    return { k: "number", value: a - b };
-                case ts.SyntaxKind.AsteriskToken:
-                    return { k: "number", value: a * b };
-                case ts.SyntaxKind.SlashToken:
-                    return { k: "number", value: a / b };
-                default:
-                    break;
-            }
-        }
-        return this.context.contractError(node, "build-time binary operator");
-    }
-
     /** `{ x: 0, y: 0, z: 0 }` -- a positional record the build allocates. */
-    private objectLiteral(
+    public record(
+        entries: readonly RecordEntry<StaticValue>[],
         node: ts.ObjectLiteralExpression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
     ): StaticValue {
         const names: string[] = [];
         const initial: number[] = [];
-        for (const property of node.properties) {
-            if (
-                !ts.isPropertyAssignment(property) ||
-                !ts.isIdentifier(property.name)
-            ) {
-                this.context.contractError(property, "record literal member");
-            }
-            const value = this.expression(property.initializer, env, file, module);
+        for (const { name, value, property } of entries) {
             if (value.k !== "number") {
                 this.context.contractError(
                     property,
                     "A build-time record literal carries numbers.",
                 );
             }
-            names.push(property.name.text);
+            names.push(name);
             initial.push(value.value);
         }
         const type = recordTypeOfMembers(names);
@@ -1011,8 +655,14 @@ class SystemLowering {
         return { k: "record", record: { type, initial } };
     }
 
+    /** `"r" in min` over a scratch record: the shape names its members. */
+    public hasMember(owner: StaticValue, key: string): boolean | undefined {
+        if (owner.k !== "record") return undefined;
+        return RECORD_SHAPES.get(owner.record.type)!.members.includes(key);
+    }
+
     /** One member read off a static value. */
-    private member(owner: StaticValue, name: string, site: ts.Node): StaticValue {
+    public member(owner: StaticValue, name: string, site: ts.Node): StaticValue {
         switch (owner.k) {
             case "json": {
                 const value = owner.value;
@@ -1087,139 +737,105 @@ class SystemLowering {
         );
     }
 
-    private call(
-        node: ts.CallExpression,
-        env: Env,
-        file: ts.SourceFile,
-        module: string,
-    ): StaticValue {
-        const args = node.arguments.map((argument) =>
-            this.expression(argument, env, file, module),
-        );
-        // `system.updateSteps.push(step)`: the one method the build calls
-        // on the system, appending a per-particle step in graph order.
-        const method = this.context.unwrapExpression(node.expression);
-        if (ts.isPropertyAccessExpression(method) && method.name.text === "push") {
-            const owner = this.expression(method.expression, env, file, module);
-            if (owner.k === "step-list") {
-                const [step] = args;
-                if (args.length !== 1 || step?.k !== "closure") {
-                    this.context.contractError(node, "updateSteps.push takes one closure");
-                }
-                step.closure.cpp ??= `update_step_${this.currentBlockId}`;
-                this.steps.push(step.closure);
-                return { k: "number", value: this.steps.length };
-            }
+    public element(owner: StaticValue, index: StaticValue, node: ts.Node): StaticValue {
+        if (owner.k === "json" && Array.isArray(owner.value) && index.k === "number") {
+            return fromJson(owner.value[index.value]);
         }
-        const callee = this.expression(node.expression, env, file, module);
-        switch (callee.k) {
+        return this.context.contractError(node, "build-time element access");
+    }
+
+    /**
+     * `system.updateSteps.push(step)`: the one method the build calls on
+     * the system, appending a per-particle step in graph order.
+     */
+    public methodCall(
+        owner: StaticValue,
+        method: string,
+        args: () => StaticValue[],
+        node: ts.CallExpression,
+    ): StaticValue | undefined {
+        if (method !== "push" || owner.k !== "step-list") return undefined;
+        const [step, ...rest] = args();
+        if (rest.length > 0 || step?.k !== "closure") {
+            this.context.contractError(node, "updateSteps.push takes one closure");
+        }
+        step.closure.cpp ??= `update_step_${this.currentBlockId}`;
+        this.steps.push(step.closure);
+        return { k: "number", value: this.steps.length };
+    }
+
+    public invoke(target: StaticValue, args: StaticValue[], site: ts.Node): StaticValue | undefined {
+        switch (target.k) {
             case "ctx-method":
-                return this.ctxCall(callee.name, args, node);
+                return this.ctxCall(target.name, args, site);
             case "array-builtin":
-                if (callee.name === "isArray") {
+                if (target.name === "isArray") {
                     const [value] = args;
                     return {
                         k: "boolean",
                         value: value?.k === "json" && Array.isArray(value.value),
                     };
                 }
-                break;
-            case "function":
-                return this.callFunction(callee.fn, args, node);
+                return undefined;
             case "constant-getter":
                 // `ctx.input(block, "emitRate", () => 10)(0)`: the pin reads
                 // a constant input once at build by calling its getter.
-                if (callee.value === null) return { k: "null" };
-                return typeof callee.value === "number"
-                    ? { k: "number", value: callee.value }
-                    : { k: "record", record: callee.value };
-            case "closure": {
-                // A closure called at build time: only a constant one has a
-                // value here, since a per-particle body reads columns.
-                const body = callee.closure.arrow.body;
-                if (ts.isBlock(body)) {
-                    const scope = new Env(callee.closure.env);
-                    callee.closure.arrow.parameters.forEach((parameter, index) => {
-                        scope.declare(
-                            parameter.name.getText(callee.closure.file),
-                            args[index] ?? { k: "undefined" },
-                        );
-                    });
-                    const completion = this.statements(
-                        body.statements,
-                        scope,
-                        callee.closure.file,
-                        callee.closure.module,
-                    );
-                    return completion.kind === "return" ? completion.value : { k: "undefined" };
-                }
-                return this.expression(
-                    body,
-                    callee.closure.env,
-                    callee.closure.file,
-                    callee.closure.module,
-                );
-            }
+                if (target.value === null) return { k: "null" };
+                return typeof target.value === "number"
+                    ? { k: "number", value: target.value }
+                    : { k: "record", record: target.value };
             default:
-                break;
+                return undefined;
         }
-        return this.context.contractError(node, `build-time call of a ${callee.k}`);
     }
 
-    /** A pinned module function evaluated at build time over static args. */
-    private callFunction(
-        fn: PinnedFunction,
-        args: readonly StaticValue[],
+    /**
+     * `column(buffer, name, ctor)` allocates a typed column on the buffer;
+     * here it registers the column the state declares, after asserting the
+     * pin's allocation and reuse rule.
+     */
+    public intercept(
+        fn: FunctionCallable<StaticValue>,
+        args: StaticValue[],
         site: ts.Node,
-    ): StaticValue {
-        if (fn.module === bufferModule && fn.declaration.name?.text === "column") {
-            const [buffer, name, ctor] = args;
-            if (buffer?.k !== "buffer" || name?.k !== "string" || ctor?.k !== "column-constructor") {
-                return this.context.contractError(site, "column requires a buffer, static name and typed-array constructor");
-            }
-            this.context.expectShapeCount(fn.declaration, "buffer._columns.get(name)", "column lookup");
-            this.context.expectShapeCount(fn.declaration, "new ctor(buffer.capacity)", "column allocation");
-            this.context.expectShapeCount(fn.declaration, "buffer._columns.set(name, created)", "column identity");
-            this.context.expectShapeCount(fn.declaration, "buffer._all.push(created)", "column swap-remove membership");
-            this.context.assertStatementInventory(fn.declaration, fn.declaration.body!.statements,
-                "column", "optional columns preserve allocation and insertion order",
-                ["variable statement", "if statement", "variable statement", "expression statement", "expression statement", "return statement"]);
-            const reuse = fn.declaration.body!.statements.find(ts.isIfStatement)!;
-            this.context.assertExpressionShape(reuse.expression, "existing", "column reuse guard");
-            const returned = this.context.findNodes(reuse.thenStatement, ts.isReturnStatement);
-            if (reuse.elseStatement || returned.length !== 1 || !returned[0]!.expression) {
-                this.context.contractError(reuse, "column must return existing storage before allocation");
-            }
-            this.context.assertExpressionShape(returned[0]!.expression!, "existing as T", "column reused storage");
-            let column = this.dynamicColumns.get(name.value);
-            if (!column) {
-                column = { name: name.value, element: ctor.element,
-                    cpp: `column_${snakeCase(name.value.replace(/[^a-zA-Z0-9_]/g, "_"))}` };
-                if (this.columns.some((existing) => existing.cpp === column!.cpp)) {
-                    return this.context.contractError(site, `column '${name.value}' has a colliding native name`);
-                }
-                this.dynamicColumns.set(name.value, column);
-                this.columns.push(column);
-            }
-            return { k: "column", column };
+    ): StaticValue | undefined {
+        const declaration = fn.declaration;
+        if (
+            fn.module !== bufferModule ||
+            !ts.isFunctionDeclaration(declaration) ||
+            declaration.name?.text !== "column"
+        ) {
+            return undefined;
         }
-        const scope = new Env(this.moduleEnv(fn.module));
-        fn.declaration.parameters.forEach((parameter, index) => {
-            if (!ts.isIdentifier(parameter.name)) {
-                this.context.contractError(parameter, "parameter name");
-            }
-            scope.declare(parameter.name.text, args[index] ?? { k: "undefined" });
-        });
-        const completion = this.statements(
-            fn.declaration.body!.statements,
-            scope,
-            fn.file,
-            fn.module,
-        );
-        if (completion.kind === "break") {
-            this.context.contractError(site, "a function broke out of nothing");
+        const [buffer, name, ctor] = args;
+        if (buffer?.k !== "buffer" || name?.k !== "string" || ctor?.k !== "column-constructor") {
+            return this.context.contractError(site, "column requires a buffer, static name and typed-array constructor");
         }
-        return completion.kind === "return" ? completion.value : { k: "undefined" };
+        this.context.expectShapeCount(declaration, "buffer._columns.get(name)", "column lookup");
+        this.context.expectShapeCount(declaration, "new ctor(buffer.capacity)", "column allocation");
+        this.context.expectShapeCount(declaration, "buffer._columns.set(name, created)", "column identity");
+        this.context.expectShapeCount(declaration, "buffer._all.push(created)", "column swap-remove membership");
+        this.context.assertStatementInventory(declaration, declaration.body!.statements,
+            "column", "optional columns preserve allocation and insertion order",
+            ["variable statement", "if statement", "variable statement", "expression statement", "expression statement", "return statement"]);
+        const reuse = declaration.body!.statements.find(ts.isIfStatement)!;
+        this.context.assertExpressionShape(reuse.expression, "existing", "column reuse guard");
+        const returned = this.context.findNodes(reuse.thenStatement, ts.isReturnStatement);
+        if (reuse.elseStatement || returned.length !== 1 || !returned[0]!.expression) {
+            this.context.contractError(reuse, "column must return existing storage before allocation");
+        }
+        this.context.assertExpressionShape(returned[0]!.expression!, "existing as T", "column reused storage");
+        let column = this.dynamicColumns.get(name.value);
+        if (!column) {
+            column = { name: name.value, element: ctor.element,
+                cpp: `column_${snakeCase(name.value.replace(/[^a-zA-Z0-9_]/g, "_"))}` };
+            if (this.columns.some((existing) => existing.cpp === column!.cpp)) {
+                return this.context.contractError(site, `column '${name.value}' has a colliding native name`);
+            }
+            this.dynamicColumns.set(name.value, column);
+            this.columns.push(column);
+        }
+        return { k: "column", column };
     }
 
     /**
@@ -1301,7 +917,10 @@ class SystemLowering {
             if (arrow.parameters.length !== 0 || ts.isBlock(arrow.body)) {
                 return value;
             }
-            return this.constantGetter(this.expression(arrow.body, env, file, module), site);
+            return this.constantGetter(
+                this.evaluator.expression(arrow.body, frame(env, file, module)),
+                site,
+            );
         }
         if (value.k === "number") return { k: "constant-getter", value: value.value };
         if (value.k === "record") return { k: "constant-getter", value: value.record };
@@ -1470,7 +1089,7 @@ class SystemLowering {
      * body may make.
      */
     private residualScope(
-        env: Env,
+        env: NpEnv,
         blockId: number,
         file: ts.SourceFile,
         module: string,
@@ -1518,7 +1137,7 @@ class SystemLowering {
         for (const call of callSites) {
             const callee = this.context.unwrapExpression(call.expression);
             if (!ts.isIdentifier(callee)) continue;
-            const value = env.lookup(callee.text) ?? this.findFree(callee.text, file, module);
+            const value = env.lookup(callee.text) ?? this.evaluator.findFree(callee.text, file, module);
             if (value?.k === "function") {
                 this.bindFunctionCall(callee.text, value.fn, call, env, blockId, calls, callShapes, file);
             }
@@ -1645,7 +1264,7 @@ class SystemLowering {
         name: string,
         fn: PinnedFunction,
         call: ts.CallExpression,
-        env: Env,
+        env: NpEnv,
         blockId: number,
         calls: Map<string, (args: readonly string[]) => string>,
         callShapes: Map<string, PinnedBinding["type"]>,
@@ -1669,7 +1288,7 @@ class SystemLowering {
             return;
         }
         const instance = `${snakeCase(name)}_b${blockId}_${this.instanceCounter++}`;
-        const scope = new Env(this.moduleEnv(fn.module));
+        const scope: NpEnv = new Env(this.evaluator.moduleEnv(fn.module));
         const numeric: string[] = [];
         const positions: number[] = [];
         fn.declaration.parameters.forEach((parameter, index) => {
@@ -1746,7 +1365,7 @@ class SystemLowering {
      */
     private lowerBody(
         body: ts.ConciseBody,
-        env: Env,
+        env: NpEnv,
         blockId: number,
         file: ts.SourceFile,
         module: string,

@@ -817,107 +817,17 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
                 );
             }
         }
-        return {
+        return this.environmentPackageLoader({
             modulePath,
             symbolName,
-            header: "",
-            source: `// ${this.context.provenance(
-                modulePath,
-                symbolName,
+            provenanceExtra:
                 "src/loader-env/load-dds-env.ts#computeSH is compiled into the package by src/dds-packager.ts",
-            )}
-#include <bblite/pal.hpp>
-#include <bblite/runtime.hpp>
-
-#include <algorithm>
-#include <array>
-#include <cstring>
-#include <stdexcept>
-
-namespace bbl {
-namespace {
-
-std::uint32_t package_u32(
-    const std::vector<std::uint8_t>& bytes,
-    std::size_t offset) {
-    if (offset + 4 > bytes.size()) {
-        throw std::runtime_error("Compiled DDS package is truncated.");
-    }
-    return
-        static_cast<std::uint32_t>(bytes[offset]) |
-        (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
-        (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
-        (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
-}
-
-float package_f32(
-    const std::vector<std::uint8_t>& bytes,
-    std::size_t offset) {
-    const std::uint32_t bits = package_u32(bytes, offset);
-    float result = 0.0f;
-    static_assert(sizeof(result) == sizeof(bits));
-    std::memcpy(&result, &bits, sizeof(result));
-    return result;
-}
-
-} // namespace
-
-void load_dds_environment(
-    Scene& scene,
-    DdsEnvironmentOptions options) {
-    const std::vector<std::uint8_t> bytes =
-        pal::read_binary_file(options.environment_url);
-    static constexpr std::array<std::uint8_t, 8> magic{
-        0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00};
-    if (
-        bytes.size() < 124 ||
-        !std::equal(magic.begin(), magic.end(), bytes.begin())) {
-        throw std::runtime_error("Invalid compiled DDS environment package.");
-    }
-    const std::uint32_t width = package_u32(bytes, 8);
-    const std::uint32_t mip_count = package_u32(bytes, 12);
-    if (width == 0 || mip_count == 0) {
-        throw std::runtime_error("Compiled DDS environment has invalid dimensions.");
-    }
-    EnvironmentState environment = scene.environment;
-    environment.has_irradiance = true;
-    for (std::size_t coefficient = 0; coefficient < 9; ++coefficient) {
-        environment.spherical_harmonics[coefficient] = Color3{
-            package_f32(bytes, 16 + coefficient * 12),
-            package_f32(bytes, 20 + coefficient * 12),
-            package_f32(bytes, 24 + coefficient * 12),
-        };
-    }
-    environment.specular_width = width;
-    environment.specular_mip_count = mip_count;
-    environment.specular_rgba16f = true;
-    environment.specular_faces.clear();
-    environment.specular_faces.reserve(
-        static_cast<std::size_t>(mip_count) * 6);
-    std::size_t offset = 124;
-    for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
-        const std::uint32_t size = std::max(width >> mip, 1u);
-        const std::size_t byte_size =
-            static_cast<std::size_t>(size) * size * 8;
-        for (std::uint32_t face = 0; face < 6; ++face) {
-            if (offset + byte_size > bytes.size()) {
-                throw std::runtime_error(
-                    "Compiled DDS environment pixel data is truncated.");
-            }
-            TextureData data;
-            data.bytes.assign(
-                bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-                bytes.begin() +
-                    static_cast<std::ptrdiff_t>(offset + byte_size));
-            environment.specular_faces.push_back(std::move(data));
-            offset += byte_size;
-        }
-    }
-    if (offset != bytes.size()) {
-        throw std::runtime_error(
-            "Compiled DDS environment has trailing pixel data.");
-    }
-    // The pinned loader decodes the same bundled BRDF PNG the .env loader
+            prefix: "package",
+            label: "DDS",
+            functionName: "load_dds_environment",
+            optionsType: "DdsEnvironmentOptions",
+            beforeState: "",
+            brdf: `    // The pinned loader decodes the same bundled BRDF PNG the .env loader
     // does (loadBrdfImage then decodeBrdfPng), rather than generating the LUT
     // with a compute pass the way the HDR loader beside it does.
     environment.brdf_lut = {};
@@ -925,20 +835,16 @@ void load_dds_environment(
         environment.brdf_lut.bytes =
             pal::read_binary_file(options.brdf_url);
     }
-    scene.environment = std::move(environment);
-    scene.state->environment_identity = next_scene_uniform_object_identity();
-    // A DDS environment creates no background of its own: the pinned loader
+`,
+            tail: `    // A DDS environment creates no background of its own: the pinned loader
     // takes a cubemap and nothing else.
     scene.environment.has_ground = false;
     scene.environment.has_skybox = false;
     scene.environment.background_enabled_by_default = false;
     scene.environment.lod_generation_scale =
         ${this.context.floatLiteral(lodGenerationScale)};
-}
-
-} // namespace bbl
 `,
-        };
+        });
     }
 
     public lowerHdrLoaderAdapter(): LoweredSource {
@@ -1005,14 +911,76 @@ void load_dds_environment(
                 "Expected HDR tone mapping to be disabled.",
             );
         }
-        return {
+        return this.environmentPackageLoader({
             modulePath,
             symbolName,
+            provenanceExtra:
+                "src/loader-hdr/hdr-parser.ts#parseRGBE,computeSHFromEquirect and src/loader-hdr/hdr-ibl-pipeline.ts",
+            prefix: "hdr",
+            label: "HDR",
+            functionName: "load_hdr_environment",
+            optionsType: "HdrEnvironmentOptions",
+            beforeState: "\n",
+            brdf: `
+    environment.brdf_lut = {};
+    if (!options.brdf_url.empty()) {
+        environment.brdf_lut.bytes =
+            pal::read_binary_file(options.brdf_url);
+        environment.brdf_lut_width = 256;
+        environment.brdf_lut_rgba16f = true;
+    }
+`,
+            tail: `    scene.environment.has_ground = false;
+    scene.environment.has_skybox = options.use_cubemap_skybox;
+    scene.environment.background_enabled_by_default =
+        options.use_cubemap_skybox;
+    scene.environment.skybox_uses_environment =
+        options.use_cubemap_skybox;
+    scene.environment.skybox_size = options.skybox_size;
+    scene.environment.skybox_position = options.skybox_position;
+    scene.environment.exposure = ${this.context.floatLiteral(exposure)};
+    scene.environment.contrast = ${this.context.floatLiteral(contrast)};
+    scene.environment.lod_generation_scale =
+        ${this.context.floatLiteral(lodGenerationScale)};
+    scene.environment.tone_mapping_enabled = false;
+`,
+        });
+    }
+
+    /**
+     * The compiled environment package both loader adapters read -- the
+     * eight-byte magic, the width and mip count, nine SH coefficients, then
+     * six faces per mip -- as one C++ parser. The two pinned loaders decode
+     * different sources (a DDS through the packager, an HDR through the
+     * pin's own IBL pipeline) into that one package, and what they leave on
+     * the scene past it is each adapter's own: the BRDF lookup it fills and
+     * the background state it sets.
+     */
+    private environmentPackageLoader(spec: {
+        modulePath: string;
+        symbolName: string;
+        provenanceExtra: string;
+        /** The helper prefix and the message label the loader spells. */
+        prefix: string;
+        label: string;
+        functionName: string;
+        optionsType: string;
+        /** Text between the dimension check and the state build. */
+        beforeState: string;
+        /** The BRDF lookup fill, before the state is stored. */
+        brdf: string;
+        /** The state the loader leaves past the identity bump. */
+        tail: string;
+    }): LoweredSource {
+        const { prefix, label } = spec;
+        return {
+            modulePath: spec.modulePath,
+            symbolName: spec.symbolName,
             header: "",
             source: `// ${this.context.provenance(
-                modulePath,
-                symbolName,
-                "src/loader-hdr/hdr-parser.ts#parseRGBE,computeSHFromEquirect and src/loader-hdr/hdr-ibl-pipeline.ts",
+                spec.modulePath,
+                spec.symbolName,
+                spec.provenanceExtra,
             )}
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
@@ -1025,11 +993,11 @@ void load_dds_environment(
 namespace bbl {
 namespace {
 
-std::uint32_t hdr_u32(
+std::uint32_t ${prefix}_u32(
     const std::vector<std::uint8_t>& bytes,
     std::size_t offset) {
     if (offset + 4 > bytes.size()) {
-        throw std::runtime_error("Compiled HDR package is truncated.");
+        throw std::runtime_error("Compiled ${label} package is truncated.");
     }
     return
         static_cast<std::uint32_t>(bytes[offset]) |
@@ -1038,10 +1006,10 @@ std::uint32_t hdr_u32(
         (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
 }
 
-float hdr_f32(
+float ${prefix}_f32(
     const std::vector<std::uint8_t>& bytes,
     std::size_t offset) {
-    const std::uint32_t bits = hdr_u32(bytes, offset);
+    const std::uint32_t bits = ${prefix}_u32(bytes, offset);
     float result = 0.0f;
     static_assert(sizeof(result) == sizeof(bits));
     std::memcpy(&result, &bits, sizeof(result));
@@ -1050,9 +1018,9 @@ float hdr_f32(
 
 } // namespace
 
-void load_hdr_environment(
+void ${spec.functionName}(
     Scene& scene,
-    HdrEnvironmentOptions options) {
+    ${spec.optionsType} options) {
     const std::vector<std::uint8_t> bytes =
         pal::read_binary_file(options.environment_url);
     static constexpr std::array<std::uint8_t, 8> magic{
@@ -1060,21 +1028,20 @@ void load_hdr_environment(
     if (
         bytes.size() < 124 ||
         !std::equal(magic.begin(), magic.end(), bytes.begin())) {
-        throw std::runtime_error("Invalid compiled HDR environment package.");
+        throw std::runtime_error("Invalid compiled ${label} environment package.");
     }
-    const std::uint32_t width = hdr_u32(bytes, 8);
-    const std::uint32_t mip_count = hdr_u32(bytes, 12);
+    const std::uint32_t width = ${prefix}_u32(bytes, 8);
+    const std::uint32_t mip_count = ${prefix}_u32(bytes, 12);
     if (width == 0 || mip_count == 0) {
-        throw std::runtime_error("Compiled HDR environment has invalid dimensions.");
+        throw std::runtime_error("Compiled ${label} environment has invalid dimensions.");
     }
-
-    EnvironmentState environment = scene.environment;
+${spec.beforeState}    EnvironmentState environment = scene.environment;
     environment.has_irradiance = true;
     for (std::size_t coefficient = 0; coefficient < 9; ++coefficient) {
         environment.spherical_harmonics[coefficient] = Color3{
-            hdr_f32(bytes, 16 + coefficient * 12),
-            hdr_f32(bytes, 20 + coefficient * 12),
-            hdr_f32(bytes, 24 + coefficient * 12),
+            ${prefix}_f32(bytes, 16 + coefficient * 12),
+            ${prefix}_f32(bytes, 20 + coefficient * 12),
+            ${prefix}_f32(bytes, 24 + coefficient * 12),
         };
     }
     environment.specular_width = width;
@@ -1091,7 +1058,7 @@ void load_hdr_environment(
         for (std::uint32_t face = 0; face < 6; ++face) {
             if (offset + byte_size > bytes.size()) {
                 throw std::runtime_error(
-                    "Compiled HDR environment pixel data is truncated.");
+                    "Compiled ${label} environment pixel data is truncated.");
             }
             TextureData data;
             data.bytes.assign(
@@ -1104,32 +1071,11 @@ void load_hdr_environment(
     }
     if (offset != bytes.size()) {
         throw std::runtime_error(
-            "Compiled HDR environment has trailing pixel data.");
+            "Compiled ${label} environment has trailing pixel data.");
     }
-
-    environment.brdf_lut = {};
-    if (!options.brdf_url.empty()) {
-        environment.brdf_lut.bytes =
-            pal::read_binary_file(options.brdf_url);
-        environment.brdf_lut_width = 256;
-        environment.brdf_lut_rgba16f = true;
-    }
-    scene.environment = std::move(environment);
+${spec.brdf}    scene.environment = std::move(environment);
     scene.state->environment_identity = next_scene_uniform_object_identity();
-    scene.environment.has_ground = false;
-    scene.environment.has_skybox = options.use_cubemap_skybox;
-    scene.environment.background_enabled_by_default =
-        options.use_cubemap_skybox;
-    scene.environment.skybox_uses_environment =
-        options.use_cubemap_skybox;
-    scene.environment.skybox_size = options.skybox_size;
-    scene.environment.skybox_position = options.skybox_position;
-    scene.environment.exposure = ${this.context.floatLiteral(exposure)};
-    scene.environment.contrast = ${this.context.floatLiteral(contrast)};
-    scene.environment.lod_generation_scale =
-        ${this.context.floatLiteral(lodGenerationScale)};
-    scene.environment.tone_mapping_enabled = false;
-}
+${spec.tail}}
 
 } // namespace bbl
 `,

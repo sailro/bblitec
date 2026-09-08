@@ -94,7 +94,7 @@ export const TEXTURE_UV_PROPERTIES: Readonly<
  * reads as absent. `coordIndex` likewise maps the pin's own `coordIndexKey`
  * to the record's UV-set field, or null where the loader fills none.
  */
-export interface ChannelSources {
+interface ChannelSources {
     presence: Readonly<Record<string, string | null | undefined>>;
     coordIndex: Readonly<Record<string, string | null | undefined>>;
 }
@@ -170,7 +170,7 @@ function channelArguments(
     };
 }
 
-export interface LoweredStandardUvTransform {
+interface LoweredStandardUvTransform {
     /** Floats the whole block occupies. */
     floatCount: number;
     /** The struct, its size assertion, and the two emitted functions. */

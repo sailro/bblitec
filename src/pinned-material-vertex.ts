@@ -25,7 +25,8 @@ const call = (name: string, ...arguments_: ShaderExpression[]): ShaderExpression
     ({ kind: "call", name, arguments: arguments_ });
 const assign = (name: string, value: ShaderExpression): ShaderStatement =>
     ({ kind: "assign", target: path(...name.split(".")), value });
-const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
+/** Whether a shader expression is exactly the dotted path `parts` spells. */
+export const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
     value.kind === "path" && value.parts.length === parts.length &&
     value.parts.every((part, index) => part === parts[index]);
 const isNumber = (value: ShaderExpression | undefined, number: number): boolean =>

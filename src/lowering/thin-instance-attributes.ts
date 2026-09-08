@@ -41,7 +41,7 @@ const pinnedThinInstanceFragment = await importPinnedModule<{
 }>("shader/fragments/thin-instance-fragment.js");
 
 /** One declared attribute, as the pin declares it. */
-export interface PinnedInstanceAttribute {
+interface PinnedInstanceAttribute {
     name: string;
     bufferGroup: string;
     arrayStride: number;
@@ -55,7 +55,7 @@ export interface PinnedInstanceAttribute {
  * fragment and needs both rows: the four `ti-matrix` columns the base list
  * holds and the one `ti-color` lane the `hasInstanceColor` branch pushes.
  */
-export function pinnedInstanceAttributes(
+function pinnedInstanceAttributes(
     context: LoweringContext,
 ): readonly PinnedInstanceAttribute[] {
     const declared =

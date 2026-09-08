@@ -14,7 +14,7 @@ import {
     refuseNode,
     singleBinding,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /**
@@ -110,7 +110,7 @@ function evaluatePinExpression(
     expression: ts.Expression,
     resolve: (name: string, node: ts.Node) => PinConstant,
 ): PinConstant {
-    const node = unwrapPin(expression);
+    const node = unwrapExpression(expression);
     if (ts.isNumericLiteral(node)) return Number(node.text);
     if (ts.isStringLiteral(node)) return node.text;
     if (ts.isIdentifier(node)) {
@@ -225,7 +225,7 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
     );
     index += 1;
     const samplerLocal = samplerBinding.name;
-    if (!ts.isConditionalExpression(unwrapPin(samplerBinding.initializer))) {
+    if (!ts.isConditionalExpression(unwrapExpression(samplerBinding.initializer))) {
         refuseNode(
             symbol,
             file,
@@ -241,7 +241,7 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
         declaration,
     );
     index += 1;
-    const wrapArrow = unwrapPin(wrapBinding.initializer);
+    const wrapArrow = unwrapExpression(wrapBinding.initializer);
     const wrapParameter = ts.isArrowFunction(wrapArrow) &&
             wrapArrow.parameters.length === 1 &&
             ts.isIdentifier(wrapArrow.parameters[0]!.name)
@@ -250,7 +250,7 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
     const wrapChain = wrapParameter !== undefined &&
             ts.isArrowFunction(wrapArrow) &&
             !ts.isBlock(wrapArrow.body)
-        ? unwrapPin(wrapArrow.body)
+        ? unwrapExpression(wrapArrow.body)
         : undefined;
     if (
         wrapParameter === undefined ||
@@ -299,7 +299,7 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
         declaration,
     );
     index += 1;
-    const minRead = unwrapPin(minBinding.initializer);
+    const minRead = unwrapExpression(minBinding.initializer);
     if (
         !ts.isPropertyAccessChain(minRead) ||
         !ts.isIdentifier(minRead.expression) ||
@@ -421,24 +421,24 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
         // The substitution check below runs over the FULL pinned
         // expression, guard included.
         let body: ts.Expression = binding.initializer;
-        const guarded = unwrapPin(body);
+        const guarded = unwrapExpression(body);
         if (
             ts.isBinaryExpression(guarded) &&
             guarded.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken
         ) {
-            const left = unwrapPin(guarded.left);
+            const left = unwrapExpression(guarded.left);
             const doubleNegated = ts.isPrefixUnaryExpression(left) &&
                     left.operator === ts.SyntaxKind.ExclamationToken &&
-                    ts.isPrefixUnaryExpression(unwrapPin(left.operand)) &&
+                    ts.isPrefixUnaryExpression(unwrapExpression(left.operand)) &&
                     (
-                        unwrapPin(
+                        unwrapExpression(
                             left.operand,
                         ) as ts.PrefixUnaryExpression
                     ).operator === ts.SyntaxKind.ExclamationToken
-                ? unwrapPin(
+                ? unwrapExpression(
                     (
-                        unwrapPin(
+                        unwrapExpression(
                             left.operand,
                         ) as ts.PrefixUnaryExpression
                     ).operand,
@@ -463,7 +463,7 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
     const returned = returnStatement &&
             ts.isReturnStatement(returnStatement) &&
             returnStatement.expression
-        ? unwrapPin(returnStatement.expression)
+        ? unwrapExpression(returnStatement.expression)
         : undefined;
     if (
         !returned ||
@@ -498,13 +498,13 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
             continue;
         }
         if (ts.isSpreadAssignment(property)) {
-            const inner = unwrapPin(property.expression);
+            const inner = unwrapExpression(property.expression);
             const spreadObject = ts.isConditionalExpression(inner) &&
-                    ts.isIdentifier(unwrapPin(inner.whenFalse)) &&
+                    ts.isIdentifier(unwrapExpression(inner.whenFalse)) &&
                     (
-                        unwrapPin(inner.whenFalse) as ts.Identifier
+                        unwrapExpression(inner.whenFalse) as ts.Identifier
                     ).text === "undefined"
-                ? unwrapPin(inner.whenTrue)
+                ? unwrapExpression(inner.whenTrue)
                 : undefined;
             const spreadField = spreadObject !== undefined &&
                     ts.isObjectLiteralExpression(spreadObject) &&
@@ -515,11 +515,11 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
                 : undefined;
             const spreadValue = spreadField !== undefined &&
                     ts.isNumericLiteral(
-                        unwrapPin(spreadField.initializer),
+                        unwrapExpression(spreadField.initializer),
                     )
                 ? Number(
                     (
-                        unwrapPin(
+                        unwrapExpression(
                             spreadField.initializer,
                         ) as ts.NumericLiteral
                     ).text,
@@ -566,7 +566,7 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
         enums: Readonly<Record<string, string>>,
         expression: ts.Expression,
     ): string => {
-        const literal = unwrapPin(expression);
+        const literal = unwrapExpression(expression);
         const mapped = ts.isStringLiteral(literal)
             ? enums[literal.text]
             : undefined;
@@ -620,7 +620,7 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
         }
         consumed.add(entry.property);
         if (entry.kind === "filter" || entry.kind === "anisotropy") {
-            const conditional = unwrapPin(initializer);
+            const conditional = unwrapExpression(initializer);
             if (!ts.isConditionalExpression(conditional)) {
                 refuseNode(
                     symbol,
@@ -641,8 +641,8 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
                         `${enumArm(entry.enums!, conditional.whenFalse)};`,
                 );
             } else {
-                const whenTrue = unwrapPin(conditional.whenTrue);
-                const whenFalse = unwrapPin(conditional.whenFalse);
+                const whenTrue = unwrapExpression(conditional.whenTrue);
+                const whenFalse = unwrapExpression(conditional.whenFalse);
                 if (
                     !ts.isNumericLiteral(whenTrue) ||
                     !ts.isNumericLiteral(whenFalse)
@@ -676,12 +676,12 @@ export function lowerSamplerMappingCpp(file: ts.SourceFile): string {
             );
             lambdaEmitted = true;
         }
-        const call = unwrapPin(initializer);
+        const call = unwrapExpression(initializer);
         const argument = ts.isCallExpression(call) &&
                 ts.isIdentifier(call.expression) &&
                 call.expression.text === wrapBinding.name &&
                 call.arguments.length === 1
-            ? unwrapPin(call.arguments[0]!)
+            ? unwrapExpression(call.arguments[0]!)
             : undefined;
         if (
             argument === undefined ||
@@ -768,7 +768,7 @@ function wrapLambdaLines(
         numeric: (literal) => literal.text,
     };
     const arm = (expression: ts.Expression): string => {
-        const literal = unwrapPin(expression);
+        const literal = unwrapExpression(expression);
         const mapped = ts.isStringLiteral(literal)
             ? addressModeByPin[literal.text]
             : undefined;
@@ -795,7 +795,7 @@ function wrapLambdaLines(
                 : `${"    ".repeat(level)}        : ${test}`,
         );
         lines.push(`${"    ".repeat(level + 1)}        ? ${arm(node.whenTrue)}`);
-        node = unwrapPin(node.whenFalse);
+        node = unwrapExpression(node.whenFalse);
         level += 1;
     }
     lines.push(`${"    ".repeat(level)}        : ${arm(node)};`, "    };");

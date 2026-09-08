@@ -7,42 +7,44 @@ import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
 import { sceneNodeTransformsSource } from "./scene-node-transforms.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 
+const fogModulePath = "src/scene/scene-ubo-extras.ts";
+const fogName = "setFog";
+const clipPlaneModulePath = fogModulePath;
+const clipPlaneName = "setClipPlane";
+
+/** The arms of the scene core a scene reaches, each gating an emitted unit. */
+interface SceneCoreOptions {
+  fog?: boolean;
+  /** The scene reaches `setClipPlane`. */
+  clipPlane?: boolean;
+  /** The scene reaches `enableMirroredMeshes`. */
+  mirroredMeshes?: boolean;
+  parenting?: boolean;
+  visibility?: boolean;
+  geometryAccess?: boolean;
+  animationManagers?: boolean;
+  /** The scene baked a vertex animation texture (mesh:vat). */
+  vat?: boolean;
+  /** The scene reaches `createTransformNode`. */
+  transformNodes?: boolean;
+  /** A retained SceneNode union reaches a TRS read or write. */
+  sceneNodeTransforms?: boolean;
+  /** Retained text entities participate in scene disposal. */
+  text?: boolean;
+  /** Node materials capture texture slots in deferred scene groups. */
+  nodeMaterials?: boolean;
+}
+
 export class SceneLowerer {
   public constructor(private readonly context: LoweringContext) {}
 
-  public lowerCore(
-    options: {
-      fog?: boolean;
-      /** The scene reaches `setClipPlane`. */
-      clipPlane?: boolean;
-      /** The scene reaches `enableMirroredMeshes`. */
-      mirroredMeshes?: boolean;
-      parenting?: boolean;
-      visibility?: boolean;
-      geometryAccess?: boolean;
-      animationManagers?: boolean;
-      /** The scene baked a vertex animation texture (mesh:vat). */
-      vat?: boolean;
-      /** The scene reaches `createTransformNode`. */
-      transformNodes?: boolean;
-      /** A retained SceneNode union reaches a TRS read or write. */
-      sceneNodeTransforms?: boolean;
-      /** Retained text entities participate in scene disposal. */
-      text?: boolean;
-      /** Node materials capture texture slots in deferred scene groups. */
-      nodeMaterials?: boolean;
-    } = {},
-  ): LoweredSource {
+  public lowerCore(options: SceneCoreOptions = {}): LoweredSource {
     const modulePath = "src/scene/scene-core.ts";
     const createName = "createSceneContext";
     const addName = "addToScene";
     const beforeName = "onBeforeRender";
     const disposeName = "onSceneDispose";
     const registerName = "registerScene";
-    const fogModulePath = "src/scene/scene-ubo-extras.ts";
-    const fogName = "setFog";
-    const clipPlaneModulePath = fogModulePath;
-    const clipPlaneName = "setClipPlane";
     const { file, declaration } = this.context.functionDeclaration(
       modulePath,
       createName,
@@ -504,403 +506,22 @@ export class SceneLowerer {
       }
     }
     const value = (input: number): string => this.context.floatLiteral(input);
-    const meshDirtySource = `
-void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) return;
-    MeshRecord& record = engine.meshes[mesh.value];
-    ++record.transform_version;
-    for (const MeshHandle child : record.parented_meshes) {
-        mark_mesh_dirty(engine, child);
-    }
-}
-
-// A transform written from a live callback or property animation changes
-// every frame. Keep that subtree's vertices local after its first such write
-// and move it through the per-draw world matrix; otherwise every dirty mark
-// rebuilds and uploads the complete baked vertex streams.
-void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) return;
-    MeshRecord& record = engine.meshes[mesh.value];
-    record.gpu_world_transform = true;
-    ++record.transform_version;
-    for (const MeshHandle child : record.parented_meshes) {
-        mark_mesh_runtime_transform(engine, child);
-    }
-}
-
-// The same, one level up. A transform node written every frame -- a physics
-// body's pose, say -- invalidates both of its child arms, exactly as
-// mark_transform_node_dirty does: a node parented under it is as stale as
-// a mesh is.
-void mark_transform_node_runtime_transform(
-    Engine& engine,
-    TransformNodeHandle node) {
-    if (node.value >= engine.transform_nodes.size()) return;
-    TransformNodeRecord& record = engine.transform_nodes[node.value];
-    ++record.transform_version;
-    for (const MeshHandle child : record.parented_meshes) {
-        mark_mesh_runtime_transform(engine, child);
-    }
-    for (const TransformNodeHandle child : record.parented_nodes) {
-        mark_transform_node_runtime_transform(engine, child);
-    }
-}
-`;
-    const visibilitySource = options.visibility
-      ? `
-// ${this.context.provenance("src/scene/visibility.ts", "setSubtreeVisible")}
-namespace {
-// The cascade half: writes the subtree, reports whether any flag moved.
-bool set_mesh_visible_cascade(
-    Engine& engine,
-    MeshHandle mesh,
-    bool visible) {
-    MeshRecord& record = engine.meshes.at(mesh.value);
-    bool changed = record.visible != visible;
-    record.visible = visible;
-    for (const MeshHandle child : record.children) {
-        if (set_mesh_visible_cascade(engine, child, visible)) {
-            changed = true;
-        }
-    }
-    return changed;
-}
-} // namespace
-
-void set_mesh_visible(
-    Engine& engine,
-    MeshHandle mesh,
-    bool visible) {
-    if (set_mesh_visible_cascade(engine, mesh, visible)) {
-        // The pin's visibility epoch feeds the shared native draw-list
-        // membership epoch. A bare \`visible\` field write deliberately does
-        // not bump it, and a same-value call stays a true no-op.
-        ++engine.draw_list_epoch;
-    }
-}
-`
-      : "";
+    const meshDirtySource = this.meshDirtySource();
+    const visibilitySource = this.visibilitySource(options);
     // src/scene/transform-node.ts createTransformNode and the
     // ObservableVec3/ObservableQuat setters a scene writes on the node
     // it made. Each setter is the field write plus the version bump a
     // child re-bakes against, which is what `markLocalDirty` does
     // upstream; the world itself is composed lazily in the render plan,
     // as `createWorldMatrixState` composes it there.
-    const transformNodeSource = options.transformNodes
-      ? `
-// ${this.context.provenance("src/scene/transform-node.ts", "createTransformNode")}
-TransformNodeHandle create_transform_node(
-    Engine& engine,
-    std::string name,
-    Vec3d position,
-    Vec4 rotation_quaternion,
-    Vec3 scaling) {
-    TransformNodeRecord node;
-    node.name = std::move(name);
-    node.position = position;
-    node.rotation_quaternion = rotation_quaternion;
-    // The pin stores the quaternion unconditionally; the record's Euler
-    // lane exists only so one composition serves nodes and meshes alike,
-    // and a node never writes it.
-    node.has_rotation_quaternion = true;
-    node.scaling = scaling;
-    engine.transform_nodes.push_back(std::move(node));
-    return TransformNodeHandle{
-        static_cast<std::uint32_t>(engine.transform_nodes.size() - 1)};
-}
-
-void mark_transform_node_dirty(
-    Engine& engine,
-    TransformNodeHandle node) {
-    if (node.value >= engine.transform_nodes.size()) return;
-    TransformNodeRecord& record = engine.transform_nodes[node.value];
-    ++record.transform_version;
-    for (const MeshHandle child : record.parented_meshes) {
-        mark_mesh_dirty(engine, child);
-    }
-    for (const TransformNodeHandle child : record.parented_nodes) {
-        mark_transform_node_dirty(engine, child);
-    }
-}
-
-void set_transform_node_position(
-    Engine& engine,
-    TransformNodeHandle node,
-    Vec3d position,
-    bool runtime_transform) {
-    engine.transform_nodes[node.value].position = position;
-    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
-    else mark_transform_node_dirty(engine, node);
-}
-
-void set_transform_node_scaling(
-    Engine& engine,
-    TransformNodeHandle node,
-    Vec3 scaling,
-    bool runtime_transform) {
-    engine.transform_nodes[node.value].scaling = scaling;
-    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
-    else mark_transform_node_dirty(engine, node);
-}
-
-void set_transform_node_rotation(
-    Engine& engine,
-    TransformNodeHandle node,
-    Vec3 rotation,
-    bool runtime_transform) {
-    TransformNodeRecord& record = engine.transform_nodes[node.value];
-    record.rotation = rotation;
-    // The pinned Euler proxy writes its quaternion source of truth. The
-    // record expresses that same selection by composing the Euler lane when
-    // this flag is false; pinnedTrsComposition performs eulerToQuat from the
-    // upstream function before the matrix write.
-    record.has_rotation_quaternion = false;
-    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
-    else mark_transform_node_dirty(engine, node);
-}
-
-void set_transform_node_rotation_quaternion(
-    Engine& engine,
-    TransformNodeHandle node,
-    Vec4 rotation,
-    bool runtime_transform) {
-    TransformNodeRecord& record = engine.transform_nodes[node.value];
-    record.rotation_quaternion = rotation;
-    record.has_rotation_quaternion = true;
-    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
-    else mark_transform_node_dirty(engine, node);
-}
-
-// The parent SETTER is the pin's own _addChild trigger: it registers the
-// child for invalidation, where the children array is only the traversal
-// list. Registering here rather than at that array's push is what makes a
-// scene which writes the link and never pushes still follow its parent.
-void set_mesh_transform_parent(
-    Engine& engine,
-    MeshHandle mesh,
-    TransformNodeHandle parent) {
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid mesh child handle.");
-    }
-    if (parent.value >= engine.transform_nodes.size()) {
-        throw std::runtime_error("Invalid transform-node parent handle.");
-    }
-    MeshRecord& record = engine.meshes[mesh.value];
-    if (
-        record.transform_parent.value == parent.value &&
-        record.parent.value >= engine.meshes.size()) {
-        return;
-    }
-    if (record.transform_parent.value < engine.transform_nodes.size()) {
-        std::vector<MeshHandle>& old_children =
-            engine.transform_nodes[record.transform_parent.value]
-                .parented_meshes;
-        old_children.erase(
-            std::remove(old_children.begin(), old_children.end(), mesh),
-            old_children.end());
-    }
-    if (record.parent.value < engine.meshes.size()) {
-        std::vector<MeshHandle>& old_children =
-            engine.meshes[record.parent.value].parented_meshes;
-        old_children.erase(
-            std::remove(old_children.begin(), old_children.end(), mesh),
-            old_children.end());
-    }
-    record.parent = MeshHandle{};
-    record.transform_parent = parent;
-    mark_mesh_dirty(engine, mesh);
-    if (parent.value < engine.transform_nodes.size()) {
-        std::vector<MeshHandle>& new_children =
-            engine.transform_nodes[parent.value].parented_meshes;
-        if (std::find(new_children.begin(), new_children.end(), mesh) ==
-            new_children.end()) {
-            new_children.push_back(mesh);
-        }
-    }
-}
-
-// The same trigger one level up. mark_transform_node_dirty already
-// recurses into parented_nodes, and transform_node_world already
-// composes record.parent; this is the write that links the two, so a
-// node hung under another follows it exactly as a mesh does.
-namespace {
-void require_acyclic_transform_node_parent(
-    const Engine& engine,
-    TransformNodeHandle node,
-    TransformNodeHandle parent) {
-    if (node.value >= engine.transform_nodes.size()) {
-        throw std::runtime_error("Invalid transform-node child handle.");
-    }
-    if (parent.value >= engine.transform_nodes.size()) {
-        throw std::runtime_error("Invalid transform-node parent handle.");
-    }
-    TransformNodeHandle cursor = parent;
-    std::size_t depth = 0;
-    while (cursor.value < engine.transform_nodes.size()) {
-        if (
-            cursor.value == node.value ||
-            depth++ >= engine.transform_nodes.size()) {
-            throw std::runtime_error(
-                "Transform-node parent cycle detected.");
-        }
-        cursor = engine.transform_nodes[cursor.value].parent;
-    }
-    if (cursor.value != invalid_handle) {
-        throw std::runtime_error(
-            "Invalid transform-node handle in parent chain.");
-    }
-}
-} // namespace
-
-void set_transform_node_parent(
-    Engine& engine,
-    TransformNodeHandle node,
-    TransformNodeHandle parent) {
-    require_acyclic_transform_node_parent(engine, node, parent);
-    TransformNodeRecord& record = engine.transform_nodes[node.value];
-    if (record.parent.value == parent.value) return;
-    if (record.parent.value < engine.transform_nodes.size()) {
-        std::vector<TransformNodeHandle>& old_children =
-            engine.transform_nodes[record.parent.value].parented_nodes;
-        old_children.erase(
-            std::remove(old_children.begin(), old_children.end(), node),
-            old_children.end());
-    }
-    record.parent = parent;
-    mark_transform_node_dirty(engine, node);
-    if (parent.value < engine.transform_nodes.size()) {
-        std::vector<TransformNodeHandle>& new_children =
-            engine.transform_nodes[parent.value].parented_nodes;
-        if (std::find(new_children.begin(), new_children.end(), node) ==
-            new_children.end()) {
-            new_children.push_back(node);
-        }
-    }
-}
-
-void push_transform_node_child(
-    Engine& engine,
-    TransformNodeHandle node,
-    MeshHandle child) {
-    if (node.value >= engine.transform_nodes.size()) {
-        throw std::runtime_error("Invalid transform-node handle.");
-    }
-    if (child.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid mesh child handle.");
-    }
-    engine.transform_nodes[node.value].children.emplace_back(child);
-}
-
-void push_transform_node_child(
-    Engine& engine,
-    TransformNodeHandle node,
-    TransformNodeHandle child) {
-    if (node.value >= engine.transform_nodes.size()) {
-        throw std::runtime_error("Invalid transform-node handle.");
-    }
-    if (child.value >= engine.transform_nodes.size()) {
-        throw std::runtime_error("Invalid transform-node child handle.");
-    }
-    engine.transform_nodes[node.value].children.emplace_back(child);
-}
-
-namespace {
-void validate_transform_node_traversal(
-    const Engine& engine,
-    TransformNodeHandle node,
-    std::vector<bool>& active) {
-    if (node.value >= engine.transform_nodes.size()) {
-        throw std::runtime_error("Invalid transform-node handle.");
-    }
-    if (active[node.value]) {
-        throw std::runtime_error(
-            "Transform-node traversal cycle detected.");
-    }
-    active[node.value] = true;
-    const TransformNodeRecord& record = engine.transform_nodes[node.value];
-    for (const TransformNodeChild& entry : record.children) {
-        if (const auto* mesh = std::get_if<MeshHandle>(&entry)) {
-            if (mesh->value >= engine.meshes.size()) {
-                throw std::runtime_error(
-                    "Invalid mesh handle in transform-node traversal.");
-            }
-            continue;
-        }
-        validate_transform_node_traversal(
-            engine,
-            std::get<TransformNodeHandle>(entry),
-            active);
-    }
-    active[node.value] = false;
-}
-
-void add_transform_node_children(
-    Scene& scene,
-    TransformNodeHandle node) {
-    Engine& engine = *scene.engine;
-    const TransformNodeRecord& record = engine.transform_nodes[node.value];
-    for (const TransformNodeChild& entry : record.children) {
-        if (const auto* mesh = std::get_if<MeshHandle>(&entry)) {
-            set_mesh_transform_parent(engine, *mesh, node);
-            add_to_scene(scene, *mesh);
-            continue;
-        }
-        const TransformNodeHandle child =
-            std::get<TransformNodeHandle>(entry);
-        set_transform_node_parent(engine, child, node);
-        add_transform_node_children(scene, child);
-    }
-}
-} // namespace
-
-// ${this.context.provenance("src/scene/scene-core.ts", "addToScene")}
-void add_to_scene(Scene& scene, TransformNodeHandle node) {
-    require_scene_engine(scene);
-    std::vector<bool> active(scene.engine->transform_nodes.size(), false);
-    validate_transform_node_traversal(*scene.engine, node, active);
-    add_transform_node_children(scene, node);
-}
-`
-      : "";
+    const transformNodeSource = this.transformNodeSource(options);
     // src/mesh/enable-mirrored-meshes.ts is one statement: it awaits
     // the support module and installs it on the scene. The
     // pipeline-side half of that install is a compile-time question
     // here -- a scene that never opts in composes no winding
     // resolution at all -- so what remains at run time is the flag the
     // per-frame watcher reads.
-    const mirroredSource = options.mirroredMeshes
-      ? `
-// ${this.context.provenance("src/mesh/enable-mirrored-meshes.ts", "enableMirroredMeshes")}
-void enable_mirrored_meshes(Scene& scene) {
-    require_scene_engine(scene);
-    scene.mirrored_meshes = true;
-    // installMirroredMeshSupport seeds every mesh present now -- the signs
-    // their renderables are about to be built with, since registerScene
-    // follows this call -- and then APPENDS its watcher to the scene's own
-    // before-render list, so it observes the transforms this frame's
-    // callbacks produced. Both halves are the pin's, and pushing the
-    // watcher here rather than calling it from a frame loop is what keeps
-    // the frame position the pin's rather than a comment's.
-    Engine& engine = *scene.engine;
-    static_cast<void>(
-        upstream::refresh_mirrored_meshes(scene, engine));
-    std::weak_ptr<SceneState> watched_state = scene.state;
-    scene.before_render.push_back([watched_state](float) {
-        std::shared_ptr<SceneState> retained = watched_state.lock();
-        if (!retained) return;
-        Scene watched = Scene::from_state(std::move(retained));
-        Engine& owner = *watched.engine;
-        if (upstream::refresh_mirrored_meshes(watched, owner)) {
-            // frontFace is baked into the pipeline object, so a flip goes
-            // through a rebuild. The pin raises enqueueMaterialSwap for
-            // it; here the render plan is where a pipeline is
-            // chosen, and its membership version is what rebuilds it.
-            ++watched.render_topology_version;
-        }
-    });
-}
-`
-      : "";
+    const mirroredSource = this.mirroredSource(options);
     const parentMatrixHelpers = options.parenting
       ? [
           "using upstream::mat4_multiply_into;",
@@ -908,665 +529,10 @@ void enable_mirrored_meshes(Scene& scene) {
           lowerMat4DecomposeFull(this.context),
         ].join("\n\n")
       : "";
-    const parentingSource = options.parenting
-      ? `
-namespace {
-
-${parentMatrixHelpers}
-
-void apply_parent_local(
-    MeshRecord& record,
-    const PinnedParentDecomposed& local) {
-    // Imported roots are flattened into an outer TRS beside each rendered
-    // leaf. Once setParent writes a decomposed local TRS, that override has
-    // served the same purpose as the pin's raw local matrix and must be
-    // cleared before the observable TRS becomes authoritative.
-    record.outer_position = Vec3{};
-    record.outer_rotation = Vec3{};
-    record.position = Vec3d{
-        local.translation.x,
-        local.translation.y,
-        local.translation.z};
-    record.rotation = Vec3{};
-    record.rotation_quaternion = Vec4{
-        static_cast<float>(local.rotation.x),
-        static_cast<float>(local.rotation.y),
-        static_cast<float>(local.rotation.z),
-        static_cast<float>(local.rotation.w)};
-    record.has_rotation_quaternion = true;
-    record.scaling = Vec3{
-        static_cast<float>(local.scale.x),
-        static_cast<float>(local.scale.y),
-        static_cast<float>(local.scale.z)};
-    // Static glTF leaves have their node world baked into their vertices.
-    // A newly live parent therefore belongs in the draw-world matrix rather
-    // than in another CPU vertex bake.
-    record.gpu_world_transform = true;
-}
-
-std::array<float, 16> parenting_world_matrix(
-    const Engine& engine,
-    const MeshRecord& record) {
-    const std::array<float, 16> local_world =
-        upstream::mesh_world_matrix(engine, record);
-    if (
-        record.outer_position.x == 0.0f &&
-        record.outer_position.y == 0.0f &&
-        record.outer_position.z == 0.0f &&
-        record.outer_rotation.x == 0.0f &&
-        record.outer_rotation.y == 0.0f &&
-        record.outer_rotation.z == 0.0f) {
-        return local_world;
-    }
-
-    // Asset-root position/rotation is an outer scene-node transform in the
-    // flattened loader. Fold it into the snapshot before clearing it, so
-    // reparenting after addToScene preserves the same visible world.
-    MeshRecord outer;
-    outer.position = Vec3d{
-        record.outer_position.x,
-        record.outer_position.y,
-        record.outer_position.z};
-    outer.rotation = record.outer_rotation;
-    const std::array<float, 16> outer_world =
-        upstream::mesh_local_matrix(outer);
-    std::array<float, 16> result{};
-    mat4_multiply_into(result, 0, outer_world, 0, local_world, 0);
-    return result;
-}
-
-bool is_mesh_child(
-    MeshHandle candidate,
-    MeshHandle child) {
-    return candidate == child;
-}
-
-bool is_mesh_child(
-    const TransformNodeChild& candidate,
-    MeshHandle child) {
-    const auto* mesh = std::get_if<MeshHandle>(&candidate);
-    return mesh && *mesh == child;
-}
-
-template <typename Children>
-void unlink_child_links(
-    Children& children,
-    std::vector<MeshHandle>& registered,
-    MeshHandle child) {
-    const auto traversal = std::find_if(
-        children.begin(),
-        children.end(),
-        [child](const auto& candidate) {
-            return is_mesh_child(candidate, child);
-        });
-    if (traversal != children.end()) {
-        // setParent removes the first public traversal entry. Explicit
-        // duplicate pushes remain observable, exactly as Array.splice does.
-        children.erase(traversal);
-    }
-    registered.erase(
-        std::remove(registered.begin(), registered.end(), child),
-        registered.end());
-}
-
-template <typename Children>
-void link_child_links(
-    Children& children,
-    std::vector<MeshHandle>& registered,
-    MeshHandle child) {
-    if (
-        std::find_if(
-            children.begin(),
-            children.end(),
-            [child](const auto& candidate) {
-                return is_mesh_child(candidate, child);
-            }) == children.end()) {
-        children.push_back(child);
-    }
-    if (std::find(registered.begin(), registered.end(), child) == registered.end()) {
-        registered.push_back(child);
-    }
-}
-
-void unlink_parent(
-    Engine& engine,
-    MeshHandle child,
-    const MeshRecord& child_record) {
-    if (child_record.transform_parent.value < engine.transform_nodes.size()) {
-        TransformNodeRecord& old_parent =
-            engine.transform_nodes[child_record.transform_parent.value];
-        unlink_child_links(
-            old_parent.children, old_parent.parented_meshes, child);
-    }
-    if (child_record.parent.value < engine.meshes.size()) {
-        MeshRecord& old_parent = engine.meshes[child_record.parent.value];
-        unlink_child_links(
-            old_parent.children, old_parent.parented_meshes, child);
-    }
-}
-
-void link_parent(
-    Engine& engine,
-    MeshHandle child,
-    MeshHandle parent) {
-    if (parent.value >= engine.meshes.size()) return;
-    MeshRecord& new_parent = engine.meshes[parent.value];
-    link_child_links(
-        new_parent.children, new_parent.parented_meshes, child);
-}
-
-void link_parent(
-    Engine& engine,
-    MeshHandle child,
-    TransformNodeHandle parent) {
-    if (parent.value >= engine.transform_nodes.size()) return;
-    TransformNodeRecord& new_parent = engine.transform_nodes[parent.value];
-    link_child_links(
-        new_parent.children, new_parent.parented_meshes, child);
-}
-
-void apply_preserved_parent_local(
-    Engine& engine,
-    MeshHandle child,
-    const std::array<float, 16>& child_world,
-    const std::optional<std::array<float, 16>>& parent_world) {
-    MeshRecord& child_record = engine.meshes[child.value];
-    if (!parent_world) {
-        apply_parent_local(
-            child_record,
-            pinned_parent_mat4_decompose(child_world));
-        mark_mesh_dirty(engine, child);
-        return;
-    }
-
-    const std::optional<std::array<float, 16>> inverse_parent =
-        mat4_invert(*parent_world);
-    if (!inverse_parent) {
-        // The pin cannot preserve a full transform beneath a singular
-        // parent. It keeps the new link, clears a raw matrix override, copies
-        // the old world position, and retains the existing rotation/scale.
-        child_record.outer_position = Vec3{};
-        child_record.outer_rotation = Vec3{};
-        child_record.gpu_world_transform = true;
-        child_record.position = Vec3d{
-            child_world[12], child_world[13], child_world[14]};
-        mark_mesh_dirty(engine, child);
-        return;
-    }
-
-    std::array<float, 16> local{};
-    mat4_multiply_into(local, 0, *inverse_parent, 0, child_world, 0);
-    apply_parent_local(
-        child_record,
-        pinned_parent_mat4_decompose(local));
-    mark_mesh_dirty(engine, child);
-}
-
-void unregister_parented_mesh(
-    std::vector<MeshHandle>& registry,
-    MeshHandle mesh) {
-    registry.erase(
-        std::remove(registry.begin(), registry.end(), mesh),
-        registry.end());
-}
-
-void require_acyclic_mesh_parent(
-    const Engine& engine,
-    MeshHandle child,
-    MeshHandle parent) {
-    MeshHandle cursor = parent;
-    std::size_t depth = 0;
-    while (cursor.value < engine.meshes.size()) {
-        if (
-            cursor.value == child.value ||
-            depth++ >= engine.meshes.size()) {
-            throw std::runtime_error("Mesh parent cycle detected.");
-        }
-        cursor = engine.meshes[cursor.value].parent;
-    }
-}
-
-} // namespace
-
-// The bare \`child.parent = mesh\` write, for the parent lane a MESH holds.
-// Its transform-node twin is \`set_mesh_transform_parent\` beside the
-// transform-node factories, under that feature's own gate; the pin has one
-// nullable \`parent\` field and this port has two handle tables, so the two
-// entry points are what one field becomes. Like that twin this registers
-// the child for invalidation and leaves \`children\` alone -- upstream the
-// traversal list is filled by its own push -- and unlike \`set_mesh_parent\`
-// below it does not preserve the child's world, because the field write
-// upstream runs none of setParent's decomposition.
-void set_mesh_transform_parent(
-    Engine& engine,
-    MeshHandle mesh,
-    MeshHandle parent) {
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid mesh child handle.");
-    }
-    if (parent.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid mesh parent handle.");
-    }
-    require_acyclic_mesh_parent(engine, mesh, parent);
-    MeshRecord& record = engine.meshes[mesh.value];
-    if (
-        record.parent.value == parent.value &&
-        record.transform_parent.value >= engine.transform_nodes.size()) {
-        return;
-    }
-    if (record.transform_parent.value < engine.transform_nodes.size()) {
-        unregister_parented_mesh(
-            engine.transform_nodes[record.transform_parent.value]
-                .parented_meshes,
-            mesh);
-    }
-    if (record.parent.value < engine.meshes.size()) {
-        unregister_parented_mesh(
-            engine.meshes[record.parent.value].parented_meshes, mesh);
-    }
-    record.transform_parent = TransformNodeHandle{};
-    record.parent = parent;
-    mark_mesh_dirty(engine, mesh);
-    std::vector<MeshHandle>& new_children =
-        engine.meshes[parent.value].parented_meshes;
-    if (
-        std::find(new_children.begin(), new_children.end(), mesh) ==
-        new_children.end()) {
-        new_children.push_back(mesh);
-    }
-}
-
-// \`mesh.children.push(child)\`: the traversal half, the twin of
-// \`push_transform_node_child\`. MeshRecord::children is the list the
-// visibility cascade walks, and upstream a bare parent write never fills
-// it, so a scene that wants both performs both.
-void push_mesh_child(
-    Engine& engine,
-    MeshHandle mesh,
-    MeshHandle child) {
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid mesh handle.");
-    }
-    if (child.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid mesh child handle.");
-    }
-    engine.meshes[mesh.value].children.emplace_back(child);
-}
-
-// ${this.context.provenance("src/scene/set-parent.ts", "setParent")}
-void set_mesh_parent(
-    Engine& engine,
-    MeshHandle child,
-    MeshHandle parent) {
-    MeshRecord& child_record = engine.meshes.at(child.value);
-    // setParent snapshots the old world before touching either parent link.
-    // The local TRS written below therefore preserves the visible transform,
-    // including a mirrored signed scale, across attach and detach.
-    const std::array<float, 16> child_world =
-        parenting_world_matrix(engine, child_record);
-    const bool link_changed =
-        child_record.parent != parent ||
-        child_record.transform_parent.value < engine.transform_nodes.size();
-    if (link_changed) {
-        unlink_parent(engine, child, child_record);
-        child_record.transform_parent = TransformNodeHandle{};
-        child_record.parent = parent;
-        link_parent(engine, child, parent);
-    }
-
-    if (parent.value >= engine.meshes.size()) {
-        apply_preserved_parent_local(
-            engine, child, child_world, std::nullopt);
-        return;
-    }
-
-    const std::array<float, 16> parent_world =
-        parenting_world_matrix(engine, engine.meshes[parent.value]);
-    apply_preserved_parent_local(
-        engine, child, child_world, parent_world);
-}
-
-void set_mesh_parent(
-    Engine& engine,
-    MeshHandle child,
-    TransformNodeHandle parent) {
-    MeshRecord& child_record = engine.meshes.at(child.value);
-    const std::array<float, 16> child_world =
-        parenting_world_matrix(engine, child_record);
-    const bool link_changed =
-        child_record.transform_parent.value != parent.value ||
-        child_record.parent.value < engine.meshes.size();
-    if (link_changed) {
-        unlink_parent(engine, child, child_record);
-        child_record.parent = MeshHandle{};
-        child_record.transform_parent = parent;
-        link_parent(engine, child, parent);
-    }
-
-    const std::array<float, 16> parent_world =
-        upstream::transform_node_world(engine, parent);
-    apply_preserved_parent_local(
-        engine, child, child_world, parent_world);
-}
-
-void set_asset_root_parent(
-    Engine& engine,
-    AssetHandle child,
-    TransformNodeHandle parent) {
-    if (child.value >= engine.assets.size()) {
-        throw std::runtime_error("Invalid imported root handle.");
-    }
-    // The loader intentionally flattens imported hierarchy nodes. Reparent
-    // every rendered leaf as one operation; each leaf snapshots its own
-    // current world, so their relative arrangement is preserved exactly.
-    for (const MeshHandle mesh : engine.assets[child.value].meshes) {
-        set_mesh_parent(engine, mesh, parent);
-    }
-}
-
-namespace {
-
-HierarchyInstancePoolRecord& hierarchy_instance_pool(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle) {
-    if (handle.value >= engine.hierarchy_instance_pools.size()) {
-        throw std::runtime_error("Invalid hierarchy instance pool handle.");
-    }
-    return engine.hierarchy_instance_pools[handle.value];
-}
-
-std::size_t hierarchy_instance_index(
-    double value,
-    std::size_t limit,
-    const char* message) {
-    if (
-        !std::isfinite(value) || value < 0.0 ||
-        std::floor(value) != value || value >= static_cast<double>(limit)) {
-        throw std::runtime_error(message);
-    }
-    return static_cast<std::size_t>(value);
-}
-
-std::array<float, 16> hierarchy_instance_matrix(
-    const std::vector<float>& matrix) {
-    if (matrix.size() < 16) {
-        throw std::runtime_error(
-            "Hierarchy instance matrix requires sixteen values.");
-    }
-    std::array<float, 16> result{};
-    std::copy_n(matrix.data(), 16, result.data());
-    return result;
-}
-
-void write_hierarchy_instance_matrix(
-    Engine& engine,
-    HierarchyInstancePoolRecord& pool,
-    std::size_t index,
-    const std::array<float, 16>& root_matrix,
-    bool mark_dirty) {
-    for (const HierarchyInstancePoolBinding& binding : pool.bindings) {
-        MeshRecord& mesh = engine.meshes.at(binding.mesh.value);
-        mat4_multiply_into(
-            pool.scratch, 0, root_matrix, 0, binding.mesh_world, 0);
-        mat4_multiply_into(
-            mesh.instance_matrices.at(index), 0,
-            binding.mesh_world_inverse, 0, pool.scratch, 0);
-        if (mark_dirty) ++mesh.instance_version;
-    }
-}
-
-} // namespace
-
-// src/mesh/hierarchy-instance-pool.ts, preserving its fixed-capacity
-// per-descendant pools and meshWorld^-1 * rootMatrix * meshWorld expansion.
-HierarchyInstancePoolHandle create_hierarchy_instance_pool(
-    Engine& engine,
-    AssetHandle root_handle,
-    double capacity_value) {
-    if (
-        !std::isfinite(capacity_value) || capacity_value < 0.0 ||
-        std::floor(capacity_value) != capacity_value ||
-        capacity_value > static_cast<double>(
-            std::numeric_limits<std::uint32_t>::max())) {
-        throw std::runtime_error(
-            "createHierarchyInstancePool capacity must be a non-negative integer");
-    }
-    if (root_handle.value >= engine.assets.size()) {
-        throw std::runtime_error("Invalid imported root handle.");
-    }
-    HierarchyInstancePoolRecord pool;
-    pool.root = root_handle;
-    pool.capacity = static_cast<std::uint32_t>(capacity_value);
-    pool.meshes = engine.assets[root_handle.value].meshes;
-    if (pool.meshes.empty()) {
-        throw std::runtime_error(
-            "createHierarchyInstancePool requires at least one mesh in the source hierarchy");
-    }
-    pool.bindings.reserve(pool.meshes.size());
-    for (const MeshHandle handle : pool.meshes) {
-        MeshRecord& mesh = engine.meshes.at(handle.value);
-        if (mesh.thin_instanced) {
-            throw std::runtime_error(
-                "createHierarchyInstancePool source mesh already has thin instances");
-        }
-        const std::array<float, 16> mesh_world =
-            mesh.instance_parent_matrix;
-        const std::optional<std::array<float, 16>> inverse =
-            mat4_invert(mesh_world);
-        if (!inverse) {
-            throw std::runtime_error(
-                "createHierarchyInstancePool requires an invertible world matrix");
-        }
-        mesh.instance_matrices.resize(pool.capacity);
-        mesh.thin_instanced = true;
-        mesh.instance_count = 0;
-        mesh.instance_source = nullptr;
-        ++mesh.instance_version;
-        pool.bindings.push_back(HierarchyInstancePoolBinding{
-            handle, mesh_world, *inverse});
-    }
-    const HierarchyInstancePoolHandle handle{
-        static_cast<std::uint32_t>(engine.hierarchy_instance_pools.size())};
-    engine.hierarchy_instance_pools.push_back(std::move(pool));
-    return handle;
-}
-
-void set_hierarchy_instance_count(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle,
-    double count_value) {
-    HierarchyInstancePoolRecord& pool =
-        hierarchy_instance_pool(engine, handle);
-    if (
-        !std::isfinite(count_value) || count_value < 0.0 ||
-        std::floor(count_value) != count_value ||
-        count_value > static_cast<double>(pool.capacity)) {
-        throw std::runtime_error(
-            "setHierarchyInstanceCount count must be an integer within pool capacity");
-    }
-    pool.count = static_cast<std::uint32_t>(count_value);
-    for (const MeshHandle mesh_handle : pool.meshes) {
-        MeshRecord& mesh = engine.meshes.at(mesh_handle.value);
-        mesh.instance_count = pool.count;
-        ++mesh.instance_version;
-    }
-}
-
-double add_hierarchy_instance(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle,
-    const std::vector<float>& matrix) {
-    HierarchyInstancePoolRecord& pool =
-        hierarchy_instance_pool(engine, handle);
-    if (pool.count >= pool.capacity) {
-        throw std::runtime_error("addHierarchyInstance exceeded pool capacity");
-    }
-    const std::size_t index = pool.count;
-    write_hierarchy_instance_matrix(
-        engine, pool, index, hierarchy_instance_matrix(matrix), false);
-    set_hierarchy_instance_count(
-        engine, handle, static_cast<double>(index + 1));
-    return static_cast<double>(index);
-}
-
-void set_hierarchy_instance_matrix(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle,
-    double index_value,
-    const std::vector<float>& matrix) {
-    HierarchyInstancePoolRecord& pool =
-        hierarchy_instance_pool(engine, handle);
-    const std::size_t index = hierarchy_instance_index(
-        index_value, pool.count,
-        "setHierarchyInstanceMatrix index must reference an active hierarchy instance");
-    write_hierarchy_instance_matrix(
-        engine, pool, index, hierarchy_instance_matrix(matrix), true);
-}
-
-void remove_hierarchy_instance(
-    Engine& engine,
-    HierarchyInstancePoolHandle handle,
-    double index_value) {
-    HierarchyInstancePoolRecord& pool =
-        hierarchy_instance_pool(engine, handle);
-    const std::size_t index = hierarchy_instance_index(
-        index_value, pool.count,
-        "removeHierarchyInstance index must reference an active hierarchy instance");
-    const std::size_t last = pool.count - 1;
-    if (index != last) {
-        for (const MeshHandle mesh_handle : pool.meshes) {
-            MeshRecord& mesh = engine.meshes.at(mesh_handle.value);
-            mesh.instance_matrices[index] = mesh.instance_matrices[last];
-        }
-    }
-    set_hierarchy_instance_count(
-        engine, handle, static_cast<double>(last));
-}
-`
-      : "";
-    const geometryAccessSource = options.geometryAccess
-      ? `
-// src/mesh/mesh.ts retained CPU arrays. The native geometry record retains
-// every lane the pin exposes, and these copies preserve typed-array value
-// semantics for scene code that only reads them.
-std::vector<float> mesh_cpu_positions(
-    const Engine& engine,
-    MeshHandle mesh) {
-    const ModelGeometry& geometry =
-        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
-    std::vector<float> result;
-    result.reserve(geometry.vertices.size() * 3);
-    for (const ModelVertex& vertex : geometry.vertices) {
-        result.push_back(vertex.position.x);
-        result.push_back(vertex.position.y);
-        result.push_back(vertex.position.z);
-    }
-    return result;
-}
-
-std::vector<float> mesh_cpu_normals(
-    const Engine& engine,
-    MeshHandle mesh) {
-    const ModelGeometry& geometry =
-        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
-    std::vector<float> result;
-    result.reserve(geometry.vertices.size() * 3);
-    for (const ModelVertex& vertex : geometry.vertices) {
-        result.push_back(vertex.normal.x);
-        result.push_back(vertex.normal.y);
-        result.push_back(vertex.normal.z);
-    }
-    return result;
-}
-
-std::vector<float> mesh_cpu_uvs(
-    const Engine& engine,
-    MeshHandle mesh) {
-    const ModelGeometry& geometry =
-        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
-    std::vector<float> result;
-    result.reserve(geometry.vertices.size() * 2);
-    for (const ModelVertex& vertex : geometry.vertices) {
-        result.push_back(vertex.uv.x);
-        result.push_back(vertex.uv.y);
-    }
-    return result;
-}
-
-std::vector<std::uint32_t> mesh_cpu_indices(
-    const Engine& engine,
-    MeshHandle mesh) {
-    return engine.geometries.at(
-        engine.meshes.at(mesh.value).geometry).indices;
-}
-
-js::Array<double> mesh_world_matrix_array(
-    const Engine& engine,
-    MeshHandle mesh) {
-    const std::array<float, 16> world =
-        upstream::mesh_world_matrix(engine, engine.meshes.at(mesh.value));
-    return js::Array<double>(world.begin(), world.end());
-}
-
-js::Array<double> mesh_bound_min_array(
-    const Engine& engine,
-    MeshHandle mesh) {
-    const MeshRecord& record = engine.meshes.at(mesh.value);
-    Vec3 bounds{};
-    if (record.geometry < engine.geometries.size()) {
-        bounds = engine.geometries[record.geometry].bounds_min;
-    }
-    Vec3 maximum{};
-    apply_mesh_bound_overrides(record, bounds, maximum);
-    return {bounds.x, bounds.y, bounds.z};
-}
-
-js::Array<double> mesh_bound_max_array(
-    const Engine& engine,
-    MeshHandle mesh) {
-    const MeshRecord& record = engine.meshes.at(mesh.value);
-    Vec3 bounds{};
-    if (record.geometry < engine.geometries.size()) {
-        bounds = engine.geometries[record.geometry].bounds_max;
-    }
-    Vec3 minimum{};
-    apply_mesh_bound_overrides(record, minimum, bounds);
-    return {bounds.x, bounds.y, bounds.z};
-}
-`
-      : "";
-    const fogSource = options.fog
-      ? `
-// ${this.context.provenance(fogModulePath, `${fogName}, writeFogUbo`)}
-void set_scene_fog(
-    Scene& scene,
-    float mode,
-    float density,
-    float start,
-    float end,
-    Color3 color) {
-    require_scene_engine(scene);
-    scene.state->fog_identity = next_scene_uniform_object_identity();
-    scene.fog_mode = mode;
-    scene.fog_density = density;
-    scene.fog_start = start;
-    scene.fog_end = end;
-    scene.fog_color = color;
-}
-`
-      : "";
-    const clipPlaneSource = options.clipPlane
-      ? `
-// ${this.context.provenance(
-          clipPlaneModulePath,
-          `${clipPlaneName}, writeClipPlaneUbo`,
-        )}
-void set_scene_clip_plane(Scene& scene, Vec4 plane) {
-    require_scene_engine(scene);
-    scene.clip_plane = plane;
-}
-`
-      : "";
+    const parentingSource = this.parentingSource(options, parentMatrixHelpers);
+    const geometryAccessSource = this.geometryAccessSource(options);
+    const fogSource = this.fogSource(options);
+    const clipPlaneSource = this.clipPlaneSource(options);
     // The emitted removal is the pinned mesh arm — removeFromScene
     // dispatches a mesh to removeMeshFromScene, whose scene-list
     // splice plus mutation mark is what the native erase and
@@ -1612,33 +578,8 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
     // comes from the settings block instead. Registered here for the same
     // reason the manager seeker is: the seek walks the scene's seekers,
     // and register_scene is the first point that runs after every bake.
-    const vatSeek = options.vat
-      ? `
-    if (!scene.seeks_vat) {
-        scene.seeks_vat = true;
-        Engine* engine = scene.engine;
-        scene.animation_seekers.push_back(
-            [engine](float time) { seek_vat(*engine, time); });
-    }`
-      : "";
-    const managerSeek = options.animationManagers
-      ? `
-    if (!scene.seeks_animation_managers) {
-        scene.seeks_animation_managers = true;
-        Engine* engine = scene.engine;
-        scene.animation_seekers.push_back(
-            [engine](float time) {
-                // Walked when the seek fires, not when it is attached:
-                // a manager created after this scene registered still
-                // owns animation time for the groups on it.
-                for (
-                    const PropertyAnimationManager& manager :
-                    engine->animation_managers) {
-                    seek_animation_manager(manager, *engine, time);
-                }
-            });
-    }`
-      : "";
+    const vatSeek = this.vatSeek(options);
+    const managerSeek = this.managerSeek(options);
     return {
       modulePath,
       symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}${options.clipPlane ? `,${clipPlaneName}` : ""}`,
@@ -2558,4 +1499,1106 @@ ${options.sceneNodeTransforms ? sceneNodeTransformsSource(options.transformNodes
 `,
     };
   }
+
+  private meshDirtySource(): string {
+    return `
+void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) return;
+    MeshRecord& record = engine.meshes[mesh.value];
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_mesh_dirty(engine, child);
+    }
+}
+
+// A transform written from a live callback or property animation changes
+// every frame. Keep that subtree's vertices local after its first such write
+// and move it through the per-draw world matrix; otherwise every dirty mark
+// rebuilds and uploads the complete baked vertex streams.
+void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) return;
+    MeshRecord& record = engine.meshes[mesh.value];
+    record.gpu_world_transform = true;
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_mesh_runtime_transform(engine, child);
+    }
+}
+
+// The same, one level up. A transform node written every frame -- a physics
+// body's pose, say -- invalidates both of its child arms, exactly as
+// mark_transform_node_dirty does: a node parented under it is as stale as
+// a mesh is.
+void mark_transform_node_runtime_transform(
+    Engine& engine,
+    TransformNodeHandle node) {
+    if (node.value >= engine.transform_nodes.size()) return;
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_mesh_runtime_transform(engine, child);
+    }
+    for (const TransformNodeHandle child : record.parented_nodes) {
+        mark_transform_node_runtime_transform(engine, child);
+    }
+}
+`;
+  }
+
+  private visibilitySource(options: SceneCoreOptions): string {
+    return options.visibility
+      ? `
+// ${this.context.provenance("src/scene/visibility.ts", "setSubtreeVisible")}
+namespace {
+// The cascade half: writes the subtree, reports whether any flag moved.
+bool set_mesh_visible_cascade(
+    Engine& engine,
+    MeshHandle mesh,
+    bool visible) {
+    MeshRecord& record = engine.meshes.at(mesh.value);
+    bool changed = record.visible != visible;
+    record.visible = visible;
+    for (const MeshHandle child : record.children) {
+        if (set_mesh_visible_cascade(engine, child, visible)) {
+            changed = true;
+        }
+    }
+    return changed;
+}
+} // namespace
+
+void set_mesh_visible(
+    Engine& engine,
+    MeshHandle mesh,
+    bool visible) {
+    if (set_mesh_visible_cascade(engine, mesh, visible)) {
+        // The pin's visibility epoch feeds the shared native draw-list
+        // membership epoch. A bare \`visible\` field write deliberately does
+        // not bump it, and a same-value call stays a true no-op.
+        ++engine.draw_list_epoch;
+    }
+}
+`
+      : "";
+  }
+
+  private transformNodeSource(options: SceneCoreOptions): string {
+    return options.transformNodes
+      ? `
+// ${this.context.provenance("src/scene/transform-node.ts", "createTransformNode")}
+TransformNodeHandle create_transform_node(
+    Engine& engine,
+    std::string name,
+    Vec3d position,
+    Vec4 rotation_quaternion,
+    Vec3 scaling) {
+    TransformNodeRecord node;
+    node.name = std::move(name);
+    node.position = position;
+    node.rotation_quaternion = rotation_quaternion;
+    // The pin stores the quaternion unconditionally; the record's Euler
+    // lane exists only so one composition serves nodes and meshes alike,
+    // and a node never writes it.
+    node.has_rotation_quaternion = true;
+    node.scaling = scaling;
+    engine.transform_nodes.push_back(std::move(node));
+    return TransformNodeHandle{
+        static_cast<std::uint32_t>(engine.transform_nodes.size() - 1)};
+}
+
+void mark_transform_node_dirty(
+    Engine& engine,
+    TransformNodeHandle node) {
+    if (node.value >= engine.transform_nodes.size()) return;
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_mesh_dirty(engine, child);
+    }
+    for (const TransformNodeHandle child : record.parented_nodes) {
+        mark_transform_node_dirty(engine, child);
+    }
+}
+
+void set_transform_node_position(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3d position,
+    bool runtime_transform) {
+    engine.transform_nodes[node.value].position = position;
+    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
+    else mark_transform_node_dirty(engine, node);
+}
+
+void set_transform_node_scaling(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3 scaling,
+    bool runtime_transform) {
+    engine.transform_nodes[node.value].scaling = scaling;
+    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
+    else mark_transform_node_dirty(engine, node);
+}
+
+void set_transform_node_rotation(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3 rotation,
+    bool runtime_transform) {
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    record.rotation = rotation;
+    // The pinned Euler proxy writes its quaternion source of truth. The
+    // record expresses that same selection by composing the Euler lane when
+    // this flag is false; pinnedTrsComposition performs eulerToQuat from the
+    // upstream function before the matrix write.
+    record.has_rotation_quaternion = false;
+    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
+    else mark_transform_node_dirty(engine, node);
+}
+
+void set_transform_node_rotation_quaternion(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec4 rotation,
+    bool runtime_transform) {
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    record.rotation_quaternion = rotation;
+    record.has_rotation_quaternion = true;
+    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
+    else mark_transform_node_dirty(engine, node);
+}
+
+// The parent SETTER is the pin's own _addChild trigger: it registers the
+// child for invalidation, where the children array is only the traversal
+// list. Registering here rather than at that array's push is what makes a
+// scene which writes the link and never pushes still follow its parent.
+void set_mesh_transform_parent(
+    Engine& engine,
+    MeshHandle mesh,
+    TransformNodeHandle parent) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh child handle.");
+    }
+    if (parent.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node parent handle.");
+    }
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (
+        record.transform_parent.value == parent.value &&
+        record.parent.value >= engine.meshes.size()) {
+        return;
+    }
+    if (record.transform_parent.value < engine.transform_nodes.size()) {
+        std::vector<MeshHandle>& old_children =
+            engine.transform_nodes[record.transform_parent.value]
+                .parented_meshes;
+        old_children.erase(
+            std::remove(old_children.begin(), old_children.end(), mesh),
+            old_children.end());
+    }
+    if (record.parent.value < engine.meshes.size()) {
+        std::vector<MeshHandle>& old_children =
+            engine.meshes[record.parent.value].parented_meshes;
+        old_children.erase(
+            std::remove(old_children.begin(), old_children.end(), mesh),
+            old_children.end());
+    }
+    record.parent = MeshHandle{};
+    record.transform_parent = parent;
+    mark_mesh_dirty(engine, mesh);
+    if (parent.value < engine.transform_nodes.size()) {
+        std::vector<MeshHandle>& new_children =
+            engine.transform_nodes[parent.value].parented_meshes;
+        if (std::find(new_children.begin(), new_children.end(), mesh) ==
+            new_children.end()) {
+            new_children.push_back(mesh);
+        }
+    }
+}
+
+// The same trigger one level up. mark_transform_node_dirty already
+// recurses into parented_nodes, and transform_node_world already
+// composes record.parent; this is the write that links the two, so a
+// node hung under another follows it exactly as a mesh does.
+namespace {
+void require_acyclic_transform_node_parent(
+    const Engine& engine,
+    TransformNodeHandle node,
+    TransformNodeHandle parent) {
+    if (node.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node child handle.");
+    }
+    if (parent.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node parent handle.");
+    }
+    TransformNodeHandle cursor = parent;
+    std::size_t depth = 0;
+    while (cursor.value < engine.transform_nodes.size()) {
+        if (
+            cursor.value == node.value ||
+            depth++ >= engine.transform_nodes.size()) {
+            throw std::runtime_error(
+                "Transform-node parent cycle detected.");
+        }
+        cursor = engine.transform_nodes[cursor.value].parent;
+    }
+    if (cursor.value != invalid_handle) {
+        throw std::runtime_error(
+            "Invalid transform-node handle in parent chain.");
+    }
+}
+} // namespace
+
+void set_transform_node_parent(
+    Engine& engine,
+    TransformNodeHandle node,
+    TransformNodeHandle parent) {
+    require_acyclic_transform_node_parent(engine, node, parent);
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    if (record.parent.value == parent.value) return;
+    if (record.parent.value < engine.transform_nodes.size()) {
+        std::vector<TransformNodeHandle>& old_children =
+            engine.transform_nodes[record.parent.value].parented_nodes;
+        old_children.erase(
+            std::remove(old_children.begin(), old_children.end(), node),
+            old_children.end());
+    }
+    record.parent = parent;
+    mark_transform_node_dirty(engine, node);
+    if (parent.value < engine.transform_nodes.size()) {
+        std::vector<TransformNodeHandle>& new_children =
+            engine.transform_nodes[parent.value].parented_nodes;
+        if (std::find(new_children.begin(), new_children.end(), node) ==
+            new_children.end()) {
+            new_children.push_back(node);
+        }
+    }
+}
+
+void push_transform_node_child(
+    Engine& engine,
+    TransformNodeHandle node,
+    MeshHandle child) {
+    if (node.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node handle.");
+    }
+    if (child.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh child handle.");
+    }
+    engine.transform_nodes[node.value].children.emplace_back(child);
+}
+
+void push_transform_node_child(
+    Engine& engine,
+    TransformNodeHandle node,
+    TransformNodeHandle child) {
+    if (node.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node handle.");
+    }
+    if (child.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node child handle.");
+    }
+    engine.transform_nodes[node.value].children.emplace_back(child);
+}
+
+namespace {
+void validate_transform_node_traversal(
+    const Engine& engine,
+    TransformNodeHandle node,
+    std::vector<bool>& active) {
+    if (node.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node handle.");
+    }
+    if (active[node.value]) {
+        throw std::runtime_error(
+            "Transform-node traversal cycle detected.");
+    }
+    active[node.value] = true;
+    const TransformNodeRecord& record = engine.transform_nodes[node.value];
+    for (const TransformNodeChild& entry : record.children) {
+        if (const auto* mesh = std::get_if<MeshHandle>(&entry)) {
+            if (mesh->value >= engine.meshes.size()) {
+                throw std::runtime_error(
+                    "Invalid mesh handle in transform-node traversal.");
+            }
+            continue;
+        }
+        validate_transform_node_traversal(
+            engine,
+            std::get<TransformNodeHandle>(entry),
+            active);
+    }
+    active[node.value] = false;
+}
+
+void add_transform_node_children(
+    Scene& scene,
+    TransformNodeHandle node) {
+    Engine& engine = *scene.engine;
+    const TransformNodeRecord& record = engine.transform_nodes[node.value];
+    for (const TransformNodeChild& entry : record.children) {
+        if (const auto* mesh = std::get_if<MeshHandle>(&entry)) {
+            set_mesh_transform_parent(engine, *mesh, node);
+            add_to_scene(scene, *mesh);
+            continue;
+        }
+        const TransformNodeHandle child =
+            std::get<TransformNodeHandle>(entry);
+        set_transform_node_parent(engine, child, node);
+        add_transform_node_children(scene, child);
+    }
+}
+} // namespace
+
+// ${this.context.provenance("src/scene/scene-core.ts", "addToScene")}
+void add_to_scene(Scene& scene, TransformNodeHandle node) {
+    require_scene_engine(scene);
+    std::vector<bool> active(scene.engine->transform_nodes.size(), false);
+    validate_transform_node_traversal(*scene.engine, node, active);
+    add_transform_node_children(scene, node);
+}
+`
+      : "";
+  }
+
+  private mirroredSource(options: SceneCoreOptions): string {
+    return options.mirroredMeshes
+      ? `
+// ${this.context.provenance("src/mesh/enable-mirrored-meshes.ts", "enableMirroredMeshes")}
+void enable_mirrored_meshes(Scene& scene) {
+    require_scene_engine(scene);
+    scene.mirrored_meshes = true;
+    // installMirroredMeshSupport seeds every mesh present now -- the signs
+    // their renderables are about to be built with, since registerScene
+    // follows this call -- and then APPENDS its watcher to the scene's own
+    // before-render list, so it observes the transforms this frame's
+    // callbacks produced. Both halves are the pin's, and pushing the
+    // watcher here rather than calling it from a frame loop is what keeps
+    // the frame position the pin's rather than a comment's.
+    Engine& engine = *scene.engine;
+    static_cast<void>(
+        upstream::refresh_mirrored_meshes(scene, engine));
+    std::weak_ptr<SceneState> watched_state = scene.state;
+    scene.before_render.push_back([watched_state](float) {
+        std::shared_ptr<SceneState> retained = watched_state.lock();
+        if (!retained) return;
+        Scene watched = Scene::from_state(std::move(retained));
+        Engine& owner = *watched.engine;
+        if (upstream::refresh_mirrored_meshes(watched, owner)) {
+            // frontFace is baked into the pipeline object, so a flip goes
+            // through a rebuild. The pin raises enqueueMaterialSwap for
+            // it; here the render plan is where a pipeline is
+            // chosen, and its membership version is what rebuilds it.
+            ++watched.render_topology_version;
+        }
+    });
+}
+`
+      : "";
+  }
+
+  private parentingSource(options: SceneCoreOptions, parentMatrixHelpers: string): string {
+    return options.parenting
+      ? `
+namespace {
+
+${parentMatrixHelpers}
+
+void apply_parent_local(
+    MeshRecord& record,
+    const PinnedParentDecomposed& local) {
+    // Imported roots are flattened into an outer TRS beside each rendered
+    // leaf. Once setParent writes a decomposed local TRS, that override has
+    // served the same purpose as the pin's raw local matrix and must be
+    // cleared before the observable TRS becomes authoritative.
+    record.outer_position = Vec3{};
+    record.outer_rotation = Vec3{};
+    record.position = Vec3d{
+        local.translation.x,
+        local.translation.y,
+        local.translation.z};
+    record.rotation = Vec3{};
+    record.rotation_quaternion = Vec4{
+        static_cast<float>(local.rotation.x),
+        static_cast<float>(local.rotation.y),
+        static_cast<float>(local.rotation.z),
+        static_cast<float>(local.rotation.w)};
+    record.has_rotation_quaternion = true;
+    record.scaling = Vec3{
+        static_cast<float>(local.scale.x),
+        static_cast<float>(local.scale.y),
+        static_cast<float>(local.scale.z)};
+    // Static glTF leaves have their node world baked into their vertices.
+    // A newly live parent therefore belongs in the draw-world matrix rather
+    // than in another CPU vertex bake.
+    record.gpu_world_transform = true;
+}
+
+std::array<float, 16> parenting_world_matrix(
+    const Engine& engine,
+    const MeshRecord& record) {
+    const std::array<float, 16> local_world =
+        upstream::mesh_world_matrix(engine, record);
+    if (
+        record.outer_position.x == 0.0f &&
+        record.outer_position.y == 0.0f &&
+        record.outer_position.z == 0.0f &&
+        record.outer_rotation.x == 0.0f &&
+        record.outer_rotation.y == 0.0f &&
+        record.outer_rotation.z == 0.0f) {
+        return local_world;
+    }
+
+    // Asset-root position/rotation is an outer scene-node transform in the
+    // flattened loader. Fold it into the snapshot before clearing it, so
+    // reparenting after addToScene preserves the same visible world.
+    MeshRecord outer;
+    outer.position = Vec3d{
+        record.outer_position.x,
+        record.outer_position.y,
+        record.outer_position.z};
+    outer.rotation = record.outer_rotation;
+    const std::array<float, 16> outer_world =
+        upstream::mesh_local_matrix(outer);
+    std::array<float, 16> result{};
+    mat4_multiply_into(result, 0, outer_world, 0, local_world, 0);
+    return result;
+}
+
+bool is_mesh_child(
+    MeshHandle candidate,
+    MeshHandle child) {
+    return candidate == child;
+}
+
+bool is_mesh_child(
+    const TransformNodeChild& candidate,
+    MeshHandle child) {
+    const auto* mesh = std::get_if<MeshHandle>(&candidate);
+    return mesh && *mesh == child;
+}
+
+template <typename Children>
+void unlink_child_links(
+    Children& children,
+    std::vector<MeshHandle>& registered,
+    MeshHandle child) {
+    const auto traversal = std::find_if(
+        children.begin(),
+        children.end(),
+        [child](const auto& candidate) {
+            return is_mesh_child(candidate, child);
+        });
+    if (traversal != children.end()) {
+        // setParent removes the first public traversal entry. Explicit
+        // duplicate pushes remain observable, exactly as Array.splice does.
+        children.erase(traversal);
+    }
+    registered.erase(
+        std::remove(registered.begin(), registered.end(), child),
+        registered.end());
+}
+
+template <typename Children>
+void link_child_links(
+    Children& children,
+    std::vector<MeshHandle>& registered,
+    MeshHandle child) {
+    if (
+        std::find_if(
+            children.begin(),
+            children.end(),
+            [child](const auto& candidate) {
+                return is_mesh_child(candidate, child);
+            }) == children.end()) {
+        children.push_back(child);
+    }
+    if (std::find(registered.begin(), registered.end(), child) == registered.end()) {
+        registered.push_back(child);
+    }
+}
+
+void unlink_parent(
+    Engine& engine,
+    MeshHandle child,
+    const MeshRecord& child_record) {
+    if (child_record.transform_parent.value < engine.transform_nodes.size()) {
+        TransformNodeRecord& old_parent =
+            engine.transform_nodes[child_record.transform_parent.value];
+        unlink_child_links(
+            old_parent.children, old_parent.parented_meshes, child);
+    }
+    if (child_record.parent.value < engine.meshes.size()) {
+        MeshRecord& old_parent = engine.meshes[child_record.parent.value];
+        unlink_child_links(
+            old_parent.children, old_parent.parented_meshes, child);
+    }
+}
+
+void link_parent(
+    Engine& engine,
+    MeshHandle child,
+    MeshHandle parent) {
+    if (parent.value >= engine.meshes.size()) return;
+    MeshRecord& new_parent = engine.meshes[parent.value];
+    link_child_links(
+        new_parent.children, new_parent.parented_meshes, child);
+}
+
+void link_parent(
+    Engine& engine,
+    MeshHandle child,
+    TransformNodeHandle parent) {
+    if (parent.value >= engine.transform_nodes.size()) return;
+    TransformNodeRecord& new_parent = engine.transform_nodes[parent.value];
+    link_child_links(
+        new_parent.children, new_parent.parented_meshes, child);
+}
+
+void apply_preserved_parent_local(
+    Engine& engine,
+    MeshHandle child,
+    const std::array<float, 16>& child_world,
+    const std::optional<std::array<float, 16>>& parent_world) {
+    MeshRecord& child_record = engine.meshes[child.value];
+    if (!parent_world) {
+        apply_parent_local(
+            child_record,
+            pinned_parent_mat4_decompose(child_world));
+        mark_mesh_dirty(engine, child);
+        return;
+    }
+
+    const std::optional<std::array<float, 16>> inverse_parent =
+        mat4_invert(*parent_world);
+    if (!inverse_parent) {
+        // The pin cannot preserve a full transform beneath a singular
+        // parent. It keeps the new link, clears a raw matrix override, copies
+        // the old world position, and retains the existing rotation/scale.
+        child_record.outer_position = Vec3{};
+        child_record.outer_rotation = Vec3{};
+        child_record.gpu_world_transform = true;
+        child_record.position = Vec3d{
+            child_world[12], child_world[13], child_world[14]};
+        mark_mesh_dirty(engine, child);
+        return;
+    }
+
+    std::array<float, 16> local{};
+    mat4_multiply_into(local, 0, *inverse_parent, 0, child_world, 0);
+    apply_parent_local(
+        child_record,
+        pinned_parent_mat4_decompose(local));
+    mark_mesh_dirty(engine, child);
+}
+
+void unregister_parented_mesh(
+    std::vector<MeshHandle>& registry,
+    MeshHandle mesh) {
+    registry.erase(
+        std::remove(registry.begin(), registry.end(), mesh),
+        registry.end());
+}
+
+void require_acyclic_mesh_parent(
+    const Engine& engine,
+    MeshHandle child,
+    MeshHandle parent) {
+    MeshHandle cursor = parent;
+    std::size_t depth = 0;
+    while (cursor.value < engine.meshes.size()) {
+        if (
+            cursor.value == child.value ||
+            depth++ >= engine.meshes.size()) {
+            throw std::runtime_error("Mesh parent cycle detected.");
+        }
+        cursor = engine.meshes[cursor.value].parent;
+    }
+}
+
+} // namespace
+
+// The bare \`child.parent = mesh\` write, for the parent lane a MESH holds.
+// Its transform-node twin is \`set_mesh_transform_parent\` beside the
+// transform-node factories, under that feature's own gate; the pin has one
+// nullable \`parent\` field and this port has two handle tables, so the two
+// entry points are what one field becomes. Like that twin this registers
+// the child for invalidation and leaves \`children\` alone -- upstream the
+// traversal list is filled by its own push -- and unlike \`set_mesh_parent\`
+// below it does not preserve the child's world, because the field write
+// upstream runs none of setParent's decomposition.
+void set_mesh_transform_parent(
+    Engine& engine,
+    MeshHandle mesh,
+    MeshHandle parent) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh child handle.");
+    }
+    if (parent.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh parent handle.");
+    }
+    require_acyclic_mesh_parent(engine, mesh, parent);
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (
+        record.parent.value == parent.value &&
+        record.transform_parent.value >= engine.transform_nodes.size()) {
+        return;
+    }
+    if (record.transform_parent.value < engine.transform_nodes.size()) {
+        unregister_parented_mesh(
+            engine.transform_nodes[record.transform_parent.value]
+                .parented_meshes,
+            mesh);
+    }
+    if (record.parent.value < engine.meshes.size()) {
+        unregister_parented_mesh(
+            engine.meshes[record.parent.value].parented_meshes, mesh);
+    }
+    record.transform_parent = TransformNodeHandle{};
+    record.parent = parent;
+    mark_mesh_dirty(engine, mesh);
+    std::vector<MeshHandle>& new_children =
+        engine.meshes[parent.value].parented_meshes;
+    if (
+        std::find(new_children.begin(), new_children.end(), mesh) ==
+        new_children.end()) {
+        new_children.push_back(mesh);
+    }
+}
+
+// \`mesh.children.push(child)\`: the traversal half, the twin of
+// \`push_transform_node_child\`. MeshRecord::children is the list the
+// visibility cascade walks, and upstream a bare parent write never fills
+// it, so a scene that wants both performs both.
+void push_mesh_child(
+    Engine& engine,
+    MeshHandle mesh,
+    MeshHandle child) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh handle.");
+    }
+    if (child.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh child handle.");
+    }
+    engine.meshes[mesh.value].children.emplace_back(child);
+}
+
+// ${this.context.provenance("src/scene/set-parent.ts", "setParent")}
+void set_mesh_parent(
+    Engine& engine,
+    MeshHandle child,
+    MeshHandle parent) {
+    MeshRecord& child_record = engine.meshes.at(child.value);
+    // setParent snapshots the old world before touching either parent link.
+    // The local TRS written below therefore preserves the visible transform,
+    // including a mirrored signed scale, across attach and detach.
+    const std::array<float, 16> child_world =
+        parenting_world_matrix(engine, child_record);
+    const bool link_changed =
+        child_record.parent != parent ||
+        child_record.transform_parent.value < engine.transform_nodes.size();
+    if (link_changed) {
+        unlink_parent(engine, child, child_record);
+        child_record.transform_parent = TransformNodeHandle{};
+        child_record.parent = parent;
+        link_parent(engine, child, parent);
+    }
+
+    if (parent.value >= engine.meshes.size()) {
+        apply_preserved_parent_local(
+            engine, child, child_world, std::nullopt);
+        return;
+    }
+
+    const std::array<float, 16> parent_world =
+        parenting_world_matrix(engine, engine.meshes[parent.value]);
+    apply_preserved_parent_local(
+        engine, child, child_world, parent_world);
+}
+
+void set_mesh_parent(
+    Engine& engine,
+    MeshHandle child,
+    TransformNodeHandle parent) {
+    MeshRecord& child_record = engine.meshes.at(child.value);
+    const std::array<float, 16> child_world =
+        parenting_world_matrix(engine, child_record);
+    const bool link_changed =
+        child_record.transform_parent.value != parent.value ||
+        child_record.parent.value < engine.meshes.size();
+    if (link_changed) {
+        unlink_parent(engine, child, child_record);
+        child_record.parent = MeshHandle{};
+        child_record.transform_parent = parent;
+        link_parent(engine, child, parent);
+    }
+
+    const std::array<float, 16> parent_world =
+        upstream::transform_node_world(engine, parent);
+    apply_preserved_parent_local(
+        engine, child, child_world, parent_world);
+}
+
+void set_asset_root_parent(
+    Engine& engine,
+    AssetHandle child,
+    TransformNodeHandle parent) {
+    if (child.value >= engine.assets.size()) {
+        throw std::runtime_error("Invalid imported root handle.");
+    }
+    // The loader intentionally flattens imported hierarchy nodes. Reparent
+    // every rendered leaf as one operation; each leaf snapshots its own
+    // current world, so their relative arrangement is preserved exactly.
+    for (const MeshHandle mesh : engine.assets[child.value].meshes) {
+        set_mesh_parent(engine, mesh, parent);
+    }
+}
+
+namespace {
+
+HierarchyInstancePoolRecord& hierarchy_instance_pool(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle) {
+    if (handle.value >= engine.hierarchy_instance_pools.size()) {
+        throw std::runtime_error("Invalid hierarchy instance pool handle.");
+    }
+    return engine.hierarchy_instance_pools[handle.value];
+}
+
+std::size_t hierarchy_instance_index(
+    double value,
+    std::size_t limit,
+    const char* message) {
+    if (
+        !std::isfinite(value) || value < 0.0 ||
+        std::floor(value) != value || value >= static_cast<double>(limit)) {
+        throw std::runtime_error(message);
+    }
+    return static_cast<std::size_t>(value);
+}
+
+std::array<float, 16> hierarchy_instance_matrix(
+    const std::vector<float>& matrix) {
+    if (matrix.size() < 16) {
+        throw std::runtime_error(
+            "Hierarchy instance matrix requires sixteen values.");
+    }
+    std::array<float, 16> result{};
+    std::copy_n(matrix.data(), 16, result.data());
+    return result;
+}
+
+void write_hierarchy_instance_matrix(
+    Engine& engine,
+    HierarchyInstancePoolRecord& pool,
+    std::size_t index,
+    const std::array<float, 16>& root_matrix,
+    bool mark_dirty) {
+    for (const HierarchyInstancePoolBinding& binding : pool.bindings) {
+        MeshRecord& mesh = engine.meshes.at(binding.mesh.value);
+        mat4_multiply_into(
+            pool.scratch, 0, root_matrix, 0, binding.mesh_world, 0);
+        mat4_multiply_into(
+            mesh.instance_matrices.at(index), 0,
+            binding.mesh_world_inverse, 0, pool.scratch, 0);
+        if (mark_dirty) ++mesh.instance_version;
+    }
+}
+
+} // namespace
+
+// src/mesh/hierarchy-instance-pool.ts, preserving its fixed-capacity
+// per-descendant pools and meshWorld^-1 * rootMatrix * meshWorld expansion.
+HierarchyInstancePoolHandle create_hierarchy_instance_pool(
+    Engine& engine,
+    AssetHandle root_handle,
+    double capacity_value) {
+    if (
+        !std::isfinite(capacity_value) || capacity_value < 0.0 ||
+        std::floor(capacity_value) != capacity_value ||
+        capacity_value > static_cast<double>(
+            std::numeric_limits<std::uint32_t>::max())) {
+        throw std::runtime_error(
+            "createHierarchyInstancePool capacity must be a non-negative integer");
+    }
+    if (root_handle.value >= engine.assets.size()) {
+        throw std::runtime_error("Invalid imported root handle.");
+    }
+    HierarchyInstancePoolRecord pool;
+    pool.root = root_handle;
+    pool.capacity = static_cast<std::uint32_t>(capacity_value);
+    pool.meshes = engine.assets[root_handle.value].meshes;
+    if (pool.meshes.empty()) {
+        throw std::runtime_error(
+            "createHierarchyInstancePool requires at least one mesh in the source hierarchy");
+    }
+    pool.bindings.reserve(pool.meshes.size());
+    for (const MeshHandle handle : pool.meshes) {
+        MeshRecord& mesh = engine.meshes.at(handle.value);
+        if (mesh.thin_instanced) {
+            throw std::runtime_error(
+                "createHierarchyInstancePool source mesh already has thin instances");
+        }
+        const std::array<float, 16> mesh_world =
+            mesh.instance_parent_matrix;
+        const std::optional<std::array<float, 16>> inverse =
+            mat4_invert(mesh_world);
+        if (!inverse) {
+            throw std::runtime_error(
+                "createHierarchyInstancePool requires an invertible world matrix");
+        }
+        mesh.instance_matrices.resize(pool.capacity);
+        mesh.thin_instanced = true;
+        mesh.instance_count = 0;
+        mesh.instance_source = nullptr;
+        ++mesh.instance_version;
+        pool.bindings.push_back(HierarchyInstancePoolBinding{
+            handle, mesh_world, *inverse});
+    }
+    const HierarchyInstancePoolHandle handle{
+        static_cast<std::uint32_t>(engine.hierarchy_instance_pools.size())};
+    engine.hierarchy_instance_pools.push_back(std::move(pool));
+    return handle;
+}
+
+void set_hierarchy_instance_count(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle,
+    double count_value) {
+    HierarchyInstancePoolRecord& pool =
+        hierarchy_instance_pool(engine, handle);
+    if (
+        !std::isfinite(count_value) || count_value < 0.0 ||
+        std::floor(count_value) != count_value ||
+        count_value > static_cast<double>(pool.capacity)) {
+        throw std::runtime_error(
+            "setHierarchyInstanceCount count must be an integer within pool capacity");
+    }
+    pool.count = static_cast<std::uint32_t>(count_value);
+    for (const MeshHandle mesh_handle : pool.meshes) {
+        MeshRecord& mesh = engine.meshes.at(mesh_handle.value);
+        mesh.instance_count = pool.count;
+        ++mesh.instance_version;
+    }
+}
+
+double add_hierarchy_instance(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle,
+    const std::vector<float>& matrix) {
+    HierarchyInstancePoolRecord& pool =
+        hierarchy_instance_pool(engine, handle);
+    if (pool.count >= pool.capacity) {
+        throw std::runtime_error("addHierarchyInstance exceeded pool capacity");
+    }
+    const std::size_t index = pool.count;
+    write_hierarchy_instance_matrix(
+        engine, pool, index, hierarchy_instance_matrix(matrix), false);
+    set_hierarchy_instance_count(
+        engine, handle, static_cast<double>(index + 1));
+    return static_cast<double>(index);
+}
+
+void set_hierarchy_instance_matrix(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle,
+    double index_value,
+    const std::vector<float>& matrix) {
+    HierarchyInstancePoolRecord& pool =
+        hierarchy_instance_pool(engine, handle);
+    const std::size_t index = hierarchy_instance_index(
+        index_value, pool.count,
+        "setHierarchyInstanceMatrix index must reference an active hierarchy instance");
+    write_hierarchy_instance_matrix(
+        engine, pool, index, hierarchy_instance_matrix(matrix), true);
+}
+
+void remove_hierarchy_instance(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle,
+    double index_value) {
+    HierarchyInstancePoolRecord& pool =
+        hierarchy_instance_pool(engine, handle);
+    const std::size_t index = hierarchy_instance_index(
+        index_value, pool.count,
+        "removeHierarchyInstance index must reference an active hierarchy instance");
+    const std::size_t last = pool.count - 1;
+    if (index != last) {
+        for (const MeshHandle mesh_handle : pool.meshes) {
+            MeshRecord& mesh = engine.meshes.at(mesh_handle.value);
+            mesh.instance_matrices[index] = mesh.instance_matrices[last];
+        }
+    }
+    set_hierarchy_instance_count(
+        engine, handle, static_cast<double>(last));
+}
+`
+      : "";
+  }
+
+  private geometryAccessSource(options: SceneCoreOptions): string {
+    return options.geometryAccess
+      ? `
+// src/mesh/mesh.ts retained CPU arrays. The native geometry record retains
+// every lane the pin exposes, and these copies preserve typed-array value
+// semantics for scene code that only reads them.
+std::vector<float> mesh_cpu_positions(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const ModelGeometry& geometry =
+        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
+    std::vector<float> result;
+    result.reserve(geometry.vertices.size() * 3);
+    for (const ModelVertex& vertex : geometry.vertices) {
+        result.push_back(vertex.position.x);
+        result.push_back(vertex.position.y);
+        result.push_back(vertex.position.z);
+    }
+    return result;
+}
+
+std::vector<float> mesh_cpu_normals(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const ModelGeometry& geometry =
+        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
+    std::vector<float> result;
+    result.reserve(geometry.vertices.size() * 3);
+    for (const ModelVertex& vertex : geometry.vertices) {
+        result.push_back(vertex.normal.x);
+        result.push_back(vertex.normal.y);
+        result.push_back(vertex.normal.z);
+    }
+    return result;
+}
+
+std::vector<float> mesh_cpu_uvs(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const ModelGeometry& geometry =
+        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
+    std::vector<float> result;
+    result.reserve(geometry.vertices.size() * 2);
+    for (const ModelVertex& vertex : geometry.vertices) {
+        result.push_back(vertex.uv.x);
+        result.push_back(vertex.uv.y);
+    }
+    return result;
+}
+
+std::vector<std::uint32_t> mesh_cpu_indices(
+    const Engine& engine,
+    MeshHandle mesh) {
+    return engine.geometries.at(
+        engine.meshes.at(mesh.value).geometry).indices;
+}
+
+js::Array<double> mesh_world_matrix_array(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const std::array<float, 16> world =
+        upstream::mesh_world_matrix(engine, engine.meshes.at(mesh.value));
+    return js::Array<double>(world.begin(), world.end());
+}
+
+js::Array<double> mesh_bound_min_array(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const MeshRecord& record = engine.meshes.at(mesh.value);
+    Vec3 bounds{};
+    if (record.geometry < engine.geometries.size()) {
+        bounds = engine.geometries[record.geometry].bounds_min;
+    }
+    Vec3 maximum{};
+    apply_mesh_bound_overrides(record, bounds, maximum);
+    return {bounds.x, bounds.y, bounds.z};
+}
+
+js::Array<double> mesh_bound_max_array(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const MeshRecord& record = engine.meshes.at(mesh.value);
+    Vec3 bounds{};
+    if (record.geometry < engine.geometries.size()) {
+        bounds = engine.geometries[record.geometry].bounds_max;
+    }
+    Vec3 minimum{};
+    apply_mesh_bound_overrides(record, minimum, bounds);
+    return {bounds.x, bounds.y, bounds.z};
+}
+`
+      : "";
+  }
+
+  private fogSource(options: SceneCoreOptions): string {
+    return options.fog
+      ? `
+// ${this.context.provenance(fogModulePath, `${fogName}, writeFogUbo`)}
+void set_scene_fog(
+    Scene& scene,
+    float mode,
+    float density,
+    float start,
+    float end,
+    Color3 color) {
+    require_scene_engine(scene);
+    scene.state->fog_identity = next_scene_uniform_object_identity();
+    scene.fog_mode = mode;
+    scene.fog_density = density;
+    scene.fog_start = start;
+    scene.fog_end = end;
+    scene.fog_color = color;
+}
+`
+      : "";
+  }
+
+  private clipPlaneSource(options: SceneCoreOptions): string {
+    return options.clipPlane
+      ? `
+// ${this.context.provenance(
+          clipPlaneModulePath,
+          `${clipPlaneName}, writeClipPlaneUbo`,
+        )}
+void set_scene_clip_plane(Scene& scene, Vec4 plane) {
+    require_scene_engine(scene);
+    scene.clip_plane = plane;
+}
+`
+      : "";
+  }
+
+  private vatSeek(options: SceneCoreOptions): string {
+    return options.vat
+      ? `
+    if (!scene.seeks_vat) {
+        scene.seeks_vat = true;
+        Engine* engine = scene.engine;
+        scene.animation_seekers.push_back(
+            [engine](float time) { seek_vat(*engine, time); });
+    }`
+      : "";
+  }
+
+  private managerSeek(options: SceneCoreOptions): string {
+    return options.animationManagers
+      ? `
+    if (!scene.seeks_animation_managers) {
+        scene.seeks_animation_managers = true;
+        Engine* engine = scene.engine;
+        scene.animation_seekers.push_back(
+            [engine](float time) {
+                // Walked when the seek fires, not when it is attached:
+                // a manager created after this scene registered still
+                // owns animation time for the groups on it.
+                for (
+                    const PropertyAnimationManager& manager :
+                    engine->animation_managers) {
+                    seek_animation_manager(manager, *engine, time);
+                }
+            });
+    }`
+      : "";
+  }
+
 }

@@ -8,14 +8,14 @@ import {
     RenderedCpp,
     additiveTerms,
     collectLaneStores,
-    collectNodes,
+    findNodes,
     identifierParameters,
     laneMembers,
     pinnedDoubleLiteral,
     refuseNode,
     singleBinding,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /** C++ precedence for the expression subset the pinned leaves use. */
@@ -36,9 +36,10 @@ export const cppPrecedence = {
  * shared pinned table's — `pinned-operators.ts` owns what a pinned
  * operator lowers to, so a spelling it changes or loses moves or fails
  * here at load — while the precedence column is this renderer's own
- * minimal-parenthesization decision and stays local. Two rows have no
- * shared home and keep a local spelling: `!==` (the shared table folds
- * only `===`/`==`, because no pinned writer guards with `!==`) and `%`.
+ * minimal-parenthesization decision and stays local. One row has no
+ * shared home and keeps a local spelling: `%`, which this renderer emits
+ * as C++'s own infix over the integral lanes the pin applies it to, where
+ * the shared table spells the floating-point remainder as a call.
  */
 const cppOperatorRows: ReadonlyArray<
     readonly [kind: ts.SyntaxKind, level: number, localSpelling?: string]
@@ -46,11 +47,7 @@ const cppOperatorRows: ReadonlyArray<
     [ts.SyntaxKind.BarBarToken, cppPrecedence.logicalOr],
     [ts.SyntaxKind.AmpersandAmpersandToken, cppPrecedence.logicalAnd],
     [ts.SyntaxKind.EqualsEqualsEqualsToken, cppPrecedence.equality],
-    [
-        ts.SyntaxKind.ExclamationEqualsEqualsToken,
-        cppPrecedence.equality,
-        "!=",
-    ],
+    [ts.SyntaxKind.ExclamationEqualsEqualsToken, cppPrecedence.equality],
     [ts.SyntaxKind.LessThanToken, cppPrecedence.relational],
     [ts.SyntaxKind.GreaterThanToken, cppPrecedence.relational],
     [ts.SyntaxKind.PlusToken, cppPrecedence.additive],
@@ -329,7 +326,7 @@ function emitNormalizeQuaternion(
         ) {
             return undefined;
         }
-        const index = unwrapPin(target.argumentExpression);
+        const index = unwrapExpression(target.argumentExpression);
         if (ts.isIdentifier(index)) {
             return index.text === offsetName ? 0 : undefined;
         }
@@ -374,7 +371,7 @@ function emitNormalizeQuaternion(
             declaration,
         );
         index += 1;
-        const read = unwrapPin(binding.initializer);
+        const read = unwrapExpression(binding.initializer);
         if (
             !ts.isElementAccessExpression(read) ||
             laneOf(read) !== lane
@@ -858,7 +855,7 @@ function emitCubicHermite(
     const keyBaseOf = (
         initializer: ts.Expression,
     ): ts.Expression | undefined => {
-        const outer = unwrapPin(initializer);
+        const outer = unwrapExpression(initializer);
         if (
             !ts.isBinaryExpression(outer) ||
             outer.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
@@ -867,7 +864,7 @@ function emitCubicHermite(
         ) {
             return undefined;
         }
-        const inner = unwrapPin(outer.left);
+        const inner = unwrapExpression(outer.left);
         if (
             !ts.isBinaryExpression(inner) ||
             inner.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
@@ -876,7 +873,7 @@ function emitCubicHermite(
         ) {
             return undefined;
         }
-        return unwrapPin(inner.left);
+        return unwrapExpression(inner.left);
     };
     const isKeyBase = (statement: ts.Statement): boolean =>
         ts.isVariableStatement(statement) &&
@@ -896,7 +893,7 @@ function emitCubicHermite(
         block[index],
         cubicIf,
     );
-    const firstInitializer = unwrapPin(firstBinding.initializer);
+    const firstInitializer = unwrapExpression(firstBinding.initializer);
     if (
         !ts.isBinaryExpression(firstInitializer) ||
         firstInitializer.operatorToken.kind !==
@@ -1034,7 +1031,7 @@ function emitCubicHermite(
         expression: ts.Expression,
         lane: number,
     ): string => {
-        const read = unwrapPin(expression);
+        const read = unwrapExpression(expression);
         if (
             !ts.isElementAccessExpression(read) ||
             !ts.isIdentifier(read.expression) ||
@@ -1047,7 +1044,7 @@ function emitCubicHermite(
                 "no longer reads the sampler output the lowered way",
             );
         }
-        const full = unwrapPin(read.argumentExpression);
+        const full = unwrapExpression(read.argumentExpression);
         if (
             !ts.isBinaryExpression(full) ||
             full.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
@@ -1061,7 +1058,7 @@ function emitCubicHermite(
                 "no longer offsets the triplet read by the component",
             );
         }
-        const offset = unwrapPin(full.left);
+        const offset = unwrapExpression(full.left);
         let keyLocal: string | undefined;
         let slot: number | undefined;
         if (ts.isIdentifier(offset)) {
@@ -1073,7 +1070,7 @@ function emitCubicHermite(
             ts.isIdentifier(offset.left)
         ) {
             keyLocal = offset.left.text;
-            const slotExpression = unwrapPin(offset.right);
+            const slotExpression = unwrapExpression(offset.right);
             if (
                 ts.isIdentifier(slotExpression) &&
                 slotExpression.text === strideName
@@ -1112,7 +1109,7 @@ function emitCubicHermite(
         initializer: ts.Expression,
         lane: number,
     ): RenderedCpp => {
-        const value = unwrapPin(initializer);
+        const value = unwrapExpression(initializer);
         if (ts.isElementAccessExpression(value)) {
             return {
                 text: tripletRead(value, lane),
@@ -1189,7 +1186,7 @@ function emitCubicHermite(
             ? store.expression
             : undefined;
         const target = assignment
-            ? unwrapPin(assignment.left)
+            ? unwrapExpression(assignment.left)
             : undefined;
         const storesComponent = target !== undefined &&
             ts.isElementAccessExpression(target) &&
@@ -1324,7 +1321,7 @@ function assertPinnedStepSelection(
             "no longer takes (sampler, t, stride, ...)",
         );
     }
-    const stepBranch = collectNodes(
+    const stepBranch = findNodes(
         declaration.body,
         (node): node is ts.IfStatement =>
             ts.isIfStatement(node) &&
@@ -1414,7 +1411,7 @@ function assertPinnedStepSelection(
             }
             // `const t1 = input[idx + 1]!` -- the pin's own non-null
             // assertion sits between the binding and the access.
-            const access = unwrapPin(binding.initializer);
+            const access = unwrapExpression(binding.initializer);
             return (
                 ts.isElementAccessExpression(access) &&
                 ts.isBinaryExpression(access.argumentExpression) &&

@@ -5,21 +5,20 @@ import {
     CppExpressionScope,
     additiveChainParts,
     coalescedPropertyDefault,
-    collectNodes,
+    findNodes,
     declarationOf,
     featureMethod,
     identifierParameters,
     identifierText,
     isMathPi,
     mathCall,
-    pinnedConstantValue,
+    pinnedNumericValue,
     pinnedFloatLiteral,
     refuseModule,
     refuseNode,
-    signedNumericValue,
     singleBinding,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /**
@@ -58,7 +57,7 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
         statements[0],
         declaration,
     );
-    const scaleValue = unwrapPin(scaleBinding.initializer);
+    const scaleValue = unwrapExpression(scaleBinding.initializer);
     const scaleShape = ts.isBinaryExpression(scaleValue) &&
         scaleValue.operatorToken.kind === ts.SyntaxKind.SlashToken &&
         identifierText(scaleValue.left) === intensityName &&
@@ -78,13 +77,13 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
         statements[1],
         declaration,
     );
-    const polyNew = unwrapPin(polyBinding.initializer);
+    const polyNew = unwrapExpression(polyBinding.initializer);
     const polySize = ts.isNewExpression(polyNew) &&
             identifierText(polyNew.expression) === "Float32Array" &&
             polyNew.arguments?.length === 1 &&
-            ts.isNumericLiteral(unwrapPin(polyNew.arguments[0]!))
+            ts.isNumericLiteral(unwrapExpression(polyNew.arguments[0]!))
         ? Number(
-            (unwrapPin(polyNew.arguments[0]!) as ts.NumericLiteral).text,
+            (unwrapExpression(polyNew.arguments[0]!) as ts.NumericLiteral).text,
         )
         : undefined;
     if (polySize === undefined) {
@@ -108,7 +107,7 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
         !ts.isBinaryExpression(loop.condition) ||
         loop.condition.operatorToken.kind !==
             ts.SyntaxKind.LessThanToken ||
-        !ts.isNumericLiteral(unwrapPin(loop.condition.right)) ||
+        !ts.isNumericLiteral(unwrapExpression(loop.condition.right)) ||
         !ts.isBlock(loop.statement)
     ) {
         refuseNode(
@@ -122,7 +121,7 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
         loop.initializer.declarations[0]!.name as ts.Identifier
     ).text;
     const channels = Number(
-        (unwrapPin(loop.condition.right) as ts.NumericLiteral).text,
+        (unwrapExpression(loop.condition.right) as ts.NumericLiteral).text,
     );
     // The record's Color3 lanes and nine-harmonic environment are fixed
     // contracts; a pin that moves either cannot lower into them.
@@ -156,12 +155,12 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
     for (let slot = 0; slot < slots; slot += 1) {
         const binding = singleBinding(symbol, file, body[cursor], loop);
         cursor += 1;
-        const value = unwrapPin(binding.initializer);
+        const value = unwrapExpression(binding.initializer);
         const scaled = ts.isBinaryExpression(value) &&
                 value.operatorToken.kind ===
                     ts.SyntaxKind.AsteriskToken &&
                 identifierText(value.right) === scaleBinding.name
-            ? unwrapPin(value.left)
+            ? unwrapExpression(value.left)
             : undefined;
         if (scaled === undefined) {
             refuseNode(
@@ -173,18 +172,18 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
         }
         const channelRead = ts.isElementAccessExpression(scaled) &&
                 identifierText(scaled.argumentExpression) === channelName
-            ? unwrapPin(scaled.expression)
+            ? unwrapExpression(scaled.expression)
             : undefined;
         const slotOk = channelRead !== undefined &&
             ts.isElementAccessExpression(channelRead) &&
             identifierText(channelRead.expression) ===
                 coefficientsName &&
             ts.isNumericLiteral(
-                unwrapPin(channelRead.argumentExpression),
+                unwrapExpression(channelRead.argumentExpression),
             ) &&
             Number(
                 (
-                    unwrapPin(
+                    unwrapExpression(
                         channelRead.argumentExpression,
                     ) as ts.NumericLiteral
                 ).text,
@@ -211,14 +210,14 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
         loop,
     );
     cursor += 1;
-    const inversePiValue = unwrapPin(inversePiBinding.initializer);
+    const inversePiValue = unwrapExpression(inversePiBinding.initializer);
     const inversePiNumerator = ts.isBinaryExpression(inversePiValue) &&
             inversePiValue.operatorToken.kind ===
                 ts.SyntaxKind.SlashToken &&
-            ts.isNumericLiteral(unwrapPin(inversePiValue.left)) &&
+            ts.isNumericLiteral(unwrapExpression(inversePiValue.left)) &&
             isMathPi(inversePiValue.right)
         ? Number(
-            (unwrapPin(inversePiValue.left) as ts.NumericLiteral).text,
+            (unwrapExpression(inversePiValue.left) as ts.NumericLiteral).text,
         )
         : undefined;
     if (inversePiNumerator === undefined) {
@@ -233,16 +232,16 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
     const storeSlotOf = (
         expression: ts.Expression,
     ): number | undefined => {
-        const node = unwrapPin(expression);
+        const node = unwrapExpression(expression);
         if (ts.isIdentifier(node) && node.text === channelName) return 0;
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            ts.isNumericLiteral(unwrapPin(node.left)) &&
+            ts.isNumericLiteral(unwrapExpression(node.left)) &&
             identifierText(node.right) === channelName
         ) {
             const offset = Number(
-                (unwrapPin(node.left) as ts.NumericLiteral).text,
+                (unwrapExpression(node.left) as ts.NumericLiteral).text,
             );
             return offset % channels === 0
                 ? offset / channels
@@ -262,7 +261,7 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
             ? statement.expression
             : undefined;
         const target = assignment
-            ? unwrapPin(assignment.left)
+            ? unwrapExpression(assignment.left)
             : undefined;
         if (
             !assignment ||
@@ -278,7 +277,7 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
                 `no longer stores polynomial slot ${slot}`,
             );
         }
-        const value = unwrapPin(assignment.right);
+        const value = unwrapExpression(assignment.right);
         const banded = ts.isBinaryExpression(value) &&
                 value.operatorToken.kind ===
                     ts.SyntaxKind.AsteriskToken &&
@@ -299,7 +298,7 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
             `            polynomial[${slot}],`,
             "            channel,",
         );
-        const inner = unwrapPin(banded);
+        const inner = unwrapExpression(banded);
         if (
             ts.isBinaryExpression(inner) &&
             (inner.operatorToken.kind === ts.SyntaxKind.PlusToken ||
@@ -357,7 +356,7 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
         "EXT_lights_image_based",
         "applyAsset",
     );
-    const conversionCall = collectNodes(
+    const conversionCall = findNodes(
         applyAsset.body,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -384,7 +383,7 @@ export function lowerIblPolynomialCpp(file: ts.SourceFile): string {
             "no longer defaults the light intensity behind a coalesce",
         );
     }
-    const intensityValue = pinnedConstantValue(
+    const intensityValue = pinnedNumericValue(
         symbol,
         file,
         intensityDefault.fallback,
@@ -450,13 +449,13 @@ export function lowerIblEnvironmentScalarsCpp(
         "applyAsset",
     );
     // (mipCount - 1) / Math.log2(specularImageSize)
-    const lodShapes = collectNodes(
+    const lodShapes = findNodes(
         applyAsset.body,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
             node.initializer !== undefined &&
             (() => {
-                const value = unwrapPin(node.initializer!);
+                const value = unwrapExpression(node.initializer!);
                 return ts.isBinaryExpression(value) &&
                     value.operatorToken.kind ===
                         ts.SyntaxKind.SlashToken &&
@@ -469,14 +468,14 @@ export function lowerIblEnvironmentScalarsCpp(
             "no longer derives one LOD scale from a log2 quotient",
         );
     }
-    const lodValue = unwrapPin(
+    const lodValue = unwrapExpression(
         lodShapes[0]!.initializer!,
     ) as ts.BinaryExpression;
-    const numerator = unwrapPin(lodValue.left);
+    const numerator = unwrapExpression(lodValue.left);
     const mipDrop = ts.isBinaryExpression(numerator) &&
             numerator.operatorToken.kind === ts.SyntaxKind.MinusToken &&
-            ts.isNumericLiteral(unwrapPin(numerator.right))
-        ? Number((unwrapPin(numerator.right) as ts.NumericLiteral).text)
+            ts.isNumericLiteral(unwrapExpression(numerator.right))
+        ? Number((unwrapExpression(numerator.right) as ts.NumericLiteral).text)
         : undefined;
     const mipName = mipDrop !== undefined && ts.isBinaryExpression(numerator)
         ? identifierText(numerator.left)
@@ -500,7 +499,7 @@ export function lowerIblEnvironmentScalarsCpp(
     ): boolean => {
         const declaration = declarationOf(applyAsset.body, name);
         if (!declaration?.initializer) return false;
-        let value = unwrapPin(declaration.initializer);
+        let value = unwrapExpression(declaration.initializer);
         if (tail !== undefined) {
             if (
                 !ts.isPropertyAccessExpression(value) ||
@@ -508,7 +507,7 @@ export function lowerIblEnvironmentScalarsCpp(
             ) {
                 return false;
             }
-            value = unwrapPin(value.expression);
+            value = unwrapExpression(value.expression);
         }
         return (
             ts.isPropertyAccessExpression(value) ||
@@ -537,7 +536,7 @@ export function lowerIblEnvironmentScalarsCpp(
     const yawReturn = yaw.body.statements.length === 1 &&
             ts.isReturnStatement(yaw.body.statements[0]!) &&
             (yaw.body.statements[0] as ts.ReturnStatement).expression
-        ? unwrapPin(
+        ? unwrapExpression(
             (yaw.body.statements[0] as ts.ReturnStatement).expression!,
         )
         : undefined;
@@ -549,15 +548,15 @@ export function lowerIblEnvironmentScalarsCpp(
     const yawLane = (argument: ts.Expression | undefined): number => {
         const read = argument === undefined
             ? undefined
-            : unwrapPin(argument);
+            : unwrapExpression(argument);
         const lane = read !== undefined &&
                 ts.isElementAccessExpression(read) &&
                 yawParameters.length === 1 &&
                 identifierText(read.expression) === yawParameters[0] &&
-                ts.isNumericLiteral(unwrapPin(read.argumentExpression))
+                ts.isNumericLiteral(unwrapExpression(read.argumentExpression))
             ? Number(
                 (
-                    unwrapPin(
+                    unwrapExpression(
                         read.argumentExpression,
                     ) as ts.NumericLiteral
                 ).text,
@@ -581,7 +580,7 @@ export function lowerIblEnvironmentScalarsCpp(
             "no longer derives the yaw from an atan2 product",
         );
     }
-    const yawFactor = signedNumericValue(
+    const yawFactor = pinnedNumericValue(
         "envYawFromQuaternion",
         imageBasedFile,
         (yawReturn as ts.BinaryExpression).left,
@@ -589,24 +588,24 @@ export function lowerIblEnvironmentScalarsCpp(
     const yawLaneA = yawLane(atan2.arguments[0]);
     const yawLaneB = yawLane(atan2.arguments[1]);
     // The gate: light.rotation ? envYawFromQuaternion(light.rotation) : 0.
-    const gates = collectNodes(
+    const gates = findNodes(
         applyAsset.body,
         (node): node is ts.ConditionalExpression =>
             ts.isConditionalExpression(node) &&
-            ts.isCallExpression(unwrapPin(node.whenTrue)) &&
+            ts.isCallExpression(unwrapExpression(node.whenTrue)) &&
             identifierText(
-                (unwrapPin(node.whenTrue) as ts.CallExpression)
+                (unwrapExpression(node.whenTrue) as ts.CallExpression)
                     .expression,
             ) === yaw.name!.text,
     );
     const gate = gates.length === 1 ? gates[0]! : undefined;
-    const gateRead = gate ? unwrapPin(gate.condition) : undefined;
+    const gateRead = gate ? unwrapExpression(gate.condition) : undefined;
     const rotationKey = gateRead !== undefined &&
             (ts.isPropertyAccessExpression(gateRead) ||
                 ts.isPropertyAccessChain(gateRead))
         ? gateRead.name.text
         : undefined;
-    const gateFalse = gate ? unwrapPin(gate.whenFalse) : undefined;
+    const gateFalse = gate ? unwrapExpression(gate.whenFalse) : undefined;
     if (
         !gate ||
         rotationKey === undefined ||
@@ -622,12 +621,12 @@ export function lowerIblEnvironmentScalarsCpp(
     }
     // The BRDF LUT width and format from the pinned generator.
     const brdf = topLevelFunction(assemblyFile, "generateBrdfLut");
-    const numericBindings = collectNodes(
+    const numericBindings = findNodes(
         brdf,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
             node.initializer !== undefined &&
-            ts.isNumericLiteral(unwrapPin(node.initializer!)),
+            ts.isNumericLiteral(unwrapExpression(node.initializer!)),
     );
     if (numericBindings.length !== 1) {
         refuseModule(
@@ -637,12 +636,12 @@ export function lowerIblEnvironmentScalarsCpp(
     }
     const lutWidth = Number(
         (
-            unwrapPin(
+            unwrapExpression(
                 numericBindings[0]!.initializer!,
             ) as ts.NumericLiteral
         ).text,
     );
-    const lutFloat16 = collectNodes(
+    const lutFloat16 = findNodes(
         brdf,
         (node): node is ts.StringLiteral =>
             ts.isStringLiteral(node) && node.text === "rgba16float",
