@@ -1,5 +1,17 @@
 import ts from "typescript";
 import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
+import {
+    findNodes,
+    nullishDefault,
+    numericValue,
+    unwrapExpression,
+} from "../context.js";
+
+// The AST reads the leaves share with every other lowering come from the
+// context module; the leaves import them here beside the family's own
+// helpers. `unwrapPin` is the same read under the name two readers outside
+// the family still spell.
+export { findNodes, unwrapExpression, unwrapExpression as unwrapPin };
 
 export const laneMembers = ["x", "y", "z", "w"] as const;
 
@@ -38,18 +50,6 @@ export function refuseNode(
     throw new Error(
         `Pinned ${symbol} ${reason}: ${node.getText(file)}.`,
     );
-}
-
-export function unwrapPin(expression: ts.Expression): ts.Expression {
-    let current = expression;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isNonNullExpression(current) ||
-        ts.isAsExpression(current)
-    ) {
-        current = current.expression;
-    }
-    return current;
 }
 
 interface PinnedBinding {
@@ -181,7 +181,7 @@ export const pinnedDoubleLiteral = (literal: ts.NumericLiteral): string =>
 
 /** Flattens a left-associated `a + b + c + …` chain into its terms. */
 export function additiveTerms(expression: ts.Expression): ts.Expression[] {
-    const node = unwrapPin(expression);
+    const node = unwrapExpression(expression);
     if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.PlusToken
@@ -195,38 +195,32 @@ export function refuseModule(symbol: string, reason: string): never {
     throw new Error(`Pinned ${symbol} ${reason}.`);
 }
 
-/** A numeric literal, allowing one leading unary minus. */
-export function signedNumericValue(
+/**
+ * A number the pin states as a constant -- a literal, its negation,
+ * `Math.PI`, arithmetic over those (the spot default `Math.PI / 4`) or a
+ * module constant -- refused in this family's voice.
+ */
+export function pinnedNumericValue(
     symbol: string,
     file: ts.SourceFile,
     expression: ts.Expression,
 ): number {
-    const node = unwrapPin(expression);
-    if (
-        ts.isPrefixUnaryExpression(node) &&
-        node.operator === ts.SyntaxKind.MinusToken
-    ) {
-        const operand = unwrapPin(node.operand);
-        if (ts.isNumericLiteral(operand)) {
-            return -Number(operand.text);
-        }
-    }
-    if (ts.isNumericLiteral(node)) {
-        return Number(node.text);
-    }
-    refuseNode(
-        symbol,
-        file,
-        expression,
-        "uses a constant this lowering cannot evaluate",
-    );
+    return numericValue(expression, file, {
+        refuse: (node, at) =>
+            refuseNode(
+                symbol,
+                at,
+                node,
+                "uses a constant this lowering cannot evaluate",
+            ),
+    });
 }
 
 /** The `a.b.c` property path of an assignment target, or undefined. */
 export function pinnedPropertyPath(
     expression: ts.Expression,
 ): string[] | undefined {
-    const node = unwrapPin(expression);
+    const node = unwrapExpression(expression);
     if (ts.isIdentifier(node)) {
         return [node.text];
     }
@@ -308,21 +302,8 @@ export const pinnedFloatLiteral = (literal: ts.NumericLiteral): string =>
 export function identifierText(
     expression: ts.Expression,
 ): string | undefined {
-    const node = unwrapPin(expression);
+    const node = unwrapExpression(expression);
     return ts.isIdentifier(node) ? node.text : undefined;
-}
-
-export function collectNodes<T extends ts.Node>(
-    root: ts.Node,
-    predicate: (node: ts.Node) => node is T,
-): T[] {
-    const result: T[] = [];
-    const visit = (node: ts.Node): void => {
-        if (predicate(node)) result.push(node);
-        ts.forEachChild(node, visit);
-    };
-    visit(root);
-    return result;
 }
 
 /** A left-associated `a (+|-) b (+|-) c` chain as parts and operators. */
@@ -330,7 +311,7 @@ export function additiveChainParts(expression: ts.Expression): {
     parts: ts.Expression[];
     operators: ("+" | "-")[];
 } {
-    const node = unwrapPin(expression);
+    const node = unwrapExpression(expression);
     if (
         ts.isBinaryExpression(node) &&
         (node.operatorToken.kind === ts.SyntaxKind.PlusToken ||
@@ -355,7 +336,7 @@ export function mathCall(
     expression: ts.Expression,
     name: string,
 ): ts.CallExpression | undefined {
-    const node = unwrapPin(expression);
+    const node = unwrapExpression(expression);
     return ts.isCallExpression(node) &&
             ts.isPropertyAccessExpression(node.expression) &&
             identifierText(node.expression.expression) === "Math" &&
@@ -365,47 +346,10 @@ export function mathCall(
 }
 
 export function isMathPi(expression: ts.Expression): boolean {
-    const node = unwrapPin(expression);
+    const node = unwrapExpression(expression);
     return ts.isPropertyAccessExpression(node) &&
         identifierText(node.expression) === "Math" &&
         node.name.text === "PI";
-}
-
-/**
- * Evaluates the constant subset the round-3 defaults use: literals, a
- * leading minus, `Math.PI`, and products/quotients of those. The spot
- * default `Math.PI / 4` evaluates here to the double the record bakes.
- */
-export function pinnedConstantValue(
-    symbol: string,
-    file: ts.SourceFile,
-    expression: ts.Expression,
-): number {
-    const node = unwrapPin(expression);
-    if (ts.isNumericLiteral(node)) return Number(node.text);
-    if (
-        ts.isPrefixUnaryExpression(node) &&
-        node.operator === ts.SyntaxKind.MinusToken
-    ) {
-        return -pinnedConstantValue(symbol, file, node.operand);
-    }
-    if (isMathPi(node)) return Math.PI;
-    if (ts.isBinaryExpression(node)) {
-        const left = pinnedConstantValue(symbol, file, node.left);
-        const right = pinnedConstantValue(symbol, file, node.right);
-        if (node.operatorToken.kind === ts.SyntaxKind.SlashToken) {
-            return left / right;
-        }
-        if (node.operatorToken.kind === ts.SyntaxKind.AsteriskToken) {
-            return left * right;
-        }
-    }
-    refuseNode(
-        symbol,
-        file,
-        expression,
-        "uses a default this lowering cannot evaluate",
-    );
 }
 
 /**
@@ -432,7 +376,7 @@ export function pinnedRootFlip(
             ) {
                 continue;
             }
-            const value = unwrapPin(declaration.initializer);
+            const value = unwrapExpression(declaration.initializer);
             if (
                 !ts.isNewExpression(value) ||
                 identifierText(value.expression) !== "F32" ||
@@ -440,7 +384,7 @@ export function pinnedRootFlip(
             ) {
                 continue;
             }
-            const argument = unwrapPin(value.arguments[0]!);
+            const argument = unwrapExpression(value.arguments[0]!);
             if (
                 !ts.isArrayLiteralExpression(argument) ||
                 argument.elements.length !== 16
@@ -450,7 +394,7 @@ export function pinnedRootFlip(
             candidates.push({
                 name: declaration.name.text,
                 values: argument.elements.map((element) =>
-                    signedNumericValue(symbol, file, element)
+                    pinnedNumericValue(symbol, file, element)
                 ),
             });
         }
@@ -477,7 +421,7 @@ export function pinnedRootFlip(
         refuseModule(symbol, "no longer flips exactly one axis by -1");
     }
     const compute = topLevelFunction(file, "computeNodeWorldMatrix");
-    const usedAsRoot = collectNodes(
+    const usedAsRoot = findNodes(
         compute,
         (node): node is ts.ConditionalExpression =>
             ts.isConditionalExpression(node) &&
@@ -503,7 +447,7 @@ export function declarationOf(
     root: ts.Node,
     name: string,
 ): ts.VariableDeclaration | undefined {
-    return collectNodes(
+    return findNodes(
         root,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
@@ -524,7 +468,7 @@ export function requirePropertyReads(
     names: readonly string[],
 ): void {
     for (const name of names) {
-        const carried = collectNodes(
+        const carried = findNodes(
             root,
             (node): node is ts.Node =>
                 ((ts.isPropertyAccessExpression(node) ||
@@ -551,19 +495,14 @@ export function coalescedPropertyDefault(
     expression: ts.Expression,
     operator: ts.SyntaxKind = ts.SyntaxKind.QuestionQuestionToken,
 ): { key: string; fallback: ts.Expression; read: ts.Expression } | undefined {
-    const node = unwrapPin(expression);
-    if (
-        !ts.isBinaryExpression(node) ||
-        node.operatorToken.kind !== operator
-    ) {
-        return undefined;
-    }
-    const read = unwrapPin(node.left);
+    const split = nullishDefault(expression, operator);
+    if (!split) return undefined;
+    const read = unwrapExpression(split.left);
     if (
         !ts.isPropertyAccessExpression(read) &&
         !ts.isPropertyAccessChain(read)
     ) {
         return undefined;
     }
-    return { key: read.name.text, fallback: node.right, read };
+    return { key: read.name.text, fallback: split.right, read };
 }

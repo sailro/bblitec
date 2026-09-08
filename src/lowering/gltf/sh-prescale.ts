@@ -7,7 +7,7 @@ import {
     refuseNode,
     singleBinding,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /** Pin constant name → the C++ constexpr the prescale emits. */
@@ -58,7 +58,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         const statement = statements[index];
         if (!statement || !ts.isVariableStatement(statement)) break;
         const binding = singleBinding(symbol, file, statement, declaration);
-        const value = unwrapPin(binding.initializer);
+        const value = unwrapExpression(binding.initializer);
         if (!ts.isNumericLiteral(value)) break;
         index += 1;
         const cpp = preScaleConstantRenames[binding.name];
@@ -94,15 +94,15 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         declaration,
     );
     index += 1;
-    const outNew = unwrapPin(outBinding.initializer);
+    const outNew = unwrapExpression(outBinding.initializer);
     const outSize = ts.isNewExpression(outNew) &&
             ts.isIdentifier(outNew.expression) &&
             (outNew.expression.text === "F32" ||
                 outNew.expression.text === "Float32Array") &&
             outNew.arguments?.length === 1 &&
-            ts.isNumericLiteral(unwrapPin(outNew.arguments[0]!))
+            ts.isNumericLiteral(unwrapExpression(outNew.arguments[0]!))
         ? Number(
-            (unwrapPin(outNew.arguments[0]!) as ts.NumericLiteral).text,
+            (unwrapExpression(outNew.arguments[0]!) as ts.NumericLiteral).text,
         )
         : undefined;
     if (outSize !== 36) {
@@ -130,9 +130,9 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         !ts.isBinaryExpression(loop.condition) ||
         loop.condition.operatorToken.kind !==
             ts.SyntaxKind.LessThanToken ||
-        !ts.isNumericLiteral(unwrapPin(loop.condition.right)) ||
+        !ts.isNumericLiteral(unwrapExpression(loop.condition.right)) ||
         Number(
-            (unwrapPin(loop.condition.right) as ts.NumericLiteral).text,
+            (unwrapExpression(loop.condition.right) as ts.NumericLiteral).text,
         ) !== 3 ||
         !ts.isBlock(loop.statement)
     ) {
@@ -150,17 +150,17 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         expression: ts.Expression,
         stride: number,
     ): number | undefined => {
-        const node = unwrapPin(expression);
+        const node = unwrapExpression(expression);
         if (ts.isIdentifier(node) && node.text === channelName) return 0;
         if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            ts.isNumericLiteral(unwrapPin(node.left)) &&
-            ts.isIdentifier(unwrapPin(node.right)) &&
-            (unwrapPin(node.right) as ts.Identifier).text === channelName
+            ts.isNumericLiteral(unwrapExpression(node.left)) &&
+            ts.isIdentifier(unwrapExpression(node.right)) &&
+            (unwrapExpression(node.right) as ts.Identifier).text === channelName
         ) {
             const offset = Number(
-                (unwrapPin(node.left) as ts.NumericLiteral).text,
+                (unwrapExpression(node.left) as ts.NumericLiteral).text,
             );
             return offset % stride === 0 ? offset / stride : undefined;
         }
@@ -171,7 +171,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
     for (let slot = 0; slot < 9; slot += 1) {
         const binding = singleBinding(symbol, file, body[bodyIndex], loop);
         bodyIndex += 1;
-        const readValue = unwrapPin(binding.initializer);
+        const readValue = unwrapExpression(binding.initializer);
         if (
             !ts.isElementAccessExpression(readValue) ||
             !ts.isIdentifier(readValue.expression) ||
@@ -202,7 +202,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
             ? statement.expression
             : undefined;
         const target = assignment
-            ? unwrapPin(assignment.left)
+            ? unwrapExpression(assignment.left)
             : undefined;
         if (
             !assignment ||
@@ -250,8 +250,8 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         !trailing ||
         !ts.isReturnStatement(trailing) ||
         !trailing.expression ||
-        !ts.isIdentifier(unwrapPin(trailing.expression)) ||
-        (unwrapPin(trailing.expression) as ts.Identifier).text !==
+        !ts.isIdentifier(unwrapExpression(trailing.expression)) ||
+        (unwrapExpression(trailing.expression) as ts.Identifier).text !==
             outBinding.name ||
         index !== statements.length
     ) {

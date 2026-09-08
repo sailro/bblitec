@@ -2,21 +2,21 @@ import ts from "typescript";
 import { stringLiteral } from "../../cpp-literals.js";
 import {
     coalescedPropertyDefault,
-    collectNodes,
+    findNodes,
     declarationOf,
     identifierText,
     refuseModule,
     requirePropertyReads,
-    signedNumericValue,
+    pinnedNumericValue,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 const SYMBOL = "bone-control";
 
 /** A call to a method named `name`, anywhere under `root`. */
 function callsNamed(root: ts.Node, name: string): ts.CallExpression[] {
-    return collectNodes(
+    return findNodes(
         root,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -30,16 +30,16 @@ function maskBit(
     file: ts.SourceFile,
     expression: ts.Expression,
 ): number | undefined {
-    const node = unwrapPin(expression);
+    const node = unwrapExpression(expression);
     if (
         !ts.isBinaryExpression(node) ||
         node.operatorToken.kind !== ts.SyntaxKind.AmpersandToken ||
         identifierText(node.left) === undefined ||
-        !ts.isNumericLiteral(unwrapPin(node.right))
+        !ts.isNumericLiteral(unwrapExpression(node.right))
     ) {
         return undefined;
     }
-    return signedNumericValue(SYMBOL, file, node.right);
+    return pinnedNumericValue(SYMBOL, file, node.right);
 }
 
 /**
@@ -60,11 +60,11 @@ function hiddenMaskBit(boneControl: ts.SourceFile): number {
         boneControl,
         "applyOverridesToTRS",
     );
-    const hiddenOnly = collectNodes(
+    const hiddenOnly = findNodes(
         applier,
         (node): node is ts.IfStatement =>
             ts.isIfStatement(node) &&
-            collectNodes(
+            findNodes(
                 node.expression,
                 (inner): inner is ts.Identifier =>
                     ts.isIdentifier(inner) &&
@@ -72,7 +72,7 @@ function hiddenMaskBit(boneControl: ts.SourceFile): number {
             ).length > 0,
     )[0];
     const bit = hiddenOnly
-        ? collectNodes(
+        ? findNodes(
               hiddenOnly.thenStatement,
               (node): node is ts.IfStatement => ts.isIfStatement(node),
           )
@@ -106,7 +106,7 @@ function assertVisibilityArms(
         operator: ts.SyntaxKind,
         right: (node: ts.Expression) => boolean,
     ): boolean =>
-        collectNodes(
+        findNodes(
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
@@ -116,19 +116,19 @@ function assertVisibilityArms(
     const setsBit = assigns(
         ts.SyntaxKind.BarEqualsToken,
         (right) =>
-            ts.isNumericLiteral(unwrapPin(right)) &&
-            signedNumericValue(SYMBOL, boneControl, right) === hidden,
+            ts.isNumericLiteral(unwrapExpression(right)) &&
+            pinnedNumericValue(SYMBOL, boneControl, right) === hidden,
     );
     // The clear is `&= ~<hidden>`: the complement of the same bit, not any
     // mask, because the emitted arm hardcodes that one.
     const clearsBit = assigns(
         ts.SyntaxKind.AmpersandEqualsToken,
         (right) => {
-            const node = unwrapPin(right);
+            const node = unwrapExpression(right);
             return (
                 ts.isPrefixUnaryExpression(node) &&
                 node.operator === ts.SyntaxKind.TildeToken &&
-                signedNumericValue(
+                pinnedNumericValue(
                     SYMBOL,
                     boneControl,
                     node.operand,
@@ -165,7 +165,7 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
         ["_byName", "get"],
     );
     const builder = topLevelFunction(boneControl, "buildSkeletons");
-    const firstWins = collectNodes(
+    const firstWins = findNodes(
         builder,
         (node): node is ts.PrefixUnaryExpression =>
             ts.isPrefixUnaryExpression(node) &&
@@ -182,7 +182,7 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
     // `json.nodes?.[ni]?.name ?? `bone_${ni}`` — the same read the camera
     // and mesh name prefixes come from, so an authored empty name is kept
     // and only a missing one takes the fallback.
-    const fallback = collectNodes(
+    const fallback = findNodes(
         builder,
         (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
     )
@@ -190,7 +190,7 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
         .find(
             (candidate) =>
                 candidate?.key === "name" &&
-                ts.isTemplateExpression(unwrapPin(candidate.fallback)),
+                ts.isTemplateExpression(unwrapExpression(candidate.fallback)),
         );
     if (!fallback) {
         refuseModule(
@@ -200,7 +200,7 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
         );
     }
     return (
-        unwrapPin(fallback.fallback) as ts.TemplateExpression
+        unwrapExpression(fallback.fallback) as ts.TemplateExpression
     ).head.text;
 }
 
@@ -229,7 +229,7 @@ function assertBakeOrder(boneControl: ts.SourceFile): void {
         "computeNodeWorldMatrices",
         "writeBoneTextures",
     ];
-    const named = collectNodes(
+    const named = findNodes(
         body,
         (node): node is ts.CallExpression => ts.isCallExpression(node),
     )
@@ -261,12 +261,12 @@ function assertSkinGrouping(boneControl: ts.SourceFile): void {
         "extractSkinGroups",
     );
     requirePropertyReads(SYMBOL, extract, ["skin", "skins", "joints"]);
-    const overNodes = collectNodes(
+    const overNodes = findNodes(
         extract,
         (node): node is ts.ForStatement =>
             ts.isForStatement(node) &&
             node.condition !== undefined &&
-            collectNodes(
+            findNodes(
                 node.condition,
                 (inner): inner is ts.Identifier =>
                     ts.isIdentifier(inner) &&
@@ -286,7 +286,7 @@ function assertSkinGrouping(boneControl: ts.SourceFile): void {
     );
 }
 
-export interface LoweredBoneControl {
+interface LoweredBoneControl {
     /** The skeleton build, the override table and the eager bake. */
     loading: string;
     /** `getBoneByName` and `setBoneVisible`, as free functions. */

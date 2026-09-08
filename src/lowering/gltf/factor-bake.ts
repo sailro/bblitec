@@ -2,14 +2,14 @@ import ts from "typescript";
 import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
 import { GltfFactorBake } from "../templates/gltf-loader-cpp.js";
 import {
-    collectNodes,
+    findNodes,
     identifierText,
     mathCall,
     refuseModule,
     refuseNode,
-    signedNumericValue,
+    pinnedNumericValue,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /** `Math.round(Math.max(lo, Math.min(hi, v)) * scale)` → constants. */
@@ -20,7 +20,7 @@ function roundClampScale(
 ): { lo: number; hi: number; scale: number; value: ts.Expression } {
     const round = mathCall(expression, "round");
     const product = round && round.arguments.length === 1
-        ? unwrapPin(round.arguments[0]!)
+        ? unwrapExpression(round.arguments[0]!)
         : undefined;
     if (
         !product ||
@@ -34,16 +34,16 @@ function roundClampScale(
             "no longer rounds a scaled clamp",
         );
     }
-    const scale = signedNumericValue(symbol, file, product.right);
+    const scale = pinnedNumericValue(symbol, file, product.right);
     const max = mathCall(product.left, "max");
     const lo = max && max.arguments.length === 2
-        ? signedNumericValue(symbol, file, max.arguments[0]!)
+        ? pinnedNumericValue(symbol, file, max.arguments[0]!)
         : undefined;
     const min = max && max.arguments.length === 2
         ? mathCall(max.arguments[1]!, "min")
         : undefined;
     const hi = min && min.arguments.length === 2
-        ? signedNumericValue(symbol, file, min.arguments[0]!)
+        ? pinnedNumericValue(symbol, file, min.arguments[0]!)
         : undefined;
     if (lo === undefined || hi === undefined) {
         refuseNode(
@@ -62,7 +62,7 @@ function pinnedTexelBuild(
     symbol: string,
     root: ts.Node,
 ): readonly ts.Expression[] {
-    const builds = collectNodes(
+    const builds = findNodes(
         root,
         (node): node is ts.NewExpression =>
             ts.isNewExpression(node) &&
@@ -70,7 +70,7 @@ function pinnedTexelBuild(
     );
     const lanes = builds.length === 1 &&
             builds[0]!.arguments?.length === 1
-        ? unwrapPin(builds[0]!.arguments[0]!)
+        ? unwrapExpression(builds[0]!.arguments[0]!)
         : undefined;
     if (
         !lanes ||
@@ -105,15 +105,15 @@ export function lowerGltfFactorBake(
         builderFile,
         "uploadOrmFactorTexture",
     );
-    const clampClosures = collectNodes(
+    const clampClosures = findNodes(
         ormUpload.body,
         (node): node is ts.VariableDeclaration =>
             ts.isVariableDeclaration(node) &&
             node.initializer !== undefined &&
-            ts.isArrowFunction(unwrapPin(node.initializer)),
+            ts.isArrowFunction(unwrapExpression(node.initializer)),
     );
     const closure = clampClosures.length === 1
-        ? unwrapPin(clampClosures[0]!.initializer!) as ts.ArrowFunction
+        ? unwrapExpression(clampClosures[0]!.initializer!) as ts.ArrowFunction
         : undefined;
     if (!closure || ts.isBlock(closure.body)) {
         refuseModule(
@@ -127,7 +127,7 @@ export function lowerGltfFactorBake(
         : undefined;
     const ormLanes = pinnedTexelBuild(symbol, ormUpload.body);
     const opaqueLanes = [ormLanes[0]!, ormLanes[3]!].map((lane) =>
-        signedNumericValue(symbol, builderFile, lane)
+        pinnedNumericValue(symbol, builderFile, lane)
     );
     if (opaqueLanes[0] !== opaqueLanes[1]) {
         refuseModule(
@@ -141,7 +141,7 @@ export function lowerGltfFactorBake(
         [ormLanes[1]!, "roughness"],
         [ormLanes[2]!, "metallic"],
     ] as const) {
-        const call = unwrapPin(lane);
+        const call = unwrapExpression(lane);
         if (
             !ts.isCallExpression(call) ||
             identifierText(call.expression) !== closureName ||
@@ -162,10 +162,10 @@ export function lowerGltfFactorBake(
     );
     const baseLanes = pinnedTexelBuild(symbol, baseUpload.body);
     baseLanes.slice(0, 3).forEach((lane, index) => {
-        const call = unwrapPin(lane);
+        const call = unwrapExpression(lane);
         const argument = ts.isCallExpression(call) &&
                 call.arguments.length === 1
-            ? unwrapPin(call.arguments[0]!)
+            ? unwrapExpression(call.arguments[0]!)
             : undefined;
         if (
             !call ||
@@ -173,7 +173,7 @@ export function lowerGltfFactorBake(
             identifierText(call.expression) !== "linearToSrgbByte" ||
             !argument ||
             !ts.isElementAccessExpression(argument) ||
-            signedNumericValue(
+            pinnedNumericValue(
                     symbol,
                     builderFile,
                     argument.argumentExpression,
@@ -198,10 +198,10 @@ export function lowerGltfFactorBake(
                 "alpha lanes",
         );
     }
-    const alphaRead = unwrapPin(alpha.value);
+    const alphaRead = unwrapExpression(alpha.value);
     if (
         !ts.isElementAccessExpression(alphaRead) ||
-        signedNumericValue(
+        pinnedNumericValue(
                 symbol,
                 builderFile,
                 alphaRead.argumentExpression,
@@ -236,12 +236,12 @@ export function lowerGltfFactorBake(
             "no longer clamps its input through Math.max over Math.min",
         );
     }
-    const srgbLo = signedNumericValue(
+    const srgbLo = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         clampMax.arguments[0]!,
     );
-    const srgbHi = signedNumericValue(
+    const srgbHi = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         clampMin.arguments[0]!,
@@ -253,7 +253,7 @@ export function lowerGltfFactorBake(
         ? mathCall(returnStatement.expression, "round")
         : undefined;
     const scaled = round && round.arguments.length === 1
-        ? unwrapPin(round.arguments[0]!)
+        ? unwrapExpression(round.arguments[0]!)
         : undefined;
     if (
         !scaled ||
@@ -265,19 +265,19 @@ export function lowerGltfFactorBake(
             "no longer rounds a scaled transfer curve",
         );
     }
-    const byteScale = signedNumericValue(
+    const byteScale = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         scaled.right,
     );
-    const curve = unwrapPin(scaled.left);
+    const curve = unwrapExpression(scaled.left);
     if (!ts.isConditionalExpression(curve)) {
         refuseModule(
             srgbSymbol,
             "no longer forks the transfer curve on a threshold",
         );
     }
-    const condition = unwrapPin(curve.condition);
+    const condition = unwrapExpression(curve.condition);
     if (
         !ts.isBinaryExpression(condition) ||
         condition.operatorToken.kind !==
@@ -289,12 +289,12 @@ export function lowerGltfFactorBake(
             "no longer tests the clamped value against the threshold",
         );
     }
-    const threshold = signedNumericValue(
+    const threshold = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         condition.right,
     );
-    const linear = unwrapPin(curve.whenTrue);
+    const linear = unwrapExpression(curve.whenTrue);
     if (
         !ts.isBinaryExpression(linear) ||
         linear.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
@@ -305,12 +305,12 @@ export function lowerGltfFactorBake(
             "no longer scales the linear segment from the clamped value",
         );
     }
-    const linearScale = signedNumericValue(
+    const linearScale = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         linear.right,
     );
-    const gamma = unwrapPin(curve.whenFalse);
+    const gamma = unwrapExpression(curve.whenFalse);
     if (
         !ts.isBinaryExpression(gamma) ||
         gamma.operatorToken.kind !== ts.SyntaxKind.MinusToken
@@ -320,12 +320,12 @@ export function lowerGltfFactorBake(
             "no longer offsets the gamma segment",
         );
     }
-    const gammaOffset = signedNumericValue(
+    const gammaOffset = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         gamma.right,
     );
-    const gammaProduct = unwrapPin(gamma.left);
+    const gammaProduct = unwrapExpression(gamma.left);
     const pow = ts.isBinaryExpression(gammaProduct) &&
             gammaProduct.operatorToken.kind ===
                 ts.SyntaxKind.AsteriskToken
@@ -333,7 +333,7 @@ export function lowerGltfFactorBake(
         : undefined;
     const exponent = pow && pow.arguments.length === 2 &&
             identifierText(pow.arguments[0]!) === clampedName
-        ? unwrapPin(pow.arguments[1]!)
+        ? unwrapExpression(pow.arguments[1]!)
         : undefined;
     if (
         !pow ||
@@ -346,17 +346,17 @@ export function lowerGltfFactorBake(
             "no longer raises the clamped value to a ratio exponent",
         );
     }
-    const gammaScale = signedNumericValue(
+    const gammaScale = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         (gammaProduct as ts.BinaryExpression).left,
     );
-    const exponentNumerator = signedNumericValue(
+    const exponentNumerator = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         exponent.left,
     );
-    const exponentDenominator = signedNumericValue(
+    const exponentDenominator = pinnedNumericValue(
         srgbSymbol,
         colorFile,
         exponent.right,

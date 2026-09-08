@@ -2,19 +2,18 @@ import ts from "typescript";
 import { doubleLiteral } from "../../cpp-literals.js";
 import {
     coalescedPropertyDefault,
-    collectNodes,
+    findNodes,
     declarationOf,
     featureMethod,
     identifierText,
     mathCall,
-    pinnedConstantValue,
+    pinnedNumericValue,
     pinnedRootFlip,
     refuseModule,
     refuseNode,
     requirePropertyReads,
-    signedNumericValue,
     topLevelFunction,
-    unwrapPin,
+    unwrapExpression,
 } from "./shared.js";
 
 /** `<owner>.<name>` (plain or optional-chained) — the file's one
@@ -78,7 +77,7 @@ export function lowerGltfCamerasCpp(
     // compiled intrinsic mirrors that gate as "cameras load whenever the
     // asset carries any", so the predicate shape is load-bearing.
     const enable = topLevelFunction(cameraFile, "enableGltfCameras");
-    const registration = collectNodes(
+    const registration = findNodes(
         enable,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -91,9 +90,9 @@ export function lowerGltfCamerasCpp(
             "no longer registers through _registerEnabledGltfFeature",
         );
     }
-    const predicate = unwrapPin(registration.arguments[0]!);
+    const predicate = unwrapExpression(registration.arguments[0]!);
     const predicateReadsCameras = ts.isArrowFunction(predicate) &&
-        collectNodes(
+        findNodes(
             predicate,
             (node): node is ts.Node => readsProperty(node, "cameras"),
         ).length > 0;
@@ -116,20 +115,20 @@ export function lowerGltfCamerasCpp(
     // orthographic [xmag, ymag, znear, zfar], anything else throws. The
     // conditional chain is the anchor; its key lists flow into the
     // emitted reads and finiteness gate.
-    const paramsConditional = collectNodes(
+    const paramsConditional = findNodes(
         applyAsset.body,
         (node): node is ts.ConditionalExpression =>
             ts.isConditionalExpression(node) &&
-            ts.isBinaryExpression(unwrapPin(node.condition)) &&
+            ts.isBinaryExpression(unwrapExpression(node.condition)) &&
             ts.isStringLiteral(
-                unwrapPin(
-                    (unwrapPin(node.condition) as ts.BinaryExpression)
+                unwrapExpression(
+                    (unwrapExpression(node.condition) as ts.BinaryExpression)
                         .right,
                 ),
             ) &&
             (
-                unwrapPin(
-                    (unwrapPin(node.condition) as ts.BinaryExpression)
+                unwrapExpression(
+                    (unwrapExpression(node.condition) as ts.BinaryExpression)
                         .right,
                 ) as ts.StringLiteral
             ).text === "perspective",
@@ -141,10 +140,10 @@ export function lowerGltfCamerasCpp(
         );
     }
     const tupleKeys = (expression: ts.Expression): string[] => {
-        const tuple = unwrapPin(expression);
+        const tuple = unwrapExpression(expression);
         if (!ts.isArrayLiteralExpression(tuple)) return [];
         return tuple.elements.map((element) => {
-            const read = unwrapPin(element);
+            const read = unwrapExpression(element);
             return ts.isPropertyAccessExpression(read) ||
                     ts.isPropertyAccessChain(read)
                 ? read.name.text
@@ -152,7 +151,7 @@ export function lowerGltfCamerasCpp(
         });
     };
     const perspectiveKeys = tupleKeys(paramsConditional.whenTrue);
-    const innerConditional = unwrapPin(paramsConditional.whenFalse);
+    const innerConditional = unwrapExpression(paramsConditional.whenFalse);
     const orthographicKeys = ts.isConditionalExpression(innerConditional)
         ? tupleKeys(innerConditional.whenTrue)
         : [];
@@ -168,15 +167,15 @@ export function lowerGltfCamerasCpp(
             "no longer gates orthographic cameras on [xmag, ymag, znear, zfar]",
         );
     }
-    const projectionThrow = collectNodes(
+    const projectionThrow = findNodes(
         applyAsset.body,
         (node): node is ts.ThrowStatement => ts.isThrowStatement(node),
     ).find((statement) => {
-        const thrown = unwrapPin(statement.expression);
+        const thrown = unwrapExpression(statement.expression);
         return ts.isNewExpression(thrown) &&
             identifierText(thrown.expression) === "Error" &&
             (thrown.arguments ?? []).some((argument) => {
-                const text = unwrapPin(argument);
+                const text = unwrapExpression(argument);
                 return ts.isTemplateExpression(text) &&
                     text.templateSpans.some((span) =>
                         span.literal.text.includes(
@@ -200,14 +199,14 @@ export function lowerGltfCamerasCpp(
         cameraFile,
         "findChangingScaleAncestor",
     );
-    const pathTest = collectNodes(
+    const pathTest = findNodes(
         findChanging,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind ===
                 ts.SyntaxKind.EqualsEqualsEqualsToken &&
-            ts.isStringLiteral(unwrapPin(node.right)) &&
-            (unwrapPin(node.right) as ts.StringLiteral).text === "scale",
+            ts.isStringLiteral(unwrapExpression(node.right)) &&
+            (unwrapExpression(node.right) as ts.StringLiteral).text === "scale",
     )[0];
     if (!pathTest) {
         refuseModule(
@@ -215,7 +214,7 @@ export function lowerGltfCamerasCpp(
             "no longer matches scale channels by target path",
         );
     }
-    const pointerTemplate = collectNodes(
+    const pointerTemplate = findNodes(
         findChanging,
         (node): node is ts.TemplateExpression =>
             ts.isTemplateExpression(node),
@@ -231,7 +230,7 @@ export function lowerGltfCamerasCpp(
             "no longer matches the animation-pointer scale spelling",
         );
     }
-    const cubicSpline = collectNodes(
+    const cubicSpline = findNodes(
         findChanging,
         (node): node is ts.StringLiteral =>
             ts.isStringLiteral(node) && node.text === "CUBICSPLINE",
@@ -243,14 +242,14 @@ export function lowerGltfCamerasCpp(
         );
     }
     // |value - rest| / Math.max(0.01, |rest|) > 1e-5 — both constants flow.
-    const toleranceCompare = collectNodes(
+    const toleranceCompare = findNodes(
         findChanging,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind ===
                 ts.SyntaxKind.GreaterThanToken &&
-            ts.isBinaryExpression(unwrapPin(node.left)) &&
-            (unwrapPin(node.left) as ts.BinaryExpression)
+            ts.isBinaryExpression(unwrapExpression(node.left)) &&
+            (unwrapExpression(node.left) as ts.BinaryExpression)
                     .operatorToken.kind === ts.SyntaxKind.SlashToken,
     )[0];
     if (!toleranceCompare) {
@@ -259,13 +258,13 @@ export function lowerGltfCamerasCpp(
             "no longer compares the relative scale drift to a tolerance",
         );
     }
-    const scaleTolerance = pinnedConstantValue(
+    const scaleTolerance = pinnedNumericValue(
         symbol,
         cameraFile,
         toleranceCompare.right,
     );
     const denominatorCall = mathCall(
-        (unwrapPin(toleranceCompare.left) as ts.BinaryExpression).right,
+        (unwrapExpression(toleranceCompare.left) as ts.BinaryExpression).right,
         "max",
     );
     if (!denominatorCall || denominatorCall.arguments.length !== 2) {
@@ -274,24 +273,24 @@ export function lowerGltfCamerasCpp(
             "no longer floors the drift denominator with Math.max",
         );
     }
-    const driftFloor = pinnedConstantValue(
+    const driftFloor = pinnedNumericValue(
         symbol,
         cameraFile,
         denominatorCall.arguments[0]!,
     );
-    const restDefault = collectNodes(
+    const restDefault = findNodes(
         findChanging,
         (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
     )
         .map((node) => coalescedPropertyDefault(node))
         .find((candidate) => candidate?.key === "scale");
     const restFallbackTuple = restDefault
-        ? unwrapPin(restDefault.fallback)
+        ? unwrapExpression(restDefault.fallback)
         : undefined;
     const restFallbackValues =
         restFallbackTuple && ts.isArrayLiteralExpression(restFallbackTuple)
             ? restFallbackTuple.elements.map((element) =>
-                  signedNumericValue(symbol, cameraFile, element)
+                  pinnedNumericValue(symbol, cameraFile, element)
               )
             : [];
     if (restFallbackValues.join(",") !== "1,1,1") {
@@ -304,7 +303,7 @@ export function lowerGltfCamerasCpp(
     // The rest-world analysis: per-axis scale from hypot over the basis
     // columns at offsets 0/4/8, the mean, the zero floor and the
     // uniformity tolerance, and the thrown message.
-    const worldCall = collectNodes(
+    const worldCall = findNodes(
         applyAsset.body,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -317,13 +316,13 @@ export function lowerGltfCamerasCpp(
             "no longer bakes the rest world through computeNodeWorldMatrix",
         );
     }
-    const measuresBasisColumns = collectNodes(
+    const measuresBasisColumns = findNodes(
         applyAsset.body,
         (node): node is ts.ArrayLiteralExpression =>
             ts.isArrayLiteralExpression(node) &&
             node.elements.length === 3 &&
             node.elements.every((element) =>
-                ts.isNumericLiteral(unwrapPin(element))
+                ts.isNumericLiteral(unwrapExpression(element))
             ) &&
             ts.isPropertyAccessExpression(node.parent) &&
             node.parent.name.text === "map",
@@ -331,7 +330,7 @@ export function lowerGltfCamerasCpp(
         (literal) =>
             literal.elements
                 .map((element) =>
-                    Number((unwrapPin(element) as ts.NumericLiteral).text)
+                    Number((unwrapExpression(element) as ts.NumericLiteral).text)
                 )
                 .join(",") === "0,4,8",
     );
@@ -341,7 +340,7 @@ export function lowerGltfCamerasCpp(
             "no longer measures the basis columns at offsets 0/4/8",
         );
     }
-    const hypotUse = collectNodes(
+    const hypotUse = findNodes(
         applyAsset.body,
         (node): node is ts.CallExpression =>
             mathCall(node as ts.Expression, "hypot") !== undefined,
@@ -352,17 +351,17 @@ export function lowerGltfCamerasCpp(
             "no longer takes the three-component column length",
         );
     }
-    const meanDivide = collectNodes(
+    const meanDivide = findNodes(
         applyAsset.body,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.SlashToken &&
-            ts.isNumericLiteral(unwrapPin(node.right)) &&
+            ts.isNumericLiteral(unwrapExpression(node.right)) &&
             ts.isParenthesizedExpression(node.left),
     )[0];
     if (
         !meanDivide ||
-        Number((unwrapPin(meanDivide.right) as ts.NumericLiteral).text) !==
+        Number((unwrapExpression(meanDivide.right) as ts.NumericLiteral).text) !==
             3
     ) {
         refuseModule(
@@ -370,13 +369,13 @@ export function lowerGltfCamerasCpp(
             "no longer averages the three axis scales",
         );
     }
-    const uniformityCheck = collectNodes(
+    const uniformityCheck = findNodes(
         applyAsset.body,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
-            ts.isBinaryExpression(unwrapPin(node.left)) &&
-            (unwrapPin(node.left) as ts.BinaryExpression)
+            ts.isBinaryExpression(unwrapExpression(node.left)) &&
+            (unwrapExpression(node.left) as ts.BinaryExpression)
                     .operatorToken.kind === ts.SyntaxKind.LessThanToken,
     )[0];
     if (!uniformityCheck) {
@@ -385,29 +384,29 @@ export function lowerGltfCamerasCpp(
             "no longer guards the scale floor and uniformity together",
         );
     }
-    const scaleFloor = pinnedConstantValue(
+    const scaleFloor = pinnedNumericValue(
         symbol,
         cameraFile,
-        (unwrapPin(uniformityCheck.left) as ts.BinaryExpression).right,
+        (unwrapExpression(uniformityCheck.left) as ts.BinaryExpression).right,
     );
-    const uniformityRight = unwrapPin(uniformityCheck.right);
+    const uniformityRight = unwrapExpression(uniformityCheck.right);
     if (
         !ts.isBinaryExpression(uniformityRight) ||
         uniformityRight.operatorToken.kind !==
             ts.SyntaxKind.GreaterThanToken ||
-        !ts.isBinaryExpression(unwrapPin(uniformityRight.right))
+        !ts.isBinaryExpression(unwrapExpression(uniformityRight.right))
     ) {
         refuseModule(
             symbol,
             "no longer compares the scale spread to a scaled tolerance",
         );
     }
-    const uniformityTolerance = pinnedConstantValue(
+    const uniformityTolerance = pinnedNumericValue(
         symbol,
         cameraFile,
-        (unwrapPin(uniformityRight.right) as ts.BinaryExpression).right,
+        (unwrapExpression(uniformityRight.right) as ts.BinaryExpression).right,
     );
-    const uniformThrow = collectNodes(
+    const uniformThrow = findNodes(
         applyAsset.body,
         (node): node is ts.StringLiteral =>
             ts.isStringLiteral(node) &&
@@ -424,13 +423,13 @@ export function lowerGltfCamerasCpp(
         "inverseScale",
     )?.initializer;
     const inverseValue = inverseInitializer
-        ? unwrapPin(inverseInitializer)
+        ? unwrapExpression(inverseInitializer)
         : undefined;
     if (
         !inverseValue ||
         !ts.isBinaryExpression(inverseValue) ||
         inverseValue.operatorToken.kind !== ts.SyntaxKind.SlashToken ||
-        signedNumericValue(symbol, cameraFile, inverseValue.left) !== 1
+        pinnedNumericValue(symbol, cameraFile, inverseValue.left) !== 1
     ) {
         refuseModule(
             symbol,
@@ -439,7 +438,7 @@ export function lowerGltfCamerasCpp(
     }
 
     // The name default: def.name ?? `camera${camIdx}` — the prefix flows.
-    const nameDefault = collectNodes(
+    const nameDefault = findNodes(
         applyAsset.body,
         (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
     )
@@ -447,7 +446,7 @@ export function lowerGltfCamerasCpp(
         .find(
             (candidate) =>
                 candidate?.key === "name" &&
-                ts.isTemplateExpression(unwrapPin(candidate.fallback)),
+                ts.isTemplateExpression(unwrapExpression(candidate.fallback)),
         );
     if (!nameDefault) {
         refuseModule(
@@ -456,13 +455,13 @@ export function lowerGltfCamerasCpp(
         );
     }
     const namePrefix = (
-        unwrapPin(nameDefault.fallback) as ts.TemplateExpression
+        unwrapExpression(nameDefault.fallback) as ts.TemplateExpression
     ).head.text;
 
     // The fixup transform: createTransformNode(name, 0,0,0, 0,0,0,1,
     // -inverseScale, inverseScale, inverseScale). The sign pattern of the
     // three scale arguments is the emitted lane table.
-    const fixupCall = collectNodes(
+    const fixupCall = findNodes(
         applyAsset.body,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -477,7 +476,7 @@ export function lowerGltfCamerasCpp(
     const trsValues = fixupCall.arguments
         .slice(1, 8)
         .map((argument) =>
-            signedNumericValue(symbol, cameraFile, argument)
+            pinnedNumericValue(symbol, cameraFile, argument)
         );
     if (trsValues.join(",") !== "0,0,0,0,0,0,1") {
         refuseModule(
@@ -488,11 +487,11 @@ export function lowerGltfCamerasCpp(
     const fixupLaneSigns = fixupCall.arguments
         .slice(8)
         .map((argument) => {
-            const value = unwrapPin(argument);
+            const value = unwrapExpression(argument);
             const negative = ts.isPrefixUnaryExpression(value) &&
                 value.operator === ts.SyntaxKind.MinusToken;
             const operand = negative
-                ? unwrapPin(
+                ? unwrapExpression(
                     (value as ts.PrefixUnaryExpression)
                         .operand as ts.Expression,
                 )
@@ -515,19 +514,19 @@ export function lowerGltfCamerasCpp(
     }
 
     // The live-vs-baked parent: ctx._nodeMap?.[nodeIdx] ?? bakedNode.
-    const parentAssignment = collectNodes(
+    const parentAssignment = findNodes(
         applyAsset.body,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            readsProperty(unwrapPin(node.left), "parent") &&
-            ts.isBinaryExpression(unwrapPin(node.right)) &&
-            (unwrapPin(node.right) as ts.BinaryExpression)
+            readsProperty(unwrapExpression(node.left), "parent") &&
+            ts.isBinaryExpression(unwrapExpression(node.right)) &&
+            (unwrapExpression(node.right) as ts.BinaryExpression)
                     .operatorToken.kind ===
                 ts.SyntaxKind.QuestionQuestionToken,
     ).find((assignment) => {
-        const fallback = unwrapPin(
-            (unwrapPin(assignment.right) as ts.BinaryExpression).right,
+        const fallback = unwrapExpression(
+            (unwrapExpression(assignment.right) as ts.BinaryExpression).right,
         );
         return ts.isCallExpression(fallback) &&
             identifierText(fallback.expression) ===
@@ -541,7 +540,7 @@ export function lowerGltfCamerasCpp(
     }
 
     // The camera itself: createFreeCamera at the origin toward (0,0,-1).
-    const freeCameraCall = collectNodes(
+    const freeCameraCall = findNodes(
         applyAsset.body,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -554,7 +553,7 @@ export function lowerGltfCamerasCpp(
         );
     }
     const vectorComponents = (expression: ts.Expression): number[] => {
-        const literal = unwrapPin(expression);
+        const literal = unwrapExpression(expression);
         if (!ts.isObjectLiteralExpression(literal)) return [];
         return ["x", "y", "z"].map((component) => {
             const property = literal.properties.find(
@@ -564,7 +563,7 @@ export function lowerGltfCamerasCpp(
                     candidate.name.text === component,
             ) as ts.PropertyAssignment | undefined;
             return property
-                ? signedNumericValue(
+                ? pinnedNumericValue(
                     symbol,
                     cameraFile,
                     property.initializer,
@@ -583,31 +582,31 @@ export function lowerGltfCamerasCpp(
 
     // The perspective projection writes: fov = yfov, nearPlane = znear,
     // farPlane = zfar ?? <default>; the default flows.
-    const cameraWrites = collectNodes(
+    const cameraWrites = findNodes(
         applyAsset.body,
         (node): node is ts.BinaryExpression =>
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ts.isPropertyAccessExpression(unwrapPin(node.left)),
+            ts.isPropertyAccessExpression(unwrapExpression(node.left)),
     );
     const cameraWrite = (property: string): ts.Expression | undefined =>
         cameraWrites.find(
             (assignment) =>
                 (
-                    unwrapPin(
+                    unwrapExpression(
                         assignment.left,
                     ) as ts.PropertyAccessExpression
                 ).name.text === property,
         )?.right;
     const write = cameraWrite("fov");
-    if (write === undefined || !readsProperty(unwrapPin(write), "yfov")) {
+    if (write === undefined || !readsProperty(unwrapExpression(write), "yfov")) {
         refuseModule(symbol, "no longer maps yfov onto the camera fov");
     }
     const perspectiveFar = cameraWrites
         .filter(
             (assignment) =>
                 (
-                    unwrapPin(
+                    unwrapExpression(
                         assignment.left,
                     ) as ts.PropertyAccessExpression
                 ).name.text === "farPlane",
@@ -620,7 +619,7 @@ export function lowerGltfCamerasCpp(
             "no longer defaults the perspective far plane from zfar",
         );
     }
-    const farDefault = pinnedConstantValue(
+    const farDefault = pinnedNumericValue(
         symbol,
         cameraFile,
         perspectiveFar.fallback,
@@ -630,7 +629,7 @@ export function lowerGltfCamerasCpp(
     // bounds the camera record does not carry; its presence keeps the
     // emitted load-time refusal honest, and a pin that drops or reshapes
     // the arm regenerates this leaf.
-    const orthoEnable = collectNodes(
+    const orthoEnable = findNodes(
         applyAsset.body,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -643,7 +642,7 @@ export function lowerGltfCamerasCpp(
             "no longer enables orthographic import through enableOrthographicCamera",
         );
     }
-    const orthoBounds = unwrapPin(orthoEnable.arguments[1]!);
+    const orthoBounds = unwrapExpression(orthoEnable.arguments[1]!);
     const orthoBoundKeys = ts.isObjectLiteralExpression(orthoBounds)
         ? orthoBounds.properties
               .map((property) =>
@@ -663,7 +662,7 @@ export function lowerGltfCamerasCpp(
     }
 
     // The exposure: node-encounter-ordered cameras on the container.
-    const pushCall = collectNodes(
+    const pushCall = findNodes(
         applyAsset.body,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
@@ -687,14 +686,14 @@ export function lowerGltfCamerasCpp(
         loadGltfFile,
         "buildNodeHierarchy",
     );
-    const rootCall = collectNodes(
+    const rootCall = findNodes(
         buildHierarchy,
         (node): node is ts.CallExpression =>
             ts.isCallExpression(node) &&
             identifierText(node.expression) === "createTransformNode" &&
             node.arguments.length === 11 &&
-            ts.isStringLiteral(unwrapPin(node.arguments[0]!)) &&
-            (unwrapPin(node.arguments[0]!) as ts.StringLiteral).text ===
+            ts.isStringLiteral(unwrapExpression(node.arguments[0]!)) &&
+            (unwrapExpression(node.arguments[0]!) as ts.StringLiteral).text ===
                 "__root__",
     )[0];
     if (!rootCall) {
@@ -706,7 +705,7 @@ export function lowerGltfCamerasCpp(
     const rootScales = rootCall.arguments
         .slice(8)
         .map((argument) =>
-            signedNumericValue(symbol, loadGltfFile, argument)
+            pinnedNumericValue(symbol, loadGltfFile, argument)
         );
     const rootFlipLanes = [0, 1, 2].filter(
         (lane) => rootScales[lane] !== 1,
