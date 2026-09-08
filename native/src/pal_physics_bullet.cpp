@@ -162,6 +162,7 @@ struct PhysicsShapeState {
      */
     btTransform node_from_body{btTransform::getIdentity()};
     std::optional<btVector3> capsule_first_endpoint;
+    std::optional<double> authored_box_volume;
     PhysicsMassProperties mass_properties{};
     bool has_exact_mass_properties = false;
     ShapeMaterial material{};
@@ -542,7 +543,7 @@ PhysicsWorldState& world_at(const PhysicsWorldHandle& handle) {
 }
 
 PhysicsBodyState& body_at(const PhysicsBodyHandle& handle) {
-    if (!handle.ownership || handle.value != handle.ownership->identity)
+    if (!handle.ownership || handle.value != handle.ownership->identity || !handle.ownership->body)
         throw std::runtime_error("Physics body handle is not live.");
     return *handle.ownership;
 }
@@ -2078,9 +2079,11 @@ PhysicsShapeHandle physics_shape_create_box(
         offset[axis] -= grown - half[axis];
         half[axis] = grown;
     }
-    return record_debug_inputs(push_shape(
+    const auto handle = record_debug_inputs(push_shape(
         std::make_unique<btBoxShape>(half),
         translated_frame(offset)), "BOX", center, rotation, extents);
+    shape_at(handle).authored_box_volume = extents[0] * extents[1] * extents[2];
+    return handle;
 }
 
 PhysicsShapeHandle physics_shape_create_capsule(
@@ -2512,6 +2515,16 @@ bool is_triangle_mesh_shape(const btCollisionShape& shape) {
     return shape.getShapeType() == TRIANGLE_MESH_SHAPE_PROXYTYPE;
 }
 
+void physics_body_release(PhysicsBodyHandle body) {
+    auto& entry = body_at(body);
+    if (entry.world != 0) throw std::runtime_error("A physics body must leave its world before release.");
+    entry.body.reset();
+    entry.mass_frame_shape.reset();
+    entry.motion_state.reset();
+    if (entry.shape) std::erase(entry.shape->users, &entry);
+    entry.shape.reset();
+}
+
 void physics_body_set_motion_type(
     PhysicsBodyHandle body,
     PhysicsMotionType motion_type) {
@@ -2594,6 +2607,33 @@ void physics_body_set_target_transform(
     // entry point; a kinematic body's motion state IS that behaviour, since
     // the solver derives contact velocity from the swept transform.
     physics_body_set_transform(body, transform);
+}
+
+double physics_shape_default_mass(PhysicsShapeHandle shape) {
+    const auto& entry = shape_at(shape);
+    const auto& geometry = *entry.shape;
+    double volume = 0;
+    if (geometry.getShapeType() == CAPSULE_SHAPE_PROXYTYPE) {
+        const auto& capsule = static_cast<const btCapsuleShape&>(geometry);
+        const double radius = capsule.getRadius();
+        volume = SIMD_PI * radius * radius * (2 * capsule.getHalfHeight() + 4.0 / 3.0 * radius);
+    } else if (geometry.getShapeType() == SPHERE_SHAPE_PROXYTYPE) {
+        const double radius = static_cast<const btSphereShape&>(geometry).getRadius();
+        volume = 4.0 / 3.0 * SIMD_PI * radius * radius * radius;
+    } else if (geometry.getShapeType() == BOX_SHAPE_PROXYTYPE) {
+        volume = entry.authored_box_volume.value();
+        if (volume <= 0) throw std::runtime_error("Default physics mass requires a positive authored box volume.");
+    } else if (geometry.getShapeType() == CYLINDER_SHAPE_PROXYTYPE) {
+        const auto& cylinder = static_cast<const btCylinderShape&>(geometry);
+        const double radius = cylinder.getRadius();
+        volume = SIMD_PI * radius * radius * 2 * cylinder.getHalfExtentsWithMargin()[cylinder.getUpAxis()];
+    } else if (entry.has_exact_mass_properties) {
+        volume = entry.mass_properties.mass;
+    } else {
+        throw std::runtime_error("Default physics mass requires a primitive or a closed convex volume.");
+    }
+    // HP_Shape_BuildMassProperties uses 1000 kg/m3 when no density is set.
+    return static_cast<float>(volume * 1000);
 }
 
 PhysicsMassProperties physics_shape_build_mass_properties(

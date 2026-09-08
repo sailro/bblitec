@@ -29,7 +29,7 @@ int main() {
     assert(!cast.empty());
     assert(physics_world_collect_shape_proximity(world, capsule, pose, .15, false, bodies[3], 1).size() == 1);
     assert(physics_world_collect_shape_cast(world, capsule, pose.rotation, pose.position, {2, .9, 0}, false, bodies[3], 1).size() == 1);
-    std::cout << '[';
+    std::cout << "{\"queries\":[";
     bool first_query = true;
     for (const auto& hits : {proximity, cast}) {
         if (!first_query) std::cout << ',';
@@ -48,7 +48,20 @@ int main() {
         }
         std::cout << ']';
     }
-    std::cout << "]\n";
+    std::cout << "],\"defaultMasses\":[";
+    bool first_mass = true;
+    for (const auto& shape : {capsule,
+        physics_shape_create_box({0,0,0}, {0,0,0,1}, {2,3,4}),
+        physics_shape_create_sphere({0,0,0}, .5)}) {
+        if (!first_mass) std::cout << ',';
+        first_mass = false;
+        std::cout << physics_shape_default_mass(shape);
+    }
+    std::cout << "]}\n";
+    bool flat_default_rejected = false;
+    try { static_cast<void>(physics_shape_default_mass(physics_shape_create_box({0,0,0}, {0,0,0,1}, {2,0,4}))); }
+    catch (const std::runtime_error&) { flat_default_rejected = true; }
+    assert(flat_default_rejected);
     physics_shape_set_trigger(box, true);
     const auto no_triggers = physics_world_collect_shape_proximity(world, capsule, pose, .15, false, bodies[3], 16);
     assert(std::all_of(no_triggers.begin(), no_triggers.end(), [&](const auto& hit) { return hit.body_identity == bodies[0].value; }));
@@ -61,5 +74,18 @@ int main() {
         assert(std::abs(properties.center_of_mass[i] - authored.center_of_mass[i]) < 1e-7);
         assert(std::abs(properties.inertia[i] - authored.inertia[i]) < 1e-7);
     }
+    auto locked = authored;
+    locked.inertia = {0,0,0};
+    physics_body_set_mass_properties(bodies[3], locked);
+    assert((physics_body_get_mass_properties(bodies[3]).inertia == std::array<double,3>{0,0,0}));
+    auto stale = bodies[3];
+    bool live_release_rejected = false;
+    try { physics_body_release(stale); } catch (const std::runtime_error&) { live_release_rejected = true; }
+    assert(live_release_rejected);
+    physics_world_remove_body(world, stale);
+    physics_body_release(stale);
+    bool stale_rejected = false;
+    try { static_cast<void>(physics_body_get_mass_properties(bodies[3])); } catch (const std::runtime_error&) { stale_rejected = true; }
+    assert(stale_rejected);
     physics_world_release(world);
 }

@@ -48,6 +48,7 @@ export type HandleKind =
   | "material"
   | "physics-body"
   | "physics-viewer"
+  | "physics-character-controller"
   | "physics-shape"
   | "billboard-sprite"
   | "billboard-system"
@@ -93,6 +94,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   material: "bbl::MaterialHandle",
   "physics-body": "bbl::upstream::PhysicsBody",
   "physics-viewer": "bbl::upstream::PhysicsViewerHandle",
+  "physics-character-controller": "std::shared_ptr<bbl::character::PhysicsCharacterController>",
   "physics-shape": "bbl::upstream::PhysicsShape",
   "billboard-sprite": "bbl::BillboardSpriteHandle",
   "billboard-system": "bbl::BillboardSystemHandle",
@@ -147,6 +149,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   Material: "material",
   PhysicsBody: "physics-body",
   PhysicsViewer: "physics-viewer",
+  PhysicsCharacterController: "physics-character-controller",
   PhysicsShape: "physics-shape",
   ShaderMaterial: "material",
   Sprite2DLayer: "sprite-layer",

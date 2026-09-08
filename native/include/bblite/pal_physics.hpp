@@ -357,6 +357,8 @@ void physics_shape_set_trigger(
 
 /** `HP_Body_Create`. */
 [[nodiscard]] PhysicsBodyHandle physics_body_create();
+/** `HP_Body_Release` after removal; outstanding handle copies become invalid. */
+void physics_body_release(PhysicsBodyHandle body);
 /** `HP_Body_SetMotionType`, taking the back end's own motion type. */
 void physics_body_set_motion_type(
     PhysicsBodyHandle body,
@@ -385,6 +387,8 @@ void physics_body_set_target_transform(
 [[nodiscard]] PhysicsMassProperties physics_shape_build_mass_properties(
     PhysicsShapeHandle shape,
     double mass);
+/** Solver default density applied to a represented primitive's authored volume. */
+[[nodiscard]] double physics_shape_default_mass(PhysicsShapeHandle shape);
 
 /** `HP_Body_SetMassProperties`. */
 void physics_body_set_mass_properties(

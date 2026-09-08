@@ -1793,6 +1793,25 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
 
   public lowerPhysics(includeQueries = false, containerShapes = false, includeViewer = false, includeConstraints = false, includeHeightfield = false): LoweredSource {
     this.assertPinnedContracts();
+    const massSetter = this.context.functionDeclaration(havokModule, "setPhysicsBodyMassProperties").declaration;
+    this.context.assertStatementShapes(massSetter, massSetter.body!.statements, `
+      const massProps = buildMassProperties(world, body);
+      if (properties.centerOfMass) { massProps[0] = [properties.centerOfMass.x, properties.centerOfMass.y, properties.centerOfMass.z]; }
+      if (properties.mass !== undefined) { massProps[1] = properties.mass; }
+      if (properties.inertia) { massProps[2] = [properties.inertia.x, properties.inertia.y, properties.inertia.z]; }
+      if (properties.inertiaOrientation) { massProps[3] = [properties.inertiaOrientation.x, properties.inertiaOrientation.y, properties.inertiaOrientation.z, properties.inertiaOrientation.w]; }
+      body._massPropertiesTransform?.(massProps);
+      world._hknp.HP_Body_SetMassProperties(body._hkBody, massProps);
+    `, "physics mass override order, tuple slots and PAL write");
+    const removeBody = this.context.functionDeclaration(havokModule, "removePhysicsBody").declaration;
+    this.context.assertStatementShapes(removeBody, removeBody.body!.statements, `
+      const { _hknp: hknp, _hkWorld: hkWorld, _bodies: bodies } = world;
+      const i = bodies.indexOf(body);
+      if (i < 0) { return; }
+      bodies.splice(i, 1);
+      hknp.HP_World_RemoveBody(hkWorld, body._hkBody);
+      hknp.HP_Body_Release(body._hkBody);
+    `, "physics body removal and release order");
     const queries = includeQueries ? lowerPhysicsQueries(this.context) : undefined;
     const container = containerShapes ? lowerPhysicsContainer(this.context) : undefined;
     const viewer = includeViewer ? lowerPhysicsViewer(this.context) : undefined;
@@ -1954,16 +1973,13 @@ ${shapeParameterLanes("options")}
  * Each member overrides one term of what the shape derives, so an absent
  * lane keeps the derived one -- the pin's own \`if (properties.x)\` arms.
  *
- * \`inertia\` and \`inertiaOrientation\` have no lane and the intrinsic
- * refuses them: Havok's inertia term is per unit mass and this PAL's is the
- * absolute tensor, and no corpus scene writes either. \`mass\` is not a
- * nullable for a related reason -- an omitted one leaves Havok's own
- * volume-times-density mass on the body, which a solver taking a mass
- * rather than a density derives no equivalent of.
+ * Inertia overrides are per unit mass in the pin and converted to the
+ * PAL's absolute tensor. An absent mass uses the solver's default density.
  */
 struct PhysicsMassPropertyOverrides {
     js::Nullable<Vec3d> center_of_mass{};
-    double mass = 0.0;
+    js::Nullable<double> mass{};
+    js::Nullable<Vec3d> inertia{};
 };
 
 /**
@@ -2242,6 +2258,12 @@ void set_physics_body_mass_properties(
     PhysicsWorldHandle world,
     PhysicsBody body,
     const PhysicsMassPropertyOverrides& properties);
+[[nodiscard]] PhysicsWorld& physics_world_state(PhysicsWorldHandle world);
+[[nodiscard]] PhysicsBody& owning_body_record(PhysicsBody body);
+[[nodiscard]] double physics_world_step_seconds(PhysicsWorldHandle world);
+[[nodiscard]] std::array<float, 16> physics_body_world_matrix(PhysicsBody body);
+[[nodiscard]] std::string physics_body_node_name(PhysicsBody body);
+void remove_physics_body(PhysicsWorldHandle world, PhysicsBody body);
 void set_physics_shape_material(
     PhysicsWorldHandle world,
     PhysicsShape shape,
@@ -3070,13 +3092,18 @@ void set_physics_body_mass_properties(
     // a mass where Havok derives one from a density and scales its own
     // per-unit-mass term by the mass scalar afterwards -- the same
     // absolute tensor, asked for the other way round.
+    const double mass = overrides.mass ? *overrides.mass : pal::physics_shape_default_mass(live.shape.handle);
     pal::PhysicsMassProperties properties =
         pal::physics_shape_build_mass_properties(
-            live.shape.handle, overrides.mass);
-    properties.mass = overrides.mass;
+            live.shape.handle, mass);
+    properties.mass = mass;
     if (overrides.center_of_mass) {
         const Vec3d& center = *overrides.center_of_mass;
         properties.center_of_mass = {center.x, center.y, center.z};
+    }
+    if (overrides.inertia) {
+        const Vec3d& inertia = *overrides.inertia;
+        properties.inertia = {inertia.x * mass, inertia.y * mass, inertia.z * mass};
     }
     pal::physics_body_set_mass_properties(live.handle, properties);
 }
@@ -3117,6 +3144,31 @@ PhysicsBody& owning_body_record(PhysicsBody body) {
         return physics_body_record(*world, body);
     }
     throw std::runtime_error("Physics body has no live engine owner.");
+}
+
+PhysicsWorld& physics_world_state(PhysicsWorldHandle handle) { return physics_world_record(handle); }
+double physics_world_step_seconds(PhysicsWorldHandle handle) { return world_step_seconds(physics_world_record(handle)); }
+std::array<float, 16> physics_body_world_matrix(PhysicsBody body) {
+    const auto& live = owning_body_record(body);
+    const auto& engine = *live.owner.lock()->engine;
+    return live.node.kind == PhysicsNodeKind::mesh
+        ? mesh_world_matrix(engine, engine.meshes.at(live.node.value))
+        : transform_node_world(engine, TransformNodeHandle{live.node.value});
+}
+std::string physics_body_node_name(PhysicsBody body) {
+    const auto& live = owning_body_record(body);
+    const auto& engine = *live.owner.lock()->engine;
+    return live.node.kind == PhysicsNodeKind::mesh
+        ? engine.meshes.at(live.node.value).name
+        : engine.transform_nodes.at(live.node.value).name;
+}
+void remove_physics_body(PhysicsWorldHandle handle, PhysicsBody body) {
+    auto& world = physics_world_record(handle);
+    const auto found = std::find(world.bodies.begin(), world.bodies.end(), body);
+    if (found == world.bodies.end()) return;
+    world.bodies.erase(found);
+    pal::physics_world_remove_body(world.handle, body.handle);
+    pal::physics_body_release(body.handle);
 }
 
 /**

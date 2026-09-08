@@ -25,7 +25,9 @@ export function characterTransportSchema(context: LoweringContext): Pick<Referen
             if (!ts.isVariableStatement(node) || node.declarationList.declarations.length !== 1) return;
             const declaration = node.declarationList.declarations[0]!;
             if (!ts.isIdentifier(declaration.name) || declaration.name.text !== "hknp") return;
-            context.assertStatementShapes(node, [node], "const hknp = this._world._hknp;", "character solver module binding");
+            if (declaration.initializer?.getText(declaration.getSourceFile()) === "world._hknp")
+                context.assertStatementShapes(node, [node], "const hknp = world._hknp;", "character constructor solver binding");
+            else context.assertStatementShapes(node, [node], "const hknp = this._world._hknp;", "character solver module binding");
             return `${indent}// The solver module is the native PAL.`;
         },
         expression(node, _expected, lowerer) {
@@ -48,6 +50,8 @@ export function characterTransportSchema(context: LoweringContext): Pick<Referen
                     const call = node.expression, path = call.expression.getText(call.getSourceFile());
                     const name = (call.expression as ts.PropertyAccessExpression).name.text;
                     if (!path.startsWith("hknp.HP_") && !path.startsWith("this._world._hknp.HP_")) return;
+                    if (name === "HP_QueryCollector_Create" && call.arguments.length === 1)
+                        return { cpp: `_create_collector(${lowerer.expression(call.arguments[0]!).cpp})`, type: "QueryCollector" };
                     if (name === "HP_QueryCollector_GetNumHits" && call.arguments.length === 1)
                         return { cpp: `static_cast<double>(${collector(call.arguments[0]!)}.size())`, type: "number" };
                     if (["HP_QueryCollector_GetShapeCastResult", "HP_QueryCollector_GetShapeProximityResult"].includes(name) && call.arguments.length === 2)
@@ -72,6 +76,17 @@ export function characterTransportSchema(context: LoweringContext): Pick<Referen
                     return { cpp: "_world_step_seconds()", type: "number" };
                 if (path === "hknp.HP_Body_ApplyImpulse" && node.arguments.length === 3)
                     return { cpp: `_apply_impulse(${bodyArgument(node.arguments[0]!, lowerer).cpp}, ${lowerer.expression(node.arguments[1]!, "number[]").cpp}, ${lowerer.expression(node.arguments[2]!, "number[]").cpp})`, type: "void" };
+                if (["hknp.HP_QueryCollector_Release", "this._world._hknp.HP_QueryCollector_Release"].includes(path) && node.arguments.length === 1) {
+                    collector(node.arguments[0]!);
+                    return { cpp: `_release_collector(${lowerer.expression(node.arguments[0]!).cpp})`, type: "void" };
+                }
+                if (["hknp.HP_Shape_Release", "this._world._hknp.HP_Shape_Release"].includes(path) && node.arguments.length === 1) {
+                    const handle = node.arguments[0]!;
+                    if (!ts.isPropertyAccessExpression(handle) || handle.name.text !== "_hkShape") return context.contractError(handle, "Character release requires its shape handle.");
+                    const shape = lowerer.expression(handle.expression);
+                    if (shape.type !== "PhysicsShape") return context.contractError(handle, "Character shape release has an unrepresented owner.");
+                    return { cpp: `_release_shape(${shape.cpp})`, type: "void" };
+                }
             }
         },
     };

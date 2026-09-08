@@ -1047,6 +1047,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/physics/havok-queries.ts shapeProximity + shapeCast",
         consumers: CMAKE,
     },
+    "physics:character-controller": {
+        provenance: "src/physics/character-controller.ts PhysicsCharacterController over Havok query collectors",
+        consumers: CMAKE,
+    },
     "physics:container": {
         provenance: "src/physics/havok.ts createPhysicsShape + addPhysicsShapeChildFromParent",
         consumers: CMAKE,

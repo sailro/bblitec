@@ -181,6 +181,7 @@ export const featureSources: Record<Feature, string[]> = {
     "physics:world": ["src/pal_physics_bullet.cpp"],
     "physics:aggregate": [],
     "physics:queries": [],
+    "physics:character-controller": [],
     "physics:container": [],
     "physics:viewer": ["src/pal_physics_debug.cpp"],
     "physics:constraints": [],
@@ -430,7 +431,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
     // The rigid-body family: main.cpp calls the generated world and
     // aggregate factories by name.
     const physicsInclude = features.includes("physics:world")
-        ? "#include <bblite/upstream/physics.hpp>\n"
+        ? "#include <bblite/upstream/physics.hpp>\n" + (features.includes("physics:character-controller") ? "#include <bblite/upstream/character_controller.hpp>\n" : "")
         : "";
     // The navigation family: main.cpp reaches the generated plugin,
     // navmesh build, debug geometry and raycast by name.

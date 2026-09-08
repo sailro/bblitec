@@ -32,6 +32,7 @@ export class PinnedReferenceLowerer {
         if (alias) return alias;
         if (node.kind === ts.SyntaxKind.NumberKeyword) return "number";
         if (node.kind === ts.SyntaxKind.BooleanKeyword) return "boolean";
+        if (node.kind === ts.SyntaxKind.StringKeyword) return "string";
         if (node.kind === ts.SyntaxKind.VoidKeyword) return "void";
         if (ts.isArrayTypeNode(node)) return `${this.type(node.elementType)}[]`;
         if (ts.isParenthesizedTypeNode(node)) return this.type(node.type);
@@ -52,6 +53,7 @@ export class PinnedReferenceLowerer {
     public storage(type: string): string {
         if (type === "number") return "double";
         if (type === "boolean") return "bool";
+        if (type === "string") return "std::string";
         if (type === "void") return "void";
         if (type.startsWith("optional:")) return `std::optional<${this.storage(type.slice(9))}>`;
         const tuple = tupleTypes(type);
@@ -145,6 +147,7 @@ export class PinnedReferenceLowerer {
         const adapted = this.schema.expression?.(node, expected, this);
         if (adapted) return adapted;
         if (ts.isNumericLiteral(node)) return { cpp: doubleLiteral(Number(node.text)), type: "number" };
+        if (ts.isStringLiteral(node)) return { cpp: JSON.stringify(node.text), type: "string" };
         if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword)
             return { cpp: node.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false", type: "boolean" };
         if (node.kind === ts.SyntaxKind.NullKeyword && expected && (this.schema.records.has(expected) || expected.startsWith("optional:"))) return { cpp: `${this.storage(expected)}{}`, type: expected };

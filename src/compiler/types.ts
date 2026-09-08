@@ -1386,6 +1386,8 @@ export type ValueKind =
   | "physics-viewer"
   | "physics-aggregate"
   | "physics-body"
+  | "physics-character-controller"
+  | "physics-character-observable"
   | "physics-shape"
   | "property-animation-group"
   /** Callback-local platform keyboard data; it has no storable JS shape. */
@@ -2522,6 +2524,7 @@ export type Feature =
   | "physics:world"
   | "physics:aggregate"
   | "physics:queries"
+  | "physics:character-controller"
   | "physics:container"
   | "physics:viewer"
   | "physics:constraints"

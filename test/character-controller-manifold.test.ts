@@ -20,7 +20,7 @@ const body = (id: number, motionType: number) => ({ _hkBody: [id], motionType, n
 const hit = (value: number, id: number, point: Vector, normal: Vector) => [value, null, [[id], null, null, lanes(point), lanes(normal)]];
 const cppHit = (value: number, id: number, point: Vector, normal: Vector) => `hit(${doubleLiteral(value)},${id},${cppVector(point)},${cppVector(normal)})`;
 
-function pinned() {
+function pinned(initial = vector(), options: { capsuleHeight?: number; capsuleRadius?: number } = { capsuleHeight: 1.8, capsuleRadius: .6 }) {
     const store = new UpstreamSourceStore();
     const evaluate = (module: string, imports: object) => {
         const output = ts.transpileModule(store.getSource(module), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -29,11 +29,13 @@ function pinned() {
         return exports;
     };
     const inverse = evaluate("src/math/mat4-invert.ts", { allocateMat4: () => new Float32Array(16) });
-    const world: any = { _bodies: [], dt: 1 / 60, proximity: [], casts: [], events: [], queries: [] };
+    const world: any = { _bodies: [], dt: 1 / 60, proximity: [], casts: [], events: [], queries: [], lifecycle: [], collectors: new Map() };
     const lookup = (id: number[]) => world._bodies.find((b: any) => b._hkBody[0] === id[0]);
     let collector = 0;
     world._hknp = {
-        HP_QueryCollector_Create: () => [0, collector++],
+        HP_QueryCollector_Create: (capacity: number) => { world.lifecycle.push(9, capacity); world.collectors.set(collector, capacity); return [0, collector++]; },
+        HP_QueryCollector_Release: (id: number) => { world.lifecycle.push(10, world.collectors.get(id)); world.collectors.set(id, 0); },
+        HP_Shape_Release: (shape: any) => { world.lifecycle.push(8, shape.height); shape.released = true; },
         HP_QueryCollector_GetNumHits: (id: number) => [0, (id === 0 ? world.proximity : world.casts).length],
         HP_QueryCollector_GetShapeProximityResult: (_id: number, i: number) => [0, world.proximity[i]],
         HP_QueryCollector_GetShapeCastResult: (_id: number, i: number) => [0, world.casts[i]],
@@ -47,12 +49,22 @@ function pinned() {
     const position = vector();
     const exports = evaluate(characterControllerModule, {
         ...inverse, worldStepSeconds: () => world.dt,
-        createTransformNode: () => ({ position: { set(x: number, y: number, z: number) { Object.assign(position, { x, y, z }); } } }),
-        createPhysicsShape: () => ({}), createPhysicsBody: () => ({ _hkBody: [0] }),
-        setPhysicsBodyShape() {}, setPhysicsBodyMassProperties() {}, setPhysicsBodyPreStep() {},
+        createTransformNode: (_name: string, x: number, y: number, z: number) => {
+            world.lifecycle.push(2,x,y,z); Object.assign(position, { x,y,z });
+            return { position: { set(x: number, y: number, z: number) { Object.assign(position, { x, y, z }); } } };
+        },
+        createPhysicsShape: (_world: any, shape: any) => {
+            const p = shape.parameters, height = p.pointA.y - p.pointB.y + 2*p.radius;
+            world.lifecycle.push(1,height,p.radius); return { _hkShape: { height, radius: p.radius, released: false } };
+        },
+        createPhysicsBody: (_world: any, node: any, motion: number) => { world.lifecycle.push(3,motion); const result={ _hkBody:[0], node }; world._bodies.push(result); return result; },
+        setPhysicsBodyShape(_world: any, _body: any, shape: any) { world.lifecycle.push(4,shape._hkShape.height); },
+        setPhysicsBodyMassProperties(_world: any, _body: any, properties: any) { world.lifecycle.push(5,...lanes(properties.inertia)); },
+        setPhysicsBodyPreStep(_body: any, enabled: boolean) { world.lifecycle.push(6,Number(enabled)); },
+        removePhysicsBody(_world: any, body: any) { world.lifecycle.push(7); world._bodies.splice(world._bodies.indexOf(body), 1); },
         PhysicsShapeType: { CAPSULE: 3 }, PhysicsMotionType: { STATIC: 0, ANIMATED: 1, DYNAMIC: 2 },
     });
-    const kernel = new exports.PhysicsCharacterController(world, vector(), { capsuleHeight: 1.8, capsuleRadius: .6 });
+    const kernel = new exports.PhysicsCharacterController(world, initial, options);
     kernel.onTriggerCollisionObservable.add((event: any) => world.events.push(0, event.collider._hkBody[0], ...lanes(event.impulsePosition), ...lanes(event.impulse)));
     return { kernel, world, position };
 }
@@ -115,6 +127,41 @@ test("manifold updates, dynamic impulses, support and moving-body tracking match
         }
         runs.push("}");
     }
+    for (const options of [{}, { capsuleHeight: 2.4 }, { capsuleRadius: .35 }, { capsuleHeight: 2.2, capsuleRadius: .4 }]) {
+        const initial = vector(3,4,5);
+        const { kernel, world, position } = pinned(initial, options);
+        const retainedPosition = kernel.getPosition(), retainedVelocity = kernel.getVelocity();
+        const snapshot = () => expected.push([
+            ...lanes(kernel.getPosition()), ...lanes(kernel.getVelocity()), ...lanes(position),
+            kernel._shape._hkShape.height, kernel._shape._hkShape.radius, Number(kernel._shape._hkShape.released),
+            world.collectors.get(kernel._startCollector), world.collectors.get(kernel._castCollector), world._bodies.length,
+            Number(retainedPosition === kernel.getPosition()), Number(retainedVelocity === kernel.getVelocity()), ...world.lifecycle,
+        ]);
+        runs.push(`{Kernel kernel;auto options=js::make_ref<PhysicsCharacterControllerOptions>();
+            ${"capsuleHeight" in options ? `options->capsuleHeight=${doubleLiteral(options.capsuleHeight!)};` : ""}
+            ${"capsuleRadius" in options ? `options->capsuleRadius=${doubleLiteral(options.capsuleRadius!)};` : ""}
+            auto initial=v(3,4,5);kernel.initialize(js::make_ref<PhysicsWorld>(),initial,options);
+            auto retainedPosition=kernel.getPosition(),retainedVelocity=kernel.getVelocity();
+            auto snapshot=[&](){js::Array<double> row;append(row,kernel.getPosition());append(row,kernel.getVelocity());append(row,kernel.node);
+                for(double value:{kernel._shape->height,kernel._shape->radius,kernel._shape->released?1.0:0.0,kernel._startCollector->capacity,kernel._castCollector->capacity,static_cast<double>(kernel.bodies.size()),retainedPosition==kernel.getPosition()?1.0:0.0,retainedVelocity==kernel.getVelocity()?1.0:0.0})row.push_back(value);
+                for(double value:kernel.lifecycle)row.push_back(value);print(row);};
+            initial->x=99;snapshot();`);
+        initial.x = 99; snapshot();
+        kernel.setVelocity(vector(1,2,3)); kernel.setPosition(vector(-1,2,4));
+        const oldShape = kernel._shape;
+        kernel.setShapeOptions({ capsuleHeight: 1.2, capsuleRadius: .3 });
+        assert.equal(oldShape._hkShape.released, true);
+        snapshot();
+        runs.push(`kernel.setVelocity(v(1,2,3));kernel.setPosition(v(-1,2,4));auto oldShape=kernel._shape;
+            auto crouch=js::make_ref<PhysicsCharacterControllerOptions>();crouch->capsuleHeight=1.2;crouch->capsuleRadius=.3;kernel.setShapeOptions(crouch);
+            if(!oldShape->released)throw std::runtime_error("Replaced capsule must be released.");snapshot();`);
+        kernel.up = vector(.2,.7,-.4); kernel.setShapeOptions({ capsuleHeight: 2.4 }, false); snapshot();
+        runs.push(`kernel.up=v(.2,.7,-.4);auto stand=js::make_ref<PhysicsCharacterControllerOptions>();stand->capsuleHeight=2.4;kernel.setShapeOptions(stand,false);snapshot();`);
+        kernel.setShapeOptions({}); snapshot();
+        runs.push("kernel.setShapeOptions(js::make_ref<PhysicsCharacterControllerOptions>());snapshot();");
+        kernel.dispose(); snapshot();
+        runs.push("kernel.dispose();snapshot();}");
+    }
     writeFileSync(join(output, "check.cpp"), `#include "character-controller-kernel-check.hpp"\nint main(){std::cout<<std::setprecision(17)<<'[';\n${runs.join("\n")}\nstd::cout<<"]\\n";}\n`);
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/I", "native/include", "/I", "test/fixtures", "/I", output, `/Fo:${output}\\`, `/Fe:${executable}`, join(output, "check.cpp")]);
@@ -140,5 +187,5 @@ test("character collector mappings reject changed ownership, result slots and qu
         ["if (!castOnly) {", "if (castOnly) {"],
         ["v(cp[4][0], cp[4][1], cp[4][2])", "v(cp[2][0], cp[2][1], cp[2][2])"],
         ["const hknp = this._world._hknp;\n        const numProximityHits", "const hknp = this._world.otherSolver;\n        const numProximityHits"],
-    ]) assert.throws(() => lowerCharacterControllerKernel(new LoweringContext(new EditedStore(from!, to!)), true), undefined, from);
+    ]) assert.throws(() => lowerCharacterControllerKernel(new LoweringContext(new EditedStore(from!, to!)), true), { message: /.+/ }, from);
 });

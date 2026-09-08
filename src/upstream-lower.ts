@@ -35,6 +35,7 @@ import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.
 import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
 import { physicsDebugCatalogPath, renderPhysicsDebugCatalog } from "./physics-debug-catalog.js";
+import { characterControllerHeader } from "./lowering/character-controller-runtime.js";
 import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { PickingLowerer } from "./lowering/picking-lowerer.js";
@@ -2561,6 +2562,9 @@ ${composed.wgsl}`,
                     header: "", source: renderPhysicsDebugCatalog([]),
                 }, generated);
             }
+        }
+        if (features.includes("physics:character-controller")) {
+            this.tree.write("upstream/include/bblite/upstream/character_controller.hpp", characterControllerHeader(context));
         }
         if (
             features.includes("mesh:tube") ||

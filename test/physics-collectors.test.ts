@@ -22,9 +22,10 @@ test("shape collectors preserve Havok capsule features, mesh edges, body identit
         `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
         "BulletDynamics.lib", "BulletCollision.lib", "LinearMath.lib",
     ]);
-    const native: number[][][] = JSON.parse(execFileSync(executable, {
+    const actual: { queries: number[][][]; defaultMasses: number[] } = JSON.parse(execFileSync(executable, {
         encoding: "utf8", env: { ...tools!.environment, PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools!.environment.PATH ?? ""}` },
     }));
+    const native = actual.queries;
     const require = createRequire(import.meta.url);
     const hp = await HavokPhysics({ wasmBinary: new Uint8Array(readFileSync(require.resolve("@babylonjs/havok/lib/esm/HavokPhysics.wasm"))).buffer });
     const world = hp.HP_World_Create()[1];
@@ -38,6 +39,8 @@ test("shape collectors preserve Havok capsule features, mesh edges, body identit
     const bodies: HP_BodyId[] = [];
     const collector = hp.HP_QueryCollector_Create(16)[1];
     const reference: number[][][] = [];
+    const massShapes = [capsule, hp.HP_Shape_CreateBox([0,0,0], [0,0,0,1], [2,3,4])[1], hp.HP_Shape_CreateSphere([0,0,0], .5)[1]];
+    const referenceMasses = massShapes.map(shape => hp.HP_Shape_BuildMassProperties(shape)[1][1]);
     try {
         hp.HP_World_SetGravity(world, [0, 0, 0]);
         const positions: Vector3[] = [[0, 0, 0], [.75, 1, 0], [-.75, 1, 0], [0, .9, 0]];
@@ -60,6 +63,7 @@ test("shape collectors preserve Havok capsule features, mesh edges, body identit
         hp.HP_QueryCollector_Release(collector);
         for (const body of bodies) { hp.HP_World_RemoveBody(world, body); hp.HP_Body_Release(body); }
         for (const shape of [capsule, box, floor]) hp.HP_Shape_Release(shape);
+        for (const shape of massShapes.slice(1)) hp.HP_Shape_Release(shape);
         hp.HP_World_Release(world);
     }
     assert.deepEqual(native.map(hits => hits.length), reference.map(hits => hits.length));
@@ -67,4 +71,7 @@ test("shape collectors preserve Havok capsule features, mesh edges, body identit
     const maxError = Math.max(...errors.flat(2));
     writeFileSync(join(output, "comparison.json"), JSON.stringify({ native, reference, maxError }, null, 2) + "\n");
     assert(maxError < 1e-5, `Collector feature error ${maxError}`);
+    const massErrors = actual.defaultMasses.map((mass, i) => Math.abs(mass - referenceMasses[i]!) / Math.max(1, referenceMasses[i]!));
+    writeFileSync(join(output, "mass-properties.json"), JSON.stringify({ actual: actual.defaultMasses, reference: referenceMasses, relativeErrors: massErrors }, null, 2) + "\n");
+    assert(Math.max(...massErrors) < 1e-6, "Default shape mass must preserve Havok density and authored volume.");
 });

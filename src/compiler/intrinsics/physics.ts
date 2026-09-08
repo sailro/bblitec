@@ -15,6 +15,7 @@
 // are. A native build links a solver through `pal_physics_*.cpp` and never
 // sees the WASM the browser loaded.
 import ts from "typescript";
+import { characterVectorValue } from "./character-controller.js";
 import type { CompilerSymbols } from "../symbols.js";
 import { isDataTuple, tupleComponents, type DataTypeRegistry } from "../data-types.js";
 import {
@@ -1115,8 +1116,9 @@ function compileShapeParameters(
 
 /** The generated info record one pinned physics event stream hands over. */
 export function physicsEventInfoType(
-  event: "collision" | "trigger",
+  event: "collision" | "trigger" | "character",
 ): string {
+  if (event === "character") return "bbl::character::CharacterCollisionEvent";
   return event === "collision"
     ? "bbl::upstream::PhysicsCollisionInfo"
     : "bbl::upstream::PhysicsTriggerInfo";
@@ -1132,9 +1134,14 @@ export function physicsEventInfoType(
  * browser compares.
  */
 export function physicsEventInfoValue(
-  event: "collision" | "trigger",
+  event: "collision" | "trigger" | "character",
   cpp: string,
 ): Value {
+  if (event === "character") return { kind: "record", cpp: "", recordProperties: {
+    collider: { kind: "physics-body", cpp: `${cpp}.collider->value` },
+    impulse: characterVectorValue(`${cpp}.impulse`),
+    impulsePosition: characterVectorValue(`${cpp}.impulsePosition`),
+  } };
   const type = (name: string): Value => ({
     kind: "data",
     cpp: `std::string(bbl::upstream::${name}(${cpp}.type))`,
@@ -1288,26 +1295,16 @@ function compileBodyEnum(
  * an omitted one stays absent and the generated setter keeps the derived
  * term -- the same treatment the aggregate's friction and restitution get.
  *
- * `inertia` and `inertiaOrientation` are absent, and a scene naming one
- * refuses rather than shipping a number in the wrong units. Havok's inertia
- * term is PER UNIT MASS: two identical boxes handed the same tensor and the
- * same angular impulse spin at 0.707 and 0.177 rad/s when only the mass
- * scalar differs by four. `pal::PhysicsMassProperties::inertia` is the
- * absolute tensor Bullet's `setMassProps` takes, and no corpus scene writes
- * either member, so neither conversion has an observer.
+ * Inertia values are per unit mass; the generated setter converts them to
+ * the PAL's absolute tensor after resolving the optional mass.
  */
-const MASS_PROPERTIES = ["centerOfMass", "mass"] as const;
+const MASS_PROPERTIES = ["centerOfMass", "mass", "inertia"] as const;
 
 /**
  * `setPhysicsBodyMassProperties`'s overrides, as the generated setter
  * receives them.
  *
- * `mass` is required here although the pinned member is optional: an
- * omitted one leaves the body wearing the mass Havok's own
- * `HP_Shape_BuildMassProperties` derives from the shape's volume and its
- * default density (measured 4000 for the 1x4x1 box the reached scene
- * builds, i.e. 1000 kg/m3), and the PAL derives no equivalent -- Bullet
- * asks for a mass rather than a density. A scene omitting it refuses.
+ * Omitted fields retain the shape-derived values in the generated setter.
  */
 function compileMassProperties(
   context: PhysicsIntrinsicContext,
@@ -1319,18 +1316,15 @@ function compileMassProperties(
     object,
     MASS_PROPERTIES,
     "A physics mass property outside this prototype's reached slice " +
-      `(${MASS_PROPERTIES.join(", ")}). Havok's own inertia term is per ` +
-      "unit mass while the PAL's is the absolute tensor, and no corpus " +
-      "scene writes `inertia` or `inertiaOrientation`, so neither " +
-      "conversion has an observer.",
+      `(${MASS_PROPERTIES.join(", ")}). Inertia orientation requires its pinned frame projection.`,
   );
-  const mass = requiredObjectNumber(context, object, "mass", "double");
+  const mass = compileNullableNumber(context, context.objectProperty(object, "mass"));
   const center = compileNullableVec3(
     context,
     context.objectProperty(object, "centerOfMass"),
   );
   return (
-    `bbl::upstream::PhysicsMassPropertyOverrides{${center}, ${mass}}`
+    `bbl::upstream::PhysicsMassPropertyOverrides{${center}, ${mass}, ${compileNullableVec3(context, context.objectProperty(object, "inertia"))}}`
   );
 }
 

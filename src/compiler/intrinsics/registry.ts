@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { compileCharacterIntrinsic } from "./character-controller.js";
 import {
     compileAnimationIntrinsic,
     type AnimationIntrinsicContext,
@@ -171,6 +172,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileEffectIntrinsic,
     compileParticleIntrinsic,
     compilePhysicsIntrinsic,
+    compileCharacterIntrinsic,
     compileNavigationIntrinsic,
     compileAudioIntrinsic,
     compilePickingIntrinsic,

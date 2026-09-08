@@ -310,6 +310,7 @@ import {
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
 import type { CompiledTextData } from "./pinned-text-data.js";
 import { readFrozenParticleProperty } from "./compiler/particle-buffer.js";
+import { compileCharacterMethod, readCharacterProperty } from "./compiler/intrinsics/character-controller.js";
 import {
     physicsEventInfoType,
     physicsEventInfoValue,
@@ -829,7 +830,7 @@ class Compiler
      */
     private readonly deferredPhysicsCallbacks: Array<{
         /** Which pinned event stream the handler is registered on. */
-        event: "collision" | "trigger";
+        event: "collision" | "trigger" | "character";
         callback: ts.Identifier | ts.ArrowFunction | ts.FunctionExpression;
         cppName: string;
         eventName: string;
@@ -15227,6 +15228,14 @@ class Compiler
     /** Platform-backed browser APIs that remain ordinary expression values. */
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
         const callee = this.unwrap(call.expression);
+        if (ts.isPropertyAccessExpression(callee)) {
+            const typeName = this.checker.getTypeAtLocation(callee.expression).getSymbol()?.getName();
+            if (typeName === "PhysicsCharacterController" || typeName === "CharacterCollisionObservable") {
+                const owner = this.compileValue(callee.expression);
+                const result = compileCharacterMethod(this, call, owner, callee.name.text);
+                if (result) return result;
+            }
+        }
         if (ts.isPropertyAccessExpression(callee) && callee.name.text === "addEventListener" &&
             !this.isBrowserOnlyExpression(callee.expression)) {
             const owner = this.compileValue(callee.expression);
@@ -17415,6 +17424,11 @@ class Compiler
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        const character = readCharacterProperty(owner, expression.name.text);
+        if (character) return character;
+        if (owner.kind === "physics-body" && expression.name.text === "node") {
+            return { kind: "record", cpp: "", recordProperties: { name: { kind: "string", cpp: `bbl::upstream::physics_body_node_name(${owner.cpp})`, dataType: { kind: "string" } } } };
+        }
         const staticProperty = owner.recordProperties?.[expression.name.text];
         if (staticProperty) {
             // A materialized record can still carry an exact value for a
@@ -18792,6 +18806,9 @@ class Compiler
     public compilePhysicsTriggerCallback(expression: ts.Expression): string {
         return this.compilePhysicsEventCallback(expression, "trigger");
     }
+    public compilePhysicsCharacterCallback(expression: ts.Expression): string {
+        return this.compilePhysicsEventCallback(expression, "character");
+    }
 
     /**
      * A handler on one of the two pinned physics event streams.
@@ -18804,7 +18821,7 @@ class Compiler
      */
     private compilePhysicsEventCallback(
         expression: ts.Expression,
-        event: "collision" | "trigger",
+        event: "collision" | "trigger" | "character",
     ): string {
         const callback = this.unwrap(expression);
         if (
