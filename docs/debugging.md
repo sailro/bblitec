@@ -107,6 +107,7 @@ state numerically when a missing small object or changed buffer could pass an im
 | Animation manager / emitter | `scene153`, `scene153-live`, `scene302`, `scene302-live`: frozen registry tree against the live twin; `scene231`, `scene241`: palette/texture animation and orbit. |
 | Device recovery | `scene164`: dataset handshake, resize, input, dispose; the recovery tape (`Dataset@key=value`, `GlobalCall@name`, `DeviceLoss`). |
 | KHR_interactivity | `calculator`, `scene304`: press control, "7" then "x" taps at the golden pose; display digits and dispatched nodes by name. |
+| Split-screen surfaces | `antigravity-racer`: the menu's two-player selection; the run-time second canvas has no layout rectangle, so both equal panes must present. |
 
 Tape spellings: `-` is an idle frame (`UiIdle@0:0` is the retained-UI spelling of the
 same); `UiWheelUp|UiWheelDown` queue SDL wheel packets at the canvas centre and

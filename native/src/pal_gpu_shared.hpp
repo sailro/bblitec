@@ -177,19 +177,28 @@ inline bool request_renderer_restart_if_scene_set_changed(
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /**
  * Native presents every browser canvas through one operating-system window.
- * Retained layout supplies each canvas's actual rectangle. The scene's render
- * targets use that canvas extent; only presentation applies its page offset.
+ * Retained layout supplies each canvas's actual rectangle when the page
+ * attached the canvas to the projected document (scenes 227 and 228). A
+ * canvas the source created and appended to host chrome outside that
+ * document -- antigravity-racer's second player -- is never laid out, so
+ * the primary scene and every registered auxiliary surface scene without a
+ * rectangle share the window in equal horizontal panes, in registration
+ * order. The scene's render targets use the pane extent; only presentation
+ * applies its offset.
  */
-inline std::optional<PixelViewport> surface_canvas_pane(
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {
+    if (canvas.value >= engine.ui_elements.size()) throw std::runtime_error("Invalid surface canvas.");
+    const auto& rect = engine.ui_elements[canvas.value].client_rect;
+    return rect.width > 0.0 && rect.height > 0.0;
+}
+
+inline PixelViewport laid_out_canvas_pane(
     const Engine& engine,
-    std::optional<UiElementHandle> surface_canvas,
+    UiElementHandle canvas,
     std::uint32_t target_width,
     std::uint32_t target_height) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    if (!surface_canvas) return std::nullopt;
-    const auto canvas = surface_canvas->value;
-    if (canvas >= engine.ui_elements.size()) throw std::runtime_error("Invalid surface canvas.");
-    const auto& rect = engine.ui_elements[canvas].client_rect;
+    const auto& rect = engine.ui_elements[canvas.value].client_rect;
     const double scale_x = target_width / engine.canvas_client_width;
     const double scale_y = target_height / engine.canvas_client_height;
     return PixelViewport{
@@ -198,15 +207,85 @@ inline std::optional<PixelViewport> surface_canvas_pane(
         std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.width * scale_x)),
         std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.height * scale_y)),
     };
+}
+
+/** An auxiliary registered scene whose surface canvas retained layout never placed. */
+inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {
+    return scene.surface_canvas.has_value() &&
+        !surface_canvas_laid_out(engine, *scene.surface_canvas);
+}
+#endif
+
+/**
+ * The equal pane of `scene` among the primary scene and the unplaced
+ * auxiliary surface scenes, or nullopt when there is no such split (one
+ * pane only) or `scene` is not one of them (a utility-layer overlay).
+ */
+inline std::optional<PixelViewport> equal_surface_pane(
+    const Engine& engine,
+    const Scene& scene,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (engine.registered_scenes.empty()) return std::nullopt;
+    std::size_t pane_count = 1;
+    std::size_t pane_index = npos;
+    const std::shared_ptr<Scene>& primary = engine.registered_scenes.front();
+    if (primary && primary->shares_identity(scene)) pane_index = 0;
+    for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
+        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+        if (!registered || !unplaced_surface_scene(engine, *registered)) continue;
+        if (registered->shares_identity(scene)) pane_index = pane_count;
+        ++pane_count;
+    }
+    if (pane_count == 1 || pane_index == npos) return std::nullopt;
+    const std::uint64_t width = target_width;
+    const auto x0 = static_cast<std::int32_t>(width * pane_index / pane_count);
+    const auto x1 = static_cast<std::int32_t>(width * (pane_index + 1) / pane_count);
+    return PixelViewport{
+        x0,
+        0,
+        std::max<std::int32_t>(1, x1 - x0),
+        std::max<std::int32_t>(1, static_cast<std::int32_t>(target_height)),
+    };
 #else
-    (void)engine; (void)surface_canvas; (void)target_width; (void)target_height;
+    (void)engine; (void)scene; (void)target_width; (void)target_height;
     return std::nullopt;
 #endif
 }
 
 inline std::optional<PixelViewport> scene_surface_pane(
     const Engine& engine, const Scene& scene, std::uint32_t width, std::uint32_t height) {
-    return surface_canvas_pane(engine, scene.surface_canvas, width, height);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (scene.surface_canvas && surface_canvas_laid_out(engine, *scene.surface_canvas)) {
+        return laid_out_canvas_pane(engine, *scene.surface_canvas, width, height);
+    }
+#endif
+    return equal_surface_pane(engine, scene, width, height);
+}
+
+/** The pane of the registered scene presenting through `surface_canvas`. */
+inline std::optional<PixelViewport> surface_canvas_pane(
+    const Engine& engine,
+    std::optional<UiElementHandle> surface_canvas,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (!surface_canvas) return std::nullopt;
+    if (surface_canvas_laid_out(engine, *surface_canvas)) {
+        return laid_out_canvas_pane(engine, *surface_canvas, target_width, target_height);
+    }
+    for (std::size_t i = 0; i < engine.registered_scenes.size(); ++i) {
+        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+        if (!registered || !registered->surface_canvas) continue;
+        if (registered->surface_canvas->value != surface_canvas->value) continue;
+        return equal_surface_pane(engine, *registered, target_width, target_height);
+    }
+    return std::nullopt;
+#else
+    (void)engine; (void)surface_canvas; (void)target_width; (void)target_height;
+    return std::nullopt;
+#endif
 }
 
 inline std::pair<std::uint32_t, std::uint32_t> surface_target_extent(
