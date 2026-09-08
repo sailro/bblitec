@@ -9,9 +9,8 @@
 #
 # Three deliberate departures from RmlUi's own default build:
 #
-#   * **Static core only.** The same option set the former per-tree
-#     FetchContent configure forced: static libraries, no samples, no Lua
-#     bindings, no precompiled headers, no RmlUi-injected compiler flags.
+#   * **Static core only.** Static libraries, no samples, no Lua bindings,
+#     no precompiled headers, no RmlUi-injected compiler flags.
 #   * **FreeType and LunaSVG come from the consuming triplet.** rmlui_core
 #     records both targets as link interfaces, and every consuming configure
 #     resolves them from its own vcpkg install (the `ui` manifest feature --
@@ -24,6 +23,12 @@
 #     that translation unit directly (the file includes nothing else from
 #     Backends/). Carrying the pair keeps the artifact self-contained and
 #     the .cache checkout disposable.
+#
+# The artifact records what it was built from -- the pinned commit and
+# every patch with its SHA-256 -- in bblite-rmlui-features.cmake, and
+# native/CMakeLists.txt refuses an artifact whose record differs from the
+# current pin and patch directory: a stale artifact would ship UI
+# behaviour the development validation never saw.
 
 param(
     [string]$Workspace = "",
@@ -39,7 +44,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
+$root = Get-RepositoryRoot
 # Development keeps one complete artifact. Shipping selects SVG only when
 # the generated scene reaches ui:inline-svg.
 $rmlSvgEnabled = -not $StaticRuntime -or $EnableSvg
@@ -126,109 +132,44 @@ if ($StaticRuntime) {
 }
 $pin = Get-Content (Join-Path $root "upstream\rmlui.json") -Raw |
     ConvertFrom-Json
-$workspacePath = [System.IO.Path]::GetFullPath($Workspace, $root)
+$workspacePath = Resolve-RepositoryPath $Workspace
 $source = Join-Path $workspacePath "rmlui"
 $build = Join-Path $workspacePath "build"
-$output = [System.IO.Path]::GetFullPath($OutputDirectory, $root)
+$output = Resolve-RepositoryPath $OutputDirectory
+$CMake = Find-CMake $CMake
 
-if (-not $CMake) {
-    $command = Get-Command cmake -ErrorAction SilentlyContinue
-    if ($command) {
-        $CMake = $command.Source
-    }
+# The maintained patches are the files under native/patches, and the pin
+# names the same set: a patch added to one place and not the other is a
+# refusal here, not a silently different library. They touch disjoint
+# files, so name order is application order.
+$patchDirectory = Join-Path $root "native\patches"
+$patches = @(Get-ChildItem $patchDirectory -Filter "rmlui-*.patch" -File | Sort-Object Name)
+if ($patches.Count -eq 0) {
+    throw "No rmlui-*.patch files were found under $patchDirectory."
 }
-if (-not $CMake -or -not (Test-Path $CMake)) {
-    throw "CMake was not found. Set CMAKE_COMMAND or pass -CMake."
-}
-
-# The development artifact must be built with the same compiler the
-# development scene builds select (clang-cl when Visual Studio ships it,
-# MSVC otherwise): RmlUi is a header-inlining-heavy C++ static library,
-# and an MSVC-built archive linked into clang-cl consumers crashed inside
-# `Context::Render` on the heavier retained documents. The discovery and
-# the PATH/INCLUDE/LIB composition mirror `discoverWindowsBuildTools`
-# (src/development-tools.ts); keep the two in step. The -StaticRuntime
-# shipping artifact stays on MSVC, the shipping compiler, whose consumers
-# are MSVC-built too.
-function Get-DevToolchain {
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} `
-        "Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path $vswhere)) { return $null }
-    $vsRoot = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath
-    if (-not $vsRoot) { return $null }
-    $clang = Join-Path $vsRoot "VC\Tools\Llvm\x64\bin\clang-cl.exe"
-    $ninja = Join-Path $vsRoot `
-        "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
-    if (-not (Test-Path $clang) -or -not (Test-Path $ninja)) { return $null }
-    $msvc = Get-ChildItem (Join-Path $vsRoot "VC\Tools\MSVC") -Directory |
-        Sort-Object Name | Select-Object -Last 1
-    $sdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10"
-    $sdk = Get-ChildItem (Join-Path $sdkRoot "Include") -Directory |
-        Sort-Object Name | Select-Object -Last 1
-    if (-not $msvc -or -not $sdk) { return $null }
-    [pscustomobject]@{
-        Clang = $clang
-        Ninja = $ninja
-        Path = @(
-            (Split-Path $clang),
-            (Join-Path $msvc.FullName "bin\Hostx64\x64"),
-            (Join-Path $sdkRoot "bin\$($sdk.Name)\x64"),
-            (Split-Path $ninja)
-        ) -join ";"
-        Include = @(
-            (Join-Path $msvc.FullName "include"),
-            (Join-Path $sdkRoot "Include\$($sdk.Name)\ucrt"),
-            (Join-Path $sdkRoot "Include\$($sdk.Name)\shared"),
-            (Join-Path $sdkRoot "Include\$($sdk.Name)\um"),
-            (Join-Path $sdkRoot "Include\$($sdk.Name)\winrt"),
-            (Join-Path $sdkRoot "Include\$($sdk.Name)\cppwinrt")
-        ) -join ";"
-        Lib = @(
-            (Join-Path $msvc.FullName "lib\x64"),
-            (Join-Path $sdkRoot "Lib\$($sdk.Name)\ucrt\x64"),
-            (Join-Path $sdkRoot "Lib\$($sdk.Name)\um\x64")
-        ) -join ";"
-    }
-}
-
-function Sync-PinnedCheckout([string]$path, [string]$repository, [string]$commit, [string]$label) {
-    if (-not (Test-Path (Join-Path $path ".git"))) {
-        git init $path
-        git -C $path remote add origin $repository
-        git -C $path config core.longpaths true
-    }
-    git -C $path fetch --depth 1 origin $commit
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to fetch pinned $label commit $commit."
-    }
-    git -C $path checkout --force --detach FETCH_HEAD
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to check out pinned $label commit $commit."
-    }
+$pinnedPatches = @($pin.patches | Sort-Object)
+$directoryPatches = @($patches | ForEach-Object { $_.Name })
+if (($pinnedPatches -join ";") -ne ($directoryPatches -join ";")) {
+    throw (
+        "upstream/rmlui.json names the patches [$($pinnedPatches -join ', ')] " +
+        "but native/patches holds [$($directoryPatches -join ', ')]; " +
+        "bring the two in step before building."
+    )
 }
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force | Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "RmlUi"
 
-# The same maintained patch-application script the former FetchContent
-# configure ran: applies each pinned patch, or verifies it is already
-# present, and fails on anything else. docs/ui.md states what each patch
-# corrects and the measurement behind it.
-foreach ($patch in @(
-    "rmlui-premultiplied-rounding.patch",
-    "rmlui-css-box-model.patch",
-    "rmlui-fractional-letter-spacing.patch",
-    "rmlui-line-leading.patch",
-    "rmlui-transform-key-ownership.patch"
-)) {
+# The maintained patch-application script: applies each pinned patch, or
+# verifies it is already present, and fails on anything else. docs/ui.md
+# states what each patch corrects and the measurement behind it.
+foreach ($patch in $patches) {
     & $CMake `
         "-DRMLUI_SOURCE_DIR=$source" `
-        "-DRMLUI_PATCH=$(Join-Path $root "native\patches\$patch")" `
+        "-DRMLUI_PATCH=$($patch.FullName)" `
         -P (Join-Path $root "native\apply-rmlui-patch.cmake")
     if ($LASTEXITCODE -ne 0) {
-        throw "Unable to apply the pinned RmlUi patch $patch."
+        throw "Unable to apply the pinned RmlUi patch $($patch.Name)."
     }
 }
 
@@ -261,6 +202,10 @@ if ($StaticRuntime) {
         '-DCMAKE_C_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG /Gw /GL'
     )
 }
+# The development artifact is built with the compiler the development
+# scene builds select (Get-DevToolchain, tools/bblite-tools.psm1); the
+# -StaticRuntime shipping artifact stays on MSVC, the shipping compiler,
+# whose consumers are MSVC-built too.
 $devToolchain = if ($StaticRuntime) { $null } else { Get-DevToolchain }
 $intendedGenerator = if ($devToolchain) { "Ninja" } else { "" }
 if ($devToolchain) {
@@ -279,8 +224,7 @@ if ($devToolchain) {
 # is disposable, so replace it rather than failing the configure.
 $cachePath = Join-Path $build "CMakeCache.txt"
 if (Test-Path $cachePath) {
-    $cachedGenerator = (Select-String -Path $cachePath `
-        -Pattern '^CMAKE_GENERATOR:INTERNAL=(.*)$').Matches.Groups[1].Value
+    $cachedGenerator = (Read-CMakeCache $cachePath)["CMAKE_GENERATOR"]
     $generatorMatches = if ($intendedGenerator) {
         $cachedGenerator -eq $intendedGenerator
     } else {
@@ -324,8 +268,21 @@ Copy-Item -Recurse -Force (Join-Path $source "Backends\RmlUi_SDL_GPU") `
     (Join-Path $backendsOut "RmlUi_SDL_GPU")
 Copy-Item -Force (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LICENSE.txt")
 
+# Native configuration reads this record and refuses the artifact when the
+# pin or a patch moved since it was built. The patch set is "name=sha256"
+# per file, in name order, as CMake recomputes it over native/patches.
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
-"set(BBLITE_RMLUI_STATIC_RUNTIME $staticRuntimeSetting)`n" |
+$patchRecord = @(
+    $patches | ForEach-Object {
+        $digest = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$($_.Name)=$digest"
+    }
+) -join ";"
+@(
+    "set(BBLITE_RMLUI_STATIC_RUNTIME $staticRuntimeSetting)"
+    "set(BBLITE_RMLUI_COMMIT `"$($pin.commit)`")"
+    "set(BBLITE_RMLUI_PATCHES `"$patchRecord`")"
+) -join "`n" |
     Set-Content (Join-Path $output "bblite-rmlui-features.cmake") -Encoding Ascii
 
-Write-Host "RmlUi installed to $output (commit $($pin.commit))."
+Write-Host "RmlUi installed to $output (commit $($pin.commit), $($patches.Count) patches)."
