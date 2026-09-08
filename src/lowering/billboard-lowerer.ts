@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { LoweredSource, LoweringContext } from "./context.js";
+import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
 import {
     extraTextureBindingsWgsl,
     extraTextureRecords,
@@ -31,7 +31,7 @@ const particleMultiplyModule =
  * identical, so this is the whole difference between the two families of
  * billboard.
  */
-export type BillboardOrientation = "facing" | "axis-locked";
+type BillboardOrientation = "facing" | "axis-locked";
 
 /**
  * Which depth path a system draws through. The pin's `DEPTH_MODE_TABLE`
@@ -40,7 +40,7 @@ export type BillboardOrientation = "facing" | "axis-locked";
  * selects a fragment arm, a pipeline state, and (per the module doc) the
  * slot the system draws in.
  */
-export type BillboardDepthMode = "transparent" | "cutout";
+type BillboardDepthMode = "transparent" | "cutout";
 
 /** The billboard shader, split into the pieces each backend re-homes. */
 export interface BillboardShaderSource {
@@ -226,7 +226,7 @@ export class BillboardLowerer {
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) =>
-                    this.elementIndexText(node.left) ===
+                    elementIndexText(node.left) ===
                     `base + ${slot}`,
             );
             if (!write) {
@@ -246,7 +246,7 @@ export class BillboardLowerer {
         for (const slot of [12, 13, 14, 15]) {
             const found = writes.filter(
                 (node) =>
-                    this.elementIndexText(node.left) ===
+                    elementIndexText(node.left) ===
                     `base + ${slot}`,
             );
             if (found.length !== 2) {
@@ -420,7 +420,7 @@ export class BillboardLowerer {
         for (const slot of [0, 1, 2, 3]) {
             const found = writes.filter(
                 (node) =>
-                    this.elementIndexText(node.left) === `${slot}`,
+                    elementIndexText(node.left) === `${slot}`,
             );
             if (found.length !== 2) {
                 this.context.contractError(
@@ -437,7 +437,7 @@ export class BillboardLowerer {
         ] as const) {
             const write = writes.find(
                 (node) =>
-                    this.elementIndexText(node.left) === `${slot}`,
+                    elementIndexText(node.left) === `${slot}`,
             );
             if (!write) {
                 this.context.contractError(
@@ -684,18 +684,6 @@ export class BillboardLowerer {
                 ts.isIdentifier(node.left.expression) &&
                 node.left.expression.text === arrayName,
         );
-    }
-
-    private elementIndexText(
-        target: ts.Expression,
-    ): string | undefined {
-        if (!ts.isElementAccessExpression(target)) {
-            return undefined;
-        }
-        return target.argumentExpression
-            .getText(target.getSourceFile())
-            .replace(/\s+/g, " ")
-            .trim();
     }
 
     // -----------------------------------------------------------------

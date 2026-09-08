@@ -1,6 +1,6 @@
 import { emitShaderCppExpression } from "../shader-cpp-emitter.js";
 import { mapShaderExpression, type ShaderExpression } from "../shader-ir.js";
-import { pinnedPbrVertexOutputs } from "../pinned-material-vertex.js";
+import { isPath, pinnedPbrVertexOutputs } from "../pinned-material-vertex.js";
 import type { LoweringContext } from "./context.js";
 
 export const bakedDirectionMinimumLength = 1e-6;
@@ -10,8 +10,6 @@ export function pinnedVertexNormalization(context: LoweringContext): string {
     const module = "src/material/pbr/pbr-template.ts";
     const template = pinnedPbrVertexOutputs(context);
     const { declaration } = template;
-    const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
-        value.kind === "path" && value.parts.length === parts.length && value.parts.every((part, index) => part === parts[index]);
     const fail = (): never => context.contractError(declaration, "Pinned vertex normal/tangent normalization contract changed.");
     const direction = (output: string, input: string[]): ShaderExpression => {
         const world = template.outputs.get(output);

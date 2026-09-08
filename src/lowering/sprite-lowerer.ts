@@ -7,7 +7,7 @@ import {
     blendFactoriesCpp,
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
-import { LoweredSource, LoweringContext } from "./context.js";
+import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
 import {
     decodeAtlasImageCpp,
     gridSpriteAtlasFramesCpp,
@@ -855,7 +855,7 @@ export class SpriteLowerer {
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) =>
-                    this.elementIndexText(node.left) ===
+                    elementIndexText(node.left) ===
                     `base + ${slot}`,
             );
             if (!write) {
@@ -875,7 +875,7 @@ export class SpriteLowerer {
         for (const slot of [9, 10, 11, 12]) {
             const found = writes.filter(
                 (node) =>
-                    this.elementIndexText(node.left) ===
+                    elementIndexText(node.left) ===
                     `base + ${slot}`,
             );
             if (found.length !== 2) {
@@ -887,7 +887,7 @@ export class SpriteLowerer {
         }
         const depthWrite = writes.find(
             (node) =>
-                this.elementIndexText(node.left) === "base + 13",
+                elementIndexText(node.left) === "base + 13",
         );
         if (!depthWrite) {
             this.context.contractError(
@@ -1319,7 +1319,7 @@ export class SpriteLowerer {
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) =>
-                    this.elementIndexText(node.left) ===
+                    elementIndexText(node.left) ===
                     String(slot),
             );
             if (!write) {
@@ -1586,18 +1586,6 @@ export class SpriteLowerer {
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------
-
-    private elementIndexText(
-        target: ts.Expression,
-    ): string | undefined {
-        if (!ts.isElementAccessExpression(target)) {
-            return undefined;
-        }
-        return target.argumentExpression
-            .getText(target.getSourceFile())
-            .replace(/\s+/g, " ")
-            .trim();
-    }
 
     public lowerCore(ySort = false): LoweredSource {
         const layout = this.layout();
