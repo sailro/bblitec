@@ -34,6 +34,10 @@ export class VatLowerer {
             VAT_MODULE,
             "clipFrameCount",
         ).declaration;
+        this.assertInventory(clipFrameCount, "clipFrameCount", [
+            "variable statement",
+            "return statement",
+        ]);
         const frameCountReturn = this.context
             .findNodes(
                 clipFrameCount,
@@ -80,8 +84,35 @@ export class VatLowerer {
         );
         // `attachVat`'s own initial write and `play`'s: params = (fromRow,
         // fromRow + frameCount - 1, offset ?? 0, fps ?? clip.fps).
-        this.context.functionDeclaration(VAT_MODULE, "attachVat");
-        this.context.functionDeclaration(VAT_MODULE, "prepareVatMany");
+        this.assertInventory(
+            this.context.functionDeclaration(VAT_MODULE, "attachVat").declaration,
+            "attachVat",
+            [
+                "variable statement", "if statement", "expression statement",
+                "variable statement", "variable statement", "variable statement",
+                "expression statement", "expression statement", "variable statement",
+                "expression statement", "if statement", "expression statement",
+                "variable statement", "variable statement", "variable statement",
+                "variable statement", "variable statement", "variable statement",
+                "expression statement", "return statement",
+            ],
+        );
+        // The per-clip bake loop `bake_vat` restates: the empty-clip refusal,
+        // the palette read, the row block per clip, and the rows themselves.
+        this.assertInventory(
+            this.context.functionDeclaration(VAT_MODULE, "prepareVatMany").declaration,
+            "prepareVatMany",
+            [
+                "if statement", "variable statement", "other statement",
+                "expression statement", "variable statement", "variable statement",
+                "variable statement", "for statement", "return statement",
+            ],
+        );
+        this.assertInventory(
+            this.context.functionDeclaration(VAT_MODULE, "bakeVat").declaration,
+            "bakeVat",
+            ["return statement"],
+        );
         return {
             modulePath: VAT_MODULE,
             symbolName:
@@ -392,6 +423,25 @@ void seek_vat(Engine& engine, float seconds) {
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * The statement inventory of a pinned body the emitted VAT functions
+     * restate: the shape checks above say each asserted statement is
+     * present, and only the inventory notices one the pin adds between them.
+     */
+    private assertInventory(
+        declaration: ts.FunctionDeclaration,
+        symbolName: string,
+        expected: readonly string[],
+    ): void {
+        this.context.assertStatementInventory(
+            declaration,
+            declaration.body!.statements,
+            symbolName,
+            "the emitted VAT bake restates a body",
+            expected,
+        );
     }
 
     private pinnedDefaultFrameRate(file: ts.SourceFile): number {

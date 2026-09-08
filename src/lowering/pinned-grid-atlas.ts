@@ -97,6 +97,20 @@ function assertGridRule(context: LoweringContext): void {
         atlasModule,
         "createGridSpriteAtlas",
     );
+    // Ten locals, the row-major loop, and the record: the shape checks
+    // below say each initializer is present, and only the inventory notices
+    // a statement the pin adds between them.
+    context.assertStatementInventory(
+        declaration,
+        declaration.body!.statements,
+        "createGridSpriteAtlas",
+        "the emitted grid partition restates a body",
+        [
+            ...Array.from({ length: 10 }, () => "variable statement"),
+            "for statement",
+            "return statement",
+        ],
+    );
     const initializer = (name: string): ts.Expression => {
         const found = context
             .findNodes(declaration.body!, ts.isVariableDeclaration)
