@@ -5,8 +5,8 @@ import {
     lowerPinnedFunction,
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
-import type {
-    PinnedBinding,
+import {
+    type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
@@ -861,12 +861,83 @@ js::Nullable<js::Tuple<3>> picked_normal(
 `;
     }
 
+    /**
+     * `createPickingRay`, translated from `ray.ts`'s own declaration.
+     *
+     * The pin builds this ray only for a detailed pick and hands it to the
+     * facing test that decides whether a surface normal is flipped; the
+     * pointer drag builds the same ray for its plane intersection. Both
+     * ends are `unproject_point` at the reverse-Z near and far planes (1
+     * is near, 0 is far), and the singular-matrix and degenerate-length
+     * arms answer `null`, which is the empty optional the info carries.
+     */
     private lowerPickRay(): string {
-        return `// ${this.context.provenance("src/picking/ray.ts", "createPickingRay")}
-// The pin builds this ray only for a detailed pick and hands it to the
-// facing test that decides whether a surface normal is flipped. It is
-// the same inverse-VP unprojection \`populate_picked_point\` performs,
-// taken at the reverse-Z near and far planes: 1 is near and 0 is far.
+        const calls = pinnedNumericMathCallsWithHypot();
+        calls.set("mat4Invert", (args) => `mat4_invert(${args.join(", ")})`);
+        calls.set(
+            "unprojectPoint",
+            (args) => `unproject_point(${args.join(", ")})`,
+        );
+        const ray = lowerPinnedFunction(
+            this.context,
+            rayModule,
+            "createPickingRay",
+            [
+                { pinned: "x", kind: "number", cpp: "x" },
+                { pinned: "y", kind: "number", cpp: "y" },
+                { pinned: "vpMatrix", kind: "mat4Const", cpp: "view_projection" },
+                { pinned: "width", kind: "number", cpp: "width" },
+                { pinned: "height", kind: "number", cpp: "height" },
+            ],
+            {
+                cppName: "create_picking_ray",
+                calls,
+                nullableMatrixCalls: new Set(["mat4Invert"]),
+                fixedTupleCalls: new Map([["unprojectPoint", 3]]),
+                returns: {
+                    type: "std::optional<PickRay>",
+                    value: (lowerer, expression) => {
+                        const returned = expression
+                            ? this.context.unwrapExpression(expression)
+                            : undefined;
+                        if (returned?.kind === ts.SyntaxKind.NullKeyword) {
+                            return "std::nullopt";
+                        }
+                        if (!returned || !ts.isObjectLiteralExpression(returned)) {
+                            return this.context.contractError(
+                                returned ??
+                                    this.context.functionDeclaration(
+                                        rayModule,
+                                        "createPickingRay",
+                                    ).declaration,
+                                "Expected pinned createPickingRay to return " +
+                                    "null or a ray literal.",
+                            );
+                        }
+                        const member = (name: string): ts.Expression =>
+                            this.context.propertyInitializer(returned, name);
+                        const direction = lowerTupleComponents(
+                            this.context,
+                            lowerer,
+                            member("direction"),
+                            { arity: 3, at: returned },
+                        );
+                        return `PickRay{${lowerer.expression(member("origin"))}, ` +
+                            `{${direction.join(", ")}}, ` +
+                            `${lowerer.expression(member("length"))}}`;
+                    },
+                },
+            },
+        );
+        return `namespace {
+
+${ray}
+
+} // namespace
+
+// The pin's \`createPickingRay(sampleX, sampleY, vp, w, h)\` over the pick's
+// own sample, kept on the info the detailed solve and the pointer drag
+// read it from.
 void populate_pick_ray(
     PickingInfo& info,
     const std::array<float, 16>& view_projection,
@@ -874,27 +945,137 @@ void populate_pick_ray(
     double sample_y,
     double width,
     double height) {
-    const auto inverse = mat4_invert(view_projection);
-    if (!inverse) return;
-    const double ndc_x = 2.0 * sample_x / width - 1.0;
-    const double ndc_y = 1.0 - 2.0 * sample_y / height;
-    const std::array<double, 3> near_point =
-        unproject_point(*inverse, ndc_x, ndc_y, 1.0);
-    const std::array<double, 3> far_point =
-        unproject_point(*inverse, ndc_x, ndc_y, 0.0);
-    const double dx = far_point[0] - near_point[0];
-    const double dy = far_point[1] - near_point[1];
-    const double dz = far_point[2] - near_point[2];
-    const double length = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (length < 1e-10) return;
-    const double inverse_length = 1.0 / length;
-    info.ray = PickRay{
-        near_point,
-        {dx * inverse_length, dy * inverse_length, dz * inverse_length},
-        length};
+    info.ray = create_picking_ray(
+        sample_x, sample_y, view_projection, width, height);
 }
 
 `;
+    }
+
+    /**
+     * `info.distance`, the tail of the pin's own `pickAsyncImpl` once the
+     * picked point is known: the origin the pin measures from, then the
+     * three deltas and the root, lowered from those five statements.
+     *
+     * The origin is `detailed && pickRay ? <ray origin> : getCameraPosition
+     * (camera)`. This port reaches the distance only through
+     * `pickBillboardSprite`, whose throwaway picker is never detailed, so
+     * `detailed` binds statically false and the pin's own conditional folds
+     * to the camera arm -- `getCameraPosition` reads the camera's FLOAT
+     * world matrix, which `camera_position` is the lowering of. The pin
+     * stores the result on the info; the scene reads it as a value, so the
+     * store is the return.
+     */
+    private lowerPickedDistance(): string {
+        const modulePath = "src/picking/gpu-picker.ts";
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            "pickAsyncImpl",
+        );
+        const origins = this.context.findNodes(
+            declaration,
+            (node): node is ts.VariableStatement =>
+                ts.isVariableStatement(node) &&
+                node.declarationList.declarations.length === 1 &&
+                ts.isIdentifier(node.declarationList.declarations[0]!.name) &&
+                node.declarationList.declarations[0]!.name.text === "origin",
+        );
+        const originStatement = origins[0];
+        if (origins.length !== 1 || !originStatement) {
+            return this.context.contractError(
+                declaration,
+                "Expected pinned pickAsyncImpl to bind the pick origin once.",
+            );
+        }
+        const block = originStatement.parent;
+        if (!ts.isBlock(block)) {
+            return this.context.contractError(
+                originStatement,
+                "Expected the pick origin to be declared inside a block.",
+            );
+        }
+        const start = block.statements.indexOf(originStatement);
+        const statements = block.statements.slice(start, start + 5);
+        const store = statements[4];
+        const distanceStore =
+            store !== undefined &&
+            ts.isExpressionStatement(store) &&
+            ts.isBinaryExpression(store.expression) &&
+            store.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            store.expression.left.getText(file) === "info.distance"
+                ? store.expression
+                : undefined;
+        if (statements.length !== 5 || !distanceStore) {
+            return this.context.contractError(
+                originStatement,
+                "Expected the pick origin, three deltas and the " +
+                    "info.distance store to be consecutive.",
+            );
+        }
+        const originInitializer =
+            originStatement.declarationList.declarations[0]!.initializer;
+        if (!originInitializer) {
+            return this.context.contractError(
+                originStatement,
+                "Expected the pick origin to be initialized.",
+            );
+        }
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                ["detailed", { cpp: "false", type: "bool", staticBoolean: false }],
+                [
+                    "pickRay",
+                    {
+                        cpp: "info.ray",
+                        type: "scalar",
+                        absentCpp: "!info.ray.has_value()",
+                    },
+                ],
+                ["pickRay.origin", { cpp: "info.ray->origin", type: "f64-buffer" }],
+                ["camera", { cpp: "camera", type: "opaque" }],
+                ["info.pickedPoint", { cpp: "point", type: "f64-buffer" }],
+                ["origin.x", { cpp: "origin.x", type: "scalar" }],
+                ["origin.y", { cpp: "origin.y", type: "scalar" }],
+                ["origin.z", { cpp: "origin.z", type: "scalar" }],
+            ]),
+            calls: new Map([
+                ...pinnedNumericMathCallsWithHypot(),
+                [
+                    "getCameraPosition",
+                    (args: readonly string[]) =>
+                        `upstream::camera_position(${args.join(", ")})`,
+                ],
+            ]),
+            booleanAnd: true,
+            vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+            statement: (statement, inner, indent) => {
+                if (statement === originStatement) {
+                    return [
+                        `${indent}const Vec3d origin = ` +
+                            `${inner.expression(originInitializer)};`,
+                    ];
+                }
+                if (statement === store) {
+                    return [
+                        `${indent}return ${inner.expression(distanceStore.right)};`,
+                    ];
+                }
+                return undefined;
+            },
+        });
+        const body = statements
+            .flatMap((statement) => lowerer.statement(statement, "    "))
+            .join("\n");
+        return `// ${this.context.provenance(modulePath, "pickAsyncImpl")}
+// \`info.distance\`, from the pick origin to the reconstructed point.
+double picked_distance(const Scene& scene, const PickingInfo& info) {
+    if (!info.picked_point || !scene.engine) return 0.0;
+    const Engine& engine = *scene.engine;
+    if (scene.camera.value >= engine.cameras.size()) return 0.0;
+    const CameraRecord& camera = engine.cameras[scene.camera.value];
+    const std::array<double, 3>& point = *info.picked_point;
+${body}
+}`;
     }
 
     /**
@@ -909,8 +1090,7 @@ void populate_pick_ray(
      * `picked_kind` and builds the scene's own record.
      *
      * `distance` is the second half the pin computes beside `pickedPoint`,
-     * from `getCameraPosition(camera)` -- the camera's FLOAT world matrix,
-     * so the origin a scene would read itself.
+     * lowered beside it by `lowerPickedDistance`.
      */
     private lowerBillboardWrapper(): string {
         const wrapperModule = "src/sprite/picking/pick-billboard.ts";
@@ -933,21 +1113,7 @@ PickingInfo pick_billboard_sprite(
     return info;
 }
 
-// ${this.context.provenance("src/picking/gpu-picker.ts", "pickAsync")}
-// \`info.distance\`: the pin measures from the camera position it read
-// with \`getCameraPosition\`, which \`camera_position\` is the lowering of.
-double picked_distance(const Scene& scene, const PickingInfo& info) {
-    if (!info.picked_point || !scene.engine) return 0.0;
-    const Engine& engine = *scene.engine;
-    if (scene.camera.value >= engine.cameras.size()) return 0.0;
-    const Vec3d origin =
-        upstream::camera_position(engine.cameras[scene.camera.value]);
-    const std::array<double, 3>& point = *info.picked_point;
-    const double dx = point[0] - origin.x;
-    const double dy = point[1] - origin.y;
-    const double dz = point[2] - origin.z;
-    return std::sqrt(dx * dx + dy * dy + dz * dz);
-}
+${this.lowerPickedDistance()}
 `;
     }
 }

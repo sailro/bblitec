@@ -23,6 +23,7 @@
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { PinnedShaderText } from "./pinned-shader-text.js";
+import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import type { CompiledShaderProgram } from "../compiler/types.js";
 
 export const lineMaterialModule = "src/material/line/line-material.ts";
@@ -368,6 +369,12 @@ export class LineLowerer {
         this.assertLineSystemDataRule();
         this.assertLineSystemRule();
         this.assertUpdateRule();
+        // `computeAabb`'s local arm, the bounds both the create and the
+        // update fold over their flattened positions.
+        const computeAabb = lowerComputeAabb(this.context, {
+            arm: "local",
+            cppName: "compute_aabb",
+        });
         return {
             modulePath: lineSystemModule,
             symbolName:
@@ -381,8 +388,10 @@ export class LineLowerer {
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -398,6 +407,8 @@ void assert_finite_line_component(const char* kind, float value) {
             " components");
     }
 }
+
+${computeAabb}
 
 }  // namespace
 
@@ -600,24 +611,17 @@ void update_line_system(
         }
     }
     // computeAabb over the new positions, exactly as the pinned update
-    // recomputes the mesh bounds after writing them.
-    Vec3 bounds_min{
-        std::numeric_limits<float>::infinity(),
-        std::numeric_limits<float>::infinity(),
-        std::numeric_limits<float>::infinity()};
-    Vec3 bounds_max{
-        -std::numeric_limits<float>::infinity(),
-        -std::numeric_limits<float>::infinity(),
-        -std::numeric_limits<float>::infinity()};
-    for (std::size_t index = 0; index < vertex_count; ++index) {
-        const Vec3& position = geometry.vertices[index].position;
-        bounds_min.x = std::min(bounds_min.x, position.x);
-        bounds_min.y = std::min(bounds_min.y, position.y);
-        bounds_min.z = std::min(bounds_min.z, position.z);
-        bounds_max.x = std::max(bounds_max.x, position.x);
-        bounds_max.y = std::max(bounds_max.y, position.y);
-        bounds_max.z = std::max(bounds_max.z, position.z);
-    }
+    // recomputes the mesh bounds after writing them: the pin's double
+    // fold, rounded once at the record's float store.
+    const std::array<std::array<double, 3>, 2> aabb = compute_aabb(positions);
+    const Vec3 bounds_min{
+        static_cast<float>(aabb[0][0]),
+        static_cast<float>(aabb[0][1]),
+        static_cast<float>(aabb[0][2])};
+    const Vec3 bounds_max{
+        static_cast<float>(aabb[1][0]),
+        static_cast<float>(aabb[1][1]),
+        static_cast<float>(aabb[1][2])};
     geometry.bounds_min = bounds_min;
     geometry.bounds_max = bounds_max;
     geometry.world_bounds_min = bounds_min;

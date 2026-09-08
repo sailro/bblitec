@@ -380,9 +380,11 @@ test("a grid template the evaluator cannot fold fails generation", () => {
         true,
         ts.ScriptKind.TS,
     );
+    // The shared shader-text evaluator refuses by the pinned node it could
+    // not fold: a builder call it cannot resolve, a builder that is gone.
     assert.throws(
         () => gridFragmentWgsl("p", doctored),
-        /Pinned Babylon Lite grid template changed/,
+        /Expected function 'dynamic' with a body/,
     );
     assert.throws(
         () =>
@@ -396,6 +398,6 @@ test("a grid template the evaluator cannot fold fails generation", () => {
                     ts.ScriptKind.TS,
                 ),
             ),
-        /no function 'buildVertexSource'/,
+        /Expected function 'buildVertexSource' with a body/,
     );
 });
