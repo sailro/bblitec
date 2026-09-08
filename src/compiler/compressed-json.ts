@@ -17,7 +17,7 @@ import {
 } from "./json-value.js";
 import type { Value } from "./types.js";
 import { runModuleJsonSync } from "./module-json-sync.js";
-import { unwrapExpression, argumentAt } from "./syntax.js";
+import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
 
 interface CompressedJsonContext {
     readonly checker: ts.TypeChecker;
@@ -46,8 +46,7 @@ function identifierIs(
     expected: string,
 ): expression is ts.Identifier {
     return !!expression &&
-        ts.isIdentifier(unwrapExpression(expression)) &&
-        (unwrapExpression(expression) as ts.Identifier).text === expected;
+        identifierText(unwrapExpression(expression)) === expected;
 }
 
 /** A built-in rather than a same-spelled module binding. */

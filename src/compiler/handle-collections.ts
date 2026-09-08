@@ -39,7 +39,12 @@ import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { handleCppType, type DataType } from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import { resolveFunctionDeclaration } from "./user-functions.js";
-import { unwrapExpression as unwrapWalkExpression, argumentAt } from "./syntax.js";
+import {
+    argumentAt,
+    identifierText,
+    unwrapExpression as unwrapWalkExpression,
+} from "./syntax.js";
+import { CompileError } from "./compile-error.js";
 import {
     isHandleCollectionProperty,
     nativeLocation,
@@ -160,7 +165,9 @@ function assetOwnerMapBuilder(
             fn.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) ||
             fn.parameters.length !== count || fn.parameters.some(parameter =>
                 !ts.isIdentifier(parameter.name) || parameter.initializer || parameter.dotDotDotToken || parameter.questionToken)) return undefined;
-        const names = fn.parameters.map(parameter => parameter.name as ts.Identifier);
+        const names = fn.parameters.flatMap((parameter) =>
+            ts.isIdentifier(parameter.name) ? [parameter.name] : [],
+        );
         return new Set(names.map(name => name.text)).size === count ? names : undefined;
     };
     const loopBinding = (statement: ts.Statement): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
@@ -2082,14 +2089,7 @@ export class HandleCollections {
         if (
             !ts.isPropertyAccessExpression(left) ||
             left.name.text !== "name" ||
-            !ts.isIdentifier(
-                this.context.unwrap(left.expression),
-            ) ||
-            (
-                this.context.unwrap(
-                    left.expression,
-                ) as ts.Identifier
-            ).text !== parameter
+            identifierText(this.context.unwrap(left.expression)) !== parameter
         ) {
             return undefined;
         }
@@ -2187,8 +2187,11 @@ export class HandleCollections {
                             this.context.compileStringLiteral(
                                 argument,
                             );
-                    } catch {
-                        // Not static in this scope; keep looking.
+                    } catch (error) {
+                        // A refusal means the message is not static in
+                        // this scope, so the search keeps looking; any
+                        // other error is the compiler's own and escapes.
+                        if (!(error instanceof CompileError)) throw error;
                     }
                 }
                 return;

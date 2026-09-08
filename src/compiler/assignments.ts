@@ -1121,10 +1121,11 @@ function emitBridgeOriginWrite(
   ) {
     return false;
   }
+  const originIdentifier = unwrappedIdentifier(origin.expression, (wrapped) =>
+    context.unwrap(wrapped),
+  );
   const owner = context.resolveRecordValue(origin.expression) ??
-    (ts.isIdentifier(context.unwrap(origin.expression))
-      ? context.lookupOptional(context.unwrap(origin.expression) as ts.Identifier)
-      : undefined);
+    (originIdentifier ? context.lookupOptional(originIdentifier) : undefined);
   if (owner?.kind !== "node-particle-2d-bridge") return false;
   if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
     context.fail(
@@ -3097,6 +3098,7 @@ import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
+import { unwrappedIdentifier } from "./syntax.js";
 import {
   emitDeterministicRandomInstall,
   type DeterministicRandomContext,

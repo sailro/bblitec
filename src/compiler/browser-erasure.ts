@@ -1661,8 +1661,7 @@ export class BrowserErasure {
             !ts.isCallExpression(scheduled) ||
             !this.isDefaultRequestAnimationFrameCall(scheduled) ||
             scheduled.arguments.length !== 1 ||
-            !ts.isIdentifier(argumentAt(scheduled, 0)) ||
-            (scheduled.arguments[0] as ts.Identifier).text !== waitName
+            identifierText(argumentAt(scheduled, 0)) !== waitName
         ) {
             return undefined;
         }

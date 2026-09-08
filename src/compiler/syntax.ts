@@ -128,6 +128,15 @@ export function identifierText(expression: ts.Expression): string | undefined {
     return ts.isIdentifier(expression) ? expression.text : undefined;
 }
 
+/** The identifier an expression is once its wrappers are stripped, or undefined. */
+export function unwrappedIdentifier(
+    expression: ts.Expression,
+    unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
+): ts.Identifier | undefined {
+    const unwrapped = unwrap(expression);
+    return ts.isIdentifier(unwrapped) ? unwrapped : undefined;
+}
+
 /** The text a string literal spells, or undefined for any other expression. */
 export function stringLiteralText(
     expression: ts.Expression,

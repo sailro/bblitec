@@ -40,6 +40,7 @@ import {
     rootExpression,
     rootIdentifier,
     argumentAt,
+    identifierText,
 } from "./syntax.js";
 
 
@@ -7289,13 +7290,8 @@ export class DataLowerer {
                 ) ||
                 this.context.unwrap(expression.right).kind ===
                     ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(
-                    this.context.unwrap(expression.right),
-                ) &&
-                    (this.context.unwrap(
-                        expression.right,
-                    ) as ts.Identifier).text ===
-                        "undefined"));
+                identifierText(this.context.unwrap(expression.right)) ===
+                    "undefined");
         if (
             kind !== "number" &&
             kind !== "boolean" &&

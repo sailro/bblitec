@@ -236,7 +236,9 @@ import {
     argumentAt,
     identifierText,
     stringLiteralText,
+    unwrappedIdentifier,
 } from "./compiler/syntax.js";
+import { CompileError } from "./compiler/compile-error.js";
 import {
     mutatingArrayMethods,
     storingDataMethods,
@@ -639,24 +641,7 @@ function callbackClosureContainer(
     ) as ts.ClassLikeDeclaration | ts.SignatureDeclaration | undefined;
 }
 
-export class CompileError extends Error {
-    public readonly fileName: string;
-    public readonly line: number;
-    public readonly column: number;
-
-    public constructor(
-        fileName: string,
-        line: number,
-        column: number,
-        message: string,
-    ) {
-        super(`${fileName}:${line}:${column}: ${message}`);
-        this.name = "CompileError";
-        this.fileName = fileName;
-        this.line = line;
-        this.column = column;
-    }
-}
+export { CompileError };
 
 export function compileSource(
     source: string,
@@ -1983,19 +1968,15 @@ class Compiler
             if (
                 ts.isBinaryExpression(candidate) &&
                 candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isIdentifier(this.unwrap(candidate.left)) &&
-                this.symbols.valueSymbol(
-                    this.unwrap(candidate.left) as ts.Identifier,
-                ) === symbol
+                this.unwrappedValueSymbol(candidate.left) === symbol
             ) {
                 const right = this.unwrap(candidate.right);
-                if (
-                    ts.isCallExpression(right) &&
-                    ts.isIdentifier(this.unwrap(right.expression)) &&
-                    this.symbols.importedName(
-                        this.unwrap(right.expression) as ts.Identifier,
-                    ) === intrinsic
-                ) {
+                const callee = ts.isCallExpression(right)
+                    ? unwrappedIdentifier(right.expression, (wrapped) =>
+                          this.unwrap(wrapped),
+                      )
+                    : undefined;
+                if (callee && this.symbols.importedName(callee) === intrinsic) {
                     found = true;
                     return;
                 }
@@ -4017,10 +3998,7 @@ class Compiler
         const directlyIndexes = (expression: ts.Expression): boolean =>
             (ts.isElementAccessExpression(expression) ||
                 ts.isPropertyAccessExpression(expression)) &&
-            ts.isIdentifier(this.unwrap(expression.expression)) &&
-            this.symbols.valueSymbol(
-                this.unwrap(expression.expression) as ts.Identifier,
-            ) === symbol;
+            this.unwrappedValueSymbol(expression.expression) === symbol;
         const visit = (node: ts.Node): void => {
             if (mutated) return;
             if (
@@ -10617,6 +10595,14 @@ class Compiler
         return this.symbols.isDefaultLibraryIdentifier(identifier);
     }
 
+    /** The value symbol an expression names once unwrapped, or undefined. */
+    private unwrappedValueSymbol(expression: ts.Expression): ts.Symbol | undefined {
+        const identifier = unwrappedIdentifier(expression, (wrapped) =>
+            this.unwrap(wrapped),
+        );
+        return identifier && this.symbols.valueSymbol(identifier);
+    }
+
     /**
      * An imported helper with no route to Babylon and no native input can
      * only observe or mutate browser state. Erasing the call as one unit is
@@ -12075,10 +12061,8 @@ class Compiler
                 (this.checker.getResolvedSignature(candidate)?.declaration ===
                     owner ||
                     (ownerSymbol !== undefined &&
-                        ts.isIdentifier(this.unwrap(candidate.expression)) &&
-                        this.symbols.valueSymbol(
-                            this.unwrap(candidate.expression) as ts.Identifier,
-                        ) === ownerSymbol))
+                        this.unwrappedValueSymbol(candidate.expression) ===
+                            ownerSymbol))
             ) {
                 reachedCall = true;
                 if (candidate.arguments.length > index) {

@@ -29,7 +29,7 @@ import {
 import type { CompilerSymbols } from "./symbols.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { isUpdateExpression, argumentAt } from "./syntax.js";
+import { argumentAt, isUpdateExpression, unwrappedIdentifier } from "./syntax.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -3275,7 +3275,9 @@ export class StatementLowerer {
                 } else if (
                     isHandleKind(target.kind) &&
                     operator === "=" &&
-                    ts.isIdentifier(context.unwrap(unwrapped.left)) &&
+                    unwrappedIdentifier(unwrapped.left, (wrapped) =>
+                        context.unwrap(wrapped),
+                    ) !== undefined &&
                     context.unwrap(unwrapped.right).kind !==
                         ts.SyntaxKind.NullKeyword
                 ) {
@@ -3290,10 +3292,11 @@ export class StatementLowerer {
                         );
                     }
                     context.emit(`${target.cpp} = ${right.cpp};`);
-                    context.rebindVariable(
-                        context.unwrap(unwrapped.left) as ts.Identifier,
-                        right,
+                    const leftName = unwrappedIdentifier(
+                        unwrapped.left,
+                        (wrapped) => context.unwrap(wrapped),
                     );
+                    if (leftName) context.rebindVariable(leftName, right);
                     return;
                 } else if (
                     target.kind === "json-null" &&
