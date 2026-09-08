@@ -271,7 +271,12 @@ rows, five project-owned gates whose retirement conditions are met.
 
 - 163 local branches merged into main; 53 unmerged codex/claude branches; 10 stashes; 41 worktrees
   (6 merged) under `C:/Dev/bbl-*` and `.claude/worktrees`. Deleting is the user's call.
-- Orphan files: `docs/images/scenes/scene11-banner.png` (no reference); `reference/{morph-picking-standard,
-  physics-drop,splat-update-picking}` and 14 `generated/` trees are outputs of fixtures and probes, not
-  registry scenes; `test/fixtures/frame-graph-effect-only.ts` and `text-resource-ops.hpp` referenced by nothing.
+- Orphan files: `docs/images/scenes/scene11-banner.png` and `test/fixtures/frame-graph-effect-only.ts` were
+  referenced by nothing (deleted on this branch); `reference/{morph-picking-standard,splat-update-picking}` and
+  14 `generated/` trees are untracked outputs of fixtures and probes; `reference/physics-drop` is the golden of
+  `examples/physics-drop.ts`; `text-resource-ops.hpp` is included by two fixtures (the earlier claim was wrong).
 - 37 GB of build trees (16.7 GB identical PCHs, 9.8 GB identical DLL copies); `.claude/worktrees/*/native` 28 GB.
+- This audit's own leftovers once the branch is merged: the nine worktrees `C:/Dev/bbl-audit-{activation,build,
+  compiler,lowering,lowermath,native,recorder,rederive,tooling}` (`tools/setup-worktree.ps1 -Path <path> -Remove`
+  unlinks their cache junctions first) and `C:/Dev/babylonlite-audit-baseline`; the branches `claude/audit-w-*`,
+  `claude/audit-merge-check`, `claude/audit-wave0`, `claude/audit-2026-08-24`, `claude/audit-2026-09-01`.
