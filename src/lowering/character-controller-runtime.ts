@@ -142,7 +142,11 @@ public:
     double _body_motion_type(js::Ref<PhysicsBody> body) override { return static_cast<double>(upstream::owning_body_record(body->value).motion_type); }
     std::optional<double> _body_identity(js::Ref<PhysicsBody> body) override { return body->value.handle.value; }
     js::Array<double> _body_world_matrix(js::Ref<PhysicsBody> body) override {
-        const auto matrix = upstream::physics_body_world_matrix(body->value);
+        const auto& live = upstream::owning_body_record(body->value);
+        const auto& engine = *live.owner.lock()->engine;
+        const auto matrix = live.node.kind == upstream::PhysicsNodeKind::mesh
+            ? upstream::mesh_world_matrix(engine, engine.meshes.at(live.node.value))
+            : upstream::transform_node_world(engine, TransformNodeHandle{live.node.value});
         return {matrix.begin(), matrix.end()};
     }
     std::tuple<js::Array<double>, double, js::Array<double>, js::Array<double>> _mass_properties(js::Ref<PhysicsBody> body) override {

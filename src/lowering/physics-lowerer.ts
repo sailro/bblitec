@@ -2263,7 +2263,6 @@ void set_physics_body_mass_properties(
 [[nodiscard]] PhysicsWorld& physics_world_state(PhysicsWorldHandle world);
 [[nodiscard]] PhysicsBody& owning_body_record(PhysicsBody body);
 [[nodiscard]] double physics_world_step_seconds(PhysicsWorldHandle world);
-[[nodiscard]] std::array<float, 16> physics_body_world_matrix(PhysicsBody body);
 [[nodiscard]] std::string physics_body_node_name(PhysicsBody body);
 void remove_physics_body(PhysicsWorldHandle world, PhysicsBody body);
 void set_physics_shape_material(
@@ -3024,13 +3023,6 @@ PhysicsBody& owning_body_record(PhysicsBody body) {
 
 PhysicsWorld& physics_world_state(PhysicsWorldHandle handle) { return physics_world_record(handle); }
 double physics_world_step_seconds(PhysicsWorldHandle handle) { return world_step_seconds(physics_world_record(handle)); }
-std::array<float, 16> physics_body_world_matrix(PhysicsBody body) {
-    const auto& live = owning_body_record(body);
-    const auto& engine = *live.owner.lock()->engine;
-    return live.node.kind == PhysicsNodeKind::mesh
-        ? mesh_world_matrix(engine, engine.meshes.at(live.node.value))
-        : transform_node_world(engine, TransformNodeHandle{live.node.value});
-}
 std::string physics_body_node_name(PhysicsBody body) {
     const auto& live = owning_body_record(body);
     const auto& engine = *live.owner.lock()->engine;

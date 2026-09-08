@@ -7,7 +7,7 @@ import ts from "typescript";
 import { float32Literal } from "../src/cpp-literals.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerPhysicsMesh } from "../src/lowering/physics-mesh-lowerer.js";
-import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
@@ -42,13 +42,24 @@ test("physics mesh source contracts reject traversal, defaults, buffer and index
 
 const tools = optionalNativeFixtureTools(false);
 test("physics mesh PAL arrays match pinned mixed hierarchy, traversal order and float32 boundaries", { skip: !tools }, async () => {
-    const imports = Object.assign({}, ...await Promise.all([
-        "math/mat4-invert.js", "math/mat4-multiply.js", "math/mat4-scale.js",
-    ].map(path => importPinnedModule<object>(path))));
-    const exports: any = {};
-    new Function("exports", "require", ts.transpileModule(store.getSource(module) + "\nexport { MeshAccumulator };", {
-        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-    }).outputText)(exports, () => imports);
+    interface Node {
+        worldMatrix: Float32Array;
+        scaling: { x: number; y: number; z: number };
+        children: Node[];
+        _gpu?: object;
+        _cpuPositions?: Float32Array;
+        _cpuIndices?: Uint32Array;
+    }
+    interface Heap { HEAPU8: Uint8Array; _malloc(bytes: number): number }
+    interface BufferSpan { offset: number; numObjects: number }
+    interface Accumulator {
+        addNodeMeshes(node: Node, includeChildren: boolean): void;
+        getVertices(heap: Heap): BufferSpan;
+        getTriangles(heap: Heap): BufferSpan;
+    }
+    const { MeshAccumulator } = await importPinnedModuleWithExports<{
+        MeshAccumulator: new (collectIndices: boolean) => Accumulator;
+    }>("physics/havok.js", ["MeshAccumulator"]);
     const matrix = (sx: number, sy: number, sz: number, angle: number, x: number, y: number, z: number) => new Float32Array([
         Math.cos(angle) * sx, Math.sin(angle) * sx, 0, 0, -Math.sin(angle) * sy, Math.cos(angle) * sy, 0, 0,
         0, 0, sz, 0, x, y, z, 1,
@@ -57,14 +68,14 @@ test("physics mesh PAL arrays match pinned mixed hierarchy, traversal order and 
         matrix(-1, 1, 2, .91, -9.11, .71, 2.17), matrix(2, .5, -3, -.19, 5.31, -2.73, 9.97)];
     const vertices = new Float32Array([.17, .29, .43, 1.13, .59, -.61, .79, 1.83, .97]);
     const indices = new Uint32Array([0, 1, 2]);
-    const root: any = { worldMatrix: worlds[0], scaling: { x: 2, y: -3, z: 4 }, children: [] };
-    const meshes = worlds.slice(1).map(worldMatrix => ({ _gpu: {}, _cpuPositions: vertices, _cpuIndices: indices, worldMatrix, children: [] as any[], scaling: { x: 1, y: 1, z: 1 } }));
+    const root: Node = { worldMatrix: worlds[0]!, scaling: { x: 2, y: -3, z: 4 }, children: [] };
+    const meshes = worlds.slice(1).map(worldMatrix => ({ _gpu: {}, _cpuPositions: vertices, _cpuIndices: indices, worldMatrix, children: [] as Node[], scaling: { x: 1, y: 1, z: 1 } }));
     // Traversal membership deliberately differs from transform ancestry.
-    const branch = { worldMatrix: matrix(1, 1, 1, 0, 100, 200, 300), scaling: { x: 1, y: 1, z: 1 }, children: [meshes[1]] };
-    root.children = [meshes[0], branch]; meshes[0]!.children.push(meshes[2]);
+    const branch = { worldMatrix: matrix(1, 1, 1, 0, 100, 200, 300), scaling: { x: 1, y: 1, z: 1 }, children: [meshes[1]!] };
+    root.children = [meshes[0]!, branch]; meshes[0]!.children.push(meshes[2]!);
     const expected: { positions: number[]; indices: number[] }[] = [];
-    for (const [node, children, collect] of [[root, true, true], [root, true, false], [meshes[0], false, true], [meshes[0], true, true]] as const) {
-        const accumulator = new exports.MeshAccumulator(collect);
+    for (const [node, children, collect] of [[root, true, true], [root, true, false], [meshes[0]!, false, true], [meshes[0]!, true, true]] as const) {
+        const accumulator = new MeshAccumulator(collect);
         accumulator.addNodeMeshes(node, children);
         const HEAPU8 = new Uint8Array(4096); let cursor = 0;
         const hknp = { HEAPU8, _malloc(bytes: number) { const offset = cursor; cursor += bytes; return offset; } };

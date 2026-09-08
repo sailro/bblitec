@@ -11,8 +11,8 @@ The corpus/registry comparison leaves **3** numbered scenes unregistered.
 
 | Scene | Remaining integration |
 | --- | --- |
-| 46 | Module-scope mutable state and all six pinned constraint types; map solver differences explicitly, including LINEAR_DISTANCE |
-| 104, 105 | Structural hierarchy/owner grouping and character controller |
+| 46 | Remaining constraint families and measured radial-distance solver adaptation |
+| 104, 105 | Character-controller collision parity and interaction checks |
 
 ## Compiler and lowering
 
