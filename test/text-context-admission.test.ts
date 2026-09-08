@@ -43,3 +43,12 @@ test("standalone text admission retains both pinned text scene paths", () => {
         assert.equal(result.manifest.features.includes("renderer:scene"), !standalone);
     }
 });
+
+test("unregistered renderer factories do not create mixed rendering contexts", () => {
+    for (const [, other] of others) {
+        compileSource(source(`createTextRenderer(engine, {layers:[]}); ${other}`));
+    }
+    compileSource(source(`${text} const scene = createSceneContext(engine);
+        const box = createBox(engine); box.material = createStandardMaterial();
+        addToScene(scene, box); createSpriteRenderer(engine, {layers:[]});`));
+});

@@ -2017,6 +2017,7 @@ class Compiler
     }
 
     private textAttachmentReached = false;
+    private reachedRenderContextRegistrations = new Set<string>();
     private textCameraMutation: ts.Node | undefined;
 
     public noteTextCameraControl(node: ts.Node, camera: Value, arcRotate: boolean): void {
@@ -6077,9 +6078,11 @@ class Compiler
 
     /** The text driver records text layers only, so mixed contexts require an explicit boundary. */
     private refuseMixedStandaloneTextContexts(): void {
-        if (!this.features.has("renderer:text")) return;
-        const incompatible = (["renderer:scene", "renderer:sprite", "renderer:frame-graph", "renderer:effect"] as const)
-            .filter(feature => this.features.has(feature));
+        if (!this.reachedRenderContextRegistrations.has("registerTextRenderer")) return;
+        const incompatible = ([
+            ["registerScene", "renderer:scene"], ["registerSpriteRenderer", "renderer:sprite"],
+            ["registerFrameGraphContext", "renderer:frame-graph"], ["registerEffectRenderer", "renderer:effect"],
+        ] as const).filter(([name]) => this.reachedRenderContextRegistrations.has(name)).map(([, feature]) => feature);
         if (incompatible.length === 0) return;
         this.failAtFile(
             "Standalone text rendering cannot be combined with other reached rendering contexts: " +
@@ -10068,6 +10071,9 @@ class Compiler
         const firstShader = this.reachedShaderPrograms.length;
         const firstNode = this.reachedNodeMaterials.length;
         const value = compileRegisteredIntrinsic(this, importedName, call);
+        if (value && ["registerTextRenderer", "registerScene", "registerSpriteRenderer", "registerFrameGraphContext", "registerEffectRenderer"].includes(importedName)) {
+            this.reachedRenderContextRegistrations.add(importedName);
+        }
         if (!profile || !value) return value;
         for (let index = firstMaterial; index < this.sceneMaterials.count; ++index) {
             this.runtimeMaterialProfiles.add(index);
@@ -13849,6 +13855,7 @@ class Compiler
         const controls = this.temporalControlAttachment;
         const textCamera = this.textCameraMutation;
         const textAttachment = this.textAttachmentReached;
+        const renderContexts = new Set(this.reachedRenderContextRegistrations);
         const result = probe();
         if (!answered(result)) {
             this.body.splice(start);
@@ -13860,6 +13867,7 @@ class Compiler
             this.temporalControlAttachment = controls;
             this.textCameraMutation = textCamera;
             this.textAttachmentReached = textAttachment;
+            this.reachedRenderContextRegistrations = renderContexts;
         }
         return result;
     }
