@@ -917,6 +917,42 @@ if("physics:viewer" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(bblite_native PRIVATE BBLITE_PHYSICS_VIEWER=1)
 endif()
 
+# TEMPORARY COPY (audit fix wave, native agent): the build agent owns the six
+# physics sub-feature definitions below. Keep exactly one copy at merge.
+# Each one is written 0/1 and named after the runtime feature it mirrors;
+# `pal_physics_bullet.cpp` compiles the family behind it only when it is 1.
+if("physics:queries" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_QUERIES=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_QUERIES=0)
+endif()
+if("physics:constraints" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_CONSTRAINTS=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_CONSTRAINTS=0)
+endif()
+if("physics:trigger" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_TRIGGER=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_TRIGGER=0)
+endif()
+if("physics:heightfield" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_HEIGHTFIELD=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_HEIGHTFIELD=0)
+endif()
+if("physics:character-controller" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_CHARACTER=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_CHARACTER=0)
+endif()
+if("physics:floating-origin" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_FLOATING_ORIGIN=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PHYSICS_FLOATING_ORIGIN=0)
+endif()
+# END TEMPORARY COPY
+
 # The navigation toolset is reached only through
 # `bblite/pal_navigation.hpp`, whose implementation is one translation
 # unit the feature list selects (`featureSources`). Nothing generated

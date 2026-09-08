@@ -2552,13 +2552,15 @@ ${composed.wgsl}`,
         if (features.includes("physics:world")) {
             this.writeSource(
                 "upstream/src/physics.cpp",
-                new PhysicsLowerer(context).lowerPhysics(
-                    features.includes("physics:queries"),
-                    features.includes("physics:container"),
-                    features.includes("physics:viewer"),
-                    features.includes("physics:constraints"),
-                    features.includes("physics:heightfield"),
-                ),
+                new PhysicsLowerer(context).lowerPhysics({
+                    queries: features.includes("physics:queries"),
+                    container: features.includes("physics:container"),
+                    viewer: features.includes("physics:viewer"),
+                    constraints: features.includes("physics:constraints"),
+                    heightfield: features.includes("physics:heightfield"),
+                    trigger: features.includes("physics:trigger"),
+                    floatingOrigin: features.includes("physics:floating-origin"),
+                }),
                 generated,
                 "upstream/include/bblite/upstream/physics.hpp",
             );
