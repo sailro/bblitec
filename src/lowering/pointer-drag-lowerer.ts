@@ -7,11 +7,12 @@ import type { LoweringContext } from "./context.js";
 import { lowerMat4InvertCpp, lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import { lowerRotationPointerDrag } from "./rotation-pointer-drag-lowerer.js";
 
 const POINTER = "src/gizmo/pointer-drag.ts";
 const MATH = "src/gizmo/gizmo-math.ts";
 
-export function lowerPointerDrag(context: LoweringContext): string {
+export function lowerPointerDrag(context: LoweringContext, rotation = false): string {
     const calls = new Map(pinnedNumericMathCallsWithHypot());
     const materialFactory = context.functionDeclaration("src/gizmo/gizmo-core.ts", "createGizmoMaterials").declaration;
     const hoverColor = context.numericTuple(materialFactory.parameters[1]!.initializer!, materialFactory.getSourceFile());
@@ -71,6 +72,7 @@ export function lowerPointerDrag(context: LoweringContext): string {
 namespace {
 ${lowerMat4InvertCpp(context)}
 ${dot}
+${rotation ? lowerRotationPointerDrag(context) : ""}
 // ${context.provenance(MATH, "rayPlaneIntersect")}
 std::optional<Vec3d> drag_ray_plane(const Vec3d& rayOrigin, const Vec3d& rayDir,
     const Vec3d& planePoint, const Vec3d& planeNormal) {
@@ -194,6 +196,13 @@ void drag_event(PointerDragDispatcher& state, unsigned event_kind, const Platfor
         state.plane_point = drag_anchor(engine, drag);
         const auto hit = drag_pointer_hit(state, event);
         if (!hit) return;
+${rotation ? `        if (drag.rotation_drag) {
+            if (drag.attached_node.value < engine.meshes.size()) {
+                drag_rotate(engine, drag.attached_node, state.last_point, *hit, drag_axis(engine, drag));
+            }
+            state.last_point = *hit;
+            return;
+        }` : ""}
         const auto step = drag_step(*hit, state.last_point, state.start_point, drag_axis(engine, drag), !drag.plane_drag);
         state.last_point = *hit;
         if (drag.attached_node.value < engine.meshes.size()) {

@@ -9580,10 +9580,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         // clears only its own depth -- so registration order is what makes
         // a layer, exactly as it does upstream. Each layer owns a plan and
         // an uploaded mesh array because a draw command indexes its plan.
-        // What each layer's plan was built against. A layer that grows or
-        // loses a renderable after the loop starts is refused by name
-        // rather than drawn from a stale plan: the base scene has a
-        // rematching path for that and a layer does not.
+        // Each layer rematches changed rows before encoding the next frame.
         std::vector<std::uint64_t> overlay_topology_versions;
         for (
             std::size_t layer = 1;
@@ -10100,6 +10097,17 @@ SceneRun run_gpu_engine(Engine& engine) {
                     mesh.gpu_world_transform;
             }
             };
+            const bool overlays_updated = refresh_overlay_render_plans(
+                engine, overlay_plans, state.overlay_meshes, overlay_topology_versions,
+                engine.draw_list_epoch != synced_draw_list_epoch,
+                [&](GpuMesh& mesh) { release_gpu_mesh(state, mesh); },
+                [&](const upstream::RenderItem& item) { return upload_render_item(item, &frame_buffer_uploads); });
+            if (overlays_updated) {
+                prune_shared_shader_geometries(state);
+                prune_shared_shader_material_textures(state);
+                prune_shared_composed_material_textures(state);
+                rebuild_task_draw_lists();
+            }
             sync_plan_meshes(render_plan, state.meshes);
             for (
                 std::size_t layer = 0;
@@ -10110,7 +10118,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     overlay_plans[layer],
                     state.overlay_meshes[layer]);
             }
-            bool topology_updated = false;
+            bool topology_updated = overlays_updated;
             if (
                 scene.render_topology_version !=
                 synced_render_topology_version) {
@@ -13671,9 +13679,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     overlay_scene->render_topology_version !=
                         overlay_topology_versions[layer]) {
                     gpu_error(
-                        "A swapchain overlay layer changed its renderables "
-                        "after the frame loop started; this port plans a "
-                        "layer once.");
+                        "A swapchain overlay changed its renderables after resource synchronization.");
                 }
                 CameraRecord& overlay_camera =
                     overlay_scene->camera.value < engine.cameras.size()

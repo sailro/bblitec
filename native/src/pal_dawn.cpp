@@ -12780,7 +12780,17 @@ SceneRun run_dawn_engine(Engine& engine) {
                 delta_ms);
         }
 #endif
-        bool topology_updated = false;
+        bool topology_updated = refresh_overlay_render_plans(
+            engine, overlay_plans, state.overlay_meshes, overlay_topology_versions,
+            engine.draw_list_epoch != synced_draw_list_epoch,
+            [](DawnMesh& mesh) { mesh.reset(); },
+            [&](const upstream::RenderItem& item) { return upload_render_item(item); });
+        if (topology_updated) {
+            state.prune_shared_shader_geometries();
+            state.prune_shared_shader_material_textures();
+            state.prune_shared_composed_material_textures();
+            rebuild_task_draw_lists();
+        }
         if (
             scene.render_topology_version !=
             synced_render_topology_version) {
@@ -14961,9 +14971,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 overlay_scene->render_topology_version !=
                     overlay_topology_versions[layer]) {
                 dawn_error(
-                    "A swapchain overlay layer changed its renderables "
-                    "after the frame loop started; this port plans a layer "
-                    "once.");
+                    "A swapchain overlay changed its renderables after resource synchronization.");
             }
             WGPURenderPassColorAttachment overlay_color =
                 WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;

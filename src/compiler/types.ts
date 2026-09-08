@@ -2510,6 +2510,7 @@ export type Feature =
   | "audio:stereo-panner"
   | "physics:world"
   | "physics:aggregate"
+  | "physics:queries"
   | "physics:trigger"
   | "physics:floating-origin"
   | "scene:remove"

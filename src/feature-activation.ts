@@ -1034,6 +1034,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "createPrimitivePhysicsShapeHandle",
         consumers: CMAKE,
     },
+    "physics:queries": {
+        provenance: "src/physics/havok-queries.ts shapeProximity + shapeCast",
+        consumers: CMAKE,
+    },
     "physics:trigger": {
         provenance:
             "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +

@@ -193,6 +193,16 @@ Triangle-mesh storage outlives its shapes. Static bodies use Bullet's BVH;
 dynamic bodies use GImpact with its approximate inertia over the same triangles.
 Floating-origin regions are separate worlds and do not collide with one another.
 
+Convex proximity uses Bullet GJK/EPA; casts use its convex sweep. Cylinder queries use a measured rounded
+rim margin `min(0.015, 0.1 * minimumHalfExtent)`. Parallel cylinder/capsule contacts select the lower axial
+overlap endpoint to match Havok's nonunique closest feature. These are measured solver adaptations.
+Scene49 is pixel-exact at its authored capture pose; rotated query fields and live contact markers differ
+from Havok by less than 0.005 in the checked poses.
+
+Rotation gizmos translate the pinned drag angle and quaternion arithmetic. Native GPU picks complete
+synchronously. Custom drag observables, sector readout, sibling-disable styling and multi-pointer/touch
+capture remain unsupported.
+
 Compare rest/shape properties separately from per-step flight, contact, rebound
 and sleep traces. Remaining capabilities and residuals belong in [TODO](../TODO.md).
 

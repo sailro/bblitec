@@ -5729,6 +5729,36 @@ inline void reject_uncomposed_family_growth(std::uint32_t added_families) {
             "variants.");
     }
 }
+
+/** Rebuild an existing overlay's rows before uploads/encoding, using backend-owned leases. */
+template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
+inline bool refresh_overlay_render_plans(
+    Engine& engine, std::vector<upstream::RenderPlan>& plans,
+    std::vector<std::vector<GpuMesh>>& meshes, std::vector<std::uint64_t>& versions,
+    bool draw_lists_changed, ReleaseMesh&& release_mesh, UploadItem&& upload_item) {
+    if (plans.size() != meshes.size() || plans.size() != versions.size() ||
+        plans.size() + 1 != engine.registered_scenes.size()) {
+        throw std::runtime_error("Overlay registration changed after renderer initialization.");
+    }
+    bool changed = false;
+    for (std::size_t layer = 0; layer < plans.size(); ++layer) {
+        Scene& scene = *engine.registered_scenes[layer + 1];
+        if (scene.render_topology_version != versions[layer]) {
+            reject_uncomposed_family_growth(scene.material_family_mask);
+            upstream::RenderPlan updated = upstream::build_render_plan(scene, engine);
+            validate_render_plan_items(updated);
+            meshes[layer] = rematch_render_meshes(plans[layer].items, updated.items,
+                meshes[layer], release_mesh, upload_item);
+            plans[layer] = std::move(updated);
+            versions[layer] = scene.render_topology_version;
+            changed = true;
+        } else if (draw_lists_changed) {
+            plans[layer].draw_lists = upstream::build_render_draw_lists(plans[layer].items, engine);
+            changed = true;
+        }
+    }
+    return changed;
+}
 #endif
 
 /**

@@ -4321,6 +4321,7 @@ struct EditGizmoRecord {
     bool dragging = false;
     bool hovering = false;
     bool plane_drag = false;
+    bool rotation_drag = false;
     MaterialHandle colored_material{};
     MaterialHandle hover_material{};
     std::vector<MeshHandle> visible_meshes;

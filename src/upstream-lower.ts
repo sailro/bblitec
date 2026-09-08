@@ -2534,7 +2534,7 @@ ${composed.wgsl}`,
         if (features.includes("physics:world")) {
             this.writeSource(
                 "upstream/src/physics.cpp",
-                new PhysicsLowerer(context).lowerPhysics(),
+                new PhysicsLowerer(context).lowerPhysics(features.includes("physics:queries")),
                 generated,
                 "upstream/include/bblite/upstream/physics.hpp",
             );

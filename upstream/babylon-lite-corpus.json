@@ -1367,6 +1367,12 @@
       "sha256": "14f9b90d35ce89fefc1cb1ae221da1cc4ca1371ded01208490b55f2fd4d0abcc"
     },
     {
+      "id": "scene49",
+      "upstreamPath": "lab/lite/src/lite/scene49.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene49.ts",
+      "sha256": "9fa4455f128d8c7a1a0710567e64c424e12d1890475d660b23b1a94839fb584d"
+    },
+    {
       "id": "scene122",
       "upstreamPath": "lab/lite/src/lite/scene122.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene122.ts",
@@ -1747,11 +1753,6 @@
       "upstreamPath": "lab/lite/src/lite/scene47.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene47.ts",
       "sha256": "0ed9ea0bdd04bcc7d6973817ce613c15243afb60af7c1e623965bcdb56323726"
-    },
-    {
-      "upstreamPath": "lab/lite/src/lite/scene49.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene49.ts",
-      "sha256": "9fa4455f128d8c7a1a0710567e64c424e12d1890475d660b23b1a94839fb584d"
     },
     {
       "upstreamPath": "lab/lite/src/lite/scene104.ts",

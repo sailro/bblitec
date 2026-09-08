@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -36,6 +37,9 @@
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
 #include <BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
 #include <BulletCollision/Gimpact/btGImpactShape.h>
+#include <BulletCollision/NarrowPhaseCollision/btGjkPairDetector.h>
+#include <BulletCollision/NarrowPhaseCollision/btPointCollector.h>
+#include <BulletCollision/NarrowPhaseCollision/btGjkEpaPenetrationDepthSolver.h>
 
 namespace bbl::pal {
 namespace {
@@ -1564,6 +1568,170 @@ PhysicsRaycastResult physics_world_raycast(
         {normal.x(), normal.y(), normal.z()},
         hit_body ? hit_body->identity : 0,
     };
+}
+
+namespace {
+
+btTransform query_transform(const PhysicsTransform& transform) {
+    return btTransform(btQuaternion(
+        static_cast<btScalar>(transform.rotation[0]), static_cast<btScalar>(transform.rotation[1]),
+        static_cast<btScalar>(transform.rotation[2]), static_cast<btScalar>(transform.rotation[3])),
+        to_bt(transform.position));
+}
+
+const btConvexShape& convex_query_shape(const PhysicsShapeState& shape) {
+    if (!shape.shape->isConvex()) {
+        throw std::runtime_error("Physics shape queries require a convex query shape.");
+    }
+    return static_cast<const btConvexShape&>(*shape.shape);
+}
+
+// Measured Havok cylinder queries use a rounded rim capped at 0.015, reduced for small
+// shapes. Keep this query geometry independent of the existing contact solver.
+// The cross-solver query fixture observes both rim and side contacts.
+class QueryShape {
+public:
+    explicit QueryShape(const PhysicsShapeState& source) : source_(convex_query_shape(source)) {
+        if (source_.getShapeType() == CYLINDER_SHAPE_PROXYTYPE) {
+            const auto& cylinder = static_cast<const btCylinderShape&>(source_);
+            const btVector3 half = cylinder.getHalfExtentsWithMargin();
+            cylinder_.emplace(half);
+            cylinder_->setMargin(btMin(btScalar(.015), half[half.minAxis()] * btScalar(.1)));
+        }
+    }
+    const btConvexShape& get() const { return cylinder_ ? *cylinder_ : source_; }
+private:
+    const btConvexShape& source_;
+    std::optional<btCylinderShape> cylinder_;
+};
+
+bool query_accepts(const PhysicsShapeState& query, const PhysicsBodyState& body,
+                   bool include_triggers, std::uint32_t ignored = 0) {
+    return body.in_world && body.shape && body.identity != ignored &&
+        (include_triggers || !body.shape->is_trigger) &&
+        (query.membership_mask & body.shape->collide_mask) != 0 &&
+        (body.shape->membership_mask & query.collide_mask) != 0;
+}
+
+btPointCollector closest_convex_points(const btConvexShape& a, const btTransform& a_transform,
+                                     const btConvexShape& b, const btTransform& b_transform,
+                                     double max_distance) {
+    btVoronoiSimplexSolver simplex;
+    btGjkEpaPenetrationDepthSolver penetration;
+    btGjkPairDetector detector(&a, &b, &simplex, &penetration);
+    btDiscreteCollisionDetectorInterface::ClosestPointInput input;
+    input.m_transformA = a_transform;
+    input.m_transformB = b_transform;
+    input.m_maximumDistanceSquared = static_cast<btScalar>(max_distance * max_distance);
+    btPointCollector result;
+    detector.getClosestPoints(input, result, nullptr);
+    return result;
+}
+
+PhysicsShapeQueryResult shape_query_hit(const btPointCollector& point,
+                                      const btTransform& query_node, double value) {
+    const btVector3 normal = point.m_normalOnBInWorld;
+    const btVector3 input_point = query_node.inverse() *
+        (point.m_pointInWorld + normal * point.m_distance);
+    const btVector3 input_normal = query_node.getBasis().transpose() * -normal;
+    return PhysicsShapeQueryResult{true, value,
+        {input_point.x(), input_point.y(), input_point.z()},
+        {point.m_pointInWorld.x(), point.m_pointInWorld.y(), point.m_pointInWorld.z()},
+        {input_normal.x(), input_normal.y(), input_normal.z()},
+        {normal.x(), normal.y(), normal.z()}};
+}
+
+// Parallel side features have an interval of equally close point pairs. Havok
+// chooses the capsule's first segment endpoint; Bullet's simplex averages it.
+// Select the lower end of their axial overlap without changing distance/normal.
+void select_parallel_capsule_feature(btPointCollector& point,
+                                     const btConvexShape& query, const btTransform& query_transform,
+                                     const btCollisionShape& target, const btTransform& target_transform) {
+    if (query.getShapeType() != CYLINDER_SHAPE_PROXYTYPE ||
+        target.getShapeType() != CAPSULE_SHAPE_PROXYTYPE) return;
+    const auto& cylinder = static_cast<const btCylinderShape&>(query);
+    const auto& capsule = static_cast<const btCapsuleShape&>(target);
+    const btVector3 capsule_axis = target_transform.getBasis().getColumn(capsule.getUpAxis());
+    const btVector3 cylinder_axis = query_transform.getBasis().getColumn(cylinder.getUpAxis());
+    if (btFabs(capsule_axis.dot(cylinder_axis)) < btScalar(1) - SIMD_EPSILON ||
+        btFabs(capsule_axis.dot(point.m_normalOnBInWorld)) > SIMD_EPSILON) return;
+    const btScalar capsule_center = capsule_axis.dot(target_transform.getOrigin());
+    const btScalar cylinder_center = capsule_axis.dot(query_transform.getOrigin());
+    const btScalar cylinder_half = cylinder.getHalfExtentsWithMargin()[cylinder.getUpAxis()];
+    const btScalar lower = btMax(capsule_center - capsule.getHalfHeight(), cylinder_center - cylinder_half);
+    const btScalar upper = btMin(capsule_center + capsule.getHalfHeight(), cylinder_center + cylinder_half);
+    if (lower <= upper) {
+        point.m_pointInWorld += capsule_axis * (lower - capsule_axis.dot(point.m_pointInWorld));
+    }
+}
+}
+
+PhysicsShapeQueryResult physics_world_shape_proximity(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape, const PhysicsTransform& transform,
+    double max_distance, bool should_hit_triggers) {
+    auto& owner = world_at(world);
+    const auto& query = shape_at(shape);
+    const QueryShape query_shape(query);
+    const btConvexShape& convex = query_shape.get();
+    const btTransform node = query_transform(transform);
+    const btTransform shape_transform = node * query.node_from_body;
+    PhysicsShapeQueryResult result;
+    double closest = max_distance;
+    for (const auto& candidate : owner.members) {
+        if (!query_accepts(query, *candidate, should_hit_triggers)) continue;
+        const auto* target = candidate->body->getCollisionShape();
+        if (!target->isConvex()) {
+            throw std::runtime_error("Physics proximity against concave or compound bodies is not supported.");
+        }
+        btPointCollector hit = closest_convex_points(convex, shape_transform,
+            static_cast<const btConvexShape&>(*target), candidate->body->getWorldTransform(),
+            std::max(0.0, closest));
+        if (hit.m_hasResult && static_cast<double>(hit.m_distance) <= closest) {
+            select_parallel_capsule_feature(hit, convex, shape_transform, *target,
+                candidate->body->getWorldTransform());
+            closest = static_cast<double>(hit.m_distance);
+            result = shape_query_hit(hit, node, closest);
+        }
+    }
+    return result;
+}
+
+PhysicsShapeQueryResult physics_world_shape_cast(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape, std::array<double, 4> rotation,
+    std::array<double, 3> from, std::array<double, 3> to, bool should_hit_triggers,
+    PhysicsBodyHandle ignored_body) {
+    auto& owner = world_at(world);
+    const auto& query = shape_at(shape);
+    const QueryShape query_shape(query);
+    const btConvexShape& convex = query_shape.get();
+    const btTransform from_node = query_transform(PhysicsTransform{from, rotation});
+    const btTransform to_node = query_transform(PhysicsTransform{to, rotation});
+    struct QueryCallback final : btCollisionWorld::ClosestConvexResultCallback {
+        const PhysicsShapeState& query;
+        bool include_triggers;
+        std::uint32_t ignored;
+        QueryCallback(const btVector3& start, const btVector3& end,
+                      const PhysicsShapeState& shape_state, bool include, std::uint32_t ignore)
+            : ClosestConvexResultCallback(start, end), query(shape_state),
+              include_triggers(include), ignored(ignore) {}
+        bool needsCollision(btBroadphaseProxy* proxy) const override {
+            const auto* body = body_entry_of(static_cast<const btCollisionObject*>(proxy->m_clientObject));
+            return body && query_accepts(query, *body, include_triggers, ignored);
+        }
+    } callback(from_node.getOrigin(), to_node.getOrigin(), query, should_hit_triggers, ignored_body.value);
+    owner.world->convexSweepTest(&convex, from_node * query.node_from_body,
+        to_node * query.node_from_body, callback);
+    if (!callback.hasHit()) return {};
+    btTransform hit_node = from_node;
+    hit_node.setOrigin(from_node.getOrigin().lerp(to_node.getOrigin(), callback.m_closestHitFraction));
+    btPointCollector point;
+    point.m_hasResult = true;
+    point.m_distance = 0;
+    point.m_pointInWorld = callback.m_hitPointWorld;
+    point.m_normalOnBInWorld = callback.m_hitNormalWorld;
+    select_parallel_capsule_feature(point, convex, hit_node * query.node_from_body,
+        *callback.m_hitCollisionObject->getCollisionShape(), callback.m_hitCollisionObject->getWorldTransform());
+    return shape_query_hit(point, hit_node, static_cast<double>(callback.m_closestHitFraction));
 }
 
 // --- Shapes ----------------------------------------------------------

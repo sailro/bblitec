@@ -177,6 +177,7 @@ export const featureSources: Record<Feature, string[]> = {
     // which is the same role SDL plays and so the same boundary.
     "physics:world": ["src/pal_physics_bullet.cpp"],
     "physics:aggregate": [],
+    "physics:queries": [],
     // The trigger drain rides in the same generated physics module the
     // world already brings, and in the same PAL translation unit; what
     // the feature records is which pinned module a scene reached.

@@ -2301,6 +2301,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene49",
+        name: "Scene 49 - Physics Shape Queries",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene49.ts",
+        title: "Babylon Lite Native - Physics Shape Queries",
+        parity: {
+            referenceSearch: "?capture",
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "30", BBLITE_FRAME_DELTA_MS: "16.666666666666668" },
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene272",
         name: "Scene 272 - Runtime Mesh Swap",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene272.ts",

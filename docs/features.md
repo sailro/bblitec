@@ -300,14 +300,17 @@ accessors, a runtime's context, `BABYLON_flow_graph` JSON, data cycles and other
 Display, editing and bounding-box gizmos use a utility layer. Interaction requires supported pointer
 registration; shape options and retargeting remain bounded. Nullable locals/class fields can create gizmos
 on first use; reads before assignment refuse. Material producers retain their source RGB values and shared color arrays.
+Rotation widgets register host pointer input, retain enlarged ring colliders and apply the pinned angle/quaternion
+update in parent coordinates. Utility layers rematch GPU resources when lazy construction adds meshes.
 
 ## Physics
 
 Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/static-mesh shapes, forces,
 velocities, motion/prestep, aggregates, centre of mass, masks, collisions/triggers, raycasts and floating origin.
-Constraints, characters, heightfields and proximity/cast queries remain incomplete. Dynamic triangle
-meshes use GImpact; inertia overrides and non-Y-aligned capsule/cylinder segments refuse.
-See [physics fidelity](fidelity.md#physics-contract).
+Convex proximity/cast queries return local input and world target contacts, distance/fraction, trigger/mask
+filtering and cast body exclusion. Query bags and quaternions require inline objects; concave/compound proximity
+targets refuse. Dynamic triangle meshes use GImpact. Constraints, characters and heightfields remain incomplete.
+Inertia overrides and non-Y-aligned capsule/cylinder segments refuse. See [physics fidelity](fidelity.md#physics-contract).
 
 Raycasts return nullable body identity, point/normal and double distance. Trigger selection and both masks
 filter the closest eligible body. Arguments evaluate in source order; retained point objects expose changes

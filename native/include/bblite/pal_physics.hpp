@@ -187,6 +187,25 @@ struct PhysicsRaycastResult {
     std::uint32_t body_identity = 0;
 };
 
+struct PhysicsShapeQueryResult {
+    bool has_hit = false;
+    double distance_or_fraction = 0.0;
+    std::array<double, 3> input_point{};
+    std::array<double, 3> point{};
+    std::array<double, 3> input_normal{};
+    std::array<double, 3> normal{};
+};
+
+[[nodiscard]] PhysicsShapeQueryResult physics_world_shape_proximity(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape,
+    const PhysicsTransform& transform, double max_distance,
+    bool should_hit_triggers);
+[[nodiscard]] PhysicsShapeQueryResult physics_world_shape_cast(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape,
+    std::array<double, 4> rotation, std::array<double, 3> from,
+    std::array<double, 3> to, bool should_hit_triggers,
+    PhysicsBodyHandle ignored_body);
+
 // --- World -----------------------------------------------------------
 
 /** `HP_World_Create`. */
