@@ -24,13 +24,13 @@ unwired). No scene-name detection exists in the activation path.
 | FA-2 | M | open | CSM has a feature but no gate: 503 CSM lines in `pinned_shadow.hpp` in 15 shadow trees that never reach CSM, 62 lines in `runtime.hpp` in all trees; ESM has its own define and header | shadow-lowerer.ts:2347, upstream-lower.ts:900 | `BBLITE_SHADOWS_CSM` from `shadow:csm`; split `csm_shadow.hpp`; gate the PAL cascade arms |
 | FA-3 | M | fixed | Asset lights joined by declared light types but arms selected by node references | pinned-material-arms.ts:195-240, compose-pipeline.ts:399-409 | one `gltfNodeLights` helper for both; byte-neutral (all ten corpus assets with lights reference them) |
 | FA-4 | M | fixed | Standard bump from a JSON scan while reflection and lightmap come from composed bindings | babylon-asset-features.ts:88-112, upstream-lower.ts:796-804 | bump read off the composed Standard variants' `bT` binding; byte-neutral |
-| FA-5 | M | open | `BBLITE_RENDERER_TRANSMISSION`, `BBLITE_DEFORM_PICKING_MORPH`, `BBLITE_GEOMETRY_TASK_FAMILIES` read by pal_dawn.cpp only; SDL compiles the transmission grab path into all 286 scene trees | pal_sdl_gpu.cpp:7321-7416, pal_dawn.cpp:198,8543,12444,13924 | gate the SDL arms on the same defines |
+| FA-5 | M | fixed | `BBLITE_RENDERER_TRANSMISSION`, `BBLITE_DEFORM_PICKING_MORPH`, `BBLITE_GEOMETRY_TASK_FAMILIES` read by pal_dawn.cpp only; SDL compiles the transmission grab path into all 286 scene trees | pal_sdl_gpu.cpp:7321-7416, pal_dawn.cpp:198,8543,12444,13924 | SDL compiles the transmission grab, the image-processing resolve and their samplers behind `BBLITE_RENDERER_TRANSMISSION`; the deform-pick morph and geometry-task family arms read the same defines on both backends |
 | FA-6 | L | open | Image codecs selected per packaged format; audio decode links every libnyquist container | CMakeLists.txt:957-1035, audio-surface.ts:311 | sniff packaged audio bytes (optional) |
 | FA-7 | L | fixed | `ui:rml` added by the companion path bypassing `reachFeature`; registry-driven activation missing from the docs table | compiler.ts:1267 | routed through `reachFeature` with the companion path as the site; features.md names the five registry fields that reach generation |
 | FA-8 | M | fixed | `BBLITE_HAS_TAA`, `BBLITE_STANDARD_SKELETON`, `BBLITE_STANDARD_VERTEX_ALPHA` written by lowerers with no activation row; the 45 CMake defines have no rows | post-process-lowerer.ts:572, pinned-standard-variants.ts:2253, standard-mesh-alpha.ts:86 | rows added for the three lowerer defines; `HAS_TAA` written 0/1; the CMake-derived defines stay CMake's (a row would re-type the mapping) |
 | FA-9 | M | fixed | Dead defines with zero readers: `BBLITE_HAS_GLTF`, `BBLITE_SHADOWS`, `BBLITE_MATERIAL_DISPERSION` | CMakeLists.txt:1112-1119, upstream-lower.ts:887,900 | the two emitted defines deleted with their rows; a test scans every emitted `#define BBLITE_` for a native reader (`BBLITE_HAS_GLTF` is the build stream's) |
 | FA-10 | L | fixed | Two define conventions (always 0/1 vs defined-only-when-on); no `-Wundef` | CMakeLists.txt:303-308,916-918,942-949 | `HAS_TAA` written both ways; `STANDARD_SKELETON`/`STANDARD_VERTEX_ALPHA` stay defined-only-when-on because every PAL reader tests `defined(...)` |
-| FA-11 | M | open | `pal_physics_bullet.cpp` 99% ungated while queries/constraints/trigger/heightfield/character/floating-origin are separate features reached by 1-2 trees each; generated physics.cpp carries every arm in all 25 physics trees | pal_physics_bullet.cpp:653-2556, physics-lowerer.ts | six defines from the existing features; gate the PAL and the generated arms at reach |
+| FA-11 | M | fixed | `pal_physics_bullet.cpp` 99% ungated while queries/constraints/trigger/heightfield/character/floating-origin are separate features reached by 1-2 trees each; generated physics.cpp carries every arm in all 25 physics trees | pal_physics_bullet.cpp:653-2556, physics-lowerer.ts | six families behind `BBLITE_HAS_PHYSICS_{QUERIES,CONSTRAINTS,TRIGGER,HEIGHTFIELD,CHARACTER,FLOATING_ORIGIN}` (0/1, declarations gated in the header); the generated trigger and floating-origin arms emitted only when reached; `pal_physics_bullet.cpp.obj` 444 KB to 277 KB in a plain tree |
 | FA-12 | L | open | `runtime.hpp` 96% ungated: per-subsystem records (sprite 549, animation 302, shadow 234, picking 210, gizmo 180 lines) and eight pinned headers compiled into all trees | runtime.hpp, upstream-lower.ts | split per family behind the existing gates (compile time only) |
 | FA-13 | M | fixed | Two refusal styles (1,768 source-located `fail()` vs 136 plain throws in the activation path, 12 naming the reaching site); six ad-hoc helpers; combination rules in five places | upstream-lower.ts:644-650, shadow-capabilities.ts:173-248, compiler.ts:1054-1071, compose-pipeline.ts:1123-1128 | `src/generation-refusal.ts`: `refuseGeneration` names the reaching site; one `unsupportedCombinations` table; 80 activation-path throws routed (the TAA coverage list in compiler.ts stays with the compiler) |
 | FA-14 | L | fixed | Packaged-ImageBitmap erasure decided by `getText().includes("fetch(")` | user-functions.ts:2736-2738 | resolved `createImageBitmap` plus an AST walk for a resolved `fetch` call |
@@ -58,7 +58,7 @@ and an assertion pins a constant, never the composition order, the numeric width
 | RD-9 | M | open | Regex over our own emitted C++ decides dead locals, continuation storage and loop-fold safety | compiler.ts:13955-13975,20643; statements.ts:2912-2920,3199 | IR facts (see TR-1) |
 | RD-10 | M | fixed | Hand float restatement of the WGSL world multiply behind a text marker beside an IR-lowered normalizer | pinned-world-transform.ts:1001-1031 | lanes derived from the pinned vertex-output IR; the matrix application stays spelled until `shader-cpp-emitter.ts` gains a `mat4x4*vec4` rule (hunk in the digest) |
 | RD-11 | L | open | Four undeclared semantic re-homings in the lifted shader family (skybox fog relocation, single-sample IP/grab arms, `positionUVW` rewrite) | shader-skybox.ts:103-112, shader-builtins-utility.ts:221-242, shader-builtins-background.ts:454-459, upstream-lower.ts:3505-3516 | one fidelity paragraph |
-| RD-12 | L | open | `pick_sprite_2d` hidden-sprite guard `== 0` where the pin says `<= 0`; `baked_world_scale` names no pinned symbol | runtime.hpp:5113-5137, gltf-loader-cpp.ts:3486-3499 | the pinned read is named (`refraction-rtt-fragment.ts` thickness scale); the shape assertion belongs in `gltf/loader.ts`; the sprite guard follows with the native stream |
+| RD-12 | L | partial | `pick_sprite_2d` hidden-sprite guard `== 0` where the pin says `<= 0`; `baked_world_scale` names no pinned symbol | runtime.hpp:5113-5137, gltf-loader-cpp.ts:3486-3499 | sprite pick guard aligned with the pin's non-positive size test; `baked_world_scale` still names no pinned symbol |
 
 ## 3. Transpiler: entry compiler
 
@@ -119,22 +119,22 @@ reached only through `pal_gpu.hpp` and two dispatch sites, generated code names 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
 | NT-1 | M | fixed | TU selection has two authorities (`featureSources` vs a hand-listed REMOVE_ITEM + re-spelled Dawn predicates); `pal_dawn.cpp` added unconditionally | output-projection.ts:12-274, CMakeLists.txt:274-288,522-544 | Dawn units derived by name from the selected SDL units (a missing twin is a configure error); `pal_dawn.cpp` follows `renderer:scene`; a test pins the pattern |
-| NT-2 | M | open | Duplicated record-sync and planning logic across the backends (frame-graph target planning, 2D/effect/frame-graph conductors, sprite-layer reconciliation, VAT/bone/storage sync, clustered lights, UI backdrop, screen-space sequencing) | native digest N-FAC-1 (12 pairs) | shared conductor template, `plan_render_targets`, `sync_records` templates |
+| NT-2 | M | partial | Duplicated record-sync and planning logic across the backends (frame-graph target planning, 2D/effect/frame-graph conductors, sprite-layer reconciliation, VAT/bone/storage sync, clustered lights, UI backdrop, screen-space sequencing) | native digest N-FAC-1 (12 pairs) | bone-palette sync shared (`sync_pinned_bone_palette`); storage-buffer, VAT, sprite-layer, clustered-light, UI-backdrop, screen-space and frame-graph planning still per backend |
 | NT-3 | M | open | `run_gpu_engine` 6,855 lines and `run_dawn_engine` 6,669 lines; the conductor re-spelled in 8 loops | pal_sdl_gpu.cpp:7180-14035, pal_dawn.cpp:10143-16812 | split into setup/sync/encode/present; share the conductor |
-| NT-4 | M | open | 2D host loops order UI layout differently: Dawn before sprite updates, SDL after them and after swapchain acquire; text update likewise swapped | pal_dawn_sprite.cpp:235-297, pal_sdl_gpu_sprite.cpp:224-281 | align SDL to the scene-loop order |
-| NT-5 | M | open | Cycle collector's `owners() >= incoming + 1` invariant only asserted; an over-reporting tracer clears a live node silently in release | js_gc.hpp:216 | refuse instead of assert |
-| NT-6 | L | open | Raw texture pointer value stored in the shared Engine record | runtime.hpp:4457-4461 | allocation-counter identity |
+| NT-4 | M | fixed | 2D host loops order UI layout differently: Dawn before sprite updates, SDL after them and after swapchain acquire; text update likewise swapped | pal_dawn_sprite.cpp:235-297, pal_sdl_gpu_sprite.cpp:224-281 | SDL 2D host loop follows the scene loops' order: UI layout after `advance_frame` and before the sprite contexts; text contexts in one slot on both hosts |
+| NT-5 | M | fixed | Cycle collector's `owners() >= incoming + 1` invariant only asserted; an over-reporting tracer clears a live node silently in release | js_gc.hpp:216 | refused with an error instead of asserted |
+| NT-6 | L | fixed | Raw texture pointer value stored in the shared Engine record | runtime.hpp:4457-4461 | device-recovery texture identities published as allocation ordinals |
 | NT-7 | L | open | `--backend` through the tool reconfigures the shared dev tree in place | scene-command.ts:1237-1248 | suffix the build directory |
 | NT-8 | L | open | Per-frame canvas-size sync only in the Dawn loops | pal_dawn.cpp:12706 | shared conductor |
-| NT-9 | L | open | Transmission members ungated in SDL; morph picking gated by different macros per backend | pal_sdl_gpu.cpp:240-1168 | same defines on both backends (FA-5) |
-| NT-10 | L | open | CMake comment claims PAL objects are byte-identical across scenes; they differ | CMakeLists.txt:293-296 | reword |
-| NT-11 | L | open | SDL-flavoured default parameter in the shared header | pal_gpu_shared.hpp:6651 | drop the default |
-| NT-12 | L | open | Leaked `SDL_Cursor`; plain-global `text_weight_installed` where sibling realm state is thread_local | pal_platform_events.hpp:696-698, text.hpp:45 | destroy at quit; thread_local |
-| NT-13 | L | open | Destroy-then-placement-new assignment operators rely on nothrow copies without asserting it | runtime.hpp:833-846,5400-5413 | static_assert |
-| NT-14 | L | open | GPU ownership mostly manual; a null view from `wgpuTextureCreateView` stored unchecked | pal_dawn.cpp:3560-3561 | extend the owning wrappers |
+| NT-9 | L | fixed | Transmission members ungated in SDL; morph picking gated by different macros per backend | pal_sdl_gpu.cpp:240-1168 | same defines on both backends (with FA-5) |
+| NT-10 | L | fixed | CMake comment claims PAL objects are byte-identical across scenes; they differ | CMakeLists.txt:293-296 | reworded |
+| NT-11 | L | fixed | SDL-flavoured default parameter in the shared header | pal_gpu_shared.hpp:6651 | default dropped |
+| NT-12 | L | fixed | Leaked `SDL_Cursor`; plain-global `text_weight_installed` where sibling realm state is thread_local | pal_platform_events.hpp:696-698, text.hpp:45 | cursor destroyed with the run; the text-weight flag is realm state |
+| NT-13 | L | fixed | Destroy-then-placement-new assignment operators rely on nothrow copies without asserting it | runtime.hpp:833-846,5400-5413 | `static_assert` on the nothrow copies |
+| NT-14 | L | partial | GPU ownership mostly manual; a null view from `wgpuTextureCreateView` stored unchecked | pal_dawn.cpp:3560-3561 | every frame-graph view creation checked; ownership stays manual |
 | NT-15 | L | open | Device-option structs and the release lambda re-spelled 8 times | pal_sdl_gpu_shared.hpp:580-583, pal_dawn_shared.hpp:280-293 | one `DeviceOptions` + RAII |
-| NT-16 | L | open | Dead: `wide_to_utf8`; legacy `BBLITE_IMAGE_CODECS` default serving 0/307 trees; stale `BBLITE_ENTRY_DRIVER` cache entry | pal_win32_text.hpp:50-84, CMakeLists.txt:22-27 | the codec default is a configure error now; `wide_to_utf8` follows with the native stream |
-| NT-17 | L | open | Capture structs are ungated members of shipping text records | pal_*_text_resources.hpp:16,58,103 | gate on `BBLITE_VISUAL_CAPTURE` |
+| NT-16 | L | fixed | Dead: `wide_to_utf8`; legacy `BBLITE_IMAGE_CODECS` default serving 0/307 trees; stale `BBLITE_ENTRY_DRIVER` cache entry | pal_win32_text.hpp:50-84, CMakeLists.txt:22-27 | `wide_to_utf8` deleted; the codec default is a configure error |
+| NT-17 | L | declined | Capture structs are ungated members of shipping text records | pal_*_text_resources.hpp:16,58,103 | a constant-false `TextGpuCapture` in no-capture builds was tried and reverted: `test/fixtures/text-sdl-resources-check.cpp` reads the receipts in a `BBLITE_VISUAL_CAPTURE=0` compile (the SDL shared header's PNG readback cannot compile standalone); the shipping cost is one flag and empty vectors per text device |
 | NT-18 | L | open | Unchecked `[handle.value]` indexing convention with no debug switch | pal_dawn.cpp (94 sites), pal_sdl_gpu.cpp (64) | optional checked-handles switch |
 | NT-19 | L | open | `Callback::operator()` copies the callback (two shared_ptr copies) per invocation | js_callback.hpp:80-84 | retain the body only |
 
@@ -171,21 +171,21 @@ staleness rule) with real gaps; the `tools/` half is an accumulation: 28 checker
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
-| TL-1 | H | open | 28 interaction scripts with 24 hand-composed native environments; 1 of 13 registered-scene checkers spreads the registry `nativeEnvironment`; scenes 231/241 measured at a clock the registry never declares | tools/check-*.mjs, docs/debugging.md:72-92 | `scene -- check <id>` and `observe <id>` over declared checks |
-| TL-2 | H | open | 14 tools files and 2 example probes reachable from nothing; scene 46/47 pairs cannot run; `clean --orphans` deletes the twins other checkers use | tooling inventory, scene-command.ts:2422-2436 | delete the dead, fold the rest, owned twins |
-| TL-3 | M | open | Six "run bblite_native with env" implementations; `diff`, `capture --native` and `probe-variants` bypass `resolveNativeExecutable` | parity-scene.ts:990,1291, capture-native.ts:62-105, scene-command.ts:325,1775 | one `runMeasured()` |
-| TL-4 | M | open | 628-line shared CLI toolkit lives inside parity-scene.ts | parity-scene.ts:138-766 | `src/tooling/*` |
+| TL-1 | H | fixed | 28 interaction scripts with 24 hand-composed native environments; 1 of 13 registered-scene checkers spreads the registry `nativeEnvironment`; scenes 231/241 measured at a clock the registry never declares | tools/check-*.mjs, docs/debugging.md:72-92 | 28 checks declared under `checks/<id>.json` with a typed expectation vocabulary; the driver spreads the registry `nativeEnvironment`; 231/241 declare their 16 ms clock beside the pose |
+| TL-2 | H | fixed | 14 tools files and 2 example probes reachable from nothing; scene 46/47 pairs cannot run; `clean --orphans` deletes the twins other checkers use | tooling inventory, scene-command.ts:2422-2436 | the 27 scripts and 2 probes deleted; 46/47 run as twin checks; `clean --orphans` owns the twin and shipping trees |
+| TL-3 | M | fixed | Six "run bblite_native with env" implementations; `diff`, `capture --native` and `probe-variants` bypass `resolveNativeExecutable` | parity-scene.ts:990,1291, capture-native.ts:62-105, scene-command.ts:325,1775 | `runMeasured` is the one native run; `resolveNativeExecutable` reaches `diff`, `capture --native` and `probe-variants` |
+| TL-4 | M | fixed | 628-line shared CLI toolkit lives inside parity-scene.ts | parity-scene.ts:138-766 | `src/tooling/` (flags, artifacts, reports, png-measure, native-run, capture-path, check-spec, check-run, observe-run, generated-readers) |
 | TL-5 | M | open | `compile-shaders.ps1` re-implements target selection, tool discovery, stage identity and artifact lists, plus ~510 lines of SDL binding semantics as PowerShell regexes | tools/compile-shaders.ps1 | port to TypeScript; prove with `neutrality-generated` |
-| TL-6 | M | open | feature-activation.json, fidelity.json and provenance.json have no reader; `show` prints the registry entry only | scene-command.ts:2487-2491 | `show --activation|--adaptations|--provenance` |
+| TL-6 | M | fixed | feature-activation.json, fidelity.json and provenance.json have no reader; `show` prints the registry entry only | scene-command.ts:2487-2491 | `show --activation|--adaptations|--provenance` |
 | TL-7 | M | open | Draw attribution exists for 9 scenes only (registry-gated at compile) | scene-command.ts:240-245 | `parity --attribute` twin on demand |
-| TL-8 | M | open | No non-running "is my exe current" check | parity-scene.ts:958-980 | `status <id>` |
-| TL-9 | M | open | Zero tests spawn the 2.8k-line dispatcher | test/ | spawn-level tests |
-| TL-10 | L | open | `validate` rejects the documented `--cold`; 12 accepted options undocumented; no `help` | scene-command.ts:2756 | accept; generate usage from the flag specs |
-| TL-11 | L | open | Library functions set `process.exitCode`; exit codes 1/2/130 mixed; read-only commands hold the dist lock | scene-compose-report.ts:246, scene-neutrality.ts:319, dist-lock.ts:76 | return verdicts; skip the lock |
-| TL-12 | L | open | Two tape spellings; backend list hard-coded ×22; `enableGpuDebug` re-typed ×17 | tools/*.mjs | the driver |
-| TL-13 | L | open | Artifacts written and never read (`buffers-summary.txt`, scene49 observations); 65 orphan artifacts folders; 7 orphan trees | capture-instrumented.ts:526-529 | drop the writers; `clean --artifacts` |
-| TL-14 | L | open | 17 superfluous exports; 5 copies of the is-main-module guard; 3 hand argv parsers | verify-*.ts, write-corpus-manifest.ts | one helper; `parseFlags` |
-| TL-15 | L | open | Docs claim a registry `diagnostics` field; 5 npm scripts undocumented | docs/development.md:59, package.json | fix the word; document or delete |
+| TL-8 | M | fixed | No non-running "is my exe current" check | parity-scene.ts:958-980 | `status <id> [--run]` reads the binary's stamp |
+| TL-9 | M | fixed | Zero tests spawn the 2.8k-line dispatcher | test/ | `test/scene-command-dispatch.test.ts`, `scene-command-gaps.test.ts`, `check-spec.test.ts` |
+| TL-10 | L | fixed | `validate` rejects the documented `--cold`; 12 accepted options undocumented; no `help` | scene-command.ts:2756 | `validate --cold` accepted; usage generated from the command table (`help`) |
+| TL-11 | L | fixed | Library functions set `process.exitCode`; exit codes 1/2/130 mixed; read-only commands hold the dist lock | scene-compose-report.ts:246, scene-neutrality.ts:319, dist-lock.ts:76 | library verdicts returned; only `main` sets the exit code; read-only commands skip the lock |
+| TL-12 | L | fixed | Two tape spellings; backend list hard-coded ×22; `enableGpuDebug` re-typed ×17 | tools/*.mjs | one driver; the tape spellings documented in debugging.md |
+| TL-13 | L | fixed | Artifacts written and never read (`buffers-summary.txt`, scene49 observations); 65 orphan artifacts folders; 7 orphan trees | capture-instrumented.ts:526-529 | the `buffers-summary.txt` writer and the scene49 capture script deleted; `clean --artifacts` reports unowned entries |
+| TL-14 | L | fixed | 17 superfluous exports; 5 copies of the is-main-module guard; 3 hand argv parsers | verify-*.ts, write-corpus-manifest.ts | exports dropped; `isMainModule` and `parseFlags` |
+| TL-15 | L | fixed | Docs claim a registry `diagnostics` field; 5 npm scripts undocumented | docs/development.md:59, package.json | registry table reworded; the five scripts documented in development.md |
 
 ## 8. Building and packaging
 
@@ -200,7 +200,7 @@ two patches stale; 35% of all native compile time is the two backend TUs recompi
 | BD-3 | H | open | 35% of registry compile is `pal_dawn.cpp` + `pal_sdl_gpu.cpp` recompiled per scene for six per-scene variant headers; invariant PAL TUs (9.7%) and the PCH (11.5%, 16.7 GB) rebuilt per tree though ≤10 define tuples cover 293 scenes | pal_gpu_shared.hpp:19-89,548 | first half done: ten scene-invariant units compile in a `bblite_pal_common` object library whose compile line names no generated directory (the precondition for a cross-scene object cache); the variant tables still live in the two backend units |
 | BD-4 | M | fixed | Generation and build identity keyed by mtime: a byte-identical checkout regenerates and rebuilds everything | validation-resume.ts:72-76, generation-stamp.ts:16-19 | inputs and `dist/src` keyed by content through one size+mtime-to-sha cache; a touch of every input is a 2 s no-op |
 | BD-5 | M | open | One WGSL change re-runs the shader pass over all 307 dirs; tint/dxc re-hashed per directory | scene-command.ts:1373-1445, compile-shaders.ps1:31-35,1210-1214 | per-directory checkpoint; hoist the hashes |
-| BD-6 | M | open | `clean --orphans` would delete the 15 shipping trees; blind to 28 GB of worktree trees and PCH/DLL duplication | scene-command.ts:2389-2440 | recognise shipping trees; report |
+| BD-6 | M | fixed | `clean --orphans` would delete the 15 shipping trees; blind to 28 GB of worktree trees and PCH/DLL duplication | scene-command.ts:2389-2440 | `clean` recognises twin and shipping trees; `--report|--pch|--dlls|--artifacts` report sizes and duplication |
 | BD-7 | M | fixed | 9.8 GB identical DLL copies and 16.7 GB identical PCHs per dev tree; 1.7 GB per-tree static vcpkg installs | CMakeLists.txt:556-565 | runtime DLLs are hard links (35 MB less per dev tree, about 11 GB over the registry); the PCH follows BD-3 |
 | BD-8 | M | fixed | Population makespan floor is `antigravity-racer/main.cpp` at 417 s under clang-cl /O2 (MSVC /O1 2.3-4× faster) | ninja logs | measured: `/clang:-O1` saves 3-7% (the minutes are clang's front end on the 8.8 MB unit, not the optimizer); `BBLITE_MAIN_OPT` knob kept, default unchanged; the real fix is GC-1 |
 | BD-9 | L | fixed | ~30 copy-pasted `IN_LIST` define blocks; `/STACK` twice | CMakeLists.txt:371-1101,1148,1179 | `bblite_feature_define` (36 calls, 100 lines fewer); one `/STACK`; missing codec list is a configure error |
@@ -220,28 +220,28 @@ unread records.
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
-| DC-1 | H | open | Physics contract is a measurement diary (per-scene deltas, control counts, "still") | docs/fidelity.md:198-247 | mechanism sentences only; numbers to status |
-| DC-2 | H | open | features.md and fidelity.md restate flow graphs, text, picking, node geometry, compressed textures, local cubemaps, animation managers (~45 lines) | docs digest D11-D20 | delete the fidelity restatements |
-| DC-3 | M | open | Status coverage cells are unchecked prose; 18 rows disagree with the registry name | docs/status.md, verify-status.ts:58-69 | verify from the registry name |
-| DC-4 | M | open | Nine canvas-only MAD values have no report artifact and no checker | docs/status.md:270-287 | write and verify `report-canvas.json` |
-| DC-5 | M | open | Six wobble-exempt cells differ from the newest reports, undeclared | scene-neutrality.ts:152-168 | mark exempt cells; state the rule |
-| DC-6 | M | open | Runtime-switch table misses 8 environment variables the binary reads | docs/debugging.md:113-131 | add rows |
-| DC-7 | M | open | 10 checker scripts absent from the table | docs/debugging.md:73-87 | collapses with TL-1 |
-| DC-8 | M | open | Build-switch facts on four pages; `BBLITE_HAS_TEXT` in features.md | ui.md:9, backends.md:68, features.md:412 | one table in development.md |
-| DC-9 | M | open | Working rules duplicated between copilot-instructions and development/backends; the hygiene rule five times | development.md:40-42,53-54,69-70; backends.md:17,28-29 | keep in copilot-instructions |
-| DC-10 | M | open | features.md "remain incomplete" tails (11) mirror TODO | docs/features.md | one link per section |
-| DC-11 | M | open | docs/reviews accumulates unread records (7, +1 per PR); README says reviews live in PRs | verify-simplify.ts:140-142 | prune on merge; write the rule |
-| DC-12 | M | open | Worker service design described twice | architecture.md:80-100, backends.md:66-83 | merge into backends |
-| DC-13 | M | open | `native/CMakePresets.json` unreferenced and disagreeing with tool conventions | native/CMakePresets.json | document or delete |
-| DC-14 | L | open | Hard-coded VS 18 CMake path as workspace setup | docs/development.md:18-22 | one sentence |
+| DC-1 | H | fixed | Physics contract is a measurement diary (per-scene deltas, control counts, "still") | docs/fidelity.md:198-247 | diary removed; mechanism sentences remain, numbers in status |
+| DC-2 | H | fixed | features.md and fidelity.md restate flow graphs, text, picking, node geometry, compressed textures, local cubemaps, animation managers (~45 lines) | docs digest D11-D20 | restated sections removed |
+| DC-3 | M | fixed | Status coverage cells are unchecked prose; 18 rows disagree with the registry name | docs/status.md, verify-status.ts:58-69 | `verify-status` checks each numbered row's cell against the registry name; 18 cells lead with it |
+| DC-4 | M | fixed | Nine canvas-only MAD values have no report artifact and no checker | docs/status.md:270-287 | `parity` writes `artifacts/parity-canvas/<id>/report-canvas.json`; `verify-status` checks the canvas-only pairs against it |
+| DC-5 | M | fixed | Six wobble-exempt cells differ from the newest reports, undeclared | scene-neutrality.ts:152-168 | rule stated in status.md; `verify-status` prints the exempt cells with their newest values |
+| DC-6 | M | fixed | Runtime-switch table misses 8 environment variables the binary reads | docs/debugging.md:113-131 | rows added |
+| DC-7 | M | fixed | 10 checker scripts absent from the table | docs/debugging.md:73-87 | one table of declared checks (with TL-1) |
+| DC-8 | M | fixed | Build-switch facts on four pages; `BBLITE_HAS_TEXT` in features.md | ui.md:9, backends.md:68, features.md:412 | one table in development.md |
+| DC-9 | M | fixed | Working rules duplicated between copilot-instructions and development/backends; the hygiene rule five times | development.md:40-42,53-54,69-70; backends.md:17,28-29 | kept in copilot-instructions |
+| DC-10 | M | fixed | features.md "remain incomplete" tails (11) mirror TODO | docs/features.md | tails removed |
+| DC-11 | M | fixed | docs/reviews accumulates unread records (7, +1 per PR); README says reviews live in PRs | verify-simplify.ts:140-142 | records of merged branches deleted; the retention rule written |
+| DC-12 | M | fixed | Worker service design described twice | architecture.md:80-100, backends.md:66-83 | merged into backends |
+| DC-13 | M | fixed | `native/CMakePresets.json` unreferenced and disagreeing with tool conventions | native/CMakePresets.json | documented as the shipping recipe's Visual Studio spelling |
+| DC-14 | L | fixed | Hard-coded VS 18 CMake path as workspace setup | docs/development.md:18-22 | one sentence |
 | DC-15 | L | fixed | Refusal message points at a README API list that does not exist | expressions.ts:3953 | points at features.md |
 | DC-16 | L | fixed | Adaptation record text carries measurements into every fidelity.json | adaptations.ts:682-686 | the physics-solver record states the mechanism only (22 physics trees' fidelity.json reworded) |
-| DC-17 | L | open | Flow-graph block list uses invented names | docs/features.md:299-300 | the pin's `FgBlockType` names |
-| DC-18 | L | open | Flags the docs' advice needs are unnamed | docs/debugging.md:26 | name them |
-| DC-19 | L | open | "error84" | docs/debugging.md:79 | "Babylon error #84" |
-| DC-20 | L | open | Colour rule undocumented; solver-delta commentary ×6 and "UI residual" ×9 inline | docs/status.md | one clause plus footnotes |
-| DC-21 | L | open | Vestigial TODO section and README row | TODO.md:7-9, README.md:39 | delete |
-| DC-22 | L | open | Dated diaries in code headers (scene-neutrality.ts 85 lines; verify-status, verify-simplify, asset-download-cache, capture-suite-reference; two PAL headers) | docs digest §3 | present-tense facts |
+| DC-17 | L | fixed | Flow-graph block list uses invented names | docs/features.md:299-300 | the pin's names |
+| DC-18 | L | fixed | Flags the docs' advice needs are unnamed | docs/debugging.md:26 | named |
+| DC-19 | L | fixed | "error84" | docs/debugging.md:79 | "Babylon error #84" |
+| DC-20 | L | fixed | Colour rule undocumented; solver-delta commentary ×6 and "UI residual" ×9 inline | docs/status.md | colour rule stated; commentary follows the registry name |
+| DC-21 | L | fixed | Vestigial TODO section and README row | TODO.md:7-9, README.md:39 | deleted |
+| DC-22 | L | fixed | Dated diaries in code headers (scene-neutrality.ts 85 lines; verify-status, verify-simplify, asset-download-cache, capture-suite-reference; two PAL headers) | docs digest §3 | headers rewritten as present-tense facts |
 | DC-23 | L | open | 5 documented refusals not located; 14 reached without refusal wording | docs digest §5 | cite or soften |
 | DC-24 | L | open | 11 undocumented refusals | docs digest §5 | one clause each |
 
@@ -254,7 +254,7 @@ rows, five project-owned gates whose retirement conditions are met.
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
-| TD-1 | H | open | TODO.md carries stale structure: a fact section, entries naming no code (`manager-delta sinks`, `result-shape registries`, pick-ray copies), unreached items (namespace imports, static-tuple `every`), 3 source comments citing entries that no longer exist | TODO.md, material-options.ts:539, scene-registry.ts:1538, output-projection.ts:446 | rewrite from the measured verdict table (90 lines) |
+| TD-1 | H | fixed | TODO.md carries stale structure: a fact section, entries naming no code (`manager-delta sinks`, `result-shape registries`, pick-ray copies), unreached items (namespace imports, static-tuple `every`), 3 source comments citing entries that no longer exist | TODO.md, material-options.ts:539, scene-registry.ts:1538, output-projection.ts:446 | TODO.md rewritten from the measured entries (145 to 94 lines) |
 | TD-2 | H | open | Nullable string/number truthiness emits bare `has_value()` except through the localStorage flag; 33 trees declare `Nullable<std::string>` | data-lowering.ts:8330, web-storage.ts:96 | absent-or-empty / absent-or-zero; sweep the 33 trees |
 | TD-3 | H | open | Frame yields nest `defer_start_continuation` lambdas (scene261 161 deep; 20 trees ≥2) | compiler.ts:20591 | counted requeue at the same drain |
 | TD-4 | H | open | A PBR handle accepts Standard-only setters silently (`pbr.diffuseColor` emits the Standard field) | assignments.ts:21-33,2391-2394 | carry the family on each row |
@@ -264,8 +264,8 @@ rows, five project-owned gates whose retirement conditions are met.
 | TD-8 | M | open | KTX1 container re-parsed and copied per mip at startup; KTX2 sampler enums hand-typed | basis-transcode.ts:248, compressed-texture-lowerer.ts:744-777, gltf-packager.ts:352-380 | sampler half fixed (`makeSampler` executed through the recorder and inverted through the pin's descriptor); mip-list half spans cli.ts, the glTF template and `CompressedMipLevel` in runtime.hpp (hunks in the recorder digest) |
 | TD-9 | M | fixed | SPZ not bake-cached (280 ms vs 19 ms); no splat packaging collision check | splat-packager.ts:408-418 | SPZ framed as a cached capture keyed by container, pin and executed closure (scene123 compile 1.0 s to 0.4 s); the only unguarded collision is a 32-bit FNV clash of two sources in `compiler/assets.ts:550`, refusal hunk in the recorder digest |
 | TD-10 | M | open | Five project-owned gates meet their own retirement conditions; one example never registered | scene-registry.ts:767,805,983,4307, examples/audit-gizmo-interaction.ts | retire |
-| TD-11 | M | open | Backend items measured: `create_torus` emitted in 182 trees for 12 reaching; unversioned bone palettes; whole stylesheet re-projected per frame; per-draw eye offset; mesh triangles stored up to five times | mesh_factories emitter, pal_dawn.cpp:12907, pal_ui_rml.cpp:3306, pal_gpu_shared.hpp:626, pal_physics_bullet.cpp:157-2385 | per item |
-| TD-12 | L | open | SDL Vulkan entry is not a task (compiled out, no defect recorded); SDL versions in lockstep | build-sdl-min.ps1:156 | delete the entry |
+| TD-11 | M | partial | Backend items measured: `create_torus` emitted in 182 trees for 12 reaching; unversioned bone palettes; whole stylesheet re-projected per frame; per-draw eye offset; mesh triangles stored up to five times | mesh_factories emitter, pal_dawn.cpp:12907, pal_ui_rml.cpp:3306, pal_gpu_shared.hpp:626, pal_physics_bullet.cpp:157-2385 | bone palettes versioned (`bone_matrices_version`, `sync_pinned_bone_palette`); a mesh physics shape's triangles kept once; `create_torus` reach-gating, the stylesheet re-projection and the per-draw eye offset remain |
+| TD-12 | L | fixed | SDL Vulkan entry is not a task (compiled out, no defect recorded); SDL versions in lockstep | build-sdl-min.ps1:156 | entry trimmed to the platform gap |
 
 ## 11. Housekeeping (local checkout, not repository content)
 

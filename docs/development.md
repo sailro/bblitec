@@ -36,7 +36,11 @@ repository-local TypeScript path; `all` selects the registry.
 | `validate <scene\|all> [--cold]` | Process, parity, published-status check |
 | `clean --report\|--orphans\|--all\|--pch\|--dlls\|--artifacts` | Sizes; unowned trees; owned build trees; duplicated payloads; unowned `artifacts/` entries. Owned trees include `generated/<id>-live`, `native/build-<id>-live-release` and `native/build-<id>-min-*` |
 
-`npm run sweep` runs `validate all`; `npm test` is separate.
+`npm run sweep` runs `validate all`; `npm test` is separate. `scenes:compile`,
+`scenes:build`, `scenes:process` and `scenes:parity` are the registry-wide
+commands; `upstream:report` runs the upstream tests then a full generation;
+`shaders:build` runs the shader step (`tools/compile-shaders.ps1`) without a
+build; `clean:dist` deletes `dist/` when no scene command is running from it.
 Build `dist/` once with `npm run build`, then use
 `node dist/src/scene-command.js ...` for a sequence. Logs belong in `artifacts/`.
 
