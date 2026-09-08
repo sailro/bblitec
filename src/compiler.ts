@@ -1092,6 +1092,7 @@ class Compiler
 
         // After every feature has settled: retained UI must land on a frame
         // loop that presents it (NA-26).
+        this.refuseMixedStandaloneTextContexts();
         this.refuseUiWithoutPresentation();
         this.validateUiStaticProjection();
 
@@ -6071,6 +6072,18 @@ class Compiler
             site,
             cssName,
             "it is outside the reviewed retained-UI surface",
+        );
+    }
+
+    /** The text driver records text layers only, so mixed contexts require an explicit boundary. */
+    private refuseMixedStandaloneTextContexts(): void {
+        if (!this.features.has("renderer:text")) return;
+        const incompatible = (["renderer:scene", "renderer:sprite", "renderer:frame-graph", "renderer:effect"] as const)
+            .filter(feature => this.features.has(feature));
+        if (incompatible.length === 0) return;
+        this.failAtFile(
+            "Standalone text rendering cannot be combined with other reached rendering contexts: " +
+                incompatible.join(", ") + ". The native text driver does not preserve mixed context registration order.",
         );
     }
 
