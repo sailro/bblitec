@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-    composePinnedPbrShader,
-    importPinnedModule,
-} from "../src/pinned-shader-composer.js";
+import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { composePinnedPbrShader } from "./pinned-pbr-shader-fixture.js";
 
 test("composes the pinned PBR fragment through Babylon Lite's own composer", async () => {
     const composed = await composePinnedPbrShader();

@@ -26,6 +26,12 @@ import type { PostProcessOptionValue } from "./compiler/types.js";
 import type { ComposedPostProcess } from "./pinned-post-process.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    createRecordingDevice,
+    RecordedTextureView,
+    type RecordedRenderPass,
+    type Recorder,
+} from "./recording-device.js";
 
 /**
  * What one entry point decides, keyed by the entry point: the temporal
@@ -248,229 +254,158 @@ const SOURCE_LABEL = "bblitec-sourceTexture";
 const DEPTH_LABEL = "bblitec-depthTexture";
 const TARGET_LABEL = "bblitec-targetTexture";
 
-interface RecordedTexture {
-    label: string;
-    format: string;
-}
-
-interface RecordedView {
-    texture: RecordedTexture;
-    aspect: string;
-}
-
-interface RecordedSampler {
-    magFilter: string;
-}
-
-interface RecordedBuffer {
-    label: string;
-    size: number;
-}
-
-interface RecordedModule {
-    code: string;
-}
-
+/** One bind-group layout entry as the pin declares it. */
 interface RecordedLayoutEntry {
     binding: number;
-    kind: ScreenSpaceStageBinding["kind"];
+    texture?: { sampleType?: string };
+    sampler?: unknown;
+    buffer?: unknown;
 }
 
-interface RecordedLayout {
-    entries: readonly RecordedLayoutEntry[];
+/**
+ * The descriptor members this composition reads back off the recording:
+ * a pipeline's module, entry points, layout and colour target, and a bind
+ * group's resources. The device returns each handle as a copy of its
+ * descriptor, so the pipeline the pin stores carries the layout handle and
+ * the module handle it was built from.
+ */
+interface ScreenSpaceShapes {
+    sampler: { magFilter?: string };
+    shaderModule: { code: string };
+    bindGroupLayout: { entries: readonly RecordedLayoutEntry[] };
+    pipelineLayout: {
+        bindGroupLayouts: readonly ScreenSpaceShapes["bindGroupLayout"][];
+    };
+    renderPipeline: {
+        layout: ScreenSpaceShapes["pipelineLayout"];
+        vertex: { module: ScreenSpaceShapes["shaderModule"]; entryPoint: string };
+        fragment: {
+            entryPoint: string;
+            targets: readonly { format: string; blend?: unknown }[];
+        };
+    };
+    bindGroup: { entries: readonly { binding: number; resource: unknown }[] };
 }
 
-interface RecordedPipeline {
-    module: RecordedModule;
-    vertexEntry: string;
-    fragmentEntry: string;
-    targetFormat: string;
-    blended: boolean;
-    layout: RecordedLayout;
-}
-
-interface RecordedGroupEntry {
-    binding: number;
-    resource: RecordedView | RecordedSampler | { buffer: RecordedBuffer };
-}
-
-interface RecordedGroup {
-    entries: readonly RecordedGroupEntry[];
-}
-
-interface RecordedPass {
-    label: string;
-    attachment: RecordedTexture;
-    loadOp: string;
-    pipeline?: RecordedPipeline;
-    group?: RecordedGroup;
-    draws: number;
-}
-
-interface Recorder {
-    buffers: RecordedBuffer[];
-    passes: RecordedPass[];
-}
+type ScreenSpaceRecorder = Recorder<ScreenSpaceShapes>;
+type RecordedPass = RecordedRenderPass<ScreenSpaceShapes>;
 
 /**
  * A device that answers every call the pin's `record()` and `execute()`
  * make and remembers what was asked. Anything the pin started calling
- * beyond this surface is a `TypeError` rather than a quietly different
- * composition, which is the property that makes the stub safe.
+ * beyond this surface refuses rather than composing quietly differently,
+ * which is the property that makes the recording safe.
  */
-function recordingEngine(
-    recorder: Recorder,
-    canvas: { width: number; height: number },
-): unknown {
-    const layoutKind = (entry: {
-        texture?: { sampleType?: string };
-        sampler?: unknown;
-        buffer?: unknown;
-    }): RecordedLayoutEntry["kind"] => {
-        if (entry.texture) {
-            return entry.texture.sampleType === "depth"
-                ? "depth-texture"
-                : "texture";
+function recordingEngine(canvas: { width: number; height: number }): {
+    engine: unknown;
+    recorder: ScreenSpaceRecorder;
+} {
+    const { device, encoder, recorder } = createRecordingDevice<ScreenSpaceShapes>({
+        producer: "screen-space",
+        device: [
+            "createShaderModule",
+            "createTexture",
+            "createBuffer",
+            "createSampler",
+            "createBindGroupLayout",
+            "createPipelineLayout",
+            "createRenderPipeline",
+            "createBindGroup",
+        ],
+        queue: ["writeBuffer"],
+        encoder: ["beginRenderPass"],
+        renderPass: [
+            "setPipeline",
+            "setBindGroup",
+            "draw",
+            "setViewport",
+            "setScissorRect",
+            "end",
+        ],
+    });
+    return {
+        recorder,
+        engine: {
+            canvas,
+            msaaSamples: 1,
+            useHighPrecisionMatrix: false,
+            useFloatingOrigin: false,
+            _device: device,
+            _currentEncoder: encoder,
+            _currentDelta: 0,
+            _cbs: [],
+        },
+    };
+}
+
+function layoutKind(entry: RecordedLayoutEntry): ScreenSpaceStageBinding["kind"] {
+    if (entry.texture) {
+        return entry.texture.sampleType === "depth"
+            ? "depth-texture"
+            : "texture";
+    }
+    if (entry.sampler) return "sampler";
+    if (entry.buffer) return "uniform";
+    throw new Error(
+        "Pinned screen-space task declared a bind group entry this port " +
+            "does not recognise.",
+    );
+}
+
+/**
+ * The shapes this port carries, checked over everything the pin built --
+ * a pipeline it created and never drew with counts as much as one it did.
+ */
+function assertRecordedShapes(recorder: ScreenSpaceRecorder): void {
+    for (const layout of recorder.bindGroupLayouts) {
+        for (const entry of layout.entries) layoutKind(entry);
+    }
+    for (const pipeline of recorder.renderPipelines) {
+        if (
+            pipeline.layout.bindGroupLayouts.length !== 1 ||
+            pipeline.fragment.targets.length !== 1
+        ) {
+            throw new Error(
+                "Pinned screen-space task built a pipeline with other " +
+                    "than one bind group and one colour target.",
+            );
         }
-        if (entry.sampler) return "sampler";
-        if (entry.buffer) return "uniform";
+    }
+    for (const pass of recorder.renderPasses) {
+        if (pass.descriptor.colorAttachments.length !== 1) {
+            throw new Error(
+                "Pinned screen-space task began a pass with other than " +
+                    "one colour attachment.",
+            );
+        }
+    }
+}
+
+/** The one colour attachment a pass draws into. */
+function passAttachment(pass: RecordedPass): RecordedTextureView {
+    return pass.descriptor.colorAttachments[0]!.view;
+}
+
+/** The one pipeline and one bind group a pass drew once with. */
+function passBinding(
+    pass: RecordedPass,
+    suffix: string,
+): { pipeline: ScreenSpaceShapes["renderPipeline"]; group: ScreenSpaceShapes["bindGroup"] } {
+    const pipeline = pass.pipeline;
+    const bound = pass.bindGroups.at(-1);
+    if (!pipeline || !bound || pass.draws.length !== 1) {
         throw new Error(
-            "Pinned screen-space task declared a bind group entry this port " +
-                "does not recognise.",
+            `Pinned screen-space task's '${suffix}' pass did not bind one ` +
+                "pipeline and one bind group for one draw.",
         );
-    };
-    const device = {
-        createShaderModule: (descriptor: { code: string }): RecordedModule => ({
-            code: descriptor.code,
-        }),
-        createTexture: (descriptor: {
-            label?: string;
-            format: string;
-            size: { width: number; height: number };
-        }) => {
-            const texture: RecordedTexture = {
-                label: descriptor.label ?? "",
-                format: descriptor.format,
-            };
-            return {
-                createView: (options?: { aspect?: string }): RecordedView => ({
-                    texture,
-                    aspect: options?.aspect ?? "all",
-                }),
-                destroy: () => {},
-            };
-        },
-        createBuffer: (descriptor: {
-            label: string;
-            size: number;
-        }): RecordedBuffer & { destroy: () => void } => {
-            const buffer = {
-                label: descriptor.label,
-                size: descriptor.size,
-                destroy: () => {},
-            };
-            recorder.buffers.push(buffer);
-            return buffer;
-        },
-        createSampler: (descriptor: { magFilter?: string }): RecordedSampler => ({
-            magFilter: descriptor.magFilter ?? "nearest",
-        }),
-        createBindGroupLayout: (descriptor: {
-            entries: readonly {
-                binding: number;
-                texture?: { sampleType?: string };
-                sampler?: unknown;
-                buffer?: unknown;
-            }[];
-        }): RecordedLayout => ({
-            entries: descriptor.entries.map((entry) => ({
-                binding: entry.binding,
-                kind: layoutKind(entry),
-            })),
-        }),
-        createPipelineLayout: (descriptor: {
-            bindGroupLayouts: readonly RecordedLayout[];
-        }) => ({ layouts: descriptor.bindGroupLayouts }),
-        createRenderPipeline: (descriptor: {
-            layout: { layouts: readonly RecordedLayout[] };
-            vertex: { module: RecordedModule; entryPoint: string };
-            fragment: {
-                entryPoint: string;
-                targets: readonly { format: string; blend?: unknown }[];
-            };
-        }): RecordedPipeline => {
-            if (
-                descriptor.layout.layouts.length !== 1 ||
-                descriptor.fragment.targets.length !== 1
-            ) {
-                throw new Error(
-                    "Pinned screen-space task built a pipeline with other " +
-                        "than one bind group and one colour target.",
-                );
-            }
-            return {
-                module: descriptor.vertex.module,
-                vertexEntry: descriptor.vertex.entryPoint,
-                fragmentEntry: descriptor.fragment.entryPoint,
-                targetFormat: descriptor.fragment.targets[0]!.format,
-                blended: descriptor.fragment.targets[0]!.blend !== undefined,
-                layout: descriptor.layout.layouts[0]!,
-            };
-        },
-        createBindGroup: (descriptor: {
-            entries: readonly RecordedGroupEntry[];
-        }): RecordedGroup => ({ entries: descriptor.entries }),
-        queue: { writeBuffer: () => {} },
-    };
-    const encoder = {
-        beginRenderPass: (descriptor: {
-            label: string;
-            colorAttachments: readonly {
-                view: RecordedView;
-                loadOp: string;
-            }[];
-        }) => {
-            if (descriptor.colorAttachments.length !== 1) {
-                throw new Error(
-                    "Pinned screen-space task began a pass with other than " +
-                        "one colour attachment.",
-                );
-            }
-            const attachment = descriptor.colorAttachments[0]!;
-            const pass: RecordedPass = {
-                label: descriptor.label,
-                attachment: attachment.view.texture,
-                loadOp: attachment.loadOp,
-                draws: 0,
-            };
-            recorder.passes.push(pass);
-            return {
-                setPipeline: (pipeline: RecordedPipeline) => {
-                    pass.pipeline = pipeline;
-                },
-                setBindGroup: (_index: number, group: RecordedGroup) => {
-                    pass.group = group;
-                },
-                draw: () => {
-                    pass.draws += 1;
-                },
-                setViewport: () => {},
-                setScissorRect: () => {},
-                end: () => {},
-            };
-        },
-    };
-    const engine = {
-        canvas,
-        msaaSamples: 1,
-        useHighPrecisionMatrix: false,
-        useFloatingOrigin: false,
-        _device: device,
-        _currentEncoder: encoder,
-        _currentDelta: 0,
-        _cbs: [],
-    };
-    return engine;
+    }
+    if (bound.index !== 0) {
+        throw new Error(
+            `Pinned screen-space task's '${suffix}' pass bound its group at ` +
+                `index ${bound.index}, where its one layout sits at 0.`,
+        );
+    }
+    return { pipeline, group: bound.group };
 }
 
 interface PinnedRenderTargetModule {
@@ -495,10 +430,10 @@ interface PinnedScreenSpaceTask {
 
 /** A texture's role from what the pin labelled it and how it is viewed. */
 function textureRole(
-    view: RecordedView,
+    view: RecordedTextureView,
     name: string,
 ): ScreenSpaceTextureRole {
-    if (view.aspect === "depth-only") {
+    if ((view.descriptor.aspect ?? "all") === "depth-only") {
         if (
             view.texture.label !== SOURCE_LABEL &&
             view.texture.label !== DEPTH_LABEL
@@ -530,39 +465,35 @@ function textureRole(
 function stageFrom(
     pass: RecordedPass,
     name: string,
-    buffers: readonly RecordedBuffer[],
+    recorder: ScreenSpaceRecorder,
     suffix: string,
 ): ComposedScreenSpaceStage {
-    const pipeline = pass.pipeline;
-    const group = pass.group;
-    if (!pipeline || !group || pass.draws !== 1) {
-        throw new Error(
-            `Pinned screen-space task's '${suffix}' pass did not bind one ` +
-                "pipeline and one bind group for one draw.",
-        );
-    }
-    if (pipeline.blended) {
+    const { pipeline, group } = passBinding(pass, suffix);
+    const target = pipeline.fragment.targets[0]!;
+    const attachment = passAttachment(pass).texture;
+    if (target.blend !== undefined) {
         throw new Error(
             `Pinned screen-space task's '${suffix}' pipeline blends, which ` +
                 "this port does not carry for a dedicated stage.",
         );
     }
-    if (pipeline.targetFormat !== pass.attachment.format) {
+    if (target.format !== attachment.format) {
         throw new Error(
             `Pinned screen-space task's '${suffix}' pipeline targets ` +
-                `'${pipeline.targetFormat}' but draws into ` +
-                `'${pass.attachment.format}'.`,
+                `'${target.format}' but draws into ` +
+                `'${attachment.format}'.`,
         );
     }
-    const wgsl = pipeline.module.code;
+    const wgsl = pipeline.vertex.module.code;
     const names = new Map(
         variantBindings(wgsl, wgsl, 0).map((binding) => [
             binding.binding,
             binding.name,
         ]),
     );
-    const bindings = pipeline.layout.entries.map(
+    const bindings = pipeline.layout.bindGroupLayouts[0]!.entries.map(
         (entry): ScreenSpaceStageBinding => {
+            const kind = layoutKind(entry);
             const bound = group.entries.find(
                 (candidate) => candidate.binding === entry.binding,
             );
@@ -574,8 +505,8 @@ function stageFrom(
                 );
             }
             const resource = bound.resource;
-            if (entry.kind === "depth-texture" || entry.kind === "texture") {
-                if (!("texture" in resource)) {
+            if (kind === "depth-texture" || kind === "texture") {
+                if (!(resource instanceof RecordedTextureView)) {
                     throw new Error(
                         `Pinned screen-space task bound binding ` +
                             `${entry.binding} of '${suffix}' to a non-texture.`,
@@ -584,14 +515,14 @@ function stageFrom(
                 return {
                     binding: entry.binding,
                     name: declared,
-                    kind: entry.kind,
+                    kind,
                     role: textureRole(resource, name),
                 };
             }
-            return { binding: entry.binding, name: declared, kind: entry.kind };
+            return { binding: entry.binding, name: declared, kind };
         },
     );
-    const uniform = buffers.find(
+    const uniform = recorder.buffers.find(
         (buffer) => buffer.label === `${name}-${suffix}-uniforms`,
     );
     if (!uniform) {
@@ -601,9 +532,9 @@ function stageFrom(
     }
     return {
         wgsl,
-        vertexEntry: pipeline.vertexEntry,
-        fragmentEntry: pipeline.fragmentEntry,
-        targetFormat: pipeline.targetFormat,
+        vertexEntry: pipeline.vertex.entryPoint,
+        fragmentEntry: pipeline.fragment.entryPoint,
+        targetFormat: target.format,
         uniformBytes: uniform.size,
         bindings,
     };
@@ -617,33 +548,29 @@ function stageFrom(
 function postProcessPassFrom(
     pass: RecordedPass,
     name: string,
-    buffers: readonly RecordedBuffer[],
+    recorder: ScreenSpaceRecorder,
     suffix: string,
 ): ComposedScreenSpacePass {
-    const pipeline = pass.pipeline;
-    const group = pass.group;
-    if (!pipeline || !group || pass.draws !== 1) {
-        throw new Error(
-            `Pinned screen-space task's '${suffix}' pass did not bind one ` +
-                "pipeline and one bind group for one draw.",
-        );
-    }
-    const sampler = group.entries.find((entry) => entry.binding === 0);
-    if (!sampler || !("magFilter" in sampler.resource)) {
+    const { pipeline, group } = passBinding(pass, suffix);
+    const bound = group.entries.find((entry) => entry.binding === 0);
+    const sampler = recorder.samplers.find(
+        (candidate) => candidate === bound?.resource,
+    );
+    if (!sampler) {
         throw new Error(
             `Pinned screen-space task's '${suffix}' pass binds no sampler at 0.`,
         );
     }
-    const sampling = sampler.resource.magFilter;
+    const sampling = sampler.magFilter ?? "nearest";
     if (sampling !== "nearest" && sampling !== "linear") {
         throw new Error(
             `Pinned screen-space task's '${suffix}' pass samples '${sampling}'.`,
         );
     }
-    const uniformEntry = pipeline.layout.entries.find(
-        (entry) => entry.kind === "uniform",
+    const uniformEntry = pipeline.layout.bindGroupLayouts[0]!.entries.find(
+        (entry) => layoutKind(entry) === "uniform",
     );
-    const uniform = buffers.find(
+    const uniform = recorder.buffers.find(
         (buffer) => buffer.label === `${name}-${suffix}-uniforms`,
     );
     if ((uniformEntry === undefined) !== (uniform === undefined)) {
@@ -654,16 +581,16 @@ function postProcessPassFrom(
     }
     const extraTextures: ScreenSpaceTextureRole[] = [];
     for (const entry of group.entries) {
-        if (entry.binding < 2 || !("texture" in entry.resource)) continue;
+        if (entry.binding < 2 || !(entry.resource instanceof RecordedTextureView)) continue;
         extraTextures[entry.binding - 2] = textureRole(entry.resource, name);
     }
     return {
-        wgsl: pipeline.module.code,
+        wgsl: pipeline.vertex.module.code,
         uniformByteLength: uniform?.size ?? 0,
         uniformBinding: uniformEntry?.binding ?? 0,
         sampling,
-        blended: pipeline.blended,
-        clear: pass.loadOp === "clear",
+        blended: pipeline.fragment.targets[0]!.blend !== undefined,
+        clear: pass.descriptor.colorAttachments[0]!.loadOp === "clear",
         extraTextures,
     };
 }
@@ -726,9 +653,8 @@ export async function composeScreenSpaceTask(
     const cameras = await importPinnedModule<PinnedCameraModule>(
         "camera/arc-rotate.js",
     );
-    const recorder: Recorder = { buffers: [], passes: [] };
     const canvas = { width: 1280, height: 720 };
-    const engine = recordingEngine(recorder, canvas);
+    const { engine, recorder } = recordingEngine(canvas);
     const built = (
         label: string,
         depth: boolean,
@@ -802,19 +728,21 @@ export async function composeScreenSpaceTask(
         );
     }
     task.record();
-    const before = recorder.passes.length;
+    const before = recorder.renderPasses.length;
     task.execute();
-    const enabled = recorder.passes.slice(before);
+    const enabled = recorder.renderPasses.slice(before);
     task.enabled = false;
-    const beforeDisabled = recorder.passes.length;
+    const beforeDisabled = recorder.renderPasses.length;
     task.execute();
-    const disabled = recorder.passes.slice(beforeDisabled);
+    const disabled = recorder.renderPasses.slice(beforeDisabled);
+    assertRecordedShapes(recorder);
 
+    const label = (pass: RecordedPass): string => pass.descriptor.label ?? "";
     const find = (
         passes: readonly RecordedPass[],
         suffix: string,
     ): RecordedPass | undefined =>
-        passes.find((pass) => pass.label === `${name}-${suffix}`);
+        passes.find((pass) => label(pass) === `${name}-${suffix}`);
     const producerPass = find(enabled, "producer");
     const resolvePass = find(enabled, "resolve");
     const historyPass = find(enabled, "history-copy");
@@ -829,25 +757,25 @@ export async function composeScreenSpaceTask(
     assertPassSequence(
         request.intrinsic,
         "enabled",
-        enabled.map((pass) => strippedLabel(pass.label, name)),
+        enabled.map((pass) => strippedLabel(label(pass), name)),
         ["producer", "resolve", "history-copy", ...compositeLabels],
     );
     assertPassSequence(
         request.intrinsic,
         "disabled",
-        disabled.map((pass) => strippedLabel(pass.label, name)),
+        disabled.map((pass) => strippedLabel(label(pass), name)),
         ["clear-stable", "clear-history", ...compositeLabels],
     );
-    const producer = stageFrom(producerPass, name, recorder.buffers, "producer");
-    const resolve = stageFrom(resolvePass, name, recorder.buffers, "resolve");
+    const producer = stageFrom(producerPass, name, recorder, "producer");
+    const resolve = stageFrom(resolvePass, name, recorder, "resolve");
     const historyCopy = postProcessPassFrom(
         historyPass,
         name,
-        recorder.buffers,
+        recorder,
         "history-copy",
     );
     const composite = compositePass
-        ? postProcessPassFrom(compositePass, name, recorder.buffers, "composite")
+        ? postProcessPassFrom(compositePass, name, recorder, "composite")
         : null;
     if (historyCopy.uniformByteLength !== 0 || historyCopy.extraTextures.length !== 0) {
         throw new Error(
@@ -861,14 +789,15 @@ export async function composeScreenSpaceTask(
                 "port does not carry.",
         );
     }
-    const stable = resolvePass.attachment;
-    if (stable.label !== `${name}-stable` || historyPass.attachment.label !== `${name}-history`) {
+    const stable = passAttachment(resolvePass).texture;
+    const history = passAttachment(historyPass).texture;
+    if (stable.label !== `${name}-stable` || history.label !== `${name}-history`) {
         throw new Error(
             `Pinned ${request.intrinsic} resolves into '${stable.label}' and ` +
-                `copies into '${historyPass.attachment.label}'.`,
+                `copies into '${history.label}'.`,
         );
     }
-    if (historyPass.attachment.format !== stable.format) {
+    if (history.format !== stable.format) {
         throw new Error(
             `Pinned ${request.intrinsic} keeps stable and history targets in ` +
                 "different formats.",

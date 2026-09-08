@@ -4,12 +4,11 @@ import { asRecords, asStrings, GLTF_SOURCE_ALBEDO_IDENTITIES, type JsonObject } 
 import { javascriptModuleUrl } from "./data-url.js";
 import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
 import { importPinnedModule, importPinnedModuleWithExports, pinnedLibraryRoot, pinnedModuleUrl } from "./pinned-shader-composer.js";
+import { createRecordingDevice, RecordedTexture } from "./recording-device.js";
 
-interface TextureObservation { image?: number; fallback?: number[] }
 interface TextureCarrier { texture: object }
 interface MaterialProbe { baseColorTexture: TextureCarrier }
 interface IdentityPayload { materials: number[]; fallbackTexels: Record<number, number[]> }
-interface GpuTextureDescriptor { format: string }
 
 /** Execute the pin's cache, sampler and material construction with inert GPU transport. */
 export async function gltfSourceAlbedoIdentities(document: JsonObject): Promise<IdentityPayload> {
@@ -35,24 +34,14 @@ export function resolveImage(_json, _bin, index) {
         ["../texture/generate-mipmaps.js", javascriptModuleUrl("export function generateMipmaps() {}")],
     ]));
     const { identityTexWrap } = await importPinnedModule<{identityTexWrap: (texture: object) => object}>("loader-gltf/gltf-pbr-builder.js");
-    const uploaded = new WeakMap<object, TextureObservation>();
-    const device = {
-        createTexture(_descriptor: GpuTextureDescriptor) {
-            const texture = {createView: () => ({})};
-            uploaded.set(texture, {});
-            return texture;
-        },
-        createSampler: (descriptor: object) => ({descriptor}),
-        createBuffer: ({size}: {size: number}) => ({getMappedRange: () => new ArrayBuffer(size), unmap() {}}),
-        queue: {
-            copyExternalImageToTexture(source: {source: {sourceImage: number}}, target: {texture: object}) {
-                uploaded.set(target.texture, {image: source.source.sourceImage});
-            },
-            writeTexture(target: {texture: object}, bytes: Uint8Array) {
-                uploaded.set(target.texture, {fallback: [...bytes]});
-            },
-        },
-    };
+    // The upload each texture last received is its identity: a decoded image
+    // through `copyExternalImageToTexture`, or the factor texel `uploadTex`
+    // writes when a slot has no image.
+    const { device } = createRecordingDevice({
+        producer: "gltf-albedo-identity",
+        device: ["createTexture", "createSampler", "createBuffer"],
+        queue: ["copyExternalImageToTexture", "writeTexture"],
+    });
     const definitions = asRecords(document.materials);
     // Include the pin's implicit default material as the last association.
     const indices = [...definitions.map((_, index) => index), -1];
@@ -79,11 +68,11 @@ export function resolveImage(_json, _bin, index) {
         if (identity === undefined) {
             identity = identities.size;
             identities.set(source, identity);
-            const receipt = uploaded.get(source.texture);
-            if (!receipt || (receipt.image === undefined && !receipt.fallback)) {
+            const upload = source.texture instanceof RecordedTexture ? source.texture.uploads.at(-1) : undefined;
+            if (!upload) {
                 throw new Error("Pinned glTF albedo has no observed image or factor upload.");
             }
-            if (receipt.fallback) fallbackTexels[identity] = receipt.fallback;
+            if (upload.kind === "write") fallbackTexels[identity] = [...upload.bytes];
         }
         return identity;
     });

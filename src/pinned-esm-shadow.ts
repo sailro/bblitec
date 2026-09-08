@@ -12,6 +12,7 @@
  * post-process and node-particle families already use.
  */
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import { createRecordingDevice, writtenFloats } from "./recording-device.js";
 
 /** One texture the pinned factory asked its device for, in creation order. */
 export interface EsmTextureDescriptor {
@@ -37,83 +38,18 @@ export interface ComposedEsmShadow {
     blurTargetFormat: string;
 }
 
-interface Recorded {
-    textures: EsmTextureDescriptor[];
-    modules: string[];
-    buffers: number[][];
-    samplers: { magFilter: string; minFilter: string }[];
-    pipelineTargets: string[];
-    /**
-     * How many bind-group layouts the factory built. Dawn takes the blur
-     * pipeline's own auto layout -- derived from the same composed WGSL --
-     * so the ENTRIES are not carried; what is checked is that the pin still
-     * builds exactly the one layout that auto layout then answers for.
-     */
-    layouts: number;
-}
-
 /**
- * A device that answers the pinned factory and records what it was asked
- * for. Every method here is one the factory actually calls; a pin that grew
- * a new call fails loudly rather than silently composing less.
+ * The descriptor members this composition reads back off the recording.
+ * Every device method listed below is one the factory actually calls; a
+ * pin that grew a new call fails loudly rather than silently composing less.
  */
-function recordingEngine(recorded: Recorded): unknown {
-    const device = {
-        createTexture: (descriptor: {
-            size: { width: number; height: number };
-            format: string;
-            usage: number;
-        }) => {
-            recorded.textures.push({
-                width: descriptor.size.width,
-                height: descriptor.size.height,
-                format: descriptor.format,
-                usage: descriptor.usage,
-            });
-            return { createView: () => ({}) };
-        },
-        createShaderModule: (descriptor: { code: string }) => {
-            recorded.modules.push(descriptor.code);
-            return {};
-        },
-        createBindGroupLayout: (descriptor: unknown) => {
-            recorded.layouts += 1;
-            return descriptor;
-        },
-        createPipelineLayout: (descriptor: unknown) => descriptor,
-        createRenderPipeline: (descriptor: {
-            fragment?: { targets?: readonly { format: string }[] };
-        }) => {
-            for (const target of descriptor.fragment?.targets ?? []) {
-                recorded.pipelineTargets.push(target.format);
-            }
-            return {};
-        },
-        createBindGroup: (descriptor: unknown) => descriptor,
-        createSampler: (
-            descriptor: { magFilter: string; minFilter: string },
-        ) => {
-            recorded.samplers.push(descriptor);
-            return {};
-        },
-        createBuffer: () => ({}),
-        queue: {
-            writeBuffer: (
-                _buffer: unknown,
-                _offset: number,
-                data: ArrayBuffer,
-                byteOffset: number,
-                byteLength: number,
-            ) => {
-                recorded.buffers.push([
-                    ...new Float32Array(
-                        data.slice(byteOffset, byteOffset + byteLength),
-                    ),
-                ]);
-            },
-        },
-    };
-    return { _device: device };
+interface EsmRecordedShapes {
+    sampler: { magFilter: string; minFilter: string };
+    shaderModule: { code: string };
+    bindGroupLayout: object;
+    pipelineLayout: object;
+    renderPipeline: { fragment?: { targets?: readonly { format: string }[] } };
+    bindGroup: object;
 }
 
 /** The light shape the factory stores but never reads while composing. */
@@ -133,68 +69,88 @@ export async function composeEsmShadow(
             cfg: Record<string, number>,
         ) => unknown;
     }>("shadow/esm-directional-shadow-generator.js");
-    const recorded: Recorded = {
-        textures: [],
-        modules: [],
-        buffers: [],
-        samplers: [],
-        pipelineTargets: [],
-        layouts: 0,
-    };
+    const { device, recorder } = createRecordingDevice<EsmRecordedShapes>({
+        producer: "esm-shadow",
+        device: [
+            "createTexture",
+            "createShaderModule",
+            "createBindGroupLayout",
+            "createPipelineLayout",
+            "createRenderPipeline",
+            "createBindGroup",
+            "createSampler",
+            "createBuffer",
+        ],
+        queue: ["writeBuffer"],
+    });
     module.createEsmDirectionalShadowGenerator(
-        recordingEngine(recorded),
+        { _device: device },
         COMPOSITION_LIGHT,
         config,
     );
-    if (recorded.textures.length !== 4) {
+    const textures = recorder.textures.map(
+        (texture): EsmTextureDescriptor => ({
+            width: texture.width,
+            height: texture.height,
+            format: texture.format,
+            usage: texture.usage,
+        }),
+    );
+    if (textures.length !== 4) {
         throw new Error(
             "Expected the pinned ESM factory to build four textures " +
-                `(esm, depth, blurH, blurV); it built ${
-                    recorded.textures.length
-                }.`,
+                `(esm, depth, blurH, blurV); it built ${textures.length}.`,
         );
     }
-    if (recorded.modules.length !== 2) {
+    const modules = recorder.shaderModules.map((shader) => shader.code);
+    if (modules.length !== 2) {
         throw new Error(
             "Expected the pinned ESM factory to build a blur vertex and " +
-                `fragment module; it built ${recorded.modules.length}.`,
+                `fragment module; it built ${modules.length}.`,
         );
     }
     // The two direction UBOs, plus the 24-float receiver block the shared
     // shadow UBO writes last. Only the first two describe the blur.
-    const directions = recorded.buffers.filter(
-        (values) => values.length === 4,
-    );
+    const directions = recorder.bufferWrites
+        .map(writtenFloats)
+        .filter((values) => values.length === 4);
     if (directions.length !== 2) {
         throw new Error(
             "Expected the pinned ESM factory to write two 4-float blur " +
                 `directions; it wrote ${directions.length}.`,
         );
     }
-    if (recorded.pipelineTargets.length !== 1) {
+    const pipelineTargets = recorder.renderPipelines.flatMap((pipeline) =>
+        (pipeline.fragment?.targets ?? []).map((target) => target.format),
+    );
+    if (pipelineTargets.length !== 1) {
         throw new Error(
             "Expected the pinned blur pipeline to declare one colour " +
-                `target; it declared ${recorded.pipelineTargets.length}.`,
+                `target; it declared ${pipelineTargets.length}.`,
         );
     }
-    if (recorded.samplers.length !== 1) {
+    if (recorder.samplers.length !== 1) {
         throw new Error(
             "Expected the pinned ESM factory to ask for one sampler; it " +
-                `asked for ${recorded.samplers.length}.`,
+                `asked for ${recorder.samplers.length}.`,
         );
     }
-    if (recorded.layouts !== 1) {
+    // Dawn takes the blur pipeline's own auto layout -- derived from the
+    // same composed WGSL -- so the layout's ENTRIES are not carried; what is
+    // checked is that the pin still builds exactly the one layout that auto
+    // layout then answers for.
+    if (recorder.bindGroupLayouts.length !== 1) {
         throw new Error(
             "Expected the pinned ESM factory to build one bind-group " +
-                `layout; it built ${recorded.layouts}.`,
+                `layout; it built ${recorder.bindGroupLayouts.length}.`,
         );
     }
     return {
-        textures: recorded.textures,
-        blurVertexWgsl: recorded.modules[0]!,
-        blurFragmentWgsl: recorded.modules[1]!,
+        textures,
+        blurVertexWgsl: modules[0]!,
+        blurFragmentWgsl: modules[1]!,
         blurDirections: directions,
-        blurSampler: recorded.samplers[0]!,
-        blurTargetFormat: recorded.pipelineTargets[0]!,
+        blurSampler: recorder.samplers[0]!,
+        blurTargetFormat: pipelineTargets[0]!,
     };
 }

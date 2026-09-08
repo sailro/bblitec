@@ -14,6 +14,11 @@ import {
     asStrings,
     type JsonRecord,
 } from "./gltf-document.js";
+import {
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "./pinned-shader-composer.js";
+import { createRecordingDevice } from "./recording-device.js";
 import { dirname, extname, resolve } from "node:path";
 
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
@@ -349,26 +354,114 @@ function basisuImageColorSpaces(
 }
 
 /**
+ * The glTF specification's sampler enumerations (`sampler.magFilter`,
+ * `sampler.minFilter`, `sampler.wrapS`/`wrapT`). The pin reads them but
+ * never tabulates them: `gltfTexSamplerDesc` tests the values it must tell
+ * apart and lets every other fall to its default arm. Spelled once, as the
+ * search space the derivation below runs the pin's own mapping over.
+ */
+const GLTF_SAMPLER_ENUMS = {
+    magFilter: [9728, 9729],
+    minFilter: [9728, 9729, 9984, 9985, 9986, 9987],
+    wrap: [33071, 33648, 10497],
+} as const;
+
+/** A WebGPU sampler descriptor as both pinned functions spell it. */
+type PinnedSamplerDescriptor = Readonly<Record<string, string | number>>;
+
+/**
+ * The sampler `ktx2-loader.ts#makeSampler` builds for a chain of `mipCount`
+ * levels, read by executing it against a recording device: the one
+ * descriptor it asks the device for.
+ */
+async function pinnedKtx2SamplerDescriptor(
+    mipCount: number,
+): Promise<PinnedSamplerDescriptor> {
+    const { makeSampler } = await importPinnedModule<{
+        makeSampler: (engine: unknown, mipCount: number) => unknown;
+    }>("texture/ktx2-loader.js");
+    const { device, recorder } = createRecordingDevice<{
+        sampler: PinnedSamplerDescriptor;
+        shaderModule: object;
+        bindGroupLayout: object;
+        pipelineLayout: object;
+        renderPipeline: object;
+        bindGroup: object;
+    }>({ producer: "ktx2-sampler", device: ["createSampler"] });
+    makeSampler({ _device: device }, mipCount);
+    const descriptor = recorder.samplers[0];
+    if (recorder.samplers.length !== 1 || !descriptor) {
+        throw new Error(
+            "Pinned ktx2-loader makeSampler asked its device for " +
+                `${recorder.samplers.length} samplers rather than one.`,
+        );
+    }
+    return descriptor;
+}
+
+/**
+ * The glTF sampler the pin's own `gltfTexSamplerDesc` turns into
+ * `descriptor`, found by running that mapping over the specification's
+ * enumerations and refused unless exactly one sampler reproduces it.
+ */
+async function gltfSamplerFor(
+    descriptor: PinnedSamplerDescriptor,
+    what: string,
+): Promise<JsonRecord> {
+    const { gltfTexSamplerDesc } = await importPinnedModuleWithExports<{
+        gltfTexSamplerDesc: (
+            json: JsonRecord,
+            texInfo: { index: number },
+        ) => PinnedSamplerDescriptor;
+    }>("loader-gltf/gltf-sampler-desc.js", ["gltfTexSamplerDesc"]);
+    const reproduces = (mapped: PinnedSamplerDescriptor): boolean =>
+        [...new Set([...Object.keys(descriptor), ...Object.keys(mapped)])].every(
+            (key) => descriptor[key] === mapped[key],
+        );
+    const matches: JsonRecord[] = [];
+    for (const magFilter of GLTF_SAMPLER_ENUMS.magFilter) {
+        for (const minFilter of GLTF_SAMPLER_ENUMS.minFilter) {
+            for (const wrapS of GLTF_SAMPLER_ENUMS.wrap) {
+                for (const wrapT of GLTF_SAMPLER_ENUMS.wrap) {
+                    const sampler: JsonRecord = { magFilter, minFilter, wrapS, wrapT };
+                    const mapped = gltfTexSamplerDesc(
+                        { textures: [{ sampler: 0 }], samplers: [sampler] },
+                        { index: 0 },
+                    );
+                    if (reproduces(mapped)) matches.push(sampler);
+                }
+            }
+        }
+    }
+    const match = matches[0];
+    if (matches.length !== 1 || !match) {
+        throw new Error(
+            `${what}: ${matches.length} glTF samplers map to the pinned ` +
+                `descriptor ${JSON.stringify(descriptor)} through ` +
+                "gltfTexSamplerDesc, where exactly one must.",
+        );
+    }
+    return match;
+}
+
+/**
  * The sampler `ktx2-loader.ts#makeSampler` builds, in glTF enums.
  *
  * The extension's textures never pass through `makeSamplerFor`: the pin
- * uploads them itself and gives each the one sampler that module builds —
- * repeat on both axes, linear min and mag, and a mip filter and anisotropy
- * that follow the chain the container carried. Resolving the extension away
- * hands the texture back to the core sampler path, so the sampler it reads
- * there is written here to say the same thing.
+ * uploads them itself and gives each the one sampler that module builds.
+ * Resolving the extension away hands the texture back to the core sampler
+ * path, so the sampler written into the document has to be the one that
+ * path maps to the same descriptor -- both halves executed from the pin,
+ * for a chain of `mipCount` levels.
  */
-function ktx2SamplerIndex(document: JsonRecord, mipCount: number): number {
-    const sampler: JsonRecord = {
-        magFilter: 9729,
-        // LINEAR_MIPMAP_LINEAR, or LINEAR_MIPMAP_NEAREST for a single
-        // level: `gltfTexSamplerDesc` reads the nearest mip filter off the
-        // second enum and drops anisotropy with it, which is exactly what
-        // `makeSampler` does at a mip count of one.
-        minFilter: mipCount > 1 ? 9987 : 9985,
-        wrapS: 10497,
-        wrapT: 10497,
-    };
+async function ktx2SamplerIndex(
+    document: JsonRecord,
+    mipCount: number,
+): Promise<number> {
+    const sampler = await gltfSamplerFor(
+        await pinnedKtx2SamplerDescriptor(mipCount),
+        `${BASISU_EXTENSION} sampler`,
+    );
     const samplers = asRecords(document.samplers);
     // By field, not by serialized text: a document that spells the same
     // four enums in a different key order would otherwise miss the reuse
@@ -658,7 +751,7 @@ export async function packageGltf(
             mimeType = KTX_MIME;
             transcodedSamplers.set(
                 imageIndex,
-                ktx2SamplerIndex(document, transcoded.mips.length),
+                await ktx2SamplerIndex(document, transcoded.mips.length),
             );
         }
         const offset = append(bytes);

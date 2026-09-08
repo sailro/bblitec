@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     ensurePinnedLoaderExecution,
-    pinnedLoaderExecuted,
     pinnedMaterialInputFromGltf,
 } from "../src/pinned-material-input.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
@@ -20,16 +19,16 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 // observable) cannot depend on when the loader executed.
 
 test("the pinned loader executes on demand, not at import, and moves no bytes", async () => {
-    // Bare import ran no pinned loader execution.
-    assert.equal(pinnedLoaderExecuted(), false);
-
-    // Reading materials before the await refuses by name instead of
-    // misbehaving — the guard that turns a missed consumer into a loud
-    // failure rather than a subtle reorder.
-    assert.throws(
-        () => pinnedMaterialInputFromGltf({}),
-        /ensurePinnedLoaderExecution/,
-    );
+    // Bare import ran no pinned loader execution: reading materials before
+    // the await refuses by name instead of misbehaving — the guard that
+    // turns a missed consumer into a loud failure rather than a subtle
+    // reorder — and that refusal is what observes the loader as not run.
+    const loaderNotRun = (): void =>
+        assert.throws(
+            () => pinnedMaterialInputFromGltf({}),
+            /ensurePinnedLoaderExecution/,
+        );
+    loaderNotRun();
 
     // A composition can now precede the loader (a scene-code material in
     // a process that later meets a glTF one). It anchors the curated
@@ -46,12 +45,13 @@ test("the pinned loader executes on demand, not at import, and moves no bytes", 
         { ...input },
         { sceneFeatures: PBR_HAS_ENV },
     );
-    assert.equal(pinnedLoaderExecuted(), false);
+    loaderNotRun();
 
-    // The loader runs on the first await, idempotently.
+    // The loader runs on the first await, idempotently, and the same read
+    // then answers.
     await ensurePinnedLoaderExecution();
     await ensurePinnedLoaderExecution();
-    assert.equal(pinnedLoaderExecuted(), true);
+    assert.doesNotThrow(() => pinnedMaterialInputFromGltf({}));
 
     // The same input composes the same bytes after the loader ran: the
     // executed imports touched no pinned registry, so the material UBO

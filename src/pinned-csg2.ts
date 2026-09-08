@@ -3,6 +3,8 @@
  * Only retained CPU geometry crosses this boundary; source and output mesh
  * construction remain live through the existing native mesh-data intrinsic.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 import {
     createSuiteSceneServer,
@@ -118,21 +120,40 @@ async function replayPlan(
     }
 }
 
+/**
+ * Where the page imports the recorder module from. The module imports
+ * nothing, so its compiled text is served verbatim and the browser replay
+ * records through the same strict device the Node replay does.
+ */
+const RECORDER_MODULE_PATH = "/bblitec/recording-device.js";
+
+function recorderModuleSource(): string {
+    return readFileSync(
+        fileURLToPath(new URL("./recording-device.js", import.meta.url)),
+        "utf8",
+    );
+}
+
 /** The exact driver source is also part of the persistent cache identity. */
 function csg2Driver(request: Csg2BakeRequest): string {
     return `
 import * as csg from "${pinnedBrowserModuleUrl("mesh/csg2.js")}";
 import * as factories from "${pinnedBrowserModuleUrl("mesh/mesh-factories.js")}";
+import { createRecordingDevice } from "${RECORDER_MODULE_PATH}";
 ${pageBase64Script}
+${recordingCsgEngine.toString()}
 window.__bakeCsg2 = () => (${replayPlan.toString()})(
     ${JSON.stringify(request)}, csg, factories,
-    ${recordingCsgEngine.toString()}, ${packBakedCsgMesh.toString()}, bblBase64);
+    recordingCsgEngine, ${packBakedCsgMesh.toString()}, bblBase64);
 `;
 }
 
 /** Called by the synchronous compiler's generation child. */
+// Referenced by name from the generation-child script `bakeCsg2Meshes` runs below.
 export async function executeCsg2Bake(request: Csg2BakeRequest): Promise<unknown> {
-    const server = createSuiteSceneServer(csg2Driver(request));
+    const server = createSuiteSceneServer(csg2Driver(request), {
+        virtualModules: { [RECORDER_MODULE_PATH]: recorderModuleSource() },
+    });
     return runPageGlobal(server, "__bakeCsg2", {
         serverName: "pinned CSG2 bake",
         browserRequirement: "Pinned CSG2 Manifold WASM requires Chrome or Edge.",
@@ -142,9 +163,11 @@ export async function executeCsg2Bake(request: Csg2BakeRequest): Promise<unknown
 export function bakeCsg2Meshes(request: Csg2BakeRequest): readonly BakedCsg2Mesh[] {
     const bytes = cachedBakeSync({
         kind: "executed-csg2-solid", version: "1", module: moduleIdentity(import.meta.url),
-        // The complete executed driver includes the shared recording and
-        // stream transport helpers, so changes there cannot reuse old bytes.
-        browser: true, parameters: { request }, inputs: [Buffer.from(csg2Driver(request))],
+        // The complete executed driver includes the recording engine and the
+        // stream transport helpers, and the served recorder module joins it,
+        // so changes to any of them cannot reuse old bytes.
+        browser: true, parameters: { request },
+        inputs: [Buffer.from(csg2Driver(request)), Buffer.from(recorderModuleSource())],
     }, () => Buffer.from(runGenerationChild({
         script: `
 const source = JSON.parse(process.env.BBLITE_CSG2_REQUEST);
