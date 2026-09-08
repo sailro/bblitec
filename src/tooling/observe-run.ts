@@ -243,7 +243,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                     await navigateReady(page, origin, spec.ready);
                     await page.unroute("**/scene.html");
                     ready = true;
-                } else if (!ready) {
+                } else if (!ready || spec.reloadEachStep) {
                     await page.setViewportSize({ width: viewport[0], height: viewport[1] });
                     await navigateReady(page, origin, spec.ready);
                     ready = true;

@@ -33,9 +33,11 @@ export function check(context) {
                     assert(Math.abs(phase.capture.camera[key] - state.camera[key]) < 1e-8, `${where}: camera ${key}: ${phase.capture.camera[key]} vs ${state.camera[key]}`);
                 }
             }
-            if (state.position !== undefined && state.width !== undefined && phase.id !== "initial" && phase.id !== "textarea-resize" && phase.id !== "window-resize" && phase.id !== "orbit" && phase.id !== "zoom") {
-                assert.equal(state.position.x, -state.width * 0.01 * 0.5, `${where}: the browser text is centred`);
-                assert.equal(state.position.y, state.height * 0.01 * 0.5, `${where}: the browser text is centred`);
+            if (state.position !== undefined && state.width !== undefined && (phase.id === "edit" || phase.id === "empty" || phase.id === "regrow")) {
+                // `===`, not Object.is: an empty text centres at -0, which the
+                // observation's JSON carries as 0.
+                assert.ok(state.position.x === -state.width * 0.01 * 0.5, `${where}: the browser text is centred (x ${state.position.x}, width ${state.width})`);
+                assert.ok(state.position.y === state.height * 0.01 * 0.5, `${where}: the browser text is centred (y ${state.position.y}, height ${state.height})`);
             }
             const draw = gpu.draws[0];
             const expectedLive = state.instances.filter(Boolean);

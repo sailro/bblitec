@@ -4,9 +4,10 @@
  * `draws[pipeline=shader].order`, `materials[directIntensity=0].textures[slot=metallicRoughness].byteLength`.
  *
  * Segments are separated by `.`. A segment is a property name, optionally
- * followed by one selector: `[<index>]` picks one element, `[*]` keeps
- * every element, `[<key>=<value>]` keeps the elements whose `key` equals
- * `value` (parsed as JSON when it parses, else the literal text). A
+ * followed by selectors applied in turn: `[<index>]` picks one element,
+ * `[*]` keeps every element, `[<key>=<value>]` keeps the elements whose
+ * `key` equals `value` (parsed as JSON when it parses, else the literal
+ * text), so `draws[pipeline=billboard][0]` is the first matching draw. A
  * property applied to an array maps over its elements, so a selection is
  * followed naturally by the field read from each match; `length` on an
  * array is its size. A missing property yields `undefined` at that point
@@ -15,12 +16,21 @@
 export function readCapturePath(value: unknown, path: string): unknown {
     let current: unknown = value;
     for (const segment of splitSegments(path)) {
-        const match = /^([^[]*)(?:\[(.*)\])?$/.exec(segment);
-        if (!match) throw new Error(`capture path: cannot parse segment '${segment}' of '${path}'`);
-        const name = match[1] ?? "";
-        const selector = match[2];
+        const open = segment.indexOf("[");
+        const name = open < 0 ? segment : segment.slice(0, open);
         if (name !== "") current = property(current, name);
-        if (selector !== undefined) current = select(current, selector, path);
+        if (open < 0) continue;
+        const selectors = segment.slice(open);
+        const pattern = /\[([^\]]*)\]/g;
+        let consumed = 0;
+        for (let match = pattern.exec(selectors); match !== null; match = pattern.exec(selectors)) {
+            if (match.index !== consumed) break;
+            consumed = match.index + match[0].length;
+            current = select(current, match[1] ?? "", path);
+        }
+        if (consumed !== selectors.length) {
+            throw new Error(`capture path: cannot parse segment '${segment}' of '${path}'`);
+        }
     }
     return current;
 }

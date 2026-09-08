@@ -34,6 +34,22 @@ test("parses a declared check and expands tape shorthands", () => {
     assert.equal(spec.phases.length, 2);
     assert.deepEqual(expandTape(spec.phases[1]!.tape!), ["-", "-", "-", "+UiMouseLeft@1:2"]);
     assert.equal(spec.expect[0]!.kind, "capture-path");
+    const observed = parseCheckSpec(
+        JSON.stringify({
+            ...minimal,
+            gpuDebug: false,
+            observe: {
+                ready: "preLossReady",
+                reloadEachStep: true,
+                steps: [{ id: "s", actions: [{ drag: [1, 2, 3, 4], steps: 8 }, { fill: { selector: "#t", text: "x" } }], screenshot: "canvas" }],
+            },
+        }),
+        "test",
+    );
+    assert.equal(observed.gpuDebug, false);
+    assert.equal(observed.observe?.ready, "preLossReady");
+    assert.equal(observed.observe?.reloadEachStep, true);
+    assert.deepEqual(observed.observe?.steps[0]?.actions?.[0], { drag: [1, 2, 3, 4], steps: 8 });
 });
 
 test("refuses unknown keys, kinds and undeclared phases by name", () => {
@@ -83,6 +99,9 @@ test("reads a capture through the path language", () => {
     assert.deepEqual(readCapturePath(capture, "meshes[*].position"), [[1, 2, 3], [4, 5, 6]]);
     assert.equal(readCapturePath(capture, "draws[pipeline=shader].length"), 2);
     assert.deepEqual(readCapturePath(capture, "draws[pipeline=shader].order"), [1000, 1000]);
+    assert.equal(readCapturePath(capture, "draws[pipeline=shader][1].order"), 1000);
+    assert.equal(readCapturePath(capture, "draws[pipeline=shader][2]"), undefined);
+    assert.throws(() => readCapturePath(capture, "draws[pipeline=shader]x[0]"), /cannot parse segment/);
     assert.deepEqual(readCapturePath(capture, "materials[directIntensity=0].textures[slot=metallicRoughness].byteLength"), [[4]]);
     assert.equal(readCapturePath(capture, "camera.missing.deeper"), undefined);
     assert.throws(() => readCapturePath(capture, "draws[bad]"), /must be an index/);

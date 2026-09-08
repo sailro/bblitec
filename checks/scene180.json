@@ -260,6 +260,7 @@
         "inject": "window.__observe = () => { const group = data._groups[0]; const ids = new Map([...group._curveSet._atlas._glyphSlots].map(([id, slot]) => [slot._index, id])); const instances = Array.from({ length: data._instanceCount }, (_, i) => { const word = data._instancesU32[i * 3 + 2]; return word === 0xffffffff ? null : [ids.get(word & 0xffff), data._instances[i * 3], data._instances[i * 3 + 1], word >>> 16]; }); const form = document.getElementById('textInput').getBoundingClientRect(); return { instances, styles: Array.from(data._styles), uniform: Array.from(window.__textUniform), layer: { position: layer.positionPx, scale: layer.scale, rotation: layer.rotationRad, opacity: layer.opacity }, viewport: { width: engine.canvas.width, height: engine.canvas.height }, form: { width: form.width, height: form.height }, values: Object.fromEntries(['weight', 'rot', 'opacity', 'red', 'green', 'blue'].map((id) => [id, document.getElementById(id).value])) }; };"
       }
     ],
+    "reloadEachStep": true,
     "steps": [
       {
         "id": "initial",

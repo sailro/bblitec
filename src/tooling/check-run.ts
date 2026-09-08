@@ -613,7 +613,14 @@ export async function runCheck(options: CheckRunOptions): Promise<CheckVerdict> 
                         : `${expectation.module}: ${findings.join("; ")}`,
                 });
             } catch (error) {
-                record({ index, kind: "plugin", ok: false, detail: `${expectation.module}: ${(error as Error).message}` });
+                // An assertion carries what it compared; the detail keeps
+                // both sides so a failure is diagnosable from the report.
+                const assertion = error as Error & { actual?: unknown; expected?: unknown; code?: string };
+                const sides =
+                    assertion.code === "ERR_ASSERTION" && (assertion.actual !== undefined || assertion.expected !== undefined)
+                        ? ` (actual ${describe(assertion.actual)}, expected ${describe(assertion.expected)})`
+                        : "";
+                record({ index, kind: "plugin", ok: false, detail: `${expectation.module}: ${assertion.message}${sides}` });
             }
             continue;
         }
