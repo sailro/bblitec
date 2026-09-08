@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { createHash } from "node:crypto";
 import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 
 type Fail = (node: ts.Node, message: string) => never;
@@ -2180,7 +2181,8 @@ export class DataTypeRegistry {
         ts.isTypeAliasDeclaration(declaration) &&
         ts.isTypeReferenceNode(declaration.type) &&
         ts.isIdentifier(declaration.type.typeName) &&
-        declaration.type.typeName.text === "Record",
+        declaration.type.typeName.text === "Record" &&
+        isDefaultLibraryIdentifier(this.checker, declaration.type.typeName),
     );
     if (!directRecordAlias && !namedRecordAlias) {
       return undefined;

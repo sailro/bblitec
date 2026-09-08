@@ -38,10 +38,54 @@ export function isBabylonModule(specifier: string): boolean {
  */
 export const physicsEngineModulePackage = "@babylonjs/havok";
 
+/**
+ * Whether a symbol is declared in one of TypeScript's own library files.
+ *
+ * Every `lib.*.d.ts` the compiler ships carries the `no-default-lib`
+ * directive, which is the marker `Program.isSourceFileDefaultLibrary`
+ * itself reads for a declaration file; asking the file directly lets a
+ * reader that holds only a checker give the same answer as the compiler.
+ */
+export function declaredInDefaultLibrary(
+    symbol: ts.Symbol | undefined,
+): boolean {
+    return (symbol?.declarations ?? []).some((declaration) => {
+        const file = declaration.getSourceFile();
+        return file.isDeclarationFile && file.hasNoDefaultLib;
+    });
+}
+
+/**
+ * Whether an identifier names a default-library global (`Math`, `fetch`,
+ * `URL`, `Error`) rather than a binding of the program's own. The one
+ * answer to "is this the library's `X`": a scene's own `Math`, however it
+ * came to be bound, is not.
+ */
+export function isDefaultLibraryIdentifier(
+    checker: ts.TypeChecker,
+    identifier: ts.Identifier,
+): boolean {
+    const symbol =
+        ts.isShorthandPropertyAssignment(identifier.parent) &&
+        identifier.parent.name === identifier
+            ? checker.getShorthandAssignmentValueSymbol(identifier.parent)
+            : checker.getSymbolAtLocation(identifier);
+    const resolved =
+        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+            ? checker.getAliasedSymbol(symbol)
+            : symbol;
+    return declaredInDefaultLibrary(resolved);
+}
+
 export class CompilerSymbols {
     public constructor(
         private readonly checker: ts.TypeChecker,
     ) {}
+
+    /** See {@link isDefaultLibraryIdentifier}. */
+    public isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean {
+        return isDefaultLibraryIdentifier(this.checker, identifier);
+    }
 
     /** Resolve a generation-known enum value through its pinned declaration,
      * including a property whose flow type has narrowed away the alias name. */

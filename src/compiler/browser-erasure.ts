@@ -1745,6 +1745,7 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(call.expression) &&
             ts.isIdentifier(call.expression.expression) &&
             call.expression.expression.text === "Object" &&
+            this.context.isDefaultLibraryIdentifier(call.expression.expression) &&
             (call.expression.name.text === "assign" ||
                 (call.expression.name.text === "defineProperty" &&
                     call.arguments[0] !== undefined &&

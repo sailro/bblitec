@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 
 export interface PromiseLoweringContext {
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     compileValue(expression: ts.Expression): Value;
     compileCallbackWithValues(
         declaration: ts.ArrowFunction | ts.FunctionExpression,
@@ -32,6 +33,7 @@ export function compileImmediatePromise(
         ts.isPropertyAccessExpression(call.expression) &&
         ts.isIdentifier(call.expression.expression) &&
         call.expression.expression.text === "Promise" &&
+        context.isDefaultLibraryIdentifier(call.expression.expression) &&
         call.expression.name.text === "resolve"
     ) {
         if (call.arguments.length !== 1) {
@@ -46,6 +48,7 @@ export function compileImmediatePromise(
         ts.isPropertyAccessExpression(call.expression) &&
         ts.isIdentifier(call.expression.expression) &&
         call.expression.expression.text === "Promise" &&
+        context.isDefaultLibraryIdentifier(call.expression.expression) &&
         call.expression.name.text === "all"
     ) {
         if (call.arguments.length !== 1) {

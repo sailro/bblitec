@@ -27,6 +27,7 @@
 import ts from "typescript";
 
 import { readProperty, type PropertyContext } from "./properties.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 import type { CompileAsset, Feature, Value } from "./types.js";
 
 /**
@@ -278,7 +279,8 @@ export function compileAudioDecodeAssetCall(
         if (ts.isCallExpression(node)) {
             if (
                 ts.isIdentifier(node.expression) &&
-                node.expression.text === "fetch"
+                node.expression.text === "fetch" &&
+                isDefaultLibraryIdentifier(context.checker, node.expression)
             ) {
                 fetches = true;
             } else if (

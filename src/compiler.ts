@@ -173,6 +173,7 @@ import {
     passesByReferenceKind,
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
+    declaredInDomLibrary,
     handleCppType,
     type DataIterationElement,
     type DataType,
@@ -1268,18 +1269,12 @@ class Compiler
                 "A native host UI companion requires a scene engine.",
             );
         }
-        this.features.add("ui:rml");
         // The reaching "site" is the audited companion file itself: a
         // companion-only scene has no call in its own source to name, and
         // leaving the site empty would attribute the activation to the
         // compiled scene TypeScript. A scene-source reach recorded during
-        // the walk still wins, matching `reachFeature`'s first-reach rule.
-        if (!this.featureSites.has("ui:rml")) {
-            this.featureSites.set(
-                "ui:rml",
-                `${hostUi.sourcePath} (host UI companion)`,
-            );
-        }
+        // the walk still wins, by `reachFeature`'s first-reach rule.
+        this.reachFeature("ui:rml", `${hostUi.sourcePath} (host UI companion)`);
         const indent = "    ".repeat(2);
         const emitted: string[] = [];
         const ids = new Set<string>();
@@ -1907,7 +1902,16 @@ class Compiler
         }
         const vat = name ? NULLABLE_VAT_RESOURCE_TYPES.get(name) : undefined;
         if (vat) return vat;
-        if (name?.endsWith("Node")) {
+        // Resolved through the DOM library's own `AudioNode`: a scene's
+        // `SceneNode`, or the pin's `TransformNode`, is not a Web Audio node.
+        if (
+            this.typeIsOrExtendsNamed(
+                members[0]!,
+                "AudioNode",
+                new Set(),
+                declaredInDomLibrary,
+            )
+        ) {
             return {
                 kind: "audio-node",
                 cppType: "bbl::pal::AudioNodeHandle",
@@ -1929,12 +1933,18 @@ class Compiler
         return undefined;
     }
 
+    /**
+     * Whether a type is, or derives from, the class or interface named
+     * `name`; `declaredBy` narrows which declaration of that name counts
+     * (the DOM library's `AudioNode`, not a scene's own class of that name).
+     */
     private typeIsOrExtendsNamed(
         type: ts.Type,
         name: string,
         visited = new Set<ts.Type>(),
+        declaredBy: (symbol: ts.Symbol) => boolean = () => true,
     ): boolean {
-        if (type.symbol?.name === name) return true;
+        if (type.symbol?.name === name && declaredBy(type.symbol)) return true;
         if (visited.has(type) || (type.flags & ts.TypeFlags.Object) === 0) {
             return false;
         }
@@ -1951,7 +1961,7 @@ class Compiler
             this.checker
                 .getBaseTypes(type as ts.InterfaceType)
                 ?.some((base) =>
-                    this.typeIsOrExtendsNamed(base, name, visited),
+                    this.typeIsOrExtendsNamed(base, name, visited, declaredBy),
                 ) ?? false
         );
     }
@@ -10601,14 +10611,7 @@ class Compiler
     }
 
     public isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean {
-        const declarations = this.symbols.valueSymbol(identifier)?.declarations;
-        return (
-            declarations?.some((declaration) =>
-                this.program.isSourceFileDefaultLibrary(
-                    declaration.getSourceFile(),
-                ),
-            ) ?? false
-        );
+        return this.symbols.isDefaultLibraryIdentifier(identifier);
     }
 
     /**
@@ -12248,6 +12251,7 @@ class Compiler
             !ts.isNewExpression(declaration.initializer) ||
             !ts.isIdentifier(declaration.initializer.expression) ||
             declaration.initializer.expression.text !== "URL" ||
+            !this.isDefaultLibraryIdentifier(declaration.initializer.expression) ||
             declaration.initializer.arguments?.length !== 2 ||
             !ts.isIdentifier(declaration.initializer.arguments[0]!) ||
             declaration.initializer.arguments[0]!.text !== pathParameter ||
@@ -12976,9 +12980,9 @@ class Compiler
         return this.classLowerer.resolveClass(expression) !== undefined;
     }
 
-    public reachVoxelFileStorage(): void {
+    public reachVoxelFileStorage(site: ts.Node): void {
         this.voxelFileStorageReached = true;
-        this.reachFeature("browser:file");
+        this.reachFeature("browser:file", site);
     }
 
     public reachJson(): void {
@@ -13010,7 +13014,7 @@ class Compiler
         if (!/\/demos\/minecraft\/save-load\.(?:ts|js)$/i.test(fileName)) {
             return undefined;
         }
-        this.reachVoxelFileStorage();
+        this.reachVoxelFileStorage(call);
         this.reachJsData();
         if (name === "saveToFile") {
             this.expectArgumentCount(call, 1, 1);
@@ -14973,7 +14977,8 @@ class Compiler
                 ts.isPropertyAccessExpression(callee) &&
                 callee.name.text === "getGamepads" &&
                 ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "navigator"
+                callee.expression.text === "navigator" &&
+                this.isDefaultLibraryIdentifier(callee.expression)
             ) {
                 return false;
             }
@@ -15410,6 +15415,7 @@ class Compiler
                             !ts.isNewExpression(imageData) ||
                             !ts.isIdentifier(imageData.expression) ||
                             imageData.expression.text !== "ImageData" ||
+                            !this.isDefaultLibraryIdentifier(imageData.expression) ||
                             (imageData.arguments?.length ?? 0) !== 3
                         ) {
                             this.fail(
@@ -20089,10 +20095,15 @@ class Compiler
         this.clusteredContainer = state;
     }
 
-    public reachFeature(feature: Feature, site?: ts.Node): void {
+    /**
+     * `site` is the scene-source node that reached the feature, or — for a
+     * feature an audited companion file reaches with no call in the scene
+     * to name — the already-formatted location of that file.
+     */
+    public reachFeature(feature: Feature, site?: ts.Node | string): void {
         if ((feature === "math:mat4-invert" && this.features.has("renderer:high-precision-matrix")) ||
             (feature === "renderer:high-precision-matrix" && this.features.has("math:mat4-invert"))) {
-            this.fail(site ?? this.sourceFile,
+            this.fail(typeof site === "object" ? site : this.sourceFile,
                 "mat4Invert currently requires Float32 Mat4 storage; high-precision matrix allocation is not supported by this scene-code intrinsic.");
         }
         // Every raw Web Audio node/asset feature is implemented by the same
@@ -20105,13 +20116,17 @@ class Compiler
         }
         this.features.add(feature);
         if (site !== undefined && !this.featureSites.has(feature)) {
-            const { file, line } = sourceLocation(site);
-            const fileName =
-                file === this.sourceFile
-                    ? this.options.fileName
-                    : file.fileName;
-            this.featureSites.set(feature, `${fileName}:${line}`);
+            this.featureSites.set(feature, this.featureSite(site));
         }
+    }
+
+    /** One reaching site as the `featureSites` record spells it. */
+    private featureSite(site: ts.Node | string): string {
+        if (typeof site === "string") return site;
+        const { file, line } = sourceLocation(site);
+        const fileName =
+            file === this.sourceFile ? this.options.fileName : file.fileName;
+        return `${fileName}:${line}`;
     }
 
     /**

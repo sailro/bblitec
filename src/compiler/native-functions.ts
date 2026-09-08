@@ -4,6 +4,7 @@ import {
     cppIdentifierPattern,
 } from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 import {
     dataTypesEqual,
     passesByReference,
@@ -1580,7 +1581,11 @@ export class NativeFunctionLowerer {
             if (ts.isCallExpression(node)) {
                 if (
                     ts.isIdentifier(node.expression) &&
-                    node.expression.text === "fetch"
+                    node.expression.text === "fetch" &&
+                    isDefaultLibraryIdentifier(
+                        this.context.checker,
+                        node.expression,
+                    )
                 ) {
                     found = true;
                     return;

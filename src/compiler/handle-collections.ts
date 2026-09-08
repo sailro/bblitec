@@ -2177,7 +2177,8 @@ export class HandleCollections {
                 const argument =
                     ts.isNewExpression(thrown) &&
                     ts.isIdentifier(thrown.expression) &&
-                    thrown.expression.text === "Error"
+                    thrown.expression.text === "Error" &&
+                    this.context.isDefaultLibraryIdentifier(thrown.expression)
                         ? thrown.arguments?.[0]
                         : undefined;
                 if (argument) {

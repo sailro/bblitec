@@ -458,6 +458,7 @@ export function lightVectorSetter(
 }
 
 export interface AssignmentContext extends DeterministicRandomContext {
+  isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
   noteNodeInputAdmissionFailure(node: ts.Node, message: string): void;
   noteTextSceneCameraAssignment(node: ts.Node): void;
   noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
@@ -2965,6 +2966,7 @@ function staticMeshIdSet(
     !ts.isNewExpression(unwrapped) ||
     !ts.isIdentifier(unwrapped.expression) ||
     unwrapped.expression.text !== "Set" ||
+    !context.isDefaultLibraryIdentifier(unwrapped.expression) ||
     unwrapped.arguments?.length !== 1
   ) {
     context.fail(

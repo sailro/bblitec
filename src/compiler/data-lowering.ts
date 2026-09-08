@@ -3978,7 +3978,10 @@ export class DataLowerer {
             !ts.isIdentifier(
                 declaration.initializer.expression,
             ) ||
-            declaration.initializer.expression.text !== "Map"
+            declaration.initializer.expression.text !== "Map" ||
+            !this.context.isDefaultLibraryIdentifier(
+                declaration.initializer.expression,
+            )
         ) {
             return undefined;
         }

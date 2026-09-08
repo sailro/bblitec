@@ -11,7 +11,7 @@ import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "
 import { readOnlyDataMethods, storingDataMethods } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { staticNumberValue, type PositiveIntegerContext } from "./option-helpers.js";
-import { CompilerSymbols } from "./symbols.js";
+import { CompilerSymbols, isDefaultLibraryIdentifier } from "./symbols.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
@@ -2665,18 +2665,20 @@ export class UserFunctionLowerer {
         let expression = shape.returned;
         while (ts.isAwaitExpression(expression))
             expression = expression.expression;
-        if (
-            !ts.isCallExpression(expression) ||
-            !ts.isIdentifier(expression.expression) ||
-            expression.expression.text !== "createImageBitmap"
-        ) {
+        const isLibraryCall = (node: ts.Node, name: string): boolean =>
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            node.expression.text === name &&
+            isDefaultLibraryIdentifier(this.checker, node.expression);
+        if (!isLibraryCall(expression, "createImageBitmap")) {
             return undefined;
         }
-        if (
-            !shape.tryStatements.some((statement) =>
-                statement.getText().includes("fetch("),
-            )
-        ) {
+        // The bytes the bitmap decodes come from the library's own `fetch`,
+        // reached somewhere in the guarded body.
+        const reachesFetch = (node: ts.Node): boolean =>
+            isLibraryCall(node, "fetch") ||
+            (ts.forEachChild(node, reachesFetch) ?? false);
+        if (!shape.tryStatements.some(reachesFetch)) {
             return undefined;
         }
         return { statements: [], returnExpression: shape.returned };

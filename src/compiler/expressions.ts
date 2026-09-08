@@ -3926,7 +3926,7 @@ export class ExpressionLowerer {
             }
             this.context.fail(
                 callee,
-                `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in README.md.`,
+                `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in docs/features.md.`,
             );
         }
         const compressedJson = compileCompressedJsonCall(

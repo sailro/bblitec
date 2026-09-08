@@ -82,6 +82,7 @@ import {
     writesThroughTrackedRoot,
 } from "./user-functions.js";
 import { rootIdentifier } from "./syntax.js";
+import { isDefaultLibraryIdentifier } from "./symbols.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
 const supportedFactories = ["createTexture2DFromPixels", "loadTexture2D"] as const;
@@ -163,28 +164,36 @@ export function containsValueNode(
     return found;
 }
 
-/** A function body that allocates a browser canvas of either spelling. */
-export function ownsCanvas(node: ts.Node): boolean {
+/**
+ * A function body that allocates a browser canvas of either spelling,
+ * through the DOM library's own `OffscreenCanvas` or `document`.
+ */
+export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
     let found = false;
     forEachValueNode(node, (child) => {
         if (found) return;
         if (
             ts.isNewExpression(child) &&
             ts.isIdentifier(child.expression) &&
-            child.expression.text === "OffscreenCanvas"
+            child.expression.text === "OffscreenCanvas" &&
+            isDefaultLibraryIdentifier(checker, child.expression)
         ) {
             found = true;
             return;
         }
+        const firstArgument = ts.isCallExpression(child)
+            ? child.arguments[0]
+            : undefined;
         if (
             ts.isCallExpression(child) &&
             ts.isPropertyAccessExpression(child.expression) &&
             child.expression.name.text === "createElement" &&
             ts.isIdentifier(child.expression.expression) &&
             child.expression.expression.text === "document" &&
-            child.arguments.length >= 1 &&
-            ts.isStringLiteral(child.arguments[0]!) &&
-            (child.arguments[0] as ts.StringLiteral).text === "canvas"
+            isDefaultLibraryIdentifier(checker, child.expression.expression) &&
+            firstArgument !== undefined &&
+            ts.isStringLiteral(firstArgument) &&
+            firstArgument.text === "canvas"
         ) {
             found = true;
         }
@@ -244,7 +253,7 @@ export function browserTextureFunctionShape(
     });
     if (!closure) return undefined;
     if (factories === 0) return undefined;
-    if (!closure.some((member) => ownsCanvas(member))) return undefined;
+    if (!closure.some((member) => ownsCanvas(member, checker))) return undefined;
 
     const returns = returnShape(declaration);
     if (!returns) return undefined;

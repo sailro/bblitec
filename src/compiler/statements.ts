@@ -1632,7 +1632,8 @@ export class StatementLowerer {
         const message =
             ts.isNewExpression(thrown) &&
             ts.isIdentifier(thrown.expression) &&
-            thrown.expression.text === "Error"
+            thrown.expression.text === "Error" &&
+            context.isDefaultLibraryIdentifier(thrown.expression)
                 ? thrown.arguments?.[0]
                 : undefined;
         if (!message) {
