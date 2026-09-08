@@ -24,13 +24,17 @@ repository-local TypeScript path; `all` selects the registry.
 
 | Command | Action |
 | --- | --- |
-| `list` / `show <scene>` | Inspect scene configuration |
+| `help` | The usage, generated from the command table |
+| `list [--json]` / `show <scene>` | Inspect scene configuration |
+| `show <scene> --activation\|--adaptations\|--provenance` | The generated tree's active features and why, adaptations by risk, lowered pinned symbols |
+| `status <scene> [--run]` | Generation record current, payload deployed, binary carries the tree's stamp |
 | `compile <scene\|all>` | Generate C++, WGSL, assets and manifests |
 | `build <scene\|all>` | Build and deploy generated output |
 | `process <scene\|all>` | Generate, compile shaders, build |
 | `parity <scene\|all> --differential` | Compare both renderers and golden |
-| `validate <scene\|all>` | Process, parity, published-status check |
-| `clean --orphans` | Remove outputs outside the registry |
+| `check <check-id>` / `observe <check-id>` | A declared interaction check (`checks/`) and its browser observation; see [debugging](debugging.md#before-calling-a-scene-done) |
+| `validate <scene\|all> [--cold]` | Process, parity, published-status check |
+| `clean --report\|--orphans\|--all\|--pch\|--dlls\|--artifacts` | Sizes; unowned trees; owned build trees; duplicated payloads; unowned `artifacts/` entries. Owned trees include `generated/<id>-live`, `native/build-<id>-live-release` and `native/build-<id>-min-*` |
 
 `npm run sweep` runs `validate all`; `npm test` is separate.
 Build `dist/` once with `npm run build`, then use
@@ -50,12 +54,17 @@ from corpus inputs; fix compiler/lowerer/PAL sources.
 
 | File | Required scene data |
 | --- | --- |
-| `src/scene-registry.ts` | Source, title, pose, thresholds, diagnostics |
+| `src/scene-registry.ts` | Source, title, pose, thresholds, attribution |
 | `upstream/babylon-lite-corpus.json` | Origins and digests |
 | `reference/<id>/babylon-lite-golden.png` | Pinned-browser reference |
 | `reference/exact-corpus-manifest.json` | Source/module/image/query provenance |
 | `docs/status.md` | Measured row |
 | `docs/images/scenes/<id>.png` | Preview from `tools/create-status-preview.mjs` |
+| `checks/<id>.json` | Declared interaction check (optional; `checks/plugins/` hold scene-specific arithmetic) |
+
+`tools/fixtures/build-*.mjs` regenerate the committed regression glTF fixtures (each
+names its script in `asset.generator`); `tools/generate-emoji-presentation.mjs`
+regenerates `native/src/pal_ui_emoji.hpp` after a Node (ICU) upgrade.
 
 Update registry/corpus membership tests. Match `referenceSearch`,
 `referenceTimeSeconds` and `referenceFrame` across generation and capture.
@@ -76,8 +85,12 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 
 The sweep includes `scenes:process`, `scenes:parity` and `status:verify`.
-Preserve prior differential reports before changes. Investigate moved cells
-outside measured scene/backend repeatability exceptions.
+`status:verify` checks every published MAD against its report, each numbered
+row's coverage cell against the registry name, the canvas-only pairs against
+`artifacts/parity-canvas/<id>/report-canvas.json`, and prints the wobble-exempt
+cells with their newest values instead of comparing them. Preserve prior
+differential reports before changes. Investigate moved cells outside measured
+scene/backend repeatability exceptions.
 
 Simplify covers the complete diff. Apply findings before the sweep;
 `npm run simplify:record` identifies the required record. Keep records limited
