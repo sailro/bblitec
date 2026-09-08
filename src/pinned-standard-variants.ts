@@ -88,6 +88,11 @@ import {
     standardPluginFeatureBits,
 } from "./pinned-material-plugins.js";
 import { plainUboSpec } from "./pinned-material-arms.js";
+import { refuseGeneration } from "./generation-refusal.js";
+
+/** The pinned modules the contracts below are keyed on when they refuse. */
+const STANDARD_MATERIAL_MODULE = "src/material/standard/standard-material.ts";
+const SKELETON_FRAGMENT_MODULE = "src/shader/fragments/skeleton-fragment.ts";
 
 /** The material fields the pin's Standard feature derivation reads. */
 export interface PinnedStandardMaterialInput {
@@ -276,7 +281,8 @@ async function registerStandardExtensions(): Promise<void> {
             >(path);
             const ext = module[exportName];
             if (!ext) {
-                throw new Error(
+                refuseGeneration(
+                    path,
                     `Pinned module ${path} no longer exports ` +
                         `${exportName}.`,
                 );
@@ -472,15 +478,16 @@ export async function composePinnedStandardVariant(
         ]);
     const meshFeatures = options.meshFeatures ?? 0;
     if (meshFeatures & meshBits.MSH_VAT) {
-        throw new Error("Pinned Standard vertex animation textures are not supported.");
+        refuseGeneration("mesh:vat", "Pinned Standard vertex animation textures are not supported.");
     }
     if ((meshFeatures & (meshBits.MSH_HAS_SKELETON | meshBits.MSH_HAS_SKELETON_8)) && !options.skeleton) {
-        throw new Error("Pinned Standard skeleton composition requires enableStandardSkeleton().");
+        refuseGeneration("material:standard-skeleton", "Pinned Standard skeleton composition requires enableStandardSkeleton().");
     }
     const shadowLights = options.shadowLights ?? [];
     if (meshFeatures & meshBits.MSH_RECEIVE_SHADOWS) {
         if (shadowLights.length === 0) {
-            throw new Error(
+            refuseGeneration(
+                "material:standard",
                 "A Standard receiver variant needs the scene's " +
                     "shadow-light slots: `createStdShadowFragment` names " +
                     "every varying and binding after the light's index in " +
@@ -492,7 +499,8 @@ export async function composePinnedStandardVariant(
         meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR &&
         !(meshFeatures & meshBits.MSH_HAS_THIN_INSTANCES)
     ) {
-        throw new Error(
+        refuseGeneration(
+            "mesh:thin-instance-colors",
             "The pin's instance-colour bit rides its thin-instance one: " +
                 "`_computeMeshFeatures` sets MSH_HAS_INSTANCE_COLOR only " +
                 "from `mesh.thinInstances.colors`, and the colour slot is " +
@@ -948,12 +956,12 @@ function lowerStandardFeatureDerivation(
         const value = context.unwrapExpression(only.expression);
         return ts.isNumericLiteral(value) && value.text === "0";
     };
-    const fail = (node: ts.Node, reason: string): never => {
-        throw new Error(
+    const fail = (node: ts.Node, reason: string): never =>
+        refuseGeneration(
+            STANDARD_MATERIAL_MODULE,
             `Cannot lower _computeStandardMaterialFeatures: ${reason} ` +
                 `(${node.getText(file)}).`,
         );
-    };
     /**
      * What names mean inside the body being walked.
      *
@@ -1148,7 +1156,8 @@ function lowerStandardFeatureDerivation(
         );
         const parameter = detect.parameters[0];
         if (!parameter || !ts.isIdentifier(parameter.name)) {
-            throw new Error(
+            refuseGeneration(
+                pinnedSourcePath(runtimeModule),
                 `Pinned ${exportName}._detect takes no named material.`,
             );
         }
@@ -1157,7 +1166,10 @@ function lowerStandardFeatureDerivation(
         lines.push(`${indent}// ${exportName}`);
         const body = detect.body;
         if (!body) {
-            throw new Error(`Pinned ${exportName}._detect has no body.`);
+            refuseGeneration(
+                pinnedSourcePath(runtimeModule),
+                `Pinned ${exportName}._detect has no body.`,
+            );
         }
         if (ts.isBlock(body)) {
             lowerStatements(body.statements, indent);
@@ -1189,7 +1201,8 @@ function lowerStandardFeatureDerivation(
         );
         const parameter = hook.parameters[1];
         if (!parameter || !ts.isIdentifier(parameter.name)) {
-            throw new Error(
+            refuseGeneration(
+                source,
                 `Pinned ${exportName}._meshFeatures takes no named ` +
                     "material as its second parameter.",
             );
@@ -1203,7 +1216,8 @@ function lowerStandardFeatureDerivation(
             meshParameter && ts.isIdentifier(meshParameter.name) &&
             !meshParameter.name.text.startsWith("_")
         ) {
-            throw new Error(
+            refuseGeneration(
+                source,
                 `Pinned ${exportName}._meshFeatures reads its mesh-feature ` +
                     "parameter, which the generated derivation does not " +
                     "carry.",
@@ -1216,7 +1230,8 @@ function lowerStandardFeatureDerivation(
         lines.push(`${indent}// ${exportName}`);
         const body = hook.body;
         if (!body) {
-            throw new Error(
+            refuseGeneration(
+                source,
                 `Pinned ${exportName}._meshFeatures has no body.`,
             );
         }
@@ -1369,7 +1384,8 @@ function lowerStandardFeatureDerivation(
         }
     };
     if (!declaration.body) {
-        throw new Error(
+        refuseGeneration(
+            STANDARD_MATERIAL_MODULE,
             "_computeStandardMaterialFeatures has no body to lower.",
         );
     }
@@ -2126,16 +2142,16 @@ function standardSkeletonBinding(context: LoweringContext): StandardBuiltinBindi
         ts.isPropertyAssignment(node) && context.propertyName(node.name) === "_vertexBindings");
     const bindings = declarations[0]?.initializer;
     if (declarations.length !== 1 || !bindings || !ts.isArrayLiteralExpression(bindings)) {
-        throw new Error("Pinned skeleton fragment must declare one vertex binding array.");
+        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton fragment must declare one vertex binding array.");
     }
     const entry = bindings.elements[0];
     if (bindings.elements.length !== 1 || !entry || !ts.isObjectLiteralExpression(entry)) {
-        throw new Error("Pinned skeleton fragment must declare one palette binding.");
+        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton fragment must declare one palette binding.");
     }
     const name = entry.properties.find((property): property is ts.PropertyAssignment =>
         ts.isPropertyAssignment(property) && context.propertyName(property.name) === "_name");
     if (!name || !ts.isStringLiteral(name.initializer)) {
-        throw new Error("Pinned skeleton palette binding must have a literal name.");
+        refuseGeneration(SKELETON_FRAGMENT_MODULE, "Pinned skeleton palette binding must have a literal name.");
     }
     return { texture: name.initializer.text, sampler: "", source: "bone_palette",
         reflectionCube: false, origin: ["skeleton-fragment.ts; textureLoad reads the live palette."] };
@@ -2219,7 +2235,7 @@ export function pinnedStandardSupportBlock(
     const builtinBindings = [...standardBuiltinBindings];
     if (options.skeleton) {
         const { file, declaration } = context.methodDeclaration(skeletonModule, "stdSkeletonExt._meshFeatures");
-        if (!declaration.body || !ts.isBlock(declaration.body)) throw new Error("Pinned Standard skeleton feature hook has no block body.");
+        if (!declaration.body || !ts.isBlock(declaration.body)) refuseGeneration(skeletonModule, "Pinned Standard skeleton feature hook has no block body.");
         const bindings = new Map<string, PinnedBinding>([
             ["meshFeatures", { cpp: "mesh_features", type: "scalar" }],
             ...["MSH_HAS_SKELETON", "MSH_HAS_SKELETON_8", "MSH_HAS_THIN_INSTANCES"].map((name): [string, PinnedBinding] => [name, { cpp: `${mesh(name)}u`, type: "scalar" }]),
@@ -2227,7 +2243,7 @@ export function pinnedStandardSupportBlock(
         ]);
         const lowerer = new PinnedNumericLowerer(file, { bindings, calls: new Map(), booleanOr: true,
             returnValue: (expression) => {
-                if (!expression) throw new Error("Pinned skeleton feature hook returned no value.");
+                if (!expression) refuseGeneration(skeletonModule, "Pinned skeleton feature hook returned no value.");
                 return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;
             },
         });

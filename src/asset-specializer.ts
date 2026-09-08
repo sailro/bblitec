@@ -20,6 +20,7 @@ import {
     sharedUpstreamStore,
     UpstreamSourceStore,
 } from "./upstream-source.js";
+import { refuseGeneration } from "./generation-refusal.js";
 
 interface GltfSpecialization {
     asset: string;
@@ -272,7 +273,8 @@ function refuseUnsupportedGltf(
     // which this port does not lower; the pin selects it by the document
     // predicate rather than by an extension name, so it is refused here.
     if (asObject(document.extensions)?.["BABYLON_flow_graph"] !== undefined) {
-        throw new Error(
+        refuseGeneration(
+            assetName,
             `${assetName}: BABYLON_flow_graph editor JSON is run by the ` +
                 `pinned loader (flow-graph/editor-serialization.ts) and not ` +
                 `lowered by this port.`,
@@ -283,7 +285,8 @@ function refuseUnsupportedGltf(
         if (metadataExtensions.has(extension)) continue;
         const pinModule = extensionModules.get(extension);
         if (pinModule !== undefined) {
-            throw new Error(
+            refuseGeneration(
+                assetName,
                 `${assetName}: glTF extension ${extension} is implemented by ` +
                     `the pinned loader${
                         pinModule !== undefined ? ` (${pinModule})` : ""
@@ -311,7 +314,8 @@ function refuseUnsupportedGltf(
     // pinned `resolveAccessor` does -- would read the unpatched base values
     // and render a plausible wrong mesh.
     if (accessors.some((accessor) => accessor.sparse !== undefined)) {
-        throw new Error(
+        refuseGeneration(
+            assetName,
             `${assetName}: a sparse glTF accessor survived packaging, so ` +
                 `the pinned gltf-feature-sparse preParse did not run over ` +
                 `this document.`,
@@ -321,7 +325,8 @@ function refuseUnsupportedGltf(
     // generated loader carries no reader for a POINTS primitive whose
     // ellipsoid lives in custom vertex attributes.
     if (extensionsUsed.includes(GAUSSIAN_SPLATTING_EXTENSION)) {
-        throw new Error(
+        refuseGeneration(
+            assetName,
             `${assetName}: ${GAUSSIAN_SPLATTING_EXTENSION} survived ` +
                 `packaging, so the pinned Gaussian-splatting conversion did ` +
                 `not run over this document.`,
@@ -335,7 +340,8 @@ function refuseUnsupportedGltf(
         );
         const texCoord = asNumber(occlusion.texCoord) ?? 0;
         if (texCoord > 1) {
-            throw new Error(
+            refuseGeneration(
+                assetName,
                 `${assetName}: a glTF occlusion texture on TEXCOORD_${texCoord} ` +
                     `is not lowered.`,
             );
@@ -357,7 +363,8 @@ function refuseUnsupportedGltf(
             asObject(occlusion.extensions)?.["KHR_texture_transform"] ===
                 undefined
         ) {
-            throw new Error(
+            refuseGeneration(
+                assetName,
                 `${assetName}: a glTF occlusion texture on TEXCOORD_1 that ` +
                     `names the same texture object as the ` +
                     `metallic-roughness slot composes an occlusion binding ` +
@@ -369,7 +376,8 @@ function refuseUnsupportedGltf(
             textureImageIndex(document, occlusion.index) !==
                 textureImageIndex(document, metallicRoughness.index)
         ) {
-            throw new Error(
+            refuseGeneration(
+                assetName,
                 `${assetName}: distinct glTF occlusion and metallic-roughness ` +
                     `images are not lowered (upstream composites them on a ` +
                     `canvas — gltf-ext-orm.ts).`,
@@ -444,7 +452,8 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
         ) {
             const prefix = constants.get(name.left.text);
             if (prefix === undefined) {
-                throw new Error(
+                refuseGeneration(
+                    path,
                     `${path}: the registry prefix ${name.left.text} did not ` +
                         `resolve to a string constant.`,
                 );
@@ -464,13 +473,15 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
         ) {
             continue;
         }
-        throw new Error(
+        refuseGeneration(
+            path,
             `${path}: a registry row's name expression has an unrecognized ` +
                 `shape.`,
         );
     }
     if (result.size === 0) {
-        throw new Error(
+        refuseGeneration(
+            path,
             `${path}: no extension registry rows were found; the registry ` +
                 `shape changed.`,
         );

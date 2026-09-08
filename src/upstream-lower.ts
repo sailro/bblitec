@@ -117,12 +117,15 @@ import type {
     SpriteCustomShaderManifest,
 } from "./compiler/types.js";
 import {
-    assertFloatingOriginCapabilities,
-    assertShadowCapabilities,
     reachesShadowGenerator,
     nodeShadowInputs,
     shadowCapabilities,
 } from "./shadow-capabilities.js";
+import {
+    refusalReachedFrom,
+    refuseGeneration,
+    refuseUnsupportedCombinations,
+} from "./generation-refusal.js";
 import {
     EffectLowerer,
     UniformEffectLowerer,
@@ -640,22 +643,6 @@ const SHADER_FAMILIES = {
 
 type ShaderFamily = keyof typeof SHADER_FAMILIES;
 
-/**
- * The " (reached from <file:line>)" suffix a late refusal appends, naming
- * the scene call site that first reached the feature owning the refused
- * mechanism. The compiler records only first-reach sites, so this is the
- * closest scene-source anchor a composition/lowering-time error can carry;
- * empty when no site was recorded (a caller without the record, an
- * asset-joined feature), which keeps the message exactly as it was.
- */
-export function refusalReachedFrom(
-    featureSites: Readonly<Record<string, string>> | undefined,
-    feature: string,
-): string {
-    const site = featureSites?.[feature];
-    return site === undefined ? "" : ` (reached from ${site})`;
-}
-
 export interface SpriteVertexPermutation {
     output: string;
     uvScroll: boolean;
@@ -735,7 +722,8 @@ function shaderDeclaration(
         ? entry.vertex
         : entry.fragment;
     if (!entryPoint && !familyEntry) {
-        throw new Error(
+        refuseGeneration(
+            output,
             `Shader family '${family}' names no entry point for ${output}; ` +
                 "the module must declare its own.",
         );
@@ -763,18 +751,21 @@ class GeneratedSourceWriter {
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
         if (features.includes("renderer:text")) {
             const unsupported = features.find(feature => /^(renderer:(scene|sprite|canvas|frame-graph)|text:renderable|camera:|mesh:|material:|sprite:)/.test(feature));
-            if (unsupported) throw new Error(`Standalone text rendering with '${unsupported}' requires unrepresented merged draw ordering${refusalReachedFrom(options.featureSites, unsupported)}.`);
+            if (unsupported) refuseGeneration(unsupported, `Standalone text rendering with '${unsupported}' requires unrepresented merged draw ordering.`, options.featureSites);
         }
         if (features.includes("text:renderable")) {
             const unsupported = features.find((feature) =>
                 /^(material:|mesh:|loader:|sprite:|particle:|animation:|background:|shadow:|light:clustered|frame-graph:|effect:|platform:workers|renderer:(frame-graph|post-process|screen-space|geometry-output|transmission|sprite|canvas|effect|high-precision-matrix|floating-origin)|camera:(default|geospatial|orthographic))/.test(feature));
-            if (unsupported) throw new Error(`Text rendering with '${unsupported}' requires unrepresented merged draw ordering or camera/task transport${refusalReachedFrom(options.featureSites, unsupported)}.`);
+            if (unsupported) refuseGeneration(unsupported, `Text rendering with '${unsupported}' requires unrepresented merged draw ordering or camera/task transport.`, options.featureSites);
         }
         if (options.postProcessComposites?.some((task) => task.taa)) {
             if (options.geometryOutputTasks.length > 0 || options.assetTransmission ||
                 (options.pinnedVariants?.length ?? 0) > 0) {
-                throw new Error("TAA source preparation does not yet cover geometry-output or imported PBR passes." +
-                    refusalReachedFrom(options.featureSites, "renderer:post-process"));
+                refuseGeneration(
+                    "renderer:post-process",
+                    "TAA source preparation does not yet cover geometry-output or imported PBR passes.",
+                    options.featureSites,
+                );
             }
         }
         // Which programs a node-particle system draws is the pin's answer
@@ -817,12 +808,6 @@ class GeneratedSourceWriter {
         // modules, and four derivations of it are four places to
         // desynchronise.
         const nodeGeometryViewList = nodeGeometryVariants(nodeVariantList);
-        if (nodeGeometryViewList.length > 0 && features.includes("loader:babylon")) {
-            throw new Error(
-                "Node geometry views require retained local vertex attributes; " +
-                "the Babylon loader does not provide that source contract.",
-            );
-        }
         // A graph can contain MorphTargetsBlock even when no currently
         // attached mesh carries targets. The pin still binds its lazily
         // created zero-target pair, so the PAL buffer lifetime must compile
@@ -836,8 +821,16 @@ class GeneratedSourceWriter {
             pbrVariants: (options.pinnedVariants ?? []).length,
             ...nodeShadowInputs(nodeVariantList),
         };
-        assertShadowCapabilities(shadowInputs);
-        assertFloatingOriginCapabilities(features);
+        // Every combination of reached units generation refuses, in one
+        // table; each row names the unit to drop and the site reaching it.
+        refuseUnsupportedCombinations(
+            {
+                features,
+                shadows: shadowInputs,
+                nodeGeometryViews: nodeGeometryViewList.length,
+            },
+            options.featureSites,
+        );
         const shadows = shadowCapabilities(shadowInputs);
         const nodeEsmCasters = shadowInputs.nodeEsmCasters > 0;
         const nodePcfCasters = (shadowInputs.nodePcfCasters ?? 0) > 0;
@@ -1733,14 +1726,12 @@ ${wgsl}`,
                 (entry) => entry.family === "sprite",
             );
             if (particlePrograms.sprite2dMultiply && sceneCustoms.length > 0) {
-                throw new Error(
+                refuseGeneration(
+                    "sprite:custom-shader",
                     "A scene-code Sprite2D custom shader and an exact " +
                         "node-particle Multiply bridge both compose the " +
-                        "custom sprite program index." +
-                        refusalReachedFrom(
-                            options.featureSites,
-                            "sprite:custom-shader",
-                        ),
+                        "custom sprite program index.",
+                    options.featureSites,
                 );
             }
             const customs = particlePrograms.sprite2dMultiply
@@ -2300,10 +2291,7 @@ ${wgsl}`,
                     context,
                     options.postProcessTasks,
                     options.postProcessComposites,
-                    refusalReachedFrom(
-                        options.featureSites,
-                        "renderer:post-process",
-                    ),
+                    options.featureSites,
                     screenSpace?.compositeWriters(),
                 ).lowerTaskRecords(),
                 generated,
@@ -2311,7 +2299,8 @@ ${wgsl}`,
             );
             if (screenSpace) {
                 if (!features.includes("renderer:screen-space")) {
-                    throw new Error(
+                    refuseGeneration(
+                        "renderer:screen-space",
                         "A screen-space task was composed without reaching " +
                             "renderer:screen-space.",
                     );
@@ -2729,10 +2718,7 @@ ${shadow.blurFragmentWgsl}`,
                 features.includes(reached) &&
                 features.includes(paired)
             ) {
-                throw new Error(
-                    reason +
-                        refusalReachedFrom(options.featureSites, paired),
-                );
+                refuseGeneration(paired, reason, options.featureSites);
             }
         }
         if (features.includes("gizmo:utility-layer")) {
@@ -2753,7 +2739,8 @@ ${shadow.blurFragmentWgsl}`,
         // What cannot happen is a parsed asset table without the unit that
         // attaches it.
         if ((options.flowGraphs?.length ?? 0) > 0 && !features.includes("flow-graph:interactivity")) {
-            throw new Error(
+            refuseGeneration(
+                "flow-graph:interactivity",
                 "A KHR_interactivity asset was parsed without reaching flow-graph:interactivity.",
             );
         }
@@ -2796,16 +2783,20 @@ ${shadow.blurFragmentWgsl}`,
             );
             const meshPickingWgsl = options.pickingShaders?.mesh;
             if (meshPickingWgsl === undefined) {
-                throw new Error(
+                refuseGeneration(
+                    "picking:gpu",
                     "A scene reaching picking:gpu must arrive with the " +
                         "pin's composed picking module.",
+                    options.featureSites,
                 );
             }
             const thinPickingWgsl = options.pickingShaders?.thin;
             if (options.gpuInstancing && thinPickingWgsl === undefined) {
-                throw new Error(
+                refuseGeneration(
+                    "picking:gpu",
                     "A picking scene with thin-instanced candidates must " +
                         "arrive with the pin's composed advanced picking module.",
+                    options.featureSites,
                 );
             }
             const detailedPickingProvenance = context.provenance(
@@ -2817,9 +2808,11 @@ ${shadow.blurFragmentWgsl}`,
                 features.includes("picking:detailed") &&
                 detailedPickingWgsl === undefined
             ) {
-                throw new Error(
+                refuseGeneration(
+                    "picking:detailed",
                     "A scene reaching picking:detailed must arrive with " +
                         "the pin's composed detailed picking module.",
+                    options.featureSites,
                 );
             }
             const cloudPickingWgsl = options.pickingShaders?.cloud;
@@ -2833,9 +2826,11 @@ ${shadow.blurFragmentWgsl}`,
                 features.includes("picking:billboard") &&
                 billboardPickingWgsl === undefined
             ) {
-                throw new Error(
+                refuseGeneration(
+                    "picking:billboard",
                     "A scene reaching picking:billboard must arrive with " +
                         "the pin's composed billboard picking module.",
+                    options.featureSites,
                 );
             }
             for (const stage of ["vert", "frag"] as const) {
@@ -2949,19 +2944,18 @@ ${shadow.blurFragmentWgsl}`,
         if (options.assetLightNodes !== undefined) {
             const maxLights = pinnedMaxLights(context);
             if (options.assetLightNodes.count > maxLights) {
-                throw new Error(
+                // Keyed on the loader feature: the site named is the
+                // loadAsset call that brought the asset in.
+                refuseGeneration(
+                    "loader:gltf",
                     `Asset ${options.assetLightNodes.asset} carries ` +
                         `${options.assetLightNodes.count} KHR_lights_punctual ` +
                         `light nodes, but the pinned MAX_LIGHTS is ` +
                         `${maxLights} and this port freezes it where the pin ` +
                         `grows the lights buffer (setMaxLights). Lights past ` +
                         `the constant would not shade; integrate the grown ` +
-                        `constant or reduce the asset's light nodes.` +
-                        // The loadAsset call that brought the asset in.
-                        refusalReachedFrom(
-                            options.featureSites,
-                            "loader:gltf",
-                        ),
+                        `constant or reduce the asset's light nodes.`,
+                    options.featureSites,
                 );
             }
         }
@@ -3046,16 +3040,14 @@ ${shadow.blurFragmentWgsl}`,
                 (options.pinnedVariants ?? []).length > 0 &&
                 widestStandardMesh.includes("previousWorld")
             ) {
-                throw new Error(
+                // The velocity arm rides a geometry-output task.
+                refuseGeneration(
+                    "renderer:geometry-output",
                     "A composed Standard velocity variant extends " +
                         "MeshUniforms past the PBR header's mirror; " +
                         "hoisting the widest struct for a scene that also " +
-                        "emits pbr_variants.hpp is not wired yet." +
-                        // The velocity arm rides a geometry-output task.
-                        refusalReachedFrom(
-                            options.featureSites,
-                            "renderer:geometry-output",
-                        ),
+                        "emits pbr_variants.hpp is not wired yet.",
+                    options.featureSites,
                 );
             }
             // The per-pass mirrors ride whichever family header comes
@@ -3203,7 +3195,8 @@ ${shadow.blurFragmentWgsl}`,
             for (const shader of composedShaders) {
                 const previous = distinctShaders.get(shader.output);
                 if (previous && previous.data !== shader.data) {
-                    throw new Error(
+                    refuseGeneration(
+                        shader.output,
                         `Generated shader path '${shader.output}' has conflicting contents.`,
                     );
                 }
@@ -3280,7 +3273,8 @@ ${shadow.blurFragmentWgsl}`,
             (source) => !declared.has(source),
         );
         if (missing.length > 0 || undeclared.length > 0) {
-            throw new Error(
+            refuseGeneration(
+                "src/generated-sources.ts",
                 "Generated source table disagrees with what was emitted" +
                     (missing.length > 0
                         ? `; declared but not emitted: ${missing.join(", ")}`
@@ -3340,12 +3334,12 @@ function pinnedTextSlice(
 ): string {
     const start = text.indexOf(from);
     if (start < 0) {
-        throw new Error(`Pinned ${what} no longer contains '${from}'.`);
+        refuseGeneration(what, `Pinned ${what} no longer contains '${from}'.`);
     }
     if (to === undefined) return text.slice(start);
     const end = text.indexOf(to, start);
     if (end < 0) {
-        throw new Error(`Pinned ${what} no longer contains '${to}'.`);
+        refuseGeneration(what, `Pinned ${what} no longer contains '${to}'.`);
     }
     return text.slice(start, end);
 }
@@ -3358,9 +3352,7 @@ function renameEntryPoint(
 ): string {
     const marker = `fn ${pinnedName}(`;
     if (!stage.includes(marker)) {
-        throw new Error(
-            `Pinned ${what} no longer declares '${marker}'.`,
-        );
+        refuseGeneration(what, `Pinned ${what} no longer declares '${marker}'.`);
     }
     return stage.split(marker).join(`fn ${nativeName}(`);
 }
@@ -3534,9 +3526,11 @@ export function dawnUtilityShaders(
             "@group(0)@binding(1)var s:texture_multisampled_2d<f32>;",
         single: "@group(0)@binding(1)var s:texture_2d<f32>;",
     };
+    const imageProcessingModule = "src/frame-graph/image-processing-task.ts";
     for (const declaration of Object.values(declarations)) {
         if (!imageProcessing.includes(declaration)) {
-            throw new Error(
+            refuseGeneration(
+                imageProcessingModule,
                 "Pinned image-processing texture declaration changed.",
             );
         }
@@ -3545,7 +3539,8 @@ export function dawnUtilityShaders(
         ...imageProcessing.matchAll(/`(@fragment fn fs[^`]*)`/g),
     ].map((match) => match[1]!);
     if (fragments.length !== 2) {
-        throw new Error(
+        refuseGeneration(
+            imageProcessingModule,
             "Pinned image-processing no longer carries exactly two " +
                 "fragment arms.",
         );
@@ -3557,7 +3552,8 @@ export function dawnUtilityShaders(
         (fragment) => !fragment.includes("textureNumSamples"),
     );
     if (!multisampledFragment || !singleFragment) {
-        throw new Error(
+        refuseGeneration(
+            imageProcessingModule,
             "Pinned image-processing fragment arms changed shape.",
         );
     }

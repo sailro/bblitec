@@ -32,6 +32,7 @@ import {
     shadowCapabilities,
 } from "./shadow-capabilities.js";
 import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
+import { refuseGeneration } from "./generation-refusal.js";
 import {
     nodeGeometryVariants,
     nodeVariantsUseMorphStorage,
@@ -1300,7 +1301,8 @@ function checkedRow(
 ): FeatureActivationRow {
     const { active, activatedBy } = activation(parts, inactive);
     if (active !== emitted) {
-        throw new Error(
+        refuseGeneration(
+            name,
             `feature-activation: row '${name}' derives ${active} from its ` +
                 `recorded reasons but the emitted value is ${emitted}; the ` +
                 `activation table no longer mirrors the join point. Update ` +
@@ -2986,7 +2988,8 @@ function refusalRows(
         emit.assetLightNodes !== undefined &&
         emit.assetLightNodes.count > inputs.pinnedMaxLights
     ) {
-        throw new Error(
+        refuseGeneration(
+            "refusal:max-lights",
             `feature-activation: row 'refusal:max-lights' records a ` +
                 `light-node count of ${emit.assetLightNodes.count} ` +
                 `above the pinned MAX_LIGHTS of ` +

@@ -5,6 +5,7 @@ import { pinnedNumericConstant } from "./pinned-numeric-constant.js";
 import { javascriptModuleUrl } from "../data-url.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
+import { refuseGeneration } from "../generation-refusal.js";
 
 const MODULE = "src/material/standard/standard-renderable.ts";
 const FLAG_MODULE = "src/material/standard/standard-flags.ts";
@@ -21,14 +22,14 @@ function alphaExpressions(context: LoweringContext): {
     const statement = variable.parent.parent;
     const block = statement.parent;
     if (!ts.isVariableDeclaration(variable) || !ts.isVariableStatement(statement) || !ts.isBlock(block)) {
-        throw new Error("Pinned Standard colour alpha initializer moved outside its renderable block.");
+        refuseGeneration(MODULE, "Pinned Standard colour alpha initializer moved outside its renderable block.");
     }
     const featureStore = block.statements[block.statements.indexOf(statement) + 1];
     if (!featureStore || !ts.isExpressionStatement(featureStore) ||
         !ts.isBinaryExpression(featureStore.expression) ||
         featureStore.expression.operatorToken.kind !== ts.SyntaxKind.BarEqualsToken ||
         featureStore.expression.left.getText(file) !== "features") {
-        throw new Error("Pinned Standard colour alpha no longer contributes to the feature word.");
+        refuseGeneration(MODULE, "Pinned Standard colour alpha no longer contributes to the feature word.");
     }
     return { file, initializer, features: featureStore.expression.right };
 }

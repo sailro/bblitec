@@ -80,7 +80,7 @@ import {
     babylonLights,
     reachedDiffuseUv2,
 } from "./babylon-asset-features.js";
-import { refusalReachedFrom } from "./upstream-lower.js";
+import { refuseGeneration } from "./generation-refusal.js";
 
 /** What the moved orchestration reads from `main`, under `main`'s names. */
 export interface ComposePipelineContext {
@@ -109,7 +109,8 @@ export function receiverShadowLightSlots(
         const shadowType = pinnedShadowFilter(generator.kind);
         const previous = byIndex.get(generator.lightIndex);
         if (previous !== undefined && previous !== shadowType) {
-            throw new Error(
+            refuseGeneration(
+                `shadow:${shadowType}`,
                 "A live shadow-light replacement changes receiver filter " +
                     `at scene light slot ${generator.lightIndex} from ` +
                     `${previous} to ${shadowType}; dynamic shadow-filter ` +
@@ -481,8 +482,10 @@ export async function composeScenePipeline({
             mesh.gltfAssetsBefore < 0 ||
             mesh.gltfAssetsBefore > gltfAssets.length
         ) {
-            throw new Error(
+            refuseGeneration(
+                "loader:gltf",
                 "A scene-code mesh records an impossible glTF load count.",
+                result.manifest.featureSites,
             );
         }
         const bucket =
@@ -660,14 +663,18 @@ export async function composeScenePipeline({
         sceneMaterialLoadCounts.length !==
         result.manifest.sceneMaterialCount
     ) {
-        throw new Error(
+        refuseGeneration(
+            "material:pbr",
             "Scene material creation-order metadata does not match its count.",
+            result.manifest.featureSites,
         );
     }
     for (const count of sceneMaterialLoadCounts) {
         if (count < 0 || count > gltfAssets.length) {
-            throw new Error(
+            refuseGeneration(
+                "material:pbr",
                 "A scene material records an impossible glTF load count.",
+                result.manifest.featureSites,
             );
         }
     }
@@ -853,10 +860,12 @@ export async function composeScenePipeline({
             const source =
                 absoluteScenePbrMaterials[caster.pbrMaterial];
             if (!source) {
-                throw new Error(
+                refuseGeneration(
+                    `shadow:${pinnedShadowFilter(generator.kind)}`,
                     "A shadow caster names scene PBR material " +
                         `${caster.pbrMaterial}, which the scene did not ` +
                         "create.",
+                    result.manifest.featureSites,
                 );
             }
             // Composed over its own caster's attribute set and no other:
@@ -1128,7 +1137,10 @@ export async function composeScenePipeline({
         for (const asset of uniqueGltfAssets) {
             const document = glbDocument(resolve(outputPath, "assets", asset.output));
             const reason = document ? await nodeGeometryAssetRefusal(document) : "an unreadable glTF document";
-            if (reason) throw new Error(`Node geometry views do not represent ${reason} in '${asset.output}'.${refusalReachedFrom(result.manifest.featureSites, "renderer:geometry-output")}`);
+            // The per-document half of the node-geometry rule in the
+            // unsupported-combination table (`generation-refusal.ts`):
+            // evaluated here because only this walk has the documents.
+            if (reason) refuseGeneration("renderer:geometry-output", `Node geometry views do not represent ${reason} in '${asset.output}'.`, result.manifest.featureSites);
         }
     }
     const repositoryRoot = result.manifest.nodeMaterials.length > 0
@@ -1192,7 +1204,7 @@ export async function composeScenePipeline({
         // deferred-builder order, rather than while composing its shader.
         if (result.manifest.features.includes("material:node-inputs")) {
             const unsupported = composed.inputs.find((input) => input.type !== "texture2d");
-            if (unsupported) throw new Error(`Node input '${unsupported.name}' (${unsupported.type}) requires numeric input state that is not represented.${refusalReachedFrom(result.manifest.featureSites, "material:node-inputs")}`);
+            if (unsupported) refuseGeneration("material:node-inputs", `Node input '${unsupported.name}' (${unsupported.type}) requires numeric input state that is not represented.`, result.manifest.featureSites);
         }
         // Extra keys are inert upstream: parseNodeMaterialFromSnippet walks
         // the COMPILED texture bindings and looks each one up in

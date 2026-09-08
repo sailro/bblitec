@@ -59,6 +59,7 @@ import {
 } from "./pinned-mesh-features.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
+import { refuseGeneration } from "./generation-refusal.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -77,7 +78,8 @@ function pinnedOcclusionUv2Bit(): number {
         source,
     );
     if (!match) {
-        throw new Error(
+        refuseGeneration(
+            "src/material/pbr/pbr-template-ext.ts",
             "Pinned pbr-template-ext.ts no longer decodes _hasOcclusionUv2 " +
                 "from a uv2Mask bit literal.",
         );
@@ -775,7 +777,8 @@ export function assertArmsCovered(
         }
     }
     if (missing.length === 0) return;
-    throw new Error(
+    refuseGeneration(
+        asset,
         `The PBR fragment emitted for ${asset} is missing arms Babylon Lite ` +
             `composes for its own materials:\n${missing.join("\n")}\n` +
             "Each of these would render as a shading bias rather than a " +
@@ -1218,7 +1221,7 @@ export async function composeScenePbrVariants(
             // The pin derives this UBO field from array truthiness only.
             // Refuse if future composition starts inspecting runtime lanes.
             input.baseColorFactor = new Proxy<number[]>([], {
-                get(_target, key) { throw new Error(`PBR composition reads runtime baseColorFactor.${String(key)}.`); },
+                get(_target, key) { return refuseGeneration("material:pbr", `PBR composition reads runtime baseColorFactor.${String(key)}.`); },
             });
         }
         if (material.hasOrmTexture) input["ormTexture"] = {};
@@ -1382,7 +1385,8 @@ export async function composeScenePbrVariants(
         }
         if (material.shadowOnly) setters.setShadowOnly(input, material.shadowOnly);
         if (material.transmission > 0) {
-            throw new Error(
+            refuseGeneration(
+                "renderer:transmission",
                 "A scene-code transmissive material has no composed arm yet; " +
                     "the refraction pass structure is the open transmission " +
                     "item.",

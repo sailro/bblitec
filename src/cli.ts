@@ -99,6 +99,7 @@ import {
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
+import { refuseGeneration } from "./generation-refusal.js";
 import { composeDefaultTextPipelines, composeStandaloneTextPipelines } from "./pinned-text-pipeline-cpp.js";
 import { holdDistLock } from "./dist-lock.js";
 import {
@@ -262,7 +263,8 @@ async function materializeAsset(
         asset.source.startsWith("generated:data-url:") &&
         inlineSource === undefined
     ) {
-        throw new Error(
+        refuseGeneration(
+            asset.source,
             `Missing materialization payload for '${asset.source}'.`,
         );
     }
@@ -651,13 +653,15 @@ async function main(): Promise<void> {
             .map((facts) => facts.splatHarmonicDegree),
     );
     if (splatHarmonicDegrees.size > 1) {
-        throw new Error(
+        refuseGeneration(
+            "loader:splat",
             "This scene loads Gaussian clouds at spherical-harmonic " +
                 `degrees ${[...splatHarmonicDegrees]
                     .sort()
                     .join(" and ")}; generation deploys one splat stage ` +
                 "pair, and the pin builds a distinct module per degree " +
                 "(degree 0 being the stock pipeline).",
+            result.manifest.featureSites,
         );
     }
     const splatHarmonicDegree = [...splatHarmonicDegrees].find(
@@ -684,13 +688,15 @@ async function main(): Promise<void> {
             observed.map((rotation) => rotation.join(",")),
         );
         if (distinct.size > 1) {
-            throw new Error(
+            refuseGeneration(
+                "loader:splat",
                 `This scene's ${container.kind.toUpperCase()} containers ` +
                     `attach clouds at different rotations (${[
                         ...distinct,
                     ].join("; ")}); the pinned ${container.loader} writes ` +
                     "one, so a difference means it now forks on the " +
                     "container.",
+                result.manifest.featureSites,
             );
         }
         return observed[0];
@@ -875,8 +881,10 @@ async function main(): Promise<void> {
                 (program) => program.name === name,
             );
             if (!predeclared) {
-                throw new Error(
+                refuseGeneration(
+                    "material:shader",
                     `Unknown shader variant '${name}'.`,
+                    result.manifest.featureSites,
                 );
             }
             return predeclaredShaderProgram(predeclared);
@@ -1310,13 +1318,15 @@ async function main(): Promise<void> {
         !pinnedSkeletonPalette &&
         specializationFeatures.maxSkinJoints > DEFORMATION_BONE_SLOTS
     ) {
-        throw new Error(
+        refuseGeneration(
+            "loader:gltf",
             `A skin of ${specializationFeatures.maxSkinJoints} joints exceeds ` +
                 `the ${DEFORMATION_BONE_SLOTS}-matrix bone palette of the ` +
                 "transcribed vertex stage, which is this scene's transport " +
                 "because it composes no pinned skeleton variant. The pin's " +
                 "own per-bone palette texture caps nothing; there is no CPU " +
                 "deformation path to fall back to.",
+            result.manifest.featureSites,
         );
     }
     // A points or lines primitive reaches the pipeline as itself, and only
@@ -1332,10 +1342,12 @@ async function main(): Promise<void> {
             specializationFeatures.assetTransmission ||
             result.manifest.geometryOutputTasks.length > 0)
     ) {
-        throw new Error(
+        refuseGeneration(
+            "loader:gltf",
             "A glTF point or line primitive in a scene that also reaches " +
                 "transmission or a geometry-output task is not lowered: " +
                 "those passes build their pipelines at a triangle list.",
+            result.manifest.featureSites,
         );
     }
     const emitOptions: UpstreamEmitOptions = {
