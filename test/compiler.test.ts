@@ -15000,9 +15000,7 @@ test("compiles pinned scene 213 GridMaterial options", () => {
     );
 });
 
-test("reports unsupported Babylon Lite APIs with source locations", () => {
-    // Dynamic text reshaping remains an unsupported pinned entry point;
-    // static font loading and initial text data now have native lowering.
+test("reports invalid Babylon Lite API arguments with source locations", () => {
     assert.throws(
         () =>
             compileSource(
@@ -15017,7 +15015,7 @@ async function main() {
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
             assert.match(error.message, /^unsupported\.ts:5:5:/);
-            assert.match(error.message, /updateDefaultTextData/);
+            assert.match(error.message, /Expected 2-3 arguments, received 0/);
             return true;
         },
     );
