@@ -296,6 +296,12 @@ function storeBake(
  * pinned package is the pin component of the key. Returns undefined
  * when any relative import cannot be resolved to a repository file,
  * and the caller then skips the cache: uncertain inputs mean bake.
+ *
+ * `standIns` names the relative specifiers of the entry modules that the
+ * bake redirects to a stand-in of its own (a pinned loader's GPU attach,
+ * recorded instead of run): the module such a specifier names executes
+ * nothing, so its subtree is not part of the closure. The stand-in's own
+ * text is the caller's and travels in its module identity.
  */
 export interface RepositoryModuleFile {
     path: string;
@@ -305,12 +311,12 @@ export interface RepositoryModuleFile {
 export function repositoryModuleClosure(
     modulePaths: readonly string[],
     repositoryRoot = resolve("."),
+    standIns: ReadonlySet<string> = new Set(),
 ): RepositoryModuleFile[] | undefined {
     const visited = new Set<string>();
     const files: RepositoryModuleFile[] = [];
-    const queue = modulePaths.map((path) =>
-        resolve(repositoryRoot, path),
-    );
+    const entries = modulePaths.map((path) => resolve(repositoryRoot, path));
+    const queue = [...entries];
     while (queue.length > 0) {
         const path = queue.shift()!;
         const file = resolveRepositoryModuleFile(path);
@@ -326,8 +332,10 @@ export function repositoryModuleClosure(
             ts.ScriptTarget.ES2022,
             true,
         );
+        const entry = entries.includes(path);
         for (const specifier of moduleSpecifiers(sourceFile)) {
             if (!specifier.text.startsWith(".")) continue;
+            if (entry && standIns.has(specifier.text)) continue;
             queue.push(resolve(dirname(file), specifier.text));
         }
     }
@@ -337,8 +345,9 @@ export function repositoryModuleClosure(
 export function moduleClosureBytes(
     modulePaths: readonly string[],
     repositoryRoot = resolve("."),
+    standIns: ReadonlySet<string> = new Set(),
 ): Uint8Array[] | undefined {
-    return repositoryModuleClosure(modulePaths, repositoryRoot)?.flatMap(
+    return repositoryModuleClosure(modulePaths, repositoryRoot, standIns)?.flatMap(
         ({ path, source }) => [
             // The file's identity includes its path, so moving a module is
             // a different closure even when its text is not.

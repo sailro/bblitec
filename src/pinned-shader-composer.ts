@@ -71,29 +71,6 @@ for (const [name, values] of Object.entries(webgpuFlagNamespaces)) {
     if (host[name] === undefined) host[name] = values;
 }
 
-/** The composer's output; field names are the pinned module's own. */
-export interface ComposedPinnedShader {
-    vertexWgsl: string;
-    fragmentWgsl: string;
-    /** The pin's identity for this permutation, e.g. `ibl|clearcoat`. */
-    fragmentKey: string;
-    /** The material UBO the composed fragment declares. */
-    materialUboSpec: unknown;
-    /** The mesh bind-group layout the composed fragment declares. */
-    meshBindGroupLayout: unknown;
-}
-
-interface PinnedComposerModules {
-    composeShader: (template: unknown, fragments: readonly unknown[]) => {
-        _vertexWGSL: string;
-        _fragmentWGSL: string;
-        _fragmentKey: string;
-        _materialUboSpec: unknown;
-        _meshBGLDescriptor: unknown;
-    };
-    createPbrTemplate: (config: Record<string, unknown>) => unknown;
-}
-
 /** Cached per process: the pin cannot change while generation runs, and
  *  every pinned import and packaged-module read resolves through it. */
 let pinnedLibraryRootCache: string | undefined;
@@ -637,21 +614,6 @@ export function assertPinnedSync<T>(value: T, what: string): T {
     return value;
 }
 
-async function pinnedComposer(): Promise<PinnedComposerModules> {
-    const [composer, template] = await Promise.all([
-        importPinnedModule<{
-            composeShader: PinnedComposerModules["composeShader"];
-        }>("shader/shader-composer.js"),
-        importPinnedModule<{
-            createPbrTemplate: PinnedComposerModules["createPbrTemplate"];
-        }>("material/pbr/pbr-template.js"),
-    ]);
-    return {
-        composeShader: composer.composeShader,
-        createPbrTemplate: template.createPbrTemplate,
-    };
-}
-
 /**
  * Extracts one top-level `fn` definition from composed WGSL, verbatim.
  *
@@ -687,40 +649,4 @@ export function extractWgslFunction(
     throw new Error(
         `Pinned composed WGSL function '${name}' is unterminated.`,
     );
-}
-
-
-/**
- * Composes the pinned PBR shader for a template configuration and a set of
- * already-built pinned fragments.
- *
- * The fragments carry their own dependency ids and the composer topologically
- * sorts them, so an incomplete set fails here instead of composing something
- * plausible: `createClearcoatFragment(..., hasIbl = true, ...)` declares `ibl`
- * and the composer refuses it without `createIblFragment`. That refusal is the
- * point — it is the pin stating a contract we would otherwise have to know.
- *
- * Production composition goes through `createPbrComposer` in
- * `pinned-pbr-variants.ts`; this thinner entry exists for
- * `test/pinned-shader-composer.test.ts`, which guards the pinned composer's
- * own contracts (the F0-remap text, the dependency refusal) independently of
- * the production path. Deliberately kept: it is the test's harness, not dead
- * code.
- */
-export async function composePinnedPbrShader(
-    templateConfig: Record<string, unknown> = {},
-    fragments: readonly unknown[] = [],
-): Promise<ComposedPinnedShader> {
-    const { composeShader, createPbrTemplate } = await pinnedComposer();
-    const composed = composeShader(
-        createPbrTemplate(templateConfig),
-        fragments,
-    );
-    return {
-        vertexWgsl: composed._vertexWGSL,
-        fragmentWgsl: composed._fragmentWGSL,
-        fragmentKey: composed._fragmentKey,
-        materialUboSpec: composed._materialUboSpec,
-        meshBindGroupLayout: composed._meshBGLDescriptor,
-    };
 }

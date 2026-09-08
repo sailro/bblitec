@@ -570,11 +570,6 @@ export async function ensurePinnedLoaderExecution(): Promise<void> {
     pinExecution = await pinExecutionPromise;
 }
 
-/** Whether the loader execution has run — the lazy-import test's marker. */
-export function pinnedLoaderExecuted(): boolean {
-    return pinExecution !== undefined;
-}
-
 /** The executed pin, or a loud refusal naming the missing await. */
 function executedPin(): PinnedLoaderExecution {
     if (pinExecution === undefined) {

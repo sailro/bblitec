@@ -149,6 +149,7 @@ window.__bakeCsg2 = () => (${replayPlan.toString()})(
 }
 
 /** Called by the synchronous compiler's generation child. */
+// Referenced by name from the generation-child script `bakeCsg2Meshes` runs below.
 export async function executeCsg2Bake(request: Csg2BakeRequest): Promise<unknown> {
     const server = createSuiteSceneServer(csg2Driver(request), {
         virtualModules: { [RECORDER_MODULE_PATH]: recorderModuleSource() },
