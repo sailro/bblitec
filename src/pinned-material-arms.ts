@@ -86,14 +86,17 @@ function pinnedOcclusionUv2Bit(): number {
 }
 
 /**
- * The composer's material UBO spec as plain data.
+ * A composer's UBO spec as plain data -- the PBR material block
+ * (`_materialUboSpec`) and the Standard mesh block (`_meshUboSpec`) share
+ * one shape.
  *
  * `_offsets` is a `Map<string, number>`, so it serializes to `{}` and any
  * consumer reading the JSON would have to recompute the layout from WGSL
- * alignment rules. The pin's own `_writeMaterialData` keys every field off this
- * map, which makes it the authority on where each field sits.
+ * alignment rules. The pin's own writers (`_writeMaterialData`,
+ * `writeStdMaterialData`) key every field off this map, which makes it the
+ * authority on where each field sits.
  */
-function plainMaterialUboSpec(spec: unknown): unknown {
+export function plainUboSpec(spec: unknown): unknown {
     const record = spec as
         | { _totalBytes?: number; _offsets?: unknown; _structBody?: string }
         | undefined;
@@ -670,7 +673,7 @@ export async function composeGltfMaterials(
             // `_writeMaterialData` keys every field off it, so it is the
             // authority on where each field sits — carry it as an object rather
             // than recomputing the layout from alignment rules here.
-            materialUboSpec: plainMaterialUboSpec(variant.materialUboSpec),
+            materialUboSpec: plainUboSpec(variant.materialUboSpec),
             metallicReflectanceRegistered,
         });
     }
@@ -877,9 +880,7 @@ export async function composeRenderableVariants(
                     fragmentKey: variant.fragmentKey,
                     vertexWgsl: variant.vertexWgsl,
                     fragmentWgsl: variant.fragmentWgsl,
-                    materialUboSpec: plainMaterialUboSpec(
-                        variant.materialUboSpec,
-                    ),
+                    materialUboSpec: plainUboSpec(variant.materialUboSpec),
                 });
                 // The pin composes each geometry task's MRT arm from the
                 // same inputs through `composePbrGeometryShader`; only the
@@ -909,7 +910,7 @@ export async function composeRenderableVariants(
                         fragmentKey: geometry.fragmentKey,
                         vertexWgsl: geometry.vertexWgsl,
                         fragmentWgsl: geometry.fragmentWgsl,
-                        materialUboSpec: plainMaterialUboSpec(
+                        materialUboSpec: plainUboSpec(
                             geometry.materialUboSpec,
                         ),
                     });
@@ -1390,9 +1391,7 @@ export async function composeScenePbrVariants(
                 fragmentKey: variant.fragmentKey,
                 vertexWgsl: variant.vertexWgsl,
                 fragmentWgsl: variant.fragmentWgsl,
-                materialUboSpec: plainMaterialUboSpec(
-                    variant.materialUboSpec,
-                ),
+                materialUboSpec: plainUboSpec(variant.materialUboSpec),
             });
         }
         }

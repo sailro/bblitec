@@ -111,10 +111,6 @@ export function reachedStandardBump(
     return false;
 }
 
-export function reachedStandardLights(lights: BabylonLight[]): number {
-    return lights.filter((light) => light.type === 0).length;
-}
-
 /**
  * Whether any reached light names the meshes it applies to. The pinned
  * engine keeps that as a per-mesh light set, which the Standard uniform

@@ -96,7 +96,6 @@ import {
     reachedDiffuseUv2,
     reachedStandardBump,
     reachedStandardLightLists,
-    reachedStandardLights,
     type BabylonLight,
 } from "./babylon-asset-features.js";
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
@@ -1438,7 +1437,6 @@ async function main(): Promise<void> {
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
-        standardLights: reachedStandardLights(reachedBabylonLights),
         standardLightLists: reachedStandardLightLists(
             reachedBabylonLights,
         ),

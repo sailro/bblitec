@@ -2501,23 +2501,6 @@ function emitOptionRows(
             ["renderer plan"],
         ),
         row(
-            "standardLights",
-            "emit-option",
-            emit.standardLights > 0,
-            emit.standardLights > 0
-                ? `${emit.standardLights} point light(s) (type 0) across ` +
-                    "the scene's .babylon assets"
-                : "no .babylon point lights",
-            "native-architecture: the pinned Standard template sizes its " +
-                "light array from MAX_LIGHTS at generation " +
-                "(src/material/standard/standard-template.ts, " +
-                "src/light/types.ts); the composed fragment loops " +
-                "min(mesh.lc, MAX_LIGHTS) over the shared lights block, " +
-                "and the count is knowable because the loader accepts " +
-                "only point lights",
-            ["renderer plan"],
-        ),
-        row(
             "standardLightLists",
             "emit-option",
             emit.standardLightLists,

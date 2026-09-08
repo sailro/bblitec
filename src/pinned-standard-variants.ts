@@ -50,12 +50,11 @@
  *   `hasVertexAlpha` adds `VERTEX_ALPHA | MATERIAL_ALPHA_BLEND`.
  * - Feature `renderer:fog` → `scene.fog`: `standard-group-builder.ts` builds
  *   `sceneShader = { _features: STD_SCENE_FOG, _fragments: [fogFragment] }`.
- * - `standardLights` / `standardSpotLights` / `standardLightLists` map to
- *   **no feature bit**: the pinned fragment always declares
- *   `array<LightEntry, MAX_LIGHTS>` and loops `min(mesh.lc, MAX_LIGHTS)`
- *   through `mli()` (`standard-template.ts` LIGHTING_FN + `lights-ubo.ts`),
- *   so light count, kind dispatch and per-mesh lists are UBO data — the
- *   transcription's unrolled slots and its spot empty-slot tagging retire.
+ * - A `.babylon` asset's light count, kinds and per-mesh light lists
+ *   (`standardLightLists`) map to **no feature bit**: the pinned fragment
+ *   always declares `array<LightEntry, MAX_LIGHTS>` and loops
+ *   `min(mesh.lc, MAX_LIGHTS)` through `mli()` (`standard-template.ts`
+ *   LIGHTING_FN + `lights-ubo.ts`), so all three are UBO data.
  * - `geometryOutputTasks` → the pin's own MRT arm,
  *   `composeStandardGeometryShader` (`standard-geometry-output-shader.ts`),
  *   reached through a material view carrying
@@ -88,6 +87,7 @@ import {
     pinnedPluginBakeShift,
     standardPluginFeatureBits,
 } from "./pinned-material-plugins.js";
+import { plainUboSpec } from "./pinned-material-arms.js";
 
 /** The material fields the pin's Standard feature derivation reads. */
 export interface PinnedStandardMaterialInput {
@@ -403,25 +403,6 @@ interface ComposedStandardShader {
     _meshUboSpec: unknown;
 }
 
-/** `_meshUboSpec` as plain data, mirroring `plainMaterialUboSpec` for PBR. */
-function plainMeshUboSpec(spec: unknown): unknown {
-    const record = spec as
-        | { _totalBytes?: number; _offsets?: unknown; _structBody?: string }
-        | undefined;
-    if (!record) return spec;
-    const offsets: Record<string, number> = {};
-    if (record._offsets instanceof Map) {
-        for (const [name, offset] of record._offsets as Map<string, number>) {
-            offsets[name] = offset;
-        }
-    }
-    return {
-        _totalBytes: record._totalBytes,
-        _offsets: offsets,
-        _structBody: record._structBody,
-    };
-}
-
 /**
  * Composes the Standard variant for one material.
  *
@@ -657,7 +638,7 @@ export async function composePinnedStandardVariant(
             meshFeatures,
             vertexWgsl: composed._vertexWGSL,
             fragmentWgsl: composed._fragmentWGSL,
-            meshUboSpec: plainMeshUboSpec(composed._meshUboSpec),
+            meshUboSpec: plainUboSpec(composed._meshUboSpec),
         };
     }
     const composed = pipeline.composeStandardShader(
@@ -673,7 +654,7 @@ export async function composePinnedStandardVariant(
         meshFeatures,
         vertexWgsl: composed._vertexWGSL,
         fragmentWgsl: composed._fragmentWGSL,
-        meshUboSpec: plainMeshUboSpec(composed._meshUboSpec),
+        meshUboSpec: plainUboSpec(composed._meshUboSpec),
     };
 }
 

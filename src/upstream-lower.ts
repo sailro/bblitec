@@ -486,7 +486,6 @@ export interface UpstreamEmitOptions {
     materialExtensionPayload: boolean;
     /** The `KHR_materials_variants` a scene selected, or "" when unreached. */
     selectedMaterialVariant: string;
-    standardLights: number;
     standardLightLists: boolean;
     standardDiffuseUv2: boolean;
     standardBump: boolean;
@@ -3625,7 +3624,6 @@ export function emitUpstreamGenerated(
         materialSpecular: false,
         materialExtensionPayload: false,
         selectedMaterialVariant: "",
-        standardLights: 0,
         standardLightLists: false,
         standardDiffuseUv2: false,
         standardBump: false,
