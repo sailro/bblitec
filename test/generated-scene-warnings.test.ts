@@ -9,6 +9,41 @@ import { PhysicsLowerer } from "../src/lowering/physics-lowerer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools();
+test("conditional object spreads retain fresh identity through a returned callback", { skip: !nativeTools }, () => {
+    for (const active of [false, true]) runScene(`conditional-spread-${active}`, `
+        const idle = { x: 0, y: -0.5, z: 0 };
+        const walking = { x: 0.7, y: -0.5, z: 2 };
+        function wire(input: { x: number; y: number; z: number }): () => void {
+            return () => { input.x = 5; input.z += 1; };
+        }
+        const input = ${active} ? { ...walking } : { ...idle };
+        const callback = wire(input);
+        callback(); callback();
+        if (input.x !== 5 || input.z !== ${active ? 4 : 2}) throw new Error("Callback lost input object identity.");
+        if (idle.x !== 0 || walking.x !== 0.7) throw new Error("Object spread mutated its source.");
+    `, "int main() { return generated_scene_main(); }");
+});
+
+test("conditional nullable records preserve selected identity and live rebinding", { skip: !nativeTools }, () => {
+    runScene("conditional-nullable-record", `
+        import { createEngine } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        function mutate(value: { x: number }): void { value.x += 2; }
+        const selected: { x: number } | null = true ? { x: 1 } : null;
+        const absent: { x: number } | null = false ? { x: 10 } : null;
+        if (selected) { mutate(selected); mutate(selected); }
+        if (absent) { mutate(absent); throw new Error("Absent conditional object became present."); }
+        if (!selected || selected.x !== 5) throw new Error("Selected object lost shared identity.");
+        let rebound: { x: number } | null = true ? { x: 4 } : null;
+        const retained = rebound;
+        rebound = null;
+        if (rebound) throw new Error("Rebound object retained stale presence.");
+        if (!retained) throw new Error("Alias lost the original object.");
+        mutate(retained);
+        if (retained.x !== 6) throw new Error("Alias lost shared storage.");
+    `, "int main() { return generated_scene_main(); }");
+});
+
 const raycastSource = `
     import HavokPhysics from "@babylonjs/havok";
     import { createEngine, createSceneContext, createBox, createHavokWorld,

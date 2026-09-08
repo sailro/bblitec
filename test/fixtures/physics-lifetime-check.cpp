@@ -7,6 +7,8 @@
 // call instead of linking the renderer merely to provide its transform entry.
 namespace bbl::upstream {
 std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
+std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
+std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
 }
 
 int main() {

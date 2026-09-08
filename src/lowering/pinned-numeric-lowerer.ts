@@ -24,6 +24,7 @@
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { cppCondition } from "../cpp-expressions.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
@@ -1354,11 +1355,12 @@ export class PinnedNumericLowerer {
         ) {
             return undefined;
         }
-        const constructor = initializer.expression.text;
+        const sourceConstructor = initializer.expression.text;
+        const constructor = TYPED_ARRAY_CONVERSIONS.get(sourceConstructor)?.type.toUpperCase() ?? sourceConstructor;
         const argument = initializer.arguments[0]!;
         // Pinned uniform writers also construct a small typed tuple directly.
         // Keep its allocation fixed and round at each authored f32 store.
-        if ((constructor === "F32" || constructor === "Float32Array") &&
+        if (constructor === "F32" &&
             ts.isArrayLiteralExpression(argument)) {
             const values = argument.elements.map((element) =>
                 `static_cast<float>(${this.expression(element)})`);
@@ -1828,19 +1830,7 @@ export class PinnedNumericLowerer {
         if (known !== undefined) return known ? "true" : "false";
         const absent = this.absenceTest(expression);
         if (absent !== undefined) return `!(${absent})`;
-        const text = this.expression(expression);
-        if (!text.startsWith("(") || !text.endsWith(")")) return text;
-        let depth = 0;
-        for (let index = 0; index < text.length; index += 1) {
-            if (text[index] === "(") depth += 1;
-            else if (text[index] === ")") {
-                depth -= 1;
-                // The opening parenthesis closed before the end, so the
-                // outer pair is not one enclosing pair.
-                if (depth === 0 && index !== text.length - 1) return text;
-            }
-        }
-        return text.slice(1, -1);
+        return cppCondition(this.expression(expression));
     }
 
     /**

@@ -165,6 +165,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "text:data": { provenance: "src/text/default-text-data.ts#createDefaultTextData", consumers: CMAKE },
     "text:layout": { provenance: "src/text/layout.ts#layoutText + src/text/default-text-data.ts#updateDefaultTextData", consumers: CMAKE },
     "text:renderable": { provenance: "src/text/text-renderable.ts#createTextRenderable + addTextRenderable", consumers: CMAKE },
+    "renderer:text": { provenance: "src/text/text-renderer.ts#createTextRenderer + registerTextRenderer", consumers: CMAKE },
+    "text:weight": { provenance: "src/text/set-font-weight-offset.ts#setFontWeightOffset", consumers: CMAKE },
     "animation:gltf-groups": {
         provenance:
             "src/animation/animation-group.ts (playAnimation, pauseAnimation, " +
@@ -885,6 +887,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/texture/texture-2d.ts",
         consumers: CMAKE,
     },
+    "material:standard-lightmap": {
+        provenance: "src/material/standard/set-std-lightmap.ts + fragments/std-lightmap-fragment.ts",
+        consumers: CMAKE,
+    },
     "material:standard-diffuse-file-texture": {
         provenance:
             "src/material/standard/standard-material.ts diffuseTexture + " +
@@ -1047,6 +1053,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/physics/havok-queries.ts shapeProximity + shapeCast",
         consumers: CMAKE,
     },
+    "physics:character-controller": {
+        provenance: "src/physics/character-controller.ts PhysicsCharacterController over Havok query collectors",
+        consumers: CMAKE,
+    },
     "physics:container": {
         provenance: "src/physics/havok.ts createPhysicsShape + addPhysicsShapeChildFromParent",
         consumers: CMAKE,
@@ -1057,6 +1067,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "physics:constraints": {
         provenance: "src/physics/havok.ts createPhysicsConstraint HINGE anchors and axis locks",
+        consumers: CMAKE,
+    },
+    "physics:heightfield": {
+        provenance: "src/physics/havok-heightfield.ts ground mesh bounds, sample grid and Havok constructor inputs",
         consumers: CMAKE,
     },
     "physics:trigger": {
@@ -1429,7 +1443,9 @@ function capabilityRows(
         "metallicReflectanceMap",
     );
     const reflectanceMap = pbrBindingNames.has("reflectanceMap");
-    const lightmap = pbrBindingNames.has("lmTexture");
+    const standardLightmap = (emit.pinnedStandardVariants ?? []).some(variant =>
+        variantBindings(variant.vertexWgsl, variant.fragmentWgsl).some(binding => binding.name === "lT"));
+    const lightmap = pbrBindingNames.has("lmTexture") || standardLightmap;
     return [
         checkedRow(
             "BBLITE_LOCAL_CUBEMAP",
@@ -1721,15 +1737,14 @@ function capabilityRows(
             lightmap,
             [
                 [
-                    has("material:lightmap") && lightmap,
+                    has("material:lightmap") && pbrBindingNames.has("lmTexture"),
                     "scene source reached material:lightmap and a composed " +
                         "variant binds lmTexture",
                 ],
+                [has("material:standard-lightmap") && standardLightmap, "scene source reached material:standard-lightmap and a composed variant binds lT"],
             ],
-            "no composed PBR variant binds lmTexture",
-            "src/material/pbr/enable-pbr-lightmap.ts is the opt-in that " +
-                "registers the extension; fragments/lightmap-fragment.ts " +
-                "declares the lmTexture/lmSampler pair and the lmLvl field",
+            "no composed material binds a lightmap",
+            "src/material/pbr/enable-pbr-lightmap.ts and src/material/standard/set-std-lightmap.ts register their lightmap fragments",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",

@@ -25,6 +25,9 @@
 #include "pal_platform_events.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
+#if BBLITE_HAS_DAWN && BBLITE_HAS_TEXT_RENDERER
+#include "pal_dawn_text_renderer.hpp"
+#endif
 
 #if BBLITE_HAS_DAWN && BBLITE_HAS_SPRITE_RENDERER
 #include "pal_dawn_sprite.hpp"
@@ -35,7 +38,7 @@
 
 namespace bbl::pal {
 
-#if BBLITE_HAS_DAWN && (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER)
+#if BBLITE_HAS_DAWN && (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER)
 
 bool run_sprite_dawn_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
@@ -44,7 +47,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
         "Dawn sprites",
         /*supports_single_sample=*/true,
         /*supports_copy_task=*/false);
-    const bool canvas_only = engine.registered_sprite_renderers.empty();
+    const bool canvas_only = engine.registered_sprite_renderers.empty() && engine.registered_text_renderers.empty();
     if (canvas_only
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         && engine.primary_canvas.value >= engine.ui_elements.size()
@@ -55,6 +58,9 @@ bool run_sprite_dawn_engine(Engine& engine) {
     }
 
     DawnDevice state;
+#if BBLITE_HAS_TEXT_RENDERER
+    std::unique_ptr<DawnTextRenderer> text_renderer;
+#endif
 #if BBLITE_HAS_SPRITE_RENDERER
     // The pinned mip generator, for an atlas the loader gave a chain.
     DawnMipGenerator mips;
@@ -67,6 +73,9 @@ bool run_sprite_dawn_engine(Engine& engine) {
     SpriteUiDawnResources ui_resources;
 #endif
     const auto release = [&]() {
+#if BBLITE_HAS_TEXT_RENDERER
+        text_renderer.reset();
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         release_sprite_ui_dawn_resources(ui_resources);
         destroy_ui_rml_runtime(ui_runtime);
@@ -99,6 +108,9 @@ bool run_sprite_dawn_engine(Engine& engine) {
         device_options.immediate_present =
             frame_options.benchmark_requested;
         create_dawn_device(engine.options, device_options, state);
+#if BBLITE_HAS_TEXT_RENDERER
+        text_renderer=std::make_unique<DawnTextRenderer>(state.device,state.queue,!frame_options.render_capture_path.empty());
+#endif
         sync_engine_canvas_size(state.window, engine);
         resize_dawn_surface(state, engine.options);
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
@@ -279,6 +291,13 @@ bool run_sprite_dawn_engine(Engine& engine) {
 
             WGPUCommandEncoder encoder =
                 wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+#if BBLITE_HAS_TEXT_RENDERER
+            text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+            DawnStandaloneTextOps text_ops(*text_renderer,state.surface_format);
+            for(const auto& renderer:engine.registered_text_renderers)update_text_renderer(*renderer,width,height,state.device,text_ops);
+            text_ops.encoder=encoder;text_ops.target=surface_view;
+            for(const auto& renderer:engine.registered_text_renderers)record_text_renderer(*renderer,text_ops);
+#endif
             if (canvas_only) {
                 WGPURenderPassColorAttachment target = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                 target.view = surface_view;
@@ -345,7 +364,11 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 !captures.screenshot_saved &&
                 !frame_options.screenshot_path.empty();
             captures.maybe_write_standalone_render_capture(
-                "dawn", engine, width, height, frame);
+                "dawn", engine, width, height, frame
+#if BBLITE_HAS_TEXT_RENDERER
+                ,&text_renderer->owner->capture
+#endif
+            );
             DawnSurfaceCapture capture{};
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             const UiRenderFrame& ui_frame =

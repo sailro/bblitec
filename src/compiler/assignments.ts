@@ -150,6 +150,11 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     field: "specular_power",
     value: "number",
   },
+  ...([
+    ["lightmapLevel", "lightmap_level", "number"],
+    ["lightmapCoordIndex", "lightmap_coord_index", "number"],
+    ["useLightmapAsShadowmap", "lightmap_shadowmap", "boolean"],
+  ] as const).map(([property, field, value]) => ({ kind: "material" as const, property, collection: "materials" as const, field, value })),
   {
     // src/material/standard/standard-material.ts: "Fragments with
     // `alpha < alphaCutOff` are discarded." It is a plain number field,
@@ -469,6 +474,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
     },
   ): void;
   recordUnknownSceneMeshMaterial(materialIndex: number): void;
+  recordUnknownStandardMeshMaterial(): void;
   recordUnknownSceneMaterialAssignment(): void;
   recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
   /** Marks a scene-code mesh as carrying a skeleton for its feature word. */
@@ -2023,6 +2029,9 @@ export function emitPropertyAssignment(
       }
       if (target.sceneMeshIndex === undefined && material.scenePbrMaterialIndex !== undefined) {
         context.recordUnknownSceneMeshMaterial(material.scenePbrMaterialIndex);
+      }
+      if (meshProfile === undefined && material.standardMaterial) {
+        context.recordUnknownStandardMeshMaterial();
       }
       if (material.scenePbrMaterialIndex === undefined && !material.standardMaterial &&
           material.nodeMaterialIndex === undefined && material.shaderVariant === undefined) {

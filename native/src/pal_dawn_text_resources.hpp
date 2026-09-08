@@ -249,9 +249,19 @@ struct DawnTextResourceOps {
         if (owner->capture.enabled()) current_quad = buffer->lease;
     }
     void set_instance_vertex_buffer(const TextGpuState& gpu) {
+        bind_instance_buffer(std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend)->instances);
+    }
+    std::shared_ptr<void> retain_instance_buffer(const TextGpuState& gpu) {
         const auto resources = std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 1u, resources->instances.lease->get(), 0u, WGPU_WHOLE_SIZE);
-        if (owner->capture.enabled()) current_instances = resources->instances.lease;
+        return std::make_shared<DawnTextBuffer>(resources->instances);
+    }
+    void set_instance_buffer(const std::shared_ptr<void>& buffer) {
+        const auto retained = std::static_pointer_cast<DawnTextBuffer>(buffer);
+        bind_instance_buffer(*retained);
+    }
+    void bind_instance_buffer(const DawnTextBuffer& buffer) {
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 1u, buffer.lease->get(), 0u, WGPU_WHOLE_SIZE);
+        if (owner->capture.enabled()) current_instances = buffer.lease;
     }
     void set_pipeline(const std::shared_ptr<void>& pipeline) {
         const auto value = std::static_pointer_cast<DawnTextPipelineLease>(pipeline);

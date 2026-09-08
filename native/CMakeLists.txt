@@ -524,7 +524,7 @@ if(BBLITE_BACKEND_DAWN)
         PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn.cpp"
     )
     if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES OR
-       "renderer:canvas" IN_LIST BBLITE_RUNTIME_FEATURES)
+       "renderer:canvas" IN_LIST BBLITE_RUNTIME_FEATURES OR "renderer:text" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_sources(
             bblite_native
             PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_sprite.cpp"
@@ -813,10 +813,21 @@ else()
     )
 endif()
 
-if("text:renderable" IN_LIST BBLITE_RUNTIME_FEATURES)
+if("text:renderable" IN_LIST BBLITE_RUNTIME_FEATURES OR "renderer:text" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT=1)
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT=0)
+endif()
+
+if("text:renderable" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT_RENDERABLE=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT_RENDERABLE=0)
+endif()
+if("renderer:text" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT_RENDERER=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT_RENDERER=0)
 endif()
 
 if("sprite:billboard" IN_LIST BBLITE_RUNTIME_FEATURES)

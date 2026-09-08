@@ -7,6 +7,7 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <variant>
 
 namespace bbl {
 
@@ -31,9 +32,20 @@ struct TextAtlas {
     TextAtlasTexture bands;
     TextStream metadata;
 };
+struct TextStyleGroupToken {};
+struct TextGroupKey {
+    std::string curve_set_id;
+    std::shared_ptr<TextStyleGroupToken> variant;
+    TextGroupKey() = default;
+    TextGroupKey(std::string id) : curve_set_id(std::move(id)) {}
+    TextGroupKey(const char* id) : curve_set_id(id) {}
+    bool operator==(const TextGroupKey&) const = default;
+    bool operator==(const std::string& id) const { return !variant && curve_set_id == id; }
+};
+inline bool text_weight_installed = false;
 struct TextDrawGroup {
     std::size_t atlas_index = 0;
-    std::string group_key;
+    TextGroupKey group_key;
     std::size_t slot_start = 0;
     std::size_t slot_count = 0;
     std::size_t live_count = 0;
@@ -80,6 +92,9 @@ struct TextDataState {
     std::vector<std::shared_ptr<TextAtlasGpuState>> atlas_gpu;
 };
 using TextData = std::shared_ptr<TextDataState>;
+struct TextRunState;
+using TextRun = std::shared_ptr<TextRunState>;
+using TextRunRef = std::variant<double, TextRun>;
 
 struct TextQuaternion { double x = 0, y = 0, z = 0, w = 1; };
 struct TextRenderableOptions {

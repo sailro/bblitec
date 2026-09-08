@@ -7,16 +7,12 @@ its scene.
 
 ## Unregistered numbered scenes
 
-The corpus/registry comparison leaves **5** numbered scenes unregistered.
-
-| Scene | Remaining integration |
-| --- | --- |
-| 46 | Module-scope mutable state and all six pinned constraint types; map solver differences explicitly, including LINEAR_DISTANCE |
-| 47 | Physics viewer, heightfields and switch-assigned meshes |
-| 104, 105 | Structural hierarchy/owner grouping and character controller |
-| 180 | Standalone text renderer/layer, range controls, dynamic color and weight updates |
+All numbered corpus scenes are registered.
 
 ## Compiler and lowering
+
+- [ ] Match Havok's deferred ACTION target pose and persistent kinematic velocity; the current Bullet
+  path writes the pose immediately and derives velocity over its first substep.
 
 - [ ] Replace positional/source-text recognizers with typed user-code IR, one
   symbol/alias resolver and an escape/retaining-sink model. Mutable callback
@@ -86,7 +82,7 @@ The corpus/registry comparison leaves **5** numbered scenes unregistered.
 | Lines/instances | Runtime point lists, lines/dashes/color changes, fast dynamic draw count and GPU culling/LOD |
 | Particles | Wider evaluators/providers/bridges/snippets, texture flip, lifecycle and mixed-set random/buffer ownership |
 | Navigation | Tiled builds without obstacles, broader queries/random state and disposal |
-| Physics | Constraints, characters/viewer, heightfields, broader query shapes/options, inertia orientation/conversion and remaining lifecycle/options |
+| Physics | Constraint springs/motors and retained handles, broader character/viewer APIs, explicit or rectangular heightfields, broader query shapes/options, inertia orientation/conversion and remaining lifecycle/options |
 | Audio | Browser/native offline PCM gate, master-volume ramps and broader sound/bus/spatial APIs |
 | UI | General forms/text input, additional drivers and multi-surface source shapes |
 

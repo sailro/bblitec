@@ -20,7 +20,7 @@ inline TextGpuDrawCapture text_pipeline_capture(const upstream::TextPipelineInfo
     result.color_format = std::move(color); result.depth_format = std::move(depth);
     result.samples = info.sample_count; result.depth_write = info.depth_write;
     if (info.depth_compare != DepthCompare::greater_equal) throw std::runtime_error("Unmapped text depth compare.");
-    result.depth_compare = "greater-equal";
+    result.depth_compare = info.has_depth ? "greater-equal" : "";
     result.blend_enabled = info.blend_enabled; result.alpha_to_coverage = info.alpha_to_coverage;
     result.topology = info.topology; result.cull_mode = info.cull_mode; result.front_face = info.front_face;
     result.sample_mask = 0xffffffffu;
@@ -37,10 +37,10 @@ inline TextGpuDrawCapture text_pipeline_capture(const upstream::TextPipelineInfo
 }
 
 inline const upstream::TextPipelineInfo& text_pipeline_info(
-    std::uint32_t samples, bool has_depth, bool depth_write, bool alpha_to_coverage) {
+    std::uint32_t samples, bool has_depth, bool depth_write, bool alpha_to_coverage, bool weighted = false) {
     for (const auto& row : upstream::text_pipeline_rows) {
         if (row.sample_count == samples && row.has_depth == has_depth && row.depth_write == depth_write &&
-            row.alpha_to_coverage == alpha_to_coverage) return row;
+            row.alpha_to_coverage == alpha_to_coverage && row.weighted == weighted) return row;
     }
     throw std::runtime_error("Text target signature has no composed pipeline.");
 }

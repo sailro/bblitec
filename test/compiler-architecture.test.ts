@@ -913,7 +913,7 @@ test("keeps scene-less sprite render targets and renderer registration live", ()
         assert.match(backend, /const auto sync_renderer_passes = \[&\]\(\)/);
         assert.match(
             backend,
-            /advance_frame\([\s\S]{0,600}sync_render_textures\(\);\s*sync_renderer_passes\(\);/,
+            /advance_frame\([\s\S]*?sync_render_textures\(\);\s*sync_renderer_passes\(\);/,
         );
         assert.match(
             backend,

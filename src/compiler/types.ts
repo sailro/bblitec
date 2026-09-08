@@ -160,6 +160,8 @@ export interface CompileManifest {
   standardMaterialPlugins: MaterialPluginManifest[][];
   /** Actual Standard material states observed for each plugin signature. */
   standardMaterialPluginInputs: PinnedStandardMaterialInput[][];
+  /** A Standard assignment targets a mesh without a scene composition profile. */
+  standardMaterialUnknownMesh?: true;
   /** Scene-material record count; physical creation count when no runtime profiles exist. */
   sceneMaterialCount: number;
   /** glTF load count at each scene material creation, across all families. */
@@ -1210,6 +1212,10 @@ export type ValueKind =
   | "text-font"
   | "text-data"
   | "text-renderable"
+  | "text-layer"
+  | "text-renderer"
+  | "text-run"
+  | "text-run-ref"
   | "text-vector"
   | "worker"
   | "worker-scope"
@@ -1386,6 +1392,8 @@ export type ValueKind =
   | "physics-viewer"
   | "physics-aggregate"
   | "physics-body"
+  | "physics-character-controller"
+  | "physics-character-observable"
   | "physics-shape"
   | "property-animation-group"
   /** Callback-local platform keyboard data; it has no storable JS shape. */
@@ -2306,6 +2314,8 @@ export interface Value {
   staticJson?: unknown;
   tupleElements?: Value[];
   recordProperties?: Record<string, Value>;
+  /** Fields alias an already-retained native object; escaping must preserve those field references. */
+  retainedNativeRecord?: true;
   /**
    * Record properties that carry a function: either an identifier
    * naming a local one, or a function literal written in place. The
@@ -2389,7 +2399,9 @@ export interface Value {
 export type Feature =
   | "text:data"
   | "text:layout"
+  | "text:weight"
   | "text:renderable"
+  | "renderer:text"
   | "animation:gltf-groups"
   | "animation:property"
   | "animation:property-blending"
@@ -2522,9 +2534,11 @@ export type Feature =
   | "physics:world"
   | "physics:aggregate"
   | "physics:queries"
+  | "physics:character-controller"
   | "physics:container"
   | "physics:viewer"
   | "physics:constraints"
+  | "physics:heightfield"
   | "physics:trigger"
   | "physics:floating-origin"
   | "scene:remove"
@@ -2607,6 +2621,7 @@ export type Feature =
   | "material:standard-emissive-render-texture"
   | "material:standard-diffuse-file-texture"
   | "material:standard-emissive-file-texture"
+  | "material:standard-lightmap"
   | "texture:file"
   | "texture:compressed"
   | "texture:pixels"

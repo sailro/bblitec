@@ -220,6 +220,7 @@ foreach ($patch in @(
     "rmlui-premultiplied-rounding.patch",
     "rmlui-css-box-model.patch",
     "rmlui-fractional-letter-spacing.patch",
+    "rmlui-line-leading.patch",
     "rmlui-transform-key-ownership.patch"
 )) {
     & $CMake `

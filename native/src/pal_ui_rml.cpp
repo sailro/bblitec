@@ -31,6 +31,8 @@
 #include "pal_ui_canvas.hpp"
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_form.hpp"
+#include "pal_ui_font_win32.hpp"
+#include "pal_ui_range.hpp"
 #include "pal_ui_text.hpp"
 
 #include <algorithm>
@@ -3015,6 +3017,11 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi initialization failed.");
             }
             initialized = true;
+            Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
+#if defined(_WIN32)
+            platform_fonts = std::make_unique<Win32UiFontEngine>(*Rml::GetFontEngineInterface());
+            Rml::SetFontEngineInterface(platform_fonts.get());
+#endif
             // Let the retained stylesheet cascade these properties on all
             // markup, including innerHTML nodes with no JavaScript handle.
             for (const auto& [name, value] : std::array{
@@ -4211,6 +4218,9 @@ struct UiRmlRuntime {
     }
 
     bool sync_text_form_metrics() {
+#if defined(_WIN32)
+        return false;
+#else
         bool changed = false;
         for (auto& projected : projected_elements) {
             auto* element = projected.element;
@@ -4226,6 +4236,7 @@ struct UiRmlRuntime {
             changed = true;
         }
         return changed;
+#endif
     }
 
     bool sync_focus() {
@@ -4856,6 +4867,7 @@ struct UiRmlRuntime {
     SDL_Window* window = nullptr;
     UiSystemInterface system_interface;
     UiRenderRecorder render_interface;
+    UiRangeDecoratorInstancer range_decorator;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;
     std::vector<std::unique_ptr<UiEventListener>> listeners;
@@ -4872,6 +4884,9 @@ struct UiRmlRuntime {
     std::string css_sans_family;
     std::string css_monospace_family;
     std::optional<TextFormMetrics> text_form_metrics;
+#if defined(_WIN32)
+    std::unique_ptr<Win32UiFontEngine> platform_fonts;
+#endif
     std::string projected_style_sheet_source;
     float density_ratio = 0.0f;
     std::uint32_t viewport_width = 0;

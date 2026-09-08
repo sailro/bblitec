@@ -803,8 +803,7 @@ test("the native-support block flows from the pin's own declarations", async () 
         block.includes(`${meshBits.MSH_HAS_THIN_INSTANCES}u`),
     );
     // The lowered derivation carries the pin's own structure: the diffuse
-    // presence guard, the alpha-blend comparison, the disable-lighting flag
-    // -- and none of the branches the loader cannot feed (no lightmap).
+    // presence guard, the alpha-blend comparison and the disable-lighting flag.
     assert.ok(
         block.includes(
             "if (material.base_color_texture.has_image() || " +
@@ -826,7 +825,7 @@ test("the native-support block flows from the pin's own declarations", async () 
                 "MATERIAL_ALPHA_BLEND",
         ),
     );
-    assert.ok(!block.includes("LIGHTMAP"));
+    assert.ok(block.includes("if (material.lightmap_texture.has_image()) {"));
     // The record-gap closures: the alpha lane and the pin-default fields
     // left untouched. bump_level is one-to-one — the record stores the
     // authored level and the pinned writer derives 1 / level itself.
@@ -836,7 +835,7 @@ test("the native-support block flows from the pin's own declarations", async () 
     assert.ok(
         block.includes("props.alpha = material.alpha;"),
     );
-    assert.ok(!block.includes("props.lightmap_level"));
+    assert.ok(block.includes("props.lightmap_level = material.lightmap_level;"));
     // The rCm lane flows from the record's own field (the .babylon
     // loader's coordinatesMode === 2 write over the pin's default 1).
     assert.ok(

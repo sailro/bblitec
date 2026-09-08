@@ -43,6 +43,21 @@ export class CompilerSymbols {
         private readonly checker: ts.TypeChecker,
     ) {}
 
+    /** Resolve a generation-known enum value through its pinned declaration,
+     * including a property whose flow type has narrowed away the alias name. */
+    public pinnedEnumMemberForValue(expression: ts.Expression, enumName: string, value: number): string | undefined {
+        const symbol = this.checker.getSymbolAtLocation(expression);
+        const declaration = symbol?.valueDeclaration;
+        const type = declaration ? this.checker.getTypeAtLocation(declaration) : this.checker.getTypeAtLocation(expression);
+        const owner = type.aliasSymbol;
+        if (owner?.name !== enumName || !owner.declarations?.some(entry => entry.getSourceFile().fileName.replaceAll("\\", "/").includes("/@babylonjs/lite/"))) return undefined;
+        const bag = this.checker.getTypeOfSymbolAtLocation(owner, expression);
+        return bag.getProperties().find(property => {
+            const member = this.checker.getTypeOfSymbolAtLocation(property, expression);
+            return member.isNumberLiteral() && member.value === value;
+        })?.name;
+    }
+
     /** Literal-valued readonly exports include the pin's `as const` enum bags. */
     public pinnedConstantProperty(
         expression: ts.PropertyAccessExpression,

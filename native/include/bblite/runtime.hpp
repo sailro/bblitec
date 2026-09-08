@@ -886,6 +886,8 @@ private:
  */
 struct SceneState;
 struct TextRenderableState;
+struct TextLayerState;
+struct TextRendererState;
 struct TextDataState;
 struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
@@ -3242,6 +3244,9 @@ struct MaterialRecord {
     // the gamma decode and the V flip are all composition input and carry
     // no lane at all.
     float lightmap_level = 1.0f;
+    float lightmap_coord_index = 1.0f;
+    bool lightmap_shadowmap = false;
+    bool lightmap_texture_srgb = false;
     float iridescence_intensity = 0.0f;
     // Pinned defaults: KHR_materials_iridescence ior 1.3, thickness
     // 100..400 nm (gltf-ext-iridescence.ts).
@@ -3382,7 +3387,7 @@ struct MaterialRecord {
     TextureData sheen_roughness_texture;
     TextureData iridescence_texture;
     TextureData iridescence_thickness_texture;
-    /** The baked lightmap `setPbrLightmap` bound (enable-pbr-lightmap.ts). */
+    /** The file texture bound by the PBR or Standard lightmap setter. */
     TextureData lightmap_texture;
     TextureData emissive_texture;
     TextureData opacity_texture;
@@ -4747,6 +4752,7 @@ struct Engine {
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
+    std::vector<std::shared_ptr<TextRendererState>> registered_text_renderers;
     // The same list for the effect half; an effect renderer is its own
     // rendering context on the engine exactly as a sprite renderer is.
     std::vector<EffectRendererHandle> registered_effect_renderers;
@@ -6192,6 +6198,7 @@ void set_pbr_lightmap(
     MaterialHandle material,
     FileTexture texture,
     float level);
+void set_standard_lightmap_texture(Engine& engine, MaterialHandle material, const FileTexture& texture);
 void set_pbr_subsurface(
     Engine& engine,
     MaterialHandle material,

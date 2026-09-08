@@ -6,12 +6,15 @@
 
 namespace bbl::upstream {
 std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
+std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
+std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
 }
 
 int main() {
     using namespace bbl;
     namespace p = bbl::pal;
     namespace u = bbl::upstream;
+    #include "constraint-axis-cases.inc"
     auto source_world = std::make_shared<u::PhysicsWorld>();
     source_world->handle = p::physics_world_create();
     const auto world = source_world->handle;
@@ -31,7 +34,7 @@ int main() {
     p::physics_world_add_body(world, b, false);
     u::PhysicsBody source_a; source_a.handle = a;
     u::PhysicsBody source_b; source_b.handle = b;
-    u::create_physics_hinge(source_handle, source_a, source_b, {
+    u::create_physics_constraint(source_handle, source_a, source_b, hinge_type, {
         .pivot_a = Vec3d{0,0,-0.5}, .pivot_b = Vec3d{0,0,0.5},
         .axis_a = Vec3d{1,0,0}, .axis_b = Vec3d{1,0,0}});
     assert(world.ownership->hinges.size() == 1);
@@ -39,8 +42,9 @@ int main() {
     double maximum_pivot_error = 0;
     const auto pivot_error = [&]() {
         const auto& hinge = world.ownership->hinges.front();
-        const auto aw = a.ownership->body->getWorldTransform() * hinge.joint->getAFrame();
-        const auto bw = b.ownership->body->getWorldTransform() * hinge.joint->getBFrame();
+        const auto& joint = static_cast<const btHingeConstraint&>(*hinge.joint);
+        const auto aw = a.ownership->body->getWorldTransform() * joint.getAFrame();
+        const auto bw = b.ownership->body->getWorldTransform() * joint.getBFrame();
         maximum_pivot_error = std::max(maximum_pivot_error, static_cast<double>((aw.getOrigin() - bw.getOrigin()).length()));
         assert(aw.getBasis().getColumn(2).dot(bw.getBasis().getColumn(2)) > 0.9999);
     };
@@ -83,5 +87,17 @@ int main() {
     try { p::physics_world_create_hinge(different_world, a, b, anchor, anchor, false); }
     catch (const std::runtime_error&) { foreign_body_refused = true; }
     assert(foreign_body_refused);
+    // A removed/released body invalidates its joint before the remaining
+    // body's changed mass frame can access the joint's rigid-body references.
+    p::physics_world_remove_body(other_world, a);
+    assert(other_world.ownership->world->getNumConstraints() == 0);
+    p::physics_body_release(a);
+    assert(other_world.ownership->hinges.size() == 1);
+    mass.center_of_mass = {0.4, 0.2, -0.3};
+    p::physics_body_set_mass_properties(b, mass);
+    p::physics_world_step(other_world, 1.0 / 60);
+    assert(other_world.ownership->hinges.empty());
+    assert(other_world.ownership->world->getNumConstraints() == 0);
+    p::physics_world_release(other_world);
     std::cout << "physics-hinge: ok pivotError=" << maximum_pivot_error << '\n';
 }

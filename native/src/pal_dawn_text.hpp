@@ -4,7 +4,9 @@
 #include "pal_dawn_shared.hpp"
 #include "pal_dawn_text_resources.hpp"
 #include "pal_text_pipeline.hpp"
+#if BBLITE_HAS_TEXT_RENDERABLE
 #include "pal_text_scene.hpp"
+#endif
 #include <map>
 #include <tuple>
 
@@ -31,7 +33,9 @@ struct DawnTextRenderer {
     std::shared_ptr<DawnTextLayout> layout;
     std::shared_ptr<DawnTextPipelineLayoutLease> pipeline_layout;
     std::shared_ptr<DawnTextBuffer> quad;
+#if BBLITE_HAS_TEXT_RENDERABLE
     TextScenePass scene;
+#endif
     std::map<std::tuple<const upstream::TextPipelineInfo*, WGPUTextureFormat, WGPUTextureFormat>,
         std::shared_ptr<DawnTextPipelineLease>> pipelines;
 

@@ -29,7 +29,7 @@ inline SceneRun run_dawn_engine(Engine&) {
 
 // The shared 2D frame host presents sprite renderers or a primary Canvas2D
 // surface. Neither requires a SceneContext or the scene renderer.
-#if (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER) && \
+#if (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER) && \
     defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
 bool run_sprite_gpu_engine(Engine& engine);
 #else
@@ -38,7 +38,7 @@ inline bool run_sprite_gpu_engine(Engine&) {
 }
 #endif
 
-#if (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER) && \
+#if (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER) && \
     defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
 bool run_sprite_dawn_engine(Engine& engine);
 #else

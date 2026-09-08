@@ -16,6 +16,12 @@ export async function composeDefaultTextPipelines(): Promise<ComposedTextPipelin
     return rows;
 }
 
+export async function composeStandaloneTextPipelines(weighted: boolean): Promise<ComposedTextPipeline[]> {
+    const rows = [await composeTextPipeline({ format: "bgra8unorm", sampleCount: 1, depthWrite: false, alphaToCoverage: false })];
+    if (weighted) rows.push(await composeTextPipeline({ format: "bgra8unorm", sampleCount: 1, depthWrite: false, alphaToCoverage: false, weighted: true }));
+    return rows;
+}
+
 export function textPipelineStem(index: number, stage: "vertex" | "fragment"): string {
     return `text-${index}.${stage === "vertex" ? "vert" : "frag"}`;
 }
@@ -42,8 +48,8 @@ export function textPipelineHeader(rows: readonly ComposedTextPipeline[]): strin
     const pipelineRows = rows.map((row, index) => {
         const descriptor = row.descriptor;
         const target = descriptor.fragment.targets;
-        if (target.length !== 1 || target[0]!.format !== "bgra8unorm" || descriptor.depthStencil?.format !== "depth24plus-stencil8")
-            throw new Error("Text activation requires the default color/depth target signature.");
+        if (target.length !== 1 || target[0]!.format !== "bgra8unorm" || (descriptor.depthStencil && descriptor.depthStencil.format !== "depth24plus-stencil8"))
+            throw new Error("Text activation requires the represented color/depth target signature.");
         const constants = (["vertex", "fragment"] as const).map((stage) => {
             const values = row[stage === "vertex" ? "vertexConstants" : "fragmentConstants"];
             const name = `text_${index}_${stage}_constants`;
@@ -56,11 +62,11 @@ export function textPipelineHeader(rows: readonly ComposedTextPipeline[]): strin
             return `BlendFactor::${value.replaceAll("-", "_")}`;
         };
         if (blend && (blend.color.operation !== "add" || blend.alpha.operation !== "add")) throw new Error("Text blend operation requires an unrepresented equation.");
-        return `    {${descriptor.multisample.count}u, true, ${descriptor.depthStencil!.depthWriteEnabled}, ${!!descriptor.multisample.alphaToCoverageEnabled}, ` +
+        return `    {${descriptor.multisample.count}u, ${!!descriptor.depthStencil}, ${!!descriptor.depthStencil?.depthWriteEnabled}, ${!!descriptor.multisample.alphaToCoverageEnabled}, ${!!row.weighted}, ` +
             `${cppStringLiteral(textPipelineStem(index, "vertex"))}, ${cppStringLiteral(textPipelineStem(index, "fragment"))}, ` +
             `${cppStringLiteral(descriptor.vertex.entryPoint)}, ${cppStringLiteral(descriptor.fragment.entryPoint)}, ${constants.join(", ")}, ` +
             `${cppStringLiteral(descriptor.primitive.topology)}, ${cppStringLiteral(descriptor.primitive.cullMode)}, ${cppStringLiteral(descriptor.primitive.frontFace)}, ` +
-            `DepthCompare::${nativeDepthCompare(descriptor.depthStencil!.depthCompare)}, ${!!blend}, ` +
+            `DepthCompare::${nativeDepthCompare(descriptor.depthStencil?.depthCompare ?? "greater-equal")}, ${!!blend}, ` +
             `{${blend ? [blend.color.srcFactor, blend.color.dstFactor, blend.alpha.srcFactor, blend.alpha.dstFactor].map(factor).join(", ") : ""}}},`;
     });
     const bufferRows = d.vertex.buffers.map((buffer, index) => {
@@ -78,7 +84,7 @@ struct TextVertexAttribute { std::uint32_t location, offset; const char* format;
 struct TextVertexBuffer { std::uint32_t stride; const char* step_mode; std::span<const TextVertexAttribute> attributes; };
 struct TextPipelineInfo {
     std::uint32_t sample_count;
-    bool has_depth, depth_write, alpha_to_coverage;
+    bool has_depth, depth_write, alpha_to_coverage, weighted;
     const char *vertex_shader, *fragment_shader, *vertex_entry, *fragment_entry;
     std::span<const ShaderStageConstant> vertex_constants, fragment_constants;
     const char *topology, *cull_mode, *front_face;

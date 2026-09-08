@@ -53,7 +53,7 @@ export class TextDataUpdateLowerer {
                     const key=d.name.text;
                     const adapted = new Map<string,readonly [string,string,PinnedBinding]>([
                         ["atlasSlot",["curveSet._atlas._glyphSlots.get(glyphId)","const double atlasSlot=glyphId>=0 && glyphId<static_cast<double>(data.glyph_slots.size())?data.glyph_slots.at(size(glyphId)):-1;",{cpp:"atlasSlot",type:"opaque",absentCpp:"atlasSlot < 0"}]],
-                        ["styleParam",["_textStyleSeam?._param(run) ?? 0","",scalar("0.0")]],
+                        ["styleParam",["_textStyleSeam?._param(run) ?? 0","",scalar("data.style_param")]],
                         ["overrideEntry",["0","",scalar("0.0")]],
                         ["pg",["run.glyphs[i]!","const auto& pg=layout.glyphs.at(size(static_cast<double>(i)));",{cpp:"pg",type:"opaque"}]],
                         ["liveSlots",["null","std::optional<std::vector<double>> liveSlots;",{cpp:"(*liveSlots)",type:"f64-list",absentCpp:"!liveSlots"}]],
@@ -215,13 +215,20 @@ inline void publish(TextDataState& state) {
     }
     auto& group=state.groups.at(0); group.slot_count=size(live.slot_count); group.live_count=live.slots.size();
 }
-inline void replace(TextDataState& state, const TextLayoutResult& layout) {
+inline void replace(TextDataState& state, const TextLayoutResult& layout, bool group_changed=false) {
     auto& data=*state.live;
     // GPU upload clears the public dirty range between source edits.
     data.dirty_start=static_cast<double>(state.dirty_start); data.dirty_end=static_cast<double>(state.dirty_end);
     const auto old_count=data.slots.size();
     auto slots=data.slots;
-    if(!layout.glyphs.empty()) {
+    if(group_changed) {
+        free_slots(data);
+        if(data.slot_count>0) { ++data.layout_version; data.instance_count-=data.slot_count; mark_dirty(data,0,data.instance_count); }
+        data.slot_count=0; data.free_slots.clear();
+        auto& group=state.groups.at(0);group.bind_group.reset();group.bind_group_version=-1;
+        slots=allocate_slots(data,static_cast<double>(layout.glyphs.size()));
+        data.slots=write_run(data,layout,slots);
+    } else if(!layout.glyphs.empty()) {
         if(layout.glyphs.size()!=old_count) { free_slots(data); slots=allocate_slots(data,static_cast<double>(layout.glyphs.size())); }
         auto live=write_run(data,layout,slots);
         data.slots=std::move(live);
@@ -231,22 +238,50 @@ inline void replace(TextDataState& state, const TextLayoutResult& layout) {
         data.slot_count=0; data.free_slots.clear();
         state.groups.at(0).bind_group.reset(); state.groups.at(0).bind_group_version=-1;
         data.slots.clear();
-        write_style(data,0,data.color,layout.pixels_per_font_unit!=0?1/layout.pixels_per_font_unit:0,0);
+        write_style(data,0,data.color,layout.pixels_per_font_unit!=0?1/layout.pixels_per_font_unit:0,data.style_param);
     }
     state.payload->width=layout.width; state.payload->height=layout.height;
     publish(state);
 }
 } // namespace text_update_detail
+inline js::Array<TextRun> text_data_runs(const TextData& data) {
+    if(!data || !data->live)throw std::runtime_error("Text run access lacks a compiled live font repertoire.");
+    auto& live=*data->live;
+    if(live.runs->empty()) {
+        auto run=std::make_shared<TextRunState>();run->layout=layout_text(*live.font,live.initial_text,live.font_size,live.options);
+        run->color=live.color;live.runs->push_back(run);
+    }
+    return js::Array<TextRun>(data->live->runs);
+}
+inline TextRun clone_text_run(const TextRun& source,const js::Tuple<4>& color) {
+    if(!source)throw std::runtime_error("Text run is absent.");
+    auto run=std::make_shared<TextRunState>();run->layout=source->layout;
+    run->color=color;
+    return run;
+}
+inline void replace_default_text_run(const TextData& data,const TextRun& previous,const TextRun& run) {
+    if(!data || !data->live || data->live->runs->size()!=1 || data->live->runs->front()!=previous)
+        throw std::runtime_error("updateTextData replaceRun: previous GlyphRun reference is not in this TextData.");
+    if(!run)throw std::runtime_error("Text replacement run is absent.");
+    auto& live=*data->live;std::copy(run->color.begin(),run->color.end(),live.color.begin());live.style_param=run->weight;
+    const bool group_changed=previous->weight!=0;
+    text_update_detail::replace(*data,run->layout,group_changed);
+    if(group_changed)data->groups.at(0).group_key=TextGroupKey(data->payload->atlases.at(0).curve_set_id);
+    live.runs->front()=run;
+}
 inline void update_default_text_data(const TextData& data, std::string_view text) {
     if(!data || !data->live)throw std::runtime_error("Default text data lacks a compiled live font repertoire.");
-    const auto layout=layout_text(*data->live->font,text,data->live->font_size,data->live->options);
-    text_update_detail::replace(*data,layout);
+    auto layout=layout_text(*data->live->font,text,data->live->font_size,data->live->options);
+    (void)text_data_runs(data);
+    auto run=std::make_shared<TextRunState>();run->layout=std::move(layout);run->color=data->live->runs->front()->color;
+    replace_default_text_run(data,data->live->runs->front(),run);
 }
 TextData create_compiled_text_data(std::uint32_t index);
-inline TextData create_live_text_data(std::uint32_t index, std::string_view text) {
+inline TextData create_live_text_data(std::uint32_t index, std::string_view text, const std::optional<js::Tuple<4>>& color=std::nullopt) {
     auto data=create_compiled_text_data(index);
     auto& live=*data->live;
-    const auto layout=layout_text(*live.font,text,live.font_size,live.options);
+    if(color)for(std::size_t i=0;i<4;++i)live.color[i]=(*color)[i];
+    auto layout=layout_text(*live.font,text,live.font_size,live.options);
     live.instances.assign(${numeric("TEXT_INSTANCE_FLOATS")},0);
     live.styles.assign(${numeric("TEXT_STYLE_FLOATS")},0);
     live.version=1; live.style_version=2; live.layout_version=0;
@@ -263,6 +298,7 @@ inline TextData create_live_text_data(std::uint32_t index, std::string_view text
     ++live.version; ++live.layout_version;
     data->payload->width=layout.width; data->payload->height=layout.height;
     text_update_detail::publish(*data);
+    auto run=std::make_shared<TextRunState>();run->layout=std::move(layout);run->color=color?*color:js::Tuple<4>{live.color};live.runs->push_back(run);
     return data;
 }
 } // namespace bbl

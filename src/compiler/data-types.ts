@@ -24,6 +24,10 @@ export type HandleKind =
   | "node-input"
   | "text-data"
   | "text-renderable"
+  | "text-layer"
+  | "text-renderer"
+  | "text-run"
+  | "text-run-ref"
   | "picking-info"
   | "offscreen-canvas"
   | "mesh"
@@ -48,6 +52,7 @@ export type HandleKind =
   | "material"
   | "physics-body"
   | "physics-viewer"
+  | "physics-character-controller"
   | "physics-shape"
   | "billboard-sprite"
   | "billboard-system"
@@ -69,6 +74,10 @@ const handleCppTypes: Record<HandleKind, string> = {
   "node-input": "bbl::NodeInputHandle",
   "text-data": "std::shared_ptr<bbl::TextDataState>",
   "text-renderable": "std::shared_ptr<bbl::TextRenderableState>",
+  "text-layer": "std::shared_ptr<bbl::TextLayerState>",
+  "text-renderer": "std::shared_ptr<bbl::TextRendererState>",
+  "text-run": "std::shared_ptr<bbl::TextRunState>",
+  "text-run-ref": "bbl::TextRunRef",
   "picking-info": "bbl::PickingInfo",
   "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
   mesh: "bbl::MeshHandle",
@@ -93,6 +102,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   material: "bbl::MaterialHandle",
   "physics-body": "bbl::upstream::PhysicsBody",
   "physics-viewer": "bbl::upstream::PhysicsViewerHandle",
+  "physics-character-controller": "std::shared_ptr<bbl::character::PhysicsCharacterController>",
   "physics-shape": "bbl::upstream::PhysicsShape",
   "billboard-sprite": "bbl::BillboardSpriteHandle",
   "billboard-system": "bbl::BillboardSystemHandle",
@@ -121,6 +131,9 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   TextData: "text-data",
   DefaultTextData: "text-data",
   TextRenderable: "text-renderable",
+  TextLayer: "text-layer",
+  TextRenderer: "text-renderer",
+  GlyphRun: "text-run",
   PickingInfo: "picking-info",
   Mesh: "mesh",
   AnimationGroup: "animation-group",
@@ -147,6 +160,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   Material: "material",
   PhysicsBody: "physics-body",
   PhysicsViewer: "physics-viewer",
+  PhysicsCharacterController: "physics-character-controller",
   PhysicsShape: "physics-shape",
   ShaderMaterial: "material",
   Sprite2DLayer: "sprite-layer",
@@ -936,6 +950,9 @@ export class DataTypeRegistry {
       return { kind: "string" };
     }
     if ((type.flags & ts.TypeFlags.Union) !== 0) {
+      const members = (type as ts.UnionType).types;
+      if (members.length === 2 && members.some(member => member.flags === ts.TypeFlags.Number) &&
+          members.some(member => pinnedHandleKind(member) === "text-run")) return {kind:"handle",handle:"text-run-ref"};
       return this.fromUnionType(type as ts.UnionType, node);
     }
     if ((type.flags & ts.TypeFlags.Intersection) !== 0) {

@@ -2,11 +2,13 @@
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";
+import { unwrapExpression } from "./user-functions.js";
 
-export type TextTransform = "position" | "scaling" | "rotation" | "rotationQuaternion";
+export type TextTransform = "position" | "scaling" | "rotation" | "rotationQuaternion" | "positionPx";
 const transforms: readonly string[] = ["position", "scaling", "rotation", "rotationQuaternion"];
-const field = (name: string): string => name === "rotationQuaternion" ? "rotation_quaternion" : name === "ignoreDepth" ? "ignore_depth" : name;
-const axes = (name: TextTransform): readonly string[] => name === "rotationQuaternion" ? ["x", "y", "z", "w"] : ["x", "y", "z"];
+const field = (name: string): string => ({rotationQuaternion:"rotation_quaternion",ignoreDepth:"ignore_depth",positionPx:"position_px",rotationRad:"rotation_rad",coverageGamma:"coverage_gamma"}[name] ?? name);
+const axes = (name: TextTransform): readonly string[] => name === "rotationQuaternion" ? ["x", "y", "z", "w"] : name === "positionPx" ? ["x","y"] : ["x", "y", "z"];
+const textKinds = ["text-data", "text-renderable", "text-layer", "text-renderer", "text-run", "text-vector"];
 
 export interface TextSurfaceContext {
     readonly checker: ts.TypeChecker;
@@ -20,7 +22,23 @@ export interface TextSurfaceContext {
     fail(node: ts.Node, message: string): never;
     assertTextPipelineMutable(node: ts.Node): void;
     isDefaultLibraryIdentifier(node: ts.Identifier): boolean;
-    reachFeature(feature: "text:data", node: ts.Node): void;
+    reachFeature(feature: "text:data" | "text:weight", node: ts.Node): void;
+    promoteTextData(node: ts.Node): void;
+}
+
+/** The opt-in package export retains a callable identity; loading it does not
+ * install the pin's style seams until its setter receives a changed offset. */
+export function compileTextModuleValue(context: TextSurfaceContext, expression: ts.PropertyAccessExpression): Value | undefined {
+    if (expression.name.text !== "setFontWeightOffset") return undefined;
+    const awaited = unwrapExpression(expression.expression);
+    if (!ts.isAwaitExpression(awaited)) return undefined;
+    const call = context.unwrap(awaited.expression);
+    if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword || call.arguments.length !== 1 ||
+        !ts.isStringLiteralLike(call.arguments[0]!) || !["babylon-lite", "@babylonjs/lite"].includes(call.arguments[0]!.text)) return undefined;
+    context.reachFeature("text:weight", expression);
+    context.promoteTextData(expression);
+    return {kind:"data", cpp:"[](bbl::TextData data, bbl::TextRunRef run, double offset) { bbl::set_font_weight_offset(data, run, offset); }",
+        dataType:{kind:"function",parameters:[{kind:"handle",handle:"text-data"},{kind:"handle",handle:"text-run-ref"},{kind:"number"}]}};
 }
 
 /** Snapshot a JavaScript reference before evaluating the next argument/RHS. */
@@ -33,8 +51,19 @@ export function retainTextValue(context: Pick<TextSurfaceContext, "allocateTempo
 export function readTextProperty(context: TextSurfaceContext, owner: Value, name: string, site: ts.Node): Value | undefined {
     if (["text-data", "text-renderable", "text-vector"].includes(owner.kind)) context.reachFeature("text:data", site);
     if (owner.kind === "text-data") {
+        if (name === "runs") {
+            context.promoteTextData(site);
+            return { kind:"data", cpp:`bbl::text_data_runs(${owner.cpp})`, dataType:{kind:"vector",element:{kind:"handle",handle:"text-run"}}, freshData:true };
+        }
         if (name === "width" || name === "height") return { kind: "number", cpp: `(${owner.cpp})->payload->${name}`, dataType: { kind: "number" }, freshData: true };
         context.fail(site, `Text data property '${name}' is not represented; shaping and internal buffer mutation remain unsupported.`);
+    }
+    if (owner.kind === "text-layer") {
+        if (name === "positionPx") return {kind:"text-vector",cpp:owner.cpp,textTransform:"positionPx"};
+        if (name === "data") return {kind:"text-data",cpp:`(${owner.cpp})->data`,dataType:{kind:"handle",handle:"text-data"},freshData:true};
+        if (["rotationRad","scale","order","opacity","coverageGamma"].includes(name)) return {kind:"number",cpp:`(${owner.cpp})->${field(name)}`,dataType:{kind:"number"},freshData:true};
+        if (name === "visible") return {kind:"boolean",cpp:`(${owner.cpp})->visible`,dataType:{kind:"boolean"},freshData:true};
+        context.fail(site, `Text layer property '${name}' is not represented.`);
     }
     if (owner.kind === "text-renderable") {
         if (transforms.includes(name)) return { kind: "text-vector", cpp: owner.cpp, textTransform: name as TextTransform };
@@ -59,22 +88,22 @@ function possibleTextOwner(context: TextSurfaceContext, expression: ts.Expressio
     // Resolving a record member may execute its getter. Type classification
     // must precede the one admitted owner evaluation below.
     const known = ts.isIdentifier(node) ? context.lookupOptional(node) : undefined;
-    if (known && ["text-renderable", "text-vector", "text-data"].includes(known.kind)) return true;
+    if (known && textKinds.includes(known.kind)) return true;
     const type = context.checker.getTypeAtLocation(node);
-    if (["text-renderable", "text-data"].includes(pinnedHandleKind(type) ?? "")) return true;
+    if (textKinds.includes(pinnedHandleKind(type) ?? "")) return true;
     // ObservableVec3 is also the pin's mesh, splat and camera surface. Its
     // type alone cannot authorize a text read: several of those owners lower
     // writes directly without exposing a first-class vector value.
-    return ts.isPropertyAccessExpression(node) && transforms.includes(node.name.text) &&
-        pinnedHandleKind(context.checker.getTypeAtLocation(node.expression)) === "text-renderable";
+    return ts.isPropertyAccessExpression(node) && [...transforms,"positionPx"].includes(node.name.text) &&
+        ["text-renderable","text-layer"].includes(pinnedHandleKind(context.checker.getTypeAtLocation(node.expression)) ?? "");
 }
 
 function ownerValue(context: TextSurfaceContext, expression: ts.Expression): Value | undefined {
     if (!possibleTextOwner(context, expression)) return undefined;
     return context.probeEmission(() => {
         const value = context.compileValue(expression);
-        if (["text-renderable", "text-vector", "text-data"].includes(value.kind)) context.reachFeature("text:data", expression);
-        return ["text-renderable", "text-vector", "text-data"].includes(value.kind) ? value : undefined;
+        if (textKinds.includes(value.kind)) context.reachFeature("text:data", expression);
+        return textKinds.includes(value.kind) ? value : undefined;
     }, (value) => value !== undefined);
 }
 
@@ -114,11 +143,12 @@ export function compileTextMutation(context: TextSurfaceContext, expression: ts.
     const name = left.name.text;
     const transform = owner.textTransform;
     const axis = transform ? axes(transform).indexOf(name) : -1;
-    if (owner.kind === "text-data" || (owner.kind === "text-vector" && axis < 0) ||
+    if (["text-data","text-run","text-renderer"].includes(owner.kind) || (owner.kind === "text-vector" && axis < 0) ||
+        (owner.kind === "text-layer" && !["rotationRad","scale","order","opacity","coverageGamma","visible"].includes(name)) ||
         (owner.kind === "text-renderable" && !["opacity", "order", "ignoreDepth"].includes(name)))
         context.fail(left, `Text property '${name}' is read-only or requires an unsupported replacement.`);
-    if (name === "ignoreDepth" || name === "order") context.assertTextPipelineMutable(left);
-    const boolean = name === "ignoreDepth";
+    if (owner.kind === "text-renderable" && (name === "ignoreDepth" || name === "order")) context.assertTextPipelineMutable(left);
+    const boolean = name === "ignoreDepth" || name === "visible";
     const operator = assignment?.operatorToken.getText() ?? (increment!.operator === ts.SyntaxKind.PlusPlusToken ? "+=" : "-=");
     if (boolean && operator !== "=") context.fail(left, "Text ignoreDepth supports simple boolean assignment.");
     if (!["=", "+=", "-=", "*=", "/="].includes(operator)) context.fail(left, `Text property assignment '${operator}' is not represented.`);

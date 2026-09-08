@@ -25,6 +25,8 @@ MaterialHandle create_shader_material(Engine& engine, std::uint32_t variant) {
 }
 namespace bbl::upstream {
 std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
+std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
+std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
 MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_t profile) { assert(profile == 3); return mesh; }
 }
 namespace bbl::pal {

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import { lowerMat4InvertCpp, lowerPinnedFunction, type PinnedFunctionParameter } from "./pinned-function-lowerer.js";
+import { lowerPinnedFunction, type PinnedFunctionParameter } from "./pinned-function-lowerer.js";
 import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 
@@ -59,18 +59,7 @@ void add_physics_shape_child_from_parent(PhysicsWorldHandle world, PhysicsShape 
     PhysicsNodeRef parent, PhysicsShape child, PhysicsNodeRef node);
 `,
         helpers: `
-${lowerMat4InvertCpp(context)}
 ${lowerMat4DecomposeFull(context)}
-std::array<float, 16> physics_matrix_product(const std::array<float, 16>& a, const std::array<float, 16>& b) {
-    std::array<float, 16> result{};
-    mat4_multiply_into(result, 0, a, 0, b, 0);
-    return result;
-}
-std::array<float, 16> physics_node_world(const Engine& engine, PhysicsNodeRef node) {
-    if (node.kind == PhysicsNodeKind::mesh) return mesh_world_matrix(engine, engine.meshes.at(node.value));
-    if (node.value >= engine.transform_nodes.size()) throw std::runtime_error("Physics child placement requires a live node.");
-    return transform_node_world(engine, TransformNodeHandle{node.value});
-}
 ${fromParent}
 `,
         source: `

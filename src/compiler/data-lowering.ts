@@ -3062,7 +3062,7 @@ export class DataLowerer {
             // every mesh intrinsic and property assignment works on a
             // mesh read out of a struct or array exactly as it does on
             // a mesh local. The reached subset has one engine.
-            const engineCpp = dataType.handle === "text-data" || dataType.handle === "text-renderable" || dataType.handle === "node-input"
+            const engineCpp = dataType.handle.startsWith("text-") || dataType.handle === "node-input"
                 ? undefined
                 : dataType.handle === "picking-info"
                 ? `bbl::picking_engine(${cpp})`
@@ -5777,6 +5777,8 @@ export class DataLowerer {
                 // created it (or read back out of another container).
                 let rawValue =
                     this.context.compileValue(unwrapped);
+                if (dataType.handle === "text-run-ref" && (rawValue.kind === "number" || rawValue.kind === "text-run"))
+                    return this.compileKnownValueForSink(rawValue, dataType, unwrapped);
                 if (
                     dataType.handle === "mesh" &&
                     rawValue.kind === "picked-node"
@@ -6438,6 +6440,8 @@ export class DataLowerer {
             case "u32array":
             case "i32array":
             case "handle":
+                if (dataType.kind === "handle" && dataType.handle === "text-run-ref" &&
+                    (value.kind === "number" || value.kind === "text-run")) return `bbl::TextRunRef{${value.cpp}}`;
                 if (
                     dataType.kind === "handle" &&
                     dataType.handle === "scene-node" &&

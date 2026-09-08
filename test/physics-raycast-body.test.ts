@@ -192,6 +192,8 @@ test("physics rays preserve body Map identity, trigger filtering and guarded mis
         #include <cassert>
         namespace bbl::upstream {
         std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
+std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
+std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
         }
         namespace bbl {
         Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }

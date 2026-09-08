@@ -799,6 +799,23 @@ export function compileMaterialIntrinsic(
             };
         }
 
+        case "setStandardLightmapTexture": {
+            context.expectArgumentCount(call, 2, 2);
+            if (context.hasRegisteredScene() || context.engineHasStarted()) context.fail(call, "Standard lightmap texture binding requires setup before scene registration.");
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            const texture = context.compileValue(call.arguments[1]!);
+            const empty = texture.kind === "json-null";
+            if (!empty) {
+                context.expectKind(texture, "texture", call.arguments[1]!);
+                if (!texture.textureFile) context.fail(call.arguments[1]!, "Standard lightmaps require a loaded file texture or null.");
+                context.expectSameEngine(material, texture, call);
+                context.boundPixelsTextures.add(texture.cpp);
+            }
+            context.reachFeature("material:standard-lightmap", call);
+            return { kind: "void", cpp: `bbl::set_standard_lightmap_texture(${context.requireEngine(material, call)}, ${material.cpp}, ${empty ? "bbl::FileTexture{}" : texture.cpp})` };
+        }
+
         case "setStandardEmissiveTexture": {
             // 1.23 moved the optional Standard textures behind per-texture
             // setters so a scene bundles only the fragments it uses; the

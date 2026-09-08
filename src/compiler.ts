@@ -1,7 +1,9 @@
 import ts from "typescript";
+import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
-import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
+import { compileTextModuleValue, compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
+import { promoteLiveTextData } from "./compiler/intrinsics/text.js";
 import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
 import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
@@ -309,6 +311,7 @@ import {
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
 import type { CompiledTextData } from "./pinned-text-data.js";
 import { readFrozenParticleProperty } from "./compiler/particle-buffer.js";
+import { compileCharacterMethod, readCharacterProperty } from "./compiler/intrinsics/character-controller.js";
 import {
     physicsEventInfoType,
     physicsEventInfoValue,
@@ -764,6 +767,7 @@ class Compiler
     public throwReached = false;
     private readonly staticConstants = new Map<ts.Symbol, ts.Expression>();
     private readonly sourceCppNames = new Set<string>();
+    private readonly transparentRebindingScopes = new WeakSet<Map<ts.Symbol, VariableBinding>>();
     public readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>> = [
         new Map(),
     ];
@@ -827,7 +831,7 @@ class Compiler
      */
     private readonly deferredPhysicsCallbacks: Array<{
         /** Which pinned event stream the handler is registered on. */
-        event: "collision" | "trigger";
+        event: "collision" | "trigger" | "character";
         callback: ts.Identifier | ts.ArrowFunction | ts.FunctionExpression;
         cppName: string;
         eventName: string;
@@ -916,6 +920,7 @@ class Compiler
     private readonly scenePbrMaterialMeshes = new Map<number, Set<number>>();
     private readonly scenePbrMaterialsWithUnknownMesh = new Set<number>();
     private unknownSceneMaterialAssignment = false;
+    private standardMaterialUnknownMesh = false;
     private readonly runtimeMaterialProfiles = new Set<number>();
     private runtimeMeshProfileCount = 0;
     private readonly runtimeShaderProfiles = new Set<number>();
@@ -1088,6 +1093,7 @@ class Compiler
 
         // After every feature has settled: retained UI must land on a frame
         // loop that presents it (NA-26).
+        this.refuseMixedStandaloneTextContexts();
         this.refuseUiWithoutPresentation();
         this.validateUiStaticProjection();
 
@@ -1176,6 +1182,10 @@ class Compiler
                     this.sceneMaterials.standardMaterialPlugins,
                 standardMaterialPluginInputs:
                     this.sceneMaterials.standardMaterialPluginInputs,
+                ...(this.standardMaterialUnknownMesh ||
+                    (this.unknownSceneMaterialAssignment && this.features.has("material:standard"))
+                    ? { standardMaterialUnknownMesh: true as const }
+                    : {}),
                 sceneMaterialCount: this.sceneMaterials.count,
                 sceneMaterialGltfAssetsBefore:
                     this.sceneMaterialGltfAssetsBefore,
@@ -2012,6 +2022,7 @@ class Compiler
     }
 
     private textAttachmentReached = false;
+    private reachedRenderContextRegistrations = new Set<string>();
     private textCameraMutation: ts.Node | undefined;
 
     public noteTextCameraControl(node: ts.Node, camera: Value, arcRotate: boolean): void {
@@ -2030,6 +2041,11 @@ class Compiler
         if (this.isRuntimeResourceConstruction() || this.textAttachmentReached || this.engineStartMark !== undefined) {
             this.fail(node, "Text pipeline/order changes require definite initialization before text attachment; live pipeline rebinding and list rebuilding are not represented.");
         }
+    }
+
+    public promoteTextData(node: ts.Node): void {
+        promoteLiveTextData(this);
+        this.reachFeature("text:layout", node);
     }
 
     public recordTextAttachment(node: ts.Node): void {
@@ -2475,6 +2491,7 @@ class Compiler
                 this.checker.getTypeAtLocation(declaration.name),
                 declaration.name,
             );
+            dataType ??= inferUninitializedHandle(declaration, this.checker, this.dataTypes);
             if (
                 !dataType &&
                 declaration.type?.kind === ts.SyntaxKind.UnknownKeyword
@@ -3577,7 +3594,7 @@ class Compiler
         const mutablePlainObject =
             ts.isIdentifier(declaration.name) &&
             inferredPlainObject &&
-            (ts.isObjectLiteralExpression(initializer)
+            (ts.isObjectLiteralExpression(initializer) || ts.isConditionalExpression(initializer)
                 ? this.inferredObjectIsMutated(declaration.name)
                 : this.identifierIsRebound(declaration.name));
         const inferredMutableObject = !declaration.type && mutablePlainObject;
@@ -3751,10 +3768,11 @@ class Compiler
                 { ...this.dataLowerer.leafValue(`(*${cppName})`, annotated), sharedStorageCpp: cppName },
             );
         }
-        const literalSnapshot =
+        const initializerSnapshot =
             spreadTarget &&
-            ts.isObjectLiteralExpression(initializer) &&
-            !initializer.properties.some(ts.isSpreadAssignment)
+            ((ts.isObjectLiteralExpression(initializer) &&
+                !initializer.properties.some(ts.isSpreadAssignment)) ||
+                ts.isConditionalExpression(initializer))
                 ? this.compileValue(initializer)
                 : undefined;
         const boundCpp =
@@ -3786,9 +3804,9 @@ class Compiler
             }
         } else {
             const initializerCpp =
-                literalSnapshot?.kind === "record"
+                initializerSnapshot
                     ? this.dataLowerer.compileKnownValueForSink(
-                          literalSnapshot,
+                          initializerSnapshot,
                           annotated,
                           declaration.initializer,
                       )
@@ -3826,7 +3844,7 @@ class Compiler
                 : "copy",
         );
         const staticRecordProperties: Record<string, Value> = {
-            ...(literalSnapshot?.recordProperties ?? {}),
+            ...(initializerSnapshot?.recordProperties ?? {}),
         };
         if (
             Object.keys(staticRecordProperties).length === 0 &&
@@ -3853,6 +3871,12 @@ class Compiler
             cpp: boundCpp,
             ...((sharedDataBinding || selfReferentialStruct) ? { sharedStorageCpp: cppName } : {}),
             dataType: annotated,
+            // Shared storage does not change a selected object's presence.
+            ...(ts.isConditionalExpression(initializer) && initializerSnapshot &&
+                !this.identifierIsRebound(declaration.name as ts.Identifier) &&
+                (initializerSnapshot.kind === "record" || initializerSnapshot.kind === "json-null")
+                ? { optionalFoundCpp: initializerSnapshot.kind === "json-null" ? "false" : "true" }
+                : {}),
             ...(annotated.kind === "map" &&
             ts.isObjectLiteralExpression(initializer) &&
             initializer.properties.length === 0
@@ -6061,6 +6085,20 @@ class Compiler
             site,
             cssName,
             "it is outside the reviewed retained-UI surface",
+        );
+    }
+
+    /** The text driver records text layers only, so mixed contexts require an explicit boundary. */
+    private refuseMixedStandaloneTextContexts(): void {
+        if (!this.reachedRenderContextRegistrations.has("registerTextRenderer")) return;
+        const incompatible = ([
+            ["registerScene", "renderer:scene"], ["registerSpriteRenderer", "renderer:sprite"],
+            ["registerFrameGraphContext", "renderer:frame-graph"], ["registerEffectRenderer", "renderer:effect"],
+        ] as const).filter(([name]) => this.reachedRenderContextRegistrations.has(name)).map(([, feature]) => feature);
+        if (incompatible.length === 0) return;
+        this.failAtFile(
+            "Standalone text rendering cannot be combined with other reached rendering contexts: " +
+                incompatible.join(", ") + ". The native text driver does not preserve mixed context registration order.",
         );
     }
 
@@ -9111,7 +9149,9 @@ class Compiler
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
-            value = this.compileNodeInputMutation(expression) ?? this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
+            const unwrapped = this.unwrap(expression);
+            const importedText = ts.isPropertyAccessExpression(unwrapped) ? compileTextModuleValue(this, unwrapped) : undefined;
+            value = importedText ?? this.compileNodeInputMutation(expression) ?? this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
         } finally {
             this.nativeDependencyStack.pop();
         }
@@ -10043,6 +10083,9 @@ class Compiler
         const firstShader = this.reachedShaderPrograms.length;
         const firstNode = this.reachedNodeMaterials.length;
         const value = compileRegisteredIntrinsic(this, importedName, call);
+        if (value && ["registerTextRenderer", "registerScene", "registerSpriteRenderer", "registerFrameGraphContext", "registerEffectRenderer"].includes(importedName)) {
+            this.reachedRenderContextRegistrations.add(importedName);
+        }
         if (!profile || !value) return value;
         for (let index = firstMaterial; index < this.sceneMaterials.count; ++index) {
             this.runtimeMaterialProfiles.add(index);
@@ -13824,6 +13867,7 @@ class Compiler
         const controls = this.temporalControlAttachment;
         const textCamera = this.textCameraMutation;
         const textAttachment = this.textAttachmentReached;
+        const renderContexts = new Set(this.reachedRenderContextRegistrations);
         const result = probe();
         if (!answered(result)) {
             this.body.splice(start);
@@ -13835,6 +13879,7 @@ class Compiler
             this.temporalControlAttachment = controls;
             this.textCameraMutation = textCamera;
             this.textAttachmentReached = textAttachment;
+            this.reachedRenderContextRegistrations = renderContexts;
         }
         return result;
     }
@@ -15224,6 +15269,14 @@ class Compiler
     /** Platform-backed browser APIs that remain ordinary expression values. */
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
         const callee = this.unwrap(call.expression);
+        if (ts.isPropertyAccessExpression(callee)) {
+            const typeName = this.checker.getTypeAtLocation(callee.expression).getSymbol()?.getName();
+            if (typeName === "PhysicsCharacterController" || typeName === "CharacterCollisionObservable") {
+                const owner = this.compileValue(callee.expression);
+                const result = compileCharacterMethod(this, call, owner, callee.name.text);
+                if (result) return result;
+            }
+        }
         if (ts.isPropertyAccessExpression(callee) && callee.name.text === "addEventListener" &&
             !this.isBrowserOnlyExpression(callee.expression)) {
             const owner = this.compileValue(callee.expression);
@@ -17412,6 +17465,11 @@ class Compiler
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        const character = readCharacterProperty(this, owner, expression.name.text);
+        if (character) return character;
+        if (owner.kind === "physics-body" && expression.name.text === "node") {
+            return { kind: "record", cpp: "", recordProperties: { name: { kind: "string", cpp: `bbl::upstream::physics_body_node_name(${owner.cpp})`, dataType: { kind: "string" } } } };
+        }
         const staticProperty = owner.recordProperties?.[expression.name.text];
         if (staticProperty) {
             // A materialized record can still carry an exact value for a
@@ -18039,7 +18097,10 @@ class Compiler
             ...binding,
             value: destination,
         };
-        if (owner === innermost) {
+        // Selected static branches run in the surrounding execution path.
+        // A callback, runtime branch or loop still separates handle metadata.
+        if (owner === innermost || this.variableScopes.slice(this.variableScopes.indexOf(owner) + 1)
+            .every(scope => this.transparentRebindingScopes.has(scope))) {
             owner.set(symbol, rebound);
             return;
         }
@@ -18522,6 +18583,7 @@ class Compiler
         preserveIdentity = false,
         node?: ts.Expression,
     ): Value {
+        if (record.retainedNativeRecord) return record;
         if (record.cameraVector) {
             return this.bindCameraVector(record);
         }
@@ -18786,6 +18848,9 @@ class Compiler
     public compilePhysicsTriggerCallback(expression: ts.Expression): string {
         return this.compilePhysicsEventCallback(expression, "trigger");
     }
+    public compilePhysicsCharacterCallback(expression: ts.Expression): string {
+        return this.compilePhysicsEventCallback(expression, "character");
+    }
 
     /**
      * A handler on one of the two pinned physics event streams.
@@ -18798,7 +18863,7 @@ class Compiler
      */
     private compilePhysicsEventCallback(
         expression: ts.Expression,
-        event: "collision" | "trigger",
+        event: "collision" | "trigger" | "character",
     ): string {
         const callback = this.unwrap(expression);
         if (
@@ -19225,8 +19290,10 @@ class Compiler
      */
     private escapingPlatformEventCaptureFloor: number | undefined;
 
-    public pushScope(cppPrefix: string): void {
-        this.variableScopes.push(new Map());
+    public pushScope(cppPrefix: string, propagateRebindings = false): void {
+        const scope = new Map<ts.Symbol, VariableBinding>();
+        if (propagateRebindings) this.transparentRebindingScopes.add(scope);
+        this.variableScopes.push(scope);
         this.cppNamePrefixes.push(cppPrefix);
     }
 
@@ -19772,6 +19839,10 @@ class Compiler
 
     public recordUnknownSceneMaterialAssignment(): void {
         this.unknownSceneMaterialAssignment = true;
+    }
+
+    public recordUnknownStandardMeshMaterial(): void {
+        this.standardMaterialUnknownMesh = true;
     }
 
     public recordSceneMeshAssetPbrMaterial(meshIndex: number): void {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
+import {mkdirSync, readFileSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import test from "node:test";
 import {compileSource} from "../src/compiler.js";
@@ -72,6 +72,18 @@ test("retained surface admission follows actual canvas tags and registration bou
     assert.throws(()=>compileSource(`import {createEngine,createSceneContext,registerScene,createPbrMaterial,createSolidTexture2D} from "@babylonjs/lite";
         async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);const material=createPbrMaterial({});
         await registerScene(scene);material.ormTexture=createSolidTexture2D(engine,1,1,1,1);}`), /before scene registration/);
+});
+
+test("selected conditional material records retain static local-cubemap setup", () => {
+    const fileName = resolve("corpus/babylon-lite/lab/lite/src/lite/scene186.ts");
+    const source = readFileSync(fileName, "utf8");
+    for (const [search, probes] of [["", 4], ["?compare=0", 2], ["?blend=0", 2]] as const) {
+        const result = compileSource(source, {fileName, search});
+        assert.equal(result.manifest.scenePbrMaterials.filter(material => material.localCubemapCandidates !== undefined).length, probes);
+    }
+    const runtimeSelection = source.replace("if (hardLeftMaterials && hardRightMaterials && hardLeftRoom && hardRightRoom)",
+        "if (Math.random() > 0 && hardLeftMaterials && hardRightMaterials && hardLeftRoom && hardRightRoom)");
+    assert.throws(() => compileSource(runtimeSelection, {fileName}), /Local cubemap configuration currently requires static calls/);
 });
 
 test("pinned local probes retain distinct cube layers, grid bytes, writer fields and debug state", async () => {

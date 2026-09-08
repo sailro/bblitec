@@ -578,10 +578,14 @@ export class StaticEvaluator {
                 unwrapped.operator === ts.SyntaxKind.MinusToken
                     ? "-"
                     : "+";
-            return `(${operator}${this.compileNumber(
-                unwrapped.operand,
-                precision,
-            )})`;
+            const operand = this.resolveValue(unwrapped.operand);
+            if (operand.kind === "string" || (operand.kind === "data" && operand.dataType?.kind === "string")) {
+                this.onJsData();
+                const converted = `bbl::js::number_from_string(${operand.cpp})`;
+                return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
+            }
+            if (operand.kind !== "number") this.fail(unwrapped.operand, `Unary numeric input requires a number or string, received ${operand.kind}.`);
+            return `(${operator}${this.castNumber(operand, precision)})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
             if (

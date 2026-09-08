@@ -32,6 +32,7 @@
  */
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -78,6 +79,19 @@ struct PhysicsConstraintAnchor {
 
 void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
     const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions);
+
+PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
+    std::array<double, 3> scale, const std::vector<float>& heights);
+enum class PhysicsConstraintAxisMode { free, limited, locked };
+struct PhysicsConstraintAxisLimit {
+    PhysicsConstraintAxisMode mode = PhysicsConstraintAxisMode::free;
+    double minimum = 0;
+    double maximum = 0;
+};
+using PhysicsConstraintAxes = std::array<PhysicsConstraintAxisLimit, 7>;
+void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor,
+    const PhysicsConstraintAxes& axes, bool collisions);
 
 /**
  * The pair `HP_World_GetSpeedLimit` returns and `HP_World_SetSpeedLimit`
@@ -204,7 +218,19 @@ struct PhysicsShapeQueryResult {
     std::array<double, 3> point{};
     std::array<double, 3> input_normal{};
     std::array<double, 3> normal{};
+    std::uint32_t body_identity = 0;
 };
+
+/** Collector queries retain the closest `capacity` hits, including multiple mesh features. */
+[[nodiscard]] std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_proximity(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape,
+    const PhysicsTransform& transform, double max_distance,
+    bool should_hit_triggers, PhysicsBodyHandle ignored_body, std::size_t capacity);
+[[nodiscard]] std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_cast(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape,
+    std::array<double, 4> rotation, std::array<double, 3> from,
+    std::array<double, 3> to, bool should_hit_triggers,
+    PhysicsBodyHandle ignored_body, std::size_t capacity);
 
 [[nodiscard]] PhysicsShapeQueryResult physics_world_shape_proximity(
     PhysicsWorldHandle world, PhysicsShapeHandle shape,
@@ -341,6 +367,8 @@ void physics_shape_set_trigger(
 
 /** `HP_Body_Create`. */
 [[nodiscard]] PhysicsBodyHandle physics_body_create();
+/** `HP_Body_Release` after removal; outstanding handle copies become invalid. */
+void physics_body_release(PhysicsBodyHandle body);
 /** `HP_Body_SetMotionType`, taking the back end's own motion type. */
 void physics_body_set_motion_type(
     PhysicsBodyHandle body,
@@ -369,11 +397,15 @@ void physics_body_set_target_transform(
 [[nodiscard]] PhysicsMassProperties physics_shape_build_mass_properties(
     PhysicsShapeHandle shape,
     double mass);
+/** Solver default density applied to a represented primitive's authored volume. */
+[[nodiscard]] double physics_shape_default_mass(PhysicsShapeHandle shape);
 
 /** `HP_Body_SetMassProperties`. */
 void physics_body_set_mass_properties(
     PhysicsBodyHandle body,
     const PhysicsMassProperties& properties);
+/** `HP_Body_GetMassProperties`: live node-local centre and principal mass frame. */
+[[nodiscard]] PhysicsMassProperties physics_body_get_mass_properties(PhysicsBodyHandle body);
 /** `HP_Body_ApplyImpulse`: world-space location followed by impulse. */
 void physics_body_apply_impulse(
     PhysicsBodyHandle body,

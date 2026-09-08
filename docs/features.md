@@ -208,6 +208,8 @@ Standard, PBR, Grid, shader materials, supported no-colour views and live proper
 Reached PBR layers include clearcoat, sheen, iridescence, anisotropy and transmission. Explicit lightmap,
 Standard UV and vertex-colour opt-ins remain distinct from asset discovery; live UV offsets require
 `enableStandardUvOffset`. Vertex-alpha meshes select the matching transparent variant.
+Standard file lightmaps preserve texture encoding, UV channel, intensity, additive/shadowmap blending
+and the pinned `uAng === Math.PI` V flip. Texture binding requires setup before registration.
 
 Public PBR factor/Standard diffuse arrays retain identity and double precision; factors have four
 channels and diffuse colors three. Standard whole-array replacement retains its supplied storage.
@@ -314,15 +316,24 @@ update in parent coordinates. Utility layers rematch GPU resources when lazy con
 
 ## Physics
 
-HINGE constraint factories accept body-local pivots/axes and collision opt-in with discarded results.
+Constraint factories support BALL_AND_SOCKET, DISTANCE, HINGE, PRISMATIC, LOCK, SLIDER and SIX_DOF
+with discarded results. Body-local anchors, collision opt-in and inline Cartesian/angular/radial limits
+are supported. Both limit bounds are required; springs, motors and retained constraint handles refuse.
 Joints retain their bodies, follow mass-frame changes and detach while either body is outside their world.
 
 Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/static-mesh shapes, forces,
 velocities, motion/prestep, aggregates, centre of mass, masks, collisions/triggers, raycasts and floating origin.
 Convex proximity/cast queries return local input and world target contacts, distance/fraction, trigger/mask
 filtering and cast body exclusion. Query bags and quaternions require inline objects; concave/compound proximity
-targets refuse. Dynamic triangle meshes use GImpact. Constraints, characters and heightfields remain incomplete.
-Inertia overrides and non-Y-aligned capsule/cylinder segments refuse. See [physics fidelity](fidelity.md#physics-contract).
+targets refuse. Dynamic triangle meshes use GImpact. Character movement kernels, capsule lifecycle and
+collision callbacks lower from pinned source; collectors retain body identity across convex, mesh and compound contacts.
+Mass and inertia overrides are supported. Omitted mass requires a positive primitive or closed convex volume.
+Inertia-orientation overrides and non-Y-aligned capsule/cylinder segments refuse. See [physics fidelity](fidelity.md#physics-contract).
+
+Heightfields accept ground meshes with square vertex grids and static bodies. Explicit sample bags and
+rectangular grids refuse. Shape geometry options retain nullable scalar/vector fields through typed helper
+returns; primitive family selection must be construction-known. Gravity setters support ordinary worlds,
+all floating-origin regions or one region selected by world position.
 
 Container shapes retain child ownership and source-derived relative TRS. Convex children support finite
 nonzero scale per placement. Construction must finish before attachment; mixed child materials/masks,
@@ -391,7 +402,9 @@ uses the pinned linear-frame and trailing image-processing contract.
 
 Static font loading/default layout run the pinned parser, shaper and packer at generation. Runtime strings
 and `updateDefaultTextData` retain the packaged font, layout options, single run, palette and live dimensions.
-Font size/options/color are static; explicit live color arguments and arbitrary run edits refuse.
+Font size/options are static. A retained single-run spread can replace defaultColor; the opt-in
+`setFontWeightOffset` accepts a retained run or numeric index and preserves source clamping and group identity.
+Explicit live color arguments and arbitrary run edits refuse.
 Text data/renderables retain identity through aliases/helpers/containers. Transform setters and opacity are
 live; pipeline membership, depth and order settle before attachment. Late attachment/disposal, conditional
 transform copies, reflective/internal-buffer writes and high-precision matrices refuse.
@@ -399,6 +412,10 @@ transform copies, reflective/internal-buffer writes and high-precision matrices 
 Rendering activates `BBLITE_HAS_TEXT` and supports one text-only default scene with a static FreeCamera or
 ArcRotate camera controls. Mixed ordering, custom tasks and other camera writes refuse. Both PALs use composed Slug shaders,
 packed resources and pinned alpha-to-coverage or premultiplied blending; shared data retains its group-cache behavior.
+
+Standalone TextRenderer layers support affine pixel placement, opacity, coverage gamma, visibility,
+ordering and shared text data on both backends. Source bundle invalidation and a depthless single-sample
+pass are retained. Layer data replacement, arbitrary renderer mutation and mixed renderer families refuse.
 
 ## Runtime scene mutation
 

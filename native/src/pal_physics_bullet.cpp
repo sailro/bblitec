@@ -32,10 +32,13 @@
 #include <type_traits>
 
 #include <btBulletDynamicsCommon.h>
+#include <LinearMath/btAabbUtil2.h>
+#include "pal_physics_distance.hpp"
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
+#include <BulletCollision/CollisionShapes/btTriangleShape.h>
 #include <BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
 #include <BulletCollision/Gimpact/btGImpactShape.h>
 #include <BulletCollision/NarrowPhaseCollision/btGjkPairDetector.h>
@@ -152,6 +155,7 @@ struct PhysicsShapeState {
     // Dynamic users retain a GImpact view of the same triangles. Static
     // users keep their BVH and its existing query/contact behavior.
     std::unique_ptr<btGImpactMeshShape> moving_mesh;
+    bool heightfield = false;
     /**
      * Transform from Bullet's centre-of-mass/principal-axis body frame into
      * the node-local frame the pin exposes. A primitive contributes its
@@ -159,6 +163,8 @@ struct PhysicsShapeState {
      * inertia orientation.
      */
     btTransform node_from_body{btTransform::getIdentity()};
+    std::optional<btVector3> capsule_first_endpoint;
+    std::optional<double> authored_box_volume;
     PhysicsMassProperties mass_properties{};
     bool has_exact_mass_properties = false;
     ShapeMaterial material{};
@@ -310,18 +316,21 @@ struct PhysicsWorldState {
     struct Hinge {
         std::shared_ptr<PhysicsBodyState> parent;
         std::shared_ptr<PhysicsBodyState> child;
-        std::unique_ptr<btHingeConstraint> joint;
+        std::unique_ptr<btTypedConstraint> joint;
         btTransform parent_anchor;
         btTransform child_anchor;
         btTransform parent_mass_frame;
         btTransform child_mass_frame;
         bool collisions = false;
         bool attached = false;
+        enum class Kind { hinge, six_dof, radial };
+        Kind kind = Kind::hinge;
     };
     std::vector<Hinge> hinges;
     std::size_t trigger_body_count = 0;
     std::uint64_t stabilized_total = 0;
     std::unordered_map<std::uint64_t, ContactSnapshot> previous_contacts;
+    std::unordered_map<std::uint64_t, bool> recovering_overlaps;
     std::vector<PhysicsCollisionEvent> collision_events;
     /**
      * The trigger pairs that overlapped at the end of the previous step.
@@ -388,6 +397,11 @@ struct PhysicsWorldState {
 
 namespace {
 void sync_constraint_membership(PhysicsWorldState& owner) {
+    std::erase_if(owner.hinges, [](const auto& hinge) {
+        if (hinge.parent->body && hinge.child->body) return false;
+        if (hinge.attached) throw std::runtime_error("Released physics body retains an attached constraint.");
+        return true;
+    });
     for (auto& hinge : owner.hinges) {
         const auto changed = [](const btTransform& before, const btTransform& after) {
             return before.getOrigin() != after.getOrigin() || before.getBasis() != after.getBasis();
@@ -395,7 +409,10 @@ void sync_constraint_membership(PhysicsWorldState& owner) {
         if (changed(hinge.parent_mass_frame, hinge.parent->node_from_body) || changed(hinge.child_mass_frame, hinge.child->node_from_body)) {
             hinge.parent_mass_frame = hinge.parent->node_from_body;
             hinge.child_mass_frame = hinge.child->node_from_body;
-            hinge.joint->setFrames(hinge.parent_mass_frame.inverse() * hinge.parent_anchor, hinge.child_mass_frame.inverse() * hinge.child_anchor);
+            const auto parent_frame = hinge.parent_mass_frame.inverse() * hinge.parent_anchor;
+            const auto child_frame = hinge.child_mass_frame.inverse() * hinge.child_anchor;
+            if (hinge.kind == PhysicsWorldState::Hinge::Kind::hinge) static_cast<btHingeConstraint&>(*hinge.joint).setFrames(parent_frame, child_frame);
+            else static_cast<btGeneric6DofSpring2Constraint&>(*hinge.joint).setFrames(parent_frame, child_frame);
         }
         const bool attach = hinge.parent->world == owner.identity && hinge.child->world == owner.identity &&
             hinge.parent->in_world && hinge.child->in_world;
@@ -539,7 +556,7 @@ PhysicsWorldState& world_at(const PhysicsWorldHandle& handle) {
 }
 
 PhysicsBodyState& body_at(const PhysicsBodyHandle& handle) {
-    if (!handle.ownership || handle.value != handle.ownership->identity)
+    if (!handle.ownership || handle.value != handle.ownership->identity || !handle.ownership->body)
         throw std::runtime_error("Physics body handle is not live.");
     return *handle.ownership;
 }
@@ -1015,6 +1032,27 @@ bool combine_material_contact(
     const btCollisionObjectWrapper* b,
     int /*partIdB*/,
     int /*indexB*/) {
+    // Deep overlap that exceeds the pair's incoming motion is positional
+    // error. The measured Havok recovery is about 5% per 60 Hz frame,
+    // capped at 1 m/s. Incoming impact contacts retain the rebound solver.
+    if (point.getDistance() < 0) {
+        const auto* body_a = body_entry_of(a->getCollisionObject());
+        const auto* body_b = body_entry_of(b->getCollisionObject());
+        const auto owner = body_a ? body_a->owner_world.lock() : nullptr;
+        if (body_a && body_b && owner) {
+            const auto relative = body_a->body->getVelocityInLocalPoint(point.getPositionWorldOnA() - body_a->body->getCenterOfMassPosition()) -
+                body_b->body->getVelocityInLocalPoint(point.getPositionWorldOnB() - body_b->body->getCenterOfMassPosition());
+            const auto delta = owner->dispatcher->substep_seconds;
+            const auto approach = std::max(btScalar(0), -relative.dot(point.m_normalWorldOnB));
+            const auto pair = pair_key(a->getCollisionObject(), b->getCollisionObject());
+            const bool initial_overlap = point.getDistance() < btScalar(-0.015) && -point.getDistance() > 2 * approach * delta;
+            if (initial_overlap || owner->recovering_overlaps.contains(pair)) {
+                owner->recovering_overlaps.try_emplace(pair, true);
+                point.m_contactPointFlags |= BT_CONTACT_FLAG_HAS_CONTACT_ERP;
+                point.m_contactERP = std::min(btScalar(0.0125), delta / -point.getDistance());
+            }
+        }
+    }
     const auto* left = material_of(a->getCollisionObject());
     const auto* right = material_of(b->getCollisionObject());
     if (left != nullptr && right != nullptr) {
@@ -1302,6 +1340,21 @@ MotionTypeOverlapFilter& motion_type_overlap_filter() {
     return filter;
 }
 
+class OverlapRecoverySolver final : public btSequentialImpulseConstraintSolver {
+    void convertContacts(btPersistentManifold** manifolds, int count, const btContactSolverInfo& settings) override {
+        for (int i = 0; i < count; ++i) {
+            auto contact_settings = settings;
+            for (int p = 0; p < manifolds[i]->getNumContacts(); ++p) {
+                if ((manifolds[i]->getContactPoint(p).m_contactPointFlags & BT_CONTACT_FLAG_HAS_CONTACT_ERP) != 0) {
+                    contact_settings.m_splitImpulsePenetrationThreshold = 0;
+                    break;
+                }
+            }
+            btSequentialImpulseConstraintSolver::convertContacts(manifolds + i, 1, contact_settings);
+        }
+    }
+};
+
 PhysicsWorldHandle physics_world_create() {
     // `gContactAddedCallback` is one process-global function pointer and the
     // assignment is idempotent.
@@ -1316,7 +1369,7 @@ PhysicsWorldHandle physics_world_create() {
     btGImpactCollisionAlgorithm::registerAlgorithm(entry.dispatcher.get());
     entry.broadphase = std::make_unique<btDbvtBroadphase>();
     entry.solver =
-        std::make_unique<btSequentialImpulseConstraintSolver>();
+        std::make_unique<OverlapRecoverySolver>();
     entry.world = std::make_unique<btDiscreteDynamicsWorld>(
         entry.dispatcher.get(),
         entry.broadphase.get(),
@@ -1333,6 +1386,19 @@ void physics_world_set_gravity(
     world_at(world).world->setGravity(to_bt(gravity));
 }
 
+namespace {
+std::array<btVector3, 3> constraint_anchor_axes(const PhysicsConstraintAnchor& anchor) {
+    auto axis = to_bt(anchor.axis);
+    auto perpendicular = to_bt(anchor.perpendicular);
+    if (axis.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint axis must be nonzero.");
+    axis.normalize();
+    perpendicular -= axis * perpendicular.dot(axis);
+    if (perpendicular.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint perpendicular must be independent of its axis.");
+    perpendicular.normalize();
+    return {axis, perpendicular, axis.cross(perpendicular)};
+}
+} // namespace
+
 void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
     const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions) {
     auto& owner = world_at(world);
@@ -1342,14 +1408,7 @@ void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle pare
         throw std::runtime_error("A physics constraint requires two different bodies in its world.");
     }
     const auto frame = [](const PhysicsConstraintAnchor& anchor) {
-        btVector3 axis = to_bt(anchor.axis);
-        btVector3 perpendicular = to_bt(anchor.perpendicular);
-        if (axis.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint axis must be nonzero.");
-        axis.normalize();
-        perpendicular -= axis * perpendicular.dot(axis);
-        if (perpendicular.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint perpendicular must be independent of its axis.");
-        perpendicular.normalize();
-        const btVector3 second = axis.cross(perpendicular);
+        const auto [axis, perpendicular, second] = constraint_anchor_axes(anchor);
         // Bullet's hinge axis is frame Z; the two other columns set its reference angle.
         const btMatrix3x3 basis(perpendicular.x(), second.x(), axis.x(),
             perpendicular.y(), second.y(), axis.y(), perpendicular.z(), second.z(), axis.z());
@@ -1359,6 +1418,50 @@ void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle pare
     const btTransform anchor_b = frame(child_anchor);
     auto hinge = std::make_unique<btHingeConstraint>(*a.body, *b.body, a.node_from_body.inverse() * anchor_a, b.node_from_body.inverse() * anchor_b);
     owner.hinges.push_back({parent.ownership, child.ownership, std::move(hinge), anchor_a, anchor_b, a.node_from_body, b.node_from_body, collisions, false});
+    sync_constraint_membership(owner);
+}
+
+void physics_world_create_constraint(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor,
+    const PhysicsConstraintAxes& axes, bool collisions) {
+    auto& owner = world_at(world);
+    const auto& a = body_at(parent);
+    const auto& b = body_at(child);
+    if (parent.value == child.value || a.world != owner.identity || b.world != owner.identity)
+        throw std::runtime_error("A physics constraint requires two different bodies in its world.");
+    for (const auto& axis : axes) {
+        if (axis.mode == PhysicsConstraintAxisMode::limited &&
+            (!std::isfinite(axis.minimum) || !std::isfinite(axis.maximum) || axis.minimum > axis.maximum))
+            throw std::runtime_error("Constraint limits require finite, ordered bounds.");
+    }
+    const bool oriented = std::any_of(axes.begin(), axes.begin() + 6,
+        [](const auto& axis) { return axis.mode != PhysicsConstraintAxisMode::free; });
+    const auto frame = [oriented](const PhysicsConstraintAnchor& anchor) {
+        btMatrix3x3 basis = btMatrix3x3::getIdentity();
+        if (oriented) {
+            const auto [axis, perpendicular, third] = constraint_anchor_axes(anchor);
+            basis.setValue(axis.x(), perpendicular.x(), third.x(), axis.y(), perpendicular.y(), third.y(), axis.z(), perpendicular.z(), third.z());
+        }
+        return btTransform(basis, to_bt(anchor.pivot));
+    };
+    const auto anchor_a = frame(parent_anchor), anchor_b = frame(child_anchor);
+    const auto frame_a = a.node_from_body.inverse() * anchor_a, frame_b = b.node_from_body.inverse() * anchor_b;
+    std::unique_ptr<btGeneric6DofSpring2Constraint> joint;
+    const auto& radial = axes[6];
+    if (radial.mode == PhysicsConstraintAxisMode::free) {
+        joint = std::make_unique<btGeneric6DofSpring2Constraint>(*a.body, *b.body, frame_a, frame_b);
+    } else {
+        const auto minimum = radial.mode == PhysicsConstraintAxisMode::locked ? 0 : radial.minimum;
+        const auto maximum = radial.mode == PhysicsConstraintAxisMode::locked ? 0 : radial.maximum;
+        joint = std::make_unique<RadialDistanceConstraint>(*a.body, *b.body, frame_a, frame_b, static_cast<btScalar>(minimum), static_cast<btScalar>(maximum));
+    }
+    for (int index = 0; index < 6; ++index) {
+        const auto& axis = axes[static_cast<std::size_t>(index)];
+        if (axis.mode == PhysicsConstraintAxisMode::free) joint->setLimit(index, 1, -1);
+        else if (axis.mode == PhysicsConstraintAxisMode::locked) joint->setLimit(index, 0, 0);
+        else joint->setLimit(index, static_cast<btScalar>(axis.minimum), static_cast<btScalar>(axis.maximum));
+    }
+    owner.hinges.push_back({parent.ownership, child.ownership, std::move(joint), anchor_a, anchor_b, a.node_from_body, b.node_from_body, collisions, false, radial.mode == PhysicsConstraintAxisMode::free ? PhysicsWorldState::Hinge::Kind::six_dof : PhysicsWorldState::Hinge::Kind::radial});
     sync_constraint_membership(owner);
 }
 
@@ -1487,6 +1590,11 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         1, static_cast<int>(std::lround(seconds / havok_substep_seconds)));
     const btScalar substep_seconds =
         static_cast<btScalar>(seconds / substeps);
+    const btScalar step_ratio = btMin(btScalar(1), substep_seconds / static_cast<btScalar>(havok_substep_seconds));
+    for (auto& joint : entry.hinges) {
+        if (joint.attached && joint.kind == PhysicsWorldState::Hinge::Kind::radial)
+            static_cast<RadialDistanceConstraint&>(*joint.joint).begin_frame(step_ratio * step_ratio);
+    }
     cache_velocities(entry, &PhysicsBodyState::step_start);
     // The landings of the previous step rebound during this one; the active
     // list is emptied below once they have, so the swap leaves the schedule
@@ -1500,6 +1608,23 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         schedule_landing_bounces(entry, substep_seconds, seconds);
     }
     entry.active_bounces.clear();
+    if (!entry.recovering_overlaps.empty()) {
+        for (auto& [pair, present] : entry.recovering_overlaps) { static_cast<void>(pair); present = false; }
+        for (int i = 0; i < entry.dispatcher->getNumManifolds(); ++i) {
+            auto* manifold = entry.dispatcher->getManifoldByIndexInternal(i);
+            const auto found = entry.recovering_overlaps.find(pair_key(
+                static_cast<const btCollisionObject*>(manifold->getBody0()), static_cast<const btCollisionObject*>(manifold->getBody1())));
+            if (found == entry.recovering_overlaps.end()) continue;
+            for (int p = 0; p < manifold->getNumContacts(); ++p) {
+                if (manifold->getContactPoint(p).getDistance() < 0) { found->second = true; break; }
+            }
+            if (!found->second) {
+                for (int p = 0; p < manifold->getNumContacts(); ++p)
+                    manifold->getContactPoint(p).m_contactPointFlags &= ~BT_CONTACT_FLAG_HAS_CONTACT_ERP;
+            }
+        }
+        std::erase_if(entry.recovering_overlaps, [](const auto& pair) { return !pair.second; });
+    }
     // Contacts can add velocity inside Bullet's solver. Havok's body limits
     // remain invariant after a step, so make that invariant observable here
     // too before transforms and counters are read.
@@ -1696,18 +1821,24 @@ const btConvexShape& convex_query_shape(const PhysicsShapeState& shape) {
 // The cross-solver query fixture observes both rim and side contacts.
 class QueryShape {
 public:
-    explicit QueryShape(const PhysicsShapeState& source) : source_(convex_query_shape(source)) {
+    explicit QueryShape(const PhysicsShapeState& source) : QueryShape(convex_query_shape(source)) {}
+    explicit QueryShape(const btConvexShape& source) : source_(source) {
         if (source_.getShapeType() == CYLINDER_SHAPE_PROXYTYPE) {
             const auto& cylinder = static_cast<const btCylinderShape&>(source_);
             const btVector3 half = cylinder.getHalfExtentsWithMargin();
             cylinder_.emplace(half);
             cylinder_->setMargin(btMin(btScalar(.015), half[half.minAxis()] * btScalar(.1)));
+        } else if (source_.getShapeType() == BOX_SHAPE_PROXYTYPE) {
+            const auto half = static_cast<const btBoxShape&>(source_).getHalfExtentsWithMargin();
+            box_.emplace(half);
+            box_->setMargin(btMin(btScalar(.015), half[half.minAxis()]));
         }
     }
-    const btConvexShape& get() const { return cylinder_ ? *cylinder_ : source_; }
+    const btConvexShape& get() const { return cylinder_ ? *cylinder_ : box_ ? *box_ : source_; }
 private:
     const btConvexShape& source_;
     std::optional<btCylinderShape> cylinder_;
+    std::optional<btBoxShape> box_;
 };
 
 bool query_accepts(const PhysicsShapeState& query, const PhysicsBodyState& body,
@@ -1723,11 +1854,15 @@ btPointCollector closest_convex_points(const btConvexShape& a, const btTransform
                                      double max_distance) {
     btVoronoiSimplexSolver simplex;
     btGjkEpaPenetrationDepthSolver penetration;
-    btGjkPairDetector detector(&a, &b, &simplex, &penetration);
+    const QueryShape target(b);
+    btGjkPairDetector detector(&a, &target.get(), &simplex, &penetration);
     btDiscreteCollisionDetectorInterface::ClosestPointInput input;
     input.m_transformA = a_transform;
     input.m_transformB = b_transform;
-    input.m_maximumDistanceSquared = static_cast<btScalar>(max_distance * max_distance);
+    // GJK tests the margin-free cores against this cutoff before expanding
+    // them. A capsule's radius is its margin, so it must be included here.
+    const double core_distance = max_distance + a.getMargin() + target.get().getMargin();
+    input.m_maximumDistanceSquared = static_cast<btScalar>(core_distance * core_distance);
     btPointCollector result;
     detector.getClosestPoints(input, result, nullptr);
     return result;
@@ -1796,6 +1931,7 @@ PhysicsShapeQueryResult physics_world_shape_proximity(
                 candidate->body->getWorldTransform());
             closest = static_cast<double>(hit.m_distance);
             result = shape_query_hit(hit, node, closest);
+            result.body_identity = candidate->identity;
         }
     }
     return result;
@@ -1836,7 +1972,196 @@ PhysicsShapeQueryResult physics_world_shape_cast(
     point.m_normalOnBInWorld = callback.m_hitNormalWorld;
     select_parallel_capsule_feature(point, convex, hit_node * query.node_from_body,
         *callback.m_hitCollisionObject->getCollisionShape(), callback.m_hitCollisionObject->getWorldTransform());
-    return shape_query_hit(point, hit_node, static_cast<double>(callback.m_closestHitFraction));
+    auto result = shape_query_hit(point, hit_node, static_cast<double>(callback.m_closestHitFraction));
+    if (const auto* body = body_entry_of(callback.m_hitCollisionObject)) result.body_identity = body->identity;
+    return result;
+}
+
+namespace {
+
+// The pin's capsule support map selects its first endpoint when both ends
+// are equally close to a box face. Restrict that endpoint to the face's axial
+// overlap; all other features retain the solver's closest point.
+void select_capsule_box_feature(btPointCollector& point, const PhysicsShapeState& query,
+    const btTransform& query_node, const btCollisionShape& target, const btTransform& target_transform) {
+    if (!query.capsule_first_endpoint || target.getShapeType() != BOX_SHAPE_PROXYTYPE) return;
+    const auto& capsule = static_cast<const btCapsuleShape&>(*query.shape);
+    const auto& box = static_cast<const btBoxShape&>(target);
+    const btVector3 axis = query_node.getBasis().getColumn(capsule.getUpAxis());
+    if (btFabs(axis.dot(point.m_normalOnBInWorld)) > btScalar(1e-5)) return;
+    const btVector3 box_axis = target_transform.getBasis().transpose() * axis;
+    const btVector3 box_normal = target_transform.getBasis().transpose() * point.m_normalOnBInWorld;
+    if (box_normal.absolute()[box_normal.absolute().maxAxis()] < btScalar(1) - btScalar(1e-5)) return;
+    const int dimension = box_axis.absolute().maxAxis();
+    if (btFabs(box_axis[dimension]) < btScalar(1) - btScalar(1e-5)) return;
+    const btScalar query_center = axis.dot((query_node * query.node_from_body).getOrigin());
+    const btScalar target_center = axis.dot(target_transform.getOrigin());
+    const auto half = box.getHalfExtentsWithMargin();
+    const btScalar extent = half[dimension] - btMin(btScalar(.015), half[half.minAxis()]);
+    const btScalar lower = btMax(query_center - capsule.getHalfHeight(), target_center - extent);
+    const btScalar upper = btMin(query_center + capsule.getHalfHeight(), target_center + extent);
+    if (lower <= upper) {
+        const btScalar endpoint = axis.dot(query_node * *query.capsule_first_endpoint);
+        const btScalar selected = btClamped(endpoint, lower, upper);
+        point.m_pointInWorld += axis * (selected - axis.dot(point.m_pointInWorld));
+    }
+}
+
+void limit_collector(std::vector<PhysicsShapeQueryResult>& hits, std::size_t capacity) {
+    if (capacity == 0) throw std::runtime_error("A physics query collector requires positive capacity.");
+    std::stable_sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) {
+        return a.distance_or_fraction < b.distance_or_fraction;
+    });
+    // A shared triangle edge can produce the same physical contact twice.
+    // Preserve distinct points and normals on the same mesh body.
+    for (std::size_t i = 0; i < hits.size(); ++i) {
+        auto end = std::remove_if(hits.begin() + static_cast<std::ptrdiff_t>(i + 1), hits.end(), [&](const auto& candidate) {
+            return candidate.body_identity == hits[i].body_identity &&
+                std::abs(candidate.distance_or_fraction - hits[i].distance_or_fraction) < 1e-6 &&
+                (to_bt(candidate.point) - to_bt(hits[i].point)).length2() < btScalar(1e-12) &&
+                (to_bt(candidate.normal) - to_bt(hits[i].normal)).length2() < btScalar(1e-12);
+        });
+        hits.erase(end, hits.end());
+    }
+    if (hits.size() > capacity) hits.resize(capacity);
+}
+
+void collect_proximity_features(const PhysicsShapeState& source, const btConvexShape& query, const btTransform& query_shape,
+    const btTransform& query_node, const btCollisionShape& target, const btTransform& target_transform,
+    double max_distance, std::uint32_t body_identity, std::vector<PhysicsShapeQueryResult>& hits) {
+    if (target.isConvex()) {
+        auto point = closest_convex_points(query, query_shape, static_cast<const btConvexShape&>(target), target_transform, max_distance);
+        if (point.m_hasResult && static_cast<double>(point.m_distance) <= max_distance) {
+            select_parallel_capsule_feature(point, query, query_shape, target, target_transform);
+            select_capsule_box_feature(point, source, query_node, target, target_transform);
+            auto hit = shape_query_hit(point, query_node, point.m_distance);
+            hit.body_identity = body_identity;
+            hits.push_back(hit);
+        }
+        return;
+    }
+    if (target.isCompound()) {
+        const auto& compound = static_cast<const btCompoundShape&>(target);
+        for (int i = 0; i < compound.getNumChildShapes(); ++i) {
+            collect_proximity_features(source, query, query_shape, query_node, *compound.getChildShape(i),
+                target_transform * compound.getChildTransform(i), max_distance, body_identity, hits);
+        }
+        return;
+    }
+    if (!target.isConcave()) throw std::runtime_error("Physics proximity target has no convex or triangle representation.");
+    struct Triangles final : btTriangleCallback {
+        const PhysicsShapeState& source;
+        const btConvexShape& query;
+        const btTransform& query_shape;
+        const btTransform& query_node;
+        const btTransform& target_transform;
+        double max_distance;
+        std::uint32_t body_identity;
+        btScalar margin;
+        std::vector<PhysicsShapeQueryResult>& hits;
+        Triangles(const PhysicsShapeState& s, const btConvexShape& q, const btTransform& qs, const btTransform& qn, const btTransform& target,
+            double distance, std::uint32_t identity, btScalar target_margin, std::vector<PhysicsShapeQueryResult>& output)
+            : source(s), query(q), query_shape(qs), query_node(qn), target_transform(target), max_distance(distance),
+              body_identity(identity), margin(target_margin), hits(output) {}
+        void processTriangle(btVector3* vertices, int, int) override {
+            btTriangleShape triangle(vertices[0], vertices[1], vertices[2]);
+            triangle.setMargin(margin);
+            collect_proximity_features(source, query, query_shape, query_node, triangle, target_transform, max_distance, body_identity, hits);
+        }
+    } triangles(source, query, query_shape, query_node, target_transform, max_distance, body_identity, target.getMargin(), hits);
+    btVector3 low, high;
+    query.getAabb(target_transform.inverse() * query_shape, low, high);
+    const btVector3 expansion(static_cast<btScalar>(max_distance), static_cast<btScalar>(max_distance), static_cast<btScalar>(max_distance));
+    static_cast<const btConcaveShape&>(target).processAllTriangles(&triangles, low - expansion, high + expansion);
+}
+
+} // namespace
+
+std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_proximity(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape, const PhysicsTransform& transform,
+    double max_distance, bool should_hit_triggers, PhysicsBodyHandle ignored_body, std::size_t capacity) {
+    if (!std::isfinite(max_distance) || max_distance < 0) throw std::runtime_error("Physics proximity distance must be finite and non-negative.");
+    auto& owner = world_at(world);
+    const auto& query = shape_at(shape);
+    const QueryShape query_shape(query);
+    const btTransform node = query_transform(transform);
+    std::vector<PhysicsShapeQueryResult> hits;
+    for (const auto& body : owner.members) {
+        if (query_accepts(query, *body, should_hit_triggers, ignored_body.value)) {
+            collect_proximity_features(query, query_shape.get(), node * query.node_from_body, node,
+                *body->body->getCollisionShape(), body->body->getWorldTransform(), max_distance, body->identity, hits);
+        }
+    }
+    limit_collector(hits, capacity);
+    return hits;
+}
+
+std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_cast(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape, std::array<double, 4> rotation,
+    std::array<double, 3> from, std::array<double, 3> to, bool should_hit_triggers,
+    PhysicsBodyHandle ignored_body, std::size_t capacity) {
+    auto& owner = world_at(world);
+    const auto& query = shape_at(shape);
+    const QueryShape query_shape(query);
+    const btTransform from_node = query_transform(PhysicsTransform{from, rotation});
+    const btTransform to_node = query_transform(PhysicsTransform{to, rotation});
+    struct Collector final : btCollisionWorld::ConvexResultCallback {
+        const PhysicsShapeState& query;
+        const btConvexShape& convex;
+        const btTransform& from_node;
+        const btTransform& to_node;
+        bool include_triggers;
+        std::uint32_t ignored;
+        std::vector<PhysicsShapeQueryResult> hits;
+        Collector(const PhysicsShapeState& q, const btConvexShape& shape, const btTransform& from, const btTransform& to,
+            bool triggers, std::uint32_t ignore) : query(q), convex(shape), from_node(from), to_node(to), include_triggers(triggers), ignored(ignore) {}
+        bool needsCollision(btBroadphaseProxy* proxy) const override {
+            const auto* body = body_entry_of(static_cast<const btCollisionObject*>(proxy->m_clientObject));
+            return body && query_accepts(query, *body, include_triggers, ignored);
+        }
+        btScalar addSingleResult(btCollisionWorld::LocalConvexResult& result, bool normal_in_world) override {
+            const auto* body = body_entry_of(result.m_hitCollisionObject);
+            if (!body) return btScalar(1);
+            btTransform hit_node = from_node;
+            hit_node.setOrigin(from_node.getOrigin().lerp(to_node.getOrigin(), result.m_hitFraction));
+            btPointCollector point;
+            point.m_hasResult = true; point.m_distance = 0;
+            point.m_pointInWorld = result.m_hitPointLocal;
+            point.m_normalOnBInWorld = normal_in_world ? result.m_hitNormalLocal :
+                result.m_hitCollisionObject->getWorldTransform().getBasis() * result.m_hitNormalLocal;
+            select_parallel_capsule_feature(point, convex, hit_node * query.node_from_body,
+                *result.m_hitCollisionObject->getCollisionShape(), result.m_hitCollisionObject->getWorldTransform());
+            select_capsule_box_feature(point, query, hit_node,
+                *result.m_hitCollisionObject->getCollisionShape(), result.m_hitCollisionObject->getWorldTransform());
+            auto hit = shape_query_hit(point, hit_node, result.m_hitFraction);
+            hit.body_identity = body->identity;
+            hits.push_back(hit);
+            return btScalar(1);
+        }
+    } collector(query, query_shape.get(), from_node, to_node, should_hit_triggers, ignored_body.value);
+    const auto from_shape = from_node * query.node_from_body;
+    const auto to_shape = to_node * query.node_from_body;
+    btVector3 sweep_low, sweep_high, end_low, end_high;
+    query_shape.get().getAabb(from_shape, sweep_low, sweep_high);
+    query_shape.get().getAabb(to_shape, end_low, end_high);
+    sweep_low.setMin(end_low); sweep_high.setMax(end_high);
+    for (const auto& body : owner.members) {
+        if (!query_accepts(query, *body, should_hit_triggers, ignored_body.value)) continue;
+        const auto* target = body->body->getCollisionShape();
+        btVector3 target_low, target_high;
+        target->getAabb(body->body->getWorldTransform(), target_low, target_high);
+        if (!TestAabbAgainstAabb2(sweep_low, sweep_high, target_low, target_high)) continue;
+        if (target->isConvex()) {
+            const QueryShape target_query(static_cast<const btConvexShape&>(*target));
+            btCollisionWorld::objectQuerySingle(&query_shape.get(), from_shape,
+                to_shape, body->body.get(), &target_query.get(), body->body->getWorldTransform(), collector, 0);
+        } else {
+            btCollisionWorld::objectQuerySingle(&query_shape.get(), from_shape,
+                to_shape, body->body.get(), target, body->body->getWorldTransform(), collector, 0);
+        }
+    }
+    limit_collector(collector.hits, capacity);
+    return std::move(collector.hits);
 }
 
 // --- Shapes ----------------------------------------------------------
@@ -1905,9 +2230,11 @@ PhysicsShapeHandle physics_shape_create_box(
         offset[axis] -= grown - half[axis];
         half[axis] = grown;
     }
-    return record_debug_inputs(push_shape(
+    const auto handle = record_debug_inputs(push_shape(
         std::make_unique<btBoxShape>(half),
         translated_frame(offset)), "BOX", center, rotation, extents);
+    shape_at(handle).authored_box_volume = extents[0] * extents[1] * extents[2];
+    return handle;
 }
 
 PhysicsShapeHandle physics_shape_create_capsule(
@@ -1915,11 +2242,13 @@ PhysicsShapeHandle physics_shape_create_capsule(
     std::array<double, 3> point_b,
     double radius) {
     const Segment segment = segment_from(point_a, point_b);
-    return record_debug_inputs(push_shape(
+    auto handle = record_debug_inputs(push_shape(
         std::make_unique<btCapsuleShape>(
             static_cast<btScalar>(radius),
             segment.half_height * btScalar(2)),
         translated_frame(segment.center)), "CAPSULE", point_a, point_b, radius);
+    shape_at(handle).capsule_first_endpoint = to_bt(point_a);
+    return handle;
 }
 
 PhysicsShapeHandle physics_shape_create_cylinder(
@@ -2060,6 +2389,38 @@ PhysicsShapeHandle physics_shape_create_mesh(
 PhysicsShapeHandle physics_shape_create_container() {
     return record_debug_inputs(push_shape(std::make_unique<btCompoundShape>(),
         btTransform::getIdentity()), "CONTAINER");
+}
+
+PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
+    std::array<double, 3> scale, const std::vector<float>& heights) {
+    if (samples_x < 2 || samples_x != samples_z || samples_x > 65535u ||
+        heights.size() != static_cast<std::size_t>(samples_x) * samples_z) {
+        throw std::runtime_error("Physics heightfields require a square sample grid of dimension 2 through 65535.");
+    }
+    for (const double component : scale) if (!std::isfinite(component) || component <= 0 || !std::isfinite(static_cast<float>(component))) {
+        throw std::runtime_error("Physics heightfield scales must be finite and positive.");
+    }
+    for (const float height : heights) if (!std::isfinite(height)) throw std::runtime_error("Physics heightfield heights must be finite.");
+    std::vector<std::array<double, 3>> positions;
+    positions.reserve(heights.size());
+    const float half = static_cast<float>(samples_x - 1u) * 0.5f;
+    const float sx = static_cast<float>(scale[0]), sy = static_cast<float>(scale[1]), sz = static_cast<float>(scale[2]);
+    for (std::uint32_t z = 0; z < samples_z; ++z) for (std::uint32_t x = 0; x < samples_x; ++x) {
+        positions.push_back({(static_cast<float>(x) - half) * sx, heights[static_cast<std::size_t>(x) * samples_x + z] * sy,
+            (static_cast<float>(z) - half) * sz});
+    }
+    std::vector<std::uint32_t> indices;
+    indices.reserve(static_cast<std::size_t>(samples_x - 1u) * (samples_z - 1u) * 6u);
+    for (std::uint32_t z = 0; z + 1u < samples_z; ++z) for (std::uint32_t x = 0; x + 1u < samples_x; ++x) {
+        const auto a = z * samples_x + x, b = a + 1u, c = a + samples_x, d = c + 1u;
+        indices.insert(indices.end(), {c, b, a, d, b, c});
+    }
+    auto shape = physics_shape_create_mesh(positions, indices);
+    shape.ownership->heightfield = true;
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+    shape.ownership->debug_descriptor = {};
+#endif
+    return record_debug_inputs(shape, "HEIGHTFIELD", samples_x, samples_z, scale, heights);
 }
 
 namespace {
@@ -2305,10 +2666,23 @@ bool is_triangle_mesh_shape(const btCollisionShape& shape) {
     return shape.getShapeType() == TRIANGLE_MESH_SHAPE_PROXYTYPE;
 }
 
+void physics_body_release(PhysicsBodyHandle body) {
+    auto& entry = body_at(body);
+    if (entry.world != 0) throw std::runtime_error("A physics body must leave its world before release.");
+    entry.body.reset();
+    entry.mass_frame_shape.reset();
+    entry.motion_state.reset();
+    if (entry.shape) std::erase(entry.shape->users, &entry);
+    entry.shape.reset();
+}
+
 void physics_body_set_motion_type(
     PhysicsBodyHandle body,
     PhysicsMotionType motion_type) {
     PhysicsBodyState& entry = body_at(body);
+    if (entry.shape && entry.shape->heightfield && motion_type != PhysicsMotionType::immovable) {
+        throw std::runtime_error("Physics heightfields require a static body.");
+    }
     int flags = entry.body->getCollisionFlags();
     flags &= ~(btCollisionObject::CF_STATIC_OBJECT |
                btCollisionObject::CF_KINEMATIC_OBJECT);
@@ -2334,6 +2708,7 @@ void physics_body_set_shape(
     PhysicsShapeHandle shape) {
     PhysicsBodyState& entry = body_at(body);
     PhysicsShapeState& shape_entry = shape_at(shape);
+    if (shape_entry.heightfield && !entry.body->isStaticObject()) throw std::runtime_error("Physics heightfields require a static body.");
     const bool shape_changed = entry.shape != shape.ownership;
     if (shape_changed) {
         shape_entry.users.push_back(&entry);
@@ -2362,10 +2737,10 @@ PhysicsTransform physics_body_get_transform(PhysicsBodyHandle body) {
     return read_node_transform(body_at(body));
 }
 
-void physics_body_set_transform(
-    PhysicsBodyHandle body,
+namespace {
+void update_body_transform(
+    PhysicsBodyState& entry,
     const PhysicsTransform& transform) {
-    PhysicsBodyState& entry = body_at(body);
     entry.requested = transform;
     entry.contact_quiet_seconds = 0.0;
     write_world_transform(entry, transform);
@@ -2373,16 +2748,52 @@ void physics_body_set_transform(
     // active would keep every pair it touches in collision detection.
     if (!entry.body->isStaticObject()) entry.body->activate(true);
 }
+}
+
+void physics_body_set_transform(
+    PhysicsBodyHandle body,
+    const PhysicsTransform& transform) {
+    auto& entry = body_at(body);
+    update_body_transform(entry, transform);
+    // HP_Body_SetQTransform teleports: the next kinematic step must not
+    // derive a velocity from the position preceding this write.
+    entry.body->setInterpolationWorldTransform(entry.body->getWorldTransform());
+}
 
 void physics_body_set_target_transform(
     PhysicsBodyHandle body,
     const PhysicsTransform& transform) {
-    // `HP_Body_SetTargetQTransform` derives a velocity that carries the
-    // body to the target over one step, so resting bodies on top are
-    // dragged by friction rather than tunnelled through. Bullet has no such
-    // entry point; a kinematic body's motion state IS that behaviour, since
-    // the solver derives contact velocity from the swept transform.
-    physics_body_set_transform(body, transform);
+    // ACTION preserves Bullet's swept-pose path. Its immediate pose write
+    // and substep velocity differ from Havok's deferred target integration;
+    // the measured boundary is recorded in docs/fidelity.md.
+    update_body_transform(body_at(body), transform);
+}
+
+double physics_shape_default_mass(PhysicsShapeHandle shape) {
+    const auto& entry = shape_at(shape);
+    const auto& geometry = *entry.shape;
+    double volume = 0;
+    if (geometry.getShapeType() == CAPSULE_SHAPE_PROXYTYPE) {
+        const auto& capsule = static_cast<const btCapsuleShape&>(geometry);
+        const double radius = capsule.getRadius();
+        volume = SIMD_PI * radius * radius * (2 * capsule.getHalfHeight() + 4.0 / 3.0 * radius);
+    } else if (geometry.getShapeType() == SPHERE_SHAPE_PROXYTYPE) {
+        const double radius = static_cast<const btSphereShape&>(geometry).getRadius();
+        volume = 4.0 / 3.0 * SIMD_PI * radius * radius * radius;
+    } else if (geometry.getShapeType() == BOX_SHAPE_PROXYTYPE) {
+        volume = entry.authored_box_volume.value();
+        if (volume <= 0) throw std::runtime_error("Default physics mass requires a positive authored box volume.");
+    } else if (geometry.getShapeType() == CYLINDER_SHAPE_PROXYTYPE) {
+        const auto& cylinder = static_cast<const btCylinderShape&>(geometry);
+        const double radius = cylinder.getRadius();
+        volume = SIMD_PI * radius * radius * 2 * cylinder.getHalfExtentsWithMargin()[cylinder.getUpAxis()];
+    } else if (entry.has_exact_mass_properties) {
+        volume = entry.mass_properties.mass;
+    } else {
+        throw std::runtime_error("Default physics mass requires a primitive or a closed convex volume.");
+    }
+    // HP_Shape_BuildMassProperties uses 1000 kg/m3 when no density is set.
+    return static_cast<float>(volume * 1000);
 }
 
 PhysicsMassProperties physics_shape_build_mass_properties(
@@ -2528,6 +2939,18 @@ void physics_body_set_mass_properties(
     entry.body->updateInertiaTensor();
     entry.contact_quiet_seconds = 0.0;
     mark_body_dirty(entry);
+}
+
+PhysicsMassProperties physics_body_get_mass_properties(PhysicsBodyHandle body) {
+    const auto& entry = body_at(body);
+    const auto& center = entry.node_from_body.getOrigin();
+    const auto rotation = entry.node_from_body.getRotation();
+    const auto inverse_inertia = entry.body->getInvInertiaDiagLocal();
+    const auto inverse_mass = entry.body->getInvMass();
+    const auto reciprocal = [](btScalar value) { return value > 0 ? 1.0 / static_cast<double>(value) : 0.0; };
+    return {{center.x(), center.y(), center.z()}, reciprocal(inverse_mass),
+        {reciprocal(inverse_inertia.x()), reciprocal(inverse_inertia.y()), reciprocal(inverse_inertia.z())},
+        {rotation.x(), rotation.y(), rotation.z(), rotation.w()}};
 }
 
 void physics_body_apply_impulse(

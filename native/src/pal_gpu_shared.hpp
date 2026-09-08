@@ -90,6 +90,7 @@
 #include <cstdio>
 
 namespace bbl::pal {
+class TextGpuCapture;
 
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
 inline thread_local Engine* draw_count_engine = nullptr;
@@ -983,7 +984,7 @@ inline const TextureData* material_slot_texture(
                 ? nullptr
                 : &material.iridescence_thickness_texture;
         case Source::lightmap:
-            return standard_material ? nullptr : &material.lightmap_texture;
+            return &material.lightmap_texture;
         case Source::metallic_reflectance:
             return standard_material
                 ? nullptr
@@ -1037,6 +1038,8 @@ inline bool material_slot_srgb(
             return true;
         case upstream::MaterialTextureSrgb::srgb_unless_standard:
             return !standard_material;
+        case upstream::MaterialTextureSrgb::lightmap:
+            return material != nullptr && material->lightmap_texture_srgb;
         case upstream::MaterialTextureSrgb::base_color:
             // The slot's encoding is its TEXTURE's, which upstream stores as
             // the `Texture2D`'s own format: the record carries it for the
@@ -6346,7 +6349,8 @@ public:
         const Engine& engine,
         std::uint32_t width,
         std::uint32_t height,
-        long frame);
+        long frame,
+        TextGpuCapture* text_capture = nullptr);
 
     /** Whether this run was asked for any capture at all. */
     [[nodiscard]] bool requested() const {

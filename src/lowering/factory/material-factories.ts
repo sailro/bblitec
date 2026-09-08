@@ -72,6 +72,7 @@ export interface StandardMaterialSetters {
     solid: boolean;
     diffuseFile: boolean;
     emissiveFile: boolean;
+    lightmapFile?: boolean;
     uvTransform: boolean;
     plugins: boolean;
     /** A plugin binding filled by texels or by a loaded image. */
@@ -1307,6 +1308,7 @@ void set_pbr_lightmap(
     float level) {
     MaterialRecord& record = engine.materials[material.value];
     record.lightmap_texture = std::move(texture.data);
+    record.lightmap_texture_srgb = texture.srgb;
     record.lightmap_level = level;
 }
 
@@ -1574,6 +1576,7 @@ MaterialHandle create_grid_material(
             solid,
             diffuseFile,
             emissiveFile,
+            lightmapFile,
             uvTransform,
             plugins,
             pluginTextures,
@@ -1583,6 +1586,11 @@ MaterialHandle create_grid_material(
         // comes from, so naming it here attributed the pixels setter and the
         // enabler to a module that contains neither.
         const materialModule = "src/material/standard/standard-material.ts";
+        if (lightmapFile) {
+            const declaration = this.context.functionDeclaration("src/material/standard/set-std-lightmap.ts", "setStandardLightmapTexture").declaration;
+            this.context.assertStatementShapes(declaration, declaration.body!.statements,
+                "mat._lightmapTexture = texture; _registerStdExt(stdLightmapExt);", "Standard lightmap setter and extension registration");
+        }
         if (uvTransform) {
             // The pin's enabler is a mark plus a lazy module preload; the
             // preload has no native counterpart, so the assignment is the
@@ -1619,6 +1627,7 @@ MaterialHandle create_grid_material(
                 ...(emissiveFile
                     ? ["setStandardEmissiveTexture#file"]
                     : []),
+                ...(lightmapFile ? ["setStandardLightmapTexture"] : []),
                 ...(uvTransform ? ["enableMaterialUvTransform"] : []),
                 ...(plugins ? ["material.plugins"] : []),
                 ...(pluginTextures
@@ -1806,6 +1815,15 @@ void set_standard_emissive_file_texture(
     const FileTexture& texture) {
     standard_slot_material(engine, material).emissive_texture = texture.data;
 }
+` : ""}${lightmapFile ? `
+// set-std-lightmap.ts: the file texture retains its upload, sampler,
+// transform and encoding. Generation performs the extension registration.
+void set_standard_lightmap_texture(Engine& engine, MaterialHandle material, const FileTexture& texture) {
+    auto& record = standard_slot_material(engine, material);
+    if (!record.standard_material) throw std::runtime_error("Standard lightmap requires a Standard material.");
+    record.lightmap_texture = texture.data;
+    record.lightmap_texture_srgb = texture.srgb;
+}
 ` : ""}${uvTransform ? `
 // src/material/enable-material-uv-transform.ts enableMaterialUvTransform
 //
@@ -1923,6 +1941,13 @@ MaterialHandle create_standard_material(Engine& engine) {
     material.specular_power = ${scalar("specularPower")};
     material.emissive_factor = ${tuple("emissiveColor")};
     material.ambient_color = ${tuple("ambientColor")};
+    material.lightmap_level = ${scalar("lightmapLevel")};
+    material.lightmap_coord_index = ${scalar("lightmapCoordIndex")};
+    material.lightmap_shadowmap = ${(() => {
+        const value = this.context.propertyInitializer(object, "useLightmapAsShadowmap");
+        if (value.kind !== ts.SyntaxKind.TrueKeyword && value.kind !== ts.SyntaxKind.FalseKeyword) return this.context.contractError(value, "Standard lightmap blend default must be boolean.");
+        return value.kind === ts.SyntaxKind.TrueKeyword;
+    })()};
     // MaterialRecord's own default is the glTF MASK cutoff, which the
     // loader wants and this factory does not: the pin ships
     // \`alphaCutOff: 0\`, no alpha test at all. Folding it here is what

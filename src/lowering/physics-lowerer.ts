@@ -53,8 +53,11 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { lowerPhysicsQueries } from "./physics-query-lowerer.js";
 import { lowerPhysicsContainer } from "./physics-container-lowerer.js";
+import { lowerPhysicsMesh } from "./physics-mesh-lowerer.js";
 import { lowerPhysicsViewer } from "./physics-viewer-lowerer.js";
 import { lowerPhysicsConstraints } from "./physics-constraint-lowerer.js";
+import { lowerPhysicsGravity } from "./physics-gravity-lowerer.js";
+import { lowerPhysicsHeightfield } from "./physics-heightfield-lowerer.js";
 import {
   SHAPE_PARAMETERS,
   shapeParameterStorage,
@@ -1789,12 +1792,34 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     );
   }
 
-  public lowerPhysics(includeQueries = false, containerShapes = false, includeViewer = false, includeConstraints = false): LoweredSource {
+  public lowerPhysics(includeQueries = false, containerShapes = false, includeViewer = false, includeConstraints = false, includeHeightfield = false): LoweredSource {
     this.assertPinnedContracts();
+    const massSetter = this.context.functionDeclaration(havokModule, "setPhysicsBodyMassProperties").declaration;
+    this.context.assertStatementShapes(massSetter, massSetter.body!.statements, `
+      const massProps = buildMassProperties(world, body);
+      if (properties.centerOfMass) { massProps[0] = [properties.centerOfMass.x, properties.centerOfMass.y, properties.centerOfMass.z]; }
+      if (properties.mass !== undefined) { massProps[1] = properties.mass; }
+      if (properties.inertia) { massProps[2] = [properties.inertia.x, properties.inertia.y, properties.inertia.z]; }
+      if (properties.inertiaOrientation) { massProps[3] = [properties.inertiaOrientation.x, properties.inertiaOrientation.y, properties.inertiaOrientation.z, properties.inertiaOrientation.w]; }
+      body._massPropertiesTransform?.(massProps);
+      world._hknp.HP_Body_SetMassProperties(body._hkBody, massProps);
+    `, "physics mass override order, tuple slots and PAL write");
+    const removeBody = this.context.functionDeclaration(havokModule, "removePhysicsBody").declaration;
+    this.context.assertStatementShapes(removeBody, removeBody.body!.statements, `
+      const { _hknp: hknp, _hkWorld: hkWorld, _bodies: bodies } = world;
+      const i = bodies.indexOf(body);
+      if (i < 0) { return; }
+      bodies.splice(i, 1);
+      hknp.HP_World_RemoveBody(hkWorld, body._hkBody);
+      hknp.HP_Body_Release(body._hkBody);
+    `, "physics body removal and release order");
     const queries = includeQueries ? lowerPhysicsQueries(this.context) : undefined;
+    const mesh = lowerPhysicsMesh(this.context);
     const container = containerShapes ? lowerPhysicsContainer(this.context) : undefined;
     const viewer = includeViewer ? lowerPhysicsViewer(this.context) : undefined;
     const constraints = includeConstraints ? lowerPhysicsConstraints(this.context) : undefined;
+    const gravitySetter = lowerPhysicsGravity(this.context);
+    const heightfield = includeHeightfield ? lowerPhysicsHeightfield(this.context) : undefined;
     const queryModule = "src/physics/havok-queries.ts";
     const raycast = this.context.functionDeclaration(queryModule, "physicsRaycast");
     const distanceLowerer = new PinnedNumericLowerer(raycast.file, {
@@ -1950,16 +1975,13 @@ ${shapeParameterLanes("options")}
  * Each member overrides one term of what the shape derives, so an absent
  * lane keeps the derived one -- the pin's own \`if (properties.x)\` arms.
  *
- * \`inertia\` and \`inertiaOrientation\` have no lane and the intrinsic
- * refuses them: Havok's inertia term is per unit mass and this PAL's is the
- * absolute tensor, and no corpus scene writes either. \`mass\` is not a
- * nullable for a related reason -- an omitted one leaves Havok's own
- * volume-times-density mass on the body, which a solver taking a mass
- * rather than a density derives no equivalent of.
+ * Inertia overrides are per unit mass in the pin and converted to the
+ * PAL's absolute tensor. An absent mass uses the solver's default density.
  */
 struct PhysicsMassPropertyOverrides {
     js::Nullable<Vec3d> center_of_mass{};
-    double mass = 0.0;
+    js::Nullable<double> mass{};
+    js::Nullable<Vec3d> inertia{};
 };
 
 /**
@@ -2001,6 +2023,8 @@ struct PhysicsNodeRef {
     PhysicsNodeKind kind = PhysicsNodeKind::mesh;
     std::uint32_t value = 0;
 };
+
+[[nodiscard]] std::array<float, 16> physics_node_world(const Engine& engine, PhysicsNodeRef node);
 
 [[nodiscard]] inline PhysicsNodeRef physics_node(MeshHandle mesh) {
     return PhysicsNodeRef{PhysicsNodeKind::mesh, mesh.value};
@@ -2112,13 +2136,9 @@ struct PhysicsRegion {
  * The pin's context also carries its six hooks as function members, because
  * the module is dynamic-imported and \`havok.ts\` reaches it only through
  * the object. A native build links one translation unit, so the hooks are
- * ordinary functions here and what the record carries is state alone. Four
- * of the six -- \`setGravity\`, \`getRegionGravity\`, \`setVelocityLimits\`
- * and \`dispose\` -- have no caller in this port at all: their only pinned
- * callers are \`setPhysicsGravity\`, \`getPhysicsGravity\`,
- * \`setPhysicsVelocityLimits\` and \`disposePhysics\`, none of which is a
- * supported intrinsic. \`gravity\` is still carried because
- * \`_getOrCreateRegion\` seeds every new region from it.
+ * ordinary functions here and what the record carries is state alone. Per-region gravity lives in the
+ * PAL world; its duplicate source field has no admitted getter. The context's
+ * gravity seeds newly created regions.
  */
 struct PhysicsFloatingOrigin {
     std::vector<PhysicsRegion> regions;
@@ -2203,7 +2223,7 @@ void set_physics_timestep_ms(
 PhysicsShape create_physics_mesh_shape(
     PhysicsWorldHandle world,
     PhysicsShapeType type,
-    MeshHandle mesh,
+    PhysicsNodeRef mesh,
     bool include_child_meshes);
 [[nodiscard]] PhysicsShape create_physics_primitive_shape(
     PhysicsWorldHandle world,
@@ -2242,6 +2262,11 @@ void set_physics_body_mass_properties(
     PhysicsWorldHandle world,
     PhysicsBody body,
     const PhysicsMassPropertyOverrides& properties);
+[[nodiscard]] PhysicsWorld& physics_world_state(PhysicsWorldHandle world);
+[[nodiscard]] PhysicsBody& owning_body_record(PhysicsBody body);
+[[nodiscard]] double physics_world_step_seconds(PhysicsWorldHandle world);
+[[nodiscard]] std::string physics_body_node_name(PhysicsBody body);
+void remove_physics_body(PhysicsWorldHandle world, PhysicsBody body);
 void set_physics_shape_material(
     PhysicsWorldHandle world,
     PhysicsShape shape,
@@ -2293,6 +2318,8 @@ void on_physics_collision(
 ${queries?.header ?? ""}
 ${viewer?.header ?? ""}
 ${constraints?.header ?? ""}
+${heightfield?.header ?? ""}
+${gravitySetter.header}
 }  // namespace bbl::upstream
 
 namespace bbl::js {
@@ -2319,6 +2346,7 @@ ${viewer ? "#include <bblite/pal_physics_debug.hpp>" : ""}
 namespace bbl::upstream {
 namespace {
 
+${mesh.helpers}
 ${container?.helpers ?? ""}
 
 PhysicsWorld& physics_world_record(PhysicsWorldHandle handle) {
@@ -2355,90 +2383,6 @@ MeshBounds mesh_bounds(const Engine& engine, const MeshRecord& mesh) {
     MeshBounds bounds{true, geometry.bounds_min, geometry.bounds_max};
     apply_mesh_bound_overrides(mesh, bounds.minimum, bounds.maximum);
     return bounds;
-}
-
-/**
- * MeshAccumulator.addNodeMeshes for the reached runtime-created hierarchy.
- * The pin maps every vertex through rootScale * inverse(rootWorld) *
- * nodeWorld. For a node below this tagged mesh root, cancelling rootWorld
- * leaves rootScale followed by the child's local chain, which is what this
- * recursive form composes. Imported glTF hierarchy mutation remains outside
- * this slice; those vertices keep the loader's bake-to-world model.
- *
- * One accumulator serves both mesh arms, as the pin's one class does:
- * \`collect_indices\` is \`options.type === PhysicsShapeType.MESH\`, and a
- * convex hull needs the points alone.
- */
-void append_physics_mesh_geometry(
-    const Engine& engine,
-    MeshHandle mesh,
-    const std::array<float, 16>& mesh_to_body,
-    bool include_children,
-    bool collect_indices,
-    std::vector<std::array<double, 3>>& positions,
-    std::vector<std::uint32_t>& indices) {
-    if (mesh.value >= engine.meshes.size()) return;
-    const MeshRecord& record = engine.meshes[mesh.value];
-    if (record.geometry < engine.geometries.size()) {
-        const ModelGeometry& geometry = engine.geometries[record.geometry];
-        // \`const indexOffset = this._vertices.length / 3\`, read BEFORE
-        // this node's own vertices join them.
-        const std::uint32_t index_offset =
-            static_cast<std::uint32_t>(positions.size());
-        positions.reserve(positions.size() + geometry.vertices.size());
-        for (const ModelVertex& vertex : geometry.vertices) {
-            const Vec3& position = record.detached_imported_mesh ? vertex.local_position : vertex.position;
-            const double x = position.x;
-            const double y = position.y;
-            const double z = position.z;
-            positions.push_back({
-                mesh_to_body[0] * x + mesh_to_body[4] * y +
-                    mesh_to_body[8] * z + mesh_to_body[12],
-                mesh_to_body[1] * x + mesh_to_body[5] * y +
-                    mesh_to_body[9] * z + mesh_to_body[13],
-                mesh_to_body[2] * x + mesh_to_body[6] * y +
-                    mesh_to_body[10] * z + mesh_to_body[14],
-            });
-        }
-        if (collect_indices && !geometry.indices.empty()) {
-            // The pin reads \`node._cpuIndices\` as triangles. A geometry
-            // whose index list means anything else -- a line list, a strip
-            // -- would build a soup of unrelated triangles, so it refuses.
-            if (geometry.topology != MeshTopology::triangles) {
-                throw std::runtime_error(
-                    "A physics mesh shape over a non-triangle mesh "
-                    "topology is not lowered by this prototype.");
-            }
-            indices.reserve(indices.size() + geometry.indices.size());
-            for (std::size_t i = 0; i + 2 < geometry.indices.size();
-                 i += 3) {
-                // \`this._indices.push(c, b, a)\`: the pin reverses each
-                // triangle because Lite scenes carry Babylon's
-                // left-handed winding and Havok's mesh shape optimizes
-                // its interior from the other one. It is carried rather
-                // than dropped -- it is the pin's own data -- but nothing
-                // downstream reads it today: Bullet's triangle ray test
-                // and its convex-versus-triangle contact are both
-                // double-sided unless a backface-culling flag is set,
-                // and none is.
-                indices.push_back(geometry.indices[i + 2] + index_offset);
-                indices.push_back(geometry.indices[i + 1] + index_offset);
-                indices.push_back(geometry.indices[i] + index_offset);
-            }
-        }
-    }
-    if (!include_children) return;
-    for (const MeshHandle child : record.children) {
-        if (child.value >= engine.meshes.size()) continue;
-        const std::array<float, 16> local =
-            mesh_local_matrix(engine.meshes[child.value]);
-        std::array<float, 16> child_to_body{};
-        mat4_multiply_into(
-            child_to_body, 0, mesh_to_body, 0, local, 0);
-        append_physics_mesh_geometry(
-            engine, child, child_to_body, true, collect_indices,
-            positions, indices);
-    }
 }
 
 // ${this.context.provenance(
@@ -2939,50 +2883,7 @@ void set_physics_timestep_ms(
     physics_world_record(handle).fixed_delta_ms = fixed_delta_ms;
 }
 
-PhysicsShape create_physics_mesh_shape(
-    PhysicsWorldHandle handle,
-    PhysicsShapeType type,
-    MeshHandle mesh,
-    bool include_child_meshes) {
-    // \`createPhysicsShape\`'s CONVEX_HULL and MESH arms share one
-    // accumulator and one throw list; what separates them is whether it
-    // collects the triangles as well as the points, and which back-end
-    // factory the result goes to.
-    const bool collect_indices = type == PhysicsShapeType::MESH;
-    PhysicsWorld& world = physics_world_record(handle);
-    Engine& engine = *world.engine;
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error(
-            "Physics mesh shapes require a live mesh hierarchy.");
-    }
-    const MeshRecord& root = engine.meshes[mesh.value];
-    const std::array<float, 16> root_scale{
-        root.scaling.x, 0.0f, 0.0f, 0.0f,
-        0.0f, root.scaling.y, 0.0f, 0.0f,
-        0.0f, 0.0f, root.scaling.z, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    std::vector<std::array<double, 3>> positions;
-    std::vector<std::uint32_t> indices;
-    append_physics_mesh_geometry(
-        engine, mesh, root_scale, include_child_meshes, collect_indices,
-        positions, indices);
-    if (positions.empty()) {
-        throw std::runtime_error(
-            "Cannot create physics mesh shape without vertex positions.");
-    }
-    if (collect_indices) {
-        if (indices.empty()) {
-            throw std::runtime_error(
-                "Cannot create physics mesh shape without triangle indices.");
-        }
-        return PhysicsShape{
-            pal::physics_shape_create_mesh(positions, indices)};
-    }
-    return PhysicsShape{
-        pal::physics_shape_create_convex_hull(positions)};
-}
-
+${mesh.source}
 ${container?.source ?? ""}PhysicsShape create_physics_primitive_shape(
     PhysicsWorldHandle handle,
     PhysicsShapeType type,
@@ -3068,13 +2969,18 @@ void set_physics_body_mass_properties(
     // a mass where Havok derives one from a density and scales its own
     // per-unit-mass term by the mass scalar afterwards -- the same
     // absolute tensor, asked for the other way round.
+    const double mass = overrides.mass ? *overrides.mass : pal::physics_shape_default_mass(live.shape.handle);
     pal::PhysicsMassProperties properties =
         pal::physics_shape_build_mass_properties(
-            live.shape.handle, overrides.mass);
-    properties.mass = overrides.mass;
+            live.shape.handle, mass);
+    properties.mass = mass;
     if (overrides.center_of_mass) {
         const Vec3d& center = *overrides.center_of_mass;
         properties.center_of_mass = {center.x, center.y, center.z};
+    }
+    if (overrides.inertia) {
+        const Vec3d& inertia = *overrides.inertia;
+        properties.inertia = {inertia.x * mass, inertia.y * mass, inertia.z * mass};
     }
     pal::physics_body_set_mass_properties(live.handle, properties);
 }
@@ -3115,6 +3021,24 @@ PhysicsBody& owning_body_record(PhysicsBody body) {
         return physics_body_record(*world, body);
     }
     throw std::runtime_error("Physics body has no live engine owner.");
+}
+
+PhysicsWorld& physics_world_state(PhysicsWorldHandle handle) { return physics_world_record(handle); }
+double physics_world_step_seconds(PhysicsWorldHandle handle) { return world_step_seconds(physics_world_record(handle)); }
+std::string physics_body_node_name(PhysicsBody body) {
+    const auto& live = owning_body_record(body);
+    const auto& engine = *live.owner.lock()->engine;
+    return live.node.kind == PhysicsNodeKind::mesh
+        ? engine.meshes.at(live.node.value).name
+        : engine.transform_nodes.at(live.node.value).name;
+}
+void remove_physics_body(PhysicsWorldHandle handle, PhysicsBody body) {
+    auto& world = physics_world_record(handle);
+    const auto found = std::find(world.bodies.begin(), world.bodies.end(), body);
+    if (found == world.bodies.end()) return;
+    world.bodies.erase(found);
+    pal::physics_world_remove_body(world.handle, body.handle);
+    pal::physics_body_release(body.handle);
 }
 
 /**
@@ -3253,6 +3177,8 @@ void on_physics_collision(
 ${queries?.source ?? ""}
 ${viewer?.source ?? ""}
 ${constraints?.source ?? ""}
+${heightfield?.source ?? ""}
+${gravitySetter.source}
 PhysicsRaycastResult physics_raycast(
     PhysicsWorldHandle handle,
     Vec3d from,

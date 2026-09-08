@@ -12,7 +12,9 @@ import { reachesShadowGenerator } from "../shadow-capabilities.js";
 export const featureSources: Record<Feature, string[]> = {
     "text:data": [],
     "text:layout": ["src/pal_text_layout.cpp"],
+    "text:weight": [],
     "text:renderable": [],
+    "renderer:text": ["src/pal_sdl_gpu_sprite.cpp"],
     "animation:gltf-groups": [],
     "animation:property": [],
     "animation:property-blending": [],
@@ -97,6 +99,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:plugin-textures": [],
     "material:standard-emissive-render-texture": [],
     "material:standard-emissive-file-texture": [],
+    "material:standard-lightmap": [],
     "material:standard-vertex-colors": [],
     "material:standard-skeleton": [],
     "material:standard-uv-offset": [],
@@ -181,9 +184,11 @@ export const featureSources: Record<Feature, string[]> = {
     "physics:world": ["src/pal_physics_bullet.cpp"],
     "physics:aggregate": [],
     "physics:queries": [],
+    "physics:character-controller": [],
     "physics:container": [],
     "physics:viewer": ["src/pal_physics_debug.cpp"],
     "physics:constraints": [],
+    "physics:heightfield": [],
     // The trigger drain rides in the same generated physics module the
     // world already brings, and in the same PAL translation unit; what
     // the feature records is which pinned module a scene reached.
@@ -407,7 +412,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
         ? "#include <bblite/upstream/sprite_layer.hpp>\n"
         : "";
     const textInclude = features.includes("text:data") || features.includes("text:renderable")
-        ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n" + (features.includes("text:layout") ? "#include <bblite/upstream_text_update.hpp>\n" : "")
+        ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n" + (features.includes("text:layout") ? "#include <bblite/upstream_text_update.hpp>\n" : "") + (features.includes("text:weight") ? "#include <bblite/upstream_text_weight.hpp>\n" : "") + (features.includes("renderer:text") ? "#include <bblite/upstream_text_renderer.hpp>\n" : "")
         : "";
     const billboardInclude = features.includes(
         "sprite:billboard",
@@ -429,7 +434,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
     // The rigid-body family: main.cpp calls the generated world and
     // aggregate factories by name.
     const physicsInclude = features.includes("physics:world")
-        ? "#include <bblite/upstream/physics.hpp>\n"
+        ? "#include <bblite/upstream/physics.hpp>\n" + (features.includes("physics:character-controller") ? "#include <bblite/upstream/character_controller.hpp>\n" : "")
         : "";
     // The navigation family: main.cpp reaches the generated plugin,
     // navmesh build, debug geometry and raycast by name.

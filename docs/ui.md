@@ -89,13 +89,17 @@ track/class/id changes refuse.
 Fonts use DirectWrite/CoreText/fontconfig. Generic emoji/ZWJ shaping is limited.
 Unauthored button fonts use the generic sans default; normal line height uses
 per-face ratios, so browser glyph/size rounding can differ.
-Fixed-pitch textareas retain fractional design advances over grid-fitted glyph masks.
+Windows file fonts use DirectWrite OpenType shaping and browser-compatible raster modes and coverage.
+Color/fallback faces and font effects retain RmlUi rasterization; glyph coverage and baseline rounding
+can differ from browser text. Textareas preserve fractional line height and design advances;
+native range painting follows browser geometry and control states.
 
 | Maintained RmlUi patch | Purpose |
 | --- | --- |
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
 | `rmlui-premultiplied-rounding.patch` | Browser-oriented color/opacity rounding |
 | `rmlui-fractional-letter-spacing.patch` | Fractional default-font accumulation; excludes HarfBuzz sample |
+| `rmlui-line-leading.patch` | Floor upper half-leading; preserve authored fractional textarea line height |
 | `rmlui-transform-key-ownership.patch` | Own mutable transition keys; preserve shared relative transforms |
 
 Relative transition units resolve at transition start. Fully responsive

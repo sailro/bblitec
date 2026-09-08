@@ -61,7 +61,7 @@ const channelSlots: Readonly<Record<string, string | null>> = {
     _bumpTexture: "material.bump_texture",
     _specularTexture: "material.specular_texture",
     _ambientTexture: "material.ambient_texture",
-    [LIGHTMAP_SLOT]: null,
+    [LIGHTMAP_SLOT]: "material.lightmap_texture",
     _opacityTexture: "material.opacity_texture",
 };
 
@@ -162,22 +162,11 @@ function channelArguments(
     const coordIndex = channel.coordIndexKey === null
         ? null
         : sources.coordIndex[channel.coordIndexKey] ?? null;
-    // `textureKey === "_lightmapTexture" && texture?.uAng === Math.PI`. The
-    // generated loader fills no lightmap slot at all, so it is the SECOND
-    // conjunct that folds this: `texture` is absent there and
-    // `undefined === Math.PI` is false upstream. A port that grows the slot
-    // has to lower the comparison rather than inherit the fold.
-    if (channel.textureKey === LIGHTMAP_SLOT && slot !== null) {
-        throw new Error(
-            "This port now records a lightmap texture, so the pinned legacy " +
-                "V flip (`texture?.uAng === Math.PI`) no longer folds to " +
-                "false and has to be lowered.",
-        );
-    }
     return {
         texture,
         usesUv2: coordIndex === null ? "false" : `${coordIndex} == 1`,
-        legacyFlipV: "false",
+        legacyFlipV: channel.textureKey === LIGHTMAP_SLOT && slot !== null
+            ? `(${present}) && ${slot}.uv_transform.u_ang == ${Math.PI}` : "false",
     };
 }
 

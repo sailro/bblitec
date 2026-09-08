@@ -84,6 +84,11 @@ test("packager ships a third-party notice for every linkable dependency", () => 
     // (upstream/rmlui.json), not vcpkg, so the manifest never names it;
     // its notice is owed all the same wherever the ui feature links it.
     names.add("rmlui");
+    // PAL font/control compatibility code retains its upstream notices.
+    for (const name of ["Skia", "Chromium"]) {
+        names.add(name);
+        assert.match(readFileSync(`native/notices/${name}.txt`, "utf8"), /Redistribution and use/);
+    }
 
     const script = readFileSync("tools/package-demo.ps1", "utf8");
     const begin = script.indexOf(

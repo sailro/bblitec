@@ -97,7 +97,7 @@ test("native material getters retain producer variants, replacement aliases and 
 #include <cassert>
 #include <cmath>
 namespace bbl {
-namespace upstream { enum class MaterialTextureSrgb { linear, srgb, srgb_unless_standard, base_color }; }
+namespace upstream { enum class MaterialTextureSrgb { linear, srgb, srgb_unless_standard, base_color, lightmap }; }
 ${cppFunction(readFileSync("native/src/pal_gpu_shared.hpp", "utf8"), "inline bool material_slot_srgb(")}
 Engine create_engine(EngineOptions) {return {};}
 ${functions}
