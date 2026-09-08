@@ -55,9 +55,9 @@ const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
  */
 function pinnedWorldMultiplyLanes(
     context: LoweringContext,
+    template: ReturnType<typeof pinnedPbrVertexOutputs>,
     output: "worldPos" | "worldNormal",
 ): string[] {
-    const template = pinnedPbrVertexOutputs(context);
     const fail = (): never =>
         context.contractError(
             template.declaration,
@@ -140,8 +140,9 @@ export function pinnedWorldTransformHeader(context: LoweringContext): string {
         "createPbrTemplate",
         `${STANDARD_TEMPLATE_MODULE}#createStandardTemplate`,
     );
-    const position = pinnedWorldMultiplyLanes(context, "worldPos");
-    const direction = pinnedWorldMultiplyLanes(context, "worldNormal");
+    const template = pinnedPbrVertexOutputs(context);
+    const position = pinnedWorldMultiplyLanes(context, template, "worldPos");
+    const direction = pinnedWorldMultiplyLanes(context, template, "worldNormal");
     const determinant = lowerMat4Determinant3(
         context,
         undefined,
