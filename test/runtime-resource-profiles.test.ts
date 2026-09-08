@@ -12,7 +12,7 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 function scene(body: string, helpers = ""): string {
     return `
         import {
-            createEngine, createSceneContext, createBox, createSphere,
+            createEngine, createSceneContext, createBox, createSphere, cloneTransformNode,
             createStandardMaterial, createPbrMaterial, addToScene,
             createShaderMaterial, setShaderFloat, onBeforeRender,
             createDirectionalLight, createPcfDirectionalShadowGenerator,
@@ -57,6 +57,22 @@ function shaderChoiceSource(selection: string, tail = ""): string {
         }\`;
     `);
 }
+
+test("native loops assign independent clone handles to one composition profile", () => {
+    const result = compileSource(scene(`
+        const source = createBox(engine);
+        const count = new Float32Array([3]);
+        const clones: Mesh[] = [];
+        for (let i = 0; i < count[0]!; ++i) {
+            const clone = cloneTransformNode(source) as Mesh;
+            clone.position.x = i;
+            clones.push(clone);
+        }
+    `));
+    assert.equal(result.manifest.sceneMeshes.filter(mesh => mesh.kind === "mesh-clone" && mesh.runtimeInstances).length, 1);
+    assert.match(result.cpp, /bind_scene_mesh_profile\([^\n]+clone_mesh_node\(/);
+    assert.equal(result.cpp.match(/clone_mesh_node\(/g)?.length, 1);
+});
 
 test("live ShaderMaterial choices propagate instance lanes to every candidate", () => {
     for (const selection of ["gate[0]! > 0 ? a : b", "materials[gate[0]!]!"]) {

@@ -311,6 +311,7 @@ export class ExpressionLowerer {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        let assertedValue: Value | undefined;
         if (
             (ts.isAsExpression(expression) ||
                 ts.isTypeAssertionExpression(expression)) &&
@@ -320,6 +321,7 @@ export class ExpressionLowerer {
             )
         ) {
             const asserted = this.compileValue(expression.expression);
+            assertedValue = asserted;
             if (asserted.kind === "picked-node") {
                 return {
                     kind: "mesh",
@@ -349,11 +351,12 @@ export class ExpressionLowerer {
                 dataTypesEqual(sourceType.inner, assertedType)
             ) {
                 return this.context.dataLowerer.narrowOptional(
-                    this.compileValue(expression.expression),
+                    assertedValue ?? this.compileValue(expression.expression),
                     expression,
                 );
             }
         }
+        if (assertedValue) return assertedValue;
         const assertedNonNull =
             hasNonNullAssertion(expression);
         const unwrapped = this.context.unwrap(expression);

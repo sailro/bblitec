@@ -118,6 +118,7 @@ constexpr std::size_t kMaximumEncodedNameLength = 180;
 } // namespace
 
 std::optional<std::string> read_local_storage(const std::string& key) {
+    require_runtime_execution("external storage input");
     const std::filesystem::path path = entry_path(key);
     std::error_code error;
     const bool exists = std::filesystem::exists(path, error);
@@ -138,6 +139,7 @@ std::optional<std::string> read_local_storage(const std::string& key) {
 }
 
 void write_local_storage(const std::string& key, const std::string& value) {
+    require_runtime_execution("external storage output");
     const std::filesystem::path path = entry_path(key);
     detail::write_file_atomically(
         path,
@@ -147,6 +149,7 @@ void write_local_storage(const std::string& key, const std::string& value) {
 }
 
 void remove_local_storage(const std::string& key) {
+    require_runtime_execution("external storage output");
     const std::filesystem::path path = entry_path(key);
     std::error_code error;
     // `remove` answers false for an absent entry, which `removeItem` on a

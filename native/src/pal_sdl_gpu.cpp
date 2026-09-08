@@ -7950,6 +7950,9 @@ SceneRun run_gpu_engine(Engine& engine) {
                     shader_pipeline_info.depth_stencil_state
                         .enable_depth_write = false;
                 }
+                if (info.depth_compare) {
+                    shader_pipeline_info.depth_stencil_state.compare_op = gpu_depth_compare(*info.depth_compare);
+                }
                 shader_pipeline_info.target_info
                     .color_target_descriptions = &shader_target;
 #if BBLITE_GPU_INSTANCE_COLORS

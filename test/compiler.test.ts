@@ -7835,7 +7835,7 @@ test("preserves compound assignments for numeric properties", () => {
         }
     `);
 
-    assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0f/);
+    assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0;/);
     assert.match(result.cpp, /\.environment\.exposure -= 0\.1f/);
     assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
     assertCameraScalarWrite(result.cpp, "alpha", /\(\w+ \+ 0\.3\)/);
@@ -15800,7 +15800,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
         "texture:file",
         "renderer:scene",
     ]);
-    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
+    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0;/);
     assert.match(result.cpp, /bbl::on_before_render/);
     assert.match(result.cpp, /v_frame\+\+/);
     assert.match(result.cpp, /if \(\(!\(v_added\) && v_frame >= 20\.0\)\)/);
@@ -16854,7 +16854,7 @@ test("compiles Babylon Lite scene 7 camera target assignment", () => {
         result.cpp,
         /\.target = bbl::Vec3d\{\(-0\.025979936122894287\), 1\.6681787837296724, 0\.4591848850250244\}/,
     );
-    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
+    assert.match(result.cpp, /\.fixed_delta_ms = 16\.0;/);
 });
 
 test("compiles Babylon Lite scene 35 camera target destructuring", () => {

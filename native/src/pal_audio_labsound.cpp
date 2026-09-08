@@ -564,6 +564,7 @@ CaptureStats measure(const lab::AudioBus& bus)
 
 AudioContextHandle audio_create_context()
 {
+    require_runtime_execution("audio device creation");
 #if BBLITE_HAS_AUDIO_CAPTURE
     const bool capture = capture_request().wanted();
 #else
@@ -680,6 +681,7 @@ void audio_collect_finished() {
 
 double audio_current_time(AudioContextHandle context)
 {
+    require_runtime_execution("an audio clock read");
     return require_context(context.value).context->currentTime();
 }
 

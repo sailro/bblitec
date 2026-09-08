@@ -356,6 +356,7 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine, js
 } // namespace
 
 void pal::run_engine(Engine& engine) {
+    require_runtime_execution("renderer or input execution");
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
     static_cast<void>(engine);
     throw std::logic_error("A Worker-enabled application must use asynchronous engine startup.");

@@ -296,6 +296,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["physics:world"],
     },
     {
+        source: "upstream/src/physics_debug_geometry.cpp",
+        features: ["physics:viewer"],
+    },
+    {
         source: "upstream/src/mesh_tube.cpp",
         features: ["mesh:tube", "mesh:extrude"],
     },

@@ -74,6 +74,7 @@ import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 import { meshProfileBindingCpp, type MeshProfileTable } from "./resource-profiles.js";
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
+import { nativeDepthCompare } from "./pinned-depth-state.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -903,6 +904,7 @@ export class RendererLowerer {
                     alphaTesting: program.needAlphaTesting,
                     backFaceCulling: program.backFaceCulling,
                     depthWrite: program.depthWrite,
+                    depthCompare: program.depthCompare,
                     valueCount,
                     defaults,
                     vertex: stageBlock("vertex"),
@@ -944,6 +946,7 @@ export class RendererLowerer {
         ${info.alphaTesting},
         ${info.backFaceCulling},
         ${info.depthWrite},
+        ${info.depthCompare === undefined ? "std::nullopt" : `DepthCompare::${nativeDepthCompare(info.depthCompare)}`},
         ${info.valueCount}u,
         {${info.defaults.map(floatLiteral).join(", ")}},
         ${stageBlockLiteral(info.vertex)},
@@ -1223,6 +1226,7 @@ struct ShaderVariantInfo {
     bool alpha_testing = false;
     bool back_face_culling = true;
     bool depth_write = true;
+    std::optional<DepthCompare> depth_compare;
     std::uint32_t value_count = 0;
     std::vector<float> defaults;
     ShaderVariantStageBlock vertex;

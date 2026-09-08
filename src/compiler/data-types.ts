@@ -47,6 +47,7 @@ export type HandleKind =
   | "storage-buffer"
   | "material"
   | "physics-body"
+  | "physics-viewer"
   | "physics-shape"
   | "billboard-sprite"
   | "billboard-system"
@@ -91,6 +92,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   "storage-buffer": "bbl::StorageBufferHandle",
   material: "bbl::MaterialHandle",
   "physics-body": "bbl::upstream::PhysicsBody",
+  "physics-viewer": "bbl::upstream::PhysicsViewerHandle",
   "physics-shape": "bbl::upstream::PhysicsShape",
   "billboard-sprite": "bbl::BillboardSpriteHandle",
   "billboard-system": "bbl::BillboardSystemHandle",
@@ -144,6 +146,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   StorageBuffer: "storage-buffer",
   Material: "material",
   PhysicsBody: "physics-body",
+  PhysicsViewer: "physics-viewer",
   PhysicsShape: "physics-shape",
   ShaderMaterial: "material",
   Sprite2DLayer: "sprite-layer",

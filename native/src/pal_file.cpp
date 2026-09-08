@@ -195,6 +195,7 @@ void set_dialog_property(
     Engine& engine,
     const FileDialogOptions& options,
     bool save) {
+    require_runtime_execution("file selection");
     const std::string override_path = environment_variable(
         save
             ? "BBLITE_FILE_DIALOG_SAVE_PATH"
@@ -231,6 +232,7 @@ std::optional<SelectedFileSnapshot> choose_open_file(
 void write_selected_file_atomically(
     const std::string& path,
     const std::vector<std::uint8_t>& bytes) {
+    require_runtime_execution("a selected-file write");
     detail::write_file_atomically(
         detail::utf8_file_path(path),
         std::span<const std::uint8_t>(bytes),
@@ -241,6 +243,7 @@ void write_selected_file_atomically(
 void write_selected_file_atomically(
     const std::string& path,
     std::string_view text) {
+    require_runtime_execution("a selected-file write");
     detail::write_file_atomically(
         detail::utf8_file_path(path),
         text,

@@ -314,6 +314,9 @@ update in parent coordinates. Utility layers rematch GPU resources when lazy con
 
 ## Physics
 
+HINGE constraint factories accept body-local pivots/axes and collision opt-in with discarded results.
+Joints retain their bodies, follow mass-frame changes and detach while either body is outside their world.
+
 Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/static-mesh shapes, forces,
 velocities, motion/prestep, aggregates, centre of mass, masks, collisions/triggers, raycasts and floating origin.
 Convex proximity/cast queries return local input and world target contacts, distance/fraction, trigger/mask
@@ -324,6 +327,10 @@ Inertia overrides and non-Y-aligned capsule/cylinder segments refuse. See [physi
 Container shapes retain child ownership and source-derived relative TRS. Convex children support finite
 nonzero scale per placement. Construction must finish before attachment; mixed child materials/masks,
 triggers and triangle-mesh children refuse.
+
+Body viewers retain show/hide/dispose, node transforms and the pinned always-depth line material.
+Debug geometry requires construction-known HP shape descriptors and a native toolchain during compilation.
+Show/hide return observations, observable startup debug membership and constraint overlays refuse.
 
 Raycasts return nullable body identity, point/normal and double distance. Trigger selection and both masks
 filter the closest eligible body. Arguments evaluate in source order; retained point objects expose changes

@@ -6208,11 +6208,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     if (engine.stopped) {
         return 0.0;
     }
-    const double delta_ms = frame_clock.advance(
-        frame_delta_ms > 0.0 ? frame_delta_ms : scene.fixed_delta_ms);
+    const double delta_ms = frame_clock.advance(frame_delta_ms);
     run_animation_frame_callbacks(engine);
+    const double scene_delta_ms = scene_callback_delta(scene, delta_ms);
     // The scene callback API is the engine's float delta.
-    const float callback_delta_ms = static_cast<float>(delta_ms);
+    const float callback_delta_ms = static_cast<float>(scene_delta_ms);
     // A callback may dispose its own scene while it is running. Snapshot the
     // dispatch list so clearing SceneState::before_render cannot destroy the
     // currently executing std::function (or invalidate the next iterator).
@@ -6230,10 +6230,10 @@ inline void run_animation_frame_callbacks(Engine& engine) {
         if (!registered || registered->shares_identity(scene)) continue;
         const auto callbacks = registered->before_render;
         for (const auto& callback : callbacks) {
-            callback(callback_delta_ms);
+            callback(static_cast<float>(scene_callback_delta(*registered, delta_ms)));
         }
     }
-    return delta_ms;
+    return scene_delta_ms;
 }
 
 /**

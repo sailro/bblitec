@@ -234,6 +234,7 @@ function assetOwnerMapBuilder(
 
 export interface HandleCollectionsContext
     extends HandleCollectionLoopContext {
+    guardStaticConstructionRead(operation: string): void;
     readonly meshWalks: CompiledMeshWalk[];
     readonly checker: ts.TypeChecker;
     readonly dataTypes: {
@@ -546,6 +547,9 @@ export class HandleCollections {
         );
         if (!collection) {
             return undefined;
+        }
+        if (owner.kind === "scene" && collection.property === "meshes") {
+            this.context.guardStaticConstructionRead("observable scene mesh membership");
         }
         // The declared type carries the element model: the property's own
         // number-index type is what an iteration yields, and the pinned

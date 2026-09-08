@@ -339,6 +339,26 @@ class WgslSubsetParser {
     }
 
     public parse(): ShaderModule {
+        const { structs, bindings } = this.parseDeclarations();
+        const entryPoint = this.parseEntryPoint(this.expectedStage);
+        this.expectEof();
+        return { structs, ...(bindings.length ? { bindings } : {}), entryPoint };
+    }
+
+    public stages(): ShaderModule[] {
+        const { structs, bindings } = this.parseDeclarations();
+        const modules: ShaderModule[] = [];
+        while (this.peek().kind !== "eof") {
+            const entryPoint = this.parseEntryPoint();
+            if (modules.some(module => module.entryPoint.stage === entryPoint.stage)) {
+                throw new Error(`Duplicate @${entryPoint.stage} WGSL entry point.`);
+            }
+            modules.push({ structs, ...(bindings.length ? { bindings } : {}), entryPoint });
+        }
+        return modules;
+    }
+
+    private parseDeclarations(): { structs: ShaderStruct[]; bindings: ShaderBinding[] } {
         const structs: ShaderStruct[] = [];
         const bindings: ShaderBinding[] = [];
         while (this.peek().text === "struct" ||
@@ -347,12 +367,17 @@ class WgslSubsetParser {
             if (this.peek().text === "struct") structs.push(this.parseStruct());
             else bindings.push(this.parseBinding());
         }
+        return { structs, bindings };
+    }
+
+    private parseEntryPoint(expectedStage?: ShaderStage): ShaderEntryPoint {
         const stageAttribute = this.parseAttribute();
         if (
             stageAttribute.kind !== "builtin" ||
-            stageAttribute.value !== this.expectedStage
+            !["vertex", "fragment"].includes(String(stageAttribute.value)) ||
+            (expectedStage !== undefined && stageAttribute.value !== expectedStage)
         ) {
-            throw new Error(`Expected @${this.expectedStage} WGSL entry point.`);
+            throw new Error(`Expected ${expectedStage ? `@${expectedStage}` : "a vertex or fragment"} WGSL entry point.`);
         }
         this.expect("fn");
         const name = this.expectIdentifier();
@@ -363,18 +388,13 @@ class WgslSubsetParser {
             : undefined;
         const returnType = this.parseNamedType();
         const statements = this.parseBlock();
-        this.expectEof();
         return {
-            structs,
-            ...(bindings.length ? { bindings } : {}),
-            entryPoint: {
-                stage: this.expectedStage,
+                stage: stageAttribute.value as ShaderStage,
                 name,
                 parameters,
                 returnType,
                 returnAttribute,
                 statements,
-            },
         };
     }
 
@@ -687,6 +707,11 @@ class WgslSubsetParser {
 /** Strict typed parsing for transformations: unsupported syntax never becomes raw text. */
 export function parseWgslModule(source: string, stage: ShaderStage): ShaderModule {
     return new WgslSubsetParser(tokenize(source), stage).parse();
+}
+
+/** Strict parsing of a module sharing bindings across vertex and fragment entry points. */
+export function parseWgslStages(source: string): ShaderModule[] {
+    return new WgslSubsetParser(tokenize(source), "vertex").stages();
 }
 
 export function parseWgslExpression(source: string): ShaderExpression {

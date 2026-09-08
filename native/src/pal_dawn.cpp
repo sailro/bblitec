@@ -6618,7 +6618,8 @@ DawnPipeline& pipeline_for(
         ? WGPUOptionalBool_False
         : WGPUOptionalBool_True;
     depth_stencil.depthCompare =
-        dawn_depth_compare(pass_depth_compare(shadow_pass));
+        dawn_depth_compare(shader_info && shader_info->depth_compare
+            ? *shader_info->depth_compare : pass_depth_compare(shadow_pass));
     // Depth-less render-task targets need attachment-compatible
     // pipelines; WebGPU validates what SDL_GPU tolerated.
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;

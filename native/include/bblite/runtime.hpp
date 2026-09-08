@@ -5779,6 +5779,7 @@ Engine create_engine(EngineOptions options);
 Surface create_surface(Engine& engine, UiElementHandle canvas);
 void dispose_surface(Surface& surface);
 Scene create_scene_context(Engine& engine);
+double scene_callback_delta(const Scene& scene, double engine_delta_ms);
 Scene create_scene_context(Surface& surface);
 FrameGraphContext create_frame_graph_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);

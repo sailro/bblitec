@@ -29,6 +29,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <type_traits>
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
@@ -40,6 +41,9 @@
 #include <BulletCollision/NarrowPhaseCollision/btGjkPairDetector.h>
 #include <BulletCollision/NarrowPhaseCollision/btPointCollector.h>
 #include <BulletCollision/NarrowPhaseCollision/btGjkEpaPenetrationDepthSolver.h>
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#include <bblite/pal_physics_debug.hpp>
+#endif
 
 namespace bbl::pal {
 namespace {
@@ -130,6 +134,9 @@ struct ShapeMaterial {
 
 struct PhysicsShapeState {
     const std::uint32_t identity = next_handle_identity<PhysicsShapeState, 0x7fffffffu>();
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+    PhysicsDebugShapeDescriptor debug_descriptor;
+#endif
     /**
      * The triangle soup a `btBvhTriangleMeshShape` indexes. Bullet's shape
      * keeps a raw pointer into it, so the soup is owned here and declared
@@ -300,6 +307,18 @@ struct PhysicsWorldState {
     // Includes pending additions. Sorted handle order preserves the solver's
     // insertion order when bodies migrate between floating-origin regions.
     std::vector<std::shared_ptr<PhysicsBodyState>> members;
+    struct Hinge {
+        std::shared_ptr<PhysicsBodyState> parent;
+        std::shared_ptr<PhysicsBodyState> child;
+        std::unique_ptr<btHingeConstraint> joint;
+        btTransform parent_anchor;
+        btTransform child_anchor;
+        btTransform parent_mass_frame;
+        btTransform child_mass_frame;
+        bool collisions = false;
+        bool attached = false;
+    };
+    std::vector<Hinge> hinges;
     std::size_t trigger_body_count = 0;
     std::uint64_t stabilized_total = 0;
     std::unordered_map<std::uint64_t, ContactSnapshot> previous_contacts;
@@ -339,6 +358,10 @@ struct PhysicsWorldState {
     btScalar max_angular_speed = default_max_angular_speed;
     ~PhysicsWorldState() { close(); }
     void close() {
+        for (auto& hinge : hinges) {
+            if (hinge.attached && world) world->removeConstraint(hinge.joint.get());
+        }
+        hinges.clear();
         for (const auto& member : members) {
             if (member->in_world && world) world->removeRigidBody(member->body.get());
             member->in_world = false;
@@ -362,6 +385,27 @@ struct PhysicsWorldState {
         active_bounces.clear();
     }
 };
+
+namespace {
+void sync_constraint_membership(PhysicsWorldState& owner) {
+    for (auto& hinge : owner.hinges) {
+        const auto changed = [](const btTransform& before, const btTransform& after) {
+            return before.getOrigin() != after.getOrigin() || before.getBasis() != after.getBasis();
+        };
+        if (changed(hinge.parent_mass_frame, hinge.parent->node_from_body) || changed(hinge.child_mass_frame, hinge.child->node_from_body)) {
+            hinge.parent_mass_frame = hinge.parent->node_from_body;
+            hinge.child_mass_frame = hinge.child->node_from_body;
+            hinge.joint->setFrames(hinge.parent_mass_frame.inverse() * hinge.parent_anchor, hinge.child_mass_frame.inverse() * hinge.child_anchor);
+        }
+        const bool attach = hinge.parent->world == owner.identity && hinge.child->world == owner.identity &&
+            hinge.parent->in_world && hinge.child->in_world;
+        if (attach == hinge.attached) continue;
+        if (attach) owner.world->addConstraint(hinge.joint.get(), !hinge.collisions);
+        else owner.world->removeConstraint(hinge.joint.get());
+        hinge.attached = attach;
+    }
+}
+}
 
 namespace {
 
@@ -1289,6 +1333,35 @@ void physics_world_set_gravity(
     world_at(world).world->setGravity(to_bt(gravity));
 }
 
+void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
+    const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions) {
+    auto& owner = world_at(world);
+    const auto& a = body_at(parent);
+    const auto& b = body_at(child);
+    if (parent.value == child.value || a.world != owner.identity || b.world != owner.identity) {
+        throw std::runtime_error("A physics constraint requires two different bodies in its world.");
+    }
+    const auto frame = [](const PhysicsConstraintAnchor& anchor) {
+        btVector3 axis = to_bt(anchor.axis);
+        btVector3 perpendicular = to_bt(anchor.perpendicular);
+        if (axis.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint axis must be nonzero.");
+        axis.normalize();
+        perpendicular -= axis * perpendicular.dot(axis);
+        if (perpendicular.length2() <= SIMD_EPSILON * SIMD_EPSILON) throw std::runtime_error("A constraint perpendicular must be independent of its axis.");
+        perpendicular.normalize();
+        const btVector3 second = axis.cross(perpendicular);
+        // Bullet's hinge axis is frame Z; the two other columns set its reference angle.
+        const btMatrix3x3 basis(perpendicular.x(), second.x(), axis.x(),
+            perpendicular.y(), second.y(), axis.y(), perpendicular.z(), second.z(), axis.z());
+        return btTransform(basis, to_bt(anchor.pivot));
+    };
+    const btTransform anchor_a = frame(parent_anchor);
+    const btTransform anchor_b = frame(child_anchor);
+    auto hinge = std::make_unique<btHingeConstraint>(*a.body, *b.body, a.node_from_body.inverse() * anchor_a, b.node_from_body.inverse() * anchor_b);
+    owner.hinges.push_back({parent.ownership, child.ownership, std::move(hinge), anchor_a, anchor_b, a.node_from_body, b.node_from_body, collisions, false});
+    sync_constraint_membership(owner);
+}
+
 PhysicsSpeedLimit physics_world_get_speed_limit(PhysicsWorldHandle world) {
     const PhysicsWorldState& entry = world_at(world);
     return PhysicsSpeedLimit{
@@ -1341,6 +1414,7 @@ void physics_world_remove_body(PhysicsWorldHandle world, PhysicsBodyHandle body)
     entry.needs_readd = false;
     entry.world = 0;
     entry.owner_world.reset();
+    sync_constraint_membership(owner);
 }
 
 void physics_world_release(PhysicsWorldHandle world) {
@@ -1370,6 +1444,9 @@ void validate_container_children(const PhysicsShapeState& root, const PhysicsSha
 }
 
 void physics_world_step(PhysicsWorldHandle world, double seconds) {
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+    require_runtime_execution("a physics step");
+#endif
     PhysicsWorldState& entry = world_at(world);
     static const bool cpu_profile = [] {
         const char* value = std::getenv("BBLITE_CPU_PROFILE");
@@ -1392,6 +1469,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         }
     }
     flush_pending_readds(entry);
+    sync_constraint_membership(entry);
     // An impulse is clamped at its write below. This pass also covers any
     // velocity written by another reached body operation before this step.
     clamp_world_velocities(entry);
@@ -1763,13 +1841,35 @@ PhysicsShapeQueryResult physics_world_shape_cast(
 
 // --- Shapes ----------------------------------------------------------
 
+namespace {
+template <typename... Inputs>
+PhysicsShapeHandle record_debug_inputs(PhysicsShapeHandle handle, const char* type, const Inputs&... inputs) {
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+    auto& descriptor = handle.ownership->debug_descriptor;
+    descriptor.type = type;
+    const auto append = [&](const auto& self, const auto& value) -> void {
+        if constexpr (std::is_arithmetic_v<std::decay_t<decltype(value)>>) {
+            const float lane = static_cast<float>(value);
+            if (!std::isfinite(lane)) throw std::runtime_error("Physics debug constructor inputs must be finite.");
+            descriptor.parameters.push_back(lane);
+        } else { for (const auto& item : value) self(self, item); }
+    };
+    (append(append, inputs), ...);
+#else
+    static_cast<void>(type);
+    (static_cast<void>(inputs), ...);
+#endif
+    return handle;
+}
+} // namespace
+
 PhysicsShapeHandle physics_shape_create_sphere(
     std::array<double, 3> center,
     double radius) {
-    return push_shape(
+    return record_debug_inputs(push_shape(
         std::make_unique<btSphereShape>(
             static_cast<btScalar>(radius)),
-        translated_frame(to_bt(center)));
+        translated_frame(to_bt(center))), "SPHERE", center, radius);
 }
 
 PhysicsShapeHandle physics_shape_create_box(
@@ -1805,9 +1905,9 @@ PhysicsShapeHandle physics_shape_create_box(
         offset[axis] -= grown - half[axis];
         half[axis] = grown;
     }
-    return push_shape(
+    return record_debug_inputs(push_shape(
         std::make_unique<btBoxShape>(half),
-        translated_frame(offset));
+        translated_frame(offset)), "BOX", center, rotation, extents);
 }
 
 PhysicsShapeHandle physics_shape_create_capsule(
@@ -1815,11 +1915,11 @@ PhysicsShapeHandle physics_shape_create_capsule(
     std::array<double, 3> point_b,
     double radius) {
     const Segment segment = segment_from(point_a, point_b);
-    return push_shape(
+    return record_debug_inputs(push_shape(
         std::make_unique<btCapsuleShape>(
             static_cast<btScalar>(radius),
             segment.half_height * btScalar(2)),
-        translated_frame(segment.center));
+        translated_frame(segment.center)), "CAPSULE", point_a, point_b, radius);
 }
 
 PhysicsShapeHandle physics_shape_create_cylinder(
@@ -1827,12 +1927,12 @@ PhysicsShapeHandle physics_shape_create_cylinder(
     std::array<double, 3> point_b,
     double radius) {
     const Segment segment = segment_from(point_a, point_b);
-    return push_shape(
+    return record_debug_inputs(push_shape(
         std::make_unique<btCylinderShape>(btVector3(
             static_cast<btScalar>(radius),
             segment.half_height,
             static_cast<btScalar>(radius))),
-        translated_frame(segment.center));
+        translated_frame(segment.center)), "CYLINDER", point_a, point_b, radius);
 }
 
 PhysicsShapeHandle physics_shape_create_convex_hull(
@@ -1892,8 +1992,8 @@ PhysicsShapeHandle physics_shape_create_convex_hull(
         // its convex radius. Bullet's raw hull can collide with the same
         // points, but an exact volume frame is undefined; retain the origin
         // frame and let its ordinary AABB inertia handle this rare arm.
-        return push_shape(
-            std::move(source_hull), btTransform::getIdentity());
+        return record_debug_inputs(push_shape(
+            std::move(source_hull), btTransform::getIdentity()), "CONVEX_HULL", positions);
     }
 
     auto hull = std::make_unique<btConvexHullShape>();
@@ -1904,7 +2004,7 @@ PhysicsShapeHandle physics_shape_create_convex_hull(
     hull->recalcLocalAabb();
     const btVector3 center = principal.getOrigin();
     const btQuaternion orientation = principal.getRotation();
-    return push_shape(
+    return record_debug_inputs(push_shape(
         std::move(hull),
         principal,
         PhysicsMassProperties{
@@ -1913,7 +2013,7 @@ PhysicsShapeHandle physics_shape_create_convex_hull(
             {inertia.x(), inertia.y(), inertia.z()},
             {orientation.x(), orientation.y(), orientation.z(),
              orientation.w()}},
-        true);
+        true), "CONVEX_HULL", positions);
 }
 
 PhysicsShapeHandle physics_shape_create_mesh(
@@ -1945,16 +2045,21 @@ PhysicsShapeHandle physics_shape_create_mesh(
     // contact against it walks that tree, and the shape owns it.
     auto shape = std::make_unique<btBvhTriangleMeshShape>(
         triangles.get(), true);
-    return push_shape(
+    auto handle = record_debug_inputs(push_shape(
         std::move(shape),
         btTransform::getIdentity(),
         PhysicsMassProperties{},
         false,
-        std::move(triangles));
+        std::move(triangles)), "MESH", positions);
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+    handle.ownership->debug_descriptor.indices = indices;
+#endif
+    return handle;
 }
 
 PhysicsShapeHandle physics_shape_create_container() {
-    return push_shape(std::make_unique<btCompoundShape>(), btTransform::getIdentity());
+    return record_debug_inputs(push_shape(std::make_unique<btCompoundShape>(),
+        btTransform::getIdentity()), "CONTAINER");
 }
 
 namespace {
@@ -2033,7 +2138,22 @@ void physics_shape_add_child(
     ++member.container_parents;
     static_cast<btCompoundShape*>(parent.shape.get())->addChildShape(
         placement, instance);
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+    record_debug_inputs(container, "CONTAINER", transform.position, transform.rotation, scale);
+    parent.debug_descriptor.children.push_back(member.debug_descriptor);
+#endif
 }
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+PhysicsDebugShapeDescriptor physics_shape_debug_descriptor(PhysicsShapeHandle handle) {
+    return shape_at(handle).debug_descriptor;
+}
+
+PhysicsDebugGeometry physics_body_debug_geometry(PhysicsBodyHandle handle) {
+    const auto& body = body_at(handle);
+    if (!body.shape) return {};
+    return materialized_physics_debug_geometry(body.shape->debug_descriptor);
+}
+#endif
 
 void physics_shape_set_material(
     PhysicsShapeHandle shape,

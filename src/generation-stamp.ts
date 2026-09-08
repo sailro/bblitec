@@ -232,12 +232,12 @@ function recordedGeneratedInputs(
  * executable's identity follows the native sources. Returns whether either
  * file moved.
  */
-export function refreshBuildStamp(outputDirectory: string): boolean {
+export function refreshBuildStamp(outputDirectory: string, options: { generatedInputsChanged?: boolean } = {}): boolean {
     const output = resolve(outputDirectory);
     const { stamp, inputs } = computeBuildStamp(
         output,
         process.cwd(),
-        recordedGeneratedInputs(output),
+        options.generatedInputsChanged ? undefined : recordedGeneratedInputs(output),
     );
     const tree = new GeneratedTree(output);
     const wroteHeader = tree.write(

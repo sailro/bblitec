@@ -34,6 +34,7 @@ import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.js";
 import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
+import { physicsDebugCatalogPath, renderPhysicsDebugCatalog } from "./physics-debug-catalog.js";
 import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { PickingLowerer } from "./lowering/picking-lowerer.js";
@@ -2545,11 +2546,20 @@ ${composed.wgsl}`,
             this.writeSource(
                 "upstream/src/physics.cpp",
                 new PhysicsLowerer(context).lowerPhysics(
-                    features.includes("physics:queries"), features.includes("physics:container"),
+                    features.includes("physics:queries"),
+                    features.includes("physics:container"),
+                    features.includes("physics:viewer"),
+                    features.includes("physics:constraints"),
                 ),
                 generated,
                 "upstream/include/bblite/upstream/physics.hpp",
             );
+            if (features.includes("physics:viewer")) {
+                this.writeSource(physicsDebugCatalogPath, {
+                    modulePath: "src/physics/havok.ts", symbolName: "getPhysicsBodyDebugGeometry",
+                    header: "", source: renderPhysicsDebugCatalog([]),
+                }, generated);
+            }
         }
         if (
             features.includes("mesh:tube") ||

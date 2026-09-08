@@ -733,6 +733,8 @@ export interface CompiledShaderProgram {
   needAlphaTesting: boolean;
   backFaceCulling: boolean;
   depthWrite: boolean;
+  /** Explicit material compare; absent uses the pinned pass convention. */
+  depthCompare?: string;
   /**
    * The pin's own `_topology`, absent where it resolves
    * `material._topology ?? "triangle-list"`. A line material is the one
@@ -1381,6 +1383,7 @@ export type ValueKind =
   | "clustered-light-container"
   | "clustered-light"
   | "physics-world"
+  | "physics-viewer"
   | "physics-aggregate"
   | "physics-body"
   | "physics-shape"
@@ -2520,6 +2523,8 @@ export type Feature =
   | "physics:aggregate"
   | "physics:queries"
   | "physics:container"
+  | "physics:viewer"
+  | "physics:constraints"
   | "physics:trigger"
   | "physics:floating-origin"
   | "scene:remove"
