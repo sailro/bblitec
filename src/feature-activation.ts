@@ -157,6 +157,13 @@ interface RuntimeFeatureEntry {
 }
 
 const CMAKE: readonly FeatureActivationConsumer[] = ["features.cmake"];
+/**
+ * A feature listed in `features.cmake` that no CMake rule, translation
+ * unit, generated source, define or compose/emit option tests: the code it
+ * reaches is emitted by the compiler at the reach site, and the name's only
+ * reader past the manifest is this inventory.
+ */
+const INVENTORY: readonly FeatureActivationConsumer[] = ["inventory"];
 
 /**
  * Every runtime feature the compiler can reach, in the order
@@ -394,7 +401,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/loader-gltf/material-variants.ts#selectVariant + " +
             "src/loader-gltf/gltf-feature-variants.ts",
-        consumers: ["features.cmake", "variant table", "loader flag"],
+        // The selected variant reaches the loader flag and the variant
+        // table through the asset record's `selectedVariant`, not through
+        // this name.
+        consumers: INVENTORY,
     },
     "loader:gltf-cameras": {
         provenance:
@@ -489,7 +499,9 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/material/pbr/set-gamma-albedo.ts (the ext contributes one " +
             "feature bit and the base template's sRGB decode block; no " +
             "fragment slot, UBO field or binding of its own)",
-        consumers: ["features.cmake", "variant table"],
+        // The arm rides the composed variant through the material's own
+        // stamp, not through this name.
+        consumers: INVENTORY,
     },
     "material:iridescence": {
         provenance: "src/material/pbr/set-iridescence.ts",
@@ -518,8 +530,9 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "material:anisotropy": {
         provenance: "src/material/pbr/set-anisotropy.ts",
         // No capability define: the layer declares no binding and no texture
-        // slot, so its whole arm rides the composed variant.
-        consumers: ["features.cmake", "variant table"],
+        // slot, so its whole arm rides the composed variant through the
+        // material's own stamp.
+        consumers: INVENTORY,
     },
     "material:metallic-reflectance": {
         provenance: "src/material/pbr/set-metallic-reflectance.ts",
@@ -537,7 +550,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "material:emissive": {
         provenance: "src/material/pbr/set-emissive.ts",
-        consumers: ["features.cmake", "variant table"],
+        consumers: INVENTORY,
     },
     "material:no-color-view": {
         provenance: "src/material/pbr/no-color-view.ts",
@@ -555,7 +568,9 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/material/shader/storage-buffer.ts + " +
             "src/material/shader/shader-material.ts storage bindings",
-        consumers: ["features.cmake", "renderer plan", "deployed shaders"],
+        // The storage bindings reach the renderer plan and the deployed
+        // program through the compiled program record, not this name.
+        consumers: INVENTORY,
     },
     "material:node": {
         provenance: "src/material/node/node-material.ts",
@@ -768,11 +783,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "gizmo:camera": {
         provenance: "src/gizmo/camera-gizmo.ts",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "gizmo:light": {
         provenance: "src/gizmo/light-gizmo.ts",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     // The four editing widgets, one row per pinned module. Each builds
     // its own geometry over the same layer, follow and material builder,
@@ -849,7 +864,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "shadow:task": {
         provenance: "src/frame-graph/shadow-task.ts",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "sprite:2d": {
         provenance:
@@ -1081,7 +1096,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +
             "onPhysicsTrigger (upstream keeps the trigger path in its own " +
             "module so a scene that imports neither pays nothing for it)",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "physics:floating-origin": {
         provenance:
