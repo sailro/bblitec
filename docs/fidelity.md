@@ -191,6 +191,12 @@ native matching compares every descriptor field. No body poses, trajectories, fr
 The generated Babylon layer targets Bullet; the browser uses Havok.
 
 HINGE anchors and default perpendicular vectors come from the pin; Bullet supplies the hinge solver.
+Other Cartesian/angular constraints use Bullet's six-axis solver with source-selected free/limited/locked rows.
+The radial row preserves those Cartesian frames. It evaluates predicted substep anchors and applies the
+measured correction `0.4 * initialSignedViolation - predictedSignedViolation`, with short-step stiffness
+scaling. Forces, torque, both lever arms and inverse inertia participate; no poses or trajectories are baked.
+Scene46's frame-10 coordinate/quaternion errors are below 0.005/0.006. Later trajectories differ by up to
+1.261 m at frame 240; pivot attachment, Cartesian locks and distance intervals remain checked separately.
 Degenerate anchor axes and constraints between bodies in different worlds refuse.
 Identical trajectories are not guaranteed. Solver substitutions include substeps,
 speculative contacts, rebound reconstruction, damping/speed conversion and rest

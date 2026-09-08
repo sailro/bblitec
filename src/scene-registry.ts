@@ -2288,6 +2288,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene46",
+        name: "Scene 46 - Physics Constraints",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene46.ts",
+        title: "Babylon Lite Native - Physics Constraints",
+        parity: {
+            referenceSearch: "?captureFrame=10",
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "20" },
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.1,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene47",
         name: "Scene 47 - Physics Heightfield",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene47.ts",

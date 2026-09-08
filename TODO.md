@@ -7,11 +7,10 @@ its scene.
 
 ## Unregistered numbered scenes
 
-The corpus/registry comparison leaves **3** numbered scenes unregistered.
+The corpus/registry comparison leaves **2** numbered scenes unregistered.
 
 | Scene | Remaining integration |
 | --- | --- |
-| 46 | Remaining constraint families and measured radial-distance solver adaptation |
 | 104, 105 | Character-controller collision parity and interaction checks |
 
 ## Compiler and lowering
@@ -87,7 +86,7 @@ The corpus/registry comparison leaves **3** numbered scenes unregistered.
 | Lines/instances | Runtime point lists, lines/dashes/color changes, fast dynamic draw count and GPU culling/LOD |
 | Particles | Wider evaluators/providers/bridges/snippets, texture flip, lifecycle and mixed-set random/buffer ownership |
 | Navigation | Tiled builds without obstacles, broader queries/random state and disposal |
-| Physics | Constraints, characters/viewer, explicit or rectangular heightfields, broader query shapes/options, inertia orientation/conversion and remaining lifecycle/options |
+| Physics | Constraint springs/motors and retained handles, characters/viewer, explicit or rectangular heightfields, broader query shapes/options, inertia orientation/conversion and remaining lifecycle/options |
 | Audio | Browser/native offline PCM gate, master-volume ramps and broader sound/bus/spatial APIs |
 | UI | General forms/text input, additional drivers and multi-surface source shapes |
 

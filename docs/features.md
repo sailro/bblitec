@@ -316,7 +316,9 @@ update in parent coordinates. Utility layers rematch GPU resources when lazy con
 
 ## Physics
 
-HINGE constraint factories accept body-local pivots/axes and collision opt-in with discarded results.
+Constraint factories support BALL_AND_SOCKET, DISTANCE, HINGE, PRISMATIC, LOCK, SLIDER and SIX_DOF
+with discarded results. Body-local anchors, collision opt-in and inline Cartesian/angular/radial limits
+are supported. Both limit bounds are required; springs, motors and retained constraint handles refuse.
 Joints retain their bodies, follow mass-frame changes and detach while either body is outside their world.
 
 Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/static-mesh shapes, forces,
