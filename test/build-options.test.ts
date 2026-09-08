@@ -251,6 +251,16 @@ test("shipping packages require the trimmed static build", () => {
     assert.match(script, /if \(Test-Path \$assetSource\)/);
     assert.doesNotMatch(script, /numbered scene id/);
     assert.doesNotMatch(script, /run-\$Scene-dawn/);
+    // The staged package runs for a few frames and must exit cleanly
+    // before the archive is written.
+    const smoke = script.slice(
+        script.indexOf("$smokeFrames = 5"),
+        script.indexOf("Compress-Archive"),
+    );
+    assert.match(smoke, /Environment\["BBLITE_MAX_FRAMES"\] = "\$smokeFrames"/);
+    assert.match(smoke, /WorkingDirectory = \$packageDirectory/);
+    assert.match(smoke, /WaitForExit\(120000\)/);
+    assert.match(smoke, /\$smoke\.ExitCode -ne 0/);
 });
 
 test("the trimmed SDL build has a separate audio-capable variant", () => {

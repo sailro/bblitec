@@ -502,5 +502,26 @@ if ($missing.Count -gt 0) {
     throw "Package would not start: missing runtime libraries the toolchain provides: $detail"
 }
 
+# The staged package must start: run it from the package directory for a
+# few frames -- BBLITE_MAX_FRAMES is the run limit every backend's loop
+# honours -- and require a clean exit. A shader the payload lacks, a
+# device the trimmed dependencies cannot bring up, or a library the
+# loader cannot resolve all fail here, before the archive exists.
+$smokeFrames = 5
+$smokeStart = [System.Diagnostics.ProcessStartInfo]::new()
+$smokeStart.FileName = Join-Path $packageDirectory $exeName
+$smokeStart.WorkingDirectory = $packageDirectory
+$smokeStart.UseShellExecute = $false
+$smokeStart.Environment["BBLITE_MAX_FRAMES"] = "$smokeFrames"
+$smoke = [System.Diagnostics.Process]::Start($smokeStart)
+if (-not $smoke.WaitForExit(120000)) {
+    $smoke.Kill()
+    throw "Package smoke run did not exit within 120 s: $exeName did not stop after $smokeFrames frames."
+}
+if ($smoke.ExitCode -ne 0) {
+    throw "Package smoke run failed: $exeName exited with $($smoke.ExitCode) after at most $smokeFrames frames."
+}
+Write-Output "Smoke run: $exeName rendered $smokeFrames frames and exited 0."
+
 Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
 Write-Output "Created $archivePath ($backend payload)"
