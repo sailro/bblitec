@@ -8590,7 +8590,7 @@ test("resolves flex text wrappers through specificity, inline, and hover cascade
     assert.match(wrapper, /normalized_css_keyword\(resolved_display\)/);
     assert.match(
         projection,
-        /resolved_style_attribute\(handle, record, &resolved_display\)[\s\S]{0,1400}text_needs_flex_wrapper\(\s*resolved_display\)/,
+        /resolved_style_attribute\(handle, record, &resolved_display\)(?:(?!\n    void ).)*text_needs_flex_wrapper\(\s*resolved_display\)/s,
     );
 });
 

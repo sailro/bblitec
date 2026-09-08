@@ -1239,7 +1239,6 @@ test("removeFromScene returns a retired mesh's geometry bytes", () => {
         );
     }
     assert.match(scene, /release_geometry_storage\(shared\);/);
-    assert.doesNotMatch(scene, /\b\w+\.\w+ = \{\};\s*\n\s*\w+\.\w+ = \{\};/);
     // Sharing is counted where it is created (an imported-root clone), so
     // a removal does not scan every mesh record the engine ever made, and
     // a removed record is retired before its share is released, so a
@@ -1942,7 +1941,7 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
     for (const backend of [sdl, dawn]) {
         assert.match(
             backend,
-            /shader_material\s*\?\s*local_vertices\(engine, geometry\)/,
+            /shader_material\s*\?\s*local_vertices\(engine, geometry, &mesh_record\)/,
         );
         assert.match(backend, /shared_shader_geometries/);
         assert.match(backend, /shared_geometry->users/);

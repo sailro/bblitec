@@ -2296,6 +2296,8 @@ struct ProjectedUiElement {
     std::unordered_map<std::string, std::string> style_properties;
     std::string resolved_style;
     std::string grid_children_style;
+    std::string fractional_grid_tracks;
+    std::vector<UiElementHandle> fractional_grid_children;
     std::string intrinsic_min_width;
     std::string crosshair_color;
     std::string inset_outline;
@@ -3750,6 +3752,8 @@ struct UiRmlRuntime {
             take_intrinsic_min_width(projected.resolved_style);
         projected.grid_children_style =
             take_grid_children_style(projected.resolved_style);
+        projected.fractional_grid_tracks =
+            take_css_declaration(projected.resolved_style, "--bbl-fr-grid-tracks");
         projected.crosshair_color =
             take_crosshair_color(projected.resolved_style);
         projected.inset_outline =
@@ -3804,10 +3808,28 @@ struct UiRmlRuntime {
             raw->AppendChild(std::move(children_container));
             children_parent = projected.children_container;
         }
+        std::istringstream fractional_tracks(projected.fractional_grid_tracks);
+        if (!projected.fractional_grid_tracks.empty()) {
+            projected.fractional_grid_children = record.children;
+        }
         for (const UiElementHandle child : record.children) {
             if (ui_element(engine, child).tag == "style") continue;
-            append_element(*children_parent, child);
+            if (projected.fractional_grid_tracks.empty()) {
+                append_element(*children_parent, child);
+            } else {
+                std::string track;
+                if (!(fractional_tracks >> track)) throw std::runtime_error("Fractional UI grid has more children than tracks.");
+                auto container = document->CreateElement("bbl-grid-track");
+                const auto flex = track.ends_with("fr")
+                    ? track.substr(0, track.size() - 2) + " 0 0px"
+                    : "0 0 " + track;
+                container->SetAttribute("style", "display:flex;flex-direction:column;min-width:0;flex:" + flex + ";");
+                append_element(*container, child);
+                children_parent->AppendChild(std::move(container));
+            }
         }
+        std::string unused_track;
+        if (fractional_tracks >> unused_track) throw std::runtime_error("Fractional UI grid has fewer children than tracks.");
         sync_inset_outline(
             projected,
             *raw,
@@ -3926,6 +3948,15 @@ struct UiRmlRuntime {
             take_intrinsic_min_width(resolved_style);
         const std::string grid_children_style =
             take_grid_children_style(resolved_style);
+        const auto fractional_grid_tracks = take_css_declaration(resolved_style, "--bbl-fr-grid-tracks");
+        if (fractional_grid_tracks != projected.fractional_grid_tracks) {
+            throw std::runtime_error("Runtime fractional UI grid track replacement is not represented.");
+        }
+        if (!fractional_grid_tracks.empty() &&
+            (record.children != projected.fractional_grid_children ||
+             !record.text.empty() || !record.inner_rml.empty())) {
+            throw std::runtime_error("Runtime fractional UI grid child replacement is not represented.");
+        }
         const std::string crosshair_color =
             take_crosshair_color(resolved_style);
         const bool crosshair_changed =
@@ -5010,7 +5041,7 @@ const UiRenderFrame& record_ui_rml_frame(
     runtime.context->Render();
     if (!runtime.style_trace_written && std::getenv("BBLITE_UI_STYLE_TRACE")) {
         Rml::ElementList elements;
-        runtime.document->QuerySelectorAll(elements, "button,h1,p,a,div");
+        runtime.document->QuerySelectorAll(elements, "button,h1,p,a,div,label,span,input,textarea,bbl-grid-track");
         if (!elements.empty()) {
             runtime.style_trace_written = true;
             for (auto* element : elements) {

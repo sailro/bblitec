@@ -26,6 +26,7 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer |
 | Focus | Control/canvas focus, focus listeners, activeElement identity, button navigation |
 | Text forms | Retained input/textarea value and input callbacks; textarea editing and vertical resize |
+| Range forms | Retained value/input callbacks and native range widgets |
 | Files | Object-URL download anchors and static single-file inputs |
 
 UI receives pointer input before cameras. Consumed events do not move cameras;
@@ -114,6 +115,9 @@ its loading scripts are omitted. TypeScript still owns live button/status and
 resize messages.
 
 ## Limits
+
+Single-row inline grids support positive px/fr tracks with one element child per track.
+Runtime track replacement and implicit extra rows refuse. Form dimensions support content-box and border-box.
 
 - No general selectors/traversal/observers, full browser form semantics, JavaScript hover callbacks,
   multiple pointer identities or arbitrary events.

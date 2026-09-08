@@ -1269,6 +1269,9 @@ class Compiler
         const emitted: string[] = [];
         const ids = new Set<string>();
         for (const rule of nativeHostUiStyleRules(hostUi)) {
+            if (Compiler.fractionalUiGridTracks(rule.style)) {
+                this.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
+            }
             const identifier = /^[A-Za-z_][A-Za-z0-9_-]*$/;
             if (!identifier.test(rule.primary)) {
                 this.failAtFile(
@@ -1329,6 +1332,10 @@ class Compiler
                 this.failAtFile(
                     `Native host UI element tag '${element.tag}' is reserved for the retained projection.`,
                 );
+            }
+            const fractionalTracks = Compiler.fractionalUiGridTracks(element.attributes?.style ?? "");
+            if (fractionalTracks && (element.text || element.children?.length !== fractionalTracks.length)) {
+                this.failAtFile("A fractional host grid requires exactly one element child per track.");
             }
             const handle = this.allocateTemporaryCppName("host_ui_element");
             emitted.push(
@@ -5348,6 +5355,7 @@ class Compiler
         "border",
         "border-color",
         "border-radius",
+        "box-sizing",
         "bottom",
         "color",
         "cursor",
@@ -5502,6 +5510,7 @@ class Compiler
         );
     private static readonly UI_IMPLEMENTATION_TAGS = new Set([
         "bbl-grid-children",
+        "bbl-grid-track",
     ]);
 
     /** The gradient-text projection trigger both the audit and the
@@ -5542,6 +5551,15 @@ class Compiler
             Compiler.DISPLAY_GRID_PATTERN.test(declarations) &&
             Compiler.GRID_TEMPLATE_COLUMNS_PATTERN.test(declarations)
         );
+    }
+
+    private static fractionalUiGridTracks(declarations: string): string[] | undefined {
+        if (Compiler.uiLastStyleProperty(declarations, "display") !== "grid") return undefined;
+        const value = Compiler.uiLastStyleProperty(declarations, "grid-template-columns");
+        const tracks = value?.trim().split(/\s+/);
+        return tracks && tracks.length > 1 && tracks.some(track => track.endsWith("fr")) &&
+            tracks.every(track => /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|fr)$/.test(track) && parseFloat(track) > 0)
+            ? tracks : undefined;
     }
 
     private static normalizeUiGridJustification(
@@ -5793,6 +5811,7 @@ class Compiler
         const hasGradientBackground =
             Compiler.GRADIENT_TEXT_BACKGROUND_PATTERN.test(value);
         const projectsGrid = Compiler.projectsUiGrid(value);
+        const fractionalTracks = Compiler.fractionalUiGridTracks(value);
         const gridProjection = Compiler.uiGridProjection(value);
         const finalDisplay = Compiler.uiLastStyleProperty(value, "display")
             ?.trim()
@@ -5870,6 +5889,9 @@ class Compiler
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (property === "box-sizing" && !/^(?:content-box|border-box)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only content-box and border-box are represented");
+            }
             if (property === "resize" && literalValue !== "vertical" && literalValue !== "none") this.uiStyleRefusal(site, property, "only vertical or none form-control resizing is represented");
             if (property === "mix-blend-mode") {
                 if (literalValue !== "difference") {
@@ -5961,6 +5983,7 @@ class Compiler
                 property === "grid-template-columns" ||
                 property === "grid-template-rows"
             ) {
+                if (property === "grid-template-columns" && fractionalTracks) return;
                 if (
                     !projectsGrid ||
                     (property === "grid-template-rows" &&
@@ -5984,7 +6007,7 @@ class Compiler
             if (
                 property === "display" &&
                 /\bgrid\b/.test(literalValue) &&
-                !projectsGrid
+                !projectsGrid && !fractionalTracks
             ) {
                 this.uiStyleRefusal(
                     site,
@@ -6460,7 +6483,13 @@ class Compiler
         // full-width outer box with a centred wrapping-flex inner box. Keeping
         // those boxes separate matters: in the browser the Tetris preview's
         // background spans the panel while only its 4x4 cells are centred.
-        if (Compiler.projectsUiGrid(lowered)) {
+        const fractionalTracks = Compiler.fractionalUiGridTracks(lowered);
+        if (fractionalTracks) {
+            lowered = lowered
+                .replace(/\bdisplay\s*:\s*grid\b/gi, "display:flex")
+                .replace(/\bgrid-template-columns\s*:[^;]+;?/gi, "") +
+                `;--bbl-fr-grid-tracks:${fractionalTracks.join(" ")};`;
+        } else if (Compiler.projectsUiGrid(lowered)) {
             this.uiSawGridDeclaration = true;
             const grid = Compiler.uiGridProjection(lowered)!;
             const shrinkToTracks =
@@ -7834,6 +7863,19 @@ class Compiler
             ancestorsById: new Map(),
         };
         try {
+            for (const [id, element] of this.uiStaticElements) {
+                const tracks = this.uiStaticElementStylePropertyValues(id, "--bbl-fr-grid-tracks");
+                if ([...tracks].some(value => value !== undefined) && (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown)) {
+                    this.failAtFile("A fractional UI grid requires one stable track list in a statically known style cascade.");
+                }
+                for (const value of tracks) {
+                    if (value === undefined) continue;
+                    const count = value.trim().split(/\s+/).length;
+                    if (!element.childShapeKnown || !element.childCardinalityKnown || element.children.size !== count || element.markupChildren.length) {
+                        this.failAtFile("A fractional UI grid requires one statically known element child per track.");
+                    }
+                }
+            }
             const anyGrid =
                 this.uiSawGridDeclaration ||
                 this.uiStyleRules.some((rule) => rule.grid !== undefined) ||
