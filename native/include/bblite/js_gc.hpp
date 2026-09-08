@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <cstddef>
 #include <deque>
 #include <list>
@@ -11,10 +10,12 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <typeinfo>
 #include <utility>
 #include <unordered_map>
 #include <unordered_set>
@@ -213,7 +214,17 @@ inline std::size_t collect_cycles() {
         static_cast<std::vector<gc::Node*>*>(state)->push_back(node);
     }, &pending);
     for (auto* node : nodes) {
-        assert(node->owners() >= node->incoming + 1);
+        // Every counted edge is one owner, and the pin taken above is
+        // another, so a node reporting fewer owners than edges has a tracer
+        // that enumerated one edge twice. Clearing it would free a live
+        // value, so the collector refuses instead.
+        if (node->owners() < node->incoming + 1) {
+            throw std::logic_error(
+                std::string("A gc_trace over-reports the edges into a ") +
+                typeid(*node).name() + ": " + std::to_string(node->incoming) +
+                " incoming edge(s) against " + std::to_string(node->owners()) +
+                " owner(s).");
+        }
         if (node->owners() > node->incoming + 1) mark.edge(node);
     }
     while (!pending.empty()) {

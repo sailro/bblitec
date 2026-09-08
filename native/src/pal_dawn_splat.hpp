@@ -383,7 +383,7 @@ inline DawnSplatPass create_dawn_splat_pass(
     // payloads are 17.9 MB for scene 124's cloud, larger than the rows,
     // and this is the only reader -- pass creation runs once. SWAPPED with
     // an empty vector rather than assigned `{}`, because assignment keeps
-    // the capacity and frees nothing (measured on PR #197's reclaim).
+    // the capacity and frees nothing.
     {
         std::vector<std::vector<std::uint8_t>> released;
         released.swap(record.sh_textures);

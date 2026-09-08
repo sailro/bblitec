@@ -488,6 +488,7 @@ function loadingCpp(
                                 bake_world(skin.joints[joint]),
                                 skin.inverse_bind_matrices[joint])));
                 }
+                ++mesh_record.bone_matrices_version;
             }
         };`;
 }

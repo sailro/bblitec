@@ -248,7 +248,7 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
         // Sidecars are generated build artifacts, but a stale or malformed one
         // must still fail in bounded space. In particular, `stoul("-4")`
         // produces a huge unsigned value on Windows; resizing to that index
-        // used to consume the machine before startup could report the error.
+        // would consume the machine before startup could report the error.
         constexpr std::size_t max_slot_index = 4096;
         if (reg.size() < 2) {
             throw std::runtime_error(

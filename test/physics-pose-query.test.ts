@@ -14,6 +14,7 @@ test("teleport retains zero kinematic velocity and capsule box queries preserve 
     mkdirSync(directory, { recursive: true });
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2",
+        "/DBBLITE_HAS_PHYSICS_CHARACTER=1",
         `/Fo:${directory}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
         `/external:I${nativeFixtureVcpkgRoot}/include/bullet`, "/external:W0", "test/fixtures/physics-pose-query-check.cpp",
         "/link", `/LIBPATH:${nativeFixtureVcpkgRoot}/lib`, "BulletDynamics.lib", "BulletCollision.lib", "LinearMath.lib"]);

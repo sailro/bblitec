@@ -108,6 +108,30 @@ export const havokTriggerModule = "src/physics/havok-trigger.ts";
 export const havokFloatingOriginModule =
   "src/physics/havok-floating-origin.ts";
 
+/**
+ * The physics sub-features a tree reached, each named after the runtime
+ * feature it mirrors. An arm is emitted only when its feature is present,
+ * so a tree that never reaches a family neither declares nor calls it --
+ * the same rule the PAL applies through its `BBLITE_HAS_PHYSICS_*` gates,
+ * which the build writes from the same feature list.
+ */
+export interface PhysicsLoweringOptions {
+  /** `physics:queries`: the single-hit shape proximity and cast queries. */
+  readonly queries?: boolean;
+  /** `physics:container`: compound shapes. */
+  readonly container?: boolean;
+  /** `physics:viewer`: the debug geometry catalogue. */
+  readonly viewer?: boolean;
+  /** `physics:constraints`: hinges and six-degree constraints. */
+  readonly constraints?: boolean;
+  /** `physics:heightfield`: the ground heightfield shape. */
+  readonly heightfield?: boolean;
+  /** `physics:trigger`: `havok-trigger.ts`, the shape flag and the drain. */
+  readonly trigger?: boolean;
+  /** `physics:floating-origin`: `havok-floating-origin.ts`, the regions. */
+  readonly floatingOrigin?: boolean;
+}
+
 /** The pinned builder every aggregate's shape parameters come from. */
 const buildShapeParams = "_buildShapeParams";
 
@@ -1792,8 +1816,10 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     );
   }
 
-  public lowerPhysics(includeQueries = false, containerShapes = false, includeViewer = false, includeConstraints = false, includeHeightfield = false): LoweredSource {
+  public lowerPhysics(options: PhysicsLoweringOptions = {}): LoweredSource {
     this.assertPinnedContracts();
+    const trigger = options.trigger === true;
+    const floatingOrigin = options.floatingOrigin === true;
     const massSetter = this.context.functionDeclaration(havokModule, "setPhysicsBodyMassProperties").declaration;
     this.context.assertStatementShapes(massSetter, massSetter.body!.statements, `
       const massProps = buildMassProperties(world, body);
@@ -1813,13 +1839,13 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       hknp.HP_World_RemoveBody(hkWorld, body._hkBody);
       hknp.HP_Body_Release(body._hkBody);
     `, "physics body removal and release order");
-    const queries = includeQueries ? lowerPhysicsQueries(this.context) : undefined;
+    const queries = options.queries ? lowerPhysicsQueries(this.context) : undefined;
     const mesh = lowerPhysicsMesh(this.context);
-    const container = containerShapes ? lowerPhysicsContainer(this.context) : undefined;
-    const viewer = includeViewer ? lowerPhysicsViewer(this.context) : undefined;
-    const constraints = includeConstraints ? lowerPhysicsConstraints(this.context) : undefined;
-    const gravitySetter = lowerPhysicsGravity(this.context);
-    const heightfield = includeHeightfield ? lowerPhysicsHeightfield(this.context) : undefined;
+    const container = options.container ? lowerPhysicsContainer(this.context) : undefined;
+    const viewer = options.viewer ? lowerPhysicsViewer(this.context) : undefined;
+    const constraints = options.constraints ? lowerPhysicsConstraints(this.context) : undefined;
+    const gravitySetter = lowerPhysicsGravity(this.context, floatingOrigin);
+    const heightfield = options.heightfield ? lowerPhysicsHeightfield(this.context) : undefined;
     const queryModule = "src/physics/havok-queries.ts";
     const raycast = this.context.functionDeclaration(queryModule, "physicsRaycast");
     const distanceLowerer = new PinnedNumericLowerer(raycast.file, {
@@ -1936,7 +1962,7 @@ inline constexpr double physics_default_restitution = ${this.context.doubleLiter
       defaults.restitution,
     )};
 
-/**
+${floatingOrigin ? `/**
  * \`enableHavokFloatingOrigin\`'s own \`floatingOriginWorldRadius = ...\`,
  * read from that parameter rather than restated. The radius decides how far
  * a body travels before it is re-based, so a bump that moves it moves every
@@ -1946,7 +1972,7 @@ inline constexpr double pinned_floating_origin_radius = ${this.context.doubleLit
       floatingOriginRadius,
     )};
 
-/**
+` : ""}/**
  * ${havokModule} \`PhysicsAggregateOptions\`, reached slice.
  *
  * The geometry half is laid out from the same table \`PhysicsShapeParameters\`
@@ -2054,7 +2080,7 @@ struct PhysicsBody {
     PhysicsMotionType motion_type = PhysicsMotionType::STATIC;
     PhysicsPrestepType prestep_type = PhysicsPrestepType::TELEPORT;
     bool pre_step = false;
-    /**
+${floatingOrigin ? `    /**
      * ${havokFloatingOriginModule} \`_region\`: the region this body is
      * simulated in, and therefore the frame its stored transform is in.
      * Absent (a zero handle) until a floating-origin world places it, which
@@ -2067,7 +2093,7 @@ struct PhysicsBody {
      * that list would not.
      */
     pal::PhysicsWorldHandle region{};
-};
+` : ""}};
 
 /** ${havokModule} \`PhysicsAggregate\`. */
 struct PhysicsAggregate {
@@ -2091,7 +2117,7 @@ struct PhysicsCollisionInfo {
 [[nodiscard]] const char* physics_collision_type_name(
     PhysicsCollisionType type);
 
-/** ${havokTriggerModule} \`PhysicsTriggerInfo["type"]\`. */
+${trigger ? `/** ${havokTriggerModule} \`PhysicsTriggerInfo["type"]\`. */
 enum class PhysicsTriggerType {
     ENTERED,
     EXITED,
@@ -2112,7 +2138,7 @@ struct PhysicsTriggerInfo {
 [[nodiscard]] const char* physics_trigger_type_name(
     PhysicsTriggerType type);
 
-struct PhysicsRaycastResult {
+` : ""}struct PhysicsRaycastResult {
     bool has_hit = false;
     Vec3d hit_point{};
     Vec3d hit_normal{};
@@ -2120,7 +2146,7 @@ struct PhysicsRaycastResult {
     js::Nullable<PhysicsBody> body{};
 };
 
-/**
+${floatingOrigin ? `/**
  * ${havokFloatingOriginModule} \`WorldRegion\`: one solver world whose
  * bodies are stored relative to a fixed world-space \`origin\`.
  */
@@ -2146,7 +2172,7 @@ struct PhysicsFloatingOrigin {
     std::array<double, 3> gravity{};
 };
 
-/**
+` : ""}/**
  * ${havokModule} \`PhysicsWorld\`. The pin keeps \`_hknp\` beside
  * \`_hkWorld\`; here the module is the PAL and only the world handle
  * travels.
@@ -2187,13 +2213,13 @@ struct PhysicsWorld {
      * for one reader: it is what seeds a floating-origin region.
      */
     std::array<double, 3> gravity{};
-    /**
+${floatingOrigin ? `    /**
      * \`_fo\`, present only after \`enableHavokFloatingOrigin\`. The pin's
      * own optional field, and the same opt-in: everything that branches on
      * it below takes its absent arm for every ordinary near-origin scene.
      */
     std::optional<PhysicsFloatingOrigin> fo{};
-};
+` : ""}};
 
 /**
  * A world is engine-owned state addressed by a typed handle, like every
@@ -2211,10 +2237,10 @@ struct PhysicsWorldHandle {
 [[nodiscard]] PhysicsWorldHandle create_havok_world(
     Scene& scene,
     Vec3d gravity);
-void enable_havok_floating_origin(
+${floatingOrigin ? `void enable_havok_floating_origin(
     PhysicsWorldHandle world,
     double floating_origin_world_radius);
-void on_physics_after_step(
+` : ""}void on_physics_after_step(
     PhysicsWorldHandle world,
     std::function<void(float)> callback);
 void set_physics_timestep_ms(
@@ -2229,11 +2255,11 @@ PhysicsShape create_physics_mesh_shape(
     PhysicsWorldHandle world,
     PhysicsShapeType type,
     const PhysicsShapeParameters& parameters);
-${container?.header ?? ""}void set_physics_shape_is_trigger(
+${container?.header ?? ""}${trigger ? `void set_physics_shape_is_trigger(
     PhysicsWorldHandle world,
     PhysicsShape shape,
     bool is_trigger);
-[[nodiscard]] PhysicsBody create_physics_body(
+` : ""}[[nodiscard]] PhysicsBody create_physics_body(
     PhysicsWorldHandle world,
     PhysicsNodeRef node,
     PhysicsMotionType motion_type,
@@ -2242,10 +2268,10 @@ void set_physics_body_shape(
     PhysicsWorldHandle world,
     PhysicsBody body,
     PhysicsShape shape);
-void on_physics_trigger(
+${trigger ? `void on_physics_trigger(
     PhysicsWorldHandle world,
     std::function<void(const PhysicsTriggerInfo&)> callback);
-PhysicsAggregate create_physics_aggregate(
+` : ""}PhysicsAggregate create_physics_aggregate(
     PhysicsWorldHandle world,
     MeshHandle mesh,
     PhysicsShapeType type,
@@ -2491,7 +2517,7 @@ void sync_node_to_body(
     }
 }
 
-// ${this.context.provenance(
+${floatingOrigin ? `// ${this.context.provenance(
       havokFloatingOriginModule,
       "createHavokFloatingOriginContext",
       "the region list held by handle rather than by object identity",
@@ -2729,7 +2755,7 @@ void fo_step_world(PhysicsWorld& world, double dt) {
     gc_regions(world);
 }
 
-/**
+` : ""}/**
  * \`worldStepSeconds\`. The effective step every physics caller agrees on,
  * derived live from the same three sources the pin reads in the same
  * order -- the world's own fixed step, then the scene's, then the
@@ -2773,12 +2799,12 @@ void step_world(PhysicsWorld& world, double delta_ms) {
     // Written ahead of the floating-origin arm because that arm RETURNS
     // and world_step_seconds reads this either way.
     world.engine_delta_ms = delta_ms;
-
+${floatingOrigin ? `
     if (world.fo) {
         fo_step_world(world, dt);
         return;
     }
-
+` : ""}
     Engine& engine = *world.engine;
     for (const PhysicsBody& body : world.bodies) {
         if (body.prestep_type != PhysicsPrestepType::DISABLED &&
@@ -2807,14 +2833,14 @@ void step_world(PhysicsWorld& world, double delta_ms) {
 }  // namespace
 
 PhysicsWorld::~PhysicsWorld() {
-    if (fo) {
+${floatingOrigin ? `    if (fo) {
         for (const auto& region : fo->regions) {
             if (region.world.value != handle.value) {
                 pal::physics_world_release(region.world);
             }
         }
     }
-    if (handle.value != 0) pal::physics_world_release(handle);
+` : ""}    if (handle.value != 0) pal::physics_world_release(handle);
 }
 
 PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
@@ -2849,7 +2875,7 @@ PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
     return handle;
 }
 
-void enable_havok_floating_origin(
+${floatingOrigin ? `void enable_havok_floating_origin(
     PhysicsWorldHandle handle,
     double floating_origin_world_radius) {
     // \`enableHavokFloatingOrigin\`: the pin's own two statements are a
@@ -2868,7 +2894,7 @@ void enable_havok_floating_origin(
     world.fo = std::move(fo);
 }
 
-void on_physics_after_step(
+` : ""}void on_physics_after_step(
     PhysicsWorldHandle handle,
     std::function<void(float)> callback) {
     physics_world_record(handle).after_step.push_back(
@@ -2905,7 +2931,7 @@ ${container?.source ?? ""}PhysicsShape create_physics_primitive_shape(
     return PhysicsShape{*primitive};
 }
 
-void set_physics_shape_is_trigger(
+${trigger ? `void set_physics_shape_is_trigger(
     PhysicsWorldHandle handle,
     PhysicsShape shape,
     bool is_trigger) {
@@ -2915,7 +2941,7 @@ void set_physics_shape_is_trigger(
     pal::physics_shape_set_trigger(shape.handle, is_trigger);
 }
 
-PhysicsBody& physics_body_record(
+` : ""}PhysicsBody& physics_body_record(
     PhysicsWorld& world,
     PhysicsBody body) {
     const auto found = std::find_if(
@@ -3237,7 +3263,7 @@ PhysicsBody create_physics_body(
     // Roll both memberships back if node synchronization fails.
     world.bodies.push_back(body);
     try {
-        if (world.fo) {
+${floatingOrigin ? `        if (world.fo) {
             // \`world._fo.placeBody(world, body, startsAsleep)\`: the region
             // decides which solver world the body joins AND the frame its
             // transform is written in, so the plain pair below is replaced
@@ -3254,7 +3280,12 @@ PhysicsBody create_physics_body(
         } else if (!world.fo) {
             pal::physics_world_remove_body(world.handle, body.handle);
         }
-        world.bodies.pop_back();
+` : `        pal::physics_world_add_body(
+            world.handle, body.handle, starts_asleep);
+        sync_node_to_body(engine, body, false);
+    } catch (...) {
+        pal::physics_world_remove_body(world.handle, body.handle);
+`}        world.bodies.pop_back();
         throw;
     }
     world.bodies.back() = body;
@@ -3274,7 +3305,7 @@ void set_physics_body_shape(
     live.shape = shape;
 }
 
-const char* physics_trigger_type_name(PhysicsTriggerType type) {
+${trigger ? `const char* physics_trigger_type_name(PhysicsTriggerType type) {
     switch (type) {
         case PhysicsTriggerType::ENTERED: return "ENTERED";
         case PhysicsTriggerType::EXITED: return "EXITED";
@@ -3304,7 +3335,7 @@ void on_physics_trigger(
         });
 }
 
-/**
+` : ""}/**
  * The three terms a capsule and a cylinder share, each taking the
  * aggregate's own override through the pin's \`??\`.
  *

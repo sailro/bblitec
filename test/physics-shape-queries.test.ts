@@ -16,6 +16,7 @@ test("shape queries preserve live cylinder rotation, closest-feature ties and fi
     const executable = join(output, "physics-queries-check.exe");
     runNativeFixtureCompiler(tools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2",
+        "/DBBLITE_HAS_PHYSICS_QUERIES=1", "/DBBLITE_HAS_PHYSICS_TRIGGER=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
         `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0",
         "test/fixtures/physics-queries-check.cpp", "/link",

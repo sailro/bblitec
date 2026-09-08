@@ -89,6 +89,7 @@ void publish_scene_palette(
     for (const MeshHandle mesh : skeleton.meshes) {
         if (mesh.value >= engine.meshes.size()) continue;
         engine.meshes[mesh.value].bone_matrices = skeleton.bone_matrices;
+        ++engine.meshes[mesh.value].bone_matrices_version;
     }
 }
 
@@ -190,6 +191,7 @@ void attach_scene_skeleton(
     mesh_record.skinned = true;
     mesh_record.scene_skeleton = true;
     mesh_record.bone_matrices = record.bone_matrices;
+    ++mesh_record.bone_matrices_version;
     ++mesh_record.transform_version;
     record.meshes.push_back(mesh);
 }

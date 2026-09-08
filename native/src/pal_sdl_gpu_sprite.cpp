@@ -226,14 +226,30 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 engine,
                 frame_clock,
                 frame_options.frame_delta_ms);
+            // The window's own pixel size is the surface every context
+            // lays out and draws into this frame; the swapchain acquired
+            // below reports the same extent.
+            int surface_width = 0;
+            int surface_height = 0;
+            SDL_GetWindowSizeInPixels(window, &surface_width, &surface_height);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            // Browser layout observes DOM changes made by this turn's RAF
+            // callbacks before painting the frame -- the same slot the
+            // scene loops and the Dawn host give it, ahead of every sprite
+            // context's own update.
+            update_ui_rml_runtime(
+                *ui_runtime,
+                static_cast<std::uint32_t>(surface_width),
+                static_cast<std::uint32_t>(surface_height));
+#endif
             const double frame_start = monotonic_milliseconds();
 #if BBLITE_HAS_TEXT_RENDERER
+            // Text contexts update right after layout and before the sprite
+            // contexts, the one slot both hosts give them.
             text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-            int text_width=0,text_height=0;
-            SDL_GetWindowSizeInPixels(window,&text_width,&text_height);
             SdlStandaloneTextOps text_ops(*text_renderer,swapchain_format);
             for(const auto& renderer:engine.registered_text_renderers)
-                update_text_renderer(*renderer,text_width,text_height,device,text_ops);
+                update_text_renderer(*renderer,surface_width,surface_height,device,text_ops);
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -277,9 +293,6 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 }
                 continue;
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-            update_ui_rml_runtime(*ui_runtime, width, height);
-#endif
             const bool capture_frame =
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
