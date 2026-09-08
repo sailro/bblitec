@@ -39,13 +39,12 @@ export class TextLowerer {
             live->slots = {${data.live.slots.join(",")}};
             live->free_slots = {${data.live.freeSlots.join(",")}};
             live->color = {${(data.layout.color ?? [1,1,1,1]).join(",")}};
-            live->pixels_per_font_unit = ${data.live.pixelsPerFontUnit};
             live->instances.resize(${data.instances.capacityBytes}/sizeof(float));
             if(!result->payload->instances.bytes.empty())std::memcpy(live->instances.data(),result->payload->instances.bytes.data(),result->payload->instances.bytes.size());
             live->styles.resize(${data.styles.capacityBytes}/sizeof(float));
             if(!result->payload->styles.bytes.empty())std::memcpy(live->styles.data(),result->payload->styles.bytes.data(),result->payload->styles.bytes.size());
             live->instance_count=${data.instances.count}; live->style_count=${data.styles.count};
-            live->slot_count=${data.groups[0]!.slotCount}; live->live_count=${data.groups[0]!.liveCount};
+            live->slot_count=${data.groups[0]!.slotCount};
             live->version=${data.versions.data}; live->style_version=${data.versions.style}; live->layout_version=${data.versions.layout};
             live->dirty_start=${data.dirtyRange.start}; live->dirty_end=${data.dirtyRange.end};
             result->live = std::move(live);

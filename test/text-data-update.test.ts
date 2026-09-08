@@ -92,6 +92,7 @@ test("live default text allocator matches pinned bytes, capacity, slot reuse and
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iterator>
+#include <cassert>
 namespace bbl {
 TextData create_compiled_text_data(std::uint32_t) {
     std::ifstream file("font.ttf",std::ios::binary);
@@ -115,12 +116,16 @@ int main() {
         if(data){data->dirty_start=0;data->dirty_end=0;bbl::update_default_text_data(data,text);}
         else data=bbl::create_live_text_data(0,text);
         const auto& live=*data->live;
+        assert(data->payload->instances.bytes.size()==live.instances.size()*sizeof(float));
+        assert(std::memcmp(data->payload->instances.bytes.data(),live.instances.data(),data->instance_count*3*sizeof(float))==0);
+        assert(data->payload->styles.bytes.size()==live.styles.size()*sizeof(float));
+        assert(std::memcmp(data->payload->styles.bytes.data(),live.styles.data(),live.styles.size()*sizeof(float))==0);
         output.push_back({{"width",data->payload->width},{"height",data->payload->height},
             {"instances",words(live.instances,data->instance_count*3)},{"styles",words(live.styles,live.styles.size())},
             {"capacity",live.instances.size()},{"count",data->instance_count},{"styleCount",data->style_count},
             {"version",data->version},{"styleVersion",data->style_version},{"layoutVersion",data->layout_version},
             {"dirty",std::array{data->dirty_start,data->dirty_end}},{"slots",live.slots},
-            {"slotCount",live.slot_count},{"liveCount",live.live_count},{"free",live.free_slots}});
+            {"slotCount",live.slot_count},{"liveCount",data->groups.at(0).live_count},{"free",live.free_slots}});
     }
     std::ofstream("actual.json")<<output;
 }

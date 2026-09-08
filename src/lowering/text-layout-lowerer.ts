@@ -97,7 +97,7 @@ export class TextLayoutLowerer {
                     if (name === "paragraphs") { c.assertExpressionShape(init, 'collapsed.split("\\n")', "Text paragraph delimiter"); return emit("const auto paragraphs = text_paragraphs(collapsed);"); }
                     if (name === "input") { c.assertExpressionShape(init, "scratchInput ??= new UnicodeBuffer()", "Text shaping input scratch"); return emit("thread_local std::u32string input;"); }
                     if (name === "output") { c.assertExpressionShape(init, "scratchOutput ??= new GlyphBuffer()", "Text shaping output scratch"); return emit("thread_local TextShapeOutput output;"); }
-                    if (name === "ends") { c.assertExpressionShape(init, "scratchEnds ??= new Int32Array(BATCH_PARAGRAPHS)", "Text paragraph boundary scratch"); return emit(`std::vector<double> ends(${c.numericValue(c.variableInitializer(file, "BATCH_PARAGRAPHS"), file)});`, { cpp: "ends", type: "f64-buffer" }); }
+                    if (name === "ends") { c.assertExpressionShape(init, "scratchEnds ??= new Int32Array(BATCH_PARAGRAPHS)", "Text paragraph boundary scratch"); return emit(`thread_local std::array<double, ${c.numericValue(c.variableInitializer(file, "BATCH_PARAGRAPHS"), file)}> ends{};`, { cpp: "ends", type: "f64-buffer" }); }
                     if (name === "lines" || name === "currentLine" || name === "placed") {
                         if (!ts.isArrayLiteralExpression(init) || init.elements.length) c.contractError(init, "Text layout collection must start empty.");
                         const type = name === "lines" ? "std::vector<std::vector<LayoutGlyph>>" : name === "placed" ? "std::vector<TextPlacedGlyph>" : "std::vector<LayoutGlyph>";
@@ -120,7 +120,6 @@ export class TextLayoutLowerer {
                             return [`${indent}${owner}.push_back(${ts.isArrayLiteralExpression(arg) && arg.elements.length === 0 ? "{}" : lowerer.expression(arg)});`];
                         }
                         if (owner === "input" && name === "addStr") c.assertExpressionShape(value.arguments[1]!, "input.length", "Shaper append cluster origin");
-                        if (owner === "currentLine" && name === "pop") return [`${indent}currentLine.pop_back();`];
                     }
                     if (ts.isBinaryExpression(value) && ts.isIdentifier(value.left) && value.left.text === "currentLine" && value.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isArrayLiteralExpression(value.right) && !value.right.elements.length)
                         return [`${indent}currentLine.clear();`];

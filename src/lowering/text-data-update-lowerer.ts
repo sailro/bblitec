@@ -198,16 +198,22 @@ ${write}
 }
 inline void publish(TextDataState& state) {
     const auto& live=*state.live; auto& payload=*state.payload;
+    const bool styles_changed=state.style_version!=live.style_version;
     state.instance_count=size(live.instance_count); state.style_count=size(live.style_count);
     state.version=live.version; state.style_version=live.style_version; state.layout_version=live.layout_version;
     state.dirty_start=size(live.dirty_start); state.dirty_end=size(live.dirty_end);
     payload.instances.count=state.instance_count; payload.instances.capacity_bytes=live.instances.size()*sizeof(float);
-    payload.instances.bytes.resize(live.instances.size()*sizeof(float));
-    if(!live.instances.empty())std::memcpy(payload.instances.bytes.data(),live.instances.data(),payload.instances.bytes.size());
+    const bool instances_resized=payload.instances.bytes.size()!=payload.instances.capacity_bytes;
+    payload.instances.bytes.resize(payload.instances.capacity_bytes);
+    const auto first=instances_resized?0:state.dirty_start*${numeric("TEXT_INSTANCE_FLOATS")}*sizeof(float);
+    const auto last=instances_resized?payload.instances.bytes.size():state.dirty_end*${numeric("TEXT_INSTANCE_FLOATS")}*sizeof(float);
+    if(last>first)std::memcpy(payload.instances.bytes.data()+first,reinterpret_cast<const std::uint8_t*>(live.instances.data())+first,last-first);
     payload.styles.count=state.style_count; payload.styles.capacity_bytes=live.styles.size()*sizeof(float);
-    payload.styles.bytes.resize(live.styles.size()*sizeof(float));
-    if(!live.styles.empty())std::memcpy(payload.styles.bytes.data(),live.styles.data(),payload.styles.bytes.size());
-    auto& group=state.groups.at(0); group.slot_count=size(live.slot_count); group.live_count=size(live.live_count);
+    if(styles_changed || payload.styles.bytes.size()!=payload.styles.capacity_bytes) {
+        payload.styles.bytes.resize(payload.styles.capacity_bytes);
+        if(!live.styles.empty())std::memcpy(payload.styles.bytes.data(),live.styles.data(),payload.styles.bytes.size());
+    }
+    auto& group=state.groups.at(0); group.slot_count=size(live.slot_count); group.live_count=live.slots.size();
 }
 inline void replace(TextDataState& state, const TextLayoutResult& layout) {
     auto& data=*state.live;
@@ -218,15 +224,12 @@ inline void replace(TextDataState& state, const TextLayoutResult& layout) {
     if(!layout.glyphs.empty()) {
         if(layout.glyphs.size()!=old_count) { free_slots(data); slots=allocate_slots(data,static_cast<double>(layout.glyphs.size())); }
         auto live=write_run(data,layout,slots);
-        data.live_count+=static_cast<double>(live.size())-static_cast<double>(old_count);
         data.slots=std::move(live);
     } else {
-        free_slots(data); data.live_count-=static_cast<double>(old_count);
-        if(data.live_count==0) {
-            if(data.slot_count>0) { ++data.layout_version; data.instance_count-=data.slot_count; mark_dirty(data,0,data.instance_count); }
-            data.slot_count=0; data.free_slots.clear();
-            state.groups.at(0).bind_group.reset(); state.groups.at(0).bind_group_version=-1;
-        }
+        free_slots(data);
+        if(data.slot_count>0) { ++data.layout_version; data.instance_count-=data.slot_count; mark_dirty(data,0,data.instance_count); }
+        data.slot_count=0; data.free_slots.clear();
+        state.groups.at(0).bind_group.reset(); state.groups.at(0).bind_group_version=-1;
         data.slots.clear();
         write_style(data,0,data.color,layout.pixels_per_font_unit!=0?1/layout.pixels_per_font_unit:0,0);
     }
@@ -255,7 +258,7 @@ inline TextData create_live_text_data(std::uint32_t index, std::string_view text
     text_update_detail::capacity(live,static_cast<double>(layout.glyphs.size()));
     live.slots=text_update_detail::write_run(live,layout,live.slots);
     live.instance_count=static_cast<double>(layout.glyphs.size());
-    live.slot_count=live.instance_count; live.live_count=static_cast<double>(live.slots.size());
+    live.slot_count=live.instance_count;
     live.dirty_start=0; live.dirty_end=live.instance_count;
     ++live.version; ++live.layout_version;
     data->payload->width=layout.width; data->payload->height=layout.height;

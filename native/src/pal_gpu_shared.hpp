@@ -6228,9 +6228,10 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     const auto registered_scenes = engine.registered_scenes;
     for (const std::shared_ptr<Scene>& registered : registered_scenes) {
         if (!registered || registered->shares_identity(scene)) continue;
+        const auto registered_delta_ms = static_cast<float>(scene_callback_delta(*registered, delta_ms));
         const auto callbacks = registered->before_render;
         for (const auto& callback : callbacks) {
-            callback(static_cast<float>(scene_callback_delta(*registered, delta_ms)));
+            callback(registered_delta_ms);
         }
     }
     return scene_delta_ms;

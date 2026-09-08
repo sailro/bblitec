@@ -20,16 +20,19 @@ import { localAssetPath } from "../asset-source.js";
 import { parseDataUrl } from "../data-url.js";
 import { runGenerationChild } from "./generation-child.js";
 
-/** One decode per (source) within a compile; documents are small. */
+/** Immutable inline and download-cache bytes can be shared across compiles. */
 const bytesBySource = new Map<string, Uint8Array>();
 
 export function readAssetBytesSync(
     source: string,
     entryFileName: string,
 ): Uint8Array {
+    // Local paths depend on the entry directory and can change between compiles.
+    const local = localAssetPath(source, resolve(entryFileName));
+    if (local) return new Uint8Array(readFileSync(local));
     const cached = bytesBySource.get(source);
     if (cached) return cached;
-    const bytes = readUncached(source, entryFileName);
+    const bytes = readUncached(source);
     bytesBySource.set(source, bytes);
     return bytes;
 }
@@ -69,14 +72,9 @@ export function readPngDimensionsSync(
 
 function readUncached(
     source: string,
-    entryFileName: string,
 ): Uint8Array {
     const inline = parseDataUrl(source);
     if (inline) return inline.bytes;
-    const local = localAssetPath(source, resolve(entryFileName));
-    if (local) {
-        return new Uint8Array(readFileSync(local));
-    }
     if (source.startsWith("generated:")) {
         throw new Error(
             "Generated assets have no source bytes to read synchronously.",

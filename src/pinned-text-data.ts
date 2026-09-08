@@ -46,7 +46,7 @@ interface TextAtlas<Blob> {
 
 /** Capacity fields describe pin CPU storage, not later GPU allocation sizes. */
 interface TextStorage<Blob> {
-    live?: { glyphSlots: number[]; slots: number[]; freeSlots: number[]; pixelsPerFontUnit: number };
+    live?: { glyphSlots: number[]; slots: number[]; freeSlots: number[] };
     width: number;
     height: number;
     versions: { data: number; style: number; layout: number };
@@ -161,7 +161,7 @@ export async function executePinnedText(fontBytes: Uint8Array, layout?: StaticTe
             _styles: Float32Array; _styleCount: number;
             _storage: unknown;
             _curveSetId: string;
-            runs: { pixelsPerFontUnit: number }[];
+            runs: object[];
             _runRecords: Map<object, { _slots: number[] }>;
             _groups: { _curveSetId: string; _curveSet: { _atlas: PinnedAtlas }; _groupKey: unknown; _slotStart: number; _slotCount: number; _liveCount: number; _freeSlots: number[] }[];
         };
@@ -183,7 +183,6 @@ export async function executePinnedText(fontBytes: Uint8Array, layout?: StaticTe
             glyphSlots: Array.from({ length: font._font.numGlyphs }, (_, id) => group._curveSet._atlas._glyphSlots.get(id)?._index ?? -1),
             slots: data._runRecords.get(data.runs[0]!)!._slots,
             freeSlots: group._freeSlots,
-            pixelsPerFontUnit: data.runs[0]!.pixelsPerFontUnit,
         };
     }
     if (![data.width, data.height].every((value) => Number.isFinite(value) && !Object.is(value, -0))) {

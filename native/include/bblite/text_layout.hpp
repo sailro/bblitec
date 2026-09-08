@@ -34,8 +34,7 @@ struct TextLiveData {
     std::vector<double> glyph_slots, slots, free_slots;
     std::vector<float> instances, styles;
     std::array<double, 4> color{1, 1, 1, 1};
-    double pixels_per_font_unit = 0;
-    double instance_count = 0, style_count = 0, live_count = 0, slot_count = 0;
+    double instance_count = 0, style_count = 0, slot_count = 0;
     double version = 0, style_version = 0, layout_version = 0, dirty_start = 0, dirty_end = 0;
 };
 namespace pal {

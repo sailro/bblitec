@@ -1,8 +1,5 @@
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
 import ts from "typescript";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { localAssetPath } from "../../asset-source.js";
 import { materializePinnedText, textSha256, type CompiledTextData, type StaticTextLayout, type TextBlob } from "../../pinned-text-data.js";
 import { readAssetBytesSync } from "../asset-bytes-sync.js";
 import { compileStaticNumber, type PositiveIntegerContext } from "../option-helpers.js";
@@ -43,8 +40,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
         for (const row of context.reachedTextData) {
             if (row.layout.live) continue;
             const payload = context.assetPayloads.get(row.font.source) ?? row.font.source;
-            const local = localAssetPath(payload, resolve(context.options.fileName));
-            const bytes = local ? new Uint8Array(readFileSync(local)) : readAssetBytesSync(payload, context.options.fileName);
+            const bytes = readAssetBytesSync(payload, context.options.fileName);
             Object.assign(row, textRow(context, bytes, { ...row.layout, live: true }, row.font, row.id));
         }
         context.reachFeature("text:layout", call);
@@ -109,9 +105,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
         const source = context.compileStaticString(call.arguments[0]!);
         const asset = context.registerAsset(source, "binary");
         const payload = context.assetPayloads.get(asset.source) ?? asset.source;
-        const local = localAssetPath(payload, resolve(context.options.fileName));
-        // A local font edit must invalidate both provenance and the bake in this process.
-        const bytes = local ? new Uint8Array(readFileSync(local)) : readAssetBytesSync(payload, context.options.fileName);
+        const bytes = readAssetBytesSync(payload, context.options.fileName);
         try { materializePinnedText(bytes); }
         catch (error) { context.fail(call, `Pinned font materialization failed: ${String(error)}`); }
         return { kind: "text-font", cpp: "", textFont: {
