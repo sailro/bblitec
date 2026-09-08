@@ -15,7 +15,7 @@
 // environment block both have limits a serialized scene document can reach.
 import { spawnSync } from "node:child_process";
 
-export interface GenerationChildOptions {
+interface GenerationChildOptions {
     /** ESM source run with `--input-type=module`; must write its own stdout. */
     script: string;
     /** What to say the child was doing, when it fails. */

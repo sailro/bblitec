@@ -110,7 +110,7 @@ export interface StaticBooleanContext {
     fail(node: ts.Node, message: string): never;
 }
 
-export interface StaticNumberSelectionContext
+interface StaticNumberSelectionContext
     extends PositiveIntegerContext {
     compileCondition(expression: ts.Expression): string;
 }
@@ -141,7 +141,7 @@ export function selectedStaticNumberValue(
  * that folds. Undefined when a condition stays live, so each caller keeps
  * its own domain-specific refusal rather than inheriting a number's.
  */
-export interface StaticSelectionContext {
+interface StaticSelectionContext {
     compileCondition(expression: ts.Expression): string;
     resolveStaticExpression(expression: ts.Expression): ts.Expression;
 }

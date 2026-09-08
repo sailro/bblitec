@@ -64,7 +64,7 @@ function accessorsOf(declaration: ts.ClassDeclaration): {
     return { getters, setters };
 }
 
-export interface ClassLoweringContext {
+interface ClassLoweringContext {
     readonly checker: ts.TypeChecker;
     readonly dataTypes: DataTypeRegistry;
     readonly nativeFunctions: {

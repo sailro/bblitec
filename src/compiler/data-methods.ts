@@ -77,19 +77,18 @@ export function compileIsArrayOverData(
 /**
  * The `[start, end]` pair a ranged builtin takes, as native doubles.
  *
- * `slice`, `fill` and `copyWithin` all resolve their endpoints through the
- * same relative-index rule, and all three read an omitted end as the
- * receiver's length. `startIndex` says where in the argument list the pair
- * begins, which is the only thing that differs between them.
+ * `fill` and `copyWithin` both resolve their endpoints through the same
+ * relative-index rule, both read an omitted end as the receiver's length,
+ * and both take the pair after one leading argument (the fill value, the
+ * copy target).
  */
 function relativeRangeArguments(
     lowerer: DataLowerer,
     call: ts.CallExpression,
     receiverCpp: string,
-    startIndex: number,
 ): [start: string, end: string] {
-    const startArgument = call.arguments[startIndex];
-    const endArgument = call.arguments[startIndex + 1];
+    const startArgument = call.arguments[1];
+    const endArgument = call.arguments[2];
     return [
         startArgument
             ? lowerer.context.compileNumber(startArgument, "double")
@@ -1368,7 +1367,6 @@ export function compileDataMethodCall(
             lowerer,
             call,
             narrowed.cpp,
-            1,
         );
         return {
             kind: "void",
@@ -1399,7 +1397,6 @@ export function compileDataMethodCall(
             lowerer,
             call,
             narrowed.cpp,
-            1,
         );
         return {
             kind: "void",

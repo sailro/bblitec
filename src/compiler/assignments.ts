@@ -1,6 +1,6 @@
-export type AssignmentValueKind = "color3" | "number";
+type AssignmentValueKind = "color3" | "number";
 
-export interface DirectPropertyAssignment {
+interface DirectPropertyAssignment {
   collection: "lights";
   nativeProperty: string;
   valueKind: AssignmentValueKind;
@@ -378,7 +378,7 @@ const lightProperties: Readonly<
   },
 };
 
-export function directPropertyAssignment(
+function directPropertyAssignment(
   owner: Value,
   property: string,
 ): DirectPropertyAssignment | undefined {
@@ -442,7 +442,7 @@ const lightScalars: Readonly<Record<LightKind, readonly string[]>> = {
 };
 
 /** The emitted entry point for `light.<scalar> = ...`, if there is one. */
-export function lightScalarSetter(
+function lightScalarSetter(
   owner: Value,
   property: string,
 ): string | undefined {
@@ -2598,7 +2598,7 @@ export function emitPropertyAssignment(
       );
       return;
     }
-    requireGroupSource(context, group, left, "loopAnimation", "gltf");
+    requireGltfGroupSource(context, group, left, "loopAnimation");
     context.reachFeature("animation:gltf-groups", left);
     context.emit(
       `bbl::set_animation_loop(${context.requireEngine(
@@ -2623,7 +2623,7 @@ export function emitPropertyAssignment(
       );
       return;
     }
-    requireGroupSource(context, group, left, "speedRatio", "gltf");
+    requireGltfGroupSource(context, group, left, "speedRatio");
     context.reachFeature("animation:gltf-groups", left);
     context.reachFeature("animation:gltf-group-speed", left);
     context.emit(
@@ -2674,7 +2674,7 @@ export function emitPropertyAssignment(
       context.emit(`${group.cpp}->current_time = ${value.cpp};`);
       return;
     }
-    requireGroupSource(context, group, left, "currentTime", "gltf");
+    requireGltfGroupSource(context, group, left, "currentTime");
     context.reachFeature("animation:gltf-groups", left);
     context.reachFeature("animation:gltf-group-time", left);
     context.emit(
@@ -2940,7 +2940,7 @@ function gltfGroupWriteTarget(
 ): Value {
   const group = context.compileValue(left.expression);
   context.expectKind(group, "animation-group", left.expression);
-  requireGroupSource(context, group, left, field, "gltf");
+  requireGltfGroupSource(context, group, left, field);
   requireSimpleAssignment(context, expression, field);
   context.reachFeature("animation:gltf-groups", left);
   return group;
@@ -3088,7 +3088,7 @@ import ts from "typescript";
 
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
-import { requireGroupSource } from "./intrinsics/animation.js";
+import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import { emitParticleBufferWrite, requireParticleBakeWritable } from "./particle-buffer.js";
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";

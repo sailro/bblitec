@@ -101,7 +101,7 @@ export interface BrowserTextureFunctionShape {
     returns: "value" | "record";
 }
 /** One texture the executed function handed a pinned factory. */
-export type BakedBrowserTexture =
+type BakedBrowserTexture =
     | {
           factory: "createTexture2DFromPixels";
           /** Raw RGBA8, exactly as the call passed it. */
@@ -119,7 +119,7 @@ export type BakedBrowserTexture =
       };
 
 /** What one executed function produced: its textures and what it returned. */
-export interface BrowserTextureBake {
+interface BrowserTextureBake {
     textures: readonly BakedBrowserTexture[];
     result:
         | { kind: "texture"; index: number }
@@ -143,7 +143,7 @@ function mayOwnBrowserTextures(source: ts.SourceFile): boolean {
 }
 
 /** Walk `node`'s value positions; type annotations are not executed. */
-export function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
+function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
     ts.forEachChild(node, (child) => {
         if (ts.isTypeNode(child) || ts.isTypeAliasDeclaration(child)) return;
         visit(child);
@@ -340,7 +340,7 @@ export function sameFileClosure(
  * still reached, and leaving it out of the closure would leave its canvas,
  * its pinned reaches and its module-level writes unexamined.
  */
-export function localFunctionDeclaration(
+function localFunctionDeclaration(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
     sourceFile: ts.SourceFile,
@@ -402,7 +402,7 @@ function returnShape(
 
 // ── Execution ────────────────────────────────────────────────────────────────
 
-export interface ClosureModule {
+interface ClosureModule {
     /** Repository-relative, forward-slashed: the module's identity. */
     key: string;
     javascript: string;
@@ -942,7 +942,7 @@ export { pngDimensions } from "./asset-bytes-sync.js";
 // ── Lowering ─────────────────────────────────────────────────────────────────
 
 /** What the lowering reads off the compiler; the walk is a superset. */
-export interface BrowserTextureCallContext {
+interface BrowserTextureCallContext {
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
     /** The names this compilation executed, for the fidelity adaptation. */

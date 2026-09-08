@@ -23,7 +23,7 @@ import type { DataType } from "./data-types.js";
 import type { Feature, Value } from "./types.js";
 
 /** The narrow slice of the expression context this lowering needs. */
-export interface WebStorageContext {
+interface WebStorageContext {
     unwrap(expression: ts.Expression): ts.Expression;
     fail(node: ts.Node, message: string): never;
     expectArgumentCount(

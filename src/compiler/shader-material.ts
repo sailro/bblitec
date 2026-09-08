@@ -765,7 +765,7 @@ function compileShaderUniformSignatures(
  * and returns its stable generated variant identity: the id indexes
  * the emitted variant table in reach order.
  */
-export function reachShaderProgram(
+function reachShaderProgram(
     context: ShaderMaterialContext,
     program: CompiledShaderProgram,
 ): { name: string; id: number } {

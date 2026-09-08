@@ -23,7 +23,6 @@ export interface NativeFunctionContext {
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
     sourceFiles(): readonly ts.SourceFile[];
-    isEntrySourceFile(file: ts.SourceFile): boolean;
     lookupIdentifierValue(
         identifier: ts.Identifier,
     ): Value | undefined;
@@ -68,7 +67,7 @@ export interface NativeFunctionContext {
     fail(node: ts.Node, message: string): never;
 }
 
-export interface DataFunctionParameter {
+interface DataFunctionParameter {
     name: ts.Identifier;
     type: DataType;
     byReference: boolean;

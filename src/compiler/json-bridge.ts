@@ -19,7 +19,7 @@ import type { DataType } from "./data-types.js";
 import type { Feature, Value } from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
-export interface JsonBridgeContext {
+interface JsonBridgeContext {
     readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     fail(node: ts.Node, message: string): never;

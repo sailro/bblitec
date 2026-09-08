@@ -65,7 +65,6 @@ export interface ShadowIntrinsicContext
         generatorIndex: number,
         casters: readonly ShadowCasterMeshManifest[],
     ): void;
-    shadowGeneratorHasRecordedCasters(generatorIndex: number): boolean;
     recordDynamicShadowCasters(generatorIndex: number): void;
     recordDynamicShadowCastersForUnknownGenerator(): void;
     esmGeneratorOrdinal(): number;

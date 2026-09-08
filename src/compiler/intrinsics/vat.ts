@@ -4,7 +4,7 @@ import type { Feature } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 /** What the handle's own methods need. The expression compiler satisfies it. */
-export interface VatMethodContext {
+interface VatMethodContext {
     emit(line: string): void;
     increaseIndent(): void;
     decreaseIndent(): void;

@@ -26,12 +26,6 @@ import type { CompiledTextData, TextFontSource } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { LocalCubemapPlan } from "../pinned-local-cubemap.js";
 
-export type {
-  NativeHostUiClassStyle,
-  NativeHostUiStyleRule,
-  UiStyleSelectorKind,
-} from "../ui-style-rule.js";
-
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
   tag: string;
@@ -896,7 +890,7 @@ export interface PixelsTextureSource {
  * scene's engine local does not exist: what travels is what the call named,
  * and the builder writes the call against its own parameter.
  */
-export interface NodeParticleTextureAssignment extends PixelsTextureSource {
+interface NodeParticleTextureAssignment extends PixelsTextureSource {
   set: number;
   system: number;
 }
@@ -1615,7 +1609,7 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
  * program, and nothing native holds them -- the simulation is baked at
  * generation. Both binding paths ask the same question, so they ask it here.
  */
-export function isNodeParticleValue(kind: ValueKind): boolean {
+function isNodeParticleValue(kind: ValueKind): boolean {
   return (
     kind === "node-particle-graph" ||
     kind === "node-particle-set" ||
@@ -1671,7 +1665,7 @@ export interface VariableBinding {
  * makes those copies name the same JavaScript light instead of accidentally
  * treating Value object identity as resource identity.
  */
-export interface LightIdentity {
+interface LightIdentity {
   /** Current `scene.lights` slot, absent while the light is not in the scene. */
   sceneLightIndex?: number;
   /** Generator assigned through `light.shadowGenerator`, when present. */
@@ -1688,7 +1682,7 @@ export interface LightIdentity {
  * the scene identity prevents independent surfaces from inflating those slots
  * into one process-global index.
  */
-export interface SceneTopologyState {
+interface SceneTopologyState {
   lights: Array<{ identity: LightIdentity; kind: LightKind }>;
 }
 

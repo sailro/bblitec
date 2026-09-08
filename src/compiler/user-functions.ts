@@ -831,13 +831,13 @@ export function recursiveStorageEscapes(
     return escapes;
 }
 
-export interface UserFunctionParameterIr {
+interface UserFunctionParameterIr {
     declaration: ts.ParameterDeclaration;
     name: ts.BindingName;
     type: ts.Type;
 }
 
-export interface UserFunctionIr {
+interface UserFunctionIr {
     declaration: SupportedFunction;
     name: string;
     parameters: UserFunctionParameterIr[];
@@ -1085,7 +1085,6 @@ export class UserFunctionLowerer {
             call,
             ir,
             (node, message) => context.fail(node, message),
-            true,
         );
         const argumentValues = call.arguments.map((argument) =>
             this.argumentValue(context, argument),
@@ -1293,7 +1292,6 @@ export class UserFunctionLowerer {
             call,
             ir,
             (node, message) => context.fail(node, message),
-            true,
         );
         // As in `compile`: the arguments were written at the call site
         // and resolve in the scope there, so only the body runs in the
@@ -2298,25 +2296,6 @@ export class UserFunctionLowerer {
         }
     }
 
-    public compileReference(
-        context: UserFunctionContext,
-        identifier: ts.Identifier,
-    ): Value | undefined {
-        const ir = this.resolve(identifier, (node, message) =>
-            context.fail(node, message),
-        );
-        if (!ir) {
-            return undefined;
-        }
-        if (ir.parameters.some(({ declaration }) => !declaration.initializer)) {
-            context.fail(
-                identifier,
-                `Callback '${ir.name}' requires arguments.`,
-            );
-        }
-        return this.lower(context, ir, [], identifier);
-    }
-
     private lower(
         context: UserFunctionContext,
         ir: UserFunctionIr,
@@ -2820,11 +2799,16 @@ export class UserFunctionLowerer {
         return needsNative ? "native" : found ? "wrapper" : "none";
     }
 
+    /**
+     * The call's arguments against the declaration's parameters. Extra
+     * arguments beyond the declared list are accepted: JavaScript ignores
+     * them, and the per-index loop below has no parameter to check them
+     * against, so both callers hand them through unchecked.
+     */
     private validateCall(
         call: ts.CallExpression,
         ir: UserFunctionIr,
         fail: Fail,
-        allowExtraArguments = false,
     ): void {
         if (call.arguments.some(ts.isSpreadElement)) {
             fail(
@@ -2836,11 +2820,7 @@ export class UserFunctionLowerer {
             ({ declaration }) =>
                 !declaration.initializer && !declaration.questionToken,
         ).length;
-        if (
-            call.arguments.length < minimum ||
-            (!allowExtraArguments &&
-                call.arguments.length > ir.parameters.length)
-        ) {
+        if (call.arguments.length < minimum) {
             fail(
                 call,
                 `Function '${ir.name}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,

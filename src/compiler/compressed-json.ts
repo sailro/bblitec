@@ -18,7 +18,7 @@ import {
 import type { Value } from "./types.js";
 import { runModuleJsonSync } from "./module-json-sync.js";
 
-export interface CompressedJsonContext {
+interface CompressedJsonContext {
     readonly checker: ts.TypeChecker;
     compileStringLiteral(expression: ts.Expression): string;
     compileValue(expression: ts.Expression): Value;

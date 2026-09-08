@@ -5,7 +5,7 @@ import type { Value } from "./types.js";
 
 const textureType: DataType = { kind: "optional", inner: { kind: "handle", handle: "texture" } };
 
-export interface NodeInputContext {
+interface NodeInputContext {
     readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     compileValue(expression: ts.Expression): Value;

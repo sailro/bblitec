@@ -154,7 +154,7 @@ type PropertyRule = PropertyRead | RefusedProperty;
  * element model. User code iterating its own arrays never reaches here: that
  * is the plain-data path.
  */
-export interface HandleCollectionRead {
+interface HandleCollectionRead {
   /** The value kind the owner must have. */
   owner: ValueKind;
   /** The property name as the source writes it. */

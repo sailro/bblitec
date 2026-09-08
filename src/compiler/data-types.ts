@@ -16,7 +16,7 @@ type Fail = (node: ts.Node, message: string) => never;
  * and remains a texture when read back out. Scene and picking-result values
  * instead copy a shared identity, retaining their source object through data.
  */
-export type HandleKind =
+type HandleKind =
   | "gpu-device"
   | "gpu-texture"
   | "device-recovery"
@@ -385,7 +385,7 @@ interface DataStructDefinition {
  * class's fields resolve through `Workspace<Part>` rather than through the
  * declaration's own `P`.
  */
-export interface ClassStructBinding {
+interface ClassStructBinding {
   declaration: ts.ClassDeclaration;
   type: ts.Type;
 }

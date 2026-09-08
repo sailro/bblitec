@@ -10,7 +10,7 @@ const field = (name: string): string => ({rotationQuaternion:"rotation_quaternio
 const axes = (name: TextTransform): readonly string[] => name === "rotationQuaternion" ? ["x", "y", "z", "w"] : name === "positionPx" ? ["x","y"] : ["x", "y", "z"];
 const textKinds = ["text-data", "text-renderable", "text-layer", "text-renderer", "text-run", "text-vector"];
 
-export interface TextSurfaceContext {
+interface TextSurfaceContext {
     readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     compileValue(expression: ts.Expression): Value;

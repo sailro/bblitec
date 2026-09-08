@@ -16,7 +16,7 @@ import {
     type NodeParticleFrozenBufferRequest,
 } from "../pinned-node-particle.js";
 
-export interface ParticleBufferContext extends PositiveIntegerContext {
+interface ParticleBufferContext extends PositiveIntegerContext {
     readonly reachedNodeParticles: CompiledNodeParticles;
     unwrap(expression: ts.Expression): ts.Expression;
     isRuntimeResourceConstruction(): boolean;

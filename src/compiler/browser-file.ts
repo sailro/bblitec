@@ -8,7 +8,7 @@ import type { Feature, Value, ValueKind } from "./types.js";
  * module owns its value shapes so Blob/object-URL/File handling does not become
  * another branch in the Babylon intrinsic registry.
  */
-export interface BrowserFileContext {
+interface BrowserFileContext {
     readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     resolveStaticExpression(expression: ts.Expression): ts.Expression;

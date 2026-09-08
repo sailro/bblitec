@@ -1,6 +1,6 @@
 import ts from "typescript";
 
-export interface NativeReturnTypeOptions {
+interface NativeReturnTypeOptions {
     /** Leave promises opaque while still recognizing a declared Promise<void>. */
     unwrapPromise?: boolean;
 }

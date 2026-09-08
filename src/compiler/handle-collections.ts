@@ -37,7 +37,7 @@
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import type { DataType } from "./data-types.js";
-import { requireGroupSource } from "./intrinsics/animation.js";
+import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import {
     resolveFunctionDeclaration,
     unwrapExpression as unwrapWalkExpression,
@@ -81,7 +81,7 @@ import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 export type HandleCollectionTarget = HandleCollectionInfo;
 
 /** What emitting a loop over one of those collections needs. */
-export interface HandleCollectionLoopContext {
+interface HandleCollectionLoopContext {
     allocateTemporaryCppName(label: string): string;
     allocateBlockPrefix(): string;
     emit(line: string): void;
@@ -232,7 +232,7 @@ function assetOwnerMapBuilder(
     return { mapStatement: mapStatement!, map: map.name, meshArray: list.name, child: children.name, ownerName, output, collect: collect.body, helpers: [...helpers] };
 }
 
-export interface HandleCollectionsContext
+interface HandleCollectionsContext
     extends HandleCollectionLoopContext {
     guardStaticConstructionRead(operation: string): void;
     readonly meshWalks: CompiledMeshWalk[];
@@ -1301,12 +1301,11 @@ export class HandleCollections {
                 "animation-group",
                 element,
             );
-            requireGroupSource(
+            requireGltfGroupSource(
                 this.context,
                 value,
                 element,
                 "addAnimationGroups",
-                "gltf",
             );
         }
         const engineCpp = groups[0]

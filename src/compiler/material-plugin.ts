@@ -68,10 +68,10 @@ import { standardBuiltinBindingNames } from "../pinned-standard-variants.js";
 import type { Value } from "./types.js";
 
 /** Which family's bind path the material a plugin attaches to takes. */
-export type MaterialPluginFamily = "standard" | "pbr";
+type MaterialPluginFamily = "standard" | "pbr";
 
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
-export interface MaterialPluginContext {
+interface MaterialPluginContext {
     readonly checker: ts.TypeChecker;
     resolveStaticExpression(expression: ts.Expression): ts.Expression;
     unwrap(expression: ts.Expression): ts.Expression;
@@ -90,7 +90,7 @@ export interface MaterialPluginContext {
 }
 
 /** One texture a plugin's `bindTextures` binds, and where it came from. */
-export interface MaterialPluginTextureBinding {
+interface MaterialPluginTextureBinding {
     /** The `Texture2D` value, already lowered to its native local. */
     value: Value;
     /** The scene expression that named it, for a located refusal. */
@@ -178,7 +178,7 @@ function resolveTextureIdentity(
 }
 
 /** A folded `material.plugins = [...]` right-hand side. */
-export interface FoldedMaterialPlugins {
+interface FoldedMaterialPlugins {
     /** The plugin list, in the order the scene wrote it. */
     manifests: MaterialPluginManifest[];
     /**

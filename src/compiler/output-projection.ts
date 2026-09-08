@@ -365,7 +365,7 @@ function markUnreferencedLocals(body: string[]): void {
  * the include decisions, and the local marking runs only once the body
  * is complete.
  */
-export interface MainCppProjection {
+interface MainCppProjection {
     workers?: { namespace: string | undefined; declarations: string; windowOptions?: string };
     features: readonly Feature[];
     jsDataReached: boolean;

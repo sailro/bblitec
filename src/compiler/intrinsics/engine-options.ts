@@ -503,7 +503,7 @@ export function compileTextureReference(
 }
 
 /** All `compileRenderTextureValue` needs: somewhere to refuse. */
-export interface RenderTextureSlotContext {
+interface RenderTextureSlotContext {
     fail(expression: ts.Node, message: string): never;
 }
 
@@ -594,7 +594,7 @@ function pinnedGeometryClearValue(type: GeometryTextureTypeName): number {
 }
 
 /** The engine's precision policy, as `createEngine` reads it. */
-export interface EnginePrecisionPolicy {
+interface EnginePrecisionPolicy {
     highPrecisionMatrix: boolean;
     floatingOrigin: boolean;
 }

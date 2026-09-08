@@ -12973,10 +12973,6 @@ class Compiler
         return this.cppIdentifier(sourceName);
     }
 
-    public isEntrySourceFile(file: ts.SourceFile): boolean {
-        return file === this.sourceFile;
-    }
-
     public sourceFiles(): readonly ts.SourceFile[] {
         return this.program.getSourceFiles();
     }
@@ -19052,24 +19048,6 @@ class Compiler
         this.defineVariable(identifier, stored);
     }
 
-    private visibleValues(): Value[] {
-        const names = new Set<string>();
-        const result: Value[] = [];
-        for (
-            let index = this.variableScopes.length - 1;
-            index >= 0;
-            index -= 1
-        ) {
-            for (const binding of this.variableScopes[index]!.values()) {
-                if (!names.has(binding.name)) {
-                    names.add(binding.name);
-                    result.push(binding.value);
-                }
-            }
-        }
-        return result;
-    }
-
     /** Visit bindings and the generation facts nested inside their values. */
     private visitScopedValues(visitor: (value: Value) => void): void {
         const seen = new Set<Value>();
@@ -19894,14 +19872,6 @@ class Compiler
         generator.casters = [...casters];
     }
 
-    public shadowGeneratorHasRecordedCasters(generatorIndex: number): boolean {
-        const generator = this.shadowGenerators[generatorIndex];
-        return Boolean(
-            generator &&
-            (generator.casters.length > 0 || generator.dynamicCasters),
-        );
-    }
-
     public recordDynamicShadowCasters(generatorIndex: number): void {
         const generator = this.shadowGenerators[generatorIndex];
         if (!generator) {
@@ -20339,19 +20309,6 @@ class Compiler
 
     public recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void {
         this.screenSpaceTasks.push(manifest);
-    }
-
-    public requireDefaultScene(node: ts.Node): Value {
-        const scenes = this.visibleValues().filter(
-            (value) => value.kind === "scene",
-        );
-        if (scenes.length !== 1) {
-            this.fail(
-                node,
-                "This intrinsic requires exactly one scene context.",
-            );
-        }
-        return scenes[0]!;
     }
 
     public expectArgumentCount(

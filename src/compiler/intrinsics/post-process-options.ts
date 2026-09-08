@@ -355,7 +355,7 @@ function paramValue(
  * extent: the pass then covered the whole target instead of the half the
  * scene asked for, with nothing said.
  */
-export function compileOptionValue(
+function compileOptionValue(
     context: EngineOptionContext,
     expression: ts.Expression,
     label: string,

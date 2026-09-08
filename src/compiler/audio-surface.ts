@@ -34,7 +34,7 @@ import type { CompileAsset, Feature, Value } from "./types.js";
  * satisfies it, which is what lets a receiver walk run through the same
  * rule table a direct read takes.
  */
-export interface AudioReceiverContext extends PropertyContext {
+interface AudioReceiverContext extends PropertyContext {
     lookupOptional(identifier: ts.Identifier): Value | undefined;
     resolveThisField(name: string): Value | undefined;
     compileValue(expression: ts.Expression): Value;
@@ -42,7 +42,7 @@ export interface AudioReceiverContext extends PropertyContext {
 }
 
 /** What a property write needs. `AssignmentContext` satisfies it. */
-export interface AudioWriteContext extends AudioReceiverContext {
+interface AudioWriteContext extends AudioReceiverContext {
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -53,7 +53,7 @@ export interface AudioWriteContext extends AudioReceiverContext {
 }
 
 /** What a method call needs. The expression compiler satisfies it. */
-export interface AudioCallContext extends AudioWriteContext {
+interface AudioCallContext extends AudioWriteContext {
     readonly checker: ts.TypeChecker;
     expectKind(value: Value, kind: Value["kind"], node: ts.Node): void;
     allocateTemporaryCppName(label: string): string;

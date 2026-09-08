@@ -45,7 +45,6 @@ export interface AnimationIntrinsicContext
     lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined;
-    requireDefaultScene(node: ts.Node): Value;
     requirePresentationHost(node: ts.Node): string;
     compileFrameCallback(expression: ts.Expression, signature?: FrameCallbackSignature, retainCaptures?: boolean): string;
     requireCompatibleFrameConductor(owner: "manager" | "persistent", site: ts.Node): void;
@@ -110,27 +109,21 @@ const groupOperationNatives: Record<string, string> = {
 
 /**
  * The two group factories produce different native things — a loader
- * handle and the shared record a property clip is bound into — so each
- * operation states which one it serves rather than emitting a call whose
- * argument would not compile.
+ * handle and the shared record a property clip is bound into — and every
+ * group operation lowered by name serves the loader handle, so each states
+ * that rather than emitting a call whose argument would not compile. A
+ * property animation group is driven by its manager instead.
  */
-export function requireGroupSource(
+export function requireGltfGroupSource(
     context: { fail(node: ts.Node, message: string): never },
     group: Value,
     node: ts.Node,
     operation: string,
-    want: "property" | "gltf",
 ): void {
-    const source =
-        group.animationGroupSource === "property"
-            ? "property"
-            : "gltf";
-    if (source === want) return;
+    if (group.animationGroupSource !== "property") return;
     context.fail(
         node,
-        want === "property"
-            ? `${operation} is lowered for a property animation group; a glTF animation group takes the loader's own group operations.`
-            : `${operation} is lowered for a glTF animation group; a property animation group is driven by its manager.`,
+        `${operation} is lowered for a glTF animation group; a property animation group is driven by its manager.`,
     );
 }
 
@@ -518,12 +511,11 @@ export function compileAnimationIntrinsic(
                 "animation-group",
                 call.arguments[0]!,
             );
-            requireGroupSource(
+            requireGltfGroupSource(
                 context,
                 group,
                 call.arguments[0]!,
                 "setAnimationAdditive",
-                "gltf",
             );
             context.reachFeature("animation:gltf-groups", call);
             context.reachFeature(
@@ -771,12 +763,11 @@ export function compileAnimationIntrinsic(
                     cpp: `bbl::${native}(${group.cpp})`,
                 };
             }
-            requireGroupSource(
+            requireGltfGroupSource(
                 context,
                 group,
                 call.arguments[0]!,
                 importedName,
-                "gltf",
             );
             context.reachFeature("animation:gltf-groups", call);
             const native = groupOperationNatives[importedName]!;

@@ -61,12 +61,13 @@ export interface GizmoIntrinsicContext
 function refuseOptions(
     context: GizmoIntrinsicContext,
     call: ts.CallExpression,
-    index: number,
     factory: string,
 ): void {
-    if (call.arguments.length > index) {
+    // Every reached factory takes its options bag as its third argument.
+    const options = call.arguments[2];
+    if (options) {
         context.fail(
-            call.arguments[index]!,
+            options,
             `${factory} options are not supported: the generated gizmo ` +
                 "family is built from the pinned factory's own defaults, " +
                 "so a supplied colour, light intensity or display flag " +
@@ -722,7 +723,7 @@ export function compileGizmoIntrinsic(
 
         case "createUtilityLayer": {
             context.expectArgumentCount(call, 2, 3);
-            refuseOptions(context, call, 2, "createUtilityLayer");
+            refuseOptions(context, call, "createUtilityLayer");
             const engine = context.compileValue(call.arguments[0]!);
             const scene = context.compileValue(call.arguments[1]!);
             context.expectKind(engine, "engine", call.arguments[0]!);
@@ -784,7 +785,7 @@ export function compileGizmoIntrinsic(
 
         case "createCameraGizmo": {
             context.expectArgumentCount(call, 2, 3);
-            refuseOptions(context, call, 2, "createCameraGizmo");
+            refuseOptions(context, call, "createCameraGizmo");
             const engine = context.compileValue(call.arguments[0]!);
             const layer = context.compileValue(call.arguments[1]!);
             context.expectKind(engine, "engine", call.arguments[0]!);
@@ -832,7 +833,7 @@ export function compileGizmoIntrinsic(
 
         case "createLightGizmo": {
             context.expectArgumentCount(call, 2, 3);
-            refuseOptions(context, call, 2, "createLightGizmo");
+            refuseOptions(context, call, "createLightGizmo");
             const engine = context.compileValue(call.arguments[0]!);
             const layer = context.compileValue(call.arguments[1]!);
             context.expectKind(engine, "engine", call.arguments[0]!);

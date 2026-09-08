@@ -3,7 +3,7 @@ import type { Value } from "../types.js";
 import { validateObjectProperties } from "../option-helpers.js";
 import type { PhysicsIntrinsicContext } from "./physics.js";
 
-export interface CharacterIntrinsicContext extends PhysicsIntrinsicContext {
+interface CharacterIntrinsicContext extends PhysicsIntrinsicContext {
     compilePhysicsCharacterCallback(expression: ts.Expression): string;
 }
 

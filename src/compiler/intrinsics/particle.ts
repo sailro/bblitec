@@ -362,13 +362,12 @@ function buildOptions(
     return { emitter, ...(base ? { textureBaseUrl: context.compileStaticString(base) } : {}) };
 }
 
-/** Which set and system a call's argument names, with its value. */
+/** Which set and system a call's first argument names, with its value. */
 function systemOf(
     context: ParticleIntrinsicContext,
     call: ts.CallExpression,
-    argumentIndex: number,
 ): { value: Value; set: number; system: number } {
-    const argument = call.arguments[argumentIndex];
+    const argument = call.arguments[0];
     if (!argument) {
         context.fail(call, "A particle-system call needs its system.");
     }
@@ -576,7 +575,7 @@ export function compileParticleIntrinsic(
         case "startParticleSystem":
         case "stopParticleSystem": {
             context.expectArgumentCount(call, 1, 1);
-            const { set, system } = systemOf(context, call, 0);
+            const { set, system } = systemOf(context, call);
             if (context.reachedNodeParticles.sets[set]?.native) {
                 return { kind: "void", cpp: `bbl::upstream::${importedName === "startParticleSystem" ? "start" : "stop"}_native_node_particle_system(${set}, ${system})` };
             }
@@ -593,7 +592,7 @@ export function compileParticleIntrinsic(
             // The pin also takes a camera and a target size, which only its
             // billboard-free render paths read; no reached scene passes one.
             context.expectArgumentCount(call, 2, 2);
-            const { set, system } = systemOf(context, call, 0);
+            const { set, system } = systemOf(context, call);
             if (context.reachedNodeParticles.sets[set]?.native) {
                 return { kind: "void", cpp: `bbl::upstream::animate_native_node_particle_system(${set}, ${system}, ${context.compileNumber(call.arguments[1]!, "double")})` };
             }
@@ -614,7 +613,7 @@ export function compileParticleIntrinsic(
 
         case "createParticleBillboard": {
             context.expectArgumentCount(call, 1, 1);
-            const { value, set, system } = systemOf(context, call, 0);
+            const { value, set, system } = systemOf(context, call);
             if (context.reachedNodeParticles.sets[set]?.native) {
                 context.fail(call, "Provider-backed particle systems draw through registerNodeParticleSet; the explicit billboard bridge only carries frozen state.");
             }
@@ -641,7 +640,7 @@ export function compileParticleIntrinsic(
 
         case "syncParticleBillboard": {
             context.expectArgumentCount(call, 2, 2);
-            const { set, system } = systemOf(context, call, 0);
+            const { set, system } = systemOf(context, call);
             const billboard = context.compileValue(call.arguments[1]!);
             context.expectKind(
                 billboard,

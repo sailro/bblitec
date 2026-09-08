@@ -371,7 +371,7 @@ export function assetRecord(
  * expression is not a module binding at all, which each caller reads as "not
  * my shape" rather than as an error.
  */
-export function executedModuleReference(
+function executedModuleReference(
     context: ExecutedModuleReferenceContext,
     identifier: ts.Expression,
 ): { module: string; exportName: string } | undefined {
@@ -572,13 +572,13 @@ function hash(value: string): string {
  * a node particle's is (`createSceneNNNNpeJson()`), and a node material's is
  * not, because the pin's own graph loader is what would have to run.
  */
-export interface StaticGraphDocumentContext
+interface StaticGraphDocumentContext
     extends ExecutedModuleReferenceContext, StaticJsonContext {
     lookupOptional(identifier: ts.Identifier): Value | undefined;
     fail(node: ts.Node, message: string): never;
 }
 
-export type StaticGraphDocument =
+type StaticGraphDocument =
     | { kind: "literal"; graph: Record<string, unknown> }
     | {
           kind: "module";

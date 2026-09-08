@@ -34,7 +34,7 @@ import {
 import type { ResolvedCompileOptions, Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 
-export interface ExecutedUrlCallContext {
+interface ExecutedUrlCallContext {
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
     /** The producers the browser ran; the adaptation record names them. */

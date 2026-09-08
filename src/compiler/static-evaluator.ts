@@ -158,7 +158,7 @@ export class StaticEvaluator {
         // scene 166 draws each component from a PRNG -- is a data tuple
         // rather than a compile-time one, so its lanes are read by index at
         // the sink's own width rather than folded.
-        const dataTuple = this.dataTupleComponents(unwrapped, 3, precision);
+        const dataTuple = this.dataTupleComponents(unwrapped, precision);
         if (dataTuple) {
             return `${type}{${dataTuple.join(", ")}}`;
         }
@@ -284,7 +284,7 @@ export class StaticEvaluator {
                 )
                 .join(", ")}}`;
         }
-        const data = this.dataTupleComponents(unwrapped, 3);
+        const data = this.dataTupleComponents(unwrapped);
         if (data) {
             return `bbl::Color3{${data.join(", ")}}`;
         }
@@ -1534,9 +1534,10 @@ export class StaticEvaluator {
      */
     private dataTupleComponents(
         expression: ts.Expression,
-        length: number,
         precision: "float" | "double" = "float",
     ): string[] | undefined {
+        // Both readers (a Vector3 and a Color3) take a three-component tuple.
+        const length = 3;
         const call = ts.isCallExpression(expression);
         if (
             !call &&

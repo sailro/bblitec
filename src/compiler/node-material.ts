@@ -74,7 +74,7 @@ export interface NodeMaterialContext
 }
 
 /** One entry of a call's `textures`, under the binding name it is keyed by. */
-export interface NodeMaterialTexture {
+interface NodeMaterialTexture {
     /** The pin's own binding name -- `options.textures` is keyed by it. */
     name: string;
     /** The `loadTexture2D` value the scene supplied for that binding. */

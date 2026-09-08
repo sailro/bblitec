@@ -19,7 +19,7 @@ import { nativeDataIterationIntrinsics, runtimeOnlyIntrinsics } from "./intrinsi
 import { resizingArrayMethods } from "./data-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
-export interface ResourceLoopContext extends PositiveIntegerContext {
+interface ResourceLoopContext extends PositiveIntegerContext {
     readonly checker: ts.TypeChecker;
     readonly symbols: CompilerSymbols;
     canvasSizeProperty(expression: ts.Expression): "width" | "height" | undefined;
@@ -299,7 +299,7 @@ export function loopBoundMayChange(
     ));
 }
 
-export interface StaticIndexLoop {
+interface StaticIndexLoop {
     indexBinding: ts.Identifier;
     start: number;
     end: ts.Expression;
