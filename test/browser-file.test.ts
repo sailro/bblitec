@@ -558,6 +558,7 @@ test(
                 "native/src",
                 "/I",
                 `${nativeFixtureVcpkgRoot}\\include`,
+                "/DBBLITE_PHYSICS_VIEWER=1",
                 "test/fixtures/js-file/browser-file-pal-check.cpp",
                 "native/src/pal_file.cpp",
                 "/link",
