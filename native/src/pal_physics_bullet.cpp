@@ -36,6 +36,7 @@
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
+#include <BulletCollision/CollisionShapes/btTriangleShape.h>
 #include <BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
 #include <BulletCollision/Gimpact/btGImpactShape.h>
 #include <BulletCollision/NarrowPhaseCollision/btGjkPairDetector.h>
@@ -160,6 +161,7 @@ struct PhysicsShapeState {
      * inertia orientation.
      */
     btTransform node_from_body{btTransform::getIdentity()};
+    std::optional<btVector3> capsule_first_endpoint;
     PhysicsMassProperties mass_properties{};
     bool has_exact_mass_properties = false;
     ShapeMaterial material{};
@@ -1728,7 +1730,10 @@ btPointCollector closest_convex_points(const btConvexShape& a, const btTransform
     btDiscreteCollisionDetectorInterface::ClosestPointInput input;
     input.m_transformA = a_transform;
     input.m_transformB = b_transform;
-    input.m_maximumDistanceSquared = static_cast<btScalar>(max_distance * max_distance);
+    // GJK tests the margin-free cores against this cutoff before expanding
+    // them. A capsule's radius is its margin, so it must be included here.
+    const double core_distance = max_distance + a.getMargin() + b.getMargin();
+    input.m_maximumDistanceSquared = static_cast<btScalar>(core_distance * core_distance);
     btPointCollector result;
     detector.getClosestPoints(input, result, nullptr);
     return result;
@@ -1797,6 +1802,7 @@ PhysicsShapeQueryResult physics_world_shape_proximity(
                 candidate->body->getWorldTransform());
             closest = static_cast<double>(hit.m_distance);
             result = shape_query_hit(hit, node, closest);
+            result.body_identity = candidate->identity;
         }
     }
     return result;
@@ -1837,7 +1843,173 @@ PhysicsShapeQueryResult physics_world_shape_cast(
     point.m_normalOnBInWorld = callback.m_hitNormalWorld;
     select_parallel_capsule_feature(point, convex, hit_node * query.node_from_body,
         *callback.m_hitCollisionObject->getCollisionShape(), callback.m_hitCollisionObject->getWorldTransform());
-    return shape_query_hit(point, hit_node, static_cast<double>(callback.m_closestHitFraction));
+    auto result = shape_query_hit(point, hit_node, static_cast<double>(callback.m_closestHitFraction));
+    if (const auto* body = body_entry_of(callback.m_hitCollisionObject)) result.body_identity = body->identity;
+    return result;
+}
+
+namespace {
+
+// The pin's capsule support map selects its first endpoint when both ends
+// are equally close to a box face. Restrict that endpoint to the face's axial
+// overlap; all other features retain the solver's closest point.
+void select_capsule_box_feature(btPointCollector& point, const PhysicsShapeState& query,
+    const btTransform& query_node, const btCollisionShape& target, const btTransform& target_transform) {
+    if (!query.capsule_first_endpoint || target.getShapeType() != BOX_SHAPE_PROXYTYPE) return;
+    const auto& capsule = static_cast<const btCapsuleShape&>(*query.shape);
+    const auto& box = static_cast<const btBoxShape&>(target);
+    const btVector3 axis = query_node.getBasis().getColumn(capsule.getUpAxis());
+    if (btFabs(axis.dot(point.m_normalOnBInWorld)) > btScalar(1e-5)) return;
+    const btVector3 box_axis = target_transform.getBasis().transpose() * axis;
+    const int dimension = box_axis.absolute().maxAxis();
+    if (btFabs(box_axis[dimension]) < btScalar(1) - btScalar(1e-5)) return;
+    const btScalar query_center = axis.dot((query_node * query.node_from_body).getOrigin());
+    const btScalar target_center = axis.dot(target_transform.getOrigin());
+    const btScalar extent = box.getHalfExtentsWithMargin()[dimension];
+    const btScalar lower = btMax(query_center - capsule.getHalfHeight(), target_center - extent);
+    const btScalar upper = btMin(query_center + capsule.getHalfHeight(), target_center + extent);
+    if (lower <= upper) {
+        const btScalar endpoint = axis.dot(query_node * *query.capsule_first_endpoint);
+        const btScalar selected = btClamped(endpoint, lower, upper);
+        point.m_pointInWorld += axis * (selected - axis.dot(point.m_pointInWorld));
+    }
+}
+
+void limit_collector(std::vector<PhysicsShapeQueryResult>& hits, std::size_t capacity) {
+    if (capacity == 0) throw std::runtime_error("A physics query collector requires positive capacity.");
+    std::stable_sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) {
+        return a.distance_or_fraction < b.distance_or_fraction;
+    });
+    // A shared triangle edge can produce the same physical contact twice.
+    // Preserve distinct points and normals on the same mesh body.
+    for (std::size_t i = 0; i < hits.size(); ++i) {
+        auto end = std::remove_if(hits.begin() + static_cast<std::ptrdiff_t>(i + 1), hits.end(), [&](const auto& candidate) {
+            return candidate.body_identity == hits[i].body_identity &&
+                std::abs(candidate.distance_or_fraction - hits[i].distance_or_fraction) < 1e-6 &&
+                (to_bt(candidate.point) - to_bt(hits[i].point)).length2() < btScalar(1e-12) &&
+                (to_bt(candidate.normal) - to_bt(hits[i].normal)).length2() < btScalar(1e-12);
+        });
+        hits.erase(end, hits.end());
+    }
+    if (hits.size() > capacity) hits.resize(capacity);
+}
+
+void collect_proximity_features(const PhysicsShapeState& source, const btConvexShape& query, const btTransform& query_shape,
+    const btTransform& query_node, const btCollisionShape& target, const btTransform& target_transform,
+    double max_distance, std::uint32_t body_identity, std::vector<PhysicsShapeQueryResult>& hits) {
+    if (target.isConvex()) {
+        auto point = closest_convex_points(query, query_shape, static_cast<const btConvexShape&>(target), target_transform, max_distance);
+        if (point.m_hasResult && static_cast<double>(point.m_distance) <= max_distance) {
+            select_parallel_capsule_feature(point, query, query_shape, target, target_transform);
+            select_capsule_box_feature(point, source, query_node, target, target_transform);
+            auto hit = shape_query_hit(point, query_node, point.m_distance);
+            hit.body_identity = body_identity;
+            hits.push_back(hit);
+        }
+        return;
+    }
+    if (target.isCompound()) {
+        const auto& compound = static_cast<const btCompoundShape&>(target);
+        for (int i = 0; i < compound.getNumChildShapes(); ++i) {
+            collect_proximity_features(source, query, query_shape, query_node, *compound.getChildShape(i),
+                target_transform * compound.getChildTransform(i), max_distance, body_identity, hits);
+        }
+        return;
+    }
+    if (!target.isConcave()) throw std::runtime_error("Physics proximity target has no convex or triangle representation.");
+    struct Triangles final : btTriangleCallback {
+        const PhysicsShapeState& source;
+        const btConvexShape& query;
+        const btTransform& query_shape;
+        const btTransform& query_node;
+        const btTransform& target_transform;
+        double max_distance;
+        std::uint32_t body_identity;
+        btScalar margin;
+        std::vector<PhysicsShapeQueryResult>& hits;
+        Triangles(const PhysicsShapeState& s, const btConvexShape& q, const btTransform& qs, const btTransform& qn, const btTransform& target,
+            double distance, std::uint32_t identity, btScalar target_margin, std::vector<PhysicsShapeQueryResult>& output)
+            : source(s), query(q), query_shape(qs), query_node(qn), target_transform(target), max_distance(distance),
+              body_identity(identity), margin(target_margin), hits(output) {}
+        void processTriangle(btVector3* vertices, int, int) override {
+            btTriangleShape triangle(vertices[0], vertices[1], vertices[2]);
+            triangle.setMargin(margin);
+            collect_proximity_features(source, query, query_shape, query_node, triangle, target_transform, max_distance, body_identity, hits);
+        }
+    } triangles(source, query, query_shape, query_node, target_transform, max_distance, body_identity, target.getMargin(), hits);
+    btVector3 low, high;
+    query.getAabb(target_transform.inverse() * query_shape, low, high);
+    const btVector3 expansion(static_cast<btScalar>(max_distance), static_cast<btScalar>(max_distance), static_cast<btScalar>(max_distance));
+    static_cast<const btConcaveShape&>(target).processAllTriangles(&triangles, low - expansion, high + expansion);
+}
+
+} // namespace
+
+std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_proximity(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape, const PhysicsTransform& transform,
+    double max_distance, bool should_hit_triggers, PhysicsBodyHandle ignored_body, std::size_t capacity) {
+    if (!std::isfinite(max_distance) || max_distance < 0) throw std::runtime_error("Physics proximity distance must be finite and non-negative.");
+    auto& owner = world_at(world);
+    const auto& query = shape_at(shape);
+    const QueryShape query_shape(query);
+    const btTransform node = query_transform(transform);
+    std::vector<PhysicsShapeQueryResult> hits;
+    for (const auto& body : owner.members) {
+        if (query_accepts(query, *body, should_hit_triggers, ignored_body.value)) {
+            collect_proximity_features(query, query_shape.get(), node * query.node_from_body, node,
+                *body->body->getCollisionShape(), body->body->getWorldTransform(), max_distance, body->identity, hits);
+        }
+    }
+    limit_collector(hits, capacity);
+    return hits;
+}
+
+std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_cast(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape, std::array<double, 4> rotation,
+    std::array<double, 3> from, std::array<double, 3> to, bool should_hit_triggers,
+    PhysicsBodyHandle ignored_body, std::size_t capacity) {
+    auto& owner = world_at(world);
+    const auto& query = shape_at(shape);
+    const QueryShape query_shape(query);
+    const btTransform from_node = query_transform(PhysicsTransform{from, rotation});
+    const btTransform to_node = query_transform(PhysicsTransform{to, rotation});
+    struct Collector final : btCollisionWorld::ConvexResultCallback {
+        const PhysicsShapeState& query;
+        const btConvexShape& convex;
+        const btTransform& from_node;
+        const btTransform& to_node;
+        bool include_triggers;
+        std::uint32_t ignored;
+        std::vector<PhysicsShapeQueryResult> hits;
+        Collector(const PhysicsShapeState& q, const btConvexShape& shape, const btTransform& from, const btTransform& to,
+            bool triggers, std::uint32_t ignore) : query(q), convex(shape), from_node(from), to_node(to), include_triggers(triggers), ignored(ignore) {}
+        bool needsCollision(btBroadphaseProxy* proxy) const override {
+            const auto* body = body_entry_of(static_cast<const btCollisionObject*>(proxy->m_clientObject));
+            return body && query_accepts(query, *body, include_triggers, ignored);
+        }
+        btScalar addSingleResult(btCollisionWorld::LocalConvexResult& result, bool normal_in_world) override {
+            const auto* body = body_entry_of(result.m_hitCollisionObject);
+            if (!body) return btScalar(1);
+            btTransform hit_node = from_node;
+            hit_node.setOrigin(from_node.getOrigin().lerp(to_node.getOrigin(), result.m_hitFraction));
+            btPointCollector point;
+            point.m_hasResult = true; point.m_distance = 0;
+            point.m_pointInWorld = result.m_hitPointLocal;
+            point.m_normalOnBInWorld = normal_in_world ? result.m_hitNormalLocal :
+                result.m_hitCollisionObject->getWorldTransform().getBasis() * result.m_hitNormalLocal;
+            select_parallel_capsule_feature(point, convex, hit_node * query.node_from_body,
+                *result.m_hitCollisionObject->getCollisionShape(), result.m_hitCollisionObject->getWorldTransform());
+            select_capsule_box_feature(point, query, hit_node,
+                *result.m_hitCollisionObject->getCollisionShape(), result.m_hitCollisionObject->getWorldTransform());
+            auto hit = shape_query_hit(point, hit_node, result.m_hitFraction);
+            hit.body_identity = body->identity;
+            hits.push_back(hit);
+            return btScalar(1);
+        }
+    } collector(query, query_shape.get(), from_node, to_node, should_hit_triggers, ignored_body.value);
+    owner.world->convexSweepTest(&query_shape.get(), from_node * query.node_from_body, to_node * query.node_from_body, collector);
+    limit_collector(collector.hits, capacity);
+    return std::move(collector.hits);
 }
 
 // --- Shapes ----------------------------------------------------------
@@ -1916,11 +2088,13 @@ PhysicsShapeHandle physics_shape_create_capsule(
     std::array<double, 3> point_b,
     double radius) {
     const Segment segment = segment_from(point_a, point_b);
-    return record_debug_inputs(push_shape(
+    auto handle = record_debug_inputs(push_shape(
         std::make_unique<btCapsuleShape>(
             static_cast<btScalar>(radius),
             segment.half_height * btScalar(2)),
         translated_frame(segment.center)), "CAPSULE", point_a, point_b, radius);
+    shape_at(handle).capsule_first_endpoint = to_bt(point_a);
+    return handle;
 }
 
 PhysicsShapeHandle physics_shape_create_cylinder(
@@ -2565,6 +2739,18 @@ void physics_body_set_mass_properties(
     entry.body->updateInertiaTensor();
     entry.contact_quiet_seconds = 0.0;
     mark_body_dirty(entry);
+}
+
+PhysicsMassProperties physics_body_get_mass_properties(PhysicsBodyHandle body) {
+    const auto& entry = body_at(body);
+    const auto& center = entry.node_from_body.getOrigin();
+    const auto rotation = entry.node_from_body.getRotation();
+    const auto inverse_inertia = entry.body->getInvInertiaDiagLocal();
+    const auto inverse_mass = entry.body->getInvMass();
+    const auto reciprocal = [](btScalar value) { return value > 0 ? 1.0 / static_cast<double>(value) : 0.0; };
+    return {{center.x(), center.y(), center.z()}, reciprocal(inverse_mass),
+        {reciprocal(inverse_inertia.x()), reciprocal(inverse_inertia.y()), reciprocal(inverse_inertia.z())},
+        {rotation.x(), rotation.y(), rotation.z(), rotation.w()}};
 }
 
 void physics_body_apply_impulse(

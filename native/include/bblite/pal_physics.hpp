@@ -32,6 +32,7 @@
  */
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -207,7 +208,19 @@ struct PhysicsShapeQueryResult {
     std::array<double, 3> point{};
     std::array<double, 3> input_normal{};
     std::array<double, 3> normal{};
+    std::uint32_t body_identity = 0;
 };
+
+/** Collector queries retain the closest `capacity` hits, including multiple mesh features. */
+[[nodiscard]] std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_proximity(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape,
+    const PhysicsTransform& transform, double max_distance,
+    bool should_hit_triggers, PhysicsBodyHandle ignored_body, std::size_t capacity);
+[[nodiscard]] std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_cast(
+    PhysicsWorldHandle world, PhysicsShapeHandle shape,
+    std::array<double, 4> rotation, std::array<double, 3> from,
+    std::array<double, 3> to, bool should_hit_triggers,
+    PhysicsBodyHandle ignored_body, std::size_t capacity);
 
 [[nodiscard]] PhysicsShapeQueryResult physics_world_shape_proximity(
     PhysicsWorldHandle world, PhysicsShapeHandle shape,
@@ -377,6 +390,8 @@ void physics_body_set_target_transform(
 void physics_body_set_mass_properties(
     PhysicsBodyHandle body,
     const PhysicsMassProperties& properties);
+/** `HP_Body_GetMassProperties`: live node-local centre and principal mass frame. */
+[[nodiscard]] PhysicsMassProperties physics_body_get_mass_properties(PhysicsBodyHandle body);
 /** `HP_Body_ApplyImpulse`: world-space location followed by impulse. */
 void physics_body_apply_impulse(
     PhysicsBodyHandle body,
