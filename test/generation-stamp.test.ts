@@ -139,3 +139,15 @@ test("the output digest sees a touched file and ignores what it excludes", () =>
     writeFileSync(resolve(scene.output, "upstream", "shaders", "a.dxil"), "x");
     assert.equal(generationOutputFingerprint(scene.output), touched);
 });
+
+test("post-compilation materialization refreshes the generated input digests", () => {
+    refreshBuildStamp(scene.output);
+    const path = resolve(scene.output, "upstream", "src", "shape_geometry.cpp");
+    writeFileSync(path, "const float shape[] = {1.0f};\n");
+    assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), true);
+    const first = readFileSync(resolve(scene.output, buildStampHeaderPath), "utf8");
+    writeFileSync(path, "const float shape[] = {2.0f};\n");
+    assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), true);
+    assert.notEqual(readFileSync(resolve(scene.output, buildStampHeaderPath), "utf8"), first);
+    assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), false);
+});

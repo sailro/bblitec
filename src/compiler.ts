@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { framePollExecutor } from "./compiler/frame-poll.js";
+import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
 import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
@@ -10008,8 +10009,7 @@ class Compiler
         }
         if (value.kind === "mesh" && value.sceneMeshIndex !== undefined) {
             const index = value.sceneMeshIndex;
-            this.sceneMeshes[index]!.runtimeInstances = true;
-            ++this.runtimeMeshProfileCount;
+            this.recordRuntimeMeshProfile(index);
             value.sceneMeshProfileIndex = index;
             delete value.sceneMeshIndex;
             value.cpp = `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
@@ -10385,6 +10385,20 @@ class Compiler
         options: ReachedLineMaterial,
     ): { name: string; id: number } {
         return reachLineMaterialProgram(this, node, options);
+    }
+
+    public reachPhysicsViewerMaterial(node: ts.Node, color: readonly [number, number, number, number]): { name: string; id: number } {
+        return reachPhysicsViewerMaterialProgram(this, node, color);
+    }
+
+    public recordRuntimeMeshProfile(index: number): void {
+        if (this.sceneMeshes[index]!.runtimeInstances) return;
+        this.sceneMeshes[index]!.runtimeInstances = true;
+        ++this.runtimeMeshProfileCount;
+    }
+
+    public guardStaticConstructionRead(operation: string): void {
+        if (this.features.has("physics:viewer")) this.emit(`bbl::pal::require_runtime_execution(${this.cppString(operation)});`);
     }
 
     public reachLinearDepthMaterial(
@@ -20618,6 +20632,13 @@ class Compiler
         if (this.presentationHostCpp && this.defaultEngineCpp !== this.presentationHostCpp) {
             this.failAtFile("A primary Canvas2D presentation host cannot also acquire a source-created GPU engine.");
         }
+        let physicsDebugConstructionBody: string[] | undefined;
+        if (features.includes("physics:viewer")) {
+            if (!this.engineStartMark || this.options.workers || this.presentationHostCpp || this.engineStartMark.indentLevel !== 2) {
+                this.failAtFile("Physics debug geometry extraction requires one top-level startEngine after the admitted construction graph.");
+            }
+            physicsDebugConstructionBody = this.body.slice(0, this.engineStartMark.index);
+        }
         this.hoistEngineContinuation();
         if (
             this.body.some(
@@ -20663,6 +20684,7 @@ class Compiler
             nativeFunctionDefinitions: this.nativeFunctionDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
             voxelFileStorageReached: this.voxelFileStorageReached,
+            ...(physicsDebugConstructionBody ? { physicsDebugConstructionBody } : {}),
             body: this.presentationHostCpp
                 ? [
                     `        auto ${this.presentationHostCpp} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,

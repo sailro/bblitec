@@ -1051,6 +1051,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/physics/havok.ts createPhysicsShape + addPhysicsShapeChildFromParent",
         consumers: CMAKE,
     },
+    "physics:viewer": {
+        provenance: "src/physics/physics-viewer.ts body lifecycle + physics-debug-line-material.ts pipeline",
+        consumers: CMAKE,
+    },
     "physics:trigger": {
         provenance:
             "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +

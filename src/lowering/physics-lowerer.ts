@@ -53,6 +53,7 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { lowerPhysicsQueries } from "./physics-query-lowerer.js";
 import { lowerPhysicsContainer } from "./physics-container-lowerer.js";
+import { lowerPhysicsViewer } from "./physics-viewer-lowerer.js";
 import {
   SHAPE_PARAMETERS,
   shapeParameterStorage,
@@ -1787,10 +1788,11 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     );
   }
 
-  public lowerPhysics(includeQueries = false, containerShapes = false): LoweredSource {
+  public lowerPhysics(includeQueries = false, containerShapes = false, includeViewer = false): LoweredSource {
     this.assertPinnedContracts();
     const queries = includeQueries ? lowerPhysicsQueries(this.context) : undefined;
     const container = containerShapes ? lowerPhysicsContainer(this.context) : undefined;
+    const viewer = includeViewer ? lowerPhysicsViewer(this.context) : undefined;
     const queryModule = "src/physics/havok-queries.ts";
     const raycast = this.context.functionDeclaration(queryModule, "physicsRaycast");
     const distanceLowerer = new PinnedNumericLowerer(raycast.file, {
@@ -2287,6 +2289,7 @@ void on_physics_collision(
     bool should_hit_triggers);
 
 ${queries?.header ?? ""}
+${viewer?.header ?? ""}
 }  // namespace bbl::upstream
 
 namespace bbl::js {
@@ -2303,6 +2306,7 @@ struct ValueHash<upstream::PhysicsBody> {
 #include "bblite/upstream/physics.hpp"
 #include "bblite/upstream/renderer_plan.hpp"
 #include <bblite/upstream/pinned_matrix.hpp>
+${viewer ? "#include <bblite/pal_physics_debug.hpp>" : ""}
 
 #include <algorithm>
 #include <cstddef>
@@ -3244,6 +3248,7 @@ void on_physics_collision(
 }
 
 ${queries?.source ?? ""}
+${viewer?.source ?? ""}
 PhysicsRaycastResult physics_raycast(
     PhysicsWorldHandle handle,
     Vec3d from,

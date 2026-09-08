@@ -20,9 +20,11 @@ import { isDataTuple, tupleComponents, type DataTypeRegistry } from "../data-typ
 import {
   pinnedEnumMemberName,
   validateObjectProperties,
+  staticJsonValue,
   type ObjectValidationContext,
 } from "../option-helpers.js";
 import type { Value } from "../types.js";
+import type { AssignmentContext } from "../assignments.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
   requiredObjectNumber,
@@ -55,6 +57,10 @@ export interface PhysicsIntrinsicContext
   compilePhysicsTriggerCallback(expression: ts.Expression): string;
   allocateTemporaryCppName(label: string): string;
   emit(line: string): void;
+  resolveStaticExpression(expression: ts.Expression): ts.Expression;
+  reachPhysicsViewerMaterial(node: ts.Node, color: readonly [number, number, number, number]): { name: string; id: number };
+  recordRuntimeMeshProfile(index: number): void;
+  recordSceneMeshMaterial: AssignmentContext["recordSceneMeshMaterial"];
 }
 
 /**
@@ -192,6 +198,60 @@ export function compilePhysicsIntrinsic(
   call: ts.CallExpression,
 ): Value | undefined {
   switch (importedName) {
+    case "createPhysicsViewer": {
+      context.expectArgumentCount(call, 2, 3);
+      const scene = context.compileValue(call.arguments[0]!);
+      const world = context.compileValue(call.arguments[1]!);
+      context.expectKind(scene, "scene", call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[1]!);
+      context.expectSameEngine(scene, world, call);
+      let color: readonly [number, number, number, number] = [1, 1, 1, 1];
+      if (call.arguments[2]) {
+        const options = context.expectObjectLiteral(call.arguments[2]);
+        validateObjectProperties(context, options, ["color"], "Physics viewer options support color only.");
+        const expression = context.objectProperty(options, "color");
+        if (expression) {
+          const values = staticJsonValue(context, expression);
+          if (!Array.isArray(values) || values.length !== 4 || !values.every(value => typeof value === "number" && Number.isFinite(value))) {
+            context.fail(expression, "Physics viewer color requires four construction-known finite numbers.");
+          }
+          color = values as [number, number, number, number];
+        }
+      }
+      context.reachFeature("physics:viewer", call);
+      const variant = context.reachPhysicsViewerMaterial(call, color);
+      return { kind: "physics-viewer", cpp: `bbl::upstream::create_physics_viewer(${scene.cpp}, ${world.cpp}, ${variant.id}u)`,
+        ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}), shaderVariant: variant.name };
+    }
+    case "showPhysicsBody": {
+      context.expectArgumentCount(call, 2, 2);
+      if (!ts.isExpressionStatement(call.parent)) {
+        context.fail(call, "Physics debug geometry materialization requires a discarded showPhysicsBody return; observing its debug mesh or nullable result is not yet supported.");
+      }
+      const viewer = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(viewer, "physics-viewer", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      if (!viewer.shaderVariant) context.fail(call.arguments[0]!, "Physics viewer material must retain its construction-known variant.");
+      const profile = context.recordSceneMesh("from-data", { hasUv2: false, hasTangents: false, hasColors: false });
+      context.recordRuntimeMeshProfile(profile);
+      context.recordSceneMeshMaterial(profile, { pbrMaterial: null, nodeMaterial: null, standardMaterial: false, sceneShaderVariant: viewer.shaderVariant });
+      for (const feature of ["physics:viewer", "mesh:from-data", "material:shader", "renderer:scene", "scene:remove"] as const) context.reachFeature(feature, call);
+      return { kind: "void", cpp: `bbl::upstream::show_physics_body(${viewer.cpp}, ${body.cpp}, ${profile}u)` };
+    }
+    case "hidePhysicsBody":
+    case "disposePhysicsViewer": {
+      if (importedName === "hidePhysicsBody" && !ts.isExpressionStatement(call.parent)) {
+        context.fail(call, "Physics debug geometry materialization requires a discarded hidePhysicsBody result; observing debug membership is not yet supported.");
+      }
+      context.expectArgumentCount(call, importedName === "hidePhysicsBody" ? 2 : 1, importedName === "hidePhysicsBody" ? 2 : 1);
+      const viewer = context.compileValue(call.arguments[0]!);
+      context.expectKind(viewer, "physics-viewer", call.arguments[0]!);
+      if (importedName === "disposePhysicsViewer") return { kind: "void", cpp: `bbl::upstream::dispose_physics_viewer(${viewer.cpp})` };
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      return { kind: "boolean", cpp: `bbl::upstream::hide_physics_body(${viewer.cpp}, ${body.cpp})` };
+    }
     case "createHavokWorld": {
       // `(scene, hknp, gravity?)`. The module argument is required by
       // the pin's signature and carries nothing here, so it is

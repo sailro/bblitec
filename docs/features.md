@@ -325,6 +325,10 @@ Container shapes retain child ownership and source-derived relative TRS. Convex 
 nonzero scale per placement. Construction must finish before attachment; mixed child materials/masks,
 triggers and triangle-mesh children refuse.
 
+Body viewers retain show/hide/dispose, node transforms and the pinned always-depth line material.
+Debug geometry requires construction-known HP shape descriptors and a native toolchain during compilation.
+Show/hide return observations, observable startup debug membership and constraint overlays refuse.
+
 Raycasts return nullable body identity, point/normal and double distance. Trigger selection and both masks
 filter the closest eligible body. Arguments evaluate in source order; retained point objects expose changes
 made by later arguments. Dynamic option aliases without native field storage refuse.

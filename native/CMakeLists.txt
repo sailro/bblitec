@@ -902,6 +902,10 @@ if("physics:world" IN_LIST BBLITE_RUNTIME_FEATURES)
     )
 endif()
 
+if("physics:viewer" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_PHYSICS_VIEWER=1)
+endif()
+
 # The navigation toolset is reached only through
 # `bblite/pal_navigation.hpp`, whose implementation is one translation
 # unit the feature list selects (`featureSources`). Nothing generated

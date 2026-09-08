@@ -604,6 +604,15 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("physics:viewer")) {
+        adaptations.push({
+            id: "materialized-physics-debug-geometry", category: "asset-materialization",
+            sourceSemantics: "The pinned viewer asks Havok HP_Shape_CreateDebugDisplayGeometry for the body's current shape and follows its source node each frame.",
+            nativeSemantics: "A compiler-generated startup construction entry records complete pre-solver HP_Shape inputs. A Node Havok WASM producer materializes only shape-local triangle geometry. The normal binary requires exact descriptor equality; body poses and motion stay live. Extraction refuses clocks, physics steps, renderer/input execution, external storage and observable debug membership. Unread direct instrumentation clocks are omitted; observed show/hide results and constraint overlays are not admitted.",
+            risk: "high",
+            validation: ["complete descriptor and producer drift/refusal tests", "viewer lifecycle and native constructor extraction controls", "both-backend image parity and live scene controls"],
+        });
+    }
     if (features.includes("physics:world")) {
         adaptations.push({
             id: "substituted-physics-solver",

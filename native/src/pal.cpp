@@ -326,6 +326,7 @@ PerformanceClockState& performance_clock_state() {
 } // namespace
 
 double performance_milliseconds() {
+    require_runtime_execution("a clock read");
     auto& state = performance_clock_state();
     return state.fixed ? state.milliseconds : monotonic_milliseconds();
 }
