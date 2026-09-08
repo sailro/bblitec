@@ -39,6 +39,7 @@ import type {
     FlowGraphSocket,
 } from "../pinned-flow-graph.js";
 import { type LoweredSource, LoweringContext, statementKind } from "./context.js";
+import { CPP_RECORD, CPP_SCALAR } from "./cpp-types.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
@@ -167,12 +168,15 @@ function staticNumber(value: number): Val {
     return { k: "static", value };
 }
 
+// The graph's four-lane shape has no positional record in the shared
+// registry (no pinned body the translators serve builds one), so its
+// storage is spelled here beside the registry's.
 const SHAPE_CPP: Record<Shape, string> = {
-    number: "double",
-    boolean: "bool",
-    string: "std::string",
-    vec2: "Vec2d",
-    vec3: "Vec3d",
+    number: CPP_SCALAR.number,
+    boolean: CPP_SCALAR.boolean,
+    string: CPP_SCALAR.string,
+    vec2: CPP_RECORD.vec2.storage,
+    vec3: CPP_RECORD.vec3.storage,
     vec4: "Vec4d",
 };
 

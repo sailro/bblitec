@@ -37,6 +37,7 @@
 import ts from "typescript";
 import { doubleLiteral, floatLiteral, snakeCase } from "../cpp-literals.js";
 import { LoweringContext } from "./context.js";
+import { cppVector } from "./cpp-types.js";
 import {
     lowerPinnedFunction,
     lowerPinnedFunctionParts,
@@ -77,7 +78,7 @@ const bufferModule = "src/particle/particle-buffer.ts";
 const registryModule = "src/particle/node/npe-registry.ts";
 
 /** One parsed input, as the pin's `ParsedParticleInput` serializes. */
-export interface LiveGraphInput {
+interface LiveGraphInput {
     name: string;
     targetBlockId: number | null;
     targetConnectionName: string | null;
@@ -86,7 +87,7 @@ export interface LiveGraphInput {
 }
 
 /** One parsed block, as the pin's `ParsedParticleBlock` serializes. */
-export interface LiveGraphBlock {
+interface LiveGraphBlock {
     id: number;
     className: string;
     name: string;
@@ -115,7 +116,7 @@ export const SLOT_NAMES = [
     "createColor",
     "createColorDead",
 ] as const;
-export type SlotName = (typeof SLOT_NAMES)[number];
+type SlotName = (typeof SLOT_NAMES)[number];
 
 /**
  * The optional hooks a feature installs on a system -- asserted against the `ParticleSystem`
@@ -130,7 +131,7 @@ export const HOOK_NAMES = [
     "_seedLocalPosition",
     "_registerBillboard",
 ] as const;
-export type HookName = (typeof HOOK_NAMES)[number];
+type HookName = (typeof HOOK_NAMES)[number];
 
 /**
  * What the executed pin reported about one live system, read off the
@@ -179,10 +180,10 @@ const COLUMN_STORAGE: Record<
     ColumnSpec["element"],
     { vector: string; binding: PinnedBinding["type"]; zero: string }
 > = {
-    f32: { vector: "std::vector<float>", binding: "f32", zero: "0.0f" },
-    f64: { vector: "std::vector<double>", binding: "f64-buffer", zero: "0.0" },
-    u32: { vector: "std::vector<std::uint32_t>", binding: "u32", zero: "0u" },
-    u8: { vector: "std::vector<std::uint8_t>", binding: "u8", zero: "0u" },
+    f32: { vector: cppVector("f32"), binding: "f32", zero: "0.0f" },
+    f64: { vector: cppVector("f64"), binding: "f64-buffer", zero: "0.0" },
+    u32: { vector: cppVector("u32"), binding: "u32", zero: "0u" },
+    u8: { vector: cppVector("u8"), binding: "u8", zero: "0u" },
 };
 
 const COLUMN_CONSTRUCTORS = new Map<string, ColumnSpec["element"]>([

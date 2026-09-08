@@ -27,6 +27,7 @@ import {
 import {
     PINNED_BOOLEAN_OPERATORS,
     PINNED_MATH_FUNCTIONS,
+    pinnedRemainderCall,
 } from "./pinned-operators.js";
 
 export interface UboFieldSlot {
@@ -38,7 +39,7 @@ export interface UboFieldSlot {
     lanes: number;
 }
 
-export interface UboWriterRequest {
+interface UboWriterRequest {
     modulePath: string;
     symbolName: string;
     /** The pinned local the writer reads values from, e.g. `cc`. */
@@ -788,6 +789,12 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         return emitExpression(state, node.left);
     }
     if (ts.isBinaryExpression(node)) {
+        if (node.operatorToken.kind === ts.SyntaxKind.PercentToken) {
+            return pinnedRemainderCall(
+                emitExpression(state, node.left),
+                emitExpression(state, node.right),
+            );
+        }
         // A writer's `||` is a boolean guard, so it lowers to C++'s own.
         const operator = PINNED_BOOLEAN_OPERATORS.get(
             node.operatorToken.kind,
