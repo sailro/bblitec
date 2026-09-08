@@ -66,6 +66,7 @@ import {
     pinnedGizmoFollowGeometry,
     pinnedGizmoGeometry,
 } from "./pinned-gizmo-geometry.js";
+import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -82,7 +83,6 @@ const COMPOSITE_MODULE = "src/gizmo/composite-gizmos.ts";
 const POINTER_DRAG_MODULE = "src/gizmo/pointer-drag.ts";
 const POLYHEDRON_MODULE = "src/mesh/create-polyhedron.ts";
 const BOUNDING_BOX_MODULE = "src/gizmo/bounding-box-gizmo.ts";
-const COMPUTE_AABB_MODULE = "src/math/compute-aabb.ts";
 const MAT4_FROM_QUAT_MODULE = "src/math/mat4-from-quat.ts";
 const MAT4_COMPOSE_MODULE = "src/math/mat4-compose-into.ts";
 
@@ -3307,116 +3307,6 @@ ${body}
 }`;
     }
 
-    /**
-     * `computeAabb`'s WORLD arm: the fold every candidate mesh goes
-     * through, lowered from the pinned body.
-     *
-     * The pinned function guards its two arms on whether a world matrix
-     * was supplied and the cage always supplies one, so the arm that
-     * transforms is the one emitted -- and it is asserted to be that
-     * guard rather than assumed.
-     */
-    private loweredComputeAabb(): string {
-        const { file, declaration } = this.context.functionDeclaration(
-            COMPUTE_AABB_MODULE,
-            "computeAabb",
-        );
-        if (
-            declaration.parameters.length !== 2 ||
-            (declaration.parameters[0]!.name as ts.Identifier).text !==
-                "positions" ||
-            (declaration.parameters[1]!.name as ts.Identifier).text !== "world"
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected pinned computeAabb to take (positions, world).",
-            );
-        }
-        let lowerer: PinnedNumericLowerer | undefined;
-        const scope: PinnedNumericScope = {
-            bindings: new Map<string, PinnedBinding>([
-                ["positions", { cpp: "positions", type: "scalar" }],
-                [
-                    "positions.length",
-                    {
-                        cpp: "static_cast<std::int64_t>(positions.size())",
-                        type: "scalar",
-                    },
-                ],
-                ["world", { cpp: "world", type: "scalar" }],
-            ]),
-            calls: new Map(),
-            returnValue: (expression) => {
-                const returned = expression
-                    ? this.context.unwrapExpression(expression)
-                    : undefined;
-                if (
-                    !returned ||
-                    !ts.isArrayLiteralExpression(returned) ||
-                    returned.elements.length !== 2
-                ) {
-                    return this.context.contractError(
-                        declaration,
-                        "Expected pinned computeAabb to return a min/max " +
-                            "pair.",
-                    );
-                }
-                const rows = returned.elements.map((row) => {
-                    const literal = this.context.unwrapExpression(row);
-                    if (
-                        !ts.isArrayLiteralExpression(literal) ||
-                        literal.elements.length !== 3
-                    ) {
-                        return this.context.contractError(
-                            declaration,
-                            "Expected each pinned AABB corner to have " +
-                                "three components.",
-                        );
-                    }
-                    return `{${literal.elements
-                        .map((element) => lowerer!.expression(element))
-                        .join(", ")}}`;
-                });
-                return `std::array<std::array<double, 3>, 2>{{${rows.join(
-                    ", ",
-                )}}}`;
-            },
-        };
-        lowerer = new PinnedNumericLowerer(file, scope);
-        const statements = declaration.body!.statements;
-        const guard = statements.find(
-            (statement): statement is ts.IfStatement =>
-                ts.isIfStatement(statement) &&
-                ts.isIdentifier(statement.expression) &&
-                statement.expression.text === "world",
-        );
-        if (!guard || !ts.isBlock(guard.thenStatement)) {
-            this.context.contractError(
-                declaration,
-                "Expected pinned computeAabb to guard its transforming " +
-                    "arm on the supplied world matrix.",
-            );
-        }
-        const body = statements
-            .flatMap((statement) =>
-                statement === guard
-                    ? (guard.thenStatement as ts.Block).statements.flatMap(
-                          (inner) => lowerer!.statement(inner, "    "),
-                      )
-                    : lowerer!.statement(statement, "    "),
-            )
-            .join("\n");
-        return `// ${this.context.provenance(
-            COMPUTE_AABB_MODULE,
-            "computeAabb",
-        )}
-std::array<std::array<double, 3>, 2> bbox_compute_aabb(
-    const BoundingBoxPositions& positions,
-    const std::array<float, 16>& world) {
-${body}
-}`;
-    }
-
     /** `mat4FromQuat`, over the pinned compose the loader also uses. */
     private loweredMat4FromQuat(file: ts.SourceFile): string {
         const declaration = this.context.functionDeclaration(
@@ -4126,7 +4016,13 @@ std::array<float, 16> bbox_mat4_from_quat(
 
         // ---- rotatePoint, computeAabb and mat4FromQuat ----
         const rotatePoint = this.loweredPinnedRotatePoint(file);
-        const computeAabb = this.loweredComputeAabb();
+        // `computeAabb`'s WORLD arm: the cage always supplies a world
+        // matrix, so the arm that transforms is the one emitted.
+        const computeAabb = lowerComputeAabb(this.context, {
+            arm: "world",
+            cppName: "bbox_compute_aabb",
+            positionsType: "BoundingBoxPositions",
+        });
         const fromQuat = this.loweredMat4FromQuat(file);
         const refreshArguments = this.refreshInverseArguments(factory, file);
         const identity = this.context.unwrapExpression(
@@ -4258,19 +4154,13 @@ ${pinnedGizmoBoundsGeometry(this.context)}
  * them as model vertices, so the same walk reads through this view rather
  * than through a copy built per frame.
  */
-struct BoundingBoxPositions {
-    const std::vector<ModelVertex>* vertices = nullptr;
-    double operator[](std::size_t index) const {
-        const ModelVertex& vertex = (*vertices)[index / 3u];
-        const std::size_t lane = index % 3u;
-        return lane == 0u
-            ? static_cast<double>(vertex.position.x)
-            : lane == 1u
-                ? static_cast<double>(vertex.position.y)
-                : static_cast<double>(vertex.position.z);
-    }
-    std::size_t size() const { return vertices->size() * 3u; }
-};
+${positionsView({
+    name: "BoundingBoxPositions",
+    element: "ModelVertex",
+    member: "vertices",
+    local: "vertex",
+    position: "vertex.position",
+})}
 
 using upstream::mat4_multiply_into;
 

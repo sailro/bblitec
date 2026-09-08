@@ -11,6 +11,7 @@ import {
     lowerTupleComponents,
 } from "../pinned-function-lowerer.js";
 import { pinnedMeshOptionLocals, pinnedParameterFlag } from "../../pinned-mesh-defaults.js";
+import { lowerComputeAabb } from "../pinned-compute-aabb.js";
 
 /**
  * The names one pinned closure reads from OUTSIDE itself.
@@ -597,6 +598,12 @@ MeshHandle create_capsule(Engine& engine, CapsuleOptions options) {
         // pin's own body, because the four call it rather than each
         // carrying a copy.
         const normalsModule = "src/mesh/compute-normals.ts";
+        // `computeAabb`'s local arm: the bounds `createMeshFromData` folds
+        // over the positions it was handed, lowered from the pinned body.
+        const computeAabb = lowerComputeAabb(this.context, {
+            arm: "local",
+            cppName: "compute_aabb",
+        });
         const computeNormals = !polyhedron && !ribbon && !torusKnot
             ? ""
             : (() => {
@@ -2546,8 +2553,10 @@ ${heightMapGround ? `\
 #include <bblite/pal_image.hpp>
 ` : ""}
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -2973,6 +2982,12 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
 }
 
 ${computeNormals}${discFactory}${cylinderFactory}${capsuleFactory}${polyhedronFactory}${ribbonFactory}${torusKnotFactory}
+namespace {
+
+${computeAabb}
+
+} // namespace
+
 MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::string& name,
@@ -3027,29 +3042,22 @@ MeshHandle create_mesh_from_data(
     // attribute, not a zero-filled one.
     geometry.has_uvs = !uvs.empty();
     geometry.has_vertex_colors = !colors.empty();
-    // computeAabb: fold XYZ min/max over the positions buffer; empty input
-    // keeps the record's default bounds (the pinned helper returns
-    // infinities that createMeshFromData filters through isFinite).
+    // computeAabb over the positions the call handed in, whole triples
+    // only; empty input keeps the record's default bounds (the pinned
+    // helper returns infinities that createMeshFromData filters through
+    // isFinite). The fold is the pin's double fold; the one float rounding
+    // is the record's own store.
     if (vertex_count > 0) {
-        Vec3 bounds_min{
-            std::numeric_limits<float>::infinity(),
-            std::numeric_limits<float>::infinity(),
-            std::numeric_limits<float>::infinity()};
-        Vec3 bounds_max{
-            -std::numeric_limits<float>::infinity(),
-            -std::numeric_limits<float>::infinity(),
-            -std::numeric_limits<float>::infinity()};
-        for (std::size_t index = 0; index < vertex_count; ++index) {
-            const Vec3 position = geometry.vertices[index].position;
-            bounds_min.x = std::min(bounds_min.x, position.x);
-            bounds_min.y = std::min(bounds_min.y, position.y);
-            bounds_min.z = std::min(bounds_min.z, position.z);
-            bounds_max.x = std::max(bounds_max.x, position.x);
-            bounds_max.y = std::max(bounds_max.y, position.y);
-            bounds_max.z = std::max(bounds_max.z, position.z);
-        }
-        geometry.bounds_min = bounds_min;
-        geometry.bounds_max = bounds_max;
+        const std::array<std::array<double, 3>, 2> aabb = compute_aabb(
+            std::span<const float>{positions.data(), vertex_count * 3});
+        geometry.bounds_min = Vec3{
+            static_cast<float>(aabb[0][0]),
+            static_cast<float>(aabb[0][1]),
+            static_cast<float>(aabb[0][2])};
+        geometry.bounds_max = Vec3{
+            static_cast<float>(aabb[1][0]),
+            static_cast<float>(aabb[1][1]),
+            static_cast<float>(aabb[1][2])};
     }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
