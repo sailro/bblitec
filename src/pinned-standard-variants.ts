@@ -2231,6 +2231,9 @@ export function pinnedStandardSupportBlock(
                 return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;
             },
         });
+        // Defined only when on: both PALs read it as defined(...), so a
+        // 0 branch would read as on. The inventory row carries the off
+        // state.
         skeletonBlock = `
 #define BBLITE_STANDARD_SKELETON 1
 // ${context.provenance(skeletonModule, "stdSkeletonExt._meshFeatures")}

@@ -569,7 +569,8 @@ void write_post_process_uniforms(
 } // namespace bbl::upstream
 ${this.compositeDeclarations()}
 ${[...lifecycleHeaders].join("\n")}
-${sceneUbo ? `#define BBLITE_HAS_TAA 1\n${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}\n${sceneUbo.packingHeader()}` : ""}`;
+#define BBLITE_HAS_TAA ${sceneUbo ? 1 : 0}
+${sceneUbo ? `${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}\n${sceneUbo.packingHeader()}` : ""}`;
     }
 
     /** The pin's own switch, as the emitted table's case arms. */

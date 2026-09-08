@@ -82,6 +82,8 @@ export function lowerStandardMeshAlpha(context: LoweringContext, vertexColors = 
     const lowerer = new PinnedNumericLowerer(file, {
         bindings, calls: new Map(), booleanAnd: true, booleanOr: true,
     });
+    // Defined only when on: both PALs read it as defined(...), so a 0
+    // branch would read as on. The inventory row carries the off state.
     return `
 #define BBLITE_STANDARD_VERTEX_ALPHA 1
 inline constexpr bool standard_vertex_colors_enabled = ${vertexColors};

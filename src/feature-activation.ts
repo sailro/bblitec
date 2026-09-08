@@ -52,23 +52,31 @@ export type FeatureActivationMechanism =
 /**
  * What reads an activation unit. The vocabulary is closed so consumers
  * stay greppable: `features.cmake` (BBLITE_RUNTIME_FEATURES and the
- * source lists), the two generated capability headers, the composed
- * pinned variant set ("variant table"), the generated loader's lowering
- * flags, the renderer plan/shader lowering options, the vcpkg codec
- * manifest features, the per-scene `fidelity.json` adaptations, and the
- * generation-time gates that refuse instead of emitting.
+ * source lists), the two generated capability headers, the three family
+ * headers that carry a define of their own (the post-process, Standard
+ * variant and render-plan headers), the composed pinned variant set
+ * ("variant table"), the generated loader's lowering flags, the renderer
+ * plan/shader lowering options, the vcpkg codec manifest features, the
+ * per-scene `fidelity.json` adaptations, the generation-time gates that
+ * refuse instead of emitting, and "inventory" for a feature nothing
+ * beyond the manifest and this table reads -- its code is emitted by the
+ * compiler where it is reached, and no build rule tests the name.
  */
 export type FeatureActivationConsumer =
     | "features.cmake"
     | "render_capabilities.hpp"
     | "material_texture_slots.hpp"
+    | "frame_graph_post_process.hpp"
+    | "standard_variants.hpp"
+    | "renderer_plan.hpp"
     | "variant table"
     | "deployed shaders"
     | "loader flag"
     | "renderer plan"
     | "vcpkg manifest"
     | "fidelity.json"
-    | "generation gate";
+    | "generation gate"
+    | "inventory";
 
 export interface FeatureActivationRow {
     name: string;
@@ -1417,6 +1425,9 @@ function capabilityRows(
     const nodeGeometryViewCount =
         nodeGeometryVariants(nodeVariantList).length;
     const nodeMorphStorage = nodeVariantsUseMorphStorage(nodeVariantList);
+    const taa = emit.postProcessComposites.some(
+        (composite) => composite.taa !== undefined,
+    );
     // The same reading upstream-lower makes for the defines: what the
     // scene's composed variants spliced and bind. For the arms the emit
     // options carry (the union over every composed variant's own arms) this
@@ -1776,20 +1787,6 @@ function capabilityRows(
                 "variant table",
             ],
         ),
-        row(
-            "BBLITE_MATERIAL_DISPERSION",
-            "capability",
-            emit.dispersion,
-            emit.dispersion
-                ? "a composed PBR variant refracts with the pin's " +
-                    "chromatic dispersion"
-                : "no composed PBR variant carries a dispersion",
-            "src/material/pbr/fragments/refraction-rtt-fragment.ts reads " +
-                "_subsurface.refraction.dispersion off the material the " +
-                "executed src/loader-gltf/gltf-ext-dielectric.ts stamped " +
-                "(needsDispersion)",
-            ["render_capabilities.hpp", "variant table"],
-        ),
         checkedRow(
             "BBLITE_MATERIAL_SPEC_GLOSS",
             "capability",
@@ -1876,24 +1873,6 @@ function capabilityRows(
                 "isCube); upstream-lower derives the define from the " +
                 "composed set through the same variantBindings walk",
             ["render_capabilities.hpp", "material_texture_slots.hpp"],
-        ),
-        checkedRow(
-            "BBLITE_SHADOWS",
-            "capability",
-            shadows.reached,
-            [
-                [
-                    has("shadow:pcf"),
-                    "scene source reached shadow:pcf",
-                ],
-                [
-                    has("shadow:esm"),
-                    "scene source reached shadow:esm",
-                ],
-            ],
-            "not reached",
-            "src/shadow/pcf-spotlight-shadow-generator.ts",
-            ["render_capabilities.hpp"],
         ),
         checkedRow(
             "BBLITE_SHADOWS_ESM",
@@ -2255,6 +2234,57 @@ function capabilityRows(
                 "task rather than to any one family",
             ["render_capabilities.hpp"],
         ),
+        // The three defines other generated headers carry. Each is written
+        // by the lowerer that owns the header, from the same reach the row
+        // states, so a plain row: there is one derivation.
+        row(
+            "BBLITE_HAS_TAA",
+            "capability",
+            taa,
+            taa
+                ? "a composed post-process composite is the pin's TAA task"
+                : has("renderer:post-process")
+                    ? "reached post-process but no composite is the TAA task"
+                    : "not reached",
+            "src/frame-graph/taa-post-process.ts createTaaPostProcessTask: " +
+                "the lowered post-process header carries the jitter, " +
+                "history and scene-UBO blocks only for a scene composing " +
+                "the TAA composite; written 0 for every other " +
+                "post-process scene, which both PALs read as off",
+            ["frame_graph_post_process.hpp"],
+        ),
+        row(
+            "BBLITE_STANDARD_SKELETON",
+            "capability",
+            has("material:standard-skeleton") && standardVariantCount > 0,
+            has("material:standard-skeleton") && standardVariantCount > 0
+                ? "scene source reached enableStandardSkeleton and the " +
+                    "scene composes Standard variants"
+                : has("material:standard-skeleton")
+                    ? "reached enableStandardSkeleton but composes no " +
+                        "Standard variant"
+                    : "not reached",
+            "src/material/standard/fragments/std-skeleton-fragment.ts " +
+                "stdSkeletonExt, registered by " +
+                "src/material/standard/enable-standard-mesh-features.ts " +
+                "enableStandardSkeleton; defined only when on, because " +
+                "both PALs test it with defined()",
+            ["standard_variants.hpp"],
+        ),
+        row(
+            "BBLITE_STANDARD_VERTEX_ALPHA",
+            "capability",
+            has("mesh:vertex-alpha") && has("renderer:scene"),
+            has("mesh:vertex-alpha") && has("renderer:scene")
+                ? "scene source reached mesh:vertex-alpha in a rendered scene"
+                : "not reached",
+            "src/material/standard/standard-renderable.ts " +
+                "buildStandardMeshRenderables colour alpha: hasVertexAlpha " +
+                "adds VERTEX_ALPHA | MATERIAL_ALPHA_BLEND to the feature " +
+                "word; defined only when on, because the shared PAL " +
+                "header tests it with defined()",
+            ["renderer_plan.hpp"],
+        ),
     ];
 }
 
@@ -2520,6 +2550,22 @@ function emitOptionRows(
                 "(src/material/standard/standard-template.ts) — specular " +
                 "and ambient always carried the selection",
             ["loader flag", "renderer plan"],
+        ),
+        row(
+            "dispersion",
+            "emit-option",
+            emit.dispersion,
+            emit.dispersion
+                ? "a composed PBR variant refracts with the pin's " +
+                    "chromatic dispersion"
+                : "no composed PBR variant carries a dispersion",
+            "src/material/pbr/fragments/refraction-rtt-fragment.ts reads " +
+                "_subsurface.refraction.dispersion off the material the " +
+                "executed src/loader-gltf/gltf-ext-dielectric.ts stamped " +
+                "(needsDispersion); the renderer lowering asserts the pin's " +
+                "dispersion formulas only where a composed variant carries " +
+                "the arm",
+            ["renderer plan"],
         ),
         row(
             "idDiagnostics",

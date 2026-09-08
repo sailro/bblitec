@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import type { AssetSpecializationFeatures } from "../src/asset-specializer.js";
 import type { CompiledShaderProgram } from "../src/compiler/types.js";
@@ -679,30 +680,101 @@ test("composition and refusal rows report this scene's facts", () => {
     assert.deepEqual(skinning.consumers, ["fidelity.json"]);
 });
 
-test("every render-capability define has a capability row", () => {
-    // The emitter's own source is the authority on which #define names
-    // `render_capabilities.hpp` can carry (upstream-lower.ts holds every
-    // one, including the pair metallicReflectanceCapabilityDefines emits
-    // and the two derived expressions). Each must have a capability row,
-    // so the next define cannot land without naming its activation.
-    const emitter = readFileSync("src/upstream-lower.ts", "utf8");
-    const defines = new Set(
-        [...emitter.matchAll(/#define (BBLITE_[A-Z0-9_]+)/g)].map(
-            (match) => match[1]!,
-        ),
-    );
-    assert.ok(defines.size > 0, "the define scan found the emitter");
+/** Every file under a directory carrying one of the extensions. */
+function sourceFiles(
+    directory: string,
+    extensions: readonly string[],
+): string[] {
+    const files: string[] = [];
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+            files.push(...sourceFiles(path, extensions));
+        } else if (extensions.some((extension) => entry.name.endsWith(extension))) {
+            files.push(path);
+        }
+    }
+    return files;
+}
+
+/**
+ * Every `#define BBLITE_*` a generated tree can carry, by the emitter that
+ * writes it. The emitters are the authority: scanning them is scanning
+ * every tree at once, before any is generated, and holds for the pair
+ * metallicReflectanceCapabilityDefines emits and the derived expressions.
+ */
+function emittedDefines(): Map<string, string> {
+    const defines = new Map<string, string>();
+    for (const file of sourceFiles("src", [".ts"])) {
+        for (
+            const match of readFileSync(file, "utf8").matchAll(
+                /#define (BBLITE_[A-Z0-9_]+)/g,
+            )
+        ) {
+            defines.set(match[1]!, file);
+        }
+    }
+    assert.ok(defines.size > 0, "the define scan found the emitters");
+    return defines;
+}
+
+/**
+ * The emitted names that are constants rather than activation units: the
+ * build stamp string, the asset-directory fallback and an include guard.
+ */
+const emittedConstants = new Set([
+    "BBLITE_BUILD_STAMP",
+    "BBLITE_ASSET_DIR",
+    "BBLITE_UPSTREAM_CAMERA_CHANGE_KEY_HPP",
+]);
+
+test("every emitted BBLITE_ define has a capability row", () => {
+    // Each define a generated tree carries must have a row, so the next
+    // define cannot land without naming its activation -- whichever header
+    // its lowerer writes it into.
     const rows = featureActivationRows(everythingOnInputs());
-    for (const define of defines) {
+    for (const [define, emitter] of emittedDefines()) {
+        if (emittedConstants.has(define)) continue;
         assert.ok(
             rows.some(
                 (row) =>
                     row.name === define &&
                     row.mechanism === "capability",
             ),
-            `render_capabilities.hpp can emit ${define} with no ` +
-                "capability row; add it to capabilityRows in " +
-                "src/feature-activation.ts",
+            `${emitter} can emit ${define} with no capability row; add it ` +
+                "to capabilityRows in src/feature-activation.ts",
+        );
+    }
+});
+
+test("every emitted BBLITE_ define has a reader", () => {
+    // A define nothing tests gates nothing: it drifts silently while
+    // reading as a capability the build honours. The readers are the
+    // checked-in PAL sources (their own #define lines excluded), plus an
+    // emitter's preprocessor test where generated code reads a define
+    // another generated header wrote -- an include guard reads itself.
+    const native = sourceFiles("native/src", [".cpp", ".hpp", ".h"]).map(
+        (file) =>
+            readFileSync(file, "utf8")
+                .split("\n")
+                .filter((line) => !/^\s*#\s*define\b/.test(line))
+                .join("\n"),
+    );
+    assert.ok(native.length > 0, "the reader scan found the PAL sources");
+    const emitters = sourceFiles("src", [".ts"]).map((file) =>
+        readFileSync(file, "utf8")
+    );
+    for (const [define, emitter] of emittedDefines()) {
+        const word = new RegExp(`\\b${define}\\b`);
+        const preprocessorRead = new RegExp(
+            `#\\s*(?:if|ifdef|ifndef|elif)\\b[^\\n]*\\b${define}\\b`,
+        );
+        assert.ok(
+            native.some((text) => word.test(text)) ||
+                emitters.some((text) => preprocessorRead.test(text)),
+            `${emitter} emits ${define}, which nothing in native/src and ` +
+                "no emitted preprocessor test reads; delete the define or " +
+                "give it a reader",
         );
     }
 });

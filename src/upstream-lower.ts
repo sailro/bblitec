@@ -880,20 +880,19 @@ class GeneratedSourceWriter {
 // The lightmap slot serves composed PBR lmTexture and Standard lT bindings.
 #define BBLITE_MATERIAL_LIGHTMAP ${composedMaterials.lightmap ? 1 : 0}
 ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
-#define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
 #define BBLITE_MATERIAL_SPEC_GLOSS ${options.specularGlossiness ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
 #define BBLITE_MATERIAL_STANDARD_BUMP ${composedMaterials.standardBump ? 1 : 0}
 
 #define BBLITE_MATERIAL_STANDARD_REFLECTION ${composedMaterials.standardReflection ? 1 : 0}
 // The shadow family: the generator's own resources and the composed
-// receiver arm. Reached by the scene's own generator factory, which is
+// receiver arms. Reached by the scene's own generator factory, which is
 // where upstream keeps its shadow scheduling code out of an ordinary
-// bundle too. The second define is the conjunction both PALs gate on --
-// the receiver fragment is the Standard family's, so a scene composing no
-// Standard variant compiles no shadow code even having reached a
-// generator.
-#define BBLITE_SHADOWS ${shadows.reached ? 1 : 0}
+// bundle too -- but every define is a CONJUNCTION of that reach with a
+// composed family, because the receiver fragment is composed per family
+// and a scene composing no variant of a family compiles none of its
+// shadow code even having reached a generator. The reach alone gates
+// nothing, so it has no define of its own.
 // The ESM generator's own half: four textures and a separable blur. A
 // CONJUNCTION for the same reason the define below is -- every site that
 // reads it is Standard-family code (the caster's own material view, the
