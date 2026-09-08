@@ -812,6 +812,20 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             ),
         );
         const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(this.context);
+        // The refraction fragment's thickness scale the loader pre-bakes
+        // into record.baked_world_scale (gltf-loader-cpp.ts): the pinned
+        // read must stay the mesh world's longest basis column.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                this.context.functionDeclaration(
+                    "src/material/pbr/fragments/refraction-rtt-fragment.ts",
+                    "makeRefractionMod",
+                ).declaration,
+                "thicknessScaleLine",
+            ),
+            "hasVolume || hasThicknessMap ? `let ts=max(length(mesh.world[0].xyz),max(length(mesh.world[1].xyz),length(mesh.world[2].xyz)));` : ``",
+            "Pinned refraction thickness scale",
+        );
         return {
             modulePath,
             symbolName,

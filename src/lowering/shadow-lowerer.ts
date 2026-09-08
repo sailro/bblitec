@@ -32,7 +32,6 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
-import { pinnedTrsComposition } from "./pinned-trs.js";
 import { pinnedCsmFunctions } from "./pinned-csm.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
@@ -1531,7 +1530,6 @@ export function pinnedShadowHeader(context: LoweringContext): string {
     const csm = csmDefaults(context);
     const mat4Invert = lowerMat4InvertCpp(context, { inline: true });
     const casterFallback = esmCasterBoundsFallback(context);
-    const trs = pinnedTrsComposition(context);
     // `computeAabb`'s local arm, the per-target delta range the morph
     // bounds provider caches.
     const computeAabb = lowerComputeAabb(context, {
@@ -1560,6 +1558,7 @@ export function pinnedShadowHeader(context: LoweringContext): string {
 
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
 namespace bbl::upstream {
@@ -1794,8 +1793,7 @@ inline CsmConfig csm_config(const ShadowGeneratorRecord& generator) {
  */
 inline std::array<double, 16> shadow_caster_local(
     const MeshRecord& mesh) {
-${trs.composeLocalBody}\
-    return local;
+    return trs_local_matrix(mesh);
 }
 
 inline std::array<double, 16> shadow_caster_world(

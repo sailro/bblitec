@@ -80,17 +80,24 @@ export function contentDigest(path: string): string {
     return sha256;
 }
 
-/** SHA-256 over the bytes of every file under each path, missing paths included. */
+/**
+ * SHA-256 over the bytes of every file under each path, missing paths
+ * included. Paths enter the digest relative to the working directory, so
+ * two checkouts of the same content (a worktree beside the main tree)
+ * agree on one fingerprint and one shared vcpkg install stamp.
+ */
 export function contentFingerprint(paths: readonly string[]): string {
     const entries: string[] = [];
     const roots = [...new Set(paths.map((path) => resolve(path)))].sort();
     for (const root of roots) {
+        const rootKey = relative(process.cwd(), root).replaceAll("\\", "/");
         if (!existsSync(root)) {
-            entries.push(`${root}\tmissing`);
+            entries.push(`${rootKey}\tmissing`);
             continue;
         }
         for (const file of filesUnder(root).sort()) {
-            entries.push(`${file}\t${contentDigest(file)}`);
+            const fileKey = relative(root, file).replaceAll("\\", "/");
+            entries.push(`${rootKey}/${fileKey}\t${contentDigest(file)}`);
         }
     }
     return hashEntries(entries);
