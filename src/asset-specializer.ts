@@ -46,9 +46,7 @@ interface GltfSpecialization {
         transmissiveMaterial: boolean;
         specularReflectance: boolean;
         extras: boolean;
-        occlusionUv2: boolean;
         eightInfluenceSkinning: boolean;
-        dispersionReached: boolean;
         /** The packaged document carries converted Gaussian-splat clouds. */
         gaussianSplats: boolean;
         /** Packaging transcoded this asset's KHR_texture_basisu images. */
@@ -626,54 +624,7 @@ export function specializeGltf(
                 (color[0] !== 1 || color[1] !== 1 || color[2] !== 1))
         );
     });
-    // The pinned `needsDispersion`, term for term (`gltf-ext-dielectric.ts`):
-    // `dispersion > 0 && (!!eIor || needsTransmission) && !!eVol &&
-    // (thicknessFactor > 0 || !!eVol.thicknessTexture)`, with
-    // `needsTransmission = !!eTx && (intensity > 0 ||
-    // !!eTx.transmissionTexture)`. Keying the capability on extension
-    // presence instead shipped dispersion arms for assets whose declared
-    // extension the pin never imports.
-    const dispersionReached = asRecords(document.materials).some((material) => {
-        const extensions = asObject(material.extensions);
-        const dispersionExtension = asObject(
-            extensions?.["KHR_materials_dispersion"],
-        );
-        const dispersion =
-            typeof dispersionExtension?.dispersion === "number"
-                ? dispersionExtension.dispersion
-                : 0;
-        if (!(dispersion > 0)) return false;
-        const ior = asObject(extensions?.["KHR_materials_ior"]);
-        const transmission = asObject(
-            extensions?.["KHR_materials_transmission"],
-        );
-        const transmissionFactor =
-            typeof transmission?.transmissionFactor === "number"
-                ? transmission.transmissionFactor
-                : 0;
-        const needsTransmission =
-            transmission !== undefined &&
-            (transmissionFactor > 0 ||
-                transmission.transmissionTexture !== undefined);
-        const volume = asObject(extensions?.["KHR_materials_volume"]);
-        const thicknessFactor =
-            typeof volume?.thicknessFactor === "number"
-                ? volume.thicknessFactor
-                : 0;
-        return (
-            (ior !== undefined || needsTransmission) &&
-            volume !== undefined &&
-            (thicknessFactor > 0 || volume.thicknessTexture !== undefined)
-        );
-    });
     const extras = hasExtras(document);
-    // Babylon Lite's pbr-template-ext appends a dedicated occlusion
-    // texture pair sampled at uv2 when a material's occlusionTexture
-    // selects TEXCOORD_1.
-    const occlusionUv2 = asRecords(document.materials).some(
-        (material) =>
-            asObject(material.occlusionTexture)?.texCoord === 1,
-    );
 
     if (animations) modules.add("./gltf-feature-animations.js");
     if (morphTargets) modules.add("./gltf-feature-morph.js");
@@ -703,9 +654,7 @@ export function specializeGltf(
             transmissiveMaterial,
             specularReflectance,
             extras,
-            occlusionUv2,
             eightInfluenceSkinning,
-            dispersionReached,
             gaussianSplats: hasGaussianSplats(document),
             compressedImages: hasCompressedImages(document),
             interactivity: gltfInteractivity(document) !== undefined,
@@ -787,13 +736,6 @@ export interface AssetSpecializationFeatures {
     textureTransform: boolean;
     gpuInstancing: boolean;
     punctualLights: boolean;
-    clearcoat: boolean;
-    sheen: boolean;
-    iridescence: boolean;
-    /** Any material replaces metallic-roughness with the spec-gloss pair. */
-    specularGlossiness: boolean;
-    dispersion: boolean;
-    occlusionUv2: boolean;
     /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
     eightInfluenceSkinning: boolean;
     /** Any asset carries transcoded KHR_texture_basisu images. */
@@ -835,12 +777,6 @@ export function emitAssetSpecializations(
             textureTransform: false,
             gpuInstancing: false,
             punctualLights: false,
-            clearcoat: false,
-            sheen: false,
-            iridescence: false,
-            specularGlossiness: false,
-            dispersion: false,
-            occlusionUv2: false,
             eightInfluenceSkinning: false,
             gaussianSplats: false,
             compressedImages: false,
@@ -921,8 +857,6 @@ export function emitAssetSpecializations(
                 specialization.features.pointOrLinePrimitives,
         ),
         nodeVisibility: usesExtension("KHR_node_visibility"),
-        // (Dispersion keys on the evaluated pinned predicate below, not on
-        // extension presence — see `dispersionReached`.)
         animationPointer: usesExtension("KHR_animation_pointer"),
         animationPointerMaterials: specializations.some(
             (specialization) =>
@@ -940,21 +874,6 @@ export function emitAssetSpecializations(
             usesExtension("KHR_materials_diffuse_transmission"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
         punctualLights: usesExtension("KHR_lights_punctual"),
-        clearcoat: usesExtension("KHR_materials_clearcoat"),
-        sheen: usesExtension("KHR_materials_sheen"),
-        iridescence: usesExtension("KHR_materials_iridescence"),
-        // The spec-gloss workflow binds its own texture pair, so the slot
-        // table needs the row whenever any material declares it.
-        specularGlossiness: usesExtension(
-            "KHR_materials_pbrSpecularGlossiness",
-        ),
-        dispersion: specializations.some(
-            (specialization) => specialization.features.dispersionReached,
-        ),
-        occlusionUv2: specializations.some(
-            (specialization) =>
-                specialization.features.occlusionUv2,
-        ),
         eightInfluenceSkinning: specializations.some(
             (specialization) =>
                 specialization.features.eightInfluenceSkinning,

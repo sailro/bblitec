@@ -35,12 +35,6 @@ function specialization(
         textureTransform: false,
         gpuInstancing: false,
         punctualLights: false,
-        clearcoat: false,
-        sheen: false,
-        iridescence: false,
-        specularGlossiness: false,
-        dispersion: false,
-        occlusionUv2: false,
         eightInfluenceSkinning: false,
         gaussianSplats: false,
         compressedImages: false,
@@ -79,7 +73,6 @@ function emitOptions(
         selectedMaterialVariant: "",
         standardLightLists: false,
         standardDiffuseUv2: false,
-        standardBump: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,
@@ -95,18 +88,33 @@ function emitOptions(
     };
 }
 
-function variants(count: number): PinnedVariantManifestEntry[] {
+/**
+ * Composed PBR variants, optionally all carrying one composition shape: the
+ * pin's fragment key (which extension fragments it spliced) and a fragment
+ * stage's group-1 bindings, which are what the capability rows read.
+ */
+function variants(
+    count: number,
+    composed: { fragmentKey?: string; fragmentWgsl?: string } = {},
+): PinnedVariantManifestEntry[] {
     return Array.from({ length: count }, (_, index) => ({
-        fragmentKey: `key-${index}`,
+        fragmentKey: composed.fragmentKey ?? `key-${index}`,
         pipeline: `pipeline-${index}`,
         selectors: [],
         vertex: `variant-${index}.vert.wgsl`,
         fragment: `variant-${index}.frag.wgsl`,
         materialUbo: undefined,
         vertexWgsl: "",
-        fragmentWgsl: "",
+        fragmentWgsl: composed.fragmentWgsl ?? "",
     }));
 }
+
+/** A fragment stage binding the pin's spec-gloss and uv2 occlusion pairs. */
+const specGlossAndOcclusionUv2Bindings =
+    "@group(1) @binding(2) var specGlossTexture: texture_2d<f32>;\n" +
+    "@group(1) @binding(3) var specGlossSampler: sampler;\n" +
+    "@group(1) @binding(4) var occlusionTexture: texture_2d<f32>;\n" +
+    "@group(1) @binding(5) var occlusionSampler_: sampler;";
 
 function metallicReflectanceMapInputs(
     binding: "metallicReflectanceMap" | "reflectanceMap",
@@ -126,7 +134,6 @@ function metallicReflectanceMapInputs(
                 },
             ],
         }),
-        transmission: false,
         imageCodecs: [],
         gltfAssetNames: [],
         composition: {
@@ -184,7 +191,6 @@ function scene33Inputs(): FeatureActivationInputs {
             assetLightNodes: { count: 5, asset: lamp },
             pinnedVariants: variants(18),
         }),
-        transmission: true,
         imageCodecs: ["png"],
         gltfAssetNames: [lamp],
         pinnedMaxLights: 8,
@@ -205,9 +211,9 @@ function scene33Inputs(): FeatureActivationInputs {
 }
 
 /**
- * A scene whose only activations come from the asset specializer: an
- * iridescent, dispersive, transmissive GLB with no scene-source
- * material features.
+ * A scene whose only material activations come from what its asset
+ * composed: an iridescent, dispersive, transmissive GLB with no
+ * scene-source material features, so every arm is the composition's.
  */
 function dispersiveInputs(): FeatureActivationInputs {
     return {
@@ -220,17 +226,16 @@ function dispersiveInputs(): FeatureActivationInputs {
         ],
         assetJoinedFeatures: new Map(),
         specialization: specialization({
-            iridescence: true,
-            dispersion: true,
             assetTransmission: true,
         }),
         emit: emitOptions({
             iridescence: true,
             dispersion: true,
             assetTransmission: true,
-            pinnedVariants: variants(2),
+            pinnedVariants: variants(2, {
+                fragmentKey: "ibl|iridescence|refraction",
+            }),
         }),
-        transmission: true,
         imageCodecs: ["png"],
         gltfAssetNames: ["dispersive.glb"],
         composition: {
@@ -263,11 +268,6 @@ function everythingOnInputs(): FeatureActivationInputs {
             textureTransform: true,
             gpuInstancing: true,
             punctualLights: true,
-            clearcoat: true,
-            sheen: true,
-            iridescence: true,
-            dispersion: true,
-            occlusionUv2: true,
             eightInfluenceSkinning: true,
         }),
         emit: emitOptions({
@@ -286,7 +286,6 @@ function everythingOnInputs(): FeatureActivationInputs {
             materialSpecular: true,
             standardLightLists: true,
             standardDiffuseUv2: true,
-            standardBump: true,
             textureTransform: true,
             imageBasedLighting: true,
             gpuInstancing: true,
@@ -295,15 +294,21 @@ function everythingOnInputs(): FeatureActivationInputs {
             // on and the new capability row's cross-check must agree.
             gpuInstanceColors: true,
             punctualLights: true,
+            // The arms as the CLI derives them: the union over the composed
+            // variants, which the entries below carry in their keys and
+            // bindings so the rows' second reading agrees.
             clearcoat: true,
             sheen: true,
             iridescence: true,
             dispersion: true,
+            specularGlossiness: true,
             occlusionUv2: true,
             assetLightNodes: { count: 4, asset: "a.glb" },
-            pinnedVariants: variants(7),
+            pinnedVariants: variants(7, {
+                fragmentKey: "ibl|clearcoat-IRNX|sheen|iridescence|refraction",
+                fragmentWgsl: specGlossAndOcclusionUv2Bindings,
+            }),
         }),
-        transmission: true,
         imageCodecs: ["png", "jpeg", "webp"],
         gltfAssetNames: ["a.glb"],
         pinnedMaxLights: 8,
@@ -444,7 +449,6 @@ function familyInputs(): FeatureActivationInputs {
             pinnedStandardVariants: [standardVariant],
             nodeVariants: [nodeVariant],
         }),
-        transmission: false,
         imageCodecs: ["png"],
         gltfAssetNames: [],
         composition: {
@@ -534,19 +538,32 @@ test("records scene-source and asset-joined runtime features", () => {
     assert.equal(box.activatedBy, "not reached");
 });
 
-test("capability rows carry the specializer's activation", () => {
+test("capability rows carry the composed set's activation", () => {
     const rows = featureActivationRows(dispersiveInputs());
 
-    // (iii) A capability activated by the asset specializer alone.
+    // (iii) A capability the asset's composed variants alone activate: the
+    // row reads the arm off the composition and names no scene reach.
     const iridescence = named(rows, "BBLITE_MATERIAL_IRIDESCENCE");
     assert.equal(iridescence.active, true);
     assert.equal(iridescence.mechanism, "capability");
-    assert.match(iridescence.activatedBy, /KHR_materials_iridescence/);
+    assert.match(iridescence.activatedBy, /composed PBR variant carries/);
+    assert.doesNotMatch(iridescence.activatedBy, /scene source/);
     assert.match(
         iridescence.upstreamProvenance,
         /gltf-ext-iridescence\.ts/,
     );
     assert.ok(iridescence.consumers.includes("render_capabilities.hpp"));
+
+    // The same arm reached from scene source names the reach beside the
+    // composition, and the composition is still what activates it.
+    const sceneCoat = named(
+        featureActivationRows({
+            ...dispersiveInputs(),
+            features: [...dispersiveInputs().features, "material:iridescence"],
+        }),
+        "BBLITE_MATERIAL_IRIDESCENCE",
+    );
+    assert.match(sceneCoat.activatedBy, /scene source reached material:iridescence/);
 
     // The transmission define reports the asset half only: the scene
     // never named the feature.
@@ -588,26 +605,45 @@ test("metallic-reflectance map capabilities stay independent", () => {
     }
 });
 
-test("dispersion keys on the evaluated pinned predicate", () => {
-    // (iv) Active: the evaluated needsDispersion, not extension presence.
-    const active = named(
-        featureActivationRows(dispersiveInputs()),
-        "BBLITE_MATERIAL_DISPERSION",
-    );
-    assert.equal(active.active, true);
-    assert.match(active.activatedBy, /evaluated pinned\s+needsDispersion/);
-    assert.match(active.upstreamProvenance, /needsDispersion/);
-    assert.match(active.upstreamProvenance, /gltf-ext-dielectric\.ts/);
+test("spec-gloss and uv2 occlusion key on the composed bindings", () => {
+    // (iv) Active: a composed variant binds the pair, and the emitted
+    // arm agrees.
+    const inputs = scene33Inputs();
+    const rows = featureActivationRows({
+        ...inputs,
+        emit: emitOptions({
+            ...inputs.emit,
+            specularGlossiness: true,
+            occlusionUv2: true,
+            pinnedVariants: variants(1, {
+                fragmentWgsl: specGlossAndOcclusionUv2Bindings,
+            }),
+        }),
+    });
+    const specGloss = named(rows, "BBLITE_MATERIAL_SPEC_GLOSS");
+    assert.equal(specGloss.active, true);
+    assert.match(specGloss.activatedBy, /binds the spec-gloss pair/);
+    assert.match(specGloss.upstreamProvenance, /PBR_HAS_SPEC_GLOSS/);
+    assert.equal(named(rows, "BBLITE_MATERIAL_OCCLUSION_UV2").active, true);
 
-    // Inactive: the row states that presence alone does not activate.
+    // Inactive: the row states that a declared extension without the
+    // texture composes nothing the define would serve.
     const inactive = named(
         featureActivationRows(scene33Inputs()),
-        "BBLITE_MATERIAL_DISPERSION",
+        "BBLITE_MATERIAL_SPEC_GLOSS",
     );
     assert.equal(inactive.active, false);
-    assert.match(
-        inactive.activatedBy,
-        /extension presence alone does\s+not activate/,
+    assert.match(inactive.activatedBy, /metallic-roughness\s+path/);
+
+    // An emitted arm no composed variant binds is the drift the checked
+    // row refuses: the define would allocate a slot nothing reads.
+    assert.throws(
+        () =>
+            featureActivationRows({
+                ...inputs,
+                emit: emitOptions({ ...inputs.emit, specularGlossiness: true }),
+            }),
+        /BBLITE_MATERIAL_SPEC_GLOSS/,
     );
 });
 
@@ -711,9 +747,9 @@ test("an unmapped manifest feature surfaces as the 'none' drift row", () => {
 
 test("a merge that stops matching its recorded reasons fails loudly", () => {
     const inputs = scene33Inputs();
-    // The emitted define says clearcoat, but neither the specializer nor
-    // the feature list recorded a reason: the join and the table have
-    // drifted apart, which must refuse rather than publish a wrong row.
+    // The emitted define says clearcoat, but no composed variant spliced
+    // the fragment: the emit options and the composed set have drifted
+    // apart, which must refuse rather than publish a wrong row.
     assert.throws(
         () =>
             featureActivationRows({

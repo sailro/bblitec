@@ -90,7 +90,7 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
     }
 });
 
-test("selects PBR material-extension specializations from glTF metadata", () => {
+test("accepts the pin-implemented material extensions and records the loader facts", () => {
     const scratch = resolve("artifacts", "test", "asset-specializer");
     rmSync(scratch, { recursive: true, force: true });
     mkdirSync(join(scratch, "assets"), { recursive: true });
@@ -113,15 +113,12 @@ test("selects PBR material-extension specializations from glTF metadata", () => 
                 kind: "gltf",
             },
         ]);
-        assert.equal(features.clearcoat, true);
-        assert.equal(features.sheen, true);
-        assert.equal(features.iridescence, true);
-        // Dispersion keys on the evaluated pinned predicate, not presence: a
-        // declared extension with no factor, refraction, or volume reaches
-        // nothing upstream (`needsDispersion` in gltf-ext-dielectric.ts).
-        assert.equal(features.dispersion, false);
+        // The layered extensions are accepted; which arms they compose is
+        // the composed variants' own answer, so the record carries only
+        // the facts the loader lowering keys on.
         assert.equal(features.textureTransform, false);
         assert.equal(features.punctualLights, false);
+        assert.equal(features.assetTransmission, false);
 
         writeGlb(join(scratch, "assets", "dispersive.glb"), {
             extensionsUsed: [
@@ -149,25 +146,29 @@ test("selects PBR material-extension specializations from glTF metadata", () => 
                 kind: "gltf",
             },
         ]);
-        assert.equal(dispersive.dispersion, true);
+        // The transmissive material is the one fact of that document the
+        // record keeps: it turns the renderer's transmission on.
+        assert.equal(dispersive.assetTransmission, true);
 
-        // The workflow replacement: `specializeGltf` accepts it now rather
-        // than refusing, and the declared extension is the whole activation
-        // input — there is no scene half and no evaluated predicate.
+        // The workflow replacement: `specializeGltf` accepts it rather than
+        // refusing. Whether a variant binds the spec-gloss pair is read off
+        // the composition, where the pin sets PBR_HAS_SPEC_GLOSS only for a
+        // material carrying the texture.
         writeGlb(join(scratch, "assets", "spec-gloss.glb"), {
             extensionsUsed: ["KHR_materials_pbrSpecularGlossiness"],
             materials: [{ name: "SpecGloss" }],
             meshes: [],
             nodes: [],
         });
-        const specGloss = emitAssetSpecializations(scratch, [
-            {
-                source: "https://example.invalid/spec-gloss.glb",
-                output: "spec-gloss.glb",
-                kind: "gltf",
-            },
-        ]);
-        assert.equal(specGloss.specularGlossiness, true);
+        assert.doesNotThrow(() =>
+            emitAssetSpecializations(scratch, [
+                {
+                    source: "https://example.invalid/spec-gloss.glb",
+                    output: "spec-gloss.glb",
+                    kind: "gltf",
+                },
+            ])
+        );
 
         writeGlb(join(scratch, "assets", "plain.glb"), {
             materials: [{ name: "Plain" }],
@@ -181,11 +182,8 @@ test("selects PBR material-extension specializations from glTF metadata", () => 
                 kind: "gltf",
             },
         ]);
-        assert.equal(plain.clearcoat, false);
-        assert.equal(plain.sheen, false);
-        assert.equal(plain.iridescence, false);
-        assert.equal(plain.dispersion, false);
-        assert.equal(plain.specularGlossiness, false);
+        assert.equal(plain.assetTransmission, false);
+        assert.equal(plain.punctualLights, false);
     } finally {
         rmSync(scratch, { recursive: true, force: true });
     }
@@ -396,10 +394,7 @@ test("refuses asset content the pinned loader implements and this port does not"
                 },
             ],
         });
-        assert.equal(
-            specializeGltf(path, "asset.glb").features.occlusionUv2,
-            true,
-        );
+        assert.doesNotThrow(() => specializeGltf(path, "asset.glb"));
 
         // One shared image through two texture objects stays the supported
         // orm-unpack shape and passes.

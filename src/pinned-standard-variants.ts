@@ -23,8 +23,8 @@
  *   `standardDiffuseUv2`) → `DIFFUSE_USES_UV2` (+`NEEDS_UV2`).
  * - `emissiveTexture` → `HAS_EMISSIVE_TEXTURE`; a render-texture source
  *   (`_sampleType === "depth"`) → `HAS_DEPTH_EMISSIVE_TEXTURE`.
- * - `bumpTexture` (`reachedStandardBump` (babylon-asset-features.ts) → `standardBump`) →
- *   `HAS_BUMP_TEXTURE`.
+ * - `bumpTexture` → `HAS_BUMP_TEXTURE` (the composed variant's `bT` binding
+ *   is what `BBLITE_MATERIAL_STANDARD_BUMP` and the loader's bump slot read).
  * - `specularTexture` → `HAS_SPECULAR_TEXTURE`; `coordinatesIndex === 1` →
  *   `SPECULAR_USES_UV2`.
  * - `ambientTexture` → `HAS_AMBIENT_TEXTURE`; `coordinatesIndex === 1` →
@@ -1383,10 +1383,11 @@ export interface StandardSceneCompositionInput {
     vertexAlpha?: boolean;
     /** Materialized `.babylon` asset paths, in load order. */
     babylonAssets: readonly string[];
-    /** The emit options that shape the generated loader's material records:
-     *  the bump slot exists only under `standardBump`, and the diffuse
-     *  coordinate index is read only under `standardDiffuseUv2`. */
-    bumpTexture: boolean;
+    /** The emit option that shapes the generated loader's material records:
+     *  the diffuse coordinate index is read only under `standardDiffuseUv2`.
+     *  The bump slot needs no option -- it exists exactly when a composed
+     *  variant binds the pin's bump pair, which is read off this
+     *  composition's output. */
     diffuseUv2: boolean;
     fog: boolean;
     /** `material:standard-vertex-colors` reached (the pin's opt-in). */
@@ -1509,15 +1510,16 @@ function babylonTexture2d(
 /**
  * A `.babylon` material as the pin's feature derivation must see it to match
  * the generated loader's record — every absence below mirrors a loader fact
- * (`babylon-loader-cpp.ts`): no emissive/lightmap slots, the bump slot only
- * under its option, the diffuse coordinate index only under its option, and
- * `disableLighting` never read. The opacity `getAlphaFromRGB` and the 2D
- * reflection presence mirror the loader's record fields the same way, which
- * are themselves the pin's own loader writes (`load-babylon.ts` TEX_SLOTS).
+ * (`babylon-loader-cpp.ts`): no emissive/lightmap slots, the diffuse
+ * coordinate index only under its option, and `disableLighting` never read.
+ * The bump, opacity `getAlphaFromRGB` and 2D reflection presences mirror the
+ * loader's record fields the same way, which are themselves the pin's own
+ * loader writes (`load-babylon.ts` TEX_SLOTS); the generated loader's bump
+ * slot in turn follows the variants this input composes.
  */
 function babylonMaterialInput(
     material: BabylonMaterialJson,
-    options: { bumpTexture: boolean; diffuseUv2: boolean },
+    options: { diffuseUv2: boolean },
 ): PinnedStandardMaterialInput {
     const coord = (texture: BabylonTextureJson | undefined): number =>
         texture?.coordinatesIndex === 1 ? 1 : 0;
@@ -1553,7 +1555,7 @@ function babylonMaterialInput(
                 ambientCoordIndex: coord(material.ambientTexture),
             }
             : {}),
-        ...(options.bumpTexture && babylonTexture2d(material.bumpTexture)
+        ...(babylonTexture2d(material.bumpTexture)
             ? { bumpTexture: {} }
             : {}),
         ...(material.reflectionTexture?.isCube === true &&
@@ -1740,7 +1742,6 @@ export async function composeSceneStandardVariants(
         for (const material of document.materials ?? []) {
             materialInputs.push(
                 babylonMaterialInput(material, {
-                    bumpTexture: input.bumpTexture,
                     diffuseUv2: input.diffuseUv2,
                 }),
             );

@@ -93,7 +93,6 @@ import {
 import {
     babylonLights,
     reachedDiffuseUv2,
-    reachedStandardBump,
     reachedStandardLightLists,
     type BabylonLight,
 } from "./babylon-asset-features.js";
@@ -886,45 +885,6 @@ async function main(): Promise<void> {
         outputPath,
         result.manifest.assets,
     );
-    const emittedArms = {
-        clearcoat:
-            specializationFeatures.clearcoat ||
-            result.manifest.features.includes("material:clearcoat"),
-        // The coat's base-F0 remap is composed for every clearcoat except a
-        // glTF one: `gltf-ext-clearcoat.ts` is the single caller passing
-        // `useF0Remap: false`. So it follows the scene-code setter and not
-        // the asset specializer's `KHR_materials_clearcoat` flag.
-        clearcoatF0Remap: result.manifest.features.includes(
-            "material:clearcoat-f0-remap",
-        ),
-        sheen:
-            specializationFeatures.sheen ||
-            result.manifest.features.includes("material:sheen"),
-        // The two pinned sheen models are composed, not switched at run time,
-        // so one fragment cannot serve both. A glTF KHR_materials_sheen
-        // material takes the albedo-scaling arm; `setPbrSheen` defaults to
-        // the legacy one and can ask for the other explicitly.
-        sheenAlbedoScaling:
-            specializationFeatures.sheen ||
-            result.manifest.features.includes(
-                "material:sheen-albedo-scaling",
-            ),
-        iridescence:
-            specializationFeatures.iridescence ||
-            result.manifest.features.includes("material:iridescence"),
-        dispersion: specializationFeatures.dispersion,
-        // Spec-gloss has no scene-code entry point: the pin reaches it only
-        // through the glTF extension, so the asset alone decides.
-        specularGlossiness: specializationFeatures.specularGlossiness,
-        occlusionUv2: specializationFeatures.occlusionUv2,
-        // The same derivation `upstream-lower.ts` uses for the compiled
-        // define: transmission is reached from scene code and from a loaded
-        // asset alike, because the pin enables it for any transmissive
-        // surface the asset carries without the scene naming it.
-        transmission:
-            result.manifest.features.includes("renderer:transmission") ||
-            specializationFeatures.assetTransmission,
-    };
     // An asset's own KHR_lights_punctual lights are the scene's lights: the
     // pin's loader creates them exactly like scene code does, and every
     // consumer keyed on the light features -- the composed arms, the pinned
@@ -1174,11 +1134,11 @@ async function main(): Promise<void> {
         standardRuntimeMeshFeatures,
         standardPluginBindings,
         nodeVariants,
+        composedArms,
     } = await composeScenePipeline({
         result,
         outputPath,
         specializationFeatures,
-        emittedArms,
         tree,
     });
     // Whether anything in this scene deforms on the GPU. Named once
@@ -1443,10 +1403,6 @@ async function main(): Promise<void> {
             outputPath,
             result.manifest.assets,
         ),
-        standardBump: reachedStandardBump(
-            outputPath,
-            result.manifest.assets,
-        ),
         animationPointer:
             specializationFeatures.animationPointer,
         animationPointerMaterials:
@@ -1471,8 +1427,12 @@ async function main(): Promise<void> {
         ),
         punctualLights:
             specializationFeatures.punctualLights,
-        clearcoat: emittedArms.clearcoat,
-        sheen: emittedArms.sheen,
+        // The arms the composed set carries, read off the composition
+        // itself: a glTF material's, a scene-code material's and a caster
+        // view's variants all report through `pinnedVariantArms`, so what
+        // the pin spliced is what the defines and the slot table declare.
+        clearcoat: composedArms.clearcoat,
+        sheen: composedArms.sheen,
         pinnedVariants,
         ...(nodeVariants.length > 0 ? { nodeVariants } : {}),
         ...(standardComposition !== undefined
@@ -1503,10 +1463,10 @@ async function main(): Promise<void> {
         ...(runtimeMeshFeatures !== undefined
             ? { runtimeMeshFeatures }
             : {}),
-        iridescence: emittedArms.iridescence,
-        specularGlossiness: emittedArms.specularGlossiness,
-        dispersion: emittedArms.dispersion,
-        occlusionUv2: emittedArms.occlusionUv2,
+        iridescence: composedArms.iridescence,
+        specularGlossiness: composedArms.specularGlossiness,
+        dispersion: composedArms.dispersion,
+        occlusionUv2: composedArms.occlusionUv2,
     };
     emitUpstreamGenerated(
         outputPath,
@@ -1580,7 +1540,6 @@ ${imageCodecLines || '    ""'}
                 assetJoinedFeatures,
                 specialization: specializationFeatures,
                 emit: emitOptions,
-                transmission: emittedArms.transmission,
                 imageCodecs,
                 gltfAssetNames: gltfAssets.map((asset) => asset.output),
                 pinnedMaxLights: readPinnedMaxLights(),

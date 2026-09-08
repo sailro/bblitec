@@ -31,7 +31,7 @@ import {
     nodeShadowInputs,
     shadowCapabilities,
 } from "./shadow-capabilities.js";
-import { variantBindings } from "./pinned-pbr-variant-cpp.js";
+import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
 import {
     nodeGeometryVariants,
     nodeVariantsUseMorphStorage,
@@ -107,11 +107,6 @@ export interface FeatureActivationInputs {
     specialization: AssetSpecializationFeatures;
     /** The exact options handed to `emitUpstreamGenerated`. */
     emit: UpstreamEmitOptions;
-    /**
-     * The merged transmission define (scene feature OR asset predicate),
-     * as the CLI computed it for the arm coverage check.
-     */
-    transmission: boolean;
     /** Codecs reached by packaged assets; capture is a build option. */
     imageCodecs: readonly string[];
     /** The glTF asset outputs the generation-time refusals checked. */
@@ -1422,30 +1417,37 @@ function capabilityRows(
     const nodeGeometryViewCount =
         nodeGeometryVariants(nodeVariantList).length;
     const nodeMorphStorage = nodeVariantsUseMorphStorage(nodeVariantList);
-    // The same derivation upstream-lower makes for the define: a composed
-    // Standard variant binding the pin's 2D reflection pair.
-    const standardReflection = (emit.pinnedStandardVariants ?? [])
-        .some((variant) =>
-            variantBindings(
-                variant.vertexWgsl,
-                variant.fragmentWgsl,
-            ).some((binding) => binding.name === "rT")
-        );
-    const pbrBindingNames = new Set(
-        (emit.pinnedVariants ?? []).flatMap((variant) =>
-            variantBindings(
-                variant.vertexWgsl,
-                variant.fragmentWgsl,
-            ).map((binding) => binding.name)
-        ),
+    // The same reading upstream-lower makes for the defines: what the
+    // scene's composed variants spliced and bind. For the arms the emit
+    // options carry (the union over every composed variant's own arms) this
+    // is the inventory's second view of the same composed output -- the
+    // deduplicated manifest's fragment keys and bindings -- so `checkedRow`
+    // compares two readings of the pin's output rather than one against
+    // itself.
+    const composed = composedMaterialCapabilities(
+        emit.pinnedVariants ?? [],
+        emit.pinnedStandardVariants ?? [],
     );
-    const metallicReflectanceMap = pbrBindingNames.has(
-        "metallicReflectanceMap",
+    const pbrBindingNames = composed.pbrBindingNames;
+    // A composed-arm reason names the composition and then the scene-source
+    // reach that led to it where one was recorded: the arm is the pin's own
+    // decision, the reach is the audit trail.
+    const composedArm = (fragment: string, feature: Feature): string =>
+        `a composed PBR variant carries the pin's ${fragment} fragment` +
+        (has(feature) ? `; scene source reached ${feature}` : "");
+    const transmission = activation(
+        [
+            [
+                has("renderer:transmission"),
+                "scene source reached renderer:transmission",
+            ],
+            [
+                spec.assetTransmission,
+                "a glTF material carries transmissionFactor > 0",
+            ],
+        ],
+        "no scene or asset transmission",
     );
-    const reflectanceMap = pbrBindingNames.has("reflectanceMap");
-    const standardLightmap = (emit.pinnedStandardVariants ?? []).some(variant =>
-        variantBindings(variant.vertexWgsl, variant.fragmentWgsl).some(binding => binding.name === "lT"));
-    const lightmap = pbrBindingNames.has("lmTexture") || standardLightmap;
     return [
         checkedRow(
             "BBLITE_LOCAL_CUBEMAP",
@@ -1469,21 +1471,13 @@ function capabilityRows(
             `src/material/pbr/fragments/${fragment}-fragment.ts; the pinned glTF extension mapper and feature detection select this texture arm`,
             ["render_capabilities.hpp", "material_texture_slots.hpp", "variant table"],
         )),
-        checkedRow(
+        // A plain row: the define is this disjunction and nothing else, so
+        // a checked row here would compare the expression against itself.
+        row(
             "BBLITE_RENDERER_TRANSMISSION",
             "capability",
-            inputs.transmission,
-            [
-                [
-                    has("renderer:transmission"),
-                    "scene source reached renderer:transmission",
-                ],
-                [
-                    spec.assetTransmission,
-                    "a glTF material carries transmissionFactor > 0",
-                ],
-            ],
-            "no scene or asset transmission",
+            transmission.active,
+            transmission.activatedBy,
             "src/frame-graph/transmission.ts (enableSceneTransmission / " +
                 "markPbrMaterialsLinear); asset half: registerPbrTransmission " +
                 "accepts any material set _transmissive with refraction " +
@@ -1659,25 +1653,21 @@ function capabilityRows(
                 "layout when a material reads it",
             ["render_capabilities.hpp"],
         ),
+        // The material arms: one trigger in the pin (`_registerPbrExt`,
+        // reached from the glTF extension loaders and the scene setters
+        // alike), so one derivation here -- what the composed variants
+        // spliced -- rather than an extension name ORed with a reach.
         checkedRow(
             "BBLITE_MATERIAL_CLEARCOAT",
             "capability",
             emit.clearcoat,
-            [
-                [
-                    spec.clearcoat,
-                    "an asset uses KHR_materials_clearcoat",
-                ],
-                [
-                    has("material:clearcoat"),
-                    "scene source reached material:clearcoat",
-                ],
-            ],
-            "no clearcoat from assets or scene source",
-            "src/loader-gltf/gltf-ext-clearcoat.ts (registry row " +
-                "KHR_materials_clearcoat); scene half " +
-                "src/material/pbr/set-clearcoat.ts; fragment " +
-                "src/material/pbr/fragments/clearcoat-fragment.ts",
+            [[composed.clearcoat, composedArm("clearcoat", "material:clearcoat")]],
+            "no composed PBR variant carries the pin's clearcoat fragment",
+            "src/material/pbr/fragments/clearcoat-fragment.ts, registered " +
+                "through _registerPbrExt by src/loader-gltf/gltf-ext-clearcoat.ts " +
+                "(registry row KHR_materials_clearcoat) and " +
+                "src/material/pbr/set-clearcoat.ts alike; the define reads the " +
+                "composed variants' own fragment keys",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",
@@ -1688,18 +1678,13 @@ function capabilityRows(
             "BBLITE_MATERIAL_SHEEN",
             "capability",
             emit.sheen,
-            [
-                [spec.sheen, "an asset uses KHR_materials_sheen"],
-                [
-                    has("material:sheen"),
-                    "scene source reached material:sheen",
-                ],
-            ],
-            "no sheen from assets or scene source",
-            "src/loader-gltf/gltf-ext-sheen.ts (registry row " +
-                "KHR_materials_sheen); scene half " +
-                "src/material/pbr/set-sheen.ts; fragment " +
-                "src/material/pbr/fragments/sheen-fragment.ts",
+            [[composed.sheen, composedArm("sheen", "material:sheen")]],
+            "no composed PBR variant carries the pin's sheen fragment",
+            "src/material/pbr/fragments/sheen-fragment.ts, registered " +
+                "through _registerPbrExt by src/loader-gltf/gltf-ext-sheen.ts " +
+                "(registry row KHR_materials_sheen) and " +
+                "src/material/pbr/set-sheen.ts alike; the define reads the " +
+                "composed variants' own fragment keys",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",
@@ -1710,21 +1695,17 @@ function capabilityRows(
             "BBLITE_MATERIAL_IRIDESCENCE",
             "capability",
             emit.iridescence,
-            [
-                [
-                    spec.iridescence,
-                    "an asset uses KHR_materials_iridescence",
-                ],
-                [
-                    has("material:iridescence"),
-                    "scene source reached material:iridescence",
-                ],
-            ],
-            "no iridescence from assets or scene source",
-            "src/loader-gltf/gltf-ext-iridescence.ts (registry row " +
-                "KHR_materials_iridescence); scene half " +
-                "src/material/pbr/set-iridescence.ts; fragment " +
-                "src/material/pbr/fragments/iridescence-fragment.ts",
+            [[
+                composed.iridescence,
+                composedArm("iridescence", "material:iridescence"),
+            ]],
+            "no composed PBR variant carries the pin's iridescence fragment",
+            "src/material/pbr/fragments/iridescence-fragment.ts, registered " +
+                "through _registerPbrExt by " +
+                "src/loader-gltf/gltf-ext-iridescence.ts (registry row " +
+                "KHR_materials_iridescence) and " +
+                "src/material/pbr/set-iridescence.ts alike; the define reads " +
+                "the composed variants' own fragment keys",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",
@@ -1734,14 +1715,14 @@ function capabilityRows(
         checkedRow(
             "BBLITE_MATERIAL_LIGHTMAP",
             "capability",
-            lightmap,
+            composed.lightmap,
             [
                 [
                     has("material:lightmap") && pbrBindingNames.has("lmTexture"),
                     "scene source reached material:lightmap and a composed " +
                         "variant binds lmTexture",
                 ],
-                [has("material:standard-lightmap") && standardLightmap, "scene source reached material:standard-lightmap and a composed variant binds lT"],
+                [has("material:standard-lightmap") && composed.standardLightmap, "scene source reached material:standard-lightmap and a composed variant binds lT"],
             ],
             "no composed material binds a lightmap",
             "src/material/pbr/enable-pbr-lightmap.ts and src/material/standard/set-std-lightmap.ts register their lightmap fragments",
@@ -1754,11 +1735,11 @@ function capabilityRows(
         checkedRow(
             "BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP",
             "capability",
-            metallicReflectanceMap,
+            composed.metallicReflectanceMap,
             [
                 [
                     (has("material:metallic-reflectance") || spec.materialSpecular) &&
-                        metallicReflectanceMap,
+                        composed.metallicReflectanceMap,
                     "source or glTF loader reached metallic reflectance " +
                         "and a composed variant binds metallicReflectanceMap",
                 ],
@@ -1776,11 +1757,11 @@ function capabilityRows(
         checkedRow(
             "BBLITE_MATERIAL_REFLECTANCE_MAP",
             "capability",
-            reflectanceMap,
+            composed.reflectanceMap,
             [
                 [
                     (has("material:metallic-reflectance") || spec.materialSpecular) &&
-                        reflectanceMap,
+                        composed.reflectanceMap,
                     "source or glTF loader reached metallic reflectance " +
                         "and a composed variant binds reflectanceMap",
                 ],
@@ -1795,24 +1776,18 @@ function capabilityRows(
                 "variant table",
             ],
         ),
-        checkedRow(
+        row(
             "BBLITE_MATERIAL_DISPERSION",
             "capability",
             emit.dispersion,
-            [
-                [
-                    spec.dispersion,
-                    "a glTF material satisfies the evaluated pinned " +
-                        "needsDispersion predicate",
-                ],
-            ],
-            "no glTF material satisfies the evaluated pinned " +
-                "needsDispersion predicate (extension presence alone does " +
-                "not activate)",
-            "src/loader-gltf/gltf-ext-dielectric.ts needsDispersion, " +
-                "evaluated term for term: dispersion > 0 && (ior || " +
-                "needsTransmission) && volume && (thicknessFactor > 0 || " +
-                "thicknessTexture)",
+            emit.dispersion
+                ? "a composed PBR variant refracts with the pin's " +
+                    "chromatic dispersion"
+                : "no composed PBR variant carries a dispersion",
+            "src/material/pbr/fragments/refraction-rtt-fragment.ts reads " +
+                "_subsurface.refraction.dispersion off the material the " +
+                "executed src/loader-gltf/gltf-ext-dielectric.ts stamped " +
+                "(needsDispersion)",
             ["render_capabilities.hpp", "variant table"],
         ),
         checkedRow(
@@ -1821,15 +1796,21 @@ function capabilityRows(
             emit.specularGlossiness,
             [
                 [
-                    spec.specularGlossiness,
-                    "an asset uses KHR_materials_pbrSpecularGlossiness",
+                    composed.specularGlossiness,
+                    "a composed PBR variant binds the spec-gloss pair " +
+                        "(specGlossTexture)",
                 ],
             ],
-            "no asset uses KHR_materials_pbrSpecularGlossiness",
+            "no composed PBR variant binds the spec-gloss pair (a declared " +
+                "KHR_materials_pbrSpecularGlossiness without a " +
+                "specularGlossinessTexture composes the metallic-roughness " +
+                "path)",
             "src/loader-gltf/gltf-ext-spec-gloss.ts (registry row " +
-                "KHR_materials_pbrSpecularGlossiness): the workflow " +
-                "replacement has no scene half, so an asset is the only " +
-                "way in",
+                "KHR_materials_pbrSpecularGlossiness) stamps " +
+                "specGlossTexture; src/material/pbr/pbr-material.ts " +
+                "_computePbrMaterialFeatures sets PBR_HAS_SPEC_GLOSS from it " +
+                "and pbr-template.ts binds the pair for that bit; the " +
+                "workflow replacement has no scene half",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",
@@ -1842,14 +1823,17 @@ function capabilityRows(
             emit.occlusionUv2,
             [
                 [
-                    spec.occlusionUv2,
-                    "a glTF occlusionTexture selects TEXCOORD_1",
+                    composed.occlusionUv2,
+                    "a composed PBR variant binds the dedicated uv2 " +
+                        "occlusion pair (occlusionTexture)",
                 ],
             ],
-            "no glTF occlusion texture on the second UV set",
+            "no composed PBR variant binds the dedicated uv2 occlusion pair",
             "src/material/pbr/pbr-template-ext.ts: a dedicated occlusion " +
-                "texture pair sampled at uv2 when occlusionTexture.texCoord " +
-                "=== 1",
+                "texture pair sampled at uv2 when the uv2 mask carries " +
+                "_hasOcclusionUv2 (occlusionTexture.texCoord === 1, " +
+                "stamped by src/loader-gltf/gltf-material.ts " +
+                "assemblePbrPropsExt)",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",
@@ -1859,21 +1843,29 @@ function capabilityRows(
         row(
             "BBLITE_MATERIAL_STANDARD_BUMP",
             "capability",
-            emit.standardBump,
-            emit.standardBump
-                ? "a .babylon material carries a bump map"
-                : "no .babylon material carries a bump map",
-            "src/material/standard/create-standard-material.ts: the pinned " +
-                "Standard material composes its normal-map fragment per " +
-                "material with a bumpTexture " +
-                "(src/loader-babylon/load-babylon.ts reads the slot)",
-            ["render_capabilities.hpp", "material_texture_slots.hpp"],
+            composed.standardBump,
+            composed.standardBump
+                ? "a composed Standard variant binds the pin's bump pair " +
+                    "(bT/bS)"
+                : "no composed Standard variant binds a bump texture",
+            "src/material/standard/fragments/normal-map-fragment.ts: the " +
+                "pinned Standard material composes its normal-map fragment " +
+                "for a material with a bumpTexture " +
+                "(src/loader-babylon/load-babylon.ts TEX_SLOTS); " +
+                "upstream-lower derives the define, the slot row and the " +
+                "generated loader's bump slot from the composed set through " +
+                "the same variantBindings walk",
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "loader flag",
+            ],
         ),
         row(
             "BBLITE_MATERIAL_STANDARD_REFLECTION",
             "capability",
-            standardReflection,
-            standardReflection
+            composed.standardReflection,
+            composed.standardReflection
                 ? "a composed Standard variant binds the pin's 2D " +
                     "reflection pair (rT/rS)"
                 : "no composed Standard variant binds a 2D reflection",
@@ -3005,22 +2997,6 @@ function refusalRows(
                 "this port freezes the constant and the native writers stop " +
                 "at it, so an asset exceeding it refuses at generation " +
                 "instead of silently unlighting the excess",
-            gate,
-        ),
-        row(
-            "refusal:uncovered-material-arm",
-            "generation-refusal",
-            false,
-            gltfAssetNames.length > 0
-                ? "checked: every arm the pin's own composition reaches " +
-                    "for the scene's glTF materials is carried by the " +
-                    "emitted fragments"
-                : "no glTF materials composed",
-            "the pin's own per-material composition " +
-                "(src/material/pbr/pbr-template.ts and its fragments) " +
-                "cross-checked against the emitted arm set; an arm reached " +
-                "but not emitted refuses naming the material rather than " +
-                "shipping a shading bias",
             gate,
         ),
         ...(inputs.interleave === undefined

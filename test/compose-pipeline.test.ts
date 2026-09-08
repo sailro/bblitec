@@ -35,8 +35,7 @@ async function composeImportedMesh(outputPath: string, source: string) {
     const result = compileSource(source, {fileName:join(outputPath,"input.ts")});
     copyFileSync(join(outputPath,"level.glb"),join(outputPath,"assets",result.manifest.assets[0]!.output));
     return {result, composed: await composeScenePipeline({result,outputPath,tree:new GeneratedTree(outputPath),
-        specializationFeatures:emitAssetSpecializations(outputPath,result.manifest.assets),
-        emittedArms:{clearcoat:false,clearcoatF0Remap:false,sheen:false,sheenAlbedoScaling:false,iridescence:false,occlusionUv2:false,transmission:false,dispersion:false}})};
+        specializationFeatures:emitAssetSpecializations(outputPath,result.manifest.assets)})};
 }
 
 test("scene Standard materials compose for imported UV2 mesh features", async () => {

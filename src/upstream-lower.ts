@@ -145,8 +145,8 @@ import {
     pinnedSharedVariantDecls,
     pinnedStandardVariantsHeader,
     sceneUniformsStruct,
-    variantBindings,
 } from "./pinned-pbr-variant-cpp.js";
+import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 import {
     pinnedNodeVariantsHeader,
@@ -488,7 +488,6 @@ export interface UpstreamEmitOptions {
     selectedMaterialVariant: string;
     standardLightLists: boolean;
     standardDiffuseUv2: boolean;
-    standardBump: boolean;
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
@@ -499,6 +498,13 @@ export interface UpstreamEmitOptions {
      */
     gpuInstanceColors: boolean;
     punctualLights: boolean;
+    /**
+     * The arms the scene's composed PBR variants carry -- the union of
+     * `PinnedRenderableVariant.arms` over every composed variant, glTF and
+     * scene-code alike (`unionArms`). The capability defines and the
+     * texture-slot rows are derived from these, so an arm the pin composes
+     * is an arm the build carries, and nothing else is.
+     */
     clearcoat: boolean;
     sheen: boolean;
     /**
@@ -568,9 +574,11 @@ export interface UpstreamEmitOptions {
      *  covers every scene-code builder; undefined refuses them. */
     runtimeMeshFeatures?: number;
     iridescence: boolean;
-    /** Any loaded material replaces metallic-roughness with spec-gloss. */
+    /** A composed variant replaces metallic-roughness with spec-gloss. */
     specularGlossiness: boolean;
+    /** A composed variant refracts with the pin's chromatic dispersion. */
     dispersion: boolean;
+    /** A composed variant binds the dedicated uv2 occlusion pair. */
     occlusionUv2: boolean;
 }
 
@@ -789,28 +797,17 @@ class GeneratedSourceWriter {
         const transmission =
             features.includes("renderer:transmission") ||
             options.assetTransmission;
-        // A composed Standard variant binding the pin's 2D reflection pair
-        // (std-reflection-fragment.ts `rT`/`rS`) is exactly the condition
-        // under which the record's reflection_texture needs a mesh slot, so
-        // the capability is derived from the composed set rather than being
-        // a separate reach signal.
-        const standardReflection = (options.pinnedStandardVariants ?? [])
-            .some((variant) =>
-                variantBindings(
-                    variant.vertexWgsl,
-                    variant.fragmentWgsl,
-                ).some((binding) => binding.name === "rT")
-            );
-        const standardLightmap = (options.pinnedStandardVariants ?? []).some(variant =>
-            variantBindings(variant.vertexWgsl, variant.fragmentWgsl).some(binding => binding.name === "lT"));
-        const pbrBindingNames = new Set(
-            (options.pinnedVariants ?? []).flatMap((variant) =>
-                variantBindings(
-                    variant.vertexWgsl,
-                    variant.fragmentWgsl,
-                ).map((binding) => binding.name)
-            ),
+        // Every binding-derived material capability -- a composed Standard
+        // variant binding the pin's 2D reflection pair (`rT`) or bump pair
+        // (`bT`), a PBR variant binding a lightmap or metallic-reflectance
+        // map -- is exactly the condition under which the record's texture
+        // needs a mesh slot, so each is read off the composed set rather
+        // than being a separate reach signal.
+        const composedMaterials = composedMaterialCapabilities(
+            options.pinnedVariants ?? [],
+            options.pinnedStandardVariants ?? [],
         );
+        const pbrBindingNames = composedMaterials.pbrBindingNames;
         // The shadow family's five defines, derived once: they are not
         // independent, and every `#if` nesting decision in both PALs rests
         // on the containment between them.
@@ -881,14 +878,14 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
 // The lightmap slot serves composed PBR lmTexture and Standard lT bindings.
-#define BBLITE_MATERIAL_LIGHTMAP ${pbrBindingNames.has("lmTexture") || standardLightmap ? 1 : 0}
+#define BBLITE_MATERIAL_LIGHTMAP ${composedMaterials.lightmap ? 1 : 0}
 ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 #define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
 #define BBLITE_MATERIAL_SPEC_GLOSS ${options.specularGlossiness ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
-#define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
+#define BBLITE_MATERIAL_STANDARD_BUMP ${composedMaterials.standardBump ? 1 : 0}
 
-#define BBLITE_MATERIAL_STANDARD_REFLECTION ${standardReflection ? 1 : 0}
+#define BBLITE_MATERIAL_STANDARD_REFLECTION ${composedMaterials.standardReflection ? 1 : 0}
 // The shadow family: the generator's own resources and the composed
 // receiver arm. Reached by the scene's own generator factory, which is
 // where upstream keeps its shadow scheduling code out of an ordinary
@@ -1070,18 +1067,19 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
-                    lightmap: pbrBindingNames.has("lmTexture") || standardLightmap,
+                    lightmap: composedMaterials.lightmap,
                     metallicReflectanceMap:
-                        pbrBindingNames.has("metallicReflectanceMap"),
-                    reflectanceMap:
-                        pbrBindingNames.has("reflectanceMap"),
-                    anisotropyMap: pbrBindingNames.has("anisotropyTexture_"),
-                    translucencyColorMap: pbrBindingNames.has("translucencyColorTexture_"),
-                    translucencyIntensityMap: pbrBindingNames.has("translucencyIntensityTexture_"),
+                        composedMaterials.metallicReflectanceMap,
+                    reflectanceMap: composedMaterials.reflectanceMap,
+                    anisotropyMap: composedMaterials.anisotropyMap,
+                    translucencyColorMap:
+                        composedMaterials.translucencyColorMap,
+                    translucencyIntensityMap:
+                        composedMaterials.translucencyIntensityMap,
                     specularGlossiness: options.specularGlossiness,
                     occlusionUv2: options.occlusionUv2,
-                    standardBump: options.standardBump,
-                    standardReflection,
+                    standardBump: composedMaterials.standardBump,
+                    standardReflection: composedMaterials.standardReflection,
                     clusteredLights:
                         pbrBindingNames.has("clusteredLights"),
                     vat: pbrBindingNames.has("vatSampler"),
@@ -1482,7 +1480,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 new BabylonLowerer(context).lowerLoaderAdapter(
                     options.standardLightLists,
                     options.standardDiffuseUv2,
-                    options.standardBump,
+                    composedMaterials.standardBump,
                     features.includes("mesh:clone"),
                 ),
                 generated,
@@ -3626,7 +3624,6 @@ export function emitUpstreamGenerated(
         selectedMaterialVariant: "",
         standardLightLists: false,
         standardDiffuseUv2: false,
-        standardBump: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,

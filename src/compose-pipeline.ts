@@ -34,7 +34,6 @@ import type { CompileAsset, CompileResult } from "./compiler.js";
 import type { GeneratedTree } from "./generated-tree.js";
 import type { MeshProfileTable } from "./lowering/resource-profiles.js";
 import {
-    assertArmsCovered,
     composeGltfMaterials,
     composeRenderableVariants,
     composeScenePbrVariants,
@@ -44,6 +43,7 @@ import {
     gltfLightmapMaterials,
     gltfRenderableFeatures,
     proceduralRenderableFeatures,
+    unionArms,
     type PinnedMaterialArms,
     type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
@@ -79,7 +79,6 @@ import {
 import {
     babylonLights,
     reachedDiffuseUv2,
-    reachedStandardBump,
 } from "./babylon-asset-features.js";
 import { refusalReachedFrom } from "./upstream-lower.js";
 
@@ -88,7 +87,6 @@ export interface ComposePipelineContext {
     result: CompileResult;
     outputPath: string;
     specializationFeatures: AssetSpecializationFeatures;
-    emittedArms: PinnedMaterialArms;
     tree: GeneratedTree;
 }
 
@@ -198,6 +196,15 @@ export interface ComposedScenePipeline {
         | readonly (readonly MaterialPluginSamplerManifest[])[]
         | undefined;
     nodeVariants: readonly NodeVariantManifestEntry[];
+    /**
+     * The arms the composed PBR set carries: the union over every composed
+     * renderable variant -- glTF materials, scene-code materials and caster
+     * views alike -- of what its own composition spliced. The capability
+     * defines and the texture-slot table are derived from this record, so
+     * the fragments the build ships and the slots it allocates come from
+     * one reading of the pin's output.
+     */
+    composedArms: PinnedMaterialArms;
 }
 
 /**
@@ -294,10 +301,10 @@ export function scenePbrMeshFeatureSets(
     return result;
 }
 
-// Every glTF material the scene loads, composed through Babylon Lite's own
-// pipeline. An arm it reaches that the emitted fragment does not carry is
-// refused here, where it names the material, rather than shipping as a
-// shading bias nothing points at.
+// Every material the scene draws, composed through Babylon Lite's own
+// pipeline; the arms the composed set carries are read off that output and
+// travel back as `composedArms`, so nothing downstream decides an arm from
+// an extension name or a reach signal the composition did not confirm.
 // The scene arms a renderable can reach: the light modes the scene compiles
 // support for, and — with an environment loaded, which is what turns tone
 // mapping on upstream — both tone-mapping states. Generation cannot know how
@@ -307,7 +314,6 @@ export async function composeScenePipeline({
     result,
     outputPath,
     specializationFeatures,
-    emittedArms,
     tree,
 }: ComposePipelineContext): Promise<ComposedScenePipeline> {
     // `enableMaterialPlugins(scene)` is the pin's own opt-in and the only
@@ -744,7 +750,6 @@ export async function composeScenePipeline({
         assetMetallicReflectanceRegistered ||= composed.some(
             (material) => material.metallicReflectanceRegistered,
         );
-        assertArmsCovered(composed, emittedArms, asset.output);
         const variants = await composeRenderableVariants(
             path,
             sceneArms,
@@ -965,6 +970,9 @@ export async function composeScenePipeline({
     // fragment where Babylon composes a fragment per feature set, and this is
     // that set, written by the pin rather than transcribed here.
     const pinnedVariants = writePinnedPbrVariants(tree, composedVariants);
+    // Read before the text-keyed deduplication because it is a fact about
+    // what was composed, not about how many distinct files that made.
+    const composedArms = unionArms(composedVariants);
     // The Standard family's pinned composition: every standard scene
     // composes its variants through the pin, and both GPU PALs draw them —
     // the transcribed standard fragment is retired.
@@ -1000,10 +1008,6 @@ export async function composeScenePipeline({
         standardComposition = await composeSceneStandardVariants(
             {
                 babylonAssets,
-                bumpTexture: reachedStandardBump(
-                    outputPath,
-                    result.manifest.assets,
-                ),
                 diffuseUv2: reachedDiffuseUv2(
                     outputPath,
                     result.manifest.assets,
@@ -1229,5 +1233,6 @@ export async function composeScenePipeline({
         standardRuntimeMeshFeatures,
         standardPluginBindings,
         nodeVariants,
+        composedArms,
     };
 }
