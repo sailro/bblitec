@@ -17432,7 +17432,7 @@ class Compiler
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const character = readCharacterProperty(owner, expression.name.text);
+        const character = readCharacterProperty(this, owner, expression.name.text);
         if (character) return character;
         if (owner.kind === "physics-body" && expression.name.text === "node") {
             return { kind: "record", cpp: "", recordProperties: { name: { kind: "string", cpp: `bbl::upstream::physics_body_node_name(${owner.cpp})`, dataType: { kind: "string" } } } };

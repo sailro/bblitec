@@ -21,6 +21,13 @@ export function characterVectorValue(cpp: string): Value {
     return { kind: "record", cpp: "", recordProperties: Object.fromEntries(["x", "y", "z"].map(axis => [axis, { kind: "number", cpp: `${cpp}->${axis}` } satisfies Value])) };
 }
 
+/** Preserve the Vec3 reference returned by the pin before another expression can rebind its controller. */
+function retainCharacterVector(context: PhysicsIntrinsicContext, cpp: string): Value {
+    const owner = context.allocateTemporaryCppName("character_vector");
+    context.emit(`[[maybe_unused]] const auto ${owner} = ${cpp};`);
+    return characterVectorValue(owner);
+}
+
 export function compileCharacterIntrinsic(context: PhysicsIntrinsicContext, name: string, call: ts.CallExpression): Value | undefined {
     if (name === "createPhysicsCharacterController") {
         context.expectArgumentCount(call, 3, 3);
@@ -53,7 +60,7 @@ export function compileCharacterMethod(context: CharacterIntrinsicContext, call:
     }
     if (["getPosition", "getVelocity"].includes(name)) {
         context.expectArgumentCount(call, 0, 0);
-        return characterVectorValue(`${owner.cpp}->${name}()`);
+        return retainCharacterVector(context, `${owner.cpp}->${name}()`);
     }
     if (name === "getBody") {
         context.expectArgumentCount(call, 0, 0);
@@ -70,10 +77,10 @@ export function compileCharacterMethod(context: CharacterIntrinsicContext, call:
     context.fail(call, `Character method '${name}' has no represented scene value projection.`);
 }
 
-export function readCharacterProperty(owner: Value, name: string): Value | undefined {
+export function readCharacterProperty(context: PhysicsIntrinsicContext, owner: Value, name: string): Value | undefined {
     if (owner.kind !== "physics-character-controller") return;
     if (name === "onTriggerCollisionObservable") return { kind: "physics-character-observable", cpp: owner.cpp, ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}) };
     if (["keepDistance", "keepContactTolerance", "maxCastIterations", "penetrationRecoverySpeed", "staticFriction", "dynamicFriction", "maxSlopeCosine", "maxCharacterSpeedForSolver", "characterStrength", "acceleration", "maxAcceleration", "characterMass"].includes(name))
         return { kind: "number", cpp: `${owner.cpp}->${name}` };
-    if (name === "up") return characterVectorValue(`${owner.cpp}->up`);
+    if (name === "up") return retainCharacterVector(context, `${owner.cpp}->up`);
 }
