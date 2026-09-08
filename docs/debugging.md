@@ -23,7 +23,8 @@ parity, paired captures and asset composition.
 
 `diff` refreshes missing/stale captures; `--recapture` forces refresh. Match
 source, module, query, pose, UI and [build identity](development.md#build-identity).
-`--seek <t>` requires intentional reference recapture for gated comparisons.
+`--seek <t>` requires an intentional reference recapture (`--recapture-reference`)
+for gated comparisons.
 `--no-fail`, suppressed features and changed poses are diagnostic-only.
 `--differential` accepts only `--gpu-debug` alongside it.
 
@@ -76,7 +77,8 @@ when a missing small object or changed buffer could pass an image gate.
 | Splat updates | `check-scene121-input.mjs`: reference splat observations/golden, complete retained buffer through idle/input. Use the source's raw SPLAT asset. |
 | TAA | `check-scene261-input.mjs`: frozen/live observations, history and camera state. |
 | Text | `check-scene275-input.mjs`: operation observations for scene/shared/blend fixtures. |
-| Node geometry | `check-scene149-input.mjs`: browser orbit/resize observations. Live browser resize throws error84; compare unchanged-module startup at resized dimensions. |
+| Node geometry | `check-scene149-input.mjs`: browser orbit/resize observations. Live browser resize throws Babylon error #84; compare unchanged-module startup at resized dimensions. |
+| Device recovery | `observe-scene164-recovery.mjs`: browser/native recovery, resource identity, resize, input and disposal; replay tokens `Dataset@key=value`, `GlobalCall@name`, `DeviceLoss`; outputs under `artifacts/scene164-controls`. |
 | Local cubemaps | `check-scene186-input.mjs`: native camera, idle and resize captures; eight faces and four reflective ORM replacements on both backends. |
 | Live text | `check-scene181-input.mjs`: edit/clear/regrow, glyph/palette receipts, textarea/window resize, orbit and zoom on both backends. |
 | Shared-engine canvases | `check-surface-input.mjs`: scenes 227/228 left/right drags, divider-crossing capture, idle isolation and geometry after resize. |
@@ -108,7 +110,6 @@ Working-set stability does not establish object/GPU resource reclamation.
 | `artifacts/memory/` | Verdicts, samples and raw traces |
 
 Artifact suffix `gpu` means SDL_GPU; CLI values are `sdl_gpu|dawn`.
-Store detailed runs and experiments here, outside project documentation.
 
 ## Runtime switches
 
@@ -128,6 +129,12 @@ Store detailed runs and experiments here, outside project documentation.
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialog paths |
 | `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides |
+| `BBLITE_GPU_DEBUG` | SDL_GPU validation layer (Dawn validation is always on) |
+| `BBLITE_TEST_PASS` | Hidden test pass: camera controls disabled (set by the harness) |
+| `BBLITE_GROUND`, `BBLITE_BACKGROUND` | Suppress ground/background (set by `parity --without`) |
+| `BBLITE_ID_BUFFER`, `BBLITE_CLUSTER_BUFFER`, `BBLITE_COPY_TASK` | Attribution outputs and copy-task filter (set by `parity` for id-diagnostic scenes) |
+| `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Frame count and stamp path of a measured run (set by `memory`/`parity`) |
+| `BBLITE_AUDIO_LOG` | LabSound log level (`trace`, `debug`, ...) |
 
 Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL
 assertion prompts. Build configuration belongs in [development](development.md).

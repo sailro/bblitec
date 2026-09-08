@@ -42,8 +42,7 @@ Static evaluation folds proven values; `intrinsics/` separates API families.
 `data-types.ts` defines storage; `data-lowering.ts` handles typed sinks.
 Data-typed functions use `native-functions.ts`, including supported recursion;
 handle-dependent helpers inline through `user-functions.ts`. Dedicated modules
-own classes, module initialization, closures and collections. A general typed
-user-code IR/escape graph remains unfinished.
+own classes, module initialization, closures and collections.
 
 Reuse `LoweringContext`, `lowerPinnedFunction`, numeric lowering and the
 shared UBO writer. Custom WGSL uses typed IR/parser or strict reflected-source
@@ -75,29 +74,8 @@ mutation must preserve or refuse outstanding aliases.
 Physics worlds, navigation plugins/crowds and audio sessions own resources
 independently. Audio data can outlive retired graph membership. Borrowed events
 exist for one dispatch; retained state must copy owned values. GPU lifetimes
-follow each backend's in-flight ownership rules.
-
-### Worker service design
-
-AOT entry factories create independent module state. Each realm owns tasks,
-microtasks, timers, promises and JS identities. Computation workers need no GPU.
-Typed sender/receiver codecs preserve admitted aliases/cycles and ordered messages.
-
-The OS thread owns window/layout/presentation. Only owned messages, document
-snapshots, dimensions and fenced image leases cross threads; engine records and
-JS references do not. Source callbacks run on their realm. Canvas transfer
-validates before detachment and preserves exclusive context ownership.
-
-Display notifications coalesce per busy realm; they do not accumulate catch-up
-frames. Surface publication does not own worker time or message delivery.
-`close` finishes the current callback/microtasks; `terminate` wakes waits and
-uses compiled cancellation points. Arbitrary native calls are not preemptible.
-
-The service does not interpret application message names. First rendered frame,
-application readiness and OS presentation are distinct events. Worker-free paths
-omit worker scheduling/locks. [Features](features.md#program-compilation) owns
-admission, [backends](backends.md#offscreen-surfaces) owns image transport and
-[TODO](../TODO.md#worker-and-platform) owns expansion.
+follow each backend's in-flight ownership rules. Worker realms and offscreen
+surfaces are described in [backends](backends.md#workers-and-offscreen-surfaces).
 
 ## Renderer
 

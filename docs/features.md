@@ -18,17 +18,16 @@ can activate its module even when an option is explicitly disabled.
 
 | Selection | Authority and effect |
 | --- | --- |
-| Runtime features | Reached APIs and asset families select generated sources and PAL units. |
-| Renderer capabilities | Settled material/mesh/asset shapes select layouts and resource guards. |
-| Codecs | Packaged image types select decoders and dependencies. |
-| Emit options | Final compiler/asset decisions select lowerer and loader branches. |
-| Composition | Pinned feature words and extension registration select shader variants. |
+| API reach | Intrinsic calls, property writes, browser globals and dynamic-import shapes record a feature with its reaching site; features select generated sources and PAL units. |
+| Call options | Option flags on a reached call (floating origin, tile-cache obstacles) select sub-features. |
+| Asset discovery | The pin's loader predicates over packaged assets join features (lights, IBL, splats, KTX, interactivity) and select image codecs and their dependencies. |
+| Composition shape | The executed pinned composer's arms and bindings select variant counts and material capability defines; shadow resources, receiver families and ESM have their own conjunction gates. |
+| Registry and companions | `source`, `title`, `nativeHostUi`, `parity.referenceSearch` and `parity.attribution` are the only registry fields that reach generation; a reviewed `ui/*.json` companion activates the retained UI. |
+| Build options | Backend, size, capture and precompiled-header switches select build shapes; see [development](development.md#native-builds). |
 | Refusals | Unsupported combinations stop generation. |
 
-`upstream/feature-activation.json` records these decisions and their origins. Reachability alone
-is not a renderer capability: shadow resources, receiver families and ESM have separate gates.
-Audio, physics, navigation, retained UI and codecs must also select their native dependencies.
-Build switches and minimal configurations belong in [development](development.md).
+`upstream/feature-activation.json` records these decisions and their origins.
+Audio, physics, navigation, retained UI and codecs also select their native dependencies.
 
 ## Program compilation
 
@@ -55,7 +54,7 @@ those supported methods. Effectful indices into borrowed native vectors refuse w
 
 `mat4Invert` returns fresh nullable Float32 storage; singular matrices return null. Float64 inputs
 and high-precision matrix allocation combinations refuse. Generic functions, resource loops, aliases
-and handle-dependent escapes remain bounded; see [ownership](architecture.md#runtime-and-memory).
+and handle-dependent escapes are bounded; see [ownership](architecture.md#runtime-and-memory).
 
 AOT asset awaits differ from frame-yield continuations. Workers use owner-loop promises for reached
 async functions. Worker codecs support typed plain data, cycles, repeated references and copied
@@ -71,14 +70,13 @@ percent-encoded asset data bodies refuse.
 ### Compressed geometry
 
 Pinned Draco/meshopt decoders and document hooks run during packaging, preserving hook order.
-Sparse, quantized and compressed inputs become ordinary native accessors. Remaining unsupported
-extensions refuse.
+Sparse, quantized and compressed inputs become ordinary native accessors. Other extensions refuse.
 
 ### Compressed textures
 
 KTX1 loads natively with its blocks/mips. Basis and glTF KTX2 use the pinned browser transcoder
 at generation. The compression target is fixed for the validated device family; native upload
-checks device support. Sampler, encoding and invertY behavior remain producer-specific.
+checks device support. Sampler, encoding and invertY behavior are producer-specific.
 
 ### Gaussian splat row updates
 
@@ -100,7 +98,7 @@ live probe rebuilding and ORM rebinding refuse. Direct-intensity writes remain n
 ### Drawn and computed assets
 
 Bounded module producers bake atlases/pixels in Chromium. CSG uses the pinned implementation;
-CSG2 uses pinned Manifold WASM and preserves material partitions. CSG2 currently requires unchanged,
+CSG2 uses pinned Manifold WASM and preserves material partitions. CSG2 requires unchanged,
 identity-transform box/sphere solids; preceding material assignments work. Runtime CSG2 control refuses.
 
 ### Browser-produced textures
@@ -127,7 +125,7 @@ pixels/blob and texture options; unrecognized calls or engine reads refuse. Live
   hooks refuse. Texture changes and blend enabling after registration also refuse.
 
 Native random overrides preserve closure/function identity. A finally spanning startEngine runs when
-its continuation completes; cleanup currently admits plain writes, not calls, accessors or explicit throws.
+its continuation completes; cleanup admits plain writes, not calls, accessors or explicit throws.
 
 ## Shader pipeline
 
@@ -151,19 +149,19 @@ Shadow-only PBR color/opacity/falloff must settle unconditionally before scene r
 Reviewed host canvases can share one engine while retaining separate scene targets, clear colors,
 camera projections and pointer capture. Canvas rectangles drive allocation and resize; default scene
 graphs share the original mesh/material identities. Wider surface options and lifecycle combinations
-remain outside the validated multi-canvas contract.
+are unsupported.
 
 ## Cameras and input
 
 ArcRotate/Free cameras, framing, bounded orthographic projection, viewports and supported SDL controls
 are live. Geospatial cameras render their compiled pose; their input arms refuse.
-Canvas dimensions follow drawable extent. Off-center orthographic planes and wider combinations remain unsupported.
+Canvas dimensions follow drawable extent. Off-center orthographic planes and wider combinations are unsupported.
 
 ## Asset loading and upload
 
 Generated glTF and `.babylon` loaders create supported meshes, materials, lights, cameras, skins and
 animation. glTF supports packaged external/compressed resources and reached material extensions;
-unsupported fields/branches refuse. Parented or geometry-less `.babylon` nodes remain incomplete.
+unsupported fields/branches refuse. Parented or geometry-less `.babylon` nodes are unsupported.
 
 Recognized closed glTF collectors retain actual stack/preorder traversal independently of native flat
 mesh storage, including Map insertion order. Metadata is demanded per asset/collector pair. Rest/default/
@@ -191,7 +189,7 @@ Detached static imported leaves share geometry and restore local attributes. Bab
 initial source TRS; cloning one after transform mutation refuses. Clones can be transformed and cloned again.
 
 Bare visibility writes are live for transparent/transmissive draws. Opaque cached lists require
-`setMeshVisible` invalidation. Full imported-root cloning/rotation/scaling and arbitrary visitor effects remain incomplete.
+`setMeshVisible` invalidation. Full imported-root cloning/rotation/scaling and arbitrary visitor effects are unsupported.
 
 ## Lights
 
@@ -249,7 +247,7 @@ See [node controls](debugging.md#before-calling-a-scene-done) for the browser re
 ### Material plugins
 
 Explicit enablement installs supported custom-code and sampler/texture bridges. Standard textures retain
-per-material identity. Wider uniform writers, runtime signatures and PBR sampler plugins remain incomplete.
+per-material identity. Wider uniform writers, runtime signatures and PBR sampler plugins are unsupported.
 
 ## Animation playback
 
@@ -266,19 +264,19 @@ its private presentation host. Autonomous managers cannot co-reach older persist
 
 ## Deformation and instancing
 
-GPU skinning, storage morphs, VAT and dynamic thin-instance pools are supported. Loaded eight-influence
-skins retain four influences as an adaptation. Direct Standard/PBR morphs require one definite pre-start
+GPU skinning, storage morphs, VAT and dynamic thin-instance pools are supported; loaded eight-influence
+skins are an [adaptation](fidelity.md#semantic-contract). Direct Standard/PBR morphs require one definite pre-start
 attachment per mesh; replacement, conditional attachment and thin-instance combinations refuse. Weight updates work.
 Scene-authored skeletons retain arrays/live palettes; Standard needs `enableStandardSkeleton`.
 
 Thin-instance pools support count/matrix/color/flush and add/remove operations. GPU-culling enablement
-records an adaptation: native draws active instances without the compute/indirect path.
+is an [adaptation](fidelity.md#semantic-contract).
 
 ## Sprites
 
 Supported paths include Sprite2D layers/renderers, offscreen/depth-hosted targets, billboards, atlases,
 animation, custom fragments and Y-sort. Options select pinned blend/shader arms and producer-specific mips.
-Handle-object APIs, mixed transparent ordering, coverage gamma and several picking combinations remain incomplete.
+Handle-object APIs, mixed transparent ordering, coverage gamma and several picking combinations are unsupported.
 
 ## Picking
 
@@ -295,9 +293,10 @@ pick casts remain supported. Picked points keep their tuple snapshot behavior.
 
 glTF `KHR_interactivity` graphs are parsed at generation by the pinned parser and lowered per block:
 each admitted block body is partially evaluated over the static graph into one update function per
-data output and one execute function per signal input, in the pin's pull/push order. Admitted blocks:
-onStart, onSelect, sequence, variable get/set, pointer get/set, add, sub, mul, div, rem, abs, floor,
-lt, clamp, combine2 and extract2. Pointers bind by executing the pinned path converter over recording
+data output and one execute function per signal input, in the pin's pull/push order. Admitted block
+types: SceneReadyEvent, OnSelect, Sequence, GetVariable, SetVariable, GetProperty, SetProperty, Add,
+Subtract, Multiply, Divide, Modulo, Abs, Floor, LessThan, Clamp, CombineVector2 and ExtractVector2.
+Pointers bind by executing the pinned path converter over recording
 stand-ins; supported targets are node visibility (cascading) and selectability and a material's
 base-colour `KHR_texture_transform` scale/offset. Graphs attach when the asset's scene setup chains,
 fire onStart on the first before-render tick and receive onSelect from `enableFlowGraphPointerPicking`
@@ -350,13 +349,13 @@ made by later arguments. Dynamic option aliases without native field storage ref
 ## Audio
 
 Feature-selected LabSound/SDL3 supports reached Web Audio lifecycle, gain, oscillators, buffers, filters,
-panning and AudioParam scheduling. Clips are packaged for native decoding. Broader Babylon sound/bus/spatial APIs and master ramps remain unsupported.
+panning and AudioParam scheduling. Clips are packaged for native decoding. Broader Babylon sound/bus/spatial APIs and master ramps are unsupported.
 
 ## Shadows
 
 Reached PCF spot/directional, ESM directional and CSM paths support receivers/casters, layers, blur and
 morph bounds. `receiveShadows` needs a static supported value; false is not a general live variant toggle.
-Wider thin-instance caster contracts and generator options remain incomplete.
+Wider thin-instance caster contracts and generator options are unsupported.
 
 ## Navigation
 
@@ -390,7 +389,7 @@ sampling. Supported settings, enablement and light direction are live; history/c
 ### Fullscreen effects
 
 EffectWrapper/EffectRenderer, UniformEffectWrapper and their tasks support bounded layouts/uniforms/textures.
-Custom vertex stages, arbitrary texture sources, wider descriptors and lifecycle/update APIs remain incomplete.
+Custom vertex stages, arbitrary texture sources, wider descriptors and lifecycle/update APIs are unsupported.
 Retained UI with scene-less effect or frame-graph drivers refuses.
 
 ### Image processing
@@ -409,8 +408,8 @@ Text data/renderables retain identity through aliases/helpers/containers. Transf
 live; pipeline membership, depth and order settle before attachment. Late attachment/disposal, conditional
 transform copies, reflective/internal-buffer writes and high-precision matrices refuse.
 
-Rendering activates `BBLITE_HAS_TEXT` and supports one text-only default scene with a static FreeCamera or
-ArcRotate camera controls. Mixed ordering, custom tasks and other camera writes refuse. Both PALs use composed Slug shaders,
+Text rendering supports one text-only default scene with a static FreeCamera or ArcRotate camera
+controls. Mixed ordering, custom tasks and other camera writes refuse. Both PALs use composed Slug shaders,
 packed resources and pinned alpha-to-coverage or premultiplied blending; shared data retains its group-cache behavior.
 
 Standalone TextRenderer layers support affine pixel placement, opacity, coverage gamma, visibility,
@@ -420,13 +419,7 @@ pass are retained. Layer data replacement, arbitrary renderer mutation and mixed
 ## Runtime scene mutation
 
 Supported removal, material-family append and instance updates refresh plans/resources. Unshared removed
-geometry can be reclaimed; re-adding retired meshes is not generally supported. Some shadow resources remain engine-owned.
+geometry can be reclaimed; re-adding retired meshes is unsupported. Shadow resources stay engine-owned.
 
-## Diagnostics and capture
-
-[Debugging](debugging.md) owns capture, attribution, memory and artifact commands;
-[development](development.md) owns build configuration.
-
-## Platform validation
-
-Validated platforms and backend limitations belong in [backends](backends.md#backend-comparison).
+Diagnostics belong in [debugging](debugging.md), build configuration in [development](development.md)
+and validated platforms in [backends](backends.md#backend-comparison).

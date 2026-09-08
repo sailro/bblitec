@@ -14,7 +14,6 @@ in [fidelity](fidelity.md), and commands in [development](development.md).
 | Platform coverage | Windows D3D12; Vulkan/Metal gaps | Windows surface integration |
 | Resource ownership | SDL device objects/fences | WebGPU objects/submission retention |
 
-Unavailable runtime selections and GPU initialization failures are errors.
 Backend agreement does not exclude a shared input or implementation defect.
 
 ## Shared frame conductor
@@ -25,8 +24,8 @@ renderer rebuilds. Scene, sprite, effect and scene-less frame-graph drivers are
 separate translation units. GPU objects and pass encoders stay backend-specific.
 
 RAF preserves registration phase relative to rendering; timers drain at frame
-boundaries. Canvas metrics update before callbacks. Unsupported runtime flags
-must refuse. A disabled backend must remove its translation units/dependencies.
+boundaries. Canvas metrics update before callbacks. A disabled backend removes
+its translation units and dependencies.
 
 ## Compiled binding contract
 
@@ -63,20 +62,33 @@ Resize recreates GPU targets and applies the source reset after successful
 recording. Stopped presentation reuses the final image without history/jitter
 execution; resizing a stopped output scales that image.
 
-## Offscreen surfaces
+## Workers and offscreen surfaces
 
-`platform:window` selects `BBLITE_OFFSCREEN_SURFACES`; ordinary builds omit
-the surface service. The host owns a device/queue and OS window. Each producer
-owns an engine, scene, encoders and resources. A three-image pool provides a
-latest-frame mailbox; consumer fences prevent overwriting sampled images.
-Normal presentation samples GPU textures; screenshots use readback.
+AOT entry factories create independent module state. Each realm owns tasks,
+microtasks, timers, promises and JS identities; computation workers need no GPU.
+Typed sender/receiver codecs preserve admitted aliases/cycles and ordered
+messages. The OS thread owns window/layout/presentation. Only owned messages,
+document snapshots, dimensions and fenced image leases cross threads; engine
+records and JS references do not. Source callbacks run on their realm. Canvas
+transfer validates before detachment and preserves exclusive context ownership.
+`close` finishes the current callback/microtasks; `terminate` wakes waits and
+uses compiled cancellation points. Arbitrary native calls are not preemptible.
+The service does not interpret application message names; first rendered frame,
+application readiness and OS presentation are distinct events. Worker-free paths
+omit worker scheduling/locks.
+
+`platform:window` selects the surface service; ordinary builds omit it. The host
+owns a device/queue and OS window. Each producer owns an engine, scene, encoders
+and resources. A three-image pool provides a latest-frame mailbox; consumer
+fences prevent overwriting sampled images. Normal presentation samples GPU
+textures; screenshots use readback.
 
 Display-paced RAF notifications run on each realm loop; busy realms coalesce
-notifications independently. `OffscreenRun` owns publication while the realm
-scheduler owns time. SDL submits on the command buffer's acquiring thread.
-Dawn enables implicit device synchronization for the shared host device and
-keeps producer encoders private. Retire completed consumer leases before
-waiting for the next repaint.
+notifications independently and do not accumulate catch-up frames.
+`OffscreenRun` owns publication while the realm scheduler owns time. SDL submits
+on the command buffer's acquiring thread. Dawn enables implicit device
+synchronization for the shared host device and keeps producer encoders private.
+Retire completed consumer leases before waiting for the next repaint.
 
 The host composites producer canvases inside the retained document; DOM
 callbacks run in the application realm. This service does not establish support
@@ -84,9 +96,8 @@ for every multi-canvas source shape.
 
 ## Retained UI
 
-Same-engine canvas scenes render to independent targets sized from retained canvas rectangles.
-Presentation applies each page offset once. Layout changes recreate affected targets, and pointer
-capture keeps a drag with its originating camera across canvas boundaries.
+Same-engine canvas scenes render to independent targets sized from retained canvas rectangles;
+presentation applies each page offset once and layout changes recreate affected targets.
 
 RmlUi emits backend-neutral geometry, texture updates, scissors, transforms and
 blur stages. Backend caches own uploads, multisample UI targets and premultiplied
@@ -98,7 +109,4 @@ composition. Supported drivers and browser compatibility belong in [UI](ui.md).
 - Single-sample resolves are copies; changed targets invalidate dependent state.
 - Transmission scene-color capture uses resolved color on SDL and multisamples
   on Dawn. Separate this difference from image processing when diagnosing.
-- D3D12 line/multisample-storage paths require maintained SDL patches; retirement
-  work belongs in [TODO](../TODO.md#backend-and-performance).
-- Main color and shadow depth conventions are distinct; winding, culling and
-  sampled depth must be checked independently.
+- D3D12 line/multisample-storage paths require maintained SDL patches.

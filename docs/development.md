@@ -13,13 +13,9 @@ npm run doctor
 ```
 
 Rebuild installed dependencies when their maintained patches change.
-For RmlUi: `pwsh -File tools/build-rmlui.ps1`.
-
-Set CMake before native commands in this workspace:
-
-```powershell
-$env:CMAKE_COMMAND = 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
-```
+For RmlUi: `pwsh -File tools/build-rmlui.ps1`. `scene` commands discover CMake
+through vswhere; the `tools/*.ps1` build scripts need it on `PATH`, in
+`CMAKE_COMMAND`, or through their `-CMake` parameter.
 
 ## Core workflow
 
@@ -38,8 +34,7 @@ repository-local TypeScript path; `all` selects the registry.
 
 `npm run sweep` runs `validate all`; `npm test` is separate.
 Build `dist/` once with `npm run build`, then use
-`node dist/src/scene-command.js ...` for a sequence. Never rebuild it while
-its commands run. Inspect exit codes directly and retain logs in `artifacts/`.
+`node dist/src/scene-command.js ...` for a sequence. Logs belong in `artifacts/`.
 
 Ad-hoc sources derive `generated/<stem>`, `native/build-<stem>-release`,
 `reference/<stem>` and `artifacts/parity/<stem>`. Without configured thresholds,
@@ -50,8 +45,7 @@ their image comparisons are diagnostic-only.
 ### Sizing a capability before implementing it
 
 Compile the unchanged source first. Identify reached APIs and asset forms;
-the first compiler error is only the first blocker. State exact checkpoint
-scene IDs and distinguish assessment from implementation. Keep probes separate
+the first compiler error is only the first blocker. Keep probes separate
 from corpus inputs; fix compiler/lowerer/PAL sources.
 
 | File | Required scene data |
@@ -65,13 +59,9 @@ from corpus inputs; fix compiler/lowerer/PAL sources.
 
 Update registry/corpus membership tests. Match `referenceSearch`,
 `referenceTimeSeconds` and `referenceFrame` across generation and capture.
-Use canvas thresholds when UI could conceal rendering regressions.
-New scenes require full/foreground MAD below 0.5 on both backends and
-[interaction checks](debugging.md#before-calling-a-scene-done).
-
-`node tools/observe-scene164-recovery.mjs` checks browser/native recovery, resource identity,
-resize, input and disposal. Recovery replay supports `Dataset@key=value`, `GlobalCall@name`
-and `DeviceLoss`; logs and measurements are written under `artifacts/scene164-controls`.
+Use canvas thresholds when UI could conceal rendering regressions. The
+registry gates are per scene; the policy for a new scene is full/foreground MAD
+below 0.5 on both backends plus [interaction checks](debugging.md#before-calling-a-scene-done).
 
 ## Validation
 
@@ -91,10 +81,12 @@ outside measured scene/backend repeatability exceptions.
 
 Simplify covers the complete diff. Apply findings before the sweep;
 `npm run simplify:record` identifies the required record. Keep records limited
-to angles, findings and unresolved actions. Put run logs/timings in artifacts
-or the PR. Documentation-only edits need link and affected metadata checks;
-rendering runs are needed when executable inputs or measurement contracts change.
-`lint:exports` is advisory because generated subprocess callers may be invisible.
+to angles, findings and unresolved actions. A record is read only while its
+content hash is the branch's diff, so delete the records of merged branches;
+`docs/reviews/` holds the open branch's record only. Documentation-only edits
+need link and affected metadata checks; rendering runs are needed when
+executable inputs or measurement contracts change. `lint:exports` is advisory
+because generated subprocess callers may be invisible.
 
 ## Proving a change moved nothing
 
@@ -108,6 +100,23 @@ use the saved differential reports and the validation sequence above.
 `--backend sdl_gpu|dawn|both` selects renderers; Windows defaults to both and
 requires Dawn. `--compiler auto|clangcl|msvc` selects the Windows compiler.
 `BBLITE_DEV_COMPILER` and `BBLITE_CMAKE_GENERATOR` override compiler/generator.
+
+Reached features select dependencies and switches; a scene links nothing it does not reach.
+
+| Feature | Build effect |
+| --- | --- |
+| `renderer:scene` | `BBLITE_HAS_PBR_RENDERER`; the SDL_GPU and Dawn scene units |
+| Packaged image formats | vcpkg `png`, `jpeg`, `webp` (SDL_image codecs) |
+| `loader:gltf`, `loader:babylon`, `data:json` | nlohmann-json |
+| `ui:rml` | vcpkg `ui` (FreeType), the pinned RmlUi artifact, DirectWrite, `BBLITE_HAS_UI` |
+| `ui:inline-svg` | vcpkg `ui-svg` (LunaSVG) and the `-EnableSvg` RmlUi artifact; development builds always include it |
+| `text:layout` | vcpkg `text-layout` (HarfBuzz) |
+| `text:renderable`, `renderer:text` | `BBLITE_HAS_TEXT` |
+| `physics:world` | vcpkg `physics` (Bullet) |
+| `navigation:recast`, `:crowd`, `:tile-cache` | vcpkg `navigation`, `navigation-crowd`, `navigation-tile-cache` |
+| `audio:engine`, `audio:decoded-buffer` | the pinned LabSound artifact; libnyquist for decoded buffers or capture |
+| `platform:window` | `BBLITE_OFFSCREEN_SURFACES` and the window presenters |
+| `input:gamepad`, `browser:file`, `audio:engine` | require an SDL build with that subsystem (`tools/build-sdl-min.ps1` flags) |
 
 Development shares `artifacts/vcpkg-installed/development-full`. Reconcile
 that install once, then parallelize builds with `VCPKG_MANIFEST_INSTALL=OFF`.
@@ -189,6 +198,5 @@ to inspect changes before `--write`. `--offline` cannot verify uncached origins.
 - Long vcpkg paths: use a short `--x-buildtrees-root`.
 - Wrong compiler/generator: recreate the affected disposable build tree.
 - Stale binary/payload: process the scene.
-- GPU validation: use `--gpu-debug` to avoid blocking SDL assertion prompts.
 
 Runtime/capture switches are listed once in [debugging](debugging.md).

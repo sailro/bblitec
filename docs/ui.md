@@ -6,9 +6,8 @@ surface and its compatibility limits.
 
 ## Integration
 
-`ui:rml` selects RmlUi/FreeType; `ui:inline-svg` adds LunaSVG. See
-[development](development.md#minimal-size-shipping-builds) for dependencies.
-Scene TypeScript owns live controls. Reviewed `ui/*.json` companions describe
+Build switches for RmlUi, FreeType and LunaSVG are in
+[development](development.md#native-builds). Scene TypeScript owns live controls. Reviewed `ui/*.json` companions describe
 static host chrome explicitly; they do not discover arbitrary browser pages.
 
 The multi-canvas companions retain the original canvases, divider and labels. Equivalent flex panes
@@ -110,13 +109,8 @@ font rasterization are not guaranteed. Rebuild patched libraries before checks.
 
 Both backends composite a premultiplied transparent layer at scene sample count.
 Backdrop blur snapshots preceding UI, uses FP16 scratch targets and clips before
-later UI. Scene/sprite drivers support retained UI; standalone effect and
-scene-less frame-graph drivers refuse it. Resize/density updates intrinsic
-measurements. Canvas overlays sit below DOM chrome.
-
-The Offscreen companion represents settled host HTML using equivalent flex panes;
-its loading scripts are omitted. TypeScript still owns live button/status and
-resize messages.
+later UI. Resize/density updates intrinsic measurements. Canvas overlays sit
+below DOM chrome.
 
 ## Limits
 
@@ -133,8 +127,5 @@ Runtime track replacement and implicit extra rows refuse. Form dimensions suppor
 - will-change, touch-action, user-select and image-rendering are accepted hints.
 - element.animate and listener removal are no-ops; CSS keyframes use mapped easing.
 
-## Capture and parity
-
-Use the [full-page measurement contract](fidelity.md#what-is-measured-the-full-page)
-and [diagnostic commands](debugging.md). Published values belong in
-[status](status.md); do not infer that every UI residual is unavoidable.
+Parity measures the [full page](fidelity.md#what-is-measured-the-full-page);
+do not infer that every UI residual is unavoidable.
