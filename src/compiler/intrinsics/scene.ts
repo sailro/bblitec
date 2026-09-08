@@ -9,6 +9,7 @@ import {
 export interface SceneIntrinsicContext
     extends IntrinsicCallContext,
         CameraDeferralContext {
+    compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined;
     noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     noteTemporalCameraControl(node: ts.Node): void;
     noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always?: boolean): void;
@@ -59,6 +60,8 @@ export function compileSceneIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    const recovery = context.compileDeviceRecoveryIntrinsic(importedName, call);
+    if (recovery) return recovery;
     if (["unregisterScene", "addToScene", "removeFromScene", "addTask", "addTaskAtStart"].includes(importedName)) {
         context.noteTemporalRecordBoundary(call, `${importedName} after scene registration`);
     }

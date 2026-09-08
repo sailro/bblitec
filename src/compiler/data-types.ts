@@ -17,6 +17,10 @@ type Fail = (node: ts.Node, message: string) => never;
  * instead copy a shared identity, retaining their source object through data.
  */
 export type HandleKind =
+  | "gpu-device"
+  | "gpu-texture"
+  | "device-recovery"
+  | "gpu-environment"
   | "node-input"
   | "text-data"
   | "text-renderable"
@@ -57,6 +61,10 @@ export type HandleKind =
   | "navigation-obstacle";
 
 const handleCppTypes: Record<HandleKind, string> = {
+  "gpu-device": "bbl::GpuDeviceIdentity",
+  "gpu-texture": "bbl::GpuTextureIdentity",
+  "device-recovery": "std::shared_ptr<bbl::DeviceRecoveryRegistration>",
+  "gpu-environment": "bbl::EnvironmentIdentity",
   "node-input": "bbl::NodeInputHandle",
   "text-data": "std::shared_ptr<bbl::TextDataState>",
   "text-renderable": "std::shared_ptr<bbl::TextRenderableState>",
@@ -104,6 +112,8 @@ export function isHandleKind(kind: string): kind is HandleKind {
 
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
+  DeviceLostRecoveryHandle: "device-recovery",
+  EnvironmentTextures: "gpu-environment",
   NodeInputHandle: "node-input",
   NodeMaterial: "material",
   TextData: "text-data",

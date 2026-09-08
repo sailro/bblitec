@@ -55,6 +55,23 @@ test("pointer drag lowers pinned math, enlarged colliders and unregister cleanup
     assert.match(source, /event\.as<PlatformMouseEvent>\(\)/);
 });
 
+test("rotation factories reach host pointer input and lower their quaternion update", () => {
+    const compiled = compileSource(`
+        import { createEngine, createSceneContext, createUtilityLayer, createRotationGizmo } from "babylon-lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const layer = createUtilityLayer(engine, scene);
+        const gizmo = createRotationGizmo(engine, layer);
+    `);
+    assert(compiled.manifest.features.includes("gizmo:pointer-drag"));
+    const source = new GizmoLowerer(new LoweringContext(), compiled.manifest.features).lower().source;
+    assert.match(source, /rotation_drag = true/);
+    assert.match(source, /const Vec3d a = Vec3d/);
+    assert.match(source, /drag_local_rotation\(engine, node/);
+    assert.match(source, /set_mesh_rotation_quaternion\(engine, handle/);
+    assert.match(source, /record.enabled = node.value != invalid_handle/);
+});
+
 test("returned canvas proxy keeps its dispatcher in orbit-control closures", () => {
     const cpp = compileSource(`
         import { createEngine, createSceneContext, createUtilityLayer, createPositionGizmo,

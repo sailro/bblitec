@@ -24,6 +24,7 @@ export interface GeneratedSourceRule {
 
 export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     { source: "upstream/src/engine.cpp", features: [] },
+    { source: "upstream/src/device_recovery.cpp", features: ["engine:device-recovery"] },
     { source: "upstream/src/scene_core.cpp", features: [] },
     { source: "upstream/src/text_data.cpp", features: ["text:data"] },
     {

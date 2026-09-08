@@ -10,6 +10,7 @@
 // scene keeps), and whether a call is browser instrumentation that is
 // erased outright.
 import ts from "typescript";
+import { promiseExecutor } from "./promise-executor.js";
 import { foldableMathUnary } from "./option-helpers.js";
 import type { Value } from "./types.js";
 
@@ -1483,29 +1484,12 @@ export class BrowserErasure {
     private promiseExecutor(
         expression: ts.Expression,
     ): { resolveName: string; body: ts.ConciseBody } | undefined {
-        const unwrapped = this.context.unwrap(expression);
-        if (
-            !ts.isNewExpression(unwrapped) ||
-            !ts.isIdentifier(unwrapped.expression) ||
-            unwrapped.expression.text !== "Promise" ||
-            !this.context.isDefaultLibraryIdentifier(
-                unwrapped.expression,
-            ) ||
-            unwrapped.arguments?.length !== 1
-        ) {
-            return undefined;
-        }
-        const executor = unwrapped.arguments[0]!;
-        if (
-            !ts.isArrowFunction(executor) ||
-            executor.parameters.length !== 1 ||
-            !ts.isIdentifier(executor.parameters[0]!.name)
-        ) {
-            return undefined;
-        }
+        const head = promiseExecutor(this.context.unwrap(expression),
+            identifier => this.context.isDefaultLibraryIdentifier(identifier));
+        if (!head) return undefined;
         return {
-            resolveName: executor.parameters[0]!.name.text,
-            body: executor.body,
+            resolveName: head.resolve.text,
+            body: head.executor.body,
         };
     }
 

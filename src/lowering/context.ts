@@ -598,6 +598,24 @@ export class LoweringContext {
         );
     }
 
+    /** Complete AST checks for a restated statement slice, including nested bodies. */
+    public assertStatementShapes(
+        owner: ts.Node,
+        statements: readonly ts.Statement[],
+        expectedSource: string,
+        label: string,
+    ): void {
+        const expected = ts.createSourceFile("expected-statements.ts", expectedSource,
+            ts.ScriptTarget.Latest, true, ts.ScriptKind.TS).statements;
+        this.assertStatementInventory(owner, statements, label, "the native seam preserves the statements",
+            expected.map(statementKind));
+        for (const [index, statement] of statements.entries()) {
+            if (this.nodeFingerprint(statement) !== this.nodeFingerprint(expected[index]!)) {
+                this.contractError(statement, `${label} statement ${index + 1} changed; the native seam must be re-read.`);
+            }
+        }
+    }
+
     /**
      * The count form of the contract above: the pinned body states the
      * shape `count` times, no more and no fewer. One home so every
@@ -1201,6 +1219,7 @@ export class LoweringContext {
             node.getSourceFile(),
         ).filter(
             (child) =>
+                !ts.isJSDoc(child) &&
                 child.kind !== ts.SyntaxKind.CommaToken &&
                 child.kind !== ts.SyntaxKind.SemicolonToken,
         );

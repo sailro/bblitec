@@ -214,6 +214,7 @@ export interface StatementLoweringContext {
      * stays erased.
      */
     emitFrameYieldRequeue(expression: ts.Expression): void;
+    emitFramePollAwait(call: ts.CallExpression): boolean;
     isBoundedNestedFrameYield(
         expression: ts.Expression,
     ): boolean;
@@ -3525,6 +3526,7 @@ export class StatementLowerer {
             return;
         }
         if (ts.isCallExpression(unwrapped)) {
+            if (ts.isAwaitExpression(expression) && context.emitFramePollAwait(unwrapped)) return;
             const value = context.compileValue(unwrapped);
             context.emitDiscardedValue(value);
             return;

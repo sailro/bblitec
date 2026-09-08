@@ -445,7 +445,7 @@ export function compileAdaptations(
             ] as const satisfies readonly Feature[]
         ).some((feature) => features.includes(feature) &&
             (!features.includes("gizmo:pointer-drag") ||
-                (feature !== "gizmo:axis-drag" && feature !== "gizmo:plane-drag")))
+                (feature !== "gizmo:axis-drag" && feature !== "gizmo:plane-drag" && feature !== "gizmo:plane-rotation")))
     ) {
         adaptations.push({
             id: "display-only-editing-gizmo",
@@ -536,13 +536,28 @@ export function compileAdaptations(
         adaptations.push({
             id: "native-position-gizmo-pointer-drag",
             category: "platform",
-            sourceSemantics: "A per-canvas dispatcher picks utility-layer colliders and converts pointer movement into axis/plane translation; camera controls defer to its active and pending state.",
-            nativeSemantics: "Explicit registerPointerDrag reaches position-gizmo axis/plane translation, enlarged axis colliders, hover materials, disposal and live camera predicates. Forwarding canvas proxies retain their source-defined add/remove/emit listener code and callback identities. GPU readback completes synchronously against the picker's own scene. Ray/plane intersection, axis projection and parent-space delta math are translated from the pinned source. Custom drag observables, sibling-disable styling, scale/rotation dragging and multi-pointer/touch capture remain outside this reached slice.",
+            sourceSemantics: "A per-canvas dispatcher picks utility-layer colliders and converts pointer movement into axis/plane translation or rotation; camera controls defer to its active and pending state.",
+            nativeSemantics: "Position drag registration and rotation widget factories reach host input, enlarged colliders, hover materials, disposal and live camera predicates. Canvas proxies retain their source listener code and callback identities. GPU readback completes synchronously against the picker's scene. Ray/plane intersection, axis projection, parent-space deltas, signed rotation angles and quaternion conjugation/update are translated from the pin. Custom drag observables, rotation sector readout, sibling-disable styling, scale dragging and multi-pointer/touch capture remain unsupported.",
             risk: "medium",
             validation: [
                 "focused editor-pointer-drag compiler, lowering and native event/camera regressions",
                 "Antigravity editor point selection and handle drag on SDL_GPU and Dawn",
                 "editor to menu to editor to menu cleanup replay",
+                "scene49 lazy widget creation, two live rotations and query marker updates on SDL_GPU and Dawn",
+            ],
+        });
+    }
+    if (features.includes("physics:queries")) {
+        adaptations.push({
+            id: "bullet-convex-shape-queries",
+            category: "platform",
+            sourceSemantics: "Havok returns the closest proximity/cast hit, local input contacts and world target contacts after trigger/mask and body-exclusion filtering.",
+            nativeSemantics: "Bullet GJK/EPA and convex sweep supply the query results. Cylinder query rims use the measured Havok margin min(0.015, 0.1 * minimumHalfExtent). Parallel cylinder/capsule side contacts select the lower axial-overlap endpoint, preserving distance and normal. Concave/compound proximity targets refuse. These are measured solver adaptations; Havok internals are not ported.",
+            risk: "medium",
+            validation: [
+                "scene49 full and foreground MAD 0.000 on SDL_GPU and Dawn",
+                "four rotated query poses against Havok WASM; every result lane differs by less than 0.005",
+                "live rotation markers against Havok at native captured quaternions, trigger/mask/excluded-body/no-hit controls",
             ],
         });
     }

@@ -296,6 +296,9 @@ add_executable(
 )
 
 set(BBLITE_OFFSCREEN_SURFACES OFF)
+if("engine:device-recovery" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_DEVICE_RECOVERY=1)
+endif()
 if("platform:workers" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(bblite_native PRIVATE BBLITE_WORKERS=1)
 endif()

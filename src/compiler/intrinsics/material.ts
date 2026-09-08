@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { floatLiteral } from "../../cpp-literals.js";
 import {compileLocalCubemapIntrinsic, type LocalCubemapIntrinsicContext} from "./local-cubemap.js";
 import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -44,6 +45,7 @@ export interface MaterialIntrinsicContext
         ObjectValidationContext,
         PositiveIntegerContext {
     engineHasStarted(): boolean;
+    hasRegisteredScene(): boolean;
     recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
         index: number | undefined,
@@ -57,6 +59,7 @@ export interface MaterialIntrinsicContext
     ): void;
     recordScenePbrSkybox(index: number | undefined): void;
     recordScenePbrGammaAlbedo(index: number | undefined): void;
+    recordScenePbrShadowOnly(index: number | undefined, options: NonNullable<import("../types.js").ScenePbrMaterialManifest["shadowOnly"]>): void;
     recordSceneMaterialSlot(): number;
     recordScenePbrClearCoat(
         clearCoat: ScenePbrClearCoatManifest,
@@ -1222,6 +1225,24 @@ export function compileMaterialIntrinsic(
             );
             context.reachFeature("material:pbr-gamma-albedo", call);
             return { kind: "void", cpp: "" };
+        }
+
+        case "setShadowOnly": {
+            context.expectArgumentCount(call, 1, 2);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            if (context.engineHasStarted() || context.hasRegisteredScene() || context.isRuntimeResourceConstruction()) context.fail(call, "Shadow-only composition requires unconditional construction before scene registration.");
+            const options = call.arguments[1] ? context.expectObjectLiteral(call.arguments[1]) : undefined;
+            if (options) validateObjectProperties(context, options, ["color", "opacity", "falloff"], "setShadowOnly");
+            const colorValue = options && context.objectProperty(options, "color");
+            const opacityValue = options && context.objectProperty(options, "opacity");
+            const falloffValue = options && context.objectProperty(options, "falloff");
+            const color = colorValue ? requiredStaticColor3(context, colorValue, "Shadow-only color").channels : [0, 0, 0] as const;
+            const opacity = opacityValue ? compileStaticNumber(context, opacityValue, "Shadow-only opacity") : 1;
+            const falloff = falloffValue ? compileStaticNumber(context, falloffValue, "Shadow-only falloff") : 1;
+            context.recordScenePbrShadowOnly(material.scenePbrMaterialIndex, { color, opacity, falloff });
+            const record = `${context.requireEngine(material, call)}.materials.at(${material.cpp}.value)`;
+            return { kind: "void", cpp: `${record}.shadow_only = true; ${record}.shadow_only_color = {${color.map(floatLiteral).join(", ")}}; ${record}.shadow_only_opacity = ${floatLiteral(opacity)}; ${record}.shadow_only_falloff = ${floatLiteral(falloff)}; ${record}.alpha_mode = bbl::MaterialAlphaMode::blend` };
         }
 
         case "setPbrUnlit": {

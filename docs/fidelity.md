@@ -28,11 +28,17 @@ label an unexplained residual a precision floor or intentional divergence.
 | Workers/Window | AOT factories, typed cloning and native realm loops; snapshotted layout and 16 ms ResizeObserver polling |
 | Plain data | Typed native storage, checked access and bounded sparse/JSON behavior |
 | Storage/files | Host preference storage, native URL tokens and synchronized picker completion |
+| Device recovery | Native device/resource reconstruction retains scene owners; GPU identities name actual backend resources and device generations. SDL_GPU handles forced loss; Dawn also handles its device-lost notification. Driver failures remain fatal when recovery cannot run. |
 | UI | RmlUi/FreeType and retained Canvas2D replace browser layout/rasterization; see [UI](ui.md) |
 | Skinning | Loaded eight-influence skins retain four influences |
 | GPU culling | Reached thin instances can use the pin's all-active fallback |
 | Splats | Sorting is synchronous on the render thread |
 | Physics/audio | Bullet replaces Havok; LabSound replaces browser audio |
+
+Primary-canvas datasets with source readback remain live; write-only instrumentation erases.
+The harness-ready gate shares this storage. Recovery global disposal hooks remain live. Closed Promise/RAF predicates
+resume through engine frame boundaries. `drawCallCount` measures native GPU draw commands, including
+transport passes; browser context accounting can differ.
 
 ## Shader contract
 
@@ -189,8 +195,19 @@ Preserve authored overrides in browser/native comparisons.
 Body insertion/configuration order, center-of-mass offsets, collider ownership,
 trigger events and combine modes are explicit library boundaries. Degenerate
 boxes expand below Bullet's margin with a positive-face limitation.
-Triangle-mesh storage outlives its shape; dynamic concave bodies refuse.
+Triangle-mesh storage outlives its shapes. Static bodies use Bullet's BVH;
+dynamic bodies use GImpact with its approximate inertia over the same triangles.
 Floating-origin regions are separate worlds and do not collide with one another.
+
+Convex proximity uses Bullet GJK/EPA; casts use its convex sweep. Cylinder queries use a measured rounded
+rim margin `min(0.015, 0.1 * minimumHalfExtent)`. Parallel cylinder/capsule contacts select the lower axial
+overlap endpoint to match Havok's nonunique closest feature. These are measured solver adaptations.
+Scene49 is pixel-exact at its authored capture pose; rotated query fields and live contact markers differ
+from Havok by less than 0.005 in the checked poses.
+
+Rotation gizmos translate the pinned drag angle and quaternion arithmetic. Native GPU picks complete
+synchronously. Custom drag observables, sector readout, sibling-disable styling and multi-pointer/touch
+capture remain unsupported.
 
 Compare rest/shape properties separately from per-step flight, contact, rebound
 and sleep traces. Remaining capabilities and residuals belong in [TODO](../TODO.md).

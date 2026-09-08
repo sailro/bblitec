@@ -194,6 +194,10 @@ export class SceneMaterialRecorder {
         ).gammaAlbedo = true;
     }
 
+    public recordScenePbrShadowOnly(index: number | undefined, options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>): void {
+        this.sceneMaterialForSetter("setShadowOnly", index).shadowOnly = options;
+    }
+
     public recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
         index: number | undefined,

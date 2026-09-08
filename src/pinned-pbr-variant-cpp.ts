@@ -91,6 +91,19 @@ const extensionWriters: ReadonlyArray<{
 } | {kind: "packet"; baseField: string; recordField: string}> = [
     {kind: "packet", baseField: "localEnvironmentMode", recordField: "local_environment"},
     {
+        modulePath: "src/material/pbr/fragments/shadow-only-fragment.ts",
+        symbolName: "writeShadowOnlyUBO",
+        sourceLocal: "",
+        baseField: "shadowOnlyColor",
+        propertySources: {
+            _shadowOnly: "material.shadow_only",
+            _shadowOnlyColor: "material.shadow_only_color",
+            _shadowOnlyOpacity: "material.shadow_only_opacity",
+            _shadowOnlyFalloff: "material.shadow_only_falloff",
+        },
+        vectorProperties: { _shadowOnlyColor: 3 },
+    },
+    {
         modulePath: "src/material/pbr/fragments/clearcoat-fragment.ts",
         symbolName: "writeClearcoatUBO",
         sourceLocal: "cc",

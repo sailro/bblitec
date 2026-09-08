@@ -3205,6 +3205,10 @@ struct MaterialRecord {
     Color3 sheen_color{0.0f, 0.0f, 0.0f};
     float sheen_roughness = 0.0f;
     float sheen_intensity = 1.0f;
+    bool shadow_only = false;
+    Color3 shadow_only_color{};
+    float shadow_only_opacity = 1.0f;
+    float shadow_only_falloff = 1.0f;
     // KHR_materials_anisotropy / `setPbrAnisotropy`. The direction is the
     // pin's own `direction ?? [1, 0]`, written beside the intensity into
     // `anisotropyParams` by the extension's own writer.
@@ -4321,6 +4325,7 @@ struct EditGizmoRecord {
     bool dragging = false;
     bool hovering = false;
     bool plane_drag = false;
+    bool rotation_drag = false;
     MaterialHandle colored_material{};
     MaterialHandle hover_material{};
     std::vector<MeshHandle> visible_meshes;
@@ -4414,7 +4419,40 @@ private:
     std::shared_ptr<const int> token_;
 };
 
+class GpuTransportError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+struct GpuDeviceIdentity {
+    Engine* engine = nullptr;
+    std::uint64_t generation = 0;
+    friend bool operator==(const GpuDeviceIdentity&, const GpuDeviceIdentity&) = default;
+};
+struct GpuTextureIdentity {
+    std::uint64_t generation = 0;
+    std::uintptr_t object = 0;
+    friend bool operator==(const GpuTextureIdentity&, const GpuTextureIdentity&) = default;
+};
+struct EnvironmentIdentity {
+    Engine* engine = nullptr;
+    std::shared_ptr<SceneState> scene;
+    std::uint64_t value = 0;
+    friend bool operator==(const EnvironmentIdentity&, const EnvironmentIdentity&) = default;
+};
+struct DeviceRecoveryRegistration {
+    Engine* engine = nullptr;
+    bool disabled = false;
+    std::function<void()> on_lost;
+    std::function<void()> on_recovered;
+    std::function<void(const std::string&)> on_failed;
+};
+
 struct Engine {
+    struct DeviceRecoveryState;
+    std::shared_ptr<DeviceRecoveryState> device_recovery;
+    std::uint64_t device_generation = 1;
+    std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
@@ -4428,6 +4466,8 @@ struct Engine {
     double canvas_client_height = 720.0;
     /** SDL window coordinates to browser client coordinates (CSS pixels). */
     double canvas_window_to_client_scale = 1.0;
+    /** Retained primary-canvas dataset, including the harness readiness handshake. */
+    std::unordered_map<std::string, std::string> canvas_dataset;
     /**
      * `stopEngine`: the pin cancels its animation frame and clears
      * `_renderFn`, so no further frame submits. There is no
@@ -4700,6 +4740,40 @@ struct Engine {
     Sprite2DYSortHook sprite_y_sort_hook;
     std::uint64_t next_file_texture_identity = 1;
 };
+
+struct Engine::DeviceRecoveryState {
+    std::vector<std::shared_ptr<DeviceRecoveryRegistration>> registrations;
+    std::vector<std::shared_ptr<DeviceRecoveryRegistration>> in_flight;
+    std::unordered_map<std::uint64_t, std::vector<std::function<void(const std::string&)>>> error_listeners;
+    std::unordered_map<std::string, std::function<void()>> globals;
+    std::unordered_map<const SceneState*, GpuTextureIdentity> environments;
+    std::unordered_map<const SceneState*, std::size_t> renderable_counts;
+    std::vector<GpuTextureIdentity> shadows;
+    GpuTextureIdentity fallback;
+    bool requested = false;
+    bool recovering = false;
+    bool resources_ready = false;
+    bool disposed = false;
+};
+
+inline GpuDeviceIdentity gpu_device_identity(Engine& engine) { return {&engine, engine.device_generation}; }
+EnvironmentIdentity environment_identity(const Scene& scene);
+GpuTextureIdentity environment_texture_identity(const EnvironmentIdentity& environment);
+GpuTextureIdentity fallback_texture_identity(const Engine& engine);
+GpuTextureIdentity shadow_texture_identity(const Engine& engine, ShadowGeneratorHandle shadow);
+std::size_t scene_renderable_count(const Scene& scene);
+void add_gpu_error_listener(GpuDeviceIdentity device, std::function<void(const std::string&)> listener);
+void report_gpu_error(Engine& engine, const std::string& error);
+void set_canvas_dataset(Engine& engine, std::string key, std::string value);
+std::string canvas_dataset(const Engine& engine, const std::string& key);
+void set_global_callback(Engine& engine, std::string key, std::function<void()> callback);
+std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(Engine& engine);
+void disable_device_recovery(const std::shared_ptr<DeviceRecoveryRegistration>& registration);
+void force_device_loss(Engine& engine);
+void begin_device_recovery(Engine& engine);
+void complete_device_recovery(Engine& engine);
+void fail_device_recovery(Engine& engine, const std::string& error);
+void dispose_engine(Engine& engine);
 
 inline std::vector<MeshHandle> asset_mesh_walk(
     const Engine& engine, AssetHandle asset, std::size_t walk_index) {

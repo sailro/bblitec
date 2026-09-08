@@ -498,14 +498,13 @@ export const propertyRules: readonly PropertyRule[] = [
     helper: "bbl::pal::audio_param_value",
   },
   {
-    // The handle itself is compile-time evidence for the structurally
-    // recognized direct thin-instance upload helper below the expression
-    // dispatcher. It has no native representation and exposes no general
-    // device surface.
+    // Device generation is observable by recovery. Queue uploads still
+    // use their structurally checked transport instead of exposing a GPU API.
     owner: "engine",
     property: "_device",
     value: "gpu-device",
-    barrier: true,
+    helper: "bbl::gpu_device_identity",
+    impure: true,
   },
   {
     owner: "gpu-device",

@@ -667,6 +667,80 @@ export function compilePhysicsIntrinsic(
       };
     }
 
+    case "shapeProximity":
+    case "shapeCast": {
+      context.expectArgumentCount(call, 2, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      const worldCpp = context.pinValueToTemporary(world, "query_world").cpp;
+      const argument = context.unwrap(call.arguments[1]!);
+      if (!ts.isObjectLiteralExpression(argument)) {
+        context.fail(argument, "Physics shape queries require an inline query record.");
+      }
+      const proximity = importedName === "shapeProximity";
+      const required = proximity
+        ? ["shape", "position", "rotation", "maxDistance"]
+        : ["shape", "rotation", "startPosition", "endPosition"];
+      validateObjectProperties(context, argument,
+        [...required, "shouldHitTriggers", ...(proximity ? [] : ["ignoreBody"])],
+        "Unsupported physics shape query option.");
+      const fields = new Map<string, string>();
+      for (const property of argument.properties) {
+        const expression = ts.isPropertyAssignment(property)
+          ? property.initializer
+          : (property as ts.ShorthandPropertyAssignment).name;
+        const name = context.propertyName(property.name!)!;
+        if (name === "shape" || name === "ignoreBody") {
+          const value = context.compileValue(expression);
+          context.expectKind(value, name === "shape" ? "physics-shape" : "physics-body", expression);
+          context.expectSameEngine(world, value, expression);
+          fields.set(name, context.pinValueToTemporary(value, `query_${name}`).cpp);
+        } else if (name === "rotation") {
+          const rotation = context.unwrap(expression);
+          if (!ts.isObjectLiteralExpression(rotation)) {
+            context.fail(rotation, "Physics query rotations require an inline quaternion record.");
+          }
+          validateObjectProperties(context, rotation, ["x", "y", "z", "w"], "Physics query rotations require x, y, z and w.");
+          const lanes = new Map<string, string>();
+          for (const lane of rotation.properties) {
+            const value = ts.isPropertyAssignment(lane) ? lane.initializer : (lane as ts.ShorthandPropertyAssignment).name;
+            lanes.set(context.propertyName(lane.name!)!, pinRayNumber(context, value));
+          }
+          if (["x", "y", "z", "w"].some((axis) => !lanes.has(axis))) {
+            context.fail(rotation, "Physics query rotations require x, y, z and w.");
+          }
+          fields.set(name, `std::array<double, 4>{${["x", "y", "z", "w"].map((axis) => lanes.get(axis)).join(", ")}}`);
+        } else if (name === "shouldHitTriggers") {
+          fields.set(name, context.pinValueToTemporary({ kind: "boolean", cpp: context.compileBoolean(expression) }, "query_triggers").cpp);
+        } else if (name === "maxDistance") {
+          fields.set(name, pinRayNumber(context, expression));
+        } else {
+          fields.set(name, compileRayPointArgument(context, expression));
+        }
+      }
+      for (const name of required) {
+        if (!fields.has(name)) context.fail(argument, `${importedName} requires '${name}'.`);
+      }
+      const result = context.allocateTemporaryCppName("physics_shape_query");
+      const args = proximity
+        ? [fields.get("position"), fields.get("rotation"), fields.get("maxDistance")]
+        : [fields.get("rotation"), fields.get("startPosition"), fields.get("endPosition")];
+      args.push(fields.get("shouldHitTriggers") ?? "false");
+      if (!proximity) args.push(fields.has("ignoreBody") ? `${fields.get("ignoreBody")}.handle` : "bbl::pal::PhysicsBodyHandle{}");
+      context.reachFeature("physics:queries", call);
+      context.emit(`const auto ${result} = bbl::upstream::shape_${proximity ? "proximity" : "cast"}(${worldCpp}, ${fields.get("shape")}, ${args.join(", ")});`);
+      return {
+        kind: "record", cpp: "", recordProperties: {
+          hasHit: { kind: "boolean", cpp: `${result}.has_hit` },
+          [proximity ? "distance" : "fraction"]: { kind: "number", cpp: `${result}.distance_or_fraction` },
+          inputHitPoint: vec3Record(`${result}.input_point`),
+          hitPoint: vec3Record(`${result}.point`),
+          inputHitNormal: vec3Record(`${result}.input_normal`),
+          hitNormal: vec3Record(`${result}.normal`),
+        },
+      };
+    }
+
     case "physicsRaycast": {
       context.expectArgumentCount(call, 3, 4);
       const world = context.compileValue(call.arguments[0]!);

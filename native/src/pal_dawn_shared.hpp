@@ -114,7 +114,7 @@ inline WGPUStringView string_view(const char* text) {
 }
 
 [[noreturn]] inline void dawn_error(const std::string& message) {
-    throw std::runtime_error("Dawn backend: " + message);
+    throw GpuTransportError("Dawn backend: " + message);
 }
 
 /**
@@ -245,6 +245,7 @@ struct DawnDevice {
     std::uint32_t surface_width = 0;
     std::uint32_t surface_height = 0;
     std::string uncaptured_error;
+    std::atomic_bool device_lost = false;
 };
 
 #if BBLITE_OFFSCREEN_SURFACES
@@ -560,13 +561,14 @@ inline void create_dawn_device(
             void* userdata1,
             void*) {
             if (reason == WGPUDeviceLostReason_Destroyed) return;
-            auto* error = static_cast<std::string*>(userdata1);
-            if (error->empty()) {
-                *error = "device lost: " + view_text(message);
+            auto* device_state = static_cast<DawnDevice*>(userdata1);
+            if (device_state->uncaptured_error.empty()) {
+                device_state->uncaptured_error = "device lost: " + view_text(message);
             }
+            device_state->device_lost = true;
         };
     device_descriptor.deviceLostCallbackInfo.userdata1 =
-        &state.uncaptured_error;
+        &state;
 #if BBLITE_OFFSCREEN_SURFACES
     if (options.shared_errors) {
         device_descriptor.uncapturedErrorCallbackInfo.callback =

@@ -257,6 +257,10 @@ function compileEditGizmo(
         ),
     );
     context.reachFeature(shape.feature, call);
+    if (shape.feature === "gizmo:plane-rotation") {
+        context.reachFeature("gizmo:pointer-drag", call);
+        context.reachFeature("picking:gpu", call);
+    }
     // The layer's own hosting: every widget hangs off a transform node
     // parented under nothing and carrying the meshes below it.
     context.reachFeature("mesh:transform-node", call);
@@ -421,6 +425,10 @@ function compileCompositeGizmo(
     context.reachFeature(shape.feature, call);
     for (const feature of shape.reached) {
         context.reachFeature(feature, call);
+    }
+    if (shape.feature === "gizmo:rotation") {
+        context.reachFeature("gizmo:pointer-drag", call);
+        context.reachFeature("picking:gpu", call);
     }
     // Every sub-widget hangs off its own transform node, as the single
     // widgets do.

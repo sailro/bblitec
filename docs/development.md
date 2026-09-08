@@ -69,6 +69,10 @@ Use canvas thresholds when UI could conceal rendering regressions.
 New scenes require full/foreground MAD below 0.5 on both backends and
 [interaction checks](debugging.md#before-calling-a-scene-done).
 
+`node tools/observe-scene164-recovery.mjs` checks browser/native recovery, resource identity,
+resize, input and disposal. Recovery replay supports `Dataset@key=value`, `GlobalCall@name`
+and `DeviceLoss`; logs and measurements are written under `artifacts/scene164-controls`.
+
 ## Validation
 
 Use focused checks during implementation and early population generation for

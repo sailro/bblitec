@@ -51,6 +51,7 @@ import {
   type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { lowerPhysicsQueries } from "./physics-query-lowerer.js";
 import {
   SHAPE_PARAMETERS,
   shapeParameterStorage,
@@ -1785,8 +1786,9 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     );
   }
 
-  public lowerPhysics(): LoweredSource {
+  public lowerPhysics(includeQueries = false): LoweredSource {
     this.assertPinnedContracts();
+    const queries = includeQueries ? lowerPhysicsQueries(this.context) : undefined;
     const queryModule = "src/physics/havok-queries.ts";
     const raycast = this.context.functionDeclaration(queryModule, "physicsRaycast");
     const distanceLowerer = new PinnedNumericLowerer(raycast.file, {
@@ -2282,6 +2284,7 @@ void on_physics_collision(
     std::uint32_t collide_with,
     bool should_hit_triggers);
 
+${queries?.header ?? ""}
 }  // namespace bbl::upstream
 
 namespace bbl::js {
@@ -3236,6 +3239,7 @@ void on_physics_collision(
         });
 }
 
+${queries?.source ?? ""}
 PhysicsRaycastResult physics_raycast(
     PhysicsWorldHandle handle,
     Vec3d from,

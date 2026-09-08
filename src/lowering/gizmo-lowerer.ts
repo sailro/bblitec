@@ -2793,9 +2793,8 @@ ${this.features.includes("gizmo:pointer-drag") ? `
             "ring",
             lowerer,
         );
-        // The thicker torus is the pick region and the camembert quad is
-        // the drag readout; both are hidden at build time, and neither is
-        // built here. A pin that showed either fails by name.
+        const collider = this.widgetMesh(PLANE_ROTATION_MODULE, "createPlaneRotationGizmo", "collider", lowerer);
+        // The sector readout remains outside the native material slice.
         this.assertHidden(factory, "collider");
         this.assertHidden(factory, "rotationDisplayPlane");
         const rootScale = this.rootScaling(
@@ -2848,7 +2847,12 @@ ${this.widgetPart(
         )})})`,
     ring,
 )}
-    return push_edit_gizmo(
+${this.features.includes("gizmo:pointer-drag") ? `
+    const auto collider_start = scene.meshes.size();
+${this.widgetPart(`create_torus(engine, TorusOptions{${this.widgetOption(collider, "diameter")}, ${this.widgetOption(collider, "thickness")}, static_cast<std::uint32_t>(${this.widgetOption(collider, "tessellation")})})`, collider)}
+    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) engine.meshes[scene.meshes[i].value].visible = false;
+` : ""}
+    const auto handle = push_edit_gizmo(
         engine,
         scene,
         layer,
@@ -2868,6 +2872,11 @@ ${this.widgetPart(
         )},
         baked,
         GizmoLocalOrientation::look_at_world_axis);
+${this.features.includes("gizmo:pointer-drag") ? `
+    initialize_pointer_gizmo(engine, layer, handle, material, true);
+    engine.edit_gizmos[handle.value].rotation_drag = true;
+` : ""}
+    return handle;
 }`;
     }
 
@@ -5654,6 +5663,7 @@ void attach_gizmo_to_node(
     MeshHandle node) {
     EditGizmoRecord& record = engine.edit_gizmos[gizmo.value];
     record.attached_node = node;
+    record.enabled = node.value != invalid_handle;
 }
 
 bool pointer_drag_has_collider(
@@ -5745,7 +5755,7 @@ void dispose_composite_gizmo(
                 : ""
         }
 ${boundingBox ? boundingBox.factories : ""}
-${this.features.includes("gizmo:pointer-drag") ? lowerPointerDrag(this.context) : ""}
+${this.features.includes("gizmo:pointer-drag") ? lowerPointerDrag(this.context, this.features.includes("gizmo:plane-rotation")) : ""}
 } // namespace bbl
 `,
         };

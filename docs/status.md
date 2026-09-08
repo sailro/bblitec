@@ -56,6 +56,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | 0.006 / 0.037 | 0.006 / 0.037 | Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value. |
 | 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | 0.037 / 0.070 | 0.037 / 0.070 | Bullet/Havok landing hops under -1 gravity; a solver delta, not a renderer-fidelity value. |
 | 48 | <img src="images/scenes/scene48.png" alt="Scene 48 rendering" width="160"> | 0.060 / 0.098 | 0.060 / 0.098 | Authored centres of mass under a kick, captured mid-topple; Bullet/Havok contact-instant lateral drift, not a renderer-fidelity value. |
+| 49 | <img src="images/scenes/scene49.png" alt="Scene 49 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Cylinder/capsule proximity and cast; live rotation/query, orbit and resize controls. |
 | 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Grid |
 | 51 | <img src="images/scenes/scene51.png" alt="Scene 51 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Soft-Edged Sprite Grid |
 | 52 | <img src="images/scenes/scene52.png" alt="Scene 52 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | HUD on 3D |
@@ -154,6 +155,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 161 | <img src="images/scenes/scene161.png" alt="Scene 161 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Custom Uniforms |
 | 162 | <img src="images/scenes/scene162.png" alt="Scene 162 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Defines |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Alpha Cutout |
+| 164 | <img src="images/scenes/scene164.png" alt="Scene 164 rendering" width="160"> | 0.019 / 0.019 | 0.019 / 0.019 | Device Loss Recovery |
 | 165 | <img src="images/scenes/scene165.png" alt="Scene 165 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Material Thin Instances |
 | 166 | <img src="images/scenes/scene166.png" alt="Scene 166 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Spot Lights |
 | 167 | <img src="images/scenes/scene167.png" alt="Scene 167 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Lightmap |

@@ -231,6 +231,12 @@ function templateOffsetField(
 
 /** The absolute float lane a `data[...]` index refers to. */
 function dataLane(state: WriterState, expression: ts.Expression): number {
+    if (ts.isNonNullExpression(expression)) return dataLane(state, expression.expression);
+    if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression) &&
+        ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === "offsets" &&
+        expression.expression.name.text === "get" && expression.arguments.length === 1 && ts.isStringLiteral(expression.arguments[0]!)) {
+        return fieldLane(state.request, expression.arguments[0]!.text);
+    }
     const base = (local: ts.Expression): number => {
         if (!ts.isIdentifier(local)) {
             throw new Error(

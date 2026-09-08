@@ -548,11 +548,13 @@ export function compileShadowIntrinsic(
                 context.handleCollections.staticHandleList(listNode);
             if (!entries) {
                 const list = context.compileValue(listNode);
+                const collection = list.kind === "handle-collection" && list.handleCollection?.elementKind === "mesh"
+                    ? list.handleCollection : undefined;
                 if (
-                    list.kind !== "data" ||
+                    !collection && (list.kind !== "data" ||
                     list.dataType?.kind !== "vector" ||
                     list.dataType.element.kind !== "handle" ||
-                    list.dataType.element.handle !== "mesh"
+                    list.dataType.element.handle !== "mesh")
                 ) {
                     context.fail(
                         listNode,
@@ -574,7 +576,7 @@ export function compileShadowIntrinsic(
                     cpp:
                         `bbl::set_shadow_task_caster_meshes(` +
                         `${context.requireEngine(generator, call)}, ` +
-                        `${generator.cpp}, bbl::js::array_to_vector(${list.cpp}))`,
+                        `${generator.cpp}, ${collection ? collection.containerCpp : `bbl::js::array_to_vector(${list.cpp})`})`,
                 };
             }
             const emitted: string[] = [];
