@@ -137,7 +137,10 @@ struct PhysicsShapeState {
      * puts the shape's death first. Null for every other shape kind.
      */
     std::vector<PhysicsBodyState*> users;
+    std::vector<std::shared_ptr<PhysicsShapeState>> children;
+    std::size_t container_parents = 0;
     std::unique_ptr<btTriangleMesh> triangle_mesh;
+    std::vector<std::unique_ptr<btCollisionShape>> child_instances;
     std::unique_ptr<btCollisionShape> shape;
     // Dynamic users retain a GImpact view of the same triangles. Static
     // users keep their BVH and its existing query/contact behavior.
@@ -161,6 +164,9 @@ struct PhysicsShapeState {
      * shape.
      */
     bool is_trigger = false;
+    ~PhysicsShapeState() {
+        for (const auto& child : children) --child->container_parents;
+    }
 };
 
 namespace {
@@ -1344,6 +1350,25 @@ void physics_world_release(PhysicsWorldHandle world) {
     world.ownership->close();
 }
 
+namespace {
+void validate_container_children(const PhysicsShapeState& root, const PhysicsShapeState& node) {
+    for (const auto& child : node.children) {
+        if (child->triangle_mesh) {
+            throw std::runtime_error("Triangle meshes nested in physics containers are not lowered.");
+        }
+        if (child->material.friction != root.material.friction ||
+            child->material.restitution != root.material.restitution ||
+            child->material.friction_combine != root.material.friction_combine ||
+            child->material.restitution_combine != root.material.restitution_combine ||
+            child->membership_mask != root.membership_mask ||
+            child->collide_mask != root.collide_mask || child->is_trigger != root.is_trigger) {
+            throw std::runtime_error("Physics container children require matching material, masks and trigger state.");
+        }
+        validate_container_children(root, *child);
+    }
+}
+}
+
 void physics_world_step(PhysicsWorldHandle world, double seconds) {
     PhysicsWorldState& entry = world_at(world);
     static const bool cpu_profile = [] {
@@ -1359,6 +1384,11 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
             if (member->needs_readd) {
                 ++pending_readds;
             }
+        }
+    }
+    for (const auto& member : entry.members) {
+        if (member->shape && !member->shape->children.empty()) {
+            validate_container_children(*member->shape, *member->shape);
         }
     }
     flush_pending_readds(entry);
@@ -1921,6 +1951,88 @@ PhysicsShapeHandle physics_shape_create_mesh(
         PhysicsMassProperties{},
         false,
         std::move(triangles));
+}
+
+PhysicsShapeHandle physics_shape_create_container() {
+    return push_shape(std::make_unique<btCompoundShape>(), btTransform::getIdentity());
+}
+
+namespace {
+// A container's scale belongs to this placement, not the shared child.
+// Transform support directions by the transpose and support points by the
+// forward affine map, including the primitive/hull's own body frame. Keeping
+// the child's margin inside that map also scales curved surfaces correctly.
+class ContainerConvexInstance final : public btConvexInternalAabbCachingShape {
+    const btConvexShape& child_;
+    btTransform node_from_body_;
+    btVector3 scale_;
+public:
+    ContainerConvexInstance(const btConvexShape& child,
+        const btTransform& node_from_body, const btVector3& scale)
+        : child_(child), node_from_body_(node_from_body), scale_(scale) {
+        m_shapeType = CUSTOM_CONVEX_SHAPE_TYPE;
+        m_collisionMargin = 0;
+        recalcLocalAabb();
+    }
+    btVector3 localGetSupportingVertexWithoutMargin(const btVector3& direction) const override {
+        const btVector3 child_direction = node_from_body_.getBasis().transpose() * (scale_ * direction);
+        return scale_ * (node_from_body_ * child_.localGetSupportingVertex(child_direction));
+    }
+    void batchedUnitVectorGetSupportingVertexWithoutMargin(const btVector3* directions,
+        btVector3* supports, int count) const override {
+        for (int i = 0; i < count; ++i) supports[i] = localGetSupportingVertexWithoutMargin(directions[i]);
+    }
+    void calculateLocalInertia(btScalar mass, btVector3& inertia) const override {
+        btVector3 minimum, maximum;
+        getAabb(btTransform::getIdentity(), minimum, maximum);
+        const btVector3 squared = (maximum - minimum) * (maximum - minimum);
+        inertia = mass / btScalar(12) * btVector3(squared.y() + squared.z(),
+            squared.x() + squared.z(), squared.x() + squared.y());
+    }
+    const char* getName() const override { return "ContainerConvexInstance"; }
+};
+
+bool contains_shape(const PhysicsShapeState& root, const PhysicsShapeState* sought) {
+    if (&root == sought) return true;
+    return std::any_of(root.children.begin(), root.children.end(),
+        [sought](const auto& child) { return contains_shape(*child, sought); });
+}
+}
+
+void physics_shape_add_child(
+    PhysicsShapeHandle container,
+    PhysicsShapeHandle child,
+    const PhysicsTransform& transform,
+    std::array<double, 3> scale) {
+    PhysicsShapeState& parent = shape_at(container);
+    PhysicsShapeState& member = shape_at(child);
+    if (!parent.shape->isCompound()) {
+        throw std::runtime_error("Physics shape children require a container shape.");
+    }
+    if (contains_shape(member, &parent)) {
+        throw std::runtime_error("Physics container shapes cannot contain a cycle.");
+    }
+    if (!parent.users.empty() || parent.container_parents) {
+        throw std::runtime_error("Physics container construction must finish before body or container attachment.");
+    }
+    btTransform placement(to_bt(transform.rotation), to_bt(transform.position));
+    btCollisionShape* instance = member.shape.get();
+    if (scale == std::array<double, 3>{1, 1, 1}) {
+        placement *= member.node_from_body;
+    } else {
+        if (!member.shape->isConvex() || std::any_of(scale.begin(), scale.end(),
+            [](double value) { return !std::isfinite(value) || value == 0; })) {
+            throw std::runtime_error("Scaled physics container children require a convex shape and finite nonzero scale.");
+        }
+        auto scaled = std::make_unique<ContainerConvexInstance>(
+            *static_cast<btConvexShape*>(member.shape.get()), member.node_from_body, to_bt(scale));
+        instance = scaled.get();
+        parent.child_instances.push_back(std::move(scaled));
+    }
+    parent.children.push_back(child.ownership);
+    ++member.container_parents;
+    static_cast<btCompoundShape*>(parent.shape.get())->addChildShape(
+        placement, instance);
 }
 
 void physics_shape_set_material(

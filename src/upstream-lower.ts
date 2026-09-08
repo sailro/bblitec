@@ -1406,6 +1406,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     dynamicThinInstances: features.includes(
                         "mesh:thin-instances-dynamic",
                     ),
+                    meshClones: features.includes("mesh:clone"),
                     nonTrianglePrimitives:
                         options.nonTrianglePrimitives,
                     gaussianSplats: options.gaussianSplats,
@@ -1477,6 +1478,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     options.standardLightLists,
                     options.standardDiffuseUv2,
                     options.standardBump,
+                    features.includes("mesh:clone"),
                 ),
                 generated,
             );
@@ -2542,7 +2544,9 @@ ${composed.wgsl}`,
         if (features.includes("physics:world")) {
             this.writeSource(
                 "upstream/src/physics.cpp",
-                new PhysicsLowerer(context).lowerPhysics(features.includes("physics:queries")),
+                new PhysicsLowerer(context).lowerPhysics(
+                    features.includes("physics:queries"), features.includes("physics:container"),
+                ),
                 generated,
                 "upstream/include/bblite/upstream/physics.hpp",
             );

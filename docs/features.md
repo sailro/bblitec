@@ -187,6 +187,9 @@ imported walks/cloning are represented. Position/rotation/scaling aliases retain
 Meshes can parent to meshes or transform nodes; transform nodes can parent only to transform nodes.
 Parent assignment and children-list insertion remain separate operations.
 
+Detached static imported leaves share geometry and restore local attributes. Babylon imports retain their
+initial source TRS; cloning one after transform mutation refuses. Clones can be transformed and cloned again.
+
 Bare visibility writes are live for transparent/transmissive draws. Opaque cached lists require
 `setMeshVisible` invalidation. Full imported-root cloning/rotation/scaling and arbitrary visitor effects remain incomplete.
 
@@ -317,6 +320,10 @@ Convex proximity/cast queries return local input and world target contacts, dist
 filtering and cast body exclusion. Query bags and quaternions require inline objects; concave/compound proximity
 targets refuse. Dynamic triangle meshes use GImpact. Constraints, characters and heightfields remain incomplete.
 Inertia overrides and non-Y-aligned capsule/cylinder segments refuse. See [physics fidelity](fidelity.md#physics-contract).
+
+Container shapes retain child ownership and source-derived relative TRS. Convex children support finite
+nonzero scale per placement. Construction must finish before attachment; mixed child materials/masks,
+triggers and triangle-mesh children refuse.
 
 Raycasts return nullable body identity, point/normal and double distance. Trigger selection and both masks
 filter the closest eligible body. Arguments evaluate in source order; retained point objects expose changes

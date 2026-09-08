@@ -197,6 +197,9 @@ trigger events and combine modes are explicit library boundaries. Degenerate
 boxes expand below Bullet's margin with a positive-face limitation.
 Triangle-mesh storage outlives its shapes. Static bodies use Bullet's BVH;
 dynamic bodies use GImpact with its approximate inertia over the same triangles.
+Container placement translates the pinned inverse/product/decomposition path. Bullet convex support
+instances preserve child-local offsets, rotation and nonuniform scale without mutating shared geometry.
+Container inertia uses Bullet's approximation; child material/filter/trigger differences refuse.
 Floating-origin regions are separate worlds and do not collide with one another.
 
 Convex proximity uses Bullet GJK/EPA; casts use its convex sweep. Cylinder queries use a measured rounded

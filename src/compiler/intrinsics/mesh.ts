@@ -1094,6 +1094,7 @@ export function compileMeshIntrinsic(
                 call.arguments[0]!,
             );
             if (source.kind === "mesh") {
+                context.reachFeature("mesh:clone", call);
                 // The pin's own `"_gpu" in src` arm: a mesh routes to
                 // cloneMeshNode. The clone is a second wrapper over the
                 // source's geometry, so it needs a scene-mesh identity of

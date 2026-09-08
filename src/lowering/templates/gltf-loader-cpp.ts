@@ -264,6 +264,7 @@ export function gltfLoaderCpp(
         deformPicking = false,
         pinnedSkeletonPalette = false,
         dynamicThinInstances = false,
+        meshClones = false,
         retainLocalNormals = false,
         sourceTextureReads = false,
         sourceMeshWalks = false,
@@ -2962,7 +2963,7 @@ ${nonTrianglePrimitives
             // mirrored-local copy so that later thin-instance draws can use
             // the same local attribute bytes the browser retained.
             const bool retains_runtime_instance_vertices =
-                ${dynamicThinInstances ? "true" : "false"};
+                ${dynamicThinInstances || meshClones ? "true" : "false"};
             const bool retains_local_vertices =
                 retains_live_wheel_vertices ||
                 retains_runtime_instance_vertices;
@@ -3287,7 +3288,7 @@ ${lowered.vertexColor}
                 !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
-                }${retainLocalNormals ? `
+                }${retainLocalNormals || meshClones ? `
                 geometry.source_indices_reversed = true;` : ""}
             }
             if (!normals) {

@@ -103,7 +103,7 @@ const PRIMITIVE_SHAPE_TYPES = ["SPHERE", "CAPSULE", "CYLINDER", "BOX"] as const;
  */
 const MESH_SHAPE_TYPES = ["CONVEX_HULL", "MESH"] as const;
 
-const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, ...MESH_SHAPE_TYPES] as const;
+const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, ...MESH_SHAPE_TYPES, "CONTAINER"] as const;
 
 /**
  * The `PhysicsShapeParameters` members the reached slice lowers, as (the
@@ -272,7 +272,17 @@ export function compilePhysicsIntrinsic(
       if (!typeExpression) {
         context.fail(call.arguments[1]!, "createPhysicsShape requires `type`.");
       }
-      const shapeType = expectShapeType(context, typeExpression);
+      const shapeType = expectShapeType(context, typeExpression, true);
+      if (shapeType === "CONTAINER") {
+        validateObjectProperties(context, options, ["type"],
+          "Physics container shapes do not consume mesh or primitive parameters.");
+        context.reachFeature("physics:container", call);
+        return {
+          kind: "physics-shape",
+          cpp: `bbl::upstream::create_physics_container_shape(${world.cpp})`,
+          ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}),
+        };
+      }
       const parametersExpression = context.objectProperty(
         options,
         "parameters",
@@ -349,6 +359,28 @@ export function compilePhysicsIntrinsic(
           `bbl::upstream::PhysicsShapeType::${shapeType}, ${mesh.cpp}, ` +
           `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
         ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
+      };
+    }
+
+    case "addPhysicsShapeChildFromParent": {
+      context.expectArgumentCount(call, 5, 5);
+      const values = call.arguments.map((argument) =>
+        context.pinValueToTemporary(context.compileValue(argument), "shape_child_arg", argument));
+      const [world, container, parent, child, node] = values;
+      context.expectKind(world!, "physics-world", call.arguments[0]!);
+      context.expectKind(container!, "physics-shape", call.arguments[1]!);
+      context.expectKind(child!, "physics-shape", call.arguments[3]!);
+      for (const index of [2, 4]) {
+        if (values[index]!.kind !== "mesh" && values[index]!.kind !== "transform-node") {
+          context.fail(call.arguments[index]!, "Physics child placement requires a mesh or transform node.");
+        }
+      }
+      for (const value of values.slice(1)) context.expectSameEngine(world!, value, call);
+      context.reachFeature("physics:container", call);
+      return {
+        kind: "void",
+        cpp: `bbl::upstream::add_physics_shape_child_from_parent(${world!.cpp}, ${container!.cpp}, ` +
+          `bbl::upstream::physics_node(${parent!.cpp}), ${child!.cpp}, bbl::upstream::physics_node(${node!.cpp}))`,
       };
     }
 
@@ -1062,23 +1094,23 @@ function compileImpulsePoint(
  * `PhysicsShapeType.SPHERE` -- a `const enum` member access. The member is
  * read by name and mapped to the generated enumerator; the reached slice is
  * the four primitives `createPrimitivePhysicsShapeHandle` builds without a
- * mesh plus the two `createPhysicsShape` builds from one, so CONTAINER and
- * HEIGHTFIELD refuse here rather than at the pin's own `throw` inside
- * `createPhysicsShape`.
+ * mesh plus the two mesh-derived kinds. Container construction is admitted
+ * only through createPhysicsShape; aggregate sizing has no container arm.
  */
 function expectShapeType(
   context: PhysicsIntrinsicContext,
   expression: ts.Expression,
+  allowContainer = false,
 ): string {
   const member = pinnedEnumMemberName(context, expression, "PhysicsShapeType");
-  if (!(SHAPE_TYPES as readonly string[]).includes(member)) {
+  if (!(SHAPE_TYPES as readonly string[]).includes(member) || (member === "CONTAINER" && !allowContainer)) {
     context.fail(
       expression,
       `PhysicsShapeType.${member} is not reached by this ` +
         "prototype. The primitive shapes " +
         "`createPrimitivePhysicsShapeHandle` builds and the two " +
         `mesh-derived ones are lowered (${SHAPE_TYPES.join(", ")}); ` +
-        "CONTAINER and HEIGHTFIELD need their additional pinned paths.",
+        "Containers require createPhysicsShape; heightfields need their pinned path.",
     );
   }
   return member;

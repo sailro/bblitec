@@ -9102,12 +9102,17 @@ SceneRun run_gpu_engine(Engine& engine) {
             const ModelGeometry& geometry = engine.geometries[item.geometry];
             const MeshRecord& mesh_record =
                 engine.meshes[item.mesh.value];
+            std::vector<std::uint32_t> clone_indices;
+            if (mesh_record.detached_imported_mesh && geometry.source_indices_reversed) {
+                node_source_indices(geometry, clone_indices);
+            }
+            const auto& upload_indices = clone_indices.empty() ? geometry.indices : clone_indices;
             const bool shader_material =
                 item.material_kind ==
                 upstream::RenderMaterialKind::shader;
             const std::vector<GpuVertex> vertices =
                 shader_material
-                    ? local_vertices(engine, geometry)
+                    ? local_vertices(engine, geometry, &mesh_record)
                     : transformed_vertices(engine, geometry, mesh_record);
             const auto upload_mesh_buffer = [&, buffer_uploads](
                                                 SDL_GPUBufferUsageFlags usage,
@@ -9128,16 +9133,16 @@ SceneRun run_gpu_engine(Engine& engine) {
                     vertices.size() * sizeof(GpuVertex));
                 gpu_mesh.indices = upload_mesh_buffer(
                     SDL_GPU_BUFFERUSAGE_INDEX,
-                    geometry.indices.data(),
-                    geometry.indices.size() * sizeof(std::uint32_t));
+                    upload_indices.data(),
+                    upload_indices.size() * sizeof(std::uint32_t));
 #else
                 const SharedGeometryIdentity identity =
-                    shared_geometry_identity(vertices, geometry.indices);
+                    shared_geometry_identity(vertices, upload_indices);
                 gpu_mesh.shared_geometry = find_shared_shader_geometry(
                     state.shared_shader_geometries,
                     identity,
                     vertices,
-                    geometry.indices);
+                    upload_indices);
                 if (!gpu_mesh.shared_geometry) {
                     const bool keep_bytes =
                         shared_geometry_keeps_bytes(vertices);
@@ -9148,7 +9153,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                                 ? vertices
                                 : std::vector<GpuVertex>{},
                             .indices = keep_bytes
-                                ? geometry.indices
+                                ? upload_indices
                                 : std::vector<std::uint32_t>{},
                         });
                     created->vertex_buffer = upload_mesh_buffer(
@@ -9157,8 +9162,8 @@ SceneRun run_gpu_engine(Engine& engine) {
                         vertices.size() * sizeof(GpuVertex));
                     created->index_buffer = upload_mesh_buffer(
                         SDL_GPU_BUFFERUSAGE_INDEX,
-                        geometry.indices.data(),
-                        geometry.indices.size() *
+                        upload_indices.data(),
+                        upload_indices.size() *
                             sizeof(std::uint32_t));
                     gpu_mesh.shared_geometry = created.get();
                     state.shared_shader_geometries.push_back(
@@ -9173,7 +9178,7 @@ SceneRun run_gpu_engine(Engine& engine) {
 #endif
             } else {
                 std::vector<std::uint32_t> source_indices;
-                std::span<const std::uint32_t> indices = geometry.indices;
+                std::span<const std::uint32_t> indices = upload_indices;
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
                 if (item.material_kind == upstream::RenderMaterialKind::node) {
                     indices = node_source_indices(geometry, source_indices);

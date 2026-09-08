@@ -208,6 +208,13 @@ export class SceneLowerer {
       transformNodeModulePath,
       "cloneMeshNode",
     );
+    this.context.assertExpressionShape(
+      this.context.variableInitializer(cloneMeshNode, "meshClone"),
+      `initMeshTransform({...mesh, name: mesh.name + "_clone", children: [], _gpu: mesh._gpu},
+        mesh.position.x, mesh.position.y, mesh.position.z, 0, 0, 0,
+        mesh.scaling.x, mesh.scaling.y, mesh.scaling.z)`,
+      "Mesh cloning starts a fresh transform state over shared geometry",
+    );
     if (
       !this.context.hasNode(
         cloneMeshNode,
@@ -1979,10 +1986,49 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
             "and no reached scene clones a parented mesh.");
     }
     MeshRecord record = engine.meshes[mesh.value];
+    if ((record.primitive == PrimitiveKind::gltf || record.primitive == PrimitiveKind::babylon) && !record.detached_imported_mesh) {
+        const ModelGeometry& geometry = engine.geometries.at(record.geometry);
+        if ((record.primitive == PrimitiveKind::gltf && geometry.vertex_space != VertexSpace::world) ||
+            geometry.bind_vertices.size() != geometry.vertices.size() || geometry.vertices.empty()) {
+            throw std::runtime_error("Detached imported mesh clones require retained static local geometry.");
+        }
+        record.detached_imported_mesh = true;
+        record.live_imported_transform = false;
+        record.gpu_world_transform = false;
+        record.baked_world_scale = 1;
+        record.mirrored_x = false;
+        record.clockwise_front_face = false;
+        record.authored_clockwise_front_face = false;
+        if (record.imported_clone_trs) {
+            if (record.transform_version != 0) {
+                throw std::runtime_error("Cloning a transformed Babylon import requires retained source transform ownership.");
+            }
+            const auto& trs = *record.imported_clone_trs;
+            record.position = {trs.position.x, trs.position.y, trs.position.z};
+            record.rotation = trs.rotation;
+            record.scaling = trs.scaling;
+            record.has_rotation_quaternion = false;
+        }
+        Vec3 minimum = geometry.vertices.front().local_position;
+        Vec3 maximum = minimum;
+        for (const auto& vertex : geometry.vertices) {
+            const auto& p = vertex.local_position;
+            minimum = {std::min(minimum.x, p.x), std::min(minimum.y, p.y), std::min(minimum.z, p.z)};
+            maximum = {std::max(maximum.x, p.x), std::max(maximum.y, p.y), std::max(maximum.z, p.z)};
+        }
+        if (!record.has_bounds_min_override) record.bounds_min_override = minimum;
+        if (!record.has_bounds_max_override) record.bounds_max_override = maximum;
+        record.has_bounds_min_override = true;
+        record.has_bounds_max_override = true;
+    }
     if (record.geometry < engine.geometries.size()) {
         ++engine.geometries[record.geometry].owners;
     }
     record.name += "${cloneSuffix}";
+    record.parent = {};
+    record.transform_parent = {};
+    record.outer_position = {};
+    record.outer_rotation = {};
     record.parented_meshes.clear();
     record.feature_source_mesh =
         record.feature_source_mesh != invalid_handle

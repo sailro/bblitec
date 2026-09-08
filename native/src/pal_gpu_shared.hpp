@@ -1600,8 +1600,11 @@ inline std::vector<GpuVertex> transformed_vertices(
         std::size_t vertex_index = 0;
         vertex_index < source_vertices.size();
         ++vertex_index) {
-        const ModelVertex& vertex =
-            source_vertices[vertex_index];
+        const ModelVertex detached_vertex = mesh.detached_imported_mesh
+            ? detached_imported_vertex(mesh, geometry, vertex_index)
+            : ModelVertex{};
+        const ModelVertex& vertex = mesh.detached_imported_mesh
+            ? detached_vertex : source_vertices[vertex_index];
         const ModelVertex& normal_vertex =
             mesh.gpu_deformation && geometry.flat_normals
                 ? geometry.vertices[vertex_index]
@@ -1760,8 +1763,15 @@ inline std::vector<GpuVertex> transformed_vertices(
  *  a whole vertex buffer for every transform-only animation step. */
 inline std::vector<GpuVertex> local_vertices(
     const Engine& engine,
-    const ModelGeometry& geometry) {
+    const ModelGeometry& geometry,
+    const MeshRecord* source = nullptr) {
     static const MeshRecord identity_transform{};
+    if (source != nullptr && source->detached_imported_mesh) {
+        MeshRecord detached_transform;
+        detached_transform.primitive = source->primitive;
+        detached_transform.detached_imported_mesh = true;
+        return transformed_vertices(engine, geometry, detached_transform);
+    }
     return transformed_vertices(engine, geometry, identity_transform);
 }
 #endif
@@ -2717,7 +2727,7 @@ inline bool node_uses_local_attributes(std::size_t geometry_variant) {
 #endif
 }
 
-/** The node adapter binds source indices, including after a glTF material swap. */
+/** Restore source winding after a loader baked a reflected node transform. */
 inline std::span<const std::uint32_t> node_source_indices(
     const ModelGeometry& geometry,
     std::vector<std::uint32_t>& scratch) {

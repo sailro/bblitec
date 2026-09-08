@@ -52,6 +52,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { lowerPhysicsQueries } from "./physics-query-lowerer.js";
+import { lowerPhysicsContainer } from "./physics-container-lowerer.js";
 import {
   SHAPE_PARAMETERS,
   shapeParameterStorage,
@@ -1786,9 +1787,10 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     );
   }
 
-  public lowerPhysics(includeQueries = false): LoweredSource {
+  public lowerPhysics(includeQueries = false, containerShapes = false): LoweredSource {
     this.assertPinnedContracts();
     const queries = includeQueries ? lowerPhysicsQueries(this.context) : undefined;
+    const container = containerShapes ? lowerPhysicsContainer(this.context) : undefined;
     const queryModule = "src/physics/havok-queries.ts";
     const raycast = this.context.functionDeclaration(queryModule, "physicsRaycast");
     const distanceLowerer = new PinnedNumericLowerer(raycast.file, {
@@ -2203,7 +2205,7 @@ PhysicsShape create_physics_mesh_shape(
     PhysicsWorldHandle world,
     PhysicsShapeType type,
     const PhysicsShapeParameters& parameters);
-void set_physics_shape_is_trigger(
+${container?.header ?? ""}void set_physics_shape_is_trigger(
     PhysicsWorldHandle world,
     PhysicsShape shape,
     bool is_trigger);
@@ -2310,6 +2312,7 @@ struct ValueHash<upstream::PhysicsBody> {
 namespace bbl::upstream {
 namespace {
 
+${container?.helpers ?? ""}
 
 PhysicsWorld& physics_world_record(PhysicsWorldHandle handle) {
     const auto world = handle.ownership.lock();
@@ -2377,9 +2380,10 @@ void append_physics_mesh_geometry(
             static_cast<std::uint32_t>(positions.size());
         positions.reserve(positions.size() + geometry.vertices.size());
         for (const ModelVertex& vertex : geometry.vertices) {
-            const double x = vertex.position.x;
-            const double y = vertex.position.y;
-            const double z = vertex.position.z;
+            const Vec3& position = record.detached_imported_mesh ? vertex.local_position : vertex.position;
+            const double x = position.x;
+            const double y = position.y;
+            const double z = position.z;
             positions.push_back({
                 mesh_to_body[0] * x + mesh_to_body[4] * y +
                     mesh_to_body[8] * z + mesh_to_body[12],
@@ -2972,7 +2976,7 @@ PhysicsShape create_physics_mesh_shape(
         pal::physics_shape_create_convex_hull(positions)};
 }
 
-PhysicsShape create_physics_primitive_shape(
+${container?.source ?? ""}PhysicsShape create_physics_primitive_shape(
     PhysicsWorldHandle handle,
     PhysicsShapeType type,
     const PhysicsShapeParameters& parameters) {

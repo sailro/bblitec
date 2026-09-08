@@ -133,6 +133,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:torus-knot": [],
     "mesh:tube": [],
     "mesh:parenting": [],
+    "mesh:clone": [],
     "mesh:geometry-access": [],
     "math:normalize-vec3": [],
     "math:mat4-invert": [],
@@ -180,6 +181,7 @@ export const featureSources: Record<Feature, string[]> = {
     "physics:world": ["src/pal_physics_bullet.cpp"],
     "physics:aggregate": [],
     "physics:queries": [],
+    "physics:container": [],
     // The trigger drain rides in the same generated physics module the
     // world already brings, and in the same PAL translation unit; what
     // the feature records is which pinned module a scene reached.

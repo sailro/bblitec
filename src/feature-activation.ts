@@ -685,6 +685,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/scene/set-parent.ts",
         consumers: CMAKE,
     },
+    "mesh:clone": {
+        provenance: "src/scene/transform-node.ts#cloneMeshNode; src/mesh/mesh.ts#initMeshTransform",
+        consumers: CMAKE,
+    },
     "mesh:geometry-access": {
         provenance: "src/mesh/mesh.ts retained CPU geometry + worldMatrix",
         consumers: CMAKE,
@@ -1041,6 +1045,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "physics:queries": {
         provenance: "src/physics/havok-queries.ts shapeProximity + shapeCast",
+        consumers: CMAKE,
+    },
+    "physics:container": {
+        provenance: "src/physics/havok.ts createPhysicsShape + addPhysicsShapeChildFromParent",
         consumers: CMAKE,
     },
     "physics:trigger": {

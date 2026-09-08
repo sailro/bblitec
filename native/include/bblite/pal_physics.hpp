@@ -302,6 +302,12 @@ physics_world_trigger_events(PhysicsWorldHandle world);
 [[nodiscard]] PhysicsShapeHandle physics_shape_create_mesh(
     const std::vector<std::array<double, 3>>& positions,
     const std::vector<std::uint32_t>& indices);
+[[nodiscard]] PhysicsShapeHandle physics_shape_create_container();
+void physics_shape_add_child(
+    PhysicsShapeHandle container,
+    PhysicsShapeHandle child,
+    const PhysicsTransform& transform,
+    std::array<double, 3> scale);
 /** `HP_Shape_SetMaterial`, taking the pin's own array as a record. */
 void physics_shape_set_material(
     PhysicsShapeHandle shape,

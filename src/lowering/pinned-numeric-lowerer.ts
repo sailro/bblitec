@@ -334,6 +334,8 @@ export interface PinnedNumericScope {
      * this — a name outside `calls` is a contract error either way.
      */
     matrixCalls?: ReadonlySet<string>;
+    /** Matrix-valued calls whose singular/absent result remains observable. */
+    nullableMatrixCalls?: ReadonlySet<string>;
     /**
      * Calls whose result is a `number[]` rather than a number.
      *
@@ -1244,6 +1246,14 @@ export class PinnedNumericLowerer {
                 const value = this.expression(initializer);
                 this.scope.bindings.set(name, { cpp, type: "vec3" });
                 lines.push(`${indent}${isConst ? "const " : ""}Vec3d ${cpp} = ${value};`);
+                continue;
+            }
+            if (ts.isCallExpression(initializer) &&
+                this.scope.nullableMatrixCalls?.has(initializer.expression.getText(this.file))) {
+                this.scope.bindings.set(name, {
+                    cpp: `(*${cpp})`, type: "f32", absentCpp: `!${cpp}.has_value()`,
+                });
+                lines.push(`${indent}${isConst ? "const " : ""}auto ${cpp} = ${this.expression(source)};`);
                 continue;
             }
             // A call the caller declared matrix-valued binds the fixed

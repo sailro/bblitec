@@ -140,6 +140,98 @@ export function emitHandleCollectionLoop<
 }
 
 /** What the collection operations need from the entry compiler. */
+interface AssetOwnerMapProof {
+    mapStatement: ts.Statement;
+    map: ts.Identifier;
+    meshArray: ts.Identifier;
+    child: ts.Identifier;
+    ownerName: ts.Identifier;
+    output: ts.Identifier;
+    collect: ts.Statement;
+    helpers: ts.FunctionDeclaration[];
+}
+
+/** A closed total glTF owner walk; Map updates remain source statements. */
+function assetOwnerMapBuilder(
+    declaration: ts.FunctionDeclaration,
+    resolve: (name: ts.Identifier) => ts.FunctionDeclaration | undefined,
+    isGlobal: (name: ts.Identifier) => boolean,
+): AssetOwnerMapProof | undefined {
+    const parameters = (fn: ts.FunctionDeclaration, count: number): ts.Identifier[] | undefined => {
+        if (!fn.body || fn.asteriskToken || fn.typeParameters?.length ||
+            fn.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) ||
+            fn.parameters.length !== count || fn.parameters.some(parameter =>
+                !ts.isIdentifier(parameter.name) || parameter.initializer || parameter.dotDotDotToken || parameter.questionToken)) return undefined;
+        const names = fn.parameters.map(parameter => parameter.name as ts.Identifier);
+        return new Set(names.map(name => name.text)).size === count ? names : undefined;
+    };
+    const loopBinding = (statement: ts.Statement): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
+        if (!ts.isForOfStatement(statement) || statement.awaitModifier ||
+            !ts.isVariableDeclarationList(statement.initializer) ||
+            !(statement.initializer.flags & ts.NodeFlags.Const) || statement.initializer.declarations.length !== 1) return undefined;
+        const binding = statement.initializer.declarations[0]!;
+        return ts.isIdentifier(binding.name) && !binding.initializer ? { loop: statement, name: binding.name } : undefined;
+    };
+    const params = parameters(declaration, 1);
+    if (!params || declaration.body!.statements.length !== 3) return undefined;
+    const [mapStatement, roots, returned] = declaration.body!.statements;
+    const map = singleConstDeclaration(mapStatement!);
+    const rootLoop = loopBinding(roots!);
+    if (!map || !rootLoop || map.name.text === params[0]!.text ||
+        !ts.isNewExpression(map.initializer) || !ts.isIdentifier(map.initializer.expression) ||
+        map.initializer.expression.text !== "Map" || !isGlobal(map.initializer.expression) ||
+        (map.initializer.arguments?.length ?? 0) !== 0 ||
+        !isPropertyReadOf(rootLoop.loop.expression, params[0]!, "entities") ||
+        !ts.isReturnStatement(returned!) || !isIdentifierRead(returned.expression, map.name)) return undefined;
+    const rootStatements = ts.isBlock(rootLoop.loop.statement) ? rootLoop.loop.statement.statements : [rootLoop.loop.statement];
+    if (rootStatements.length !== 1) return undefined;
+    const rootGuard = guardedArm(rootStatements[0]!);
+    if (!rootGuard || !guardedBy(rootGuard.test, rootLoop.name, resolve, fn => isChildrenPresenceGuard(fn, isGlobal))) return undefined;
+    const call = singleExpressionStatement(rootGuard.body);
+    if (!call || !ts.isCallExpression(call) || !ts.isIdentifier(call.expression) || call.arguments.length !== 3 ||
+        !isIdentifierRead(call.arguments[0]!, rootLoop.name) || !isPropertyReadOf(call.arguments[1]!, rootLoop.name, "name") ||
+        !isIdentifierRead(call.arguments[2]!, map.name)) return undefined;
+    const visitor = resolve(call.expression);
+    const visitorParams = visitor && parameters(visitor, 3);
+    if (!visitor || !visitorParams || visitor.body!.statements.length !== 1) return undefined;
+    const [node, ownerName, output] = visitorParams as [ts.Identifier, ts.Identifier, ts.Identifier];
+    const children = loopBinding(visitor.body!.statements[0]!);
+    if (!children || visitorParams.some(name => name.text === children.name.text) ||
+        !isPropertyReadOf(children.loop.expression, node, "children") || !ts.isBlock(children.loop.statement) ||
+        children.loop.statement.statements.length !== 2) return undefined;
+    const collect = guardedArm(children.loop.statement.statements[0]!);
+    const descend = guardedArm(children.loop.statement.statements[1]!);
+    if (!collect || !descend || !ts.isBlock(collect.body) || collect.body.statements.length !== 3 ||
+        !guardedBy(collect.test, children.name, resolve, isRenderablePresenceGuard) ||
+        !guardedBy(descend.test, children.name, resolve, fn => isChildrenPresenceGuard(fn, isGlobal))) return undefined;
+    const [listStatement, pushed, stored] = collect.body.statements;
+    const list = singleConstDeclaration(listStatement!);
+    if (!list || [...visitorParams, children.name].some(name => name.text === list.name.text)) return undefined;
+    const initial = unwrapWalkExpression(list.initializer);
+    if (!ts.isBinaryExpression(initial) || initial.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken ||
+        !ts.isCallExpression(initial.left) || initial.left.arguments.length !== 1 ||
+        !isPropertyReadOf(initial.left.expression, output, "get") || !isIdentifierRead(initial.left.arguments[0]!, ownerName) ||
+        !ts.isArrayLiteralExpression(initial.right) || initial.right.elements.length !== 0 ||
+        !isIdentifierRead(pushedArgument(singleExpressionStatement(pushed!), list.name, false), children.name)) return undefined;
+    const set = singleExpressionStatement(stored!);
+    if (!set || !ts.isCallExpression(set) || set.arguments.length !== 2 || !isPropertyReadOf(set.expression, output, "set") ||
+        !isIdentifierRead(set.arguments[0]!, ownerName) || !isIdentifierRead(set.arguments[1]!, list.name)) return undefined;
+    const recursive = singleExpressionStatement(descend.body);
+    if (!recursive || !ts.isCallExpression(recursive) || !ts.isIdentifier(recursive.expression) ||
+        resolve(recursive.expression) !== visitor || recursive.arguments.length !== 3 ||
+        !isIdentifierRead(recursive.arguments[0]!, children.name) || !isIdentifierRead(recursive.arguments[2]!, output)) return undefined;
+    const nextOwner = unwrapWalkExpression(recursive.arguments[1]!);
+    if (!ts.isConditionalExpression(nextOwner) || !guardedBy(nextOwner.condition, children.name, resolve, isRenderablePresenceGuard) ||
+        !isIdentifierRead(nextOwner.whenTrue, ownerName) || !isPropertyReadOf(nextOwner.whenFalse, children.name, "name")) return undefined;
+    const helpers = new Set<ts.FunctionDeclaration>([visitor]);
+    for (const guard of [rootGuard.test, collect.test, descend.test, nextOwner.condition]) {
+        const invocation = unwrapWalkExpression(guard);
+        if (!ts.isCallExpression(invocation) || !ts.isIdentifier(invocation.expression)) return undefined;
+        helpers.add(resolve(invocation.expression)!);
+    }
+    return { mapStatement: mapStatement!, map: map.name, meshArray: list.name, child: children.name, ownerName, output, collect: collect.body, helpers: [...helpers] };
+}
+
 export interface HandleCollectionsContext
     extends HandleCollectionLoopContext {
     readonly meshWalks: CompiledMeshWalk[];
@@ -158,6 +250,8 @@ export interface HandleCollectionsContext
     importedName(identifier: ts.Identifier): string | undefined;
     fail(node: ts.Node, message: string): never;
     compileValue(expression: ts.Expression): Value;
+    emitStatement(statement: ts.Statement): void;
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     compileCondition(expression: ts.Expression): string;
     compileStringLiteral(expression: ts.Expression): string;
     cppString(value: string): string;
@@ -229,6 +323,50 @@ interface HandleCollectionMember {
 }
 
 export class HandleCollections {
+    /** Fold only the hierarchy traversal; lower the source's Map updates normally. */
+    public compileAssetOwnerMap(call: ts.CallExpression, identifier: ts.Identifier): Value | undefined {
+        const resolve = (name: ts.Identifier): ts.FunctionDeclaration | undefined => {
+            const declaration = resolveFunctionDeclaration(this.context.checker, name,
+                (node, message) => this.context.fail(node, message));
+            return declaration && ts.isFunctionDeclaration(declaration) ? declaration : undefined;
+        };
+        const declaration = resolve(identifier);
+        if (!declaration || call.arguments.length !== 1) return undefined;
+        const proof = assetOwnerMapBuilder(declaration, resolve,
+            name => this.context.isDefaultLibraryIdentifier(name));
+        if (!proof) return undefined;
+        const owner = this.context.compileValue(call.arguments[0]!);
+        if (owner.kind !== "asset" || owner.asset?.kind !== "gltf") return undefined;
+        const target = this.assetMeshCollection(owner, proof.meshArray).handleCollection!;
+        const walk = this.sourceMeshWalk(owner, target, {
+            kind: "owner-map",
+            parameter: declaration.parameters[0]!.name.getText(),
+            body: `{ ${proof.helpers.map(helper => helper.getText()).join("\n")} ${declaration.body!.statements.map(statement => statement.getText()).join("\n")} }`,
+        });
+        this.context.pushScope(this.context.allocateBlockPrefix());
+        try {
+            this.context.emitStatement(proof.mapStatement);
+            const map = this.context.lookup(proof.map);
+            if (map.dataType?.kind !== "map" || map.dataType.key.kind !== "string" ||
+                map.dataType.value.kind !== "vector" || map.dataType.value.element.kind !== "handle" ||
+                map.dataType.value.element.handle !== "mesh") {
+                this.context.fail(call, "An asset owner map requires Map<string, Mesh[]> storage.");
+            }
+            emitHandleCollectionLoop(this.context, walk, proof.child, context => {
+                const child = context.lookup(proof.child);
+                context.bindLocalValue(proof.ownerName, {
+                    kind: "string", cpp: `${target.engineCpp}.meshes[${child.cpp}.value].scene_node_name`,
+                    dataType: { kind: "string" },
+                });
+                context.bindLocalValue(proof.output, map);
+                context.emitStatement(proof.collect);
+            });
+            return { ...map, engineCpp: target.engineCpp };
+        } finally {
+            this.context.popScope();
+        }
+    }
+
     private readonly meshCardinalities = new Map<string, number>();
 
     public collectionCardinality(target: HandleCollectionTarget, node: ts.Node): number | undefined {

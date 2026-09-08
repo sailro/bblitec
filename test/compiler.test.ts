@@ -16956,9 +16956,9 @@ test("parses reached decimal strings with parseInt radix 10", () => {
             compileSource(`
             import { createEngine } from "@babylonjs/lite";
             await createEngine({});
-            parseInt("ff", 16);
+            parseInt("ff", 1);
         `),
-        /literal radix 10/,
+        /literal radix 0 or 2 through 36/,
     );
 });
 

@@ -13,6 +13,7 @@ export function babylonLoaderCpp(
     lightMeshLists = false,
     diffuseUv2 = false,
     bumpTexture = false,
+    meshClones = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal.hpp>
@@ -539,6 +540,7 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                 }
                 ModelGeometry geometry;
                 geometry.vertices.resize(vertex_count);
+${meshClones ? "                geometry.bind_vertices.resize(vertex_count);" : ""}
                 geometry.bounds_min = Vec3{
                     std::numeric_limits<float>::max(),
                     std::numeric_limits<float>::max(),
@@ -602,6 +604,9 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                     geometry.bounds_max.z =
                         std::max(geometry.bounds_max.z, vertex.position.z);
                     geometry.vertices[index] = vertex;
+${meshClones ? `                    vertex.position = local_position;
+                    vertex.normal = upstream::transform_direction(local_matrix, source_normal);
+                    geometry.bind_vertices[index] = vertex;` : ""}
                 }
                 geometry.indices.reserve(submesh.index_count);
                 for (std::size_t index = 0;
@@ -641,6 +646,7 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                                std::to_string(submesh.material_index)
                          : std::string{});
                 mesh.primitive = PrimitiveKind::babylon;
+${meshClones ? "                mesh.imported_clone_trs = ImportedMeshTrs{mesh_position, mesh_rotation, mesh_scaling};" : ""}
                 // The pin's mesh.world keeps this node's TRS — its position
                 // attribute carries only localMatrix-applied vertices,
                 // measured bit-exact against the browser's uploads — while

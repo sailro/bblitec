@@ -30,15 +30,23 @@ export function isParseFloatCallee(
         isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     },
 ): boolean {
+    return isNumberParserCallee(callee, context, "parseFloat");
+}
+
+export function isNumberParserCallee(
+    callee: ts.Expression,
+    context: { isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean },
+    method: "parseFloat" | "parseInt",
+): boolean {
     if (ts.isIdentifier(callee)) {
         return (
-            callee.text === "parseFloat" &&
+            callee.text === method &&
             context.isDefaultLibraryIdentifier(callee)
         );
     }
     return (
         ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "parseFloat" &&
+        callee.name.text === method &&
         ts.isIdentifier(callee.expression) &&
         callee.expression.text === "Number" &&
         context.isDefaultLibraryIdentifier(callee.expression)

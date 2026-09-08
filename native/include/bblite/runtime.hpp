@@ -2201,6 +2201,12 @@ struct TransformNodeRecord {
     std::uint64_t transform_version = 0;
 };
 
+struct ImportedMeshTrs {
+    Vec3 position{};
+    Vec3 rotation{};
+    Vec3 scaling{1, 1, 1};
+};
+
 struct MeshRecord {
     /**
      * The pinned Mesh name: the factory literal (`"sphere"`, `"box"`, …),
@@ -2264,6 +2270,9 @@ struct MeshRecord {
     bool gpu_world_transform = false;
     /** A static imported mesh restored to its authored local vertex stream. */
     bool live_imported_transform = false;
+    /** cloneMeshNode starts a fresh world state over the source local attributes. */
+    bool detached_imported_mesh = false;
+    std::optional<ImportedMeshTrs> imported_clone_trs;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     /**
@@ -2450,6 +2459,17 @@ struct MeshRecord {
     std::vector<float> morph_storage_weights;
     std::uint64_t morph_weights_version = 0;
 };
+
+inline ModelVertex detached_imported_vertex(const MeshRecord& mesh, const ModelGeometry& geometry, std::size_t index) {
+    ModelVertex vertex = geometry.bind_vertices.at(index);
+    vertex.position = geometry.vertices.at(index).local_position;
+    if (mesh.primitive == PrimitiveKind::gltf) {
+        vertex.normal.x = -vertex.normal.x;
+        vertex.tangent.x = -vertex.tangent.x;
+        vertex.tangent.w = -vertex.tangent.w;
+    }
+    return vertex;
+}
 
 inline void apply_mesh_bound_overrides(
     const MeshRecord& mesh,
