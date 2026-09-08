@@ -2,14 +2,14 @@
  * GridMaterial WGSL, built by evaluating the pinned template functions.
  *
  * `grid-material.ts`'s `buildVertexSource`/`buildFragmentSource` are private
- * but pure template functions, so — the sprite lowerer's precedent — their
- * AST is evaluated with the option flags bound and the *returned strings* are
- * what gets emitted. The native fragment keeps the transcription's runtime
- * option gates (one generated fragment serves every grid material a scene
- * data file can describe), but each gated arm is now the pin's own built
- * text: the two `gridIsOnLine` bodies, the two grid-combine folds, the
- * transparent-opacity clamp, and the premultiply all come out of builder
- * evaluations at the option sets that produce them.
+ * but pure template functions, so — as for every other pinned shader-text
+ * builder — their AST is evaluated by the shared `PinnedShaderText` with the
+ * option record bound and the *returned strings* are what gets emitted. The
+ * native fragment keeps runtime option gates (one generated fragment serves
+ * every grid material a scene data file can describe), but each gated arm is
+ * the pin's own built text: the two `gridIsOnLine` bodies, the two
+ * grid-combine folds, the transparent-opacity clamp, and the premultiply all
+ * come out of builder evaluations at the option sets that produce them.
  *
  * The documented re-homings, mirroring the background lift:
  * - `@group`/`@binding` move to SDL_GPU's register spaces (vertex uniforms in
@@ -22,206 +22,42 @@
  *   world-space position attribute, and reads the object-space position and
  *   normal from the shared model vertex layout's dedicated attributes.
  *
- * Anything the evaluator cannot fold, and any built string missing a piece
- * this file must gate, throws naming the pinned symbol — a changed template
- * stops generation instead of silently keeping a copy.
+ * Anything the evaluator cannot fold refuses naming the pinned node, and any
+ * built string missing a piece this file must gate throws naming the piece —
+ * a changed template stops generation instead of silently keeping a copy.
  */
 import ts from "typescript";
+import { LoweringContext } from "./lowering/context.js";
+import { PinnedShaderText } from "./lowering/pinned-shader-text.js";
 import { extractWgslFunction } from "./pinned-shader-composer.js";
+import { sharedUpstreamStore } from "./upstream-source.js";
+
+const gridModule = "src/material/grid/grid-material.ts";
 
 function gridLiftError(what: string): never {
     throw new Error(`Pinned Babylon Lite grid template changed: ${what}.`);
 }
 
-// ---------------------------------------------------------------------------
-// Template evaluation (the sprite lowerer's bounded evaluator, extended with
-// the option-record property reads and `&&` folds the grid builders use)
-// ---------------------------------------------------------------------------
-
-type GridFlags = Readonly<Record<string, boolean>>;
-type GridScopeValue = string | boolean | GridFlags;
-
-function unwrapExpression(expression: ts.Expression): ts.Expression {
-    let current = expression;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isNonNullExpression(current)
-    ) {
-        current = current.expression;
+/**
+ * The context the shared evaluator reads the grid module through.
+ *
+ * The renderer hands this file the grid module it already resolved, so the
+ * supplied source stands in for the store's copy of that one module and
+ * every other module still resolves through the shared store -- the same
+ * evaluator, over the same file, whether the caller is the renderer or a
+ * test doctoring the template.
+ */
+class GridSourceContext extends LoweringContext {
+    public constructor(private readonly gridMaterial: ts.SourceFile) {
+        super(sharedUpstreamStore());
     }
-    return current;
+
+    public override sourceFile(modulePath: string): ts.SourceFile {
+        return modulePath === gridModule
+            ? this.gridMaterial
+            : super.sourceFile(modulePath);
+    }
 }
-
-function functionDeclarationOf(
-    file: ts.SourceFile,
-    name: string,
-): ts.FunctionDeclaration {
-    for (const statement of file.statements) {
-        if (
-            ts.isFunctionDeclaration(statement) &&
-            statement.name?.text === name &&
-            statement.body !== undefined
-        ) {
-            return statement;
-        }
-    }
-    return gridLiftError(`no function '${name}'`);
-}
-
-function evaluateBoolean(
-    expression: ts.Expression,
-    scope: ReadonlyMap<string, GridScopeValue>,
-): boolean {
-    const node = unwrapExpression(expression);
-    if (ts.isIdentifier(node)) {
-        const bound = scope.get(node.text);
-        if (typeof bound !== "boolean") {
-            gridLiftError(`'${node.text}' is not a bound flag`);
-        }
-        return bound;
-    }
-    if (
-        ts.isPropertyAccessExpression(node) &&
-        ts.isIdentifier(node.expression)
-    ) {
-        const record = scope.get(node.expression.text);
-        if (record === undefined || typeof record !== "object") {
-            gridLiftError(
-                `'${node.expression.text}' is not a bound option record`,
-            );
-        }
-        const flag = record[node.name.text];
-        if (typeof flag !== "boolean") {
-            gridLiftError(
-                `option '${node.name.text}' is not a bound flag`,
-            );
-        }
-        return flag;
-    }
-    if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind ===
-            ts.SyntaxKind.AmpersandAmpersandToken
-    ) {
-        return (
-            evaluateBoolean(node.left, scope) &&
-            evaluateBoolean(node.right, scope)
-        );
-    }
-    return gridLiftError(
-        `a condition this evaluator cannot fold (${
-            ts.SyntaxKind[node.kind]
-        })`,
-    );
-}
-
-function evaluateString(
-    file: ts.SourceFile,
-    expression: ts.Expression,
-    scope: ReadonlyMap<string, GridScopeValue>,
-): string {
-    const node = unwrapExpression(expression);
-    if (
-        ts.isStringLiteral(node) ||
-        ts.isNoSubstitutionTemplateLiteral(node)
-    ) {
-        return node.text;
-    }
-    if (ts.isTemplateExpression(node)) {
-        let text = node.head.text;
-        for (const span of node.templateSpans) {
-            text += evaluateString(file, span.expression, scope);
-            text += span.literal.text;
-        }
-        return text;
-    }
-    if (ts.isIdentifier(node)) {
-        const bound = scope.get(node.text);
-        if (typeof bound !== "string") {
-            gridLiftError(`'${node.text}' is not a resolved string`);
-        }
-        return bound;
-    }
-    if (ts.isConditionalExpression(node)) {
-        return evaluateString(
-            file,
-            evaluateBoolean(node.condition, scope)
-                ? node.whenTrue
-                : node.whenFalse,
-            scope,
-        );
-    }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-        if (node.arguments.length !== 1) {
-            gridLiftError(
-                `'${node.expression.text}' is no longer a single-argument builder`,
-            );
-        }
-        return evaluateTemplateFunction(
-            file,
-            node.expression.text,
-            evaluateBoolean(node.arguments[0]!, scope),
-        );
-    }
-    return gridLiftError(
-        `an expression this evaluator cannot fold (${
-            ts.SyntaxKind[node.kind]
-        })`,
-    );
-}
-
-function evaluateTemplateFunction(
-    file: ts.SourceFile,
-    name: string,
-    argument: GridScopeValue,
-): string {
-    const declaration = functionDeclarationOf(file, name);
-    const parameter = declaration.parameters[0];
-    if (
-        declaration.parameters.length !== 1 ||
-        parameter === undefined ||
-        !ts.isIdentifier(parameter.name)
-    ) {
-        gridLiftError(
-            `'${name}' no longer takes a single named parameter`,
-        );
-    }
-    const scope = new Map<string, GridScopeValue>([
-        [parameter.name.text, argument],
-    ]);
-    for (const statement of declaration.body!.statements) {
-        if (ts.isVariableStatement(statement)) {
-            for (const binding of statement.declarationList.declarations) {
-                if (
-                    !ts.isIdentifier(binding.name) ||
-                    binding.initializer === undefined
-                ) {
-                    gridLiftError(
-                        `an unsupported binding in '${name}'`,
-                    );
-                }
-                scope.set(
-                    binding.name.text,
-                    evaluateString(file, binding.initializer, scope),
-                );
-            }
-            continue;
-        }
-        if (ts.isReturnStatement(statement)) {
-            if (statement.expression === undefined) {
-                gridLiftError(`'${name}' returns nothing`);
-            }
-            return evaluateString(file, statement.expression, scope);
-        }
-        gridLiftError(`an unsupported statement in '${name}'`);
-    }
-    return gridLiftError(`'${name}' has no return statement`);
-}
-
-// ---------------------------------------------------------------------------
-// Assembly
-// ---------------------------------------------------------------------------
 
 /** The one attribute permutation the native layout carries. */
 const hasOpacity = false;
@@ -235,10 +71,11 @@ function builtFragment(
         preMultiplyAlpha: boolean;
     },
 ): string {
-    return evaluateTemplateFunction(file, "buildFragmentSource", {
-        ...options,
-        hasOpacity,
-    });
+    return new PinnedShaderText(new GridSourceContext(file)).evaluate(
+        gridModule,
+        "buildFragmentSource",
+        new Map([["opts", { ...options, hasOpacity }]]),
+    );
 }
 
 /** Requires `text` inside `source`, naming the missing piece otherwise. */
@@ -431,10 +268,12 @@ export function gridVertexWgsl(
     provenance: string,
     gridMaterial: ts.SourceFile,
 ): string {
-    const built = evaluateTemplateFunction(
-        gridMaterial,
+    const built = new PinnedShaderText(
+        new GridSourceContext(gridMaterial),
+    ).evaluate(
+        gridModule,
         "buildVertexSource",
-        hasOpacity,
+        new Map([["hasOpacity", hasOpacity]]),
     );
     // The pinned shader system multiplies three matrices right to left; the
     // plan premultiplies view-projection and pre-transforms the position
