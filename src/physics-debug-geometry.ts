@@ -82,6 +82,7 @@ function canonicalShape(shape: PhysicsDebugShape): PhysicsDebugShape {
             if (![shape.samplesX, shape.samplesZ].every(value => Number.isInteger(value) && value >= 2)) {
                 throw new Error("Physics debug geometry: heightfield sample dimensions must be integers of at least two.");
             }
+            if (shape.samplesX !== shape.samplesZ) throw new Error("Physics debug geometry: only square heightfield grids are materialized.");
             return { type: shape.type, samplesX: shape.samplesX, samplesZ: shape.samplesZ,
                 scale: vector(shape.scale), heights: finite(shape.heights, "heights", shape.samplesX * shape.samplesZ) };
         }

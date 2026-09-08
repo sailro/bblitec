@@ -1059,6 +1059,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/physics/havok.ts createPhysicsConstraint HINGE anchors and axis locks",
         consumers: CMAKE,
     },
+    "physics:heightfield": {
+        provenance: "src/physics/havok-heightfield.ts ground mesh bounds, sample grid and Havok constructor inputs",
+        consumers: CMAKE,
+    },
     "physics:trigger": {
         provenance:
             "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +

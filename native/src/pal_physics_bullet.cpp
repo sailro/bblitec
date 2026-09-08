@@ -152,6 +152,7 @@ struct PhysicsShapeState {
     // Dynamic users retain a GImpact view of the same triangles. Static
     // users keep their BVH and its existing query/contact behavior.
     std::unique_ptr<btGImpactMeshShape> moving_mesh;
+    bool heightfield = false;
     /**
      * Transform from Bullet's centre-of-mass/principal-axis body frame into
      * the node-local frame the pin exposes. A primitive contributes its
@@ -2062,6 +2063,38 @@ PhysicsShapeHandle physics_shape_create_container() {
         btTransform::getIdentity()), "CONTAINER");
 }
 
+PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
+    std::array<double, 3> scale, const std::vector<float>& heights) {
+    if (samples_x < 2 || samples_x != samples_z || samples_x > 65535u ||
+        heights.size() != static_cast<std::size_t>(samples_x) * samples_z) {
+        throw std::runtime_error("Physics heightfields require a square sample grid of dimension 2 through 65535.");
+    }
+    for (const double component : scale) if (!std::isfinite(component) || component <= 0 || !std::isfinite(static_cast<float>(component))) {
+        throw std::runtime_error("Physics heightfield scales must be finite and positive.");
+    }
+    for (const float height : heights) if (!std::isfinite(height)) throw std::runtime_error("Physics heightfield heights must be finite.");
+    std::vector<std::array<double, 3>> positions;
+    positions.reserve(heights.size());
+    const float half = static_cast<float>(samples_x - 1u) * 0.5f;
+    const float sx = static_cast<float>(scale[0]), sy = static_cast<float>(scale[1]), sz = static_cast<float>(scale[2]);
+    for (std::uint32_t z = 0; z < samples_z; ++z) for (std::uint32_t x = 0; x < samples_x; ++x) {
+        positions.push_back({(static_cast<float>(x) - half) * sx, heights[static_cast<std::size_t>(x) * samples_x + z] * sy,
+            (static_cast<float>(z) - half) * sz});
+    }
+    std::vector<std::uint32_t> indices;
+    indices.reserve(static_cast<std::size_t>(samples_x - 1u) * (samples_z - 1u) * 6u);
+    for (std::uint32_t z = 0; z + 1u < samples_z; ++z) for (std::uint32_t x = 0; x + 1u < samples_x; ++x) {
+        const auto a = z * samples_x + x, b = a + 1u, c = a + samples_x, d = c + 1u;
+        indices.insert(indices.end(), {c, b, a, d, b, c});
+    }
+    auto shape = physics_shape_create_mesh(positions, indices);
+    shape.ownership->heightfield = true;
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+    shape.ownership->debug_descriptor = {};
+#endif
+    return record_debug_inputs(shape, "HEIGHTFIELD", samples_x, samples_z, scale, heights);
+}
+
 namespace {
 // A container's scale belongs to this placement, not the shared child.
 // Transform support directions by the transpose and support points by the
@@ -2309,6 +2342,9 @@ void physics_body_set_motion_type(
     PhysicsBodyHandle body,
     PhysicsMotionType motion_type) {
     PhysicsBodyState& entry = body_at(body);
+    if (entry.shape && entry.shape->heightfield && motion_type != PhysicsMotionType::immovable) {
+        throw std::runtime_error("Physics heightfields require a static body.");
+    }
     int flags = entry.body->getCollisionFlags();
     flags &= ~(btCollisionObject::CF_STATIC_OBJECT |
                btCollisionObject::CF_KINEMATIC_OBJECT);
@@ -2334,6 +2370,7 @@ void physics_body_set_shape(
     PhysicsShapeHandle shape) {
     PhysicsBodyState& entry = body_at(body);
     PhysicsShapeState& shape_entry = shape_at(shape);
+    if (shape_entry.heightfield && !entry.body->isStaticObject()) throw std::runtime_error("Physics heightfields require a static body.");
     const bool shape_changed = entry.shape != shape.ownership;
     if (shape_changed) {
         shape_entry.users.push_back(&entry);

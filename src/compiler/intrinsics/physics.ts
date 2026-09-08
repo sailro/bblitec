@@ -45,6 +45,7 @@ export interface PhysicsIntrinsicContext
     precision?: "float" | "double",
   ): string;
   compileBoolean(expression: ts.Expression): string;
+  castNumber(value: Value, precision: "float" | "double"): string;
   vec3FromRecord(value: Value, node: ts.Node, precision?: "float" | "double"): string;
   materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
   pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
@@ -76,9 +77,7 @@ function compileNullableNumber(
   context: PhysicsIntrinsicContext,
   expression: ts.Expression | undefined,
 ): string {
-  return expression
-    ? `bbl::js::Nullable<double>{${context.compileNumber(expression, "double")}}`
-    : "bbl::js::Nullable<double>{}";
+  return nullableShapeParameter(context, expression && context.compileValue(expression), "number", expression);
 }
 
 /** The same, for an optional vector option. */
@@ -86,9 +85,7 @@ function compileNullableVec3(
   context: PhysicsIntrinsicContext,
   expression: ts.Expression | undefined,
 ): string {
-  return expression
-    ? `bbl::js::Nullable<bbl::Vec3d>{${context.compileVec3(expression, "double")}}`
-    : "bbl::js::Nullable<bbl::Vec3d>{}";
+  return nullableShapeParameter(context, expression && context.compileValue(expression), "vec3", expression);
 }
 
 /**
@@ -154,21 +151,34 @@ const qualifiedShapeParameterStorage = (
   return storage === "double" ? storage : `bbl::${storage}`;
 };
 
-/**
- * One geometry member's compiled value.
- *
- * Both bags that declare the five members compile them the same way; only
- * the lane each is written into differs, so the compile itself is the part
- * that must not diverge between them.
- */
-function compileShapeParameter(
+/** An optional geometry value retains nullish absence at the pinned default. */
+function nullableShapeParameter(
   context: PhysicsIntrinsicContext,
-  value: ts.Expression,
+  value: Value | undefined,
   shape: (typeof SHAPE_PARAMETERS)[number][2],
+  node: ts.Node | undefined,
 ): string {
-  return shape === "vec3"
-    ? context.compileVec3(value, "double")
-    : context.compileNumber(value, "double");
+  const lane = `bbl::js::Nullable<${qualifiedShapeParameterStorage(shape)}>`;
+  if (!value || value.kind === "json-null") return `${lane}{}`;
+  if (value.kind === "data" && value.dataType?.kind === "optional") {
+    if (shape === "number" && value.dataType.inner.kind === "number") return value.cpp;
+    if (shape !== "vec3" || value.dataType.inner.kind !== "struct") {
+      context.fail(node!, "Optional physics geometry values must retain their numeric or vector type.");
+    }
+    const owner = context.pinValueToTemporary(value, "physics_optional_vector");
+    const vector = context.vec3FromRecord({ ...owner, cpp: `(*${owner.cpp})`, dataType: value.dataType.inner }, node!, "double");
+    return `(${owner.cpp}.has_value() ? ${lane}{${vector}} : ${lane}{})`;
+  }
+  if (shape === "vec3" && value.kind === "data" && value.dataType?.kind === "struct" &&
+      context.dataTypes.isReferenceStruct(value.dataType.name)) {
+    const owner = context.pinValueToTemporary(value, "physics_optional_vector");
+    return `(${owner.cpp} ? ${lane}{${context.vec3FromRecord(owner, node!, "double")}} : ${lane}{})`;
+  }
+  if (shape === "number") context.expectKind(value, "number", node!);
+  const cpp = shape === "vec3"
+    ? context.vec3FromRecord(value, node!, "double")
+    : context.castNumber(value, "double");
+  return `${lane}{${cpp}}`;
 }
 
 /**
@@ -198,6 +208,20 @@ export function compilePhysicsIntrinsic(
   call: ts.CallExpression,
 ): Value | undefined {
   switch (importedName) {
+    case "createHeightFieldShape": {
+      context.expectArgumentCount(call, 2, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      const options = context.expectObjectLiteral(call.arguments[1]!);
+      validateObjectProperties(context, options, ["groundMesh"], "Heightfields currently require a groundMesh square grid.");
+      const expression = context.objectProperty(options, "groundMesh");
+      if (!expression) context.fail(options, "Heightfields currently require a groundMesh square grid.");
+      const mesh = context.compileValue(expression);
+      context.expectKind(mesh, "mesh", expression);
+      context.expectSameEngine(world, mesh, call);
+      context.reachFeature("physics:heightfield", call);
+      return { kind: "physics-shape", cpp: `bbl::upstream::create_physics_heightfield_from_ground(${world.cpp}, ${mesh.cpp})`, ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}) };
+    }
     case "createPhysicsConstraint": {
       context.expectArgumentCount(call, 4, 5);
       if (!ts.isExpressionStatement(call.parent)) context.fail(call, "The reached HINGE constraint requires a discarded factory result.");
@@ -332,6 +356,13 @@ export function compilePhysicsIntrinsic(
           `bbl::upstream::enable_havok_floating_origin(` +
           `${world.cpp}, ${radius})`,
       };
+    }
+
+    case "setPhysicsGravity": {
+      context.expectArgumentCount(call, 2, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      return { kind: "void", cpp: `bbl::upstream::set_physics_gravity(${world.cpp}, ${context.compileVec3(call.arguments[1]!, "double")}, ${compileNullableVec3(context, call.arguments[2])})` };
     }
 
     case "setPhysicsTimestepMs": {
@@ -1048,26 +1079,37 @@ function compileShapeParameters(
   context: PhysicsIntrinsicContext,
   expression: ts.Expression,
 ): string {
-  const object = context.expectObjectLiteral(expression);
-  validateObjectProperties(
-    context,
-    object,
-    SHAPE_PARAMETERS.map(([pinned]) => pinned),
-    "A physics shape parameter outside this prototype's reached slice " +
-      `(${SHAPE_PARAMETERS.map(([pinned]) => pinned).join(", ")}). ` +
-      "`rotation` reaches no corpus scene, so a rotated primitive would " +
-      "ship the pin's identity quaternion rather than the one written.",
-  );
-  // Designated initializers, so an omitted member is the struct's own
-  // absent lane and the emitted text names the field it fills. C++20 still
-  // requires them in DECLARATION order, so the order of the table above is
-  // load-bearing -- which is why the lowerer emits the struct from that
-  // same table rather than from a copy of it.
-  const written = SHAPE_PARAMETERS.flatMap(([pinned, field, shape]) => {
-    const value = context.objectProperty(object, pinned);
-    if (!value) return [];
-    return [`.${field} = ${compileShapeParameter(context, value, shape)}`];
-  });
+  let record = context.compileValue(expression);
+  const allowed = new Set<string>(SHAPE_PARAMETERS.map(([pinned]) => pinned));
+  if (record.kind === "data" && record.dataType?.kind === "struct") {
+    const type = record.dataType;
+    const owner = context.pinValueToTemporary(record, "physics_shape_parameters");
+    const access = context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
+    const fields: Record<string, Value> = {};
+    for (const field of context.dataTypes.structFields(type.name, expression)) {
+      const cpp = `${owner.cpp}${access}${field.name}`;
+      if (!allowed.has(field.sourceName)) {
+        const optionalReference = field.optionalProperty && field.type.kind === "struct" &&
+          context.dataTypes.isReferenceStruct(field.type.name);
+        if (field.sourceName !== "rotation" || !(field.type.kind === "optional" || optionalReference)) {
+          context.fail(expression, `Unsupported physics shape parameter '${field.sourceName}'.`);
+        }
+        const present = optionalReference ? `static_cast<bool>(${cpp})` : `${cpp}.has_value()`;
+        context.emit(`if (${present}) throw std::runtime_error("Physics shape rotation is not lowered.");`);
+        continue;
+      }
+      fields[field.sourceName] = { kind: field.type.kind === "number" ? "number" : "data", cpp, dataType: field.type };
+    }
+    record = { kind: "record", cpp: "", recordProperties: fields };
+  }
+  context.expectKind(record, "record", expression);
+  if (Object.keys(record.recordGetters ?? {}).length || Object.keys(record.recordMethods ?? {}).length ||
+      Object.keys(record.recordProperties ?? {}).some((name) => !allowed.has(name))) {
+    context.fail(expression, `Physics shape parameters require a closed record of ${[...allowed].join(", ")}.`);
+  }
+  // Designated initializers retain the generated declaration order.
+  const written = SHAPE_PARAMETERS.map(([pinned, field, shape]) =>
+    `.${field} = ${nullableShapeParameter(context, record.recordProperties?.[pinned], shape, expression)}`);
   return `bbl::upstream::PhysicsShapeParameters{${written.join(", ")}}`;
 }
 
@@ -1191,7 +1233,14 @@ function expectShapeType(
   expression: ts.Expression,
   allowContainer = false,
 ): string {
-  const member = pinnedEnumMemberName(context, expression, "PhysicsShapeType");
+  let member: string | undefined;
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression) && context.symbols.importedName(expression.expression) === "PhysicsShapeType") {
+    member = expression.name.text;
+  } else {
+    const value = context.compileValue(expression);
+    if (value.staticNumber !== undefined && !value.parameterBinding) member = context.symbols.pinnedEnumMemberForValue(expression, "PhysicsShapeType", value.staticNumber);
+  }
+  if (!member) context.fail(expression, "A physics shape requires a construction-known pinned PhysicsShapeType value.");
   if (!(SHAPE_TYPES as readonly string[]).includes(member) || (member === "CONTAINER" && !allowContainer)) {
     context.fail(
       expression,
@@ -1321,11 +1370,8 @@ function compileAggregateOptions(
   // one is absent unless the scene wrote it: the generated factory then
   // takes the pin's own `??` and derives from the mesh's bounds instead.
   const geometry = SHAPE_PARAMETERS.map(([pinned, , shapeKind]) => {
-    const lane = `bbl::js::Nullable<${qualifiedShapeParameterStorage(shapeKind)}>`;
-    const value = context.objectProperty(object, pinned);
-    return value
-      ? `${lane}{${compileShapeParameter(context, value, shapeKind)}}`
-      : `${lane}{}`;
+    const expression = context.objectProperty(object, pinned);
+    return nullableShapeParameter(context, expression && context.compileValue(expression), shapeKind, expression);
   });
   // `createPhysicsAggregate` forwards `options.startAsleep` straight into
   // `createPhysicsBody`'s `startsAsleep = false` default, which is the

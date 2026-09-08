@@ -60,5 +60,6 @@ test("descriptor identities ignore property spelling order and retain all geomet
     await assert.rejects(materializePhysicsDebugGeometry({ ...box, bodyPose: [0, 0, 0] } as PhysicsDebugShape), /unrepresented BOX field/);
     await assert.rejects(materializePhysicsDebugGeometry({ type: "MESH", positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 3] }), /triangle indices/);
     await assert.rejects(materializePhysicsDebugGeometry({ type: "HEIGHTFIELD", samplesX: 2, samplesZ: 2, scale: [1, 1, 1], heights: [0, 1, 2] }), /finite values/);
+    await assert.rejects(materializePhysicsDebugGeometry({ type: "HEIGHTFIELD", samplesX: 3, samplesZ: 2, scale: [1, 1, 1], heights: [0, 1, 2, 3, 4, 5] }), /square/);
     await assert.rejects(materializePhysicsDebugGeometry({ type: "SPHERE", center: [0, 0, 0], radius: Infinity }), /positive and finite/);
 });

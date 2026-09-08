@@ -1354,11 +1354,12 @@ export class PinnedNumericLowerer {
         ) {
             return undefined;
         }
-        const constructor = initializer.expression.text;
+        const sourceConstructor = initializer.expression.text;
+        const constructor = TYPED_ARRAY_CONVERSIONS.get(sourceConstructor)?.type.toUpperCase() ?? sourceConstructor;
         const argument = initializer.arguments[0]!;
         // Pinned uniform writers also construct a small typed tuple directly.
         // Keep its allocation fixed and round at each authored f32 store.
-        if ((constructor === "F32" || constructor === "Float32Array") &&
+        if (constructor === "F32" &&
             ts.isArrayLiteralExpression(argument)) {
             const values = argument.elements.map((element) =>
                 `static_cast<float>(${this.expression(element)})`);

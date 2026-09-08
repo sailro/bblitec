@@ -79,6 +79,9 @@ struct PhysicsConstraintAnchor {
 void physics_world_create_hinge(PhysicsWorldHandle world, PhysicsBodyHandle parent, PhysicsBodyHandle child,
     const PhysicsConstraintAnchor& parent_anchor, const PhysicsConstraintAnchor& child_anchor, bool collisions);
 
+PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x, std::uint32_t samples_z,
+    std::array<double, 3> scale, const std::vector<float>& heights);
+
 /**
  * The pair `HP_World_GetSpeedLimit` returns and `HP_World_SetSpeedLimit`
  * takes.

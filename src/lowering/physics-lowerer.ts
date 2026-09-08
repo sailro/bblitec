@@ -55,6 +55,8 @@ import { lowerPhysicsQueries } from "./physics-query-lowerer.js";
 import { lowerPhysicsContainer } from "./physics-container-lowerer.js";
 import { lowerPhysicsViewer } from "./physics-viewer-lowerer.js";
 import { lowerPhysicsConstraints } from "./physics-constraint-lowerer.js";
+import { lowerPhysicsGravity } from "./physics-gravity-lowerer.js";
+import { lowerPhysicsHeightfield } from "./physics-heightfield-lowerer.js";
 import {
   SHAPE_PARAMETERS,
   shapeParameterStorage,
@@ -1789,12 +1791,14 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     );
   }
 
-  public lowerPhysics(includeQueries = false, containerShapes = false, includeViewer = false, includeConstraints = false): LoweredSource {
+  public lowerPhysics(includeQueries = false, containerShapes = false, includeViewer = false, includeConstraints = false, includeHeightfield = false): LoweredSource {
     this.assertPinnedContracts();
     const queries = includeQueries ? lowerPhysicsQueries(this.context) : undefined;
     const container = containerShapes ? lowerPhysicsContainer(this.context) : undefined;
     const viewer = includeViewer ? lowerPhysicsViewer(this.context) : undefined;
     const constraints = includeConstraints ? lowerPhysicsConstraints(this.context) : undefined;
+    const gravitySetter = lowerPhysicsGravity(this.context);
+    const heightfield = includeHeightfield ? lowerPhysicsHeightfield(this.context) : undefined;
     const queryModule = "src/physics/havok-queries.ts";
     const raycast = this.context.functionDeclaration(queryModule, "physicsRaycast");
     const distanceLowerer = new PinnedNumericLowerer(raycast.file, {
@@ -2112,13 +2116,9 @@ struct PhysicsRegion {
  * The pin's context also carries its six hooks as function members, because
  * the module is dynamic-imported and \`havok.ts\` reaches it only through
  * the object. A native build links one translation unit, so the hooks are
- * ordinary functions here and what the record carries is state alone. Four
- * of the six -- \`setGravity\`, \`getRegionGravity\`, \`setVelocityLimits\`
- * and \`dispose\` -- have no caller in this port at all: their only pinned
- * callers are \`setPhysicsGravity\`, \`getPhysicsGravity\`,
- * \`setPhysicsVelocityLimits\` and \`disposePhysics\`, none of which is a
- * supported intrinsic. \`gravity\` is still carried because
- * \`_getOrCreateRegion\` seeds every new region from it.
+ * ordinary functions here and what the record carries is state alone. Per-region gravity lives in the
+ * PAL world; its duplicate source field has no admitted getter. The context's
+ * gravity seeds newly created regions.
  */
 struct PhysicsFloatingOrigin {
     std::vector<PhysicsRegion> regions;
@@ -2293,6 +2293,8 @@ void on_physics_collision(
 ${queries?.header ?? ""}
 ${viewer?.header ?? ""}
 ${constraints?.header ?? ""}
+${heightfield?.header ?? ""}
+${gravitySetter.header}
 }  // namespace bbl::upstream
 
 namespace bbl::js {
@@ -3253,6 +3255,8 @@ void on_physics_collision(
 ${queries?.source ?? ""}
 ${viewer?.source ?? ""}
 ${constraints?.source ?? ""}
+${heightfield?.source ?? ""}
+${gravitySetter.source}
 PhysicsRaycastResult physics_raycast(
     PhysicsWorldHandle handle,
     Vec3d from,
