@@ -11,11 +11,14 @@ import type {
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import type { CompiledRenderTargetOptions } from "./engine-options.js";
-import type { CompiledScreenSpaceTask } from "./screen-space-options.js";
 import type {
-    CompiledPostProcessComposite,
-    CompiledPostProcessTask,
+    CompiledRenderTargetOptions,
+    EngineOptionContext,
+} from "./engine-options.js";
+import { compileScreenSpaceTaskOptions } from "./screen-space-options.js";
+import {
+    compilePostProcessCompositeOptions,
+    compilePostProcessTaskOptions,
 } from "./post-process-options.js";
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
 import { validateObjectProperties } from "../option-helpers.js";
@@ -26,7 +29,7 @@ interface CompiledGeometryTask {
 }
 
 export interface EngineIntrinsicContext
-    extends IntrinsicCallContext {
+    extends IntrinsicCallContext, EngineOptionContext {
     noteTextSceneLifecycle(node: ts.Node, message?: string): void;
     noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     emit(line: string): void;
@@ -54,16 +57,6 @@ export interface EngineIntrinsicContext
     compileCopyTaskOptions(
         expression: ts.Expression,
     ): string;
-    compilePostProcessTaskOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        shaderIndex: number,
-    ): CompiledPostProcessTask;
-    compilePostProcessCompositeOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        compositeIndex: number,
-    ): CompiledPostProcessComposite;
     recordGeometryOutputTask(
         manifest: GeometryOutputTaskManifest,
     ): void;
@@ -74,11 +67,6 @@ export interface EngineIntrinsicContext
         manifest: PostProcessCompositeManifest,
         site: ts.Node,
     ): void;
-    compileScreenSpaceTaskOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        taskIndex: number,
-    ): CompiledScreenSpaceTask;
     recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void;
     readonly postProcessTasks: readonly PostProcessTaskManifest[];
     readonly postProcessComposites: readonly PostProcessCompositeManifest[];
@@ -460,7 +448,8 @@ function compileScreenSpaceIntrinsic(
         "the frame function reads the scene renderer's camera matrices.",
     );
     context.reachFeature("renderer:screen-space", call);
-    const compiled = context.compileScreenSpaceTaskOptions(
+    const compiled = compileScreenSpaceTaskOptions(
+        context,
         importedName,
         call.arguments[0]!,
         context.screenSpaceTasks.length,
@@ -505,7 +494,8 @@ function compilePostProcessIntrinsic(
     }
     const engine = compileTaskEngineAndScene(context, importedName, call);
     if (composite) {
-        const built = context.compilePostProcessCompositeOptions(
+        const built = compilePostProcessCompositeOptions(
+            context,
             importedName,
             call.arguments[0]!,
             context.postProcessComposites.length,
@@ -524,7 +514,8 @@ function compilePostProcessIntrinsic(
             postProcessComposite: built.manifest,
         };
     }
-    const compiled = context.compilePostProcessTaskOptions(
+    const compiled = compilePostProcessTaskOptions(
+        context,
         importedName,
         call.arguments[0]!,
         context.postProcessTasks.length,

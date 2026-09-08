@@ -12,6 +12,12 @@ import { readOnlyDataMethods, storingDataMethods } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { staticNumberValue, type PositiveIntegerContext } from "./option-helpers.js";
 import { CompilerSymbols } from "./symbols.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    rootIdentifier,
+    unwrapExpression,
+} from "./syntax.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 export type SupportedFunction =
@@ -31,43 +37,6 @@ export function isSupportedFunction(
             ts.isArrowFunction(node) ||
             ts.isMethodDeclaration(node))
     );
-}
-
-/** Strip the type-only and grouping wrappers around an expression. */
-export function unwrapExpression(expression: ts.Expression): ts.Expression {
-    let current = expression;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isTypeAssertionExpression(current) ||
-        ts.isNonNullExpression(current) ||
-        ts.isSatisfiesExpression(current)
-    ) {
-        current = current.expression;
-    }
-    return current;
-}
-
-/**
- * The identifier a property/element-access chain is rooted at, if any.
- *
- * The unwrap has to run BETWEEN chain steps, not only once: `(a as X).b[i]`
- * roots at `a`. Every mutation walk in this compiler depends on that, so the
- * loop lives here once; `Compiler.inferredObjectIsMutated` passes its own
- * `unwrap`, which additionally records the `await` expressions it stripped.
- */
-export function rootIdentifier(
-    expression: ts.Expression,
-    unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
-): ts.Identifier | undefined {
-    let current = unwrap(expression);
-    while (
-        ts.isPropertyAccessExpression(current) ||
-        ts.isElementAccessExpression(current)
-    ) {
-        current = unwrap(current.expression);
-    }
-    return ts.isIdentifier(current) ? current : undefined;
 }
 
 /**
@@ -93,19 +62,10 @@ function writesThroughRoot(
     mutatesVia: (method: string) => boolean = (method) =>
         !readOnlyDataMethods.has(method),
 ): boolean {
-    if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-    ) {
+    if (isAssignmentExpression(node)) {
         return isTarget(node.left);
     }
-    if (
-        (ts.isPrefixUnaryExpression(node) ||
-            ts.isPostfixUnaryExpression(node)) &&
-        (node.operator === ts.SyntaxKind.PlusPlusToken ||
-            node.operator === ts.SyntaxKind.MinusMinusToken)
-    ) {
+    if (isUpdateExpression(node)) {
         return isTarget(node.operand);
     }
     return (

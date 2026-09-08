@@ -409,19 +409,6 @@ const lightVectors: Readonly<Record<LightKind, readonly string[]>> = {
   spot: ["position", "direction"],
 };
 
-/** The emitted entry point for `light.<vector>.set(...)`, if there is one. */
-export function lightVectorSetter(
-  owner: Value,
-  vector: string,
-): string | undefined {
-  if (owner.kind !== "light" || !owner.lightKind) {
-    return undefined;
-  }
-  return lightVectors[owner.lightKind].includes(vector)
-    ? `set_${owner.lightKind}_light_${vector}`
-    : undefined;
-}
-
 /**
  * The light scalars whose write is more than one record store, and the
  * emitted entry point each takes.
@@ -441,17 +428,33 @@ const lightScalars: Readonly<Record<LightKind, readonly string[]>> = {
   spot: ["angle"],
 };
 
-/** The emitted entry point for `light.<scalar> = ...`, if there is one. */
-function lightScalarSetter(
+/**
+ * The emitted entry point for a light property write, if there is one:
+ * `light.<vector>.set(...)` for the `vector` family and `light.<scalar> =
+ * ...` for the `scalar` family. Both families spell the same
+ * `set_<kind>_light_<property>` symbol; which properties each light kind
+ * offers is the only difference between them.
+ */
+export function lightSetter(
   owner: Value,
   property: string,
+  family: "vector" | "scalar",
 ): string | undefined {
   if (owner.kind !== "light" || !owner.lightKind) {
     return undefined;
   }
-  return lightScalars[owner.lightKind].includes(property)
+  const properties = family === "vector" ? lightVectors : lightScalars;
+  return properties[owner.lightKind].includes(property)
     ? `set_${owner.lightKind}_light_${property}`
     : undefined;
+}
+
+/** The vector family of {@link lightSetter}, as the pin audit reads it. */
+export function lightVectorSetter(
+  owner: Value,
+  vector: string,
+): string | undefined {
+  return lightSetter(owner, vector, "vector");
 }
 
 export interface AssignmentContext extends DeterministicRandomContext {
@@ -2550,7 +2553,7 @@ export function emitPropertyAssignment(
       }
     }
 
-    const scalarSetter = lightScalarSetter(target, property);
+    const scalarSetter = lightSetter(target, property, "scalar");
     if (scalarSetter) {
       requireSimpleAssignment(context, expression, `light ${property}`);
       // The pin recomputes the cone cosine from the JavaScript-number
@@ -2697,7 +2700,7 @@ export function emitPropertyAssignment(
     }
     if (mesh.kind === "light") {
       const vector = left.expression.name.text;
-      const setter = lightVectorSetter(mesh, vector);
+      const setter = lightSetter(mesh, vector, "vector");
       if (!setter) {
         context.fail(
           left.expression,
@@ -2901,27 +2904,24 @@ export function emitPropertyAssignment(
   context.fail(left, `Unsupported property assignment '${left.getText()}'.`);
 }
 
+/**
+ * The C++ spelling of a property write's operator: the same five forms a
+ * pinned body may state, so scene code and pinned code agree on them.
+ */
 function assignmentOperator(
   context: AssignmentContext,
   expression: ts.BinaryExpression,
-): "=" | "+=" | "-=" | "*=" | "/=" {
-  switch (expression.operatorToken.kind) {
-    case ts.SyntaxKind.EqualsToken:
-      return "=";
-    case ts.SyntaxKind.PlusEqualsToken:
-      return "+=";
-    case ts.SyntaxKind.MinusEqualsToken:
-      return "-=";
-    case ts.SyntaxKind.AsteriskEqualsToken:
-      return "*=";
-    case ts.SyntaxKind.SlashEqualsToken:
-      return "/=";
-    default:
-      return context.fail(
-        expression.operatorToken,
-        `Unsupported assignment operator '${expression.operatorToken.getText()}'.`,
-      );
+): string {
+  const operator = PINNED_ASSIGNMENT_OPERATORS.get(
+    expression.operatorToken.kind,
+  );
+  if (operator === undefined) {
+    context.fail(
+      expression.operatorToken,
+      `Unsupported assignment operator '${expression.operatorToken.getText()}'.`,
+    );
   }
+  return operator;
 }
 
 /**
@@ -3093,6 +3093,7 @@ import { emitParticleBufferWrite, requireParticleBakeWritable } from "./particle
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { stringLiteral } from "../cpp-literals.js";
+import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import {
   emitDeterministicRandomInstall,
   type DeterministicRandomContext,

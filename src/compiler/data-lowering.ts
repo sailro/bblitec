@@ -13,6 +13,7 @@ import {
     isTypedArrayType,
     passesByReference,
     pinnedHandleKind,
+    TYPED_ARRAY_KINDS,
     typedArrayStem,
     typedArrayStoreExpression,
     type DataIterationElement,
@@ -31,6 +32,12 @@ import {
 } from "./data-methods.js";
 import { isTrsVectorName } from "./assignments.js";
 import { pickedMeshHandleCpp } from "./properties.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    rootExpression,
+    rootIdentifier,
+} from "./syntax.js";
 
 /**
  * The one-argument `Math` members scene code may call, each a `<cmath>`
@@ -582,14 +589,10 @@ export class DataLowerer {
      * what comes back.
      */
     public plainDataOwnerChain(expression: ts.Expression): boolean {
-        let node = this.context.unwrap(expression);
-        while (
-            ts.isPropertyAccessExpression(node) ||
-            ts.isElementAccessExpression(node)
-        ) {
-            node = this.context.unwrap(node.expression);
-        }
-        if (!ts.isIdentifier(node)) return true;
+        const node = rootIdentifier(expression, (chain) =>
+            this.context.unwrap(chain),
+        );
+        if (!node) return true;
         const bound = this.context.lookupIdentifierValue(node);
         return (
             bound?.kind !== "scene" &&
@@ -1363,17 +1366,7 @@ export class DataLowerer {
         if (
             !ts.isNewExpression(source) ||
             !ts.isIdentifier(source.expression) ||
-            ![
-                "Float32Array",
-                "Float64Array",
-                "Uint8Array",
-                "Uint16Array",
-                "Int16Array",
-                "Uint32Array",
-                "Int32Array",
-            ].includes(
-                source.expression.text,
-            ) ||
+            !TYPED_ARRAY_KINDS.has(source.expression.text) ||
             this.context.lookupIdentifierValue(
                 source.expression,
             ) ||
@@ -2194,12 +2187,8 @@ export class DataLowerer {
         const indexCanRunCode = (node: ts.Node): boolean =>
             ts.isCallExpression(node) || ts.isNewExpression(node) ||
             ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
-            ts.isPostfixUnaryExpression(node) ||
-            (ts.isPrefixUnaryExpression(node) &&
-                (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) ||
-            (ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            isUpdateExpression(node) ||
+            isAssignmentExpression(node) ||
             !!ts.forEachChild(node, indexCanRunCode);
         const typedIndexRunsCode = isTypedArrayType(dataType) && indexCanRunCode(access.argumentExpression);
         const retainedIndexOwner = ownedRead || typedIndexRunsCode;
@@ -2705,11 +2694,7 @@ export class DataLowerer {
                 return;
             }
             if (
-                (ts.isPostfixUnaryExpression(node) ||
-                    ts.isPrefixUnaryExpression(node)) &&
-                (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                    node.operator ===
-                        ts.SyntaxKind.MinusMinusToken) &&
+                isUpdateExpression(node) &&
                 this.isSameSymbolIdentifier(
                     node.operand,
                     indexSymbol,
@@ -2718,13 +2703,7 @@ export class DataLowerer {
                 safe = false;
                 return;
             }
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >=
-                    ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <=
-                    ts.SyntaxKind.LastAssignment
-            ) {
+            if (isAssignmentExpression(node)) {
                 const target = this.context.unwrap(node.left);
                 if (
                     this.isSameSymbolIdentifier(
@@ -4479,32 +4458,12 @@ export class DataLowerer {
             return undefined;
         }
         const name = expression.expression.text;
-        if (
-            name !== "Float64Array" &&
-            name !== "Float32Array" &&
-            name !== "Uint8Array" &&
-            name !== "Uint16Array" &&
-            name !== "Int16Array" &&
-            name !== "Uint32Array" &&
-            name !== "Int32Array"
-        ) {
+        const kind = TYPED_ARRAY_KINDS.get(name);
+        if (!kind) {
             return undefined;
         }
-        const dataType: DataType =
-            name === "Float64Array"
-                ? { kind: "f64array" }
-                : name === "Float32Array"
-                  ? { kind: "f32array" }
-                : name === "Uint8Array"
-                  ? { kind: "u8array" }
-                : name === "Uint16Array"
-                  ? { kind: "u16array" }
-                : name === "Int16Array"
-                  ? { kind: "i16array" }
-                : name === "Uint32Array"
-                  ? { kind: "u32array" }
-                  : { kind: "i32array" };
-        const prefix = typedArrayStem(dataType.kind);
+        const dataType: DataType = { kind };
+        const prefix = typedArrayStem(kind);
         this.context.reachJsData();
         const argument = expression.arguments?.[0];
         if (!argument) {
@@ -7595,14 +7554,10 @@ export class DataLowerer {
             }
         }
         const clearStaticHandleSnapshot = (node: ts.Expression): void => {
-            let root = this.context.unwrap(node);
-            while (
-                ts.isPropertyAccessExpression(root) ||
-                ts.isElementAccessExpression(root)
-            ) {
-                root = this.context.unwrap(root.expression);
-            }
-            if (ts.isIdentifier(root)) {
+            const root = rootIdentifier(node, (chain) =>
+                this.context.unwrap(chain),
+            );
+            if (root) {
                 const value = this.context.lookupIdentifierValue(root);
                 if (value) this.invalidateStaticElements(value);
             }
@@ -7782,13 +7737,9 @@ export class DataLowerer {
         if (!target) {
             return false;
         }
-        let targetRoot: ts.Expression = left;
-        while (
-            ts.isPropertyAccessExpression(targetRoot) ||
-            ts.isElementAccessExpression(targetRoot)
-        ) {
-            targetRoot = this.context.unwrap(targetRoot.expression);
-        }
+        const targetRoot = rootExpression(left, (chain) =>
+            this.context.unwrap(chain),
+        );
         const invalidateRootRecordSnapshot = (): void => {
             if (
                 !ts.isPropertyAccessExpression(left) ||

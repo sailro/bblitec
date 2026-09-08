@@ -2,7 +2,7 @@
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";
-import { unwrapExpression } from "./user-functions.js";
+import { isAssignmentExpression, isUpdateExpression, unwrapExpression } from "./syntax.js";
 
 export type TextTransform = "position" | "scaling" | "rotation" | "rotationQuaternion" | "positionPx";
 const transforms: readonly string[] = ["position", "scaling", "rotation", "rotationQuaternion"];
@@ -129,9 +129,8 @@ export function compileTextMutation(context: TextSurfaceContext, expression: ts.
         });
         return { kind: "void", cpp: `bbl::text_set_${field(owner.textTransform!)}(*(${owner.cpp}), ${args.join(", ")})` };
     }
-    const assignment = ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment ? node : undefined;
-    const increment = (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-        [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator) ? node : undefined;
+    const assignment = isAssignmentExpression(node) ? node : undefined;
+    const increment = isUpdateExpression(node) ? node : undefined;
     const target = assignment?.left ?? increment?.operand;
     if (!target) return undefined;
     const left = context.unwrap(target);

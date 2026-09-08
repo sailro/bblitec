@@ -16,7 +16,7 @@ import type {
     Value,
     ValueKind,
 } from "./types.js";
-import { lightVectorSetter } from "./assignments.js";
+import { lightSetter } from "./assignments.js";
 import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import {
     staticIndexLoopShape,
@@ -29,6 +29,7 @@ import {
 import type { CompilerSymbols } from "./symbols.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { isUpdateExpression } from "./syntax.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -913,7 +914,7 @@ export class StatementLowerer {
                 return constant(node.left, seen) && constant(node.right, seen);
             }
             return ts.isPrefixUnaryExpression(node) &&
-                node.operator !== ts.SyntaxKind.PlusPlusToken && node.operator !== ts.SyntaxKind.MinusMinusToken &&
+                !isUpdateExpression(node) &&
                 constant(node.operand, seen);
         };
         let settled = true;
@@ -3429,13 +3430,7 @@ export class StatementLowerer {
             }
             return;
         }
-        if (
-            (ts.isPostfixUnaryExpression(unwrapped) || ts.isPrefixUnaryExpression(unwrapped)) &&
-            [
-                ts.SyntaxKind.PlusPlusToken,
-                ts.SyntaxKind.MinusMinusToken,
-            ].includes(unwrapped.operator)
-        ) {
+        if (isUpdateExpression(unwrapped)) {
             if (ts.isIdentifier(unwrapped.operand)) {
                 const target = context.lookup(
                     unwrapped.operand,
@@ -3934,7 +3929,7 @@ export class StatementLowerer {
             // a message that would name the wrong cause.
             return false;
         }
-        const setter = lightVectorSetter(target, property);
+        const setter = lightSetter(target, property, "vector");
         if (!setter) {
             context.fail(
                 call,

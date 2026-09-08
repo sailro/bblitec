@@ -78,10 +78,10 @@ import type {
     Value,
 } from "./types.js";
 import {
-    rootIdentifier,
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
 } from "./user-functions.js";
+import { rootIdentifier } from "./syntax.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
 const supportedFactories = ["createTexture2DFromPixels", "loadTexture2D"] as const;

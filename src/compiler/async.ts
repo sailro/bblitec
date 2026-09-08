@@ -3,7 +3,8 @@ import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataTypeRegistry } from "./data-types.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
-import { tryResolveFunctionDeclaration, unwrapExpression } from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import { unwrapExpression } from "./syntax.js";
 import type { Value } from "./types.js";
 
 interface AsyncContext {

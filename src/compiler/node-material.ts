@@ -29,10 +29,8 @@ import {
     type PositiveIntegerContext,
 } from "./option-helpers.js";
 import { babylonPackages } from "./symbols.js";
-import {
-    resolveFunctionDeclaration,
-    unwrapExpression as unwrapLoaderExpression,
-} from "./user-functions.js";
+import { resolveFunctionDeclaration } from "./user-functions.js";
+import { unwrapExpression as unwrapLoaderExpression } from "./syntax.js";
 import type {
     CompiledNodeMaterial,
     NodeMaterialBlockEmitter,

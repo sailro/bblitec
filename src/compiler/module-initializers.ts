@@ -1,5 +1,6 @@
 import ts from "typescript";
 import type { CompilerSymbols } from "./symbols.js";
+import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
 
 /** Statements JavaScript executes while evaluating an imported module. */
 export function isModuleInitializerStatement(
@@ -39,19 +40,9 @@ export function collectReboundSymbols(
         if (symbol) rebound.add(symbol);
     };
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-            node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-        ) {
+        if (isAssignmentExpression(node)) {
             record(node.left);
-        } else if (
-            countUpdateOperators &&
-            (ts.isPostfixUnaryExpression(node) ||
-                ts.isPrefixUnaryExpression(node)) &&
-            (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                node.operator === ts.SyntaxKind.MinusMinusToken)
-        ) {
+        } else if (countUpdateOperators && isUpdateExpression(node)) {
             record(node.operand);
         }
         ts.forEachChild(node, visit);
@@ -550,11 +541,7 @@ class ModuleInitializerPlanner {
                 }
             }
             if (
-                ts.isBinaryExpression(current) &&
-                current.operatorToken.kind >=
-                    ts.SyntaxKind.FirstAssignment &&
-                current.operatorToken.kind <=
-                    ts.SyntaxKind.LastAssignment &&
+                isAssignmentExpression(current) &&
                 targetsSymbol(current.left)
             ) {
                 found = true;

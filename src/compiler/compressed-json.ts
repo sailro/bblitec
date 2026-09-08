@@ -17,6 +17,7 @@ import {
 } from "./json-value.js";
 import type { Value } from "./types.js";
 import { runModuleJsonSync } from "./module-json-sync.js";
+import { unwrapExpression } from "./syntax.js";
 
 interface CompressedJsonContext {
     readonly checker: ts.TypeChecker;
@@ -40,28 +41,13 @@ function functionDeclaration(
     );
 }
 
-/** Remove syntax that cannot change the value or operation being matched. */
-function unwrap(expression: ts.Expression): ts.Expression {
-    let current = expression;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isTypeAssertionExpression(current) ||
-        ts.isNonNullExpression(current) ||
-        ts.isSatisfiesExpression(current)
-    ) {
-        current = current.expression;
-    }
-    return current;
-}
-
 function identifierIs(
     expression: ts.Expression | undefined,
     expected: string,
 ): expression is ts.Identifier {
     return !!expression &&
-        ts.isIdentifier(unwrap(expression)) &&
-        (unwrap(expression) as ts.Identifier).text === expected;
+        ts.isIdentifier(unwrapExpression(expression)) &&
+        (unwrapExpression(expression) as ts.Identifier).text === expected;
 }
 
 /** A built-in rather than a same-spelled module binding. */
@@ -70,7 +56,7 @@ function globalIdentifierIs(
     expression: ts.Expression,
     expected: string,
 ): expression is ts.Identifier {
-    const unwrapped = unwrap(expression);
+    const unwrapped = unwrapExpression(expression);
     if (!ts.isIdentifier(unwrapped) || unwrapped.text !== expected) {
         return false;
     }
@@ -85,7 +71,7 @@ function propertyCall(
     expression: ts.Expression,
     property: string,
 ): ts.CallExpression | undefined {
-    const call = unwrap(expression);
+    const call = unwrapExpression(expression);
     if (
         !ts.isCallExpression(call) ||
         call.questionDotToken ||
@@ -147,7 +133,7 @@ function isStringLiteral(
     expression: ts.Expression,
     expected: string,
 ): boolean {
-    const unwrapped = unwrap(expression);
+    const unwrapped = unwrapExpression(expression);
     return ts.isStringLiteralLike(unwrapped) && unwrapped.text === expected;
 }
 
@@ -156,7 +142,7 @@ function isPropertyRead(
     owner: string,
     property: string,
 ): boolean {
-    const unwrapped = unwrap(expression);
+    const unwrapped = unwrapExpression(expression);
     return ts.isPropertyAccessExpression(unwrapped) &&
         !unwrapped.questionDotToken &&
         unwrapped.name.text === property &&
@@ -189,7 +175,7 @@ function isNegated(
     expression: ts.Expression,
     predicate: (operand: ts.Expression) => boolean,
 ): boolean {
-    const unwrapped = unwrap(expression);
+    const unwrapped = unwrapExpression(expression);
     return ts.isPrefixUnaryExpression(unwrapped) &&
         unwrapped.operator === ts.SyntaxKind.ExclamationToken &&
         predicate(unwrapped.operand);
@@ -202,17 +188,17 @@ function isTypeOfComparison(
     operator: ts.SyntaxKind.EqualsEqualsEqualsToken | ts.SyntaxKind.ExclamationEqualsEqualsToken,
     expected: string,
 ): boolean {
-    const comparison = unwrap(expression);
+    const comparison = unwrapExpression(expression);
     if (
         !ts.isBinaryExpression(comparison) ||
         comparison.operatorToken.kind !== operator ||
-        !ts.isTypeOfExpression(unwrap(comparison.left)) ||
+        !ts.isTypeOfExpression(unwrapExpression(comparison.left)) ||
         !isStringLiteral(comparison.right, expected)
     ) {
         return false;
     }
-    const operand = unwrap(
-        (unwrap(comparison.left) as ts.TypeOfExpression).expression,
+    const operand = unwrapExpression(
+        (unwrapExpression(comparison.left) as ts.TypeOfExpression).expression,
     );
     return property === undefined
         ? identifierIs(operand, owner)
@@ -230,7 +216,7 @@ function isMissingOrNonObjectGuard(
     ) {
         return false;
     }
-    const condition = unwrap(statement.expression);
+    const condition = unwrapExpression(statement.expression);
     return ts.isBinaryExpression(condition) &&
         condition.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
         isNegated(condition.left, (operand) => identifierIs(operand, value)) &&
@@ -305,8 +291,8 @@ function isGzipBase64JsonDecoder(
     ) {
         return false;
     }
-    const decoded = unwrap(byteFactory.arguments[0]!);
-    const mapper = unwrap(byteFactory.arguments[1]!);
+    const decoded = unwrapExpression(byteFactory.arguments[0]!);
+    const mapper = unwrapExpression(byteFactory.arguments[1]!);
     if (
         !ts.isCallExpression(decoded) ||
         decoded.questionDotToken ||
@@ -329,8 +315,8 @@ function isGzipBase64JsonDecoder(
     if (
         !charCodeAt ||
         charCodeAt.arguments.length !== 1 ||
-        !ts.isNumericLiteral(unwrap(charCodeAt.arguments[0]!)) ||
-        Number((unwrap(charCodeAt.arguments[0]!) as ts.NumericLiteral).text) !== 0 ||
+        !ts.isNumericLiteral(unwrapExpression(charCodeAt.arguments[0]!)) ||
+        Number((unwrapExpression(charCodeAt.arguments[0]!) as ts.NumericLiteral).text) !== 0 ||
         !ts.isPropertyAccessExpression(charCodeAt.expression) ||
         !identifierIs(charCodeAt.expression.expression, char)
     ) {
@@ -342,25 +328,25 @@ function isGzipBase64JsonDecoder(
     const streamCall = ts.isPropertyAccessExpression(pipeThrough.expression)
         ? propertyCall(pipeThrough.expression.expression, "stream")
         : undefined;
-    const decompressor = unwrap(pipeThrough.arguments[0]!);
+    const decompressor = unwrapExpression(pipeThrough.arguments[0]!);
     if (
         !streamCall ||
         streamCall.arguments.length !== 0 ||
         !ts.isPropertyAccessExpression(streamCall.expression) ||
-        !ts.isNewExpression(unwrap(streamCall.expression.expression)) ||
+        !ts.isNewExpression(unwrapExpression(streamCall.expression.expression)) ||
         !ts.isNewExpression(decompressor)
     ) {
         return false;
     }
-    const blob = unwrap(streamCall.expression.expression) as ts.NewExpression;
+    const blob = unwrapExpression(streamCall.expression.expression) as ts.NewExpression;
     if (
         !globalIdentifierIs(checker, blob.expression, "Blob") ||
         (blob.typeArguments?.length ?? 0) !== 0 ||
         blob.arguments?.length !== 1 ||
-        !ts.isArrayLiteralExpression(unwrap(blob.arguments[0]!)) ||
-        (unwrap(blob.arguments[0]!) as ts.ArrayLiteralExpression).elements.length !== 1 ||
+        !ts.isArrayLiteralExpression(unwrapExpression(blob.arguments[0]!)) ||
+        (unwrapExpression(blob.arguments[0]!) as ts.ArrayLiteralExpression).elements.length !== 1 ||
         !identifierIs(
-            (unwrap(blob.arguments[0]!) as ts.ArrayLiteralExpression)
+            (unwrapExpression(blob.arguments[0]!) as ts.ArrayLiteralExpression)
                 .elements[0] as ts.Expression,
             bytes.name,
         ) ||
@@ -376,18 +362,18 @@ function isGzipBase64JsonDecoder(
         return false;
     }
 
-    const awaited = unwrap(returned.expression);
+    const awaited = unwrapExpression(returned.expression);
     if (!ts.isAwaitExpression(awaited)) return false;
     const jsonCall = propertyCall(awaited.expression, "json");
     if (
         !jsonCall ||
         jsonCall.arguments.length !== 0 ||
         !ts.isPropertyAccessExpression(jsonCall.expression) ||
-        !ts.isNewExpression(unwrap(jsonCall.expression.expression))
+        !ts.isNewExpression(unwrapExpression(jsonCall.expression.expression))
     ) {
         return false;
     }
-    const response = unwrap(
+    const response = unwrapExpression(
         jsonCall.expression.expression,
     ) as ts.NewExpression;
     return globalIdentifierIs(checker, response.expression, "Response") &&
@@ -427,14 +413,14 @@ function isInputAliasLoop(
     ) {
         return false;
     }
-    const condition = unwrap(assignmentGuard!.expression);
+    const condition = unwrapExpression(assignmentGuard!.expression);
     if (
         !ts.isBinaryExpression(condition) ||
         condition.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken
     ) {
         return false;
     }
-    const missing = unwrap(condition.left);
+    const missing = unwrapExpression(condition.left);
     if (
         !ts.isBinaryExpression(missing) ||
         missing.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken ||
@@ -452,7 +438,7 @@ function isInputAliasLoop(
     }
     const assignment = singleStatement(assignmentGuard!.thenStatement);
     if (!assignment || !ts.isExpressionStatement(assignment)) return false;
-    const binary = unwrap(assignment.expression);
+    const binary = unwrapExpression(assignment.expression);
     return ts.isBinaryExpression(binary) &&
         binary.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         isPropertyRead(binary.left, entry.name, "inputName") &&

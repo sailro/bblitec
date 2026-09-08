@@ -1,6 +1,7 @@
 /** Public node inputs retain their source slot; graphs alone are deduplicated. */
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind, type DataType } from "./data-types.js";
+import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
 import type { Value } from "./types.js";
 
 const textureType: DataType = { kind: "optional", inner: { kind: "handle", handle: "texture" } };
@@ -63,9 +64,8 @@ export function compileNodeInputMutation(context: NodeInputContext, expression: 
             context.fail(node, "Reflective node input mutation is not represented.");
         }
     }
-    const assignment = ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment ? node : undefined;
-    const increment = (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-        [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator) ? node : undefined;
+    const assignment = isAssignmentExpression(node) ? node : undefined;
+    const increment = isUpdateExpression(node) ? node : undefined;
     const target = assignment?.left ?? increment?.operand ?? (ts.isDeleteExpression(node) ? node.expression : undefined);
     if (!target) return undefined;
     const left = context.unwrap(target);

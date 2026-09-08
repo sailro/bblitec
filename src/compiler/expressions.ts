@@ -25,6 +25,7 @@ import {
     compileBrowserFileElementAccess,
 } from "./browser-file.js";
 import { isNumberParserCallee, isParseFloatCallee } from "./browser-erasure.js";
+import { hasNonNullAssertion } from "./syntax.js";
 import type { ClassLowerer } from "./classes.js";
 import {
     compileCompressedJsonCall,
@@ -106,24 +107,6 @@ function containsEvaluatedCall(node: ts.Node): boolean {
         return true;
     }
     return ts.forEachChild(node, containsEvaluatedCall) ?? false;
-}
-
-function hasNonNullAssertion(expression: ts.Expression): boolean {
-    let current = expression;
-    while (
-        ts.isAwaitExpression(current) ||
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isTypeAssertionExpression(current) ||
-        ts.isNonNullExpression(current) ||
-        ts.isSatisfiesExpression(current)
-    ) {
-        if (ts.isNonNullExpression(current)) {
-            return true;
-        }
-        current = current.expression;
-    }
-    return false;
 }
 
 export interface ExpressionContext

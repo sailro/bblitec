@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind } from "./data-types.js";
+import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
 import type { Value } from "./types.js";
 
 interface Context {
@@ -39,9 +40,8 @@ export function checkNodeGeometryMutation(context: Context, expression: ts.Expre
         return !value && isPinnedType(context.checker.getTypeAtLocation(node), ["ObservableVec3", "ObservableQuaternion"]);
     };
     const node = context.unwrap(expression);
-    const assignment = ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
-    const increment = (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-        (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken);
+    const assignment = isAssignmentExpression(node);
+    const increment = isUpdateExpression(node);
     const target = assignment ? node.left : increment ? node.operand : ts.isDeleteExpression(node) ? node.expression : undefined;
     if (target) {
         const left = context.unwrap(target);

@@ -13,6 +13,13 @@ import {
     staticNumberValue,
 } from "./option-helpers.js";
 import { isJsonValue } from "./json-bridge.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    objectProperty,
+    unwrapExpression,
+} from "./syntax.js";
+import { PINNED_ARITHMETIC_OPERATORS } from "../lowering/pinned-operators.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
@@ -69,13 +76,6 @@ const bitwiseFunctions = new Map<ts.SyntaxKind, string>([
         ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
         "shift_right_unsigned",
     ],
-]);
-
-const arithmeticOperators = new Map<ts.SyntaxKind, string>([
-    [ts.SyntaxKind.PlusToken, "+"],
-    [ts.SyntaxKind.MinusToken, "-"],
-    [ts.SyntaxKind.AsteriskToken, "*"],
-    [ts.SyntaxKind.SlashToken, "/"],
 ]);
 
 /**
@@ -538,10 +538,7 @@ export class StaticEvaluator {
             );
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
-            if (
-                unwrapped.operator === ts.SyntaxKind.PlusPlusToken ||
-                unwrapped.operator === ts.SyntaxKind.MinusMinusToken
-            ) {
+            if (isUpdateExpression(unwrapped)) {
                 const value = this.resolveValue(unwrapped);
                 if (value.kind === "number") {
                     return this.castNumber(value, precision);
@@ -687,7 +684,7 @@ export class StaticEvaluator {
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
-            const operator = arithmeticOperators.get(
+            const operator = PINNED_ARITHMETIC_OPERATORS.get(
                 unwrapped.operatorToken.kind,
             );
             if (!operator) {
@@ -1319,19 +1316,9 @@ export class StaticEvaluator {
             const parent = node.parent;
             if (throughBinding(node)) {
                 const assigned =
-                    ts.isBinaryExpression(parent) &&
-                    parent.left === node &&
-                    parent.operatorToken.kind >=
-                        ts.SyntaxKind.FirstAssignment &&
-                    parent.operatorToken.kind <=
-                        ts.SyntaxKind.LastAssignment;
-                const stepped =
-                    (ts.isPrefixUnaryExpression(parent) ||
-                        ts.isPostfixUnaryExpression(parent)) &&
-                    (parent.operator ===
-                        ts.SyntaxKind.PlusPlusToken ||
-                        parent.operator ===
-                            ts.SyntaxKind.MinusMinusToken);
+                    isAssignmentExpression(parent) &&
+                    parent.left === node;
+                const stepped = isUpdateExpression(parent);
                 const deleted =
                     ts.isDeleteExpression(parent);
                 const called =
@@ -1418,27 +1405,6 @@ export class StaticEvaluator {
             initializer,
             new Set([...resolving, symbol]),
         );
-    }
-
-    private objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined {
-        for (const property of object.properties) {
-            if (
-                ts.isPropertyAssignment(property) &&
-                this.propertyName(property.name) === name
-            ) {
-                return property.initializer;
-            }
-            if (
-                ts.isShorthandPropertyAssignment(property) &&
-                property.name.text === name
-            ) {
-                return property.name;
-            }
-        }
-        return undefined;
     }
 
     private tupleElements(
@@ -1686,7 +1652,7 @@ export class StaticEvaluator {
         name: string,
         precision: "float" | "double" = "float",
     ): string {
-        const value = this.objectProperty(object, name);
+        const value = objectProperty(object, name);
         if (!value) {
             this.fail(
                 object,
@@ -1696,38 +1662,15 @@ export class StaticEvaluator {
         return this.compileNumber(value, precision);
     }
 
-    private propertyName(
-        name: ts.PropertyName,
-    ): string | undefined {
-        if (
-            ts.isIdentifier(name) ||
-            ts.isStringLiteral(name) ||
-            ts.isNumericLiteral(name)
-        ) {
-            return name.text;
-        }
-        return undefined;
-    }
-
     public unwrap(
         expression: ts.Expression,
     ): ts.Expression {
         let current = expression;
         for (;;) {
-            if (
-                ts.isAsExpression(current) ||
-                ts.isTypeAssertionExpression(current) ||
-                ts.isParenthesizedExpression(current) ||
-                ts.isNonNullExpression(current) ||
-                ts.isSatisfiesExpression(current) ||
-                ts.isAwaitExpression(current)
-            ) {
-                if (ts.isAwaitExpression(current)) {
-                    this.onAwait(current);
-                }
-                current = current.expression;
-                continue;
-            }
+            current = unwrapExpression(current, {
+                await: true,
+                onAwait: this.onAwait,
+            });
             // The pin's `wgsl` tag is the identity over its template.
             const template = this.pinnedWgslTemplate(current);
             if (template) {

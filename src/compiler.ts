@@ -69,16 +69,6 @@ import {
     compileHdrEnvironmentOptions,
     type AssetOptionContext,
 } from "./compiler/intrinsics/asset-options.js";
-import {
-    compilePostProcessCompositeOptions,
-    compilePostProcessTaskOptions,
-    type CompiledPostProcessComposite,
-    type CompiledPostProcessTask,
-} from "./compiler/intrinsics/post-process-options.js";
-import {
-    compileScreenSpaceTaskOptions,
-    type CompiledScreenSpaceTask,
-} from "./compiler/intrinsics/screen-space-options.js";
 import { screenSpaceFacts } from "./pinned-screen-space.js";
 import {
     compileRenderTargetOptions,
@@ -181,6 +171,8 @@ import {
     opaqueEngineValue,
     passesByReference,
     passesByReferenceKind,
+    BUFFER_VIEW_KINDS,
+    TYPED_ARRAY_KINDS,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
@@ -228,13 +220,18 @@ import {
     recursiveStorageEscapes,
     writesThroughTrackedRoot,
     resolveFunctionDeclaration,
-    rootIdentifier,
-    unwrapExpression,
     tryResolveFunctionDeclaration,
     type SupportedFunction,
     type UserFunctionContext,
     UserFunctionLowerer,
 } from "./compiler/user-functions.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    objectProperty,
+    rootIdentifier,
+    unwrapExpression,
+} from "./compiler/syntax.js";
 import {
     mutatingArrayMethods,
     storingDataMethods,
@@ -2274,16 +2271,12 @@ class Compiler
                 // A property of the program's own data keeps the function;
                 // a library global's (`Math.random = () => ...`, which a
                 // bake moves to generation) does not.
-                let root: ts.Expression = parent.left;
-                while (
-                    ts.isPropertyAccessExpression(root) ||
-                    ts.isElementAccessExpression(root)
-                ) {
-                    root = root.expression;
-                }
+                const target = this.unwrap(parent.left);
+                const root = rootIdentifier(target, (chain) => this.unwrap(chain));
                 return (
-                    root !== parent.left &&
-                    (!(ts.isIdentifier(root) && this.isDefaultLibraryIdentifier(root)) ||
+                    (ts.isPropertyAccessExpression(target) ||
+                        ts.isElementAccessExpression(target)) &&
+                    (!(root && this.isDefaultLibraryIdentifier(root)) ||
                         (isDeterministicRandomRead(this, parent.left) && this.sourceUsesNativeParticleProvider()))
                 );
             }
@@ -3959,10 +3952,7 @@ class Compiler
                         }
                     }
                     if (
-                        (ts.isPrefixUnaryExpression(node) ||
-                            ts.isPostfixUnaryExpression(node)) &&
-                        (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                            node.operator === ts.SyntaxKind.MinusMinusToken) &&
+                        isUpdateExpression(node) &&
                         ts.isElementAccessExpression(node.operand) &&
                         scan.namesAlias(this.unwrap(node.operand.expression))
                     ) {
@@ -3986,11 +3976,7 @@ class Compiler
                         }
                     }
                     return (
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind >=
-                            ts.SyntaxKind.FirstAssignment &&
-                        node.operatorToken.kind <=
-                            ts.SyntaxKind.LastAssignment &&
+                        isAssignmentExpression(node) &&
                         (((ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
                             scan.containsAlias(node.right)) ||
                           (ts.isElementAccessExpression(node.left) &&
@@ -4018,9 +4004,7 @@ class Compiler
         const visit = (node: ts.Node): void => {
             if (mutated) return;
             if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+                isAssignmentExpression(node) &&
                 directlyIndexes(node.left)
             ) {
                 mutated = true;
@@ -4110,11 +4094,7 @@ class Compiler
                         return true;
                     }
                     if (
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind >=
-                            ts.SyntaxKind.FirstAssignment &&
-                        node.operatorToken.kind <=
-                            ts.SyntaxKind.LastAssignment &&
+                        isAssignmentExpression(node) &&
                         (ts.isPropertyAccessExpression(node.left) ||
                             ts.isElementAccessExpression(node.left)) &&
                         isAlias(scan, node.left)
@@ -4134,10 +4114,7 @@ class Compiler
                         return true;
                     }
                     if (
-                        (ts.isPrefixUnaryExpression(node) ||
-                            ts.isPostfixUnaryExpression(node)) &&
-                        (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                            node.operator === ts.SyntaxKind.MinusMinusToken) &&
+                        isUpdateExpression(node) &&
                         (ts.isPropertyAccessExpression(node.operand) ||
                             ts.isElementAccessExpression(node.operand)) &&
                         isAlias(scan, node.operand)
@@ -10339,45 +10316,6 @@ class Compiler
         return compileCopyTaskOptions(this, expression);
     }
 
-    public compilePostProcessTaskOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        shaderIndex: number,
-    ): CompiledPostProcessTask {
-        return compilePostProcessTaskOptions(
-            this,
-            intrinsic,
-            expression,
-            shaderIndex,
-        );
-    }
-
-    public compilePostProcessCompositeOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        compositeIndex: number,
-    ): CompiledPostProcessComposite {
-        return compilePostProcessCompositeOptions(
-            this,
-            intrinsic,
-            expression,
-            compositeIndex,
-        );
-    }
-
-    public compileScreenSpaceTaskOptions(
-        intrinsic: string,
-        expression: ts.Expression,
-        taskIndex: number,
-    ): CompiledScreenSpaceTask {
-        return compileScreenSpaceTaskOptions(
-            this,
-            intrinsic,
-            expression,
-            taskIndex,
-        );
-    }
-
     public compileGroundOptions(
         expression: ts.Expression,
     ): [string, string, string, string, string] {
@@ -11304,17 +11242,11 @@ class Compiler
                     const value = this.compileValue(unwrapped.left);
                     if (value.nativeError) return "true";
                 }
-                const expected = new Map<string, string>([
-                    ["ArrayBuffer", "arraybuffer"],
-                    ["DataView", "dataview"],
-                    ["Uint8Array", "u8array"],
-                    ["Uint16Array", "u16array"],
-                    ["Int16Array", "i16array"],
-                    ["Uint32Array", "u32array"],
-                    ["Int32Array", "i32array"],
-                    ["Float64Array", "f64array"],
-                    ["Float32Array", "f32array"],
-                ]).get(unwrapped.right.text);
+                // The two buffer views answer `instanceof` beside the
+                // typed arrays; neither table alone names every binary kind.
+                const expected: string | undefined =
+                    BUFFER_VIEW_KINDS.get(unwrapped.right.text) ??
+                    TYPED_ARRAY_KINDS.get(unwrapped.right.text);
                 if (expected) {
                     const value = this.compileValue(unwrapped.left);
                     if (value.dataType) {
@@ -11967,21 +11899,7 @@ class Compiler
         object: ts.ObjectLiteralExpression,
         name: string,
     ): ts.Expression | undefined {
-        for (const property of object.properties) {
-            if (
-                ts.isPropertyAssignment(property) &&
-                this.propertyName(property.name) === name
-            ) {
-                return property.initializer;
-            }
-            if (
-                ts.isShorthandPropertyAssignment(property) &&
-                property.name.text === name
-            ) {
-                return property.name;
-            }
-        }
-        return undefined;
+        return objectProperty(object, name, (key) => this.propertyName(key));
     }
 
     public propertyName(name: ts.PropertyName): string | undefined {
@@ -14343,8 +14261,7 @@ class Compiler
     private compileCameraMutation(expression: ts.Expression): Value | undefined {
         const node = this.unwrap(expression);
         const unary = ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node);
-        if (unary ? node.operator !== ts.SyntaxKind.PlusPlusToken && node.operator !== ts.SyntaxKind.MinusMinusToken :
-            !ts.isBinaryExpression(node) || node.operatorToken.kind < ts.SyntaxKind.FirstAssignment || node.operatorToken.kind > ts.SyntaxKind.LastAssignment) return undefined;
+        if (unary ? !isUpdateExpression(node) : !isAssignmentExpression(node)) return undefined;
         const left = this.unwrap(unary ? node.operand : (node as ts.BinaryExpression).left);
         const operator = unary ? (node.operator === ts.SyntaxKind.PlusPlusToken ? "+" :
             node.operator === ts.SyntaxKind.MinusMinusToken ? "-" : undefined) :

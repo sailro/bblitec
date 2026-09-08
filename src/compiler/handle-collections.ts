@@ -38,10 +38,8 @@ import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import type { DataType } from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
-import {
-    resolveFunctionDeclaration,
-    unwrapExpression as unwrapWalkExpression,
-} from "./user-functions.js";
+import { resolveFunctionDeclaration } from "./user-functions.js";
+import { unwrapExpression as unwrapWalkExpression } from "./syntax.js";
 import {
     isHandleCollectionProperty,
     nativeLocation,
@@ -2471,29 +2469,30 @@ function isPropertyPresenceProbe(
     );
 }
 
-function singleExpressionStatement(
+/** The one statement a block-wrapped or bare arm holds, when it is of the asked shape. */
+function singleStatement<T extends ts.Statement>(
     statement: ts.Statement,
-): ts.Expression | undefined {
+    is: (node: ts.Node) => node is T,
+): T | undefined {
     const statements = ts.isBlock(statement)
         ? statement.statements
         : [statement];
-    return statements.length === 1 &&
-        ts.isExpressionStatement(statements[0]!)
-        ? statements[0]!.expression
-        : undefined;
+    const only = statements.length === 1 ? statements[0] : undefined;
+    return only && is(only) ? only : undefined;
+}
+
+/** A block-wrapped or bare expression-statement arm's expression. */
+function singleExpressionStatement(
+    statement: ts.Statement,
+): ts.Expression | undefined {
+    return singleStatement(statement, ts.isExpressionStatement)?.expression;
 }
 
 /** A block-wrapped or bare `return <expression>` arm. */
 function singleReturnExpression(
     statement: ts.Statement,
 ): ts.Expression | undefined {
-    const statements = ts.isBlock(statement)
-        ? statement.statements
-        : [statement];
-    return statements.length === 1 &&
-        ts.isReturnStatement(statements[0]!)
-        ? statements[0]!.expression
-        : undefined;
+    return singleStatement(statement, ts.isReturnStatement)?.expression;
 }
 
 /**

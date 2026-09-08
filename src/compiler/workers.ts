@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { browserGlobalNamed } from "./browser-erasure.js";
-import { rootIdentifier } from "./user-functions.js";
+import { rootIdentifier } from "./syntax.js";
 import { validateObjectProperties } from "./option-helpers.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataTypeRegistry } from "./data-types.js";

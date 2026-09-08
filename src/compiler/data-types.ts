@@ -503,6 +503,90 @@ export type TypedArrayKind =
   | "i32array";
 
 /**
+ * One typed-array kind: the ECMAScript constructor that names it, the
+ * `bbl::js::` spelling stem of its `<stem>_array_from` /
+ * `<stem>_array_sized` family and its `<STEM>Array` element alias, the C++
+ * type it is stored as, and the reached ECMAScript store conversion one of
+ * its lanes applies.
+ */
+interface TypedArrayRecord {
+  readonly constructor: string;
+  readonly stem: string;
+  readonly cppType: string;
+  readonly store: (value: string) => string;
+}
+
+/**
+ * The one table every typed-array question reads: which constructor names
+ * a kind, and what each kind spells to. A kind added here is known to the
+ * `instanceof` test, `new` lowering, the type mapper and the C++ spellings
+ * at once.
+ */
+const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
+  u8array: {
+    constructor: "Uint8Array",
+    stem: "u8",
+    cppType: "bbl::js::U8Array",
+    store: (value) => `bbl::js::to_uint8(${value})`,
+  },
+  f64array: {
+    constructor: "Float64Array",
+    stem: "f64",
+    cppType: "bbl::js::F64Array",
+    store: (value) => value,
+  },
+  f32array: {
+    constructor: "Float32Array",
+    stem: "f32",
+    cppType: "bbl::js::F32Array",
+    store: (value) => `static_cast<float>(${value})`,
+  },
+  u16array: {
+    constructor: "Uint16Array",
+    stem: "u16",
+    cppType: "bbl::js::U16Array",
+    store: (value) => `bbl::js::to_uint16(${value})`,
+  },
+  i16array: {
+    constructor: "Int16Array",
+    stem: "i16",
+    cppType: "bbl::js::I16Array",
+    store: (value) => `bbl::js::to_int16(${value})`,
+  },
+  u32array: {
+    constructor: "Uint32Array",
+    stem: "u32",
+    cppType: "bbl::js::U32Array",
+    store: (value) => `bbl::js::to_uint32(${value})`,
+  },
+  i32array: {
+    constructor: "Int32Array",
+    stem: "i32",
+    cppType: "bbl::js::I32Array",
+    store: (value) => `bbl::js::to_int32(${value})`,
+  },
+};
+
+/**
+ * The typed-array constructor names, each mapped to its kind. `ArrayBuffer`
+ * and `DataView` are deliberately NOT here: they are buffer views with no
+ * element lane, stem or store, so a consumer that also recognizes them
+ * (the `instanceof` test) says so beside this table rather than through it.
+ */
+export const TYPED_ARRAY_KINDS: ReadonlyMap<string, TypedArrayKind> = new Map(
+  (Object.entries(TYPED_ARRAYS) as [TypedArrayKind, TypedArrayRecord][]).map(
+    ([kind, record]) => [record.constructor, kind],
+  ),
+);
+
+/** The two buffer views, named beside the typed arrays they underlie. */
+export const BUFFER_VIEW_KINDS: ReadonlyMap<string, "arraybuffer" | "dataview"> =
+  new Map([
+    ["ArrayBuffer", "arraybuffer"],
+    ["DataView", "dataview"],
+  ]);
+
+/**
  * Whether a data type is one of them.
  *
  * Every typed-array method and every native-function parameter rule asks
@@ -513,13 +597,8 @@ export function isTypedArrayType(
   dataType: DataType | undefined,
 ): dataType is DataType & { kind: TypedArrayKind } {
   return (
-    dataType?.kind === "u8array" ||
-    dataType?.kind === "f64array" ||
-    dataType?.kind === "f32array" ||
-    dataType?.kind === "u16array" ||
-    dataType?.kind === "i16array" ||
-    dataType?.kind === "u32array" ||
-    dataType?.kind === "i32array"
+    dataType !== undefined &&
+    Object.prototype.hasOwnProperty.call(TYPED_ARRAYS, dataType.kind)
   );
 }
 
@@ -529,22 +608,12 @@ export function isTypedArrayType(
  * alias its elements are stored in.
  */
 export function typedArrayStem(kind: TypedArrayKind): string {
-  switch (kind) {
-    case "u8array":
-      return "u8";
-    case "f64array":
-      return "f64";
-    case "f32array":
-      return "f32";
-    case "u16array":
-      return "u16";
-    case "i16array":
-      return "i16";
-    case "u32array":
-      return "u32";
-    case "i32array":
-      return "i32";
-  }
+  return TYPED_ARRAYS[kind].stem;
+}
+
+/** The C++ type one typed-array kind is stored as. */
+export function typedArrayCppType(kind: TypedArrayKind): string {
+  return TYPED_ARRAYS[kind].cppType;
 }
 
 /** Apply the reached ECMAScript store conversion for one typed-array lane. */
@@ -552,22 +621,7 @@ export function typedArrayStoreExpression(
   kind: TypedArrayKind,
   value: string,
 ): string {
-  switch (kind) {
-    case "u8array":
-      return `bbl::js::to_uint8(${value})`;
-    case "u16array":
-      return `bbl::js::to_uint16(${value})`;
-    case "i16array":
-      return `bbl::js::to_int16(${value})`;
-    case "u32array":
-      return `bbl::js::to_uint32(${value})`;
-    case "i32array":
-      return `bbl::js::to_int32(${value})`;
-    case "f64array":
-      return value;
-    case "f32array":
-      return `static_cast<float>(${value})`;
-  }
+  return TYPED_ARRAYS[kind].store(value);
 }
 
 /**
@@ -653,6 +707,8 @@ export function dataTypesEqual(left: DataType, right: DataType): boolean {
   if (left.kind !== right.kind) {
     return false;
   }
+  // A typed array carries nothing beyond its kind.
+  if (isTypedArrayType(left)) return true;
   switch (left.kind) {
     case "number":
     case "boolean":
@@ -660,13 +716,6 @@ export function dataTypesEqual(left: DataType, right: DataType): boolean {
     case "arraybuffer":
     case "dataview":
     case "json":
-    case "u8array":
-    case "f64array":
-    case "f32array":
-    case "u16array":
-    case "i16array":
-    case "u32array":
-    case "i32array":
       return true;
     case "borrowed-platform-event":
       return (
@@ -1039,32 +1088,17 @@ export class DataTypeRegistry {
     if (recordMap) {
       return recordMap;
     }
-    if (type.symbol?.name === "Float32Array") {
-      return { kind: "f32array" };
+    const typedArray = type.symbol
+      ? TYPED_ARRAY_KINDS.get(type.symbol.name)
+      : undefined;
+    if (typedArray) {
+      return { kind: typedArray };
     }
     if (isPinnedType(type, ["Mat4"])) {
       // The reached native matrix producers own F32 storage. Keep the pin's
       // opaque, numerically indexed interface through parameters and returns;
       // ordinary data sinks still refuse incompatible F64 producers.
       return { kind: "f32array" };
-    }
-    if (type.symbol?.name === "Float64Array") {
-      return { kind: "f64array" };
-    }
-    if (type.symbol?.name === "Uint8Array") {
-      return { kind: "u8array" };
-    }
-    if (type.symbol?.name === "Uint16Array") {
-      return { kind: "u16array" };
-    }
-    if (type.symbol?.name === "Int16Array") {
-      return { kind: "i16array" };
-    }
-    if (type.symbol?.name === "Uint32Array") {
-      return { kind: "u32array" };
-    }
-    if (type.symbol?.name === "Int32Array") {
-      return { kind: "i32array" };
     }
     const pinnedHandle = pinnedHandleKind(type);
     if (pinnedHandle) {
@@ -2264,15 +2298,7 @@ export class DataTypeRegistry {
     cpp: string,
     node: ts.Node,
   ): string {
-    const definition = [...this.enumsByKey.values()].find(
-      (entry) => entry.name === dataType.name,
-    );
-    if (!definition) {
-      this.fail(node, `Unknown enum '${dataType.name}'.`);
-    }
-    this.emittedNamedTypes.add(dataType.name);
-    this.runtimeEnumParsers.add(dataType.name);
-    return `bblscene::${dataType.name}_from_string(${cpp})`;
+    return this.enumBridgeCpp(dataType, cpp, node, "from_string");
   }
 
   /** Converts a runtime string-literal union back to its JavaScript text. */
@@ -2281,6 +2307,19 @@ export class DataTypeRegistry {
     cpp: string,
     node: ts.Node,
   ): string {
+    return this.enumBridgeCpp(dataType, cpp, node, "to_string");
+  }
+
+  /**
+   * One direction of the runtime string bridge: the call, and the record
+   * that its parser or serializer is emitted for this enum.
+   */
+  private enumBridgeCpp(
+    dataType: DataType & { kind: "enum" },
+    cpp: string,
+    node: ts.Node,
+    bridge: "from_string" | "to_string",
+  ): string {
     const definition = [...this.enumsByKey.values()].find(
       (entry) => entry.name === dataType.name,
     );
@@ -2288,8 +2327,11 @@ export class DataTypeRegistry {
       this.fail(node, `Unknown enum '${dataType.name}'.`);
     }
     this.emittedNamedTypes.add(dataType.name);
-    this.runtimeEnumSerializers.add(dataType.name);
-    return `bblscene::${dataType.name}_to_string(${cpp})`;
+    (bridge === "from_string"
+      ? this.runtimeEnumParsers
+      : this.runtimeEnumSerializers
+    ).add(dataType.name);
+    return `bblscene::${dataType.name}_${bridge}(${cpp})`;
   }
 
   /**
@@ -2611,6 +2653,7 @@ export class DataTypeRegistry {
   }
 
   public cppType(dataType: DataType): string {
+    if (isTypedArrayType(dataType)) return typedArrayCppType(dataType.kind);
     switch (dataType.kind) {
       case "number":
         return "double";
@@ -2667,24 +2710,12 @@ export class DataTypeRegistry {
         return `bbl::js::EnumMap<${this.cppType(dataType.element)}, ${this.enumMembers(dataType.enumName).length}>`;
       case "table":
         return `const ${this.tableCppType(dataType.dimensions)}&`;
-      case "u8array":
-        return "bbl::js::U8Array";
-      case "f64array":
-        return "bbl::js::F64Array";
-      case "f32array":
-        return "bbl::js::F32Array";
-      case "u16array":
-        return "bbl::js::U16Array";
-      case "i16array":
-        return "bbl::js::I16Array";
-      case "u32array":
-        return "bbl::js::U32Array";
-      case "i32array":
-        return "bbl::js::I32Array";
     }
   }
 
   private typeKey(dataType: DataType): string {
+    // The key is the runtime spelling stem, which is unique per kind.
+    if (isTypedArrayType(dataType)) return typedArrayStem(dataType.kind);
     switch (dataType.kind) {
       case "number":
         return "n";
@@ -2724,20 +2755,6 @@ export class DataTypeRegistry {
         return `m(${dataType.enumName},${this.typeKey(dataType.element)})`;
       case "table":
         return `g(${dataType.dimensions.join("x")})`;
-      case "u8array":
-        return "u8";
-      case "f64array":
-        return "f64";
-      case "f32array":
-        return "f32";
-      case "u16array":
-        return "u16";
-      case "i16array":
-        return "i16";
-      case "u32array":
-        return "u32";
-      case "i32array":
-        return "i32";
     }
   }
 
