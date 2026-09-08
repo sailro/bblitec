@@ -962,14 +962,21 @@ struct GpuState {
     SDL_GPUGraphicsPipeline* cluster_double_sided_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* blit_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* blit_msaa_pipeline = nullptr;
+#if BBLITE_RENDERER_TRANSMISSION
+    // The pin's transmission grab and its image-processing resolve, the
+    // same gate the Dawn backend compiles them behind.
     SDL_GPUGraphicsPipeline* image_processing_pipeline = nullptr;
     bool per_sample_image_processing = false;
+    SDL_GPUSampler* transmission_sampler = nullptr;
+    SDL_GPUTexture* transmission_color = nullptr;
+    std::uint32_t transmission_width = 0;
+    std::uint32_t transmission_height = 0;
+#endif
     std::array<SDL_GPUGraphicsPipeline*, 2> depth_only_pipelines{};
     std::array<SDL_GPUGraphicsPipeline*, 2>
         depth_only_double_sided_pipelines{};
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
-    SDL_GPUSampler* transmission_sampler = nullptr;
     SDL_GPUSampler* ground_sampler = nullptr;
 #if BBLITE_GPU_MORPH_STORAGE
     // Shared zero-count pair bound for draws whose mesh has no morph
@@ -983,8 +990,11 @@ struct GpuState {
     SDL_GPUTexture* reflection_fallback = nullptr;
     std::vector<SDL_GPUTexture*> reflection_cubes;
     SDL_GPUTexture* color = nullptr;
+#if BBLITE_RENDERER_TRANSMISSION
     SDL_GPUTexture* processed_color = nullptr;
-    SDL_GPUTexture* transmission_color = nullptr;
+    std::uint32_t processed_color_width = 0;
+    std::uint32_t processed_color_height = 0;
+#endif
     SDL_GPUTexture* msaa_color = nullptr;
     SDL_GPUTexture* depth = nullptr;
 #if BBLITE_PBR_VARIANTS > 0
@@ -1008,6 +1018,13 @@ struct GpuState {
     // textureLoad, so the sampler is never consulted; SDL_GPU still binds the
     // pair together.
     SDL_GPUSampler* pinned_bone_sampler = nullptr;
+    /**
+     * The staging buffer every pinned float texture (bone palettes, VAT
+     * rows) streams through, grown to the largest upload and cycled by
+     * SDL when a submitted upload still reads it.
+     */
+    SDL_GPUTransferBuffer* pinned_float_transfer = nullptr;
+    std::uint32_t pinned_float_transfer_bytes = 0;
 #endif
 #if BBLITE_SHADOW_RECEIVERS
     /**
@@ -1162,10 +1179,6 @@ struct GpuState {
 #endif
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
-    std::uint32_t processed_color_width = 0;
-    std::uint32_t processed_color_height = 0;
-    std::uint32_t transmission_width = 0;
-    std::uint32_t transmission_height = 0;
     std::uint32_t msaa_color_width = 0;
     std::uint32_t msaa_color_height = 0;
     std::uint32_t depth_width = 0;
@@ -2233,9 +2246,15 @@ const GpuState::EsmBlur* esm_caster_params_for(
         case upstream::MaterialTextureSource::brdf_lut:
             return {state.brdf_lut, state.background_sampler};
         case upstream::MaterialTextureSource::scene_color:
+#if BBLITE_RENDERER_TRANSMISSION
             // The pin's transmission grab: the 1024x1024 mip-chained scene
             // colour copied out mid-pass, sampled trilinear-anisotropic.
             return {state.transmission_color, state.transmission_sampler};
+#else
+            // No grab exists in a tree that composes no transmission; the
+            // base-colour stand-in below is what the binding resolves to.
+            return {};
+#endif
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
         // The clustered field's three, from the container the scene holds.
         // Each is `textureLoad`ed, so the sampler beside it is the one SDL
@@ -2311,19 +2330,22 @@ void apply_geometry_color_targets(
     std::size_t entry_color_target_count,
     const char* family,
     const SDL_GPUColorTargetBlendState* blend) {
-    const GeometryTargetClasses classes = geometry_target_classes(task);
-    require_geometry_target_count(classes, entry_color_target_count, family);
-    targets.reserve(classes.attachments.size() + 1u);
-    const auto push = [&](SDL_GPUTextureFormat format) {
+    const std::vector<SDL_GPUTextureFormat> formats =
+        geometry_color_target_formats<SDL_GPUTextureFormat>(
+            task,
+            entry_color_target_count,
+            family,
+            [](TextureFormatClass format_class) {
+                return texture_format(format_class);
+            },
+            state.pinned_color_format);
+    targets.reserve(formats.size());
+    for (const SDL_GPUTextureFormat format : formats) {
         SDL_GPUColorTargetDescription target{};
         target.format = format;
         if (blend) target.blend_state = *blend;
         targets.push_back(target);
-    };
-    for (const TextureFormatClass format_class : classes.attachments) {
-        push(texture_format(format_class));
     }
-    if (classes.trailing_output) push(state.pinned_color_format);
     info.target_info.color_target_descriptions = targets.data();
     info.target_info.num_color_targets =
         static_cast<Uint32>(targets.size());
@@ -2658,7 +2680,13 @@ void sync_morph_weights(
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
-/** One rgba32float upload through this backend's copy pass. */
+/**
+ * One rgba32float upload through this backend's copy pass, staged through
+ * the state's one transfer buffer: a pose streams every frame, so the
+ * buffer is kept and grown rather than created and released per upload.
+ * Mapping with `cycle` lets SDL hand out fresh backing when a submitted
+ * upload still reads the previous contents.
+ */
 void upload_pinned_float_texture(
     GpuState& state,
     SDL_GPUTexture* texture,
@@ -2666,13 +2694,20 @@ void upload_pinned_float_texture(
     std::uint32_t width,
     std::uint32_t height,
     std::uint32_t bytes) {
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = bytes;
-    SDL_GPUTransferBuffer* transfer =
-        SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
-    if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
-    void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, false);
+    if (!state.pinned_float_transfer || state.pinned_float_transfer_bytes < bytes) {
+        if (state.pinned_float_transfer) {
+            SDL_ReleaseGPUTransferBuffer(state.device, state.pinned_float_transfer);
+        }
+        SDL_GPUTransferBufferCreateInfo transfer_info{};
+        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        transfer_info.size = bytes;
+        state.pinned_float_transfer =
+            SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
+        if (!state.pinned_float_transfer) gpu_error("SDL_CreateGPUTransferBuffer");
+        state.pinned_float_transfer_bytes = bytes;
+    }
+    SDL_GPUTransferBuffer* transfer = state.pinned_float_transfer;
+    void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, true);
     if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
     std::memcpy(mapped, data, bytes);
     SDL_UnmapGPUTransferBuffer(state.device, transfer);
@@ -2688,7 +2723,6 @@ void upload_pinned_float_texture(
     if (!SDL_SubmitGPUCommandBuffer(command)) {
         gpu_error("SDL_SubmitGPUCommandBuffer");
     }
-    SDL_ReleaseGPUTransferBuffer(state.device, transfer);
 }
 
 SDL_GPUTexture* create_pinned_float_texture(
@@ -5151,6 +5185,8 @@ void create_color(
     state.color_height = height;
 }
 
+#if BBLITE_RENDERER_TRANSMISSION
+/** The image-processing resolve's target: the transmission frame's output. */
 void create_processed_color(
     GpuState& state,
     SDL_GPUTextureFormat format,
@@ -5223,6 +5259,7 @@ void create_transmission_color(GpuState& state) {
     state.transmission_width = width;
     state.transmission_height = height;
 }
+#endif
 
 SDL_GPUSampleCount task_sample_count(
     const GpuState& state,
@@ -5970,6 +6007,7 @@ void release(GpuState& state) {
         state.color,
         state.color_width,
         state.color_height);
+#if BBLITE_RENDERER_TRANSMISSION
     release_sized_texture(
         state,
         state.processed_color,
@@ -5980,6 +6018,7 @@ void release(GpuState& state) {
         state.transmission_color,
         state.transmission_width,
         state.transmission_height);
+#endif
     release_sized_texture(
         state,
         state.msaa_color,
@@ -5991,11 +6030,13 @@ void release(GpuState& state) {
         state.depth_width,
         state.depth_height);
     if (state.background_sampler) SDL_ReleaseGPUSampler(state.device, state.background_sampler);
+#if BBLITE_RENDERER_TRANSMISSION
     if (state.transmission_sampler) {
         SDL_ReleaseGPUSampler(
             state.device,
             state.transmission_sampler);
     }
+#endif
     if (state.ground_sampler) {
         SDL_ReleaseGPUSampler(
             state.device,
@@ -6056,6 +6097,11 @@ void release(GpuState& state) {
     if (state.pinned_bone_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.pinned_bone_sampler);
     }
+    if (state.pinned_float_transfer) {
+        SDL_ReleaseGPUTransferBuffer(state.device, state.pinned_float_transfer);
+        state.pinned_float_transfer = nullptr;
+        state.pinned_float_transfer_bytes = 0;
+    }
 #endif
     if (state.sampler) SDL_ReleaseGPUSampler(state.device, state.sampler);
     if (state.background_pipeline) SDL_ReleaseGPUGraphicsPipeline(state.device, state.background_pipeline);
@@ -6072,11 +6118,13 @@ void release(GpuState& state) {
     if (state.blit_msaa_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, state.blit_msaa_pipeline);
     }
+#if BBLITE_RENDERER_TRANSMISSION
     if (state.image_processing_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(
             state.device,
             state.image_processing_pipeline);
     }
+#endif
     for (SDL_GPUGraphicsPipeline* pipeline : state.depth_only_pipelines) {
         if (pipeline) {
             SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
@@ -7318,6 +7366,7 @@ SceneRun run_gpu_engine(Engine& engine) {
             static_cast<std::uint32_t>(engine.options.width),
             static_cast<std::uint32_t>(engine.options.height));
 #endif
+#if BBLITE_RENDERER_TRANSMISSION
         const bool transmission_enabled = scene.transmission_enabled;
         // The frame-graph path takes the main pass's else arm, where the
         // mid-pass scene-colour grab never runs — refuse, exactly as the
@@ -7327,6 +7376,11 @@ SceneRun run_gpu_engine(Engine& engine) {
                 "transmission combined with frame-graph tasks is not "
                 "implemented yet.");
         }
+#else
+        // A tree that composes no transmission carries no grab path; the
+        // remaining arms below fold to their plain side.
+        constexpr bool transmission_enabled = false;
+#endif
         if (
             !frame_options.single_sample &&
             upstream::preferred_sample_count() >= 4 &&
@@ -7397,6 +7451,7 @@ SceneRun run_gpu_engine(Engine& engine) {
 #else
                 0);
 #endif
+#if BBLITE_RENDERER_TRANSMISSION
         auto image_processing_vertex_shader =
             transmission_enabled
                 ? load_shader(
@@ -7435,6 +7490,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                              1,
                              "mainFragment"))
                 : nullptr;
+#endif
         const upstream::RenderFeatures render_features =
             upstream::build_render_features(scene, engine);
         // The Standard family's reflection cubes still upload when the
@@ -7793,6 +7849,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         pipeline_info.target_info.depth_stencil_format =
             state.depth_format;
         pipeline_info.target_info.has_depth_stencil_target = true;
+#if BBLITE_RENDERER_TRANSMISSION
         if (
             image_processing_vertex_shader &&
             image_processing_fragment_shader) {
@@ -7825,6 +7882,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     "SDL_CreateGPUGraphicsPipeline image processing");
             }
         }
+#endif
         if (grid_vertex_shader && grid_fragment_shader) {
             SDL_GPUGraphicsPipelineCreateInfo grid_pipeline_info =
                 pipeline_info;
@@ -8361,8 +8419,10 @@ SceneRun run_gpu_engine(Engine& engine) {
         }
 
         vertex_shader.reset();
+#if BBLITE_RENDERER_TRANSMISSION
         image_processing_vertex_shader.reset();
         image_processing_fragment_shader.reset();
+#endif
         grid_vertex_shader.reset();
         grid_fragment_shader.reset();
         depth_only_fragment_shader.reset();
@@ -8387,6 +8447,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         sampler_info.max_lod = 1000.0f;
         state.sampler = SDL_CreateGPUSampler(state.device, &sampler_info);
         if (!state.sampler) gpu_error("SDL_CreateGPUSampler");
+#if BBLITE_RENDERER_TRANSMISSION
         // Scene-color grab sampler mirrors Babylon Lite's
         // trilinear-anisotropic sampler: linear filters, repeat
         // addressing, and the shared anisotropy (inert under
@@ -8401,6 +8462,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         }
         sampler_info.enable_anisotropy = false;
         sampler_info.max_anisotropy = 0.0f;
+#endif
 #if BBLITE_GPU_MORPH_STORAGE
         {
             const std::array<float, 1> zero_delta{0.0f};
@@ -8731,7 +8793,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                 const auto& item = render_plan.items[candidate.item_index];
                 const auto& record = engine.meshes[item.mesh.value];
                 auto& gpu = pick_meshes[candidate.item_index];
-#if BBLITE_GPU_MORPH_STORAGE
+#if BBLITE_DEFORM_PICKING_MORPH
                 sync_morph_weights(pose_uploads, gpu, engine.geometries[item.geometry], record);
 #endif
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
@@ -9390,7 +9452,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                         });
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
                         if (engine.device_recovery && !engine.device_recovery->fallback.object && (!data || !data->has_image())) {
-                            engine.device_recovery->fallback = {engine.device_generation, reinterpret_cast<std::uintptr_t>(created->bindings.back().texture)};
+                            engine.device_recovery->fallback = publish_gpu_texture_identity(engine);
                         }
 #endif
                     }
@@ -12220,8 +12282,12 @@ SceneRun run_gpu_engine(Engine& engine) {
                             &task,
                             &geometry_params,
                             geometry.params);
+#if BBLITE_GEOMETRY_TASK_FAMILIES
+                        // The previous view-projection is a property of the
+                        // TASK, tracked only when a composed family reads it.
                         geometry.previous_view_projection =
                             graph_matrix;
+#endif
                         SDL_EndGPURenderPass(task_pass);
                         continue;
                     }
@@ -12704,6 +12770,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     width,
                     height);
             }
+#if BBLITE_RENDERER_TRANSMISSION
             if (transmission_enabled) {
                 create_transmission_color(state);
                 create_processed_color(
@@ -12712,6 +12779,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                     width,
                     height);
             }
+#endif
             create_msaa_color(
                 state,
                 transmission_enabled
@@ -12794,11 +12862,13 @@ SceneRun run_gpu_engine(Engine& engine) {
             set_pass_camera_viewport(
                 pass, scene, engine, camera, width, height);
             bool scene_matrix_bound = true;
+#if BBLITE_RENDERER_TRANSMISSION
             // The pin's transmission grab fires once, before the first
             // transmissive draw: the opaque scene colour resolved so far is
             // blitted into the 1024x1024 mip-chained refraction texture the
             // composed fragments sample.
             bool transmission_copied = false;
+#endif
 #if BBLITE_GPU_INSTANCING
             const std::array<float, 16> identity_parent_world{
                 1.0f, 0.0f, 0.0f, 0.0f,
@@ -13081,6 +13151,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                             ? &engine.materials[
                                   item.material.value]
                             : nullptr;
+#if BBLITE_RENDERER_TRANSMISSION
                     if (
                         transmission_enabled &&
                         !transmission_copied &&
@@ -13141,6 +13212,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                         bound_pipeline = nullptr;
                         transmission_copied = true;
                     }
+#endif
 #if BBLITE_PBR_VARIANTS > 0
                     // Babylon Lite's own composed stages own every PBR draw:
                     // the transcribed fragment is retired, so a draw the
@@ -13776,6 +13848,7 @@ SceneRun run_gpu_engine(Engine& engine) {
             }
             SDL_GPUTexture* visible_color =
                 capture_frame ? state.color : swapchain;
+#if BBLITE_RENDERER_TRANSMISSION
             if (transmission_enabled) {
                 SDL_GPUColorTargetInfo image_processing_target{};
                 image_processing_target.texture =
@@ -13835,6 +13908,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                 SDL_EndGPURenderPass(image_processing_pass);
                 visible_color = state.processed_color;
             }
+#endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
             // The scene is the first rendering context; registered sprite
             // contexts then load and blend over its final single-sample

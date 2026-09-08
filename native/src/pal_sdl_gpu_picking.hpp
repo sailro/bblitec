@@ -266,11 +266,10 @@ public:
         const PickSceneUniforms& scene_uniforms,
         std::vector<PickRange>& ranges,
         std::uint32_t& next_id) {
-        const std::vector<PickBillboardCandidate> candidates =
-            collect_pick_billboard_candidates(
-                engine, scene, ranges, next_id);
+        collect_pick_billboard_candidates(
+            engine, scene, ranges, next_id, candidates_);
         bool scene_pushed = false;
-        for (const PickBillboardCandidate& candidate : candidates) {
+        for (const PickBillboardCandidate& candidate : candidates_) {
             const Pipeline& pipeline =
                 ensure_pipeline(candidate.orientation);
             SDL_BindGPUGraphicsPipeline(pass, pipeline.pipeline);
@@ -460,6 +459,8 @@ private:
     SDL_GPUBuffer* indices_ = nullptr;
     std::array<Pipeline, 2> pipelines_{};
     std::vector<SystemResources> systems_;
+    /** The candidate walk's scratch, kept across picks. */
+    std::vector<PickBillboardCandidate> candidates_;
 };
 #endif
 

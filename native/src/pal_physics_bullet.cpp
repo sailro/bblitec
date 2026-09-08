@@ -35,6 +35,7 @@
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
+#include <BulletCollision/CollisionShapes/btTriangleIndexVertexArray.h>
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
 #include <BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
 #include <BulletCollision/Gimpact/btGImpactShape.h>
@@ -148,16 +149,20 @@ struct PhysicsShapeState {
 #if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
     PhysicsDebugShapeDescriptor debug_descriptor;
 #endif
-    /**
-     * The triangle soup a `btBvhTriangleMeshShape` indexes. Bullet's shape
-     * keeps a raw pointer into it, so the soup is owned here and declared
-     * BEFORE the shape: members destroy in reverse declaration order, which
-     * puts the shape's death first. Null for every other shape kind.
-     */
     std::vector<PhysicsBodyState*> users;
     std::vector<std::shared_ptr<PhysicsShapeState>> children;
     std::size_t container_parents = 0;
-    std::unique_ptr<btTriangleMesh> triangle_mesh;
+    /**
+     * The triangle soup a `btBvhTriangleMeshShape` indexes: the pin's own
+     * vertex list and index triples, held once and addressed in place
+     * through `triangle_mesh`, the interface Bullet's shapes keep a raw
+     * pointer into. Owned here and declared BEFORE the shapes: members
+     * destroy in reverse declaration order, which puts the shapes' death
+     * first. Empty for every other shape kind.
+     */
+    std::vector<btScalar> triangle_vertices;
+    std::vector<int> triangle_indices;
+    std::unique_ptr<btTriangleIndexVertexArray> triangle_mesh;
     std::vector<std::unique_ptr<btCollisionShape>> child_instances;
     std::unique_ptr<btCollisionShape> shape;
     // Dynamic users retain a GImpact view of the same triangles. Static
@@ -1300,11 +1305,9 @@ PhysicsShapeHandle push_shape(
     std::unique_ptr<btCollisionShape> shape,
     btTransform node_from_body,
     PhysicsMassProperties mass_properties = {},
-    bool has_exact_mass_properties = false,
-    std::unique_ptr<btTriangleMesh> triangle_mesh = nullptr) {
+    bool has_exact_mass_properties = false) {
     auto owned = std::make_shared<PhysicsShapeState>();
     PhysicsShapeState& entry = *owned;
-    entry.triangle_mesh = std::move(triangle_mesh);
     entry.shape = std::move(shape);
     entry.node_from_body = node_from_body;
     entry.mass_properties = mass_properties;
@@ -2427,37 +2430,54 @@ PhysicsShapeHandle physics_shape_create_mesh(
     const std::vector<std::array<double, 3>>& positions,
     const std::vector<std::uint32_t>& indices) {
     // The pin hands Havok two heap buffers and lets it index one with the
-    // other. Bullet's equivalent that owns its own storage is
-    // `btTriangleMesh`, which takes a triangle at a time, so the indexing
-    // happens here instead of inside the back end.
-    auto triangles = std::make_unique<btTriangleMesh>();
-    for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
-        const std::uint32_t a = indices[i];
-        const std::uint32_t b = indices[i + 1];
-        const std::uint32_t c = indices[i + 2];
-        if (a >= positions.size() || b >= positions.size() ||
-            c >= positions.size()) {
+    // other. Bullet reads the same pair through `btTriangleIndexVertexArray`,
+    // so the soup is held exactly once -- the vertices in the solver's
+    // scalar and the index triples as the ints Bullet addresses them by --
+    // and every shape over it, the BVH and a dynamic user's GImpact view,
+    // points into that one copy.
+    const std::size_t triangle_count = indices.size() / 3;
+    if (triangle_count == 0) {
+        throw std::runtime_error(
+            "Cannot create physics mesh shape without triangle indices.");
+    }
+    std::vector<int> triangle_indices;
+    triangle_indices.reserve(triangle_count * 3);
+    for (std::size_t i = 0; i < triangle_count * 3; ++i) {
+        const std::uint32_t index = indices[i];
+        if (index >= positions.size()) {
             throw std::runtime_error(
                 "A physics mesh shape has a triangle index outside its "
                 "vertex list.");
         }
-        triangles->addTriangle(
-            to_bt(positions[a]), to_bt(positions[b]), to_bt(positions[c]));
+        triangle_indices.push_back(static_cast<int>(index));
     }
-    if (triangles->getNumTriangles() == 0) {
-        throw std::runtime_error(
-            "Cannot create physics mesh shape without triangle indices.");
+    std::vector<btScalar> triangle_vertices;
+    triangle_vertices.reserve(positions.size() * 3);
+    for (const std::array<double, 3>& position : positions) {
+        for (const double component : position) {
+            triangle_vertices.push_back(static_cast<btScalar>(component));
+        }
     }
+    // A moved vector keeps its buffer, so the interface built over these
+    // two stays valid once the state owns them below.
+    auto triangles = std::make_unique<btTriangleIndexVertexArray>(
+        static_cast<int>(triangle_count),
+        triangle_indices.data(),
+        static_cast<int>(3 * sizeof(int)),
+        static_cast<int>(positions.size()),
+        triangle_vertices.data(),
+        static_cast<int>(3 * sizeof(btScalar)));
     // `buildBvh` is what makes the soup queryable: every ray test and every
     // contact against it walks that tree, and the shape owns it.
     auto shape = std::make_unique<btBvhTriangleMeshShape>(
         triangles.get(), true);
     auto handle = record_debug_inputs(push_shape(
         std::move(shape),
-        btTransform::getIdentity(),
-        PhysicsMassProperties{},
-        false,
-        std::move(triangles)), "MESH", positions);
+        btTransform::getIdentity()), "MESH", positions);
+    PhysicsShapeState& entry = *handle.ownership;
+    entry.triangle_vertices = std::move(triangle_vertices);
+    entry.triangle_indices = std::move(triangle_indices);
+    entry.triangle_mesh = std::move(triangles);
 #if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
     handle.ownership->debug_descriptor.indices = indices;
 #endif

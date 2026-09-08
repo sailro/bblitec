@@ -37,6 +37,13 @@ class MediaQueryList {
     explicit MediaQueryList(std::string query);
     void add_change_listener(js::Callback<void()> callback);
     void deliver();
+    /**
+     * Whether the document must keep this list alive on the script's
+     * behalf: a `matchMedia` result that registered a change listener stays
+     * reachable through the window, as it does in a browser, while one the
+     * script dropped without listening is retired at the next tick.
+     */
+    [[nodiscard]] bool retained() const noexcept { return !listeners_.empty(); }
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(listeners_); }
   private:
     double resolution_ = 0;

@@ -168,6 +168,11 @@ void tick_document() {
     auto& doc = current_document();
     const auto observers = doc.observers;
     for (const auto& observer : observers) observer->deliver();
+    // A list only the document still holds, with no listener to deliver
+    // to, is one the script has let go of.
+    std::erase_if(doc.media, [](const std::shared_ptr<MediaQueryList>& query) {
+        return query.use_count() == 1 && !query->retained();
+    });
     const auto media = doc.media;
     for (const auto& query : media) query->deliver();
     EventLoop::current().set_timeout(tick_document, 16);

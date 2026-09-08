@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "pal_runtime_trace.hpp"
+#include "pal_window.hpp"
 
 namespace bbl::pal {
 
@@ -692,9 +693,12 @@ inline void apply_canvas_cursor(const Engine& engine) {
     }
     SDL_ShowCursor();
     if (engine.canvas_cursor == "crosshair") {
-        // One process-lifetime system cursor avoids allocating on each move.
-        static SDL_Cursor* crosshair =
-            SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
+        // One system cursor per run avoids allocating on each move; the
+        // run's quit destroys it.
+        SDL_Cursor*& crosshair = crosshair_cursor();
+        if (!crosshair) {
+            crosshair = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
+        }
         if (crosshair) SDL_SetCursor(crosshair);
         return;
     }
