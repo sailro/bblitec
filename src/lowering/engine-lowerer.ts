@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
+import { canvasDatasetSource } from "./canvas-dataset.js";
 
 export class EngineLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -112,6 +113,7 @@ std::string asset_path(const std::string& relative_path) {
 }
 
 } // namespace bbl
+${canvasDatasetSource}
 `,
         };
     }

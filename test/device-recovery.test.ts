@@ -7,6 +7,7 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerDeviceRecovery } from "../src/lowering/device-recovery-lowerer.js";
+import { canvasDatasetSource } from "../src/lowering/canvas-dataset.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
@@ -65,7 +66,7 @@ const nativeTools = optionalNativeFixtureTools(false);
 test("native recovery keeps callback snapshots, identities, failure and disposal state", { skip: !nativeTools }, () => {
     const output = resolve("artifacts/device-recovery-native");
     mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "recovery.hpp"), lowerDeviceRecovery(new LoweringContext()).source);
+    writeFileSync(join(output, "recovery.hpp"), lowerDeviceRecovery(new LoweringContext()).source + canvasDatasetSource);
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native/include", "test/fixtures/device-recovery-check.cpp"]);

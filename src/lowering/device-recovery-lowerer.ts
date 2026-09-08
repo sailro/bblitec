@@ -70,14 +70,14 @@ void begin_device_recovery(Engine& engine) {
     state.in_flight.clear();
     for (const auto& registration : state.registrations) if (!registration->disabled) state.in_flight.push_back(registration);
     for (const auto& registration : state.in_flight) if (registration->on_lost) registration->on_lost();
-    state.was_running = !engine.stopped;
+    const bool was_running = !engine.stopped;
     engine.stopped = true;
     if (!engine.registered_sprite_renderers.empty() || !engine.registered_effect_renderers.empty() || !engine.registered_frame_graph_contexts.empty()) {
         throw std::runtime_error("Every active rendering context must have an enabled recovery strategy; only scene contexts are represented.");
     }
     state.environments.clear(); state.shadows.clear(); state.renderable_counts.clear(); state.fallback = {};
     ++engine.device_generation;
-    engine.stopped = !state.was_running;
+    engine.stopped = !was_running;
 }
 void complete_device_recovery(Engine& engine) {
     if (!engine.device_recovery) return;
@@ -135,18 +135,6 @@ GpuTextureIdentity shadow_texture_identity(const Engine& engine, ShadowGenerator
 std::size_t scene_renderable_count(const Scene& scene) {
     if (!scene.engine || !scene.engine->device_recovery) throw std::runtime_error("Scene renderables have not been published.");
     return scene.engine->device_recovery->renderable_counts.at(scene.state.get());
-}
-void set_canvas_dataset(Engine& engine, std::string key, std::string value) {
-    auto& dataset = recovery_state(engine).dataset;
-    if (pal::environment_variable("BBLITE_RUNTIME_TRACE") == "1" && dataset[key] != value) {
-        std::cerr << "[bblite trace] dataset " << key << "=" << value << '\\n';
-    }
-    dataset[std::move(key)] = std::move(value);
-}
-std::string canvas_dataset(const Engine& engine, const std::string& key) {
-    if (!engine.device_recovery) return {};
-    const auto found = engine.device_recovery->dataset.find(key);
-    return found == engine.device_recovery->dataset.end() ? std::string{} : found->second;
 }
 void set_global_callback(Engine& engine, std::string key, std::function<void()> callback) {
     recovery_state(engine).globals[std::move(key)] = std::move(callback);

@@ -35,7 +35,8 @@ label an unexplained residual a precision floor or intentional divergence.
 | Splats | Sorting is synchronous on the render thread |
 | Physics/audio | Bullet replaces Havok; LabSound replaces browser audio |
 
-Recovery dataset handshakes and global disposal hooks remain live. Closed Promise/RAF predicates
+Primary-canvas datasets with source readback remain live; write-only instrumentation erases.
+The harness-ready gate shares this storage. Recovery global disposal hooks remain live. Closed Promise/RAF predicates
 resume through engine frame boundaries. `drawCallCount` measures native GPU draw commands, including
 transport passes; browser context accounting can differ.
 

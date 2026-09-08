@@ -15792,6 +15792,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     assert.deepEqual(result.manifest.features, [
         "core",
         "backend:sdl",
+        "engine:device-recovery",
         "camera:arc-rotate",
         "light:hemispheric",
         "material:pbr",
@@ -15816,6 +15817,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     assert.doesNotMatch(result.cpp, /dataset|drawCallCount/);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
+        "upstream/src/device_recovery.cpp",
         "upstream/src/scene_core.cpp",
         "upstream/src/camera_arc_rotate.cpp",
         "upstream/src/camera_controls.cpp",

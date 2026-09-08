@@ -4466,6 +4466,8 @@ struct Engine {
     double canvas_client_height = 720.0;
     /** SDL window coordinates to browser client coordinates (CSS pixels). */
     double canvas_window_to_client_scale = 1.0;
+    /** Retained primary-canvas dataset, including the harness readiness handshake. */
+    std::unordered_map<std::string, std::string> canvas_dataset;
     /**
      * `stopEngine`: the pin cancels its animation frame and clears
      * `_renderFn`, so no further frame submits. There is no
@@ -4743,7 +4745,6 @@ struct Engine::DeviceRecoveryState {
     std::vector<std::shared_ptr<DeviceRecoveryRegistration>> registrations;
     std::vector<std::shared_ptr<DeviceRecoveryRegistration>> in_flight;
     std::unordered_map<std::uint64_t, std::vector<std::function<void(const std::string&)>>> error_listeners;
-    std::unordered_map<std::string, std::string> dataset;
     std::unordered_map<std::string, std::function<void()>> globals;
     std::unordered_map<const SceneState*, GpuTextureIdentity> environments;
     std::unordered_map<const SceneState*, std::size_t> renderable_counts;
@@ -4752,7 +4753,6 @@ struct Engine::DeviceRecoveryState {
     bool requested = false;
     bool recovering = false;
     bool resources_ready = false;
-    bool was_running = false;
     bool disposed = false;
 };
 

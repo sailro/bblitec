@@ -4843,7 +4843,7 @@ class Compiler
 
     /** Whether an expression is already known to produce retained UI state. */
     public isNativeUiValueExpression(expression: ts.Expression): boolean {
-        if (this.deviceRecoveryDataset(expression)) return true;
+        if (this.primaryCanvasDataset(expression)) return true;
         const value = this.unwrap(expression);
         if (
             ts.isPropertyAccessExpression(value) &&
@@ -8799,10 +8799,10 @@ class Compiler
             this.emit(`bbl::set_global_callback(${this.requireDefaultEngine(expression)}, ${this.cppString(globalLeft.name.text)}, ${this.compileVoidCallback(expression.right)});`);
             return true;
         }
-        const recoveryDataset = this.deviceRecoveryDataset(expression.left);
-        if (recoveryDataset && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-            if (recoveryDataset === "ready") this.deviceRecoveryReadyGate = true;
-            this.emit(`bbl::set_canvas_dataset(${this.requireDefaultEngine(expression)}, ${this.cppString(recoveryDataset)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`);
+        const canvasDataset = this.primaryCanvasDataset(expression.left);
+        if (canvasDataset && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            if (canvasDataset === "ready") this.primaryCanvasReadyGate = true;
+            this.emit(`bbl::set_canvas_dataset(${this.requireDefaultEngine(expression)}, ${this.cppString(canvasDataset)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`);
             return true;
         }
         if (
@@ -9378,7 +9378,7 @@ class Compiler
     public compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value {
-        const dataset = this.deviceRecoveryDataset(expression);
+        const dataset = this.primaryCanvasDataset(expression);
         if (dataset) return { kind: "string", cpp: `bbl::canvas_dataset(${this.requireDefaultEngine(expression)}, ${this.cppString(dataset)})`, dataType: { kind: "string" } };
         const canvas = compileCanvasValue(this, expression);
         if (canvas) return canvas;
@@ -20275,14 +20275,39 @@ class Compiler
     private readonly engineContinuationStorage = new Set<string>();
 
     private readonly deviceRecoveryCallbacks: Array<{ cpp: string; options: Value; node: ts.Expression }> = [];
-    private deviceRecoveryReadyGate = false;
+    private primaryCanvasReadyGate = false;
+    private readonly canvasDatasetReads = new WeakMap<ts.SourceFile, boolean>();
 
-    private deviceRecoveryDataset(expression: ts.Expression): string | undefined {
-        if (!this.features.has("engine:device-recovery")) return undefined;
+    /** Write-only dataset instrumentation erases; readback requires retained DOM state. */
+    private readsCanvasDataset(source: ts.SourceFile): boolean {
+        const cached = this.canvasDatasetReads.get(source);
+        if (cached !== undefined) return cached;
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (ts.isPropertyAccessExpression(node)) {
+                const dataset = this.unwrap(node.expression);
+                if (ts.isPropertyAccessExpression(dataset) && dataset.name.text === "dataset" &&
+                    this.isCanvasElement(dataset.expression) &&
+                    !(ts.isBinaryExpression(node.parent) && node.parent.left === node &&
+                        node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken)) {
+                    found = true;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(source);
+        this.canvasDatasetReads.set(source, found);
+        return found;
+    }
+
+    private primaryCanvasDataset(expression: ts.Expression): string | undefined {
         const value = this.unwrap(expression);
         if (!ts.isPropertyAccessExpression(value)) return undefined;
         const dataset = this.unwrap(value.expression);
-        return ts.isPropertyAccessExpression(dataset) && dataset.name.text === "dataset" && this.isCanvasElement(dataset.expression)
+        return ts.isPropertyAccessExpression(dataset) && dataset.name.text === "dataset" && this.isCanvasElement(dataset.expression) &&
+            this.readsCanvasDataset(value.getSourceFile())
             ? value.name.text : undefined;
     }
 
@@ -20335,7 +20360,7 @@ class Compiler
 
     public markEngineStart(engineCpp: string, node: ts.Node): void {
         this.emitDeviceRecoveryCallbacks();
-        if (this.deviceRecoveryReadyGate) this.emit(`bbl::defer_capture_until(${engineCpp}, [&]() { return bbl::canvas_dataset(${engineCpp}, "ready") == "true"; });`);
+        if (this.primaryCanvasReadyGate) this.emit(`bbl::defer_capture_until(${engineCpp}, [&]() { return bbl::canvas_dataset(${engineCpp}, "ready") == "true"; });`);
         if (this.engineStartMark) {
             this.fail(
                 node,
