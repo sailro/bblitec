@@ -20,11 +20,12 @@
 import type { LoweredSource, LoweringContext } from "./context.js";
 import {
     clusteredAddLightToClusters,
+    clusteredConeWriter,
     clusteredConstants,
     clusteredModule,
     clusteredProjectedBounds,
     clusteredScalarHelpers,
-    clusteredSpotStride,
+    clusteredSliceMapping,
 } from "./clustered-light-lowerer.js";
 
 /** The clustered light field's generated header and translation unit. */
@@ -37,6 +38,7 @@ export function lowerClusteredLights(
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <vector>
 
 #include "bblite/js_data.hpp"
@@ -191,11 +193,8 @@ void refresh_clustered_lights(
         container.last_proj == proj) {
         return;
     }
-    const double log_far_near = std::log(far_plane / near_plane);
     const double slices = static_cast<double>(container.slice_count);
-    const double slice_scale = slices / log_far_near;
-    const double slice_bias =
-        -(slices * std::log(near_plane)) / log_far_near;
+${clusteredSliceMapping(context, "    ")}
 
     // The pin collects the active lights, sorts them by view depth and bins
     // in that order -- the slice range it writes is a running min/max over
@@ -262,16 +261,16 @@ void refresh_clustered_lights(
             static_cast<double>(container.tile_count_x),
             static_cast<double>(container.tile_count_y),
             static_cast<double>(container.slice_count),
-            slice_scale,
-            slice_bias,
+            sliceScale,
+            sliceBias,
             static_cast<double>(active_batches));
     }
     container.params[3] = static_cast<std::uint32_t>(active.size());
     // Two of the eight params lanes are floats over the same bytes, which is
     // what the pin's one \`ArrayBuffer(32)\` viewed as both a U32 and an F32
     // gives the shader.
-    const float slice_scale_f = static_cast<float>(slice_scale);
-    const float slice_bias_f = static_cast<float>(slice_bias);
+    const float slice_scale_f = static_cast<float>(sliceScale);
+    const float slice_bias_f = static_cast<float>(sliceBias);
     std::memcpy(&container.params[4], &slice_scale_f, sizeof(float));
     std::memcpy(&container.params[5], &slice_bias_f, sizeof(float));
     container.params[7] = active_batches;
@@ -291,7 +290,8 @@ void refresh_clustered_lights(
         container.light_data[off + 6] = static_cast<float>(light.diffuse[2]);
         container.light_data[off + 7] = static_cast<float>(light.intensity);
         if (stride == 3) {
-            write_clustered_cone(container.light_data, off, light);
+            write_clustered_cone(
+                container.light_data, static_cast<double>(off), light);
         }
     }
     container.last_view = view;
@@ -396,51 +396,4 @@ void add_clustered_light_container(
         modulePath: clusteredModule,
         symbolName: "buildClusteredLightGpuState",
     };
-}
-
-/**
- * The spot cone's third texel, from `clustered-spot-support.ts`'s `_write`.
- *
- * Its two rules are the pin's and neither is guessable: the direction
- * normalizes through a RECIPROCAL multiply with a zero/unit-length shortcut
- * (`len === 0 || len === 1 ? 1 : 1 / len`, matching Babylon.js), and the cone
- * stores `cos(clamp(angle, 0, PI) * 0.5)`. A point light in a spot container
- * writes `w = -1`, the sentinel the fragment tests.
- *
- * `_write` is a property of an object literal built inside `spotSupport
- * ._create`, one nesting level past what `context.propertyFunction` resolves,
- * so it is restated here rather than folded. `clusteredSpotStride` anchors the
- * stride that decides whether it runs at all, so a pin that stopped writing a
- * third texel fails generation rather than leaving this dead.
- */
-function clusteredConeWriter(context: LoweringContext): string {
-    const stride = clusteredSpotStride(context);
-    return `// ${context.provenance(
-        "src/light/clustered-spot-support.ts",
-        "_write",
-    )}
-// The pin's own spot stride is ${stride}: three texels per light, the third
-// carrying the cone this writes.
-inline void write_clustered_cone(
-    std::vector<float>& data,
-    std::size_t offset,
-    const ClusteredLight& light) {
-    if (!light.spot) {
-        data[offset + 8] = 0.0f;
-        data[offset + 9] = 0.0f;
-        data[offset + 10] = 0.0f;
-        data[offset + 11] = -1.0f;
-        return;
-    }
-    const double dx = light.direction[0];
-    const double dy = light.direction[1];
-    const double dz = light.direction[2];
-    const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
-    const double inv = (len == 0.0 || len == 1.0) ? 1.0 : 1.0 / len;
-    data[offset + 8] = static_cast<float>(dx * inv);
-    data[offset + 9] = static_cast<float>(dy * inv);
-    data[offset + 10] = static_cast<float>(dz * inv);
-    data[offset + 11] = static_cast<float>(std::cos(
-        std::min(std::max(light.angle, 0.0), 3.141592653589793) * 0.5));
-}`;
 }

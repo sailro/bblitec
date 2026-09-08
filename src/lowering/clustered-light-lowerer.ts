@@ -8,6 +8,7 @@
  * is lowered from its own declaration and a pin that moves one fails
  * generation instead of drifting.
  */
+import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
     lowerPinnedFunction,
@@ -15,7 +16,10 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    type PinnedBinding,
+    PinnedNumericLowerer,
+} from "./pinned-numeric-lowerer.js";
 
 export const clusteredModule = "src/light/clustered.ts";
 const spotModule = "src/light/clustered-spot-support.ts";
@@ -63,6 +67,156 @@ export function clusteredSpotStride(context: LoweringContext): number {
         );
     }
     return context.numericValue(stride, file);
+}
+
+/**
+ * The spot cone's third texel: `clustered-spot-support.ts`'s `_write`,
+ * lowered from the method the pin declares on the object literal
+ * `spotSupport._create` returns.
+ *
+ * Its two rules are the pin's and neither is guessable: the direction
+ * normalizes through a RECIPROCAL multiply with a zero/unit-length shortcut
+ * (`len === 0 || len === 1 ? 1 : 1 / len`, matching Babylon.js), and the
+ * cone stores `cos(clamp(angle, 0, PI) * 0.5)`. A point light in a spot
+ * container writes `w = -1`, the sentinel the fragment tests. The method is
+ * one nesting level past what `context.propertyFunction` resolves -- a
+ * method of a literal built inside a method of a literal -- so it is
+ * located through `_create` and translated from there.
+ *
+ * `clusteredSpotStride` anchors the stride that decides whether it runs at
+ * all, so a pin that stopped writing a third texel fails generation rather
+ * than leaving this dead. The `spot` parameter binds to the container's
+ * light record, absent when the record is not a spot, which is the
+ * `!spot` the pin's point-light arm tests.
+ */
+export function clusteredConeWriter(context: LoweringContext): string {
+    const stride = clusteredSpotStride(context);
+    const { file, declaration: create } = context.methodDeclaration(
+        spotModule,
+        "spotSupport._create",
+    );
+    const writers = context.findNodes(
+        create,
+        (node): node is ts.MethodDeclaration & { body: ts.Block } =>
+            ts.isMethodDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === "_write" &&
+            node.body !== undefined,
+    );
+    const write = writers[0];
+    if (writers.length !== 1 || !write) {
+        return context.contractError(
+            create,
+            "Expected spotSupport._create to build exactly one _write " +
+                "method with a body.",
+        );
+    }
+    const parameterNames = write.parameters.map((parameter) =>
+        ts.isIdentifier(parameter.name) ? parameter.name.text : "",
+    );
+    if (parameterNames.join(",") !== "data,offset,spot") {
+        context.contractError(
+            write,
+            "Expected the pinned _write to take (data, offset, spot).",
+        );
+    }
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map<string, PinnedBinding>([
+            ["data", { cpp: "data", type: "f32" }],
+            ["offset", { cpp: "offset", type: "scalar" }],
+            [
+                "spot",
+                { cpp: "light", type: "scalar", absentCpp: "!light.spot" },
+            ],
+            [
+                "spot.direction",
+                { cpp: "light.direction", type: "f64-buffer" },
+            ],
+            ["spot.angle", { cpp: "light.angle", type: "scalar" }],
+            ["Math.PI", { cpp: "std::numbers::pi", type: "scalar" }],
+        ]),
+        calls: pinnedNumericMathCalls(),
+        // `len === 0 || len === 1` joins two comparisons.
+        booleanOr: true,
+    });
+    const body = lowerer.statements(write.body.statements, "    ").join("\n");
+    return `// ${context.provenance(spotModule, "_write")}
+// The pin's own spot stride is ${stride}: three texels per light, the third
+// carrying the cone this writes.
+inline void write_clustered_cone(
+    std::vector<float>& data,
+    double offset,
+    const ClusteredLight& light) {
+${body}
+}`;
+}
+
+/**
+ * The slice mapping the per-frame `refresh` derives from the camera's
+ * depth range: `logFarNear`, `sliceScale` and `sliceBias`, the three
+ * statements every `getSliceIndex` and the params buffer read.
+ *
+ * They live inside the closure `buildClusteredLightGpuState` returns
+ * rather than in a declaration of their own, so they are located by name,
+ * asserted to be the consecutive statements the pin writes, and lowered in
+ * that order -- which is what keeps a pin that moves to a different depth
+ * partition from leaving this runtime binning lights under the old one.
+ * The emitted locals keep the pin's names.
+ */
+export function clusteredSliceMapping(
+    context: LoweringContext,
+    indent: string,
+): string {
+    const { file, declaration } = context.functionDeclaration(
+        clusteredModule,
+        "buildClusteredLightGpuState",
+    );
+    const named = (name: string): ts.VariableStatement => {
+        const found = context.findNodes(
+            declaration,
+            (node): node is ts.VariableStatement =>
+                ts.isVariableStatement(node) &&
+                node.declarationList.declarations.length === 1 &&
+                ts.isIdentifier(node.declarationList.declarations[0]!.name) &&
+                node.declarationList.declarations[0]!.name.text === name,
+        );
+        if (found.length !== 1 || !found[0]) {
+            return context.contractError(
+                declaration,
+                `Expected buildClusteredLightGpuState to declare '${name}' once.`,
+            );
+        }
+        return found[0];
+    };
+    const statements = ["logFarNear", "sliceScale", "sliceBias"].map(named);
+    const block = statements[0]!.parent;
+    if (!ts.isBlock(block)) {
+        context.contractError(
+            statements[0]!,
+            "Expected the slice mapping to be declared inside a block.",
+        );
+    }
+    const start = block.statements.indexOf(statements[0]!);
+    statements.forEach((statement, index) => {
+        if (block.statements[start + index] !== statement) {
+            context.contractError(
+                statement,
+                "Expected the slice mapping's three statements to be " +
+                    "consecutive.",
+            );
+        }
+    });
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map<string, PinnedBinding>([
+            ["farZ", { cpp: "far_plane", type: "scalar" }],
+            ["nearZ", { cpp: "near_plane", type: "scalar" }],
+            ["zSlices", { cpp: "slices", type: "scalar" }],
+        ]),
+        calls: pinnedNumericMathCalls(),
+    });
+    return statements
+        .flatMap((statement) => lowerer.statement(statement, indent))
+        .join("\n");
 }
 
 /**
