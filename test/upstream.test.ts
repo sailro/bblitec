@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeUpstreamGraph } from "../src/upstream-graph.js";
 import { LoweringContext } from "../src/lowering/context.js";
-import { lightVectorSetter } from "../src/compiler/assignments.js";
+import { lightSetter } from "../src/compiler/assignments.js";
 import type { LightKind } from "../src/compiler/types.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
@@ -790,9 +790,10 @@ test("every light vector setter rebuilds its own kind's local matrix", () => {
     let emitted = 0;
     for (const kind of Object.keys(sources) as LightKind[]) {
         for (const vector of ["position", "direction"]) {
-            const setter = lightVectorSetter(
+            const setter = lightSetter(
                 { kind: "light", cpp: "", lightKind: kind },
                 vector,
+                "vector",
             );
             if (!setter) continue;
             emitted++;
@@ -809,9 +810,10 @@ test("every light vector setter rebuilds its own kind's local matrix", () => {
         // all, so its factory stays the pin's plain one.
         if (
             !["position", "direction"].some((vector) =>
-                lightVectorSetter(
+                lightSetter(
                     { kind: "light", cpp: "", lightKind: kind },
                     vector,
+                    "vector",
                 )
             )
         ) {

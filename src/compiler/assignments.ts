@@ -449,14 +449,6 @@ export function lightSetter(
     : undefined;
 }
 
-/** The vector family of {@link lightSetter}, as the pin audit reads it. */
-export function lightVectorSetter(
-  owner: Value,
-  vector: string,
-): string | undefined {
-  return lightSetter(owner, vector, "vector");
-}
-
 export interface AssignmentContext extends DeterministicRandomContext {
   isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
   noteNodeInputAdmissionFailure(node: ts.Node, message: string): void;
