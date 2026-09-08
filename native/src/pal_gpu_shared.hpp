@@ -2661,6 +2661,18 @@ inline std::span<const upstream::PinnedShadowBinding> node_shadow_rows(
 }
 #endif
 
+/** Restore source winding after a loader baked a reflected node transform. */
+inline std::span<const std::uint32_t> node_source_indices(
+    const ModelGeometry& geometry,
+    std::vector<std::uint32_t>& scratch) {
+    if (!geometry.source_indices_reversed) return geometry.indices;
+    scratch = geometry.indices;
+    for (std::size_t index = 0; index < scratch.size(); index += 3) {
+        std::swap(scratch.at(index + 1), scratch.at(index + 2));
+    }
+    return scratch;
+}
+
 #if BBLITE_NODE_VARIANTS > 0
 /**
  * A node graph's two compiled views, as one index.
@@ -2726,18 +2738,6 @@ inline bool node_uses_local_attributes(std::size_t geometry_variant) {
     (void)geometry_variant;
     return false;
 #endif
-}
-
-/** Restore source winding after a loader baked a reflected node transform. */
-inline std::span<const std::uint32_t> node_source_indices(
-    const ModelGeometry& geometry,
-    std::vector<std::uint32_t>& scratch) {
-    if (!geometry.source_indices_reversed) return geometry.indices;
-    scratch = geometry.indices;
-    for (std::size_t index = 0; index < scratch.size(); index += 3) {
-        std::swap(scratch.at(index + 1), scratch.at(index + 2));
-    }
-    return scratch;
 }
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
