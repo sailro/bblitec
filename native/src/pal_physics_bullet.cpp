@@ -392,6 +392,11 @@ struct PhysicsWorldState {
 
 namespace {
 void sync_constraint_membership(PhysicsWorldState& owner) {
+    std::erase_if(owner.hinges, [](const auto& hinge) {
+        if (hinge.parent->body && hinge.child->body) return false;
+        if (hinge.attached) throw std::runtime_error("Released physics body retains an attached constraint.");
+        return true;
+    });
     for (auto& hinge : owner.hinges) {
         const auto changed = [](const btTransform& before, const btTransform& after) {
             return before.getOrigin() != after.getOrigin() || before.getBasis() != after.getBasis();

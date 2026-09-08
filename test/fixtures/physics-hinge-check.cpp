@@ -6,6 +6,8 @@
 
 namespace bbl::upstream {
 std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
+std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
+std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
 }
 
 int main() {
@@ -83,5 +85,17 @@ int main() {
     try { p::physics_world_create_hinge(different_world, a, b, anchor, anchor, false); }
     catch (const std::runtime_error&) { foreign_body_refused = true; }
     assert(foreign_body_refused);
+    // A removed/released body invalidates its joint before the remaining
+    // body's changed mass frame can access the joint's rigid-body references.
+    p::physics_world_remove_body(other_world, a);
+    assert(other_world.ownership->world->getNumConstraints() == 0);
+    p::physics_body_release(a);
+    assert(other_world.ownership->hinges.size() == 1);
+    mass.center_of_mass = {0.4, 0.2, -0.3};
+    p::physics_body_set_mass_properties(b, mass);
+    p::physics_world_step(other_world, 1.0 / 60);
+    assert(other_world.ownership->hinges.empty());
+    assert(other_world.ownership->world->getNumConstraints() == 0);
+    p::physics_world_release(other_world);
     std::cout << "physics-hinge: ok pivotError=" << maximum_pivot_error << '\n';
 }
