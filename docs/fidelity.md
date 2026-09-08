@@ -197,7 +197,8 @@ speculative contacts, rebound reconstruction, damping/speed conversion and rest
 stabilization. The rebound rule is fitted behavior, not ported Havok internals.
 
 Default physics follows variable frame delta, capped at 100 ms. Explicit
-scene/world fixed steps advance once per rendered frame; there is no automatic
+scene/world fixed steps advance once per rendered frame, including the initial zero engine delta.
+Each scene resolves its callback delta once per update; there is no automatic
 fixed-frequency accumulator. Applications must supply fixed-step scheduling.
 Preserve authored overrides in browser/native comparisons.
 
