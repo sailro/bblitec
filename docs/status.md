@@ -14,7 +14,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 1 | <img src="images/scenes/scene1.png" alt="Scene 1 BoomBox rendering" width="160"> | 0.001 / 0.007 | 0.001 / 0.007 | BoomBox PBR |
 | 2 | <img src="images/scenes/scene2.png" alt="Scene 2 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Directional Light Sphere |
 | 3 | <img src="images/scenes/scene3.png" alt="Scene 3 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Fog Boxes |
-| 4 | <img src="images/scenes/scene4.png" alt="Scene 4 rendering" width="160"> | 0.127 / 0.127 | 0.127 / 0.127 | ESM Directional and PCF Spot Shadows |
+| 4 | <img src="images/scenes/scene4.png" alt="Scene 4 rendering" width="160"> | 0.042 / 0.042 | 0.042 / 0.042 | ESM Directional and PCF Spot Shadows |
 | 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Alien Morph and Skeleton |
 | 6 | <img src="images/scenes/scene6.png" alt="Scene 6 rendering" width="160"> | 0.001 / 0.013 | 0.001 / 0.013 | PBR Gold Sphere |
 | 7 | <img src="images/scenes/scene7.png" alt="Scene 7 ChibiRex rendering" width="160"> | 0.001 / 0.010 | 0.001 / 0.010 | ChibiRex Default Camera |
@@ -32,7 +32,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 19 | <img src="images/scenes/scene19.png" alt="Scene 19 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Clearcoat |
 | 20 | <img src="images/scenes/scene20.png" alt="Scene 20 rendering" width="160"> | 0.002 / 0.007 | 0.002 / 0.007 | PBR Emissive Sphere Grid |
 | 21 | <img src="images/scenes/scene21.png" alt="Scene 21 rendering" width="160"> | 0.330 / 0.330 | 0.330 / 0.330 | PBR Sheen Cloth |
-| 22 | <img src="images/scenes/scene22.png" alt="Scene 22 rendering" width="160"> | 0.124 / 0.124 | 0.124 / 0.124 | PBR Shadow Receiver |
+| 22 | <img src="images/scenes/scene22.png" alt="Scene 22 rendering" width="160"> | 0.040 / 0.040 | 0.040 / 0.040 | PBR Shadow Receiver |
 | 23 | <img src="images/scenes/scene23.png" alt="Scene 23 rendering" width="160"> | 0.002 / 0.017 | 0.002 / 0.017 | PBR Anisotropy |
 | 24 | <img src="images/scenes/scene24.png" alt="Scene 24 rendering" width="160"> | 0.004 / 0.004 | 0.000 / 0.000 | Hill Valley |
 | 25 | <img src="images/scenes/scene25.png" alt="Scene 25 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | KTX Compressed Texture |
@@ -116,7 +116,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 103 | <img src="images/scenes/scene103.png" alt="Scene 103 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Raycast Instance Picking; exact captureFrame=5 pose. |
 | 104 | <img src="images/scenes/scene104.png" alt="Scene 104 rendering" width="160"> | 0.014 / 0.013 | 0.014 / 0.013 | Character capsule movement, collision events, keyboard/jump and camera follow; imported level lightmaps. |
 | 105 | <img src="images/scenes/scene105.png" alt="Scene 105 rendering" width="160"> | 0.274 / 0.204 | 0.274 / 0.204 | Character movement and animated platform; Bullet/Havok dynamic-obstacle solver delta. |
-| 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.018 / 0.098 | 0.018 / 0.098 | Physics Motion and Prestep Grid; Bullet/Havok geometry and solver residual at frame 20. |
+| 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.018 / 0.097 | 0.018 / 0.097 | Physics Motion and Prestep Grid; Bullet/Havok geometry and solver residual at frame 20. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
 | 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Flight Helmet KTX2 |
@@ -205,7 +205,7 @@ Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-sp
 | 224 | <img src="images/scenes/scene224.png" alt="Scene 224 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bounding Box Gizmo |
 | 225 | <img src="images/scenes/scene225.png" alt="Scene 225 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Geospatial Camera; renders its pose, controls attach without input arms. |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting glTF |
-| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.017 / 0.001 | 0.018 / 0.001 | Shared Scene Surfaces |
+| 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.018 / 0.001 | 0.018 / 0.001 | Shared Scene Surfaces |
 | 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.013 / 0.014 | 0.013 / 0.014 | Independent Scene Surfaces |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |
 | 231 | <img src="images/scenes/scene231.png" alt="Scene 231 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.000 | Standard Material Deform Features |
@@ -267,22 +267,22 @@ Unchanged pinned applications, including their reached source and asset graphs.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
-| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.456}} / \color{#9a6700}{\textsf{0.576}}$ | $\color{#1a7f37}{\textsf{0.456}} / \color{#9a6700}{\textsf{0.576}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI residual; canvas-only MAD: SDL_GPU 0.002 / 0.002, Dawn 0.001 / 0.002. |
-| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.204}} / \color{#cf222e}{\textsf{1.037}}$ | $\color{#cf222e}{\textsf{1.204}} / \color{#cf222e}{\textsf{1.037}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
+| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.438}} / \color{#9a6700}{\textsf{0.553}}$ | $\color{#1a7f37}{\textsf{0.438}} / \color{#9a6700}{\textsf{0.553}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI residual; canvas-only MAD: SDL_GPU 0.002 / 0.002, Dawn 0.001 / 0.002. |
+| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.074}} / \color{#9a6700}{\textsf{0.856}}$ | $\color{#cf222e}{\textsf{1.074}} / \color{#9a6700}{\textsf{0.856}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | WAD game; sprites; audio; retained UI. |
-| LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.058 / 0.058 | 0.058 / 0.058 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
+| LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.048 / 0.048 | 0.048 / 0.048 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
 | Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Frame graph; offscreen effects; bloom. |
-| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.773}} / \color{#9a6700}{\textsf{0.773}}$ | $\color{#9a6700}{\textsf{0.770}} / \color{#9a6700}{\textsf{0.770}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.000 / 0.000. |
+| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.809}} / \color{#9a6700}{\textsf{0.809}}$ | $\color{#9a6700}{\textsf{0.806}} / \color{#9a6700}{\textsf{0.806}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.000 / 0.000. |
 | Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Voronoi fracture; PBR; physics. |
-| Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | $\color{#9a6700}{\textsf{0.578}} / \color{#9a6700}{\textsf{0.578}}$ | $\color{#9a6700}{\textsf{0.578}} / \color{#9a6700}{\textsf{0.578}}$ | Driving game; CSM; physics; audio; retained HUD. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.004 / 0.004. |
-| Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{3.520}} / \color{#cf222e}{\textsf{3.585}}$ | $\color{#cf222e}{\textsf{3.520}} / \color{#cf222e}{\textsf{3.585}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: SDL_GPU 0.028 / 0.029, Dawn 0.028 / 0.029. |
-| Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.145 / 0.104 | 0.145 / 0.104 | Animated glTF; PBR/IBL; retained chrome. |
-| Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.120 / 0.166 | 0.120 / 0.166 | Skinned Draco/WebP glTF; transmission; retained chrome. |
-| Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.175 / 0.172 | 0.158 / 0.155 | Strategy map; sprites; picking; retained cursor/tooltips. |
-| Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.095 / 0.100 | 0.095 / 0.100 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000 / 0.000 on both backends. |
-| Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#cf222e}{\textsf{1.104}} / \color{#cf222e}{\textsf{1.104}}$ | $\color{#cf222e}{\textsf{1.103}} / \color{#cf222e}{\textsf{1.103}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.000, Dawn 0.000 / 0.000. |
+| Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | $\color{#9a6700}{\textsf{0.606}} / \color{#9a6700}{\textsf{0.606}}$ | $\color{#9a6700}{\textsf{0.606}} / \color{#9a6700}{\textsf{0.606}}$ | Driving game; CSM; physics; audio; retained HUD. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.004 / 0.004. |
+| Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{3.324}} / \color{#cf222e}{\textsf{3.385}}$ | $\color{#cf222e}{\textsf{3.324}} / \color{#cf222e}{\textsf{3.385}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: SDL_GPU 0.028 / 0.029, Dawn 0.028 / 0.029. |
+| Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.143 / 0.109 | 0.143 / 0.109 | Animated glTF; PBR/IBL; retained chrome. |
+| Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.103 / 0.141 | 0.103 / 0.141 | Skinned Draco/WebP glTF; transmission; retained chrome. |
+| Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.189 / 0.186 | 0.172 / 0.169 | Strategy map; sprites; picking; retained cursor/tooltips. |
+| Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.073 / 0.077 | 0.073 / 0.077 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000 / 0.000 on both backends. |
+| Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#cf222e}{\textsf{1.117}} / \color{#cf222e}{\textsf{1.117}}$ | $\color{#cf222e}{\textsf{1.116}} / \color{#cf222e}{\textsf{1.116}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.000, Dawn 0.000 / 0.000. |
 | NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Live pure-2D node particles; sprite atlas; pointer-following emitter. |
-| Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.373 / 0.455 | 0.372 / 0.453 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.002, Dawn 0.000 / 0.000. |
+| Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.362 / 0.441 | 0.361 / 0.440 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.002, Dawn 0.000 / 0.000. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.016 / 0.016 | 0.014 / 0.014 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
 | Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | $\color{#1a7f37}{\textsf{0.197}} / \color{#9a6700}{\textsf{0.896}}$ | $\color{#1a7f37}{\textsf{0.197}} / \color{#9a6700}{\textsf{0.896}}$ | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only MAD: 0.000 / 0.002 on both backends. |
 
@@ -297,7 +297,7 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | nav-crowd | <img src="images/scenes/regression-nav-crowd.png" alt="Navigation crowd step rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd Step |
 | nav-obstacles | <img src="images/scenes/regression-nav-obstacles.png" alt="Navigation obstacle removal rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Removal |
 | mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Visible and Pickable |
-| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options |
+| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.053 / 0.083 | 0.053 / 0.083 | Physics Aggregate Options |
 | physics-floating-origin | <img src="images/scenes/regression-physics-floating-origin.png" alt="Physics floating origin rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Floating Origin Regions |
 | physics-mesh-shape | <img src="images/scenes/regression-physics-mesh-shape.png" alt="Physics mesh shape rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Triangle-Soup Shape |
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |

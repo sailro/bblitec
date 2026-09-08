@@ -90,8 +90,9 @@ Fonts use DirectWrite/CoreText/fontconfig. Generic emoji/ZWJ shaping is limited.
 Unauthored button fonts use the generic sans default; normal line height uses
 per-face ratios, so browser glyph/size rounding can differ.
 Windows file fonts use DirectWrite OpenType shaping and browser-compatible raster modes and coverage.
-Color/fallback faces and font effects retain the registered RmlUi engine. Textareas preserve fractional
-line height and design advances; native range painting follows browser geometry and control states.
+Color/fallback faces and font effects retain RmlUi rasterization; glyph coverage and baseline rounding
+can differ from browser text. Textareas preserve fractional line height and design advances;
+native range painting follows browser geometry and control states.
 
 | Maintained RmlUi patch | Purpose |
 | --- | --- |
