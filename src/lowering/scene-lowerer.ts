@@ -5,6 +5,7 @@ import {
 } from "./pinned-function-lowerer.js";
 import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
 import { sceneNodeTransformsSource } from "./scene-node-transforms.js";
+import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 
 export class SceneLowerer {
   public constructor(private readonly context: LoweringContext) {}
@@ -47,6 +48,13 @@ export class SceneLowerer {
       createName,
     );
     const scene = this.context.objectInitializer(declaration, "ctxLocal");
+    const callbackDelta = new PinnedNumericLowerer(file, {
+      bindings: new Map([
+        ["ctx.fixedDeltaMs", { cpp: "scene.fixed_delta_ms", type: "scalar" }],
+        ["eng._currentDelta", { cpp: "engine_delta_ms", type: "scalar" }],
+      ]),
+      calls: new Map(),
+    }).expression(this.context.variableInitializer(declaration, "d"));
     this.context.assertExpressionShape(
       this.context.propertyInitializer(scene, "fog"), "null", "Pinned initial fog identity",
     );
@@ -1686,6 +1694,10 @@ std::uint32_t scene_material_families(const Scene& scene) {
 }
 
 } // namespace
+
+double scene_callback_delta(const Scene& scene, double engine_delta_ms) {
+    return ${callbackDelta};
+}
 
 Scene create_scene_context(Engine& engine) {
     Scene scene;

@@ -1702,7 +1702,7 @@ export function emitPropertyAssignment(
 
     if (target.kind === "scene" && property === "fixedDeltaMs") {
       context.emit(
-        `${target.cpp}.fixed_delta_ms ${operator} ${context.compileNumber(expression.right)};`,
+        `${target.cpp}.fixed_delta_ms ${operator} ${context.compileNumber(expression.right, "double")};`,
       );
       return;
     }
