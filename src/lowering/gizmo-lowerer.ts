@@ -52,6 +52,7 @@ import {
     type PinnedBinding,
     type PinnedNumericScope,
     PinnedNumericLowerer,
+    recordLiteralCpp,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import {
@@ -83,6 +84,25 @@ const COMPOSITE_MODULE = "src/gizmo/composite-gizmos.ts";
 const POINTER_DRAG_MODULE = "src/gizmo/pointer-drag.ts";
 const POLYHEDRON_MODULE = "src/mesh/create-polyhedron.ts";
 const BOUNDING_BOX_MODULE = "src/gizmo/bounding-box-gizmo.ts";
+
+/** A pinned `{x, y, z}` at the pin's double width, as the native record. */
+function vec3d(lanes: readonly string[]): string {
+    return recordLiteralCpp("vec3", lanes);
+}
+
+/**
+ * Three lanes landing on a native FLOAT sink -- a mesh or node scaling --
+ * each rounding where that record's own store rounds, and nowhere earlier.
+ */
+function vec3f(lanes: readonly string[]): string {
+    return `Vec3{${lanes.map((lane) => `static_cast<float>(${lane})`).join(", ")}}`;
+}
+
+/** The same float sink over four lanes: a node's rotation quaternion. */
+function vec4f(lanes: readonly string[]): string {
+    return `Vec4{${lanes.map((lane) => `static_cast<float>(${lane})`).join(", ")}}`;
+}
+
 const MAT4_FROM_QUAT_MODULE = "src/math/mat4-from-quat.ts";
 const MAT4_COMPOSE_MODULE = "src/math/mat4-compose-into.ts";
 
@@ -594,7 +614,7 @@ export class GizmoLowerer {
                 returns: {
                     type: "Vec3d",
                     value: (lowerer, expression) =>
-                        `Vec3d{${lowerObjectComponents(
+                        vec3d(lowerObjectComponents(
                             this.context,
                             lowerer,
                             expression ??
@@ -607,7 +627,7 @@ export class GizmoLowerer {
                                         "return a value.",
                                 ),
                             ["x", "y", "z"],
-                        ).join(", ")}}`,
+                        )),
                 },
             },
         );
@@ -746,12 +766,12 @@ export class GizmoLowerer {
                                     "combination.",
                             );
                         }
-                        return `normalize_vec3(Vec3d{${lowerObjectComponents(
+                        return `normalize_vec3(${vec3d(lowerObjectComponents(
                             this.context,
                             lowerer,
                             returned.arguments[0]!,
                             ["x", "y", "z"],
-                        ).join(", ")}})`;
+                        ))})`;
                     },
                 },
             },
@@ -867,8 +887,7 @@ export class GizmoLowerer {
         const position = this.channel(scope, local, "position", lowerer, ["0.0", "0.0", "0.0"]);
         const scaling = this.channel(scope, local, "scaling", lowerer, ["1.0", "1.0", "1.0"]);
         const rotation = this.channel(scope, local, "rotationQuaternion", lowerer, ["0.0", "0.0", "0.0", "1.0"]);
-        return `Vec3d{${position.join(", ")}}, ` +
-            `Vec3{${scaling.map((lane) => `static_cast<float>(${lane})`).join(", ")}}, ` +
+        return `${vec3d(position)}, ${vec3f(scaling)}, ` +
             `std::array<double, 4>{${rotation.join(", ")}}`;
     }
 
@@ -895,9 +914,8 @@ export class GizmoLowerer {
             if (!value) this.context.contractError(parameter, "Missing pinned transform-node default.");
             return lowerer.expression(value);
         });
-        return `${JSON.stringify(call.arguments[0].text)}, Vec3d{${values.slice(0, 3).join(", ")}}, ` +
-            `Vec4{${values.slice(3, 7).map((lane) => `static_cast<float>(${lane})`).join(", ")}}, ` +
-            `Vec3{${values.slice(7).map((lane) => `static_cast<float>(${lane})`).join(", ")}}`;
+        return `${JSON.stringify(call.arguments[0].text)}, ${vec3d(values.slice(0, 3))}, ` +
+            `${vec4f(values.slice(3, 7))}, ${vec3f(values.slice(7))}`;
     }
 
     private lightGeometryArm(scope: ts.Node, type: string): ts.Node {
@@ -1060,12 +1078,12 @@ export class GizmoLowerer {
                 return `normalize_vec3(${render(node.arguments[0]!)})`;
             }
             if (ts.isObjectLiteralExpression(node)) {
-                return `Vec3d{${lowerObjectComponents(
+                return vec3d(lowerObjectComponents(
                     this.context,
                     lowerer,
                     node,
                     ["x", "y", "z"],
-                ).join(", ")}}`;
+                ));
             }
             return this.context.contractError(
                 node,
@@ -1476,11 +1494,9 @@ ${indent}    engine,
 ${indent}    scene,
 ${indent}    ${factory},
 ${indent}    material,
-${indent}    Vec3d{${part.position.join(", ")}},
+${indent}    ${vec3d(part.position)},
 ${indent}    std::array<double, 3>{${part.rotation.join(", ")}},
-${indent}    Vec3{${part.scaling
-            .map((value) => `static_cast<float>(${value})`)
-            .join(", ")}},
+${indent}    ${vec3f(part.scaling)},
 ${indent}    root);`;
     }
 
@@ -1966,12 +1982,12 @@ EditGizmoHandle push_edit_gizmo(
             const value = member(name);
             if (name === "color") {
                 return value
-                    ? `std::optional<Vec3d>{Vec3d{${lowerTupleComponents(
+                    ? `std::optional<Vec3d>{${vec3d(lowerTupleComponents(
                           this.context,
                           lowerer,
                           value,
                           { arity: 3, at: options },
-                      ).join(", ")}}}`
+                      ))}}`
                     : "std::optional<Vec3d>{}";
             }
             if (name === "uniformScaling") {
@@ -2004,12 +2020,12 @@ EditGizmoHandle push_edit_gizmo(
             `${widget.cppFactory}(`,
             "engine,",
             "layer,",
-            `Vec3d{${lowerObjectComponents(
+            `${vec3d(lowerObjectComponents(
                 this.context,
                 lowerer,
                 axis,
                 ["x", "y", "z"],
-            ).join(", ")}}${supplied.length > 0 ? "," : ")"}`,
+            ))}${supplied.length > 0 ? "," : ")"}`,
             ...supplied.map(
                 (argument, index) =>
                     `${argument}${
@@ -2393,15 +2409,13 @@ EditGizmoHandle create_axis_drag_gizmo(
         thickness,
     )});
     const MaterialHandle material = gizmo_material(
-        engine, color.value_or(Vec3d{${color.join(", ")}}), false);
+        engine, color.value_or(${vec3d(color)}), false);
     const std::array<double, 4> baked = look_at_quat(drag_axis);
     const TransformNodeHandle root = edit_gizmo_root(
         engine,
         scene,
         baked,
-        Vec3{${rootScale
-            .map((value) => `static_cast<float>(${value})`)
-            .join(", ")}});
+        ${vec3f(rootScale)});
 ${this.widgetPart(
     `create_cylinder(engine, ${this.widgetCylinder(cone)})`,
     cone,
@@ -2598,7 +2612,7 @@ EditGizmoHandle create_axis_scale_gizmo(
     )});
     const bool uniform_scaling = uniform_scaling_option.value_or(${uniformScalingDefault});
     const MaterialHandle material = gizmo_material(
-        engine, color.value_or(Vec3d{${color.join(", ")}}), false);
+        engine, color.value_or(${vec3d(color)}), false);
     // The pin bakes the axis lookAt ONCE through setDirection (yaw and
     // pitch, no roll) rather than the shortest-arc rotation the drag and
     // rotation widgets take: the scale cube is not roll-symmetric.
@@ -2610,9 +2624,7 @@ EditGizmoHandle create_axis_scale_gizmo(
         engine,
         scene,
         baked,
-        Vec3{${rootScale
-            .map((value) => `static_cast<float>(${value})`)
-            .join(", ")}});
+        ${vec3f(rootScale)});
     if (uniform_scaling) {
         const double uniform_size = ${this.widgetOption(uniformHead, "size")};
 ${this.widgetPart(
@@ -2718,15 +2730,13 @@ EditGizmoHandle create_plane_drag_gizmo(
     std::optional<Vec3d> color) {
     Scene& scene = layer_record(engine, layer).scene;
     const MaterialHandle material = gizmo_material(
-        engine, color.value_or(Vec3d{${color.join(", ")}}), true);
+        engine, color.value_or(${vec3d(color)}), true);
     const std::array<double, 4> baked = look_at_quat(drag_plane_normal);
     const TransformNodeHandle root = edit_gizmo_root(
         engine,
         scene,
         baked,
-        Vec3{${rootScale
-            .map((value) => `static_cast<float>(${value})`)
-            .join(", ")}});
+        ${vec3f(rootScale)});
     const double plane_size = ${size};
 ${this.widgetPart(
     "create_plane(engine, PlaneOptions{" +
@@ -2821,7 +2831,7 @@ EditGizmoHandle create_plane_rotation_gizmo(
         tessellation,
     )});
     const MaterialHandle material = gizmo_material(
-        engine, color.value_or(Vec3d{${color.join(", ")}}), false);
+        engine, color.value_or(${vec3d(color)}), false);
     const Vec3d initial_normal = ${this.widgetLocalAxis(
         PLANE_ROTATION_MODULE,
         "createPlaneRotationGizmo",
@@ -2834,9 +2844,7 @@ EditGizmoHandle create_plane_rotation_gizmo(
         engine,
         scene,
         baked,
-        Vec3{${rootScale
-            .map((value) => `static_cast<float>(${value})`)
-            .join(", ")}});
+        ${vec3f(rootScale)});
 ${this.widgetPart(
     `create_torus(engine, TorusOptions{` +
         `${this.widgetOption(ring, "diameter")}, ` +
@@ -3283,7 +3291,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
                 ],
             ]),
             tupleCalls: new Map([["rotateVec3ByQuat", 3]]),
-            vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+            vec3Literal: (x, y, z) => vec3d([x, y, z]),
             returnValue: (expression) =>
                 expression
                     ? lowerer!.expression(expression)
@@ -3455,7 +3463,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                 ],
             ]),
             booleanAnd: true,
-            vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+            vec3Literal: (x, y, z) => vec3d([x, y, z]),
         };
     }
 
@@ -3774,7 +3782,7 @@ std::array<float, 16> bbox_mat4_from_quat(
             new PinnedNumericLowerer(file, {
                 bindings: new Map(),
                 calls: new Map(),
-                vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+                vec3Literal: (x, y, z) => vec3d([x, y, z]),
             }).expression(element),
         );
 
@@ -4485,9 +4493,9 @@ BoundingBoxGizmoHandle create_bounding_box_gizmo(
     std::optional<double> edge_thickness_option,
     std::optional<double> scale_box_size_option,
     std::optional<double> rotation_anchor_size_option) {
-    const Vec3d color = color_option.value_or(Vec3d{${colorDefault
-        .map((component) => this.context.doubleLiteral(component))
-        .join(", ")}});
+    const Vec3d color = color_option.value_or(${vec3d(
+        colorDefault.map((component) => this.context.doubleLiteral(component)),
+    )});
     const js::Array<double> source_color{color.x, color.y, color.z};
     const double edge_thickness = edge_thickness_option.value_or(
         ${this.context.doubleLiteral(edgeThicknessDefault)});
