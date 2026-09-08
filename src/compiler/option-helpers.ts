@@ -7,6 +7,7 @@
 // are declared once here so every per-domain option module states the
 // same rule instead of carrying its own copy.
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import {
     MATH_CONSTANTS,
@@ -414,7 +415,7 @@ export function staticNumberValue(
         if (call.arguments.length === 1) {
             const fold = mathUnaryFold(name);
             if (fold) {
-                const argument = staticNumberValue(context, call.arguments[0]!);
+                const argument = staticNumberValue(context, argumentAt(call, 0));
                 return argument === undefined ? undefined : fold(argument);
             }
         }

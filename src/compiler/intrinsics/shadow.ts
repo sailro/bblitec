@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type {
     DefaultRenderTaskEmission,
     Feature,
@@ -329,13 +330,13 @@ function compileShadowGeneratorFactory(
     spec: ShadowGeneratorFactory,
 ): Value {
     context.expectArgumentCount(call, 2, 3);
-    const engine = context.compileValue(call.arguments[0]!);
-    context.expectKind(engine, "engine", call.arguments[0]!);
-    const light = context.compileValue(call.arguments[1]!);
-    context.expectKind(light, "light", call.arguments[1]!);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const light = context.compileValue(argumentAt(call, 1));
+    context.expectKind(light, "light", argumentAt(call, 1));
     if (light.lightKind !== spec.lightKind) {
         context.fail(
-            call.arguments[1]!,
+            argumentAt(call, 1),
             `${spec.article} takes a ${spec.lightKind} light, received a ` +
                 `${light.lightKind ?? "unknown"} light.`,
         );
@@ -448,15 +449,15 @@ export function compileShadowIntrinsic(
 
         case "getCsmReceiverTexture": {
             context.expectArgumentCount(call, 1, 1);
-            const generator = context.compileValue(call.arguments[0]!);
+            const generator = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 generator,
                 "shadow-generator",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (generator.shadowGeneratorIndex === undefined) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "A CSM receiver texture requires a generator created in this scene.",
                 );
             }
@@ -471,14 +472,14 @@ export function compileShadowIntrinsic(
 
         case "onCsmReceiverUpdate": {
             context.expectArgumentCount(call, 2, 2);
-            const generator = context.compileValue(call.arguments[0]!);
+            const generator = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 generator,
                 "shadow-generator",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const callback = context.compileF32ArrayCallback(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const disposer = context.allocateTemporaryCppName(
                 "csm_receiver_disposer",
@@ -502,11 +503,11 @@ export function compileShadowIntrinsic(
         // where it fills the bounds -- same provider, no proxy.
         case "enableMorphTargetShadows": {
             context.expectArgumentCount(call, 1, 1);
-            const generator = context.compileValue(call.arguments[0]!);
+            const generator = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 generator,
                 "shadow-generator",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "void",
@@ -522,11 +523,11 @@ export function compileShadowIntrinsic(
         // what it decides here is which materials compose a no-colour view.
         case "setShadowTaskCasterMeshes": {
             context.expectArgumentCount(call, 2, 2);
-            const generator = context.compileValue(call.arguments[0]!);
+            const generator = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 generator,
                 "shadow-generator",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const generatorIndex = generator.shadowGeneratorIndex;
             const runtimeSelectedGenerator =
@@ -535,14 +536,14 @@ export function compileShadowIntrinsic(
                 generator.dataType.handle === "shadow-generator";
             if (generatorIndex === undefined && !runtimeSelectedGenerator) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "This shadow generator was not created in this scene.",
                 );
             }
             // An array literal at the call site, or a local the scene grew
             // with `push` inside a loop generation unrolls -- which is how
             // scene 207 writes it. One reader answers for both.
-            const listNode = call.arguments[1]!;
+            const listNode = argumentAt(call, 1);
             const entries =
                 context.handleCollections.staticHandleList(listNode);
             if (!entries) {
@@ -597,7 +598,7 @@ export function compileShadowIntrinsic(
             }
             if (emitted.length === 0) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "A shadow generator with no casters renders an empty " +
                         "map; no reached scene registers one.",
                 );
@@ -641,8 +642,8 @@ export function compileShadowIntrinsic(
         // survives here as a different generated call.
         case "registerSceneWithShadowSupport": {
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             context.noteTemporalRecordBoundary(call, importedName, "registration", scene);
             context.reachFeature("shadow:task", call);
             context.reachFeature("frame-graph:resources", call);

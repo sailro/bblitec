@@ -17,7 +17,7 @@ import {
 } from "./json-value.js";
 import type { Value } from "./types.js";
 import { runModuleJsonSync } from "./module-json-sync.js";
-import { unwrapExpression } from "./syntax.js";
+import { unwrapExpression, argumentAt } from "./syntax.js";
 
 interface CompressedJsonContext {
     readonly checker: ts.TypeChecker;
@@ -291,8 +291,8 @@ function isGzipBase64JsonDecoder(
     ) {
         return false;
     }
-    const decoded = unwrapExpression(byteFactory.arguments[0]!);
-    const mapper = unwrapExpression(byteFactory.arguments[1]!);
+    const decoded = unwrapExpression(argumentAt(byteFactory, 0));
+    const mapper = unwrapExpression(argumentAt(byteFactory, 1));
     if (
         !ts.isCallExpression(decoded) ||
         decoded.questionDotToken ||
@@ -315,8 +315,8 @@ function isGzipBase64JsonDecoder(
     if (
         !charCodeAt ||
         charCodeAt.arguments.length !== 1 ||
-        !ts.isNumericLiteral(unwrapExpression(charCodeAt.arguments[0]!)) ||
-        Number((unwrapExpression(charCodeAt.arguments[0]!) as ts.NumericLiteral).text) !== 0 ||
+        !ts.isNumericLiteral(unwrapExpression(argumentAt(charCodeAt, 0))) ||
+        Number((unwrapExpression(argumentAt(charCodeAt, 0)) as ts.NumericLiteral).text) !== 0 ||
         !ts.isPropertyAccessExpression(charCodeAt.expression) ||
         !identifierIs(charCodeAt.expression.expression, char)
     ) {
@@ -328,7 +328,7 @@ function isGzipBase64JsonDecoder(
     const streamCall = ts.isPropertyAccessExpression(pipeThrough.expression)
         ? propertyCall(pipeThrough.expression.expression, "stream")
         : undefined;
-    const decompressor = unwrapExpression(pipeThrough.arguments[0]!);
+    const decompressor = unwrapExpression(argumentAt(pipeThrough, 0));
     if (
         !streamCall ||
         streamCall.arguments.length !== 0 ||
@@ -343,10 +343,10 @@ function isGzipBase64JsonDecoder(
         !globalIdentifierIs(checker, blob.expression, "Blob") ||
         (blob.typeArguments?.length ?? 0) !== 0 ||
         blob.arguments?.length !== 1 ||
-        !ts.isArrayLiteralExpression(unwrapExpression(blob.arguments[0]!)) ||
-        (unwrapExpression(blob.arguments[0]!) as ts.ArrayLiteralExpression).elements.length !== 1 ||
+        !ts.isArrayLiteralExpression(unwrapExpression(argumentAt(blob, 0))) ||
+        (unwrapExpression(argumentAt(blob, 0)) as ts.ArrayLiteralExpression).elements.length !== 1 ||
         !identifierIs(
-            (unwrapExpression(blob.arguments[0]!) as ts.ArrayLiteralExpression)
+            (unwrapExpression(argumentAt(blob, 0)) as ts.ArrayLiteralExpression)
                 .elements[0] as ts.Expression,
             bytes.name,
         ) ||
@@ -357,7 +357,7 @@ function isGzipBase64JsonDecoder(
         ) ||
         (decompressor.typeArguments?.length ?? 0) !== 0 ||
         decompressor.arguments?.length !== 1 ||
-        !isStringLiteral(decompressor.arguments[0]!, "gzip")
+        !isStringLiteral(argumentAt(decompressor, 0), "gzip")
     ) {
         return false;
     }
@@ -617,7 +617,7 @@ export function compileCompressedJsonCall(
         }
         return jsonValue(
             context,
-            decodeCompressedJson(context, call.arguments[0]!),
+            decodeCompressedJson(context, argumentAt(call, 0)),
             call,
         );
     }
@@ -649,10 +649,10 @@ export function compileCompressedJsonCall(
         if (call.arguments.length !== 1) {
             context.fail(call, "An input-name alias restorer takes one JSON value.");
         }
-        const value = context.compileValue(call.arguments[0]!);
+        const value = context.compileValue(argumentAt(call, 0));
         if (value.staticJson === undefined) {
             context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "Input-name aliases can be restored only on generation-known JSON.",
             );
         }
@@ -719,7 +719,7 @@ export function compileCompressedJsonPromiseThen(
         restoreInputNameAliases(
             decodeCompressedJson(
                 context,
-                then.expression.arguments[0]!,
+                argumentAt(then.expression, 0),
             ),
         ),
         call,

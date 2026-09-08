@@ -30,7 +30,11 @@ import {
 } from "./option-helpers.js";
 import { babylonPackages } from "./symbols.js";
 import { resolveFunctionDeclaration } from "./user-functions.js";
-import { unwrapExpression as unwrapLoaderExpression } from "./syntax.js";
+import {
+    argumentAt,
+    stringLiteralText,
+    unwrapExpression as unwrapLoaderExpression,
+} from "./syntax.js";
 import type {
     CompiledNodeMaterial,
     NodeMaterialBlockEmitter,
@@ -243,33 +247,34 @@ function compileBlockLoader(
             );
         }
         const imported = unwrapLoaderExpression(awaited.expression);
-        if (
-            !ts.isCallExpression(imported) ||
-            imported.expression.kind !== ts.SyntaxKind.ImportKeyword ||
-            imported.arguments.length !== 1 ||
-            !ts.isStringLiteralLike(imported.arguments[0]!)
-        ) {
+        const specifierNode =
+            ts.isCallExpression(imported) &&
+            imported.expression.kind === ts.SyntaxKind.ImportKeyword &&
+            imported.arguments.length === 1
+                ? argumentAt(imported, 0)
+                : undefined;
+        const specifier = specifierNode && stringLiteralText(specifierNode);
+        if (specifierNode === undefined || specifier === undefined) {
             context.fail(
                 imported,
                 "A node material blockLoader case must dynamically import " +
                     "one pinned block module.",
             );
         }
-        const specifier = imported.arguments[0]!.text;
         const prefix = nodeBlockModulePrefixes.find((candidate) =>
             specifier.startsWith(candidate),
         );
         const module = prefix ? specifier.slice(prefix.length) : "";
         if (!/^material\/node\/blocks\/[a-z0-9][a-z0-9-]*\.js$/.test(module)) {
             context.fail(
-                imported.arguments[0]!,
+                specifierNode,
                 "A node material blockLoader may import only the pinned " +
                     "material/node/blocks emitter modules.",
             );
         }
         if (!pinnedNodeBlockModuleInventory().has(module)) {
             context.fail(
-                imported.arguments[0]!,
+                specifierNode,
                 `A node material blockLoader module '${specifier}' does ` +
                     "not exist in the pinned material/node/blocks inventory.",
             );

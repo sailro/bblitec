@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
@@ -60,14 +61,14 @@ export function compileCanvasValue(context: CanvasContext, expression: ts.Expres
         browserGlobalNamed(context, node.expression)?.text === "ResizeObserver") {
         if (node.arguments?.length !== 1) return context.fail(node, "ResizeObserver requires one callback.");
         requireWindowHost(context, node);
-        return { kind: "worker-resize-observer", cpp: `bbl::pal::create_resize_observer(${context.compileFrameCallback(node.arguments[0]!, "void")})`, impure: true };
+        return { kind: "worker-resize-observer", cpp: `bbl::pal::create_resize_observer(${context.compileFrameCallback(argumentAt(node, 0), "void")})`, impure: true };
     }
     if (ts.isCallExpression(node)) {
         const callee = context.unwrap(node.expression);
         if (!context.options.workers.namespace && browserGlobalNamed(context, callee)?.text === "matchMedia") {
             if (node.arguments.length !== 1) return context.fail(node, "matchMedia requires one media query string.");
             requireWindowHost(context, node);
-            return { kind: "worker-media-query", cpp: `bbl::pal::create_media_query(${context.dataLowerer.compileForSink(node.arguments[0]!, { kind: "string" })})`, impure: true };
+            return { kind: "worker-media-query", cpp: `bbl::pal::create_media_query(${context.dataLowerer.compileForSink(argumentAt(node, 0), { kind: "string" })})`, impure: true };
         }
         if (ts.isPropertyAccessExpression(callee) && callee.name.text === "addEventListener" &&
             hasDomInterface(context, callee.expression, "MediaQueryList")) {
@@ -77,7 +78,7 @@ export function compileCanvasValue(context: CanvasContext, expression: ts.Expres
                 !event || !ts.isStringLiteralLike(event) || event.text !== "change") {
                 return context.fail(node, "MediaQueryList requires an admitted change listener.");
             }
-            return { kind: "void", cpp: `${owner.cpp}->add_change_listener(${context.compileFrameCallback(node.arguments[1]!, "void")})` };
+            return { kind: "void", cpp: `${owner.cpp}->add_change_listener(${context.compileFrameCallback(argumentAt(node, 1), "void")})` };
         }
         if (ts.isPropertyAccessExpression(callee) && callee.name.text === "transferControlToOffscreen" &&
             context.isCanvasElement(callee.expression)) {

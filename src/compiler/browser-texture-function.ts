@@ -81,7 +81,7 @@ import {
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
 } from "./user-functions.js";
-import { rootIdentifier } from "./syntax.js";
+import { rootIdentifier, argumentAt } from "./syntax.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
@@ -1007,10 +1007,10 @@ export function compileBrowserTextureFunctionCall(
     // than returning undefined: falling back to the inliner here would
     // compile the argument a second time, on top of the lines the first
     // compile already emitted.
-    const engine = context.compileValue(call.arguments[0]!);
+    const engine = context.compileValue(argumentAt(call, 0));
     if (engine.kind !== "engine") {
         context.fail(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             `'${shape.name}' produces its textures in a browser canvas at ` +
                 `generation, so its one argument is the engine; received ${engine.kind}.`,
         );

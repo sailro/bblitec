@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import { handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { handleFoundCpp } from "../properties.js";
@@ -99,23 +100,23 @@ export function compileSkeletonIntrinsic(
             // different composed variant, not a wider argument list -- so
             // passing them refuses by name.
             context.expectArgumentCount(call, 5, 5);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             const joints = context.compileForDataSink(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 { kind: "u16array" },
             );
             const weights = context.compileForDataSink(
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 { kind: "f32array" },
             );
             const boneCount = context.compileNumber(
-                call.arguments[3]!,
+                argumentAt(call, 3),
                 "double",
             );
             const boneData = bonePaletteArgument(
                 context,
-                call.arguments[4]!,
+                argumentAt(call, 4),
                 "createSkeleton",
             );
             const engineCpp = engine.engineCpp ?? engine.cpp;
@@ -140,13 +141,13 @@ export function compileSkeletonIntrinsic(
             // and hands it back, which is exactly what the pin's own
             // mirror-then-upload does.
             context.expectArgumentCount(call, 3, 3);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const skeleton = context.compileValue(call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const skeleton = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 skeleton,
                 "scene-skeleton",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             if (
                 skeleton.engineCpp !==
@@ -160,7 +161,7 @@ export function compileSkeletonIntrinsic(
             }
             const boneData = bonePaletteArgument(
                 context,
-                call.arguments[2]!,
+                argumentAt(call, 2),
                 "updateSkeletonBoneMatrices",
             );
             context.reachFeature("mesh:skeleton", call);
@@ -201,15 +202,15 @@ export function compileSkeletonIntrinsic(
             // (`if`, `??`, a null comparison) answer through it.
             context.expectArgumentCount(call, 2, 2);
             const skeleton = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 skeleton,
                 "skeleton",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const name = context.compileStringLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const engine = context.requireEngine(skeleton, call);
             const bone =
@@ -234,20 +235,20 @@ export function compileSkeletonIntrinsic(
             // emptied, and re-bakes only when there was one to clear.
             context.expectArgumentCount(call, 3, 3);
             const skeleton = context.compileValue(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 skeleton,
                 "skeleton",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const bone = context.compileValue(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
-            context.expectKind(bone, "bone", call.arguments[1]!);
+            context.expectKind(bone, "bone", argumentAt(call, 1));
             context.expectSameEngine(skeleton, bone, call);
             const visible = context.compileCondition(
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             return {
                 kind: "void",

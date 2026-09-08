@@ -55,6 +55,7 @@
  * different path from the Standard record lane this port binds.
  */
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 import { LoweringContext } from "../lowering/context.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
@@ -469,7 +470,7 @@ function pluginFactorySite(
         }
         return {
             name: parameter.name,
-            value: context.compileValue(call.arguments[index]!),
+            value: context.compileValue(argumentAt(call, index)),
         };
     });
     return { object, bindings };

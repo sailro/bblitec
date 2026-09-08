@@ -18,6 +18,7 @@ import {
     isUpdateExpression,
     objectProperty,
     unwrapExpression,
+    argumentAt,
 } from "./syntax.js";
 import { PINNED_ARITHMETIC_OPERATORS } from "../lowering/pinned-operators.js";
 import {
@@ -724,7 +725,7 @@ export class StaticEvaluator {
         const sqrt = mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
         if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
             const compiled = sqrt.cpp([
-                this.compileNumber(mathCall.call.arguments[0]!, "double"),
+                this.compileNumber(argumentAt(mathCall.call, 0), "double"),
             ]);
             return precision === "float"
                 ? `static_cast<float>(${compiled})`

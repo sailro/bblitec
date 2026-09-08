@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { Feature } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -64,19 +65,19 @@ export function compileVatIntrinsic(
             // reads, so a fourth argument refuses rather than being
             // silently dropped.
             context.expectArgumentCount(call, 3, 3);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const mesh = context.compileValue(call.arguments[1]!);
-            context.expectKind(mesh, "mesh", call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const mesh = context.compileValue(argumentAt(call, 1));
+            context.expectKind(mesh, "mesh", argumentAt(call, 1));
             context.expectSameEngine(engine, mesh, call);
-            const groups = context.compileValue(call.arguments[2]!);
+            const groups = context.compileValue(argumentAt(call, 2));
             if (
                 groups.kind !== "handle-collection" ||
                 !groups.handleCollection ||
                 groups.handleCollection.elementKind !== "animation-group"
             ) {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "bakeVat takes the container's own animation-group collection; the bake reads each clip's posed palette frame by frame.",
                 );
             }
@@ -107,13 +108,13 @@ export function compileVatIntrinsic(
             // skeleton, so from here the mesh deforms from the baked
             // texture alone.
             context.expectArgumentCount(call, 3, 4);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const mesh = context.compileValue(call.arguments[1]!);
-            context.expectKind(mesh, "mesh", call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const mesh = context.compileValue(argumentAt(call, 1));
+            context.expectKind(mesh, "mesh", argumentAt(call, 1));
             context.expectSameEngine(engine, mesh, call);
-            const baked = context.compileValue(call.arguments[2]!);
-            context.expectKind(baked, "vat-bake", call.arguments[2]!);
+            const baked = context.compileValue(argumentAt(call, 2));
+            context.expectKind(baked, "vat-bake", argumentAt(call, 2));
             const clip = call.arguments[3]
                 ? context.cppString(
                       context.compileStringLiteral(call.arguments[3]),
@@ -179,7 +180,7 @@ export function compileVatMethodCall(
         if (method === "play") {
             context.expectArgumentCount(call, 1, 2);
             const clip = context.cppString(
-                context.compileStringLiteral(call.arguments[0]!),
+                context.compileStringLiteral(argumentAt(call, 0)),
             );
             const options = call.arguments[1]
                 ? vatPlayOptions(context, call.arguments[1])
@@ -192,7 +193,7 @@ export function compileVatMethodCall(
         } else if (method === "update") {
             context.expectArgumentCount(call, 1, 1);
             const delta = context.compileNumber(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "double",
             );
             context.emit(
@@ -200,13 +201,13 @@ export function compileVatMethodCall(
             );
         } else {
             context.expectArgumentCount(call, 1, 1);
-            const params = context.compileValue(call.arguments[0]!);
+            const params = context.compileValue(argumentAt(call, 0));
             if (
                 params.kind !== "data" ||
                 params.dataType?.kind !== "f32array"
             ) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "VatHandle.setInstances takes the per-instance Float32Array the pin uploads to the params texture.",
                 );
             }

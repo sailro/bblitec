@@ -2,7 +2,14 @@
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";
-import { isAssignmentExpression, isUpdateExpression, unwrapExpression } from "./syntax.js";
+import {
+    argumentAt,
+    isAssignmentExpression,
+    isUpdateExpression,
+    stringLiteralText,
+    unwrapExpression,
+} from "./syntax.js";
+import { babylonPackages } from "./symbols.js";
 
 export type TextTransform = "position" | "scaling" | "rotation" | "rotationQuaternion" | "positionPx";
 const transforms: readonly string[] = ["position", "scaling", "rotation", "rotationQuaternion"];
@@ -33,8 +40,13 @@ export function compileTextModuleValue(context: TextSurfaceContext, expression: 
     const awaited = unwrapExpression(expression.expression);
     if (!ts.isAwaitExpression(awaited)) return undefined;
     const call = context.unwrap(awaited.expression);
-    if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword || call.arguments.length !== 1 ||
-        !ts.isStringLiteralLike(call.arguments[0]!) || !["babylon-lite", "@babylonjs/lite"].includes(call.arguments[0]!.text)) return undefined;
+    const specifier =
+        ts.isCallExpression(call) &&
+        call.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        call.arguments.length === 1
+            ? stringLiteralText(argumentAt(call, 0))
+            : undefined;
+    if (specifier === undefined || !(babylonPackages as readonly string[]).includes(specifier)) return undefined;
     context.reachFeature("text:weight", expression);
     context.promoteTextData(expression);
     return {kind:"data", cpp:"[](bbl::TextData data, bbl::TextRunRef run, double offset) { bbl::set_font_weight_offset(data, run, offset); }",

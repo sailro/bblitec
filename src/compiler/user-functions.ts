@@ -17,6 +17,7 @@ import {
     isUpdateExpression,
     rootIdentifier,
     unwrapExpression,
+    argumentAt,
 } from "./syntax.js";
 import { firstReturn } from "./loop-control.js";
 
@@ -1294,7 +1295,7 @@ export class UserFunctionLowerer {
                         "Forward native callback parameters must be plain data.",
                     );
                 }
-                return context.compileForDataSink(call.arguments[index]!, type);
+                return context.compileForDataSink(argumentAt(call, index), type);
             });
             const cpp = `${bound.cpp}(${argumentsCpp.join(", ")})`;
             return bound.nativeCallbackReturnType

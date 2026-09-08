@@ -29,7 +29,7 @@ import {
 import type { CompilerSymbols } from "./symbols.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { isUpdateExpression } from "./syntax.js";
+import { isUpdateExpression, argumentAt } from "./syntax.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -1377,9 +1377,9 @@ export class StatementLowerer {
             browserLocal(expression.expression.expression) &&
             expression.expression.name.text === "addEventListener" &&
             expression.arguments.length >= 2 &&
-            pure(expression.arguments[0]!) &&
-            (ts.isArrowFunction(expression.arguments[1]!) ||
-                ts.isFunctionExpression(expression.arguments[1]!)) &&
+            pure(argumentAt(expression, 0)) &&
+            (ts.isArrowFunction(argumentAt(expression, 1)) ||
+                ts.isFunctionExpression(argumentAt(expression, 1))) &&
             expression.arguments.slice(2).every(pure)
         ) {
             // The callback is reachable only through the browser handle that
@@ -3865,7 +3865,7 @@ export class StatementLowerer {
     ): string[] {
         if (
             call.arguments.length === 1 &&
-            ts.isSpreadElement(call.arguments[0]!)
+            ts.isSpreadElement(argumentAt(call, 0))
         ) {
             const spread = call.arguments[0] as ts.SpreadElement;
             const value = context.compileValue(spread.expression);
@@ -3939,7 +3939,7 @@ export class StatementLowerer {
             return false;
         }
         context.expectArgumentCount(call, 1, 1);
-        const child = context.compileValue(call.arguments[0]!);
+        const child = context.compileValue(argumentAt(call, 0));
         // MeshRecord::children is a mesh list -- the visibility cascade
         // that walks it takes a MeshHandle -- while a transform node's is
         // the pin's own mixed list. So what a receiver accepts is a
@@ -3952,7 +3952,7 @@ export class StatementLowerer {
                 : ["mesh", "transform-node"];
         if (!accepted.includes(child.kind)) {
             context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 `${node.kind === "mesh" ? "Mesh" : "TransformNode"} ` +
                     "children.push supports exactly " +
                     `${accepted.join(" and ")} values, ` +
@@ -4015,12 +4015,12 @@ export class StatementLowerer {
         }
         context.expectArgumentCount(call, 1, 2);
         const mesh = context.compileValue(
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         context.expectKind(
             mesh,
             "mesh",
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         context.expectSameEngine(task, mesh, call);
         const engine = context.requireEngine(task, call);
@@ -4029,7 +4029,7 @@ export class StatementLowerer {
         let materialCpp = `${engine}.meshes[${mesh.cpp}.value].material`;
         if (call.arguments.length === 2) {
             const options = context.expectObjectLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const materialExpression = context.objectProperty(
                 options,

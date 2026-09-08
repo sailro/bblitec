@@ -259,8 +259,8 @@ function emitFrameGraphTransmission(
       "Reached frame-graph transmission requires copyCount: 1.",
     );
   }
-  const scene = context.compileValue(frameGraph.arguments[0]!);
-  context.expectKind(scene, "scene", frameGraph.arguments[0]!);
+  const scene = context.compileValue(argumentAt(frameGraph, 0));
+  context.expectKind(scene, "scene", argumentAt(frameGraph, 0));
   context.reachFeature("renderer:scene", expression);
   context.reachFeature("renderer:transmission", expression);
   context.reachFeature("material:pbr-linear-image-processing", expression);
@@ -2974,7 +2974,7 @@ function staticMeshIdSet(
       "A light's includedOnlyMeshIds must be `new Set(<mesh ids>)`.",
     );
   }
-  return staticStringList(context, unwrapped.arguments[0]!);
+  return staticStringList(context, argumentAt(unwrapped, 0));
 }
 
 /** A generation-known list of strings, spreads of such lists included. */
@@ -3087,6 +3087,7 @@ function requireSimpleAssignment(
   }
 }
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";

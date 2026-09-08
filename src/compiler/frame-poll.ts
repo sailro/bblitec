@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt, identifierText } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 
 /** A closed Promise executor: local setup, one zero-argument RAF poll, and its initial call. */
@@ -28,11 +29,11 @@ export function framePollExecutor(expression: ts.Expression, checker: ts.TypeChe
         !done || !ts.isReturnStatement(done) || done.expression) return undefined;
     const raf = scheduled.expression;
     if (!ts.isIdentifier(raf.expression) || raf.expression.text !== "requestAnimationFrame" || !isGlobal(raf.expression) || raf.arguments.length !== 1 ||
-        !ts.isIdentifier(raf.arguments[0]!) || raf.arguments[0]!.text !== poll.name.text ||
+        identifierText(argumentAt(raf, 0)) !== poll.name.text ||
         !ts.isIdentifier(initialCall.expression.expression) || initialCall.expression.expression.text !== poll.name.text || initialCall.expression.arguments.length !== 0) return undefined;
     const sameSymbol = (left: ts.Node, right: ts.Node) => checker.getSymbolAtLocation(left) !== undefined && checker.getSymbolAtLocation(left) === checker.getSymbolAtLocation(right);
     if (!sameSymbol(resolve.expression.expression, resolveParameter) ||
-        !sameSymbol(raf.arguments[0]!, poll.name) || !sameSymbol(initialCall.expression.expression, poll.name) ||
+        !sameSymbol(argumentAt(raf, 0), poll.name) || !sameSymbol(initialCall.expression.expression, poll.name) ||
         executor.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) ||
         poll.initializer.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) return undefined;
     if (!statements.slice(0, -2).every(statement => ts.isVariableStatement(statement) &&

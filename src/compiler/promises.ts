@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 
 export interface PromiseLoweringContext {
@@ -42,7 +43,7 @@ export function compileImmediatePromise(
                 "Immediate Promise.resolve requires one value.",
             );
         }
-        return context.compileValue(call.arguments[0]!);
+        return context.compileValue(argumentAt(call, 0));
     }
     if (
         ts.isPropertyAccessExpression(call.expression) &&
@@ -57,7 +58,7 @@ export function compileImmediatePromise(
                 "Promise.all requires one static iterable.",
             );
         }
-        const argument = call.arguments[0]!;
+        const argument = argumentAt(call, 0);
         if (!ts.isArrayLiteralExpression(argument)) {
             const iterable = context.compileValue(argument);
             if (
@@ -130,7 +131,7 @@ export function compileImmediatePromise(
             "Immediate promise then requires one fulfillment callback and an optional rejection callback.",
         );
     }
-    const callback = call.arguments[0]!;
+    const callback = argumentAt(call, 0);
     if (
         !ts.isArrowFunction(callback) &&
         !ts.isFunctionExpression(callback)
@@ -226,7 +227,7 @@ function compileImmediateCatch(
     if (call.arguments.length !== 1) {
         context.fail(call, "Immediate promise catch requires one callback.");
     }
-    const callback = call.arguments[0]!;
+    const callback = argumentAt(call, 0);
     if (
         (!ts.isArrowFunction(callback) &&
             !ts.isFunctionExpression(callback)) ||

@@ -233,6 +233,9 @@ import {
     objectProperty,
     rootIdentifier,
     unwrapExpression,
+    argumentAt,
+    identifierText,
+    stringLiteralText,
 } from "./compiler/syntax.js";
 import {
     mutatingArrayMethods,
@@ -1424,7 +1427,7 @@ class Compiler
         ) {
             return false;
         }
-        const id = this.unwrap(call.arguments[0]!);
+        const id = this.unwrap(argumentAt(call, 0));
         // A literal, or an inlined helper's parameter bound to one: a
         // demo's `bindToggle(buttonId, ...)` looks its button up by the
         // literal every call site passes, which the inlined binding still
@@ -1825,7 +1828,7 @@ class Compiler
         ) {
             return statement;
         }
-        const handler = this.unwrap(call.arguments[0]!);
+        const handler = this.unwrap(argumentAt(call, 0));
         if (!this.isBrowserOnlyHandler(handler)) {
             this.fail(
                 handler,
@@ -2648,7 +2651,7 @@ class Compiler
         const hostLookup = this.unwrap(declaration.initializer);
         if (!this.defaultEngineCpp && !this.options.workers &&
             ts.isCallExpression(hostLookup) && this.isNativeHostUiLookup(hostLookup)) {
-            const id = this.compileStringLiteral(hostLookup.arguments[0]!);
+            const id = this.compileStringLiteral(argumentAt(hostLookup, 0));
             const value: Value = { kind: "ui-element", cpp: cppName, uiHostId: id,
                 uiTag: this.nativeHostUiTags().get(id)!, truthinessCpp: "true" };
             this.pendingHostUiLookups.push(value);
@@ -4697,7 +4700,7 @@ class Compiler
     private uiCreationTag(expression: ts.Expression): string | undefined {
         const creation = this.uiCreationCall(expression);
         const tag = creation
-            ? this.tryUiStaticString(creation.arguments[0]!)
+            ? this.tryUiStaticString(argumentAt(creation, 0))
             : undefined;
         return tag?.toLowerCase();
     }
@@ -6193,8 +6196,8 @@ class Compiler
             const divisor = this.compileValue(expression.right).staticNumber;
             return divisor !== undefined && divisor > 0 ? divisor : undefined;
         };
-        const width = logical(call.arguments[0]!, "width");
-        const height = logical(call.arguments[1]!, "height");
+        const width = logical(argumentAt(call, 0), "width");
+        const height = logical(argumentAt(call, 1), "height");
         if (width !== undefined && height !== undefined) {
             this.uiCanvasFullClearSizes.add(`${width}x${height}`);
         }
@@ -6225,7 +6228,7 @@ class Compiler
             );
         for (const index of [0, 1]) {
             const origin = this.compileValue(
-                call.arguments[index]!,
+                argumentAt(call, index),
             ).staticNumber;
             if (origin !== 0) {
                 refuse(
@@ -6235,13 +6238,13 @@ class Compiler
             }
         }
         if (
-            this.isUiCanvasSizeRead(call.arguments[2]!, "width") &&
-            this.isUiCanvasSizeRead(call.arguments[3]!, "height")
+            this.isUiCanvasSizeRead(argumentAt(call, 2), "width") &&
+            this.isUiCanvasSizeRead(argumentAt(call, 3), "height")
         ) {
             return;
         }
-        const width = this.compileValue(call.arguments[2]!).staticNumber;
-        const height = this.compileValue(call.arguments[3]!).staticNumber;
+        const width = this.compileValue(argumentAt(call, 2)).staticNumber;
+        const height = this.compileValue(argumentAt(call, 3)).staticNumber;
         if (width !== undefined && height !== undefined) {
             if (this.uiCanvasFullClearSizes.has(`${width}x${height}`)) {
                 return;
@@ -10152,13 +10155,13 @@ class Compiler
             return undefined;
         }
         this.expectArgumentCount(call, 3, 3);
-        const mesh = this.compileValue(call.arguments[0]!);
-        this.expectKind(mesh, "mesh", call.arguments[0]!);
+        const mesh = this.compileValue(argumentAt(call, 0));
+        this.expectKind(mesh, "mesh", argumentAt(call, 0));
         const matrices = this.compileTypedArrayArgument(
-            call.arguments[1]!,
+            argumentAt(call, 1),
             "f32array",
         );
-        const count = this.compileNumber(call.arguments[2]!);
+        const count = this.compileNumber(argumentAt(call, 2));
         this.reachFeature("mesh:thin-instances", call);
         this.reachFeature("mesh:thin-instances-dynamic", call);
         this.recordThinInstanceMesh(mesh.sceneMeshIndex);
@@ -10197,7 +10200,7 @@ class Compiler
         const device = this.compileValue(callee.expression.expression);
         if (device.kind !== "gpu-device") return undefined;
         this.expectArgumentCount(call, 4, 4);
-        const destination = this.unwrap(call.arguments[0]!);
+        const destination = this.unwrap(argumentAt(call, 0));
         if (!ts.isObjectLiteralExpression(destination)) {
             this.fail(
                 destination,
@@ -10229,13 +10232,13 @@ class Compiler
                 "GPUQueue.writeTexture currently updates createTexture2DFromPixels results.",
             );
         }
-        const pixelValue = this.compileValue(call.arguments[1]!);
+        const pixelValue = this.compileValue(argumentAt(call, 1));
         if (
             pixelValue.kind !== "data" ||
             pixelValue.dataType?.kind !== "u8array"
         ) {
             this.fail(
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "GPUQueue.writeTexture source must be a Uint8Array.",
             );
         }
@@ -10274,9 +10277,9 @@ class Compiler
                 node.expression.name.text === "writeBuffer" &&
                 node.arguments.length === 5
             ) {
-                const source = node.arguments[2]!;
-                const offset = node.arguments[3]!;
-                const size = node.arguments[4]!;
+                const source = argumentAt(node, 2);
+                const offset = argumentAt(node, 3);
+                const size = argumentAt(node, 4);
                 directUpload =
                     ts.isPropertyAccessExpression(source) &&
                     source.name.text === "buffer" &&
@@ -12011,8 +12014,8 @@ class Compiler
             if (
                 ts.isCallExpression(node) &&
                 node.arguments.length === 2 &&
-                (ts.isStringLiteral(node.arguments[0]!) ||
-                    ts.isNoSubstitutionTemplateLiteral(node.arguments[0]!))
+                (ts.isStringLiteral(argumentAt(node, 0)) ||
+                    ts.isNoSubstitutionTemplateLiteral(argumentAt(node, 0)))
             ) {
                 const url = this.moduleRelativeAssetUrl(node);
                 if (url !== undefined) candidates.add(url);
@@ -12105,7 +12108,7 @@ class Compiler
             !ts.isCallExpression(resolved) ||
             !ts.isIdentifier(resolved.expression) ||
             resolved.arguments.length !== 2 ||
-            !this.isImportMetaUrl(resolved.arguments[1]!)
+            !this.isImportMetaUrl(argumentAt(resolved, 1))
         ) {
             return undefined;
         }
@@ -12129,11 +12132,11 @@ class Compiler
             moduleParameter.text,
         );
         if (!replacements) return undefined;
-        if (ts.isTemplateExpression(resolved.arguments[0]!)) {
+        if (ts.isTemplateExpression(argumentAt(resolved, 0))) {
             return undefined;
         }
         const path = this.evaluator.compileStringLiteral(
-            resolved.arguments[0]!,
+            argumentAt(resolved, 0),
         );
         const url = new URL(path, "https://bblite.invalid/");
         for (const [search, replacement] of replacements) {
@@ -12153,7 +12156,7 @@ class Compiler
             !ts.isCallExpression(resolved) ||
             !ts.isIdentifier(resolved.expression) ||
             resolved.arguments.length !== 2 ||
-            !this.isImportMetaUrl(resolved.arguments[1]!)
+            !this.isImportMetaUrl(argumentAt(resolved, 1))
         ) {
             return undefined;
         }
@@ -12177,7 +12180,7 @@ class Compiler
             moduleParameter.text,
         );
         if (!replacements) return undefined;
-        const path = this.unwrap(resolved.arguments[0]!);
+        const path = this.unwrap(argumentAt(resolved, 0));
         if (
             !ts.isTemplateExpression(path) ||
             path.templateSpans.length !== 1 ||
@@ -12253,10 +12256,8 @@ class Compiler
             declaration.initializer.expression.text !== "URL" ||
             !this.isDefaultLibraryIdentifier(declaration.initializer.expression) ||
             declaration.initializer.arguments?.length !== 2 ||
-            !ts.isIdentifier(declaration.initializer.arguments[0]!) ||
-            declaration.initializer.arguments[0]!.text !== pathParameter ||
-            !ts.isIdentifier(declaration.initializer.arguments[1]!) ||
-            declaration.initializer.arguments[1]!.text !== moduleParameter
+            identifierText(argumentAt(declaration.initializer, 0)) !== pathParameter ||
+            identifierText(argumentAt(declaration.initializer, 1)) !== moduleParameter
         ) {
             return undefined;
         }
@@ -12294,16 +12295,16 @@ class Compiler
                 !ts.isIdentifier(call.expression.expression.expression) ||
                 call.expression.expression.expression.text !== urlVariable ||
                 call.expression.expression.name.text !== "pathname" ||
-                call.arguments.length !== 2 ||
-                !ts.isStringLiteralLike(call.arguments[0]!) ||
-                !ts.isStringLiteralLike(call.arguments[1]!)
+                call.arguments.length !== 2
             ) {
                 return undefined;
             }
-            replacements.push([
-                call.arguments[0]!.text,
-                call.arguments[1]!.text,
-            ]);
+            const from = stringLiteralText(argumentAt(call, 0));
+            const to = stringLiteralText(argumentAt(call, 1));
+            if (from === undefined || to === undefined) {
+                return undefined;
+            }
+            replacements.push([from, to]);
         }
         return replacements;
     }
@@ -12379,8 +12380,8 @@ class Compiler
         }
         let canvasArgument = "";
         if (this.options.workers) {
-            const canvas = this.compileValue(call.arguments[0]!);
-            if (canvas.kind !== "offscreen-canvas" && canvas.kind !== "ui-element") this.fail(call.arguments[0]!, "The realm engine requires a native canvas context.");
+            const canvas = this.compileValue(argumentAt(call, 0));
+            if (canvas.kind !== "offscreen-canvas" && canvas.kind !== "ui-element") this.fail(argumentAt(call, 0), "The realm engine requires a native canvas context.");
             canvasArgument = `, ${canvas.kind === "ui-element" ? `bbl::pal::window_canvas(${canvas.cpp})` : canvas.cpp}`;
         }
         this.emit(`auto ${cppName} = ${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}}${canvasArgument});`);
@@ -12397,9 +12398,9 @@ class Compiler
         }
         let surfaceCanvas = false;
         if (!this.options.workers && [...this.nativeHostUiTags().values()].includes("canvas")) {
-            const canvas = this.compileValue(call.arguments[0]!);
+            const canvas = this.compileValue(argumentAt(call, 0));
             if (canvas.kind === "ui-element") {
-                if (canvas.uiTag !== "canvas") this.fail(call.arguments[0]!, "An engine surface requires a retained canvas element.");
+                if (canvas.uiTag !== "canvas") this.fail(argumentAt(call, 0), "An engine surface requires a retained canvas element.");
                 this.emit(`${engineCpp}.surface_canvas = ${canvas.cpp};`);
                 this.emit(`${engineCpp}.ui_elements[${canvas.cpp}.value].client_rect_requested = true;`);
                 surfaceCanvas = true;
@@ -13036,7 +13037,7 @@ class Compiler
                 kind: "boolean",
                 cpp:
                     `bbl::js::save_voxel_world(${this.requireDefaultEngine(call)}, ` +
-                    `${this.dataLowerer.compileForSink(call.arguments[0]!, dataType)})`,
+                    `${this.dataLowerer.compileForSink(argumentAt(call, 0), dataType)})`,
                 dataType: { kind: "boolean" },
             };
         }
@@ -15196,11 +15197,11 @@ class Compiler
             const owner = this.compileValue(callee.expression);
             if (owner.kind === "gpu-device") {
                 this.expectArgumentCount(call, 2, 2);
-                if (this.compileStringLiteral(call.arguments[0]!) !== "uncapturederror") this.fail(call, "Only GPU uncapturederror listeners are represented.");
+                if (this.compileStringLiteral(argumentAt(call, 0)) !== "uncapturederror") this.fail(call, "Only GPU uncapturederror listeners are represented.");
                 this.reachFeature("engine:device-recovery", call);
                 const message = this.allocateTemporaryCppName("gpu_error");
                 const value: Value = { kind: "record", cpp: "", recordProperties: { error: { kind: "record", cpp: "", recordProperties: { message: { kind: "string", cpp: message, dataType: { kind: "string" } } } } } };
-                const callback = this.compilePlatformCallback(call.arguments[1]!, { cppType: "const std::string&", name: message }, [value], undefined, false, false);
+                const callback = this.compilePlatformCallback(argumentAt(call, 1), { cppType: "const std::string&", name: message }, [value], undefined, false, false);
                 return { kind: "void", cpp: `bbl::add_gpu_error_listener(${owner.cpp}, ${callback.cpp})` };
             }
         }
@@ -15221,7 +15222,7 @@ class Compiler
                 this.requirePresentationHost(call);
             }
             if (this.isNativeHostUiLookup(call)) {
-                const id = this.compileStringLiteral(call.arguments[0]!);
+                const id = this.compileStringLiteral(argumentAt(call, 0));
                 const engine = this.options.workers ? "bbl::pal::window_document_engine()" : this.requireDefaultEngine(call);
                 this.reachFeature("ui:rml", call);
                 return {
@@ -15242,17 +15243,17 @@ class Compiler
                 this.isDefaultLibraryIdentifier(callee.expression)
             ) {
                 this.expectArgumentCount(call, 1, 1);
-                const tag = this.compileStringLiteral(call.arguments[0]!);
+                const tag = this.compileStringLiteral(argumentAt(call, 0));
                 const normalizedTag = tag.toLowerCase();
                 if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Native UI element tag '${tag}' is not valid.`,
                     );
                 }
                 if (Compiler.UI_IMPLEMENTATION_TAGS.has(normalizedTag)) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Native UI element tag '${tag}' is reserved for the retained projection.`,
                     );
                 }
@@ -15297,10 +15298,10 @@ class Compiler
                 callee.name.text === "getContext"
             ) {
                 this.expectArgumentCount(call, 1, 1);
-                const context = this.compileStringLiteral(call.arguments[0]!);
+                const context = this.compileStringLiteral(argumentAt(call, 0));
                 if (context !== "2d") {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         "Retained native canvas only supports the '2d' context.",
                     );
                 }
@@ -15312,7 +15313,7 @@ class Compiler
             if (element?.uiCanvasContext) {
                 const engine = this.requireEngine(element, call);
                 const number = (index: number): string =>
-                    this.compileNumber(call.arguments[index]!, "double");
+                    this.compileNumber(argumentAt(call, index), "double");
                 const invocation = (
                     name: string,
                     minimum: number,
@@ -15410,7 +15411,7 @@ class Compiler
                     }
                     case "putImageData": {
                         this.expectArgumentCount(call, 3, 3);
-                        const imageData = this.unwrap(call.arguments[0]!);
+                        const imageData = this.unwrap(argumentAt(call, 0));
                         if (
                             !ts.isNewExpression(imageData) ||
                             !ts.isIdentifier(imageData.expression) ||
@@ -15419,7 +15420,7 @@ class Compiler
                             (imageData.arguments?.length ?? 0) !== 3
                         ) {
                             this.fail(
-                                call.arguments[0]!,
+                                argumentAt(call, 0),
                                 "Retained Canvas2D putImageData requires new ImageData(rgba, width, height).",
                             );
                         }
@@ -15434,7 +15435,7 @@ class Compiler
                                     "Uint8Array") &&
                             pixelsConstructor.arguments?.length === 1
                         ) {
-                            pixelsExpression = pixelsConstructor.arguments[0]!;
+                            pixelsExpression = argumentAt(pixelsConstructor, 0);
                         }
                         const pixels = this.compileValue(pixelsExpression);
                         if (
@@ -15458,10 +15459,10 @@ class Compiler
                     }
                     case "drawImage": {
                         this.expectArgumentCount(call, 5, 5);
-                        const source = this.compileValue(call.arguments[0]!);
+                        const source = this.compileValue(argumentAt(call, 0));
                         if (source.kind !== "ui-element") {
                             this.fail(
-                                call.arguments[0]!,
+                                argumentAt(call, 0),
                                 "Retained Canvas2D drawImage source must be a retained UI element; " +
                                     `received ${source.kind}.`,
                             );
@@ -15471,14 +15472,14 @@ class Compiler
                         }
                         this.expectSameEngine(element, source, call);
                         const sourceText = this.unwrap(
-                            call.arguments[0]!,
+                            argumentAt(call, 0),
                         ).getText();
                         const extent = (
                             argumentIndex: number,
                             axis: "width" | "height",
                         ): string => {
                             const argument = this.unwrap(
-                                call.arguments[argumentIndex]!,
+                                argumentAt(call, argumentIndex),
                             );
                             let dimension: ts.Expression = argument;
                             let multiplier = "1.0";
@@ -15516,7 +15517,7 @@ class Compiler
                                     sourceText
                             ) {
                                 this.fail(
-                                    call.arguments[argumentIndex]!,
+                                    argumentAt(call, argumentIndex),
                                     `Retained Canvas2D drawImage ${axis} must be source.${axis}, optionally multiplied by a scale.`,
                                 );
                             }
@@ -15538,7 +15539,7 @@ class Compiler
                             kind: "void",
                             cpp:
                                 `bbl::ui_canvas_fill_text(${engine}, ${element.cpp}, ` +
-                                `${this.uiStringCpp(call.arguments[0]!, "Canvas2D fillText")}, ` +
+                                `${this.uiStringCpp(argumentAt(call, 0), "Canvas2D fillText")}, ` +
                                 `${number(1)}, ${number(2)})`,
                         };
                 }
@@ -15575,7 +15576,7 @@ class Compiler
             }
             if (element && callee.name.text === "querySelector") {
                 this.expectArgumentCount(call, 1, 1);
-                const selector = this.compileStringLiteral(call.arguments[0]!);
+                const selector = this.compileStringLiteral(argumentAt(call, 0));
                 if (element.uiStaticId === undefined) {
                     this.fail(
                         call,
@@ -15614,7 +15615,7 @@ class Compiler
                         })();
                 if (!query) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Retained UI querySelector selector '${selector}' is not lowered.`,
                     );
                 }
@@ -15647,11 +15648,11 @@ class Compiler
             }
             if (element && callee.name.text === "querySelectorAll") {
                 this.expectArgumentCount(call, 1, 1);
-                const selector = this.compileStringLiteral(call.arguments[0]!);
+                const selector = this.compileStringLiteral(argumentAt(call, 0));
                 const matched = selector.match(/^\.([A-Za-z_][A-Za-z0-9_-]*)$/);
                 if (!matched) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Retained UI querySelectorAll selector '${selector}' is not lowered; only a static '.class' scoped query is supported.`,
                     );
                 }
@@ -15720,13 +15721,13 @@ class Compiler
             }
             if (element && callee.name.text === "setAttribute") {
                 this.expectArgumentCount(call, 2, 2);
-                const name = this.compileStringLiteral(call.arguments[0]!);
+                const name = this.compileStringLiteral(argumentAt(call, 0));
                 const engine = this.requireEngine(element, call);
                 const browserFile = this.compileUiBrowserFileAttribute(
                     element,
                     engine,
                     name,
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     call,
                     "attribute",
                 );
@@ -15736,10 +15737,10 @@ class Compiler
                         cpp: browserFile,
                     };
                 }
-                const staticValue = this.tryUiStaticString(call.arguments[1]!);
+                const staticValue = this.tryUiStaticString(argumentAt(call, 1));
                 const sourceValue =
                     staticValue === undefined
-                        ? this.compileValue(call.arguments[1]!)
+                        ? this.compileValue(argumentAt(call, 1))
                         : undefined;
                 if (
                     sourceValue !== undefined &&
@@ -15750,7 +15751,7 @@ class Compiler
                     )
                 ) {
                     this.fail(
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                         `UI setAttribute value requires a string, received ${sourceValue?.kind}.`,
                     );
                 }
@@ -15760,7 +15761,7 @@ class Compiler
                               this.lowerUiAttributeLiteral(
                                   name,
                                   staticValue,
-                                  call.arguments[1]!,
+                                  argumentAt(call, 1),
                               ),
                           )
                         : sourceValue!.cpp;
@@ -15768,7 +15769,7 @@ class Compiler
                     this.recordUiStaticAttribute(
                         element,
                         name,
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                     );
                 } else if (name === "style" && staticValue !== undefined) {
                     this.recordUiStaticStyle(
@@ -15776,7 +15777,7 @@ class Compiler
                         this.lowerUiAttributeLiteral(
                             "style",
                             staticValue,
-                            call.arguments[1]!,
+                            argumentAt(call, 1),
                         ),
                     );
                 } else if (name === "style") {
@@ -15792,8 +15793,8 @@ class Compiler
             }
             if (element && callee.name.text === "appendChild") {
                 this.expectArgumentCount(call, 1, 1);
-                const child = this.compileValue(call.arguments[0]!);
-                this.expectKind(child, "ui-element", call.arguments[0]!);
+                const child = this.compileValue(argumentAt(call, 0));
+                this.expectKind(child, "ui-element", argumentAt(call, 0));
                 if (!element.uiRoot) {
                     this.expectSameEngine(element, child, call);
                 }
@@ -15930,17 +15931,17 @@ class Compiler
                         method === "toggle" ? 2 : 1,
                         method === "toggle" ? 2 : 1,
                     );
-                    const name = this.compileStringLiteral(call.arguments[0]!);
+                    const name = this.compileStringLiteral(argumentAt(call, 0));
                     if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
                         this.fail(
-                            call.arguments[0]!,
+                            argumentAt(call, 0),
                             `Native UI class name '${name}' is not valid.`,
                         );
                     }
                     const enabled =
                         method === "toggle"
                             ? this.uiBooleanCpp(
-                                  call.arguments[1]!,
+                                  argumentAt(call, 1),
                                   "UI classList.toggle",
                               )
                             : method === "add"
@@ -15980,8 +15981,8 @@ class Compiler
                 this.isDefaultLibraryIdentifier(callee.expression.expression)
             ) {
                 this.expectArgumentCount(call, 1, 1);
-                const child = this.compileValue(call.arguments[0]!);
-                this.expectKind(child, "ui-element", call.arguments[0]!);
+                const child = this.compileValue(argumentAt(call, 0));
+                this.expectKind(child, "ui-element", argumentAt(call, 0));
                 const engine = this.requireEngine(child, call);
                 this.recordUiStaticRootAppend(child);
                 return {
@@ -16003,7 +16004,7 @@ class Compiler
             this.isDefaultLibraryIdentifier(callee.expression)
         ) {
             this.expectArgumentCount(call, 1, 1);
-            const argument = this.compileValue(call.arguments[0]!);
+            const argument = this.compileValue(argumentAt(call, 0));
             if (argument.staticNumber !== undefined) {
                 return {
                     kind: "boolean",
@@ -16015,7 +16016,7 @@ class Compiler
             return {
                 kind: "boolean",
                 cpp: `std::isfinite(${this.compileNumber(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "double",
                 )})`,
             };
@@ -16030,17 +16031,17 @@ class Compiler
                     kind: "boolean",
                     cpp:
                         `std::isfinite(` +
-                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
             if (callee.text === "setInterval") {
                 this.expectArgumentCount(call, 2, 2);
                 const engine = this.requireDefaultEngine(call);
                 const callback = this.compileFrameCallback(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "interval",
                 );
-                const delay = this.compileNumber(call.arguments[1]!, "double");
+                const delay = this.compileNumber(argumentAt(call, 1), "double");
                 return {
                     kind: "number",
                     cpp: `bbl::set_interval(${engine}, ${callback}, ${delay})`,
@@ -16054,7 +16055,7 @@ class Compiler
                     kind: "void",
                     cpp:
                         `bbl::clear_interval(${engine}, ` +
-                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
             if (callee.text === "clearTimeout") {
@@ -16064,7 +16065,7 @@ class Compiler
                     kind: "void",
                     cpp:
                         `bbl::clear_timeout(${engine}, ` +
-                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
         }
@@ -16237,12 +16238,12 @@ class Compiler
         call: ts.CallExpression,
     ): Value | undefined {
         this.expectArgumentCount(call, 1, 1);
-        const argument = this.unwrap(call.arguments[0]!);
+        const argument = this.unwrap(argumentAt(call, 0));
         const stored = ts.isIdentifier(argument) ? this.lookupOptional(argument) : undefined;
         // A materialized callback retains its own requeue operation, including
         // conditional schedules and synchronous priming calls.
         const recurring = !(stored?.kind === "callback" && stored.cpp.length > 0) && this.animationFrameCallbackRearmsItself(
-            call.arguments[0]!,
+            argumentAt(call, 0),
         );
         const nested = this.frameCallbackDepth > 0;
         if (nested && recurring) {
@@ -16250,7 +16251,7 @@ class Compiler
         }
         const engine = this.requireDefaultEngine(call);
         const callback = this.compileFrameCallback(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             "timestamp",
         );
         if (!recurring) {
@@ -16289,11 +16290,11 @@ class Compiler
         if (uiElement) {
             if (removing) return false;
             this.expectArgumentCount(call, 2, 2);
-            const event = this.compileStringLiteral(call.arguments[0]!);
+            const event = this.compileStringLiteral(argumentAt(call, 0));
             if (event === "change") {
                 if (uiElement.uiTag !== "input" || !uiElement.uiFileInput) {
                     this.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         "The native 'change' event is supported only on a retained <input type=\"file\">.",
                     );
                 }
@@ -16324,11 +16325,11 @@ class Compiler
                 event !== "contextmenu"
             ) {
                 this.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     `Native UI elements do not support the '${event}' event.`,
                 );
             }
-            const callback = call.arguments[1]!;
+            const callback = argumentAt(call, 1);
             this.hoistForwardCallbackBindings(callback, call.pos);
             const engine = this.requireEngine(uiElement, call);
             if (event === "contextmenu") {
@@ -16391,8 +16392,8 @@ class Compiler
                 "Platform event listeners require an event name, callback, and optional options record.",
             );
         }
-        const event = this.evaluator.staticTextValue(call.arguments[0]!);
-        const callback = call.arguments[1]!;
+        const event = this.evaluator.staticTextValue(argumentAt(call, 0));
+        const callback = argumentAt(call, 1);
         this.hoistForwardCallbackBindings(callback, call.pos);
         let once = false;
         if (!removing && call.arguments[2]) {
@@ -20347,8 +20348,8 @@ class Compiler
     public compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined {
         if (!["enableDeviceLostSceneRecovery", "forceWebGpuDeviceLossForTesting", "disposeEngine"].includes(name)) return undefined;
         this.expectArgumentCount(call, 1, name === "enableDeviceLostSceneRecovery" ? 2 : 1);
-        const engine = this.compileValue(call.arguments[0]!);
-        this.expectKind(engine, "engine", call.arguments[0]!);
+        const engine = this.compileValue(argumentAt(call, 0));
+        this.expectKind(engine, "engine", argumentAt(call, 0));
         this.reachFeature("engine:device-recovery", call);
         if (name === "enableDeviceLostSceneRecovery") {
             if (this.engineHasStarted() || this.isRuntimeResourceConstruction()) this.fail(call, "Device recovery registration requires unconditional construction before engine startup.");

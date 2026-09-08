@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type { DefaultRenderTaskEmission, LightKind, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -74,13 +75,13 @@ export function compileSceneIntrinsic(
         case "addToScene": {
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             const resource =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (
                 resource.kind !== "asset" &&
@@ -96,7 +97,7 @@ export function compileSceneIntrinsic(
                 resource.kind !== "transform-node"
             ) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     `addToScene supports asset, entity, mesh, light, camera, and transform-node values, received ${resource.kind}.`,
                 );
             }
@@ -146,20 +147,20 @@ export function compileSceneIntrinsic(
         case "removeFromScene": {
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             const resource =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // The pinned removal accepts the same union as addToScene. Mesh
             // retirement and light-topology replacement are the two reached
             // native paths; both retain their concrete handle kind here.
             if (resource.kind !== "mesh" && resource.kind !== "light") {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     `removeFromScene currently supports mesh and light values, received ${resource.kind}.`,
                 );
             }
@@ -179,34 +180,34 @@ export function compileSceneIntrinsic(
         case "onBeforeRender": {
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "void",
                 cpp:
                     `bbl::on_before_render(${scene.cpp}, ` +
-                    `${context.compileFrameCallback(call.arguments[1]!)})`,
+                    `${context.compileFrameCallback(argumentAt(call, 1))})`,
             };
         }
 
         case "onSceneDispose": {
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "void",
                 cpp:
                     `bbl::on_scene_dispose(${scene.cpp}, ` +
-                    `${context.compileVoidCallback(call.arguments[1]!)})`,
+                    `${context.compileVoidCallback(argumentAt(call, 1))})`,
             };
         }
 
@@ -214,22 +215,22 @@ export function compileSceneIntrinsic(
         case "addTaskAtStart": {
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             const task =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             if (
                 scene.kind !== "scene" &&
                 scene.kind !== "frame-graph-context"
             ) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     `addTask requires a scene or frame-graph context, received ${scene.kind}.`,
                 );
             }
             context.expectKind(
                 task,
                 "task",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectSameEngine(scene, task, call);
             const defaultTask = scene.kind === "scene"
@@ -250,11 +251,11 @@ export function compileSceneIntrinsic(
 
         case "registerFrameGraphContext": {
             context.expectArgumentCount(call, 1, 1);
-            const frameGraph = context.compileValue(call.arguments[0]!);
+            const frameGraph = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 frameGraph,
                 "frame-graph-context",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.noteTemporalRecordBoundary(call, importedName, "registration", frameGraph);
             return {
@@ -275,17 +276,17 @@ export function compileSceneIntrinsic(
                 importedName === "attachControl" ? 4 : 3,
             );
             const camera =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             const sceneArgument =
                 call.arguments.length >= 3
-                    ? call.arguments[2]!
-                    : call.arguments[1]!;
+                    ? argumentAt(call, 2)
+                    : argumentAt(call, 1);
             const scene =
                 context.compileValue(sceneArgument);
             context.expectKind(
                 camera,
                 "camera",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 scene,
@@ -329,11 +330,11 @@ export function compileSceneIntrinsic(
             // scene block and composed IBL shader already consume it.
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (
                 scene.sceneEnvironmentState!
@@ -350,7 +351,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `${scene.cpp}.environment.rotation_y = ` +
-                    context.compileNumber(call.arguments[1]!),
+                    context.compileNumber(argumentAt(call, 1)),
             };
         }
 
@@ -361,8 +362,8 @@ export function compileSceneIntrinsic(
         // dynamic import; the awaited value is void.
         case "enableFlowGraphPointerPicking": {
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             context.reachFeature("flow-graph:interactivity", call);
             context.reachFeature("picking:gpu", call);
             return {
@@ -378,8 +379,8 @@ export function compileSceneIntrinsic(
             // that never calls it composes none of it. Awaited upstream
             // because that import is; the awaited value is void.
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             context.reachFeature("mesh:mirrored", call);
             return {
                 kind: "void",
@@ -393,14 +394,14 @@ export function compileSceneIntrinsic(
         case "setFog": {
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const config = context.expectObjectLiteral(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const property = (
                 name: string,
@@ -421,9 +422,9 @@ export function compileSceneIntrinsic(
             // This adapter snapshots the numeric fields. A fresh literal and
             // its fresh color array cannot subsequently be mutated through an
             // alias; retained bags need their own live object carrier first.
-            if (!ts.isObjectLiteralExpression(context.unwrap(call.arguments[1]!)) ||
+            if (!ts.isObjectLiteralExpression(context.unwrap(argumentAt(call, 1))) ||
                 !ts.isArrayLiteralExpression(context.unwrap(property("color")))) {
-                context.noteTemporalAdmissionFailure(call.arguments[1]!,
+                context.noteTemporalAdmissionFailure(argumentAt(call, 1),
                     "TAA requires setFog to receive a fresh inline config with an inline color array; " +
                     "named or aliased fog objects do not yet retain their identity and live fields.");
             }
@@ -462,29 +463,29 @@ export function compileSceneIntrinsic(
             // never writes stays the zero its block was packed with.
             context.expectArgumentCount(call, 2, 2);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("renderer:clip-plane", call);
             return {
                 kind: "void",
                 cpp:
                     `bbl::set_scene_clip_plane(${scene.cpp}, ` +
-                    `${context.compileVec4(call.arguments[1]!)})`,
+                    `${context.compileVec4(argumentAt(call, 1))})`,
             };
         }
 
         case "registerScene": {
             context.expectArgumentCount(call, 1, 1);
             const scene =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.noteTemporalRecordBoundary(call, importedName, "registration", scene);
             const defaultTask = scene.surfaceCanvas ? context.ensureDefaultRenderTask(scene, call) : undefined;
@@ -498,8 +499,8 @@ export function compileSceneIntrinsic(
 
         case "unregisterScene": {
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp: `bbl::unregister_scene(${scene.cpp})`,
@@ -508,8 +509,8 @@ export function compileSceneIntrinsic(
 
         case "disposeScene": {
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp: `bbl::dispose_scene(${scene.cpp})`,
@@ -518,8 +519,8 @@ export function compileSceneIntrinsic(
 
         case "rebuildSceneRenderables": {
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp: `bbl::rebuild_scene_renderables(${scene.cpp})`,
@@ -529,11 +530,11 @@ export function compileSceneIntrinsic(
         case "startEngine": {
             context.expectArgumentCount(call, 1, 1);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature("backend:sdl", call);
             const asynchronous = context.compileAsyncEngineStart(engine, call);
@@ -554,11 +555,11 @@ export function compileSceneIntrinsic(
 
         case "setEngineSize": {
             context.expectArgumentCount(call, 3, 3);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
             if (!engine.ownedEngineCpp) return context.fail(call, "Explicit engine size currently requires a realm-owned canvas.");
-            const width = context.compileNumber(call.arguments[1]!, "double");
-            const height = context.compileNumber(call.arguments[2]!, "double");
+            const width = context.compileNumber(argumentAt(call, 1), "double");
+            const height = context.compileNumber(argumentAt(call, 2), "double");
             return { kind: "void", cpp: `bbl::set_engine_size(${engine.cpp}, ${width}, ${height})` };
         }
 
@@ -569,11 +570,11 @@ export function compileSceneIntrinsic(
         case "stopEngine": {
             context.expectArgumentCount(call, 1, 1);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "void",

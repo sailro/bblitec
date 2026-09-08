@@ -17,6 +17,7 @@
 // success.
 
 import ts from "typescript";
+import { argumentAt } from "./syntax.js";
 
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { DataType } from "./data-types.js";
@@ -86,7 +87,7 @@ export function compileWebStorageCall(
     context.reachFeature("storage:local", call);
     context.reachJsData();
     const key = (): string =>
-        context.dataLowerer.compileForSink(call.arguments[0]!, stringType);
+        context.dataLowerer.compileForSink(argumentAt(call, 0), stringType);
     if (method === "getItem") {
         context.expectArgumentCount(call, 1, 1);
         return {
@@ -106,7 +107,7 @@ export function compileWebStorageCall(
     context.expectArgumentCount(call, 2, 2);
     const storedKey = key();
     const value = context.dataLowerer.compileForSink(
-        call.arguments[1]!,
+        argumentAt(call, 1),
         stringType,
     );
     return {

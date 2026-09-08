@@ -20,6 +20,7 @@
  * reaches that at the spot factory, and so does this.
  */
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import type { ClusteredContainerState, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
@@ -109,7 +110,7 @@ function appendLight(
     spot: boolean,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
-    const container = containerValue(context, call.arguments[0]!);
+    const container = containerValue(context, argumentAt(call, 0));
     if (container.state.frozen) {
         context.fail(
             call,
@@ -120,7 +121,7 @@ function appendLight(
         );
     }
     const engine = context.requireDefaultEngine(call);
-    const literal = context.expectObjectLiteral(call.arguments[1]!);
+    const literal = context.expectObjectLiteral(argumentAt(call, 1));
     validateOptions(
         context,
         literal,
@@ -215,9 +216,9 @@ export function compileClusteredLightIntrinsic(
 
         case "addClusteredLightContainer": {
             context.expectArgumentCount(call, 2, 2);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
-            const container = containerValue(context, call.arguments[1]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
+            const container = containerValue(context, argumentAt(call, 1));
             if (container.state.frozen) {
                 context.fail(
                     call,

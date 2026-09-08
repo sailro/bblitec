@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import {
     pinnedEnumMemberName,
     staticNumberValue,
@@ -203,14 +204,14 @@ export function compileAnimationIntrinsic(
             // scene doing so.
             context.expectArgumentCount(call, 2, 2);
             const manager =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const groups = context.compileAnimationGroupList(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             associateManagerEngine(
                 context,
@@ -234,15 +235,15 @@ export function compileAnimationIntrinsic(
         case "updateAnimationManager": {
             context.expectArgumentCount(call, 2, 2);
             const manager =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (!manager.engineCpp) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "updateAnimationManager needs a manager created with an engine.",
                 );
             }
@@ -256,7 +257,7 @@ export function compileAnimationIntrinsic(
                     `bbl::update_animation_manager(` +
                     `${manager.cpp}, ${manager.engineCpp}, ` +
                     `${context.compileNumber(
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                         "double",
                     )})`,
             };
@@ -266,8 +267,8 @@ export function compileAnimationIntrinsic(
             context.expectArgumentCount(call, 2, 3);
             const compiled =
                 context.compilePropertyAnimationClip(
-                    call.arguments[0]!,
-                    call.arguments[1]!,
+                    argumentAt(call, 0),
+                    argumentAt(call, 1),
                     call.arguments[2],
                 );
             context.reachFeature("animation:property", call);
@@ -284,20 +285,20 @@ export function compileAnimationIntrinsic(
         case "createPropertyAnimationGroup": {
             context.expectArgumentCount(call, 3, 4);
             const manager =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             const target =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             const clip =
-                context.compileValue(call.arguments[2]!);
+                context.compileValue(argumentAt(call, 2));
             context.expectKind(
                 manager,
                 "animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 clip,
                 "animation-clip",
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             // Plain objects resolve their fields independently of native
             // mesh/camera lane names; a clip can bind either kind of target.
@@ -306,7 +307,7 @@ export function compileAnimationIntrinsic(
             const paths = clip.animationPaths ?? [];
             if (paths.length === 0) {
                 context.fail(
-                    call.arguments[2]!,
+                    argumentAt(call, 2),
                     "Property animation clip is missing its static paths.",
                 );
             }
@@ -317,7 +318,7 @@ export function compileAnimationIntrinsic(
                     context.compilePropertyAnimationTargets(
                         target,
                         paths,
-                        call.arguments[1]!,
+                        argumentAt(call, 1),
                     );
                 targetsCpp = compiled.cpp;
                 engine = compiled.engineCpp;
@@ -325,7 +326,7 @@ export function compileAnimationIntrinsic(
                 context.expectKind(
                     target,
                     targetKind,
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
                 engine = context.requireEngine(target, call);
                 targetsCpp = `{${paths
@@ -371,33 +372,33 @@ export function compileAnimationIntrinsic(
             // into the property mixer separately, then advances this job
             // through updateAnimationManager in its measured seek arm.
             context.expectArgumentCount(call, 4, 4);
-            const manager = context.compileValue(call.arguments[0]!);
-            const fromGroup = context.compileValue(call.arguments[1]!);
-            const toGroup = context.compileValue(call.arguments[2]!);
+            const manager = context.compileValue(argumentAt(call, 0));
+            const fromGroup = context.compileValue(argumentAt(call, 1));
+            const toGroup = context.compileValue(argumentAt(call, 2));
             context.expectKind(
                 manager,
                 "animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.expectKind(
                 fromGroup,
                 "animation-group",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectKind(
                 toGroup,
                 "animation-group",
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             context.expectSameEngine(fromGroup, toGroup, call);
             context.expectSameEngine(manager, fromGroup, call);
             const engine = context.requireEngine(
                 fromGroup,
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             associateManagerEngine(context, manager, engine, call);
             const options = context.expectObjectLiteral(
-                call.arguments[3]!,
+                argumentAt(call, 3),
             );
             validateObjectProperties(
                 context,
@@ -453,14 +454,14 @@ export function compileAnimationIntrinsic(
             // the skeleton mixer reads.
             context.expectArgumentCount(call, 2, 2);
             const group =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 group,
                 "animation-group",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const weight = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             if (group.animationGroupSource === "property") {
                 context.reachFeature(
@@ -487,7 +488,7 @@ export function compileAnimationIntrinsic(
                     `bbl::set_animation_weight(` +
                     `${context.requireEngine(
                         group,
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                     )}, ${group.cpp}, ${weight})`,
             };
         }
@@ -505,16 +506,16 @@ export function compileAnimationIntrinsic(
             // carries it.
             context.expectArgumentCount(call, 1, 2);
             const group =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 group,
                 "animation-group",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             requireGltfGroupSource(
                 context,
                 group,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "setAnimationAdditive",
             );
             context.reachFeature("animation:gltf-groups", call);
@@ -535,7 +536,7 @@ export function compileAnimationIntrinsic(
             );
             const engine = context.requireEngine(
                 group,
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const optionsExpression = call.arguments[1];
             if (!optionsExpression) {
@@ -619,11 +620,11 @@ export function compileAnimationIntrinsic(
             // loads neither (src/animation/weighted-gltf-mixer.ts).
             context.expectArgumentCount(call, 1, 1);
             const blended =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 blended,
                 "animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature(
                 "animation:gltf-blending",
@@ -649,11 +650,11 @@ export function compileAnimationIntrinsic(
             // weighted-pointer-mixer.ts).
             context.expectArgumentCount(call, 1, 1);
             const manager =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             context.reachFeature(
                 "animation:property-blending",
@@ -678,11 +679,11 @@ export function compileAnimationIntrinsic(
             // re-reads `names` whenever its array reference or length moves.
             context.expectArgumentCount(call, 1, 2);
             const namesExpression = context.resolveStaticExpression(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (!ts.isArrayLiteralExpression(namesExpression)) {
                 context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "createAnimationGroupMask takes a static array of " +
                         "target names.",
                 );
@@ -714,11 +715,11 @@ export function compileAnimationIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             context.requireCompatibleFrameConductor("manager", call);
             const manager =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 manager,
                 "animation-manager",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const engine = manager.engineCpp
                 ? context.requireEngine(manager, call)
@@ -735,8 +736,8 @@ export function compileAnimationIntrinsic(
 
         case "stopAnimationManager": {
             context.expectArgumentCount(call, 1, 1);
-            const manager = context.compileValue(call.arguments[0]!);
-            context.expectKind(manager, "animation-manager", call.arguments[0]!);
+            const manager = context.compileValue(argumentAt(call, 0));
+            context.expectKind(manager, "animation-manager", argumentAt(call, 0));
             context.reachFeature("animation:property", call);
             return { kind: "void", cpp: `bbl::stop_animation_manager(${manager.cpp})` };
         }
@@ -747,11 +748,11 @@ export function compileAnimationIntrinsic(
             // src/animation/animation-group.ts: three writes over one group.
             context.expectArgumentCount(call, 1, 1);
             const group =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 group,
                 "animation-group",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             // Property groups remain manager-owned and sampled; these
             // operations update their public playback state in place.
@@ -766,7 +767,7 @@ export function compileAnimationIntrinsic(
             requireGltfGroupSource(
                 context,
                 group,
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 importedName,
             );
             context.reachFeature("animation:gltf-groups", call);
@@ -789,14 +790,14 @@ export function compileAnimationIntrinsic(
             // the caller passed it.
             context.expectArgumentCount(call, 2, 3);
             const group =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 group,
                 "animation-group",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const frame = context.compileNumber(
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const engineArgument = call.arguments[2];
             if (engineArgument !== undefined) {

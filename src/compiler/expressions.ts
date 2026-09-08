@@ -25,7 +25,7 @@ import {
     compileBrowserFileElementAccess,
 } from "./browser-file.js";
 import { isNumberParserCallee, isParseFloatCallee } from "./browser-erasure.js";
-import { hasNonNullAssertion } from "./syntax.js";
+import { hasNonNullAssertion, argumentAt } from "./syntax.js";
 import { firstReturn } from "./loop-control.js";
 import {
     FORMATTED_MATH_FOLDS,
@@ -2173,7 +2173,7 @@ export class ExpressionLowerer {
         projection: "keys" | "values",
     ): Value {
         this.context.expectArgumentCount(call, 1, 1);
-        const object = this.compileValue(call.arguments[0]!);
+        const object = this.compileValue(argumentAt(call, 0));
         const resultType = this.context.dataLowerer.dataTypeAt(call);
         if (
             projection === "values" &&
@@ -2192,7 +2192,7 @@ export class ExpressionLowerer {
         }
         if (object.kind !== "record") {
             this.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 `Object.${projection} currently expects a compile-time record.`,
             );
         }
@@ -2356,12 +2356,12 @@ export class ExpressionLowerer {
         this.context.expectArgumentCount(call, 2, 2);
         const delay = staticNumberValue(
             this.context,
-            call.arguments[1]!,
+            argumentAt(call, 1),
         );
         if (delay !== 0) {
             if (
                 this.context.isBrowserOnlyHandler(
-                    this.context.unwrap(call.arguments[0]!),
+                    this.context.unwrap(argumentAt(call, 0)),
                 )
             ) {
                 return { kind: "void", cpp: "" };
@@ -2369,13 +2369,13 @@ export class ExpressionLowerer {
 
             if (delay === undefined || !Number.isFinite(delay) || delay < 0) {
                 this.context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "setTimeout delay must be a generation-known finite non-negative number.",
                 );
             }
             const engine = this.context.requireDefaultEngine(call);
             const callback = this.context.compileFrameCallback(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "void",
             );
             return {
@@ -2386,7 +2386,7 @@ export class ExpressionLowerer {
         }
         const engine = this.context.requireDefaultEngine(call);
         const callback = this.context.compileFrameCallback(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             "void",
         );
         return {
@@ -3043,7 +3043,7 @@ export class ExpressionLowerer {
                         "bbl::sprite_renderer_before_update(" +
                         `${engineCpp}, ${renderer.cpp}, ` +
                         `${this.context.compileFrameCallback(
-                            call.arguments[0]!,
+                            argumentAt(call, 0),
                         )})`,
                     engineCpp,
                 };
@@ -3103,7 +3103,7 @@ export class ExpressionLowerer {
                         call.arguments.length === 0
                             ? "std::string{}"
                             : call.arguments.length === 1
-                            ? `bbl::js::string_from_char_code(${this.context.compileNumber(call.arguments[0]!, "double")})`
+                            ? `bbl::js::string_from_char_code(${this.context.compileNumber(argumentAt(call, 0), "double")})`
                             : `bbl::js::string_from_char_codes({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
                     dataType: { kind: "string" },
                 };
@@ -3117,7 +3117,7 @@ export class ExpressionLowerer {
                 this.context.expectArgumentCount(call, 1, 1);
                 return {
                     kind: "boolean",
-                    cpp: `std::isfinite(${this.context.compileNumber(call.arguments[0]!, "double")})`,
+                    cpp: `std::isfinite(${this.context.compileNumber(argumentAt(call, 0), "double")})`,
                     dataType: { kind: "boolean" },
                 };
             }
@@ -3269,7 +3269,7 @@ export class ExpressionLowerer {
                 }
                 this.context.expectArgumentCount(call, 1, 1);
                 const input = this.context.dataLowerer.compileForSink(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     { kind: "string" },
                 );
                 this.context.reachJsData();
@@ -3420,7 +3420,7 @@ export class ExpressionLowerer {
                     const cloud = this.context.allocateTemporaryCppName("splat_update_receiver");
                     this.context.emit(`const auto ${cloud} = ${instance.cpp};`);
                     const buffer = this.context.dataLowerer.compileForSink(
-                        call.arguments[0]!, { kind: "arraybuffer" },
+                        argumentAt(call, 0), { kind: "arraybuffer" },
                     );
                     this.context.reachFeature("loader:splat-data", call);
                     return {
@@ -3747,14 +3747,14 @@ export class ExpressionLowerer {
 
         if (isNumberParserCallee(callee, this.context, "parseInt")) {
             this.context.expectArgumentCount(call, 1, 2);
-            const value = this.compileValue(call.arguments[0]!);
+            const value = this.compileValue(argumentAt(call, 0));
             if (value.kind !== "string" && !(value.kind === "data" && value.dataType?.kind === "string")) {
-                this.context.fail(call.arguments[0]!, "Reached parseInt currently requires a string value.");
+                this.context.fail(argumentAt(call, 0), "Reached parseInt currently requires a string value.");
             }
             const radix = call.arguments[1] ? this.compileValue(call.arguments[1]) : undefined;
             if (radix && (radix.kind !== "number" || radix.staticNumber === undefined || radix.parameterBinding ||
                 !Number.isInteger(radix.staticNumber) || (radix.staticNumber !== 0 && (radix.staticNumber < 2 || radix.staticNumber > 36)))) {
-                this.context.fail(call.arguments[1]!, "Reached parseInt requires a literal radix 0 or 2 through 36.");
+                this.context.fail(argumentAt(call, 1), "Reached parseInt requires a literal radix 0 or 2 through 36.");
             }
             this.context.reachJsData();
             return {
@@ -3798,12 +3798,12 @@ export class ExpressionLowerer {
             !this.context.lookupOptional(callee)
         ) {
             this.context.expectArgumentCount(call, 1, 1);
-            const value = this.compileValue(call.arguments[0]!);
+            const value = this.compileValue(argumentAt(call, 0));
             this.context.reachJsData();
             if (value.kind === "number" || value.kind === "boolean") {
                 return {
                     kind: "data",
-                    cpp: `bbl::js::concat(${this.stringConcatPart(value, call.arguments[0]!)})`,
+                    cpp: `bbl::js::concat(${this.stringConcatPart(value, argumentAt(call, 0))})`,
                     dataType: { kind: "string" },
                 };
             }
@@ -3819,7 +3819,7 @@ export class ExpressionLowerer {
                 };
             }
             this.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 `String() supports number, boolean, and string values, received ${value.kind}.`,
             );
         }
@@ -3830,7 +3830,7 @@ export class ExpressionLowerer {
         ) {
             this.context.expectArgumentCount(call, 1, 1);
             return this.compileNumberConversion(
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
         }
 
@@ -4206,7 +4206,7 @@ export class ExpressionLowerer {
                 `Compile-time Array.${method} requires exactly one callback and no thisArg.`,
             );
         }
-        const callback = this.context.unwrap(call.arguments[0]!);
+        const callback = this.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isArrowFunction(callback) &&
             !ts.isFunctionExpression(callback) &&

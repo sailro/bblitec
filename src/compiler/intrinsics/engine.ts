@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import {
     postProcessComposite,
     postProcessEffect,
@@ -109,10 +110,10 @@ export function compileEngineIntrinsic(
 
         case "createSurface": {
             context.expectArgumentCount(call, 2, 2);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const canvas = context.compileValue(call.arguments[1]!);
-            context.expectKind(canvas, "ui-element", call.arguments[1]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const canvas = context.compileValue(argumentAt(call, 1));
+            context.expectKind(canvas, "ui-element", argumentAt(call, 1));
             context.expectSameEngine(engine, canvas, call);
             if (canvas.uiTag !== "canvas") {
                 context.fail(call, "Additional surfaces require retained canvas elements.");
@@ -130,8 +131,8 @@ export function compileEngineIntrinsic(
 
         case "disposeSurface": {
             context.expectArgumentCount(call, 1, 1);
-            const surface = context.compileValue(call.arguments[0]!);
-            context.expectKind(surface, "surface", call.arguments[0]!);
+            const surface = context.compileValue(argumentAt(call, 0));
+            context.expectKind(surface, "surface", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp: `bbl::dispose_surface(${surface.cpp})`,
@@ -140,8 +141,8 @@ export function compileEngineIntrinsic(
 
         case "enableSurfaceResizeObserver": {
             context.expectArgumentCount(call, 1, 1);
-            const surface = context.compileValue(call.arguments[0]!);
-            context.expectKind(surface, "surface", call.arguments[0]!);
+            const surface = context.compileValue(argumentAt(call, 0));
+            context.expectKind(surface, "surface", argumentAt(call, 0));
             return {
                 kind: "callback",
                 cpp: "std::function<void()>{[]() {}}",
@@ -152,12 +153,12 @@ export function compileEngineIntrinsic(
         case "createSceneContext": {
             context.expectArgumentCount(call, 1, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             if (engine.kind !== "surface") {
                 context.expectKind(
                     engine,
                     "engine",
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 );
             }
             const defaultRenderTask = context.compileSceneDefaultRenderTask(call.arguments[1]);
@@ -189,8 +190,8 @@ export function compileEngineIntrinsic(
 
         case "createFrameGraphContext": {
             context.expectArgumentCount(call, 1, 2);
-            const surface = context.compileValue(call.arguments[0]!);
-            context.expectKind(surface, "engine", call.arguments[0]!);
+            const surface = context.compileValue(argumentAt(call, 0));
+            context.expectKind(surface, "engine", argumentAt(call, 0));
             const options = call.arguments[1]
                 ? context.expectObjectLiteral(call.arguments[1])
                 : undefined;
@@ -231,7 +232,7 @@ export function compileEngineIntrinsic(
                 context.requireDefaultEngine(call);
             const options =
                 context.compileRenderTargetOptions(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 );
             context.reachFeature("frame-graph:resources", call);
             return {
@@ -245,15 +246,15 @@ export function compileEngineIntrinsic(
         case "createRenderTargetTexture": {
             context.expectArgumentCount(call, 2, 2);
             const engine =
-                context.compileValue(call.arguments[0]!);
+                context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const options =
                 context.compileRenderTargetOptions(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                 );
             context.reachFeature("frame-graph:resources", call);
             return {
@@ -276,23 +277,23 @@ export function compileEngineIntrinsic(
         case "createRenderTask": {
             context.expectArgumentCount(call, 3, 3);
             const engine =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             const scene =
-                context.compileValue(call.arguments[2]!);
+                context.compileValue(argumentAt(call, 2));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             context.expectSameEngine(engine, scene, call);
             const options =
                 context.compileRenderTaskOptions(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 );
             reachRenderer(context, call);
             return {
@@ -310,23 +311,23 @@ export function compileEngineIntrinsic(
             context.noteTemporalRecordBoundary(call, "geometry-output task preparation", "always");
             context.expectArgumentCount(call, 3, 3);
             const engine =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             const scene =
-                context.compileValue(call.arguments[2]!);
+                context.compileValue(argumentAt(call, 2));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             context.expectSameEngine(engine, scene, call);
             const compiled =
                 context.compileGeometryTaskOptions(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 );
             context.recordGeometryOutputTask(
                 compiled.manifest,
@@ -348,23 +349,23 @@ export function compileEngineIntrinsic(
             context.noteTemporalRecordBoundary(call, "copy task preparation", "always");
             context.expectArgumentCount(call, 3, 3);
             const engine =
-                context.compileValue(call.arguments[1]!);
+                context.compileValue(argumentAt(call, 1));
             const scene =
-                context.compileValue(call.arguments[2]!);
+                context.compileValue(argumentAt(call, 2));
             context.expectKind(
                 engine,
                 "engine",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             context.expectKind(
                 scene,
                 "scene",
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             context.expectSameEngine(engine, scene, call);
             const options =
                 context.compileCopyTaskOptions(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 );
             reachRenderer(context, call);
             return {
@@ -413,8 +414,8 @@ function compileTaskEngineAndScene(
     sceneRequired?: string,
 ): Value {
     context.expectArgumentCount(call, 2, 3);
-    const engine = context.compileValue(call.arguments[1]!);
-    context.expectKind(engine, "engine", call.arguments[1]!);
+    const engine = context.compileValue(argumentAt(call, 1));
+    context.expectKind(engine, "engine", argumentAt(call, 1));
     if (!call.arguments[2] && sceneRequired) {
         context.fail(
             call,
@@ -425,7 +426,7 @@ function compileTaskEngineAndScene(
         ? context.compileValue(call.arguments[2])
         : undefined;
     if (scene) {
-        context.expectKind(scene, "scene", call.arguments[2]!);
+        context.expectKind(scene, "scene", argumentAt(call, 2));
         context.expectSameEngine(engine, scene, call);
         reachRenderer(context, call);
     } else {
@@ -451,7 +452,7 @@ function compileScreenSpaceIntrinsic(
     const compiled = compileScreenSpaceTaskOptions(
         context,
         importedName,
-        call.arguments[0]!,
+        argumentAt(call, 0),
         context.screenSpaceTasks.length,
     );
     context.recordScreenSpaceTask(compiled.manifest);
@@ -497,7 +498,7 @@ function compilePostProcessIntrinsic(
         const built = compilePostProcessCompositeOptions(
             context,
             importedName,
-            call.arguments[0]!,
+            argumentAt(call, 0),
             context.postProcessComposites.length,
         );
         context.recordPostProcessComposite(built.manifest, call);
@@ -517,7 +518,7 @@ function compilePostProcessIntrinsic(
     const compiled = compilePostProcessTaskOptions(
         context,
         importedName,
-        call.arguments[0]!,
+        argumentAt(call, 0),
         context.postProcessTasks.length,
     );
     context.recordPostProcessTask(compiled.manifest);

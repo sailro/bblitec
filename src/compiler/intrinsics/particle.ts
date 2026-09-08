@@ -7,6 +7,7 @@
 // unsupported combinations refuse where their source operation is reached.
 import { createHash } from "node:crypto";
 import ts from "typescript";
+import { argumentAt } from "../syntax.js";
 import { requireParticleBakeWritable } from "../particle-buffer.js";
 import {
     staticGraphDocument,
@@ -446,7 +447,7 @@ export function compileParticleIntrinsic(
             if (context.reachedNodeParticles.steps.some((step) => step.op === "random")) {
                 context.fail(call, "A native emitter provider cannot follow a generation-only Math.random override.");
             }
-            const callback = context.compileForDataSink(call.arguments[0]!, {
+            const callback = context.compileForDataSink(argumentAt(call, 0), {
                 kind: "function", parameters: [], result: { kind: "f32array" },
             });
             const callbackCpp = context.allocateTemporaryCppName("particle_provider");
@@ -465,7 +466,7 @@ export function compileParticleIntrinsic(
                 cpp: "",
                 nodeParticleGraph: graphSource(
                     context,
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                 ),
             };
         }
@@ -482,11 +483,11 @@ export function compileParticleIntrinsic(
             // the pin's own reason: a normalized graph carries an internal
             // marker and a second call returns it unchanged.
             context.expectArgumentCount(call, 1, 1);
-            const graph = context.compileValue(call.arguments[0]!);
+            const graph = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 graph,
                 "node-particle-graph",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             return {
                 kind: "node-particle-graph",
@@ -503,15 +504,15 @@ export function compileParticleIntrinsic(
         case "buildNodeParticleSetWithFlowMaps":
         case "buildNodeParticleSetWithNoiseTextures": {
             context.expectArgumentCount(call, 3, 4);
-            const engine = context.compileValue(call.arguments[0]!);
-            context.expectKind(engine, "engine", call.arguments[0]!);
-            const scene = context.compileValue(call.arguments[1]!);
-            context.expectKind(scene, "scene", call.arguments[1]!);
-            const graph = context.compileValue(call.arguments[2]!);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const scene = context.compileValue(argumentAt(call, 1));
+            context.expectKind(scene, "scene", argumentAt(call, 1));
+            const graph = context.compileValue(argumentAt(call, 2));
             context.expectKind(
                 graph,
                 "node-particle-graph",
-                call.arguments[2]!,
+                argumentAt(call, 2),
             );
             let emitter: readonly [number, number, number] = [0, 0, 0];
             let textureBaseUrl: string | undefined;
@@ -545,7 +546,7 @@ export function compileParticleIntrinsic(
                 !camera
             ) {
                 context.fail(
-                    call.arguments[1]!,
+                    argumentAt(call, 1),
                     "A flow-map node-particle build reads the scene's " +
                         "camera; this scene's camera is not a static " +
                         "arc-rotate construction.",
@@ -594,12 +595,12 @@ export function compileParticleIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const { set, system } = systemOf(context, call);
             if (context.reachedNodeParticles.sets[set]?.native) {
-                return { kind: "void", cpp: `bbl::upstream::animate_native_node_particle_system(${set}, ${system}, ${context.compileNumber(call.arguments[1]!, "double")})` };
+                return { kind: "void", cpp: `bbl::upstream::animate_native_node_particle_system(${set}, ${system}, ${context.compileNumber(argumentAt(call, 1), "double")})` };
             }
             requireUnbaked(context, set, system, call);
             const ratio = compileStaticNumber(
                 context,
-                call.arguments[1]!,
+                argumentAt(call, 1),
                 "animateParticleSystem's scaled ratio",
             );
             context.reachedNodeParticles.steps.push({
@@ -641,11 +642,11 @@ export function compileParticleIntrinsic(
         case "syncParticleBillboard": {
             context.expectArgumentCount(call, 2, 2);
             const { set, system } = systemOf(context, call);
-            const billboard = context.compileValue(call.arguments[1]!);
+            const billboard = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 billboard,
                 "billboard-system",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const frozen = context.reachedNodeParticles.billboards.find(
                 (candidate) =>
@@ -694,11 +695,11 @@ export function compileParticleIntrinsic(
             // system and returns the same set, so the value passes straight
             // through and what is recorded is that the chain ran.
             context.expectArgumentCount(call, 1, 1);
-            const set = context.compileValue(call.arguments[0]!);
+            const set = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 set,
                 "node-particle-set",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             const request =
                 context.reachedNodeParticles.sets[
@@ -714,13 +715,13 @@ export function compileParticleIntrinsic(
 
         case "registerNodeParticleSet": {
             context.expectArgumentCount(call, 2, 3);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
-            const set = context.compileValue(call.arguments[1]!);
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
+            const set = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 set,
                 "node-particle-set",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             let autoStart = pinnedDefaultFlag("nodeParticleAutoStart");
             const optionsArgument = call.arguments[2];
@@ -779,17 +780,17 @@ export function compileParticleIntrinsic(
         case "registerNodeParticleSet2D":
         case "registerNodeParticleSet2DWithBlendModes": {
             context.expectArgumentCount(call, 2, 3);
-            const renderer = context.compileValue(call.arguments[0]!);
+            const renderer = context.compileValue(argumentAt(call, 0));
             context.expectKind(
                 renderer,
                 "sprite-renderer",
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
-            const set = context.compileValue(call.arguments[1]!);
+            const set = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 set,
                 "node-particle-set",
-                call.arguments[1]!,
+                argumentAt(call, 1),
             );
             const index = set.nodeParticleSetIndex!;
             if (context.reachedNodeParticles.sets[index]?.native) {

@@ -103,6 +103,38 @@ export function rootIdentifier(
     return ts.isIdentifier(root) ? root : undefined;
 }
 
+/**
+ * The argument at an index a caller has already counted, through
+ * `expectArgumentCount` or a length test of its own. A missing one is
+ * therefore an internal error rather than a scene refusal: the count was
+ * checked before the read, so the read cannot be the place to refuse.
+ */
+export function argumentAt(
+    call: ts.CallExpression | ts.NewExpression,
+    index: number,
+): ts.Expression {
+    const argument = call.arguments?.[index];
+    if (argument === undefined) {
+        throw new Error(
+            `Internal error: argument ${index} was read from a call with ` +
+                `${call.arguments?.length ?? 0} argument(s) without being counted.`,
+        );
+    }
+    return argument;
+}
+
+/** The name an identifier spells, or undefined for any other expression. */
+export function identifierText(expression: ts.Expression): string | undefined {
+    return ts.isIdentifier(expression) ? expression.text : undefined;
+}
+
+/** The text a string literal spells, or undefined for any other expression. */
+export function stringLiteralText(
+    expression: ts.Expression,
+): string | undefined {
+    return ts.isStringLiteralLike(expression) ? expression.text : undefined;
+}
+
 /** Whether a binary operator token is `=` or one of its compound forms. */
 export function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
     return (

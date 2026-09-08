@@ -39,6 +39,7 @@ import {
     isUpdateExpression,
     rootExpression,
     rootIdentifier,
+    argumentAt,
 } from "./syntax.js";
 
 
@@ -1358,7 +1359,7 @@ export class DataLowerer {
             return undefined;
         }
         const argument = this.context.resolveStaticExpression(
-            source.arguments[0]!,
+            argumentAt(source, 0),
         );
         if (ts.isArrayLiteralExpression(argument)) {
             return argument.elements.length;
@@ -3353,13 +3354,13 @@ export class DataLowerer {
             return undefined;
         }
         if (call.arguments.length === 1) {
-            const source = this.context.compileValue(call.arguments[0]!);
+            const source = this.context.compileValue(argumentAt(call, 0));
             if (
                 source.kind !== "data" ||
                 source.dataType?.kind !== "vector"
             ) {
                 this.context.fail(
-                    call.arguments[0]!,
+                    argumentAt(call, 0),
                     "Array.from with one argument requires a native array value.",
                 );
             }
@@ -3377,7 +3378,7 @@ export class DataLowerer {
                 "Array.from currently requires an array-like length object and one mapper callback.",
             );
         }
-        const source = this.context.unwrap(call.arguments[0]!);
+        const source = this.context.unwrap(argumentAt(call, 0));
         if (!ts.isObjectLiteralExpression(source)) {
             this.context.fail(
                 source,
@@ -3396,7 +3397,7 @@ export class DataLowerer {
                 "Array.from array-like object requires a length property.",
             );
         }
-        const callback = this.context.unwrap(call.arguments[1]!);
+        const callback = this.context.unwrap(argumentAt(call, 1));
         if (
             !ts.isIdentifier(callback) &&
             !ts.isArrowFunction(callback) &&
@@ -3511,7 +3512,7 @@ export class DataLowerer {
             // through `staticCanvasSize`, so it folds here too.
             const argument = staticNumberValue(
                 this.context,
-                call.arguments[0]!,
+                argumentAt(call, 0),
             );
             if (argument !== undefined) {
                 const folded = fold(argument);
@@ -3543,13 +3544,10 @@ export class DataLowerer {
             };
         }
         if (method === "max" || method === "min") {
-            if (
-                call.arguments.length === 1 &&
-                ts.isSpreadElement(call.arguments[0]!)
-            ) {
-                const spread = this.context.compileValue(
-                    call.arguments[0]!.expression,
-                );
+            const only =
+                call.arguments.length === 1 ? argumentAt(call, 0) : undefined;
+            if (only && ts.isSpreadElement(only)) {
+                const spread = this.context.compileValue(only.expression);
                 if (
                     spread.kind !== "data" ||
                     (spread.dataType?.kind !== "vector" &&
@@ -3557,7 +3555,7 @@ export class DataLowerer {
                     spread.dataType.element.kind !== "number"
                 ) {
                     this.context.fail(
-                        call.arguments[0]!,
+                        argumentAt(call, 0),
                         `Math.${method} spread requires an array of numbers.`,
                     );
                 }
@@ -3660,12 +3658,12 @@ export class DataLowerer {
         }
         const source = this.typedArrayFromSource(
             typedArrayStem(kind),
-            this.context.unwrap(call.arguments[0]!),
+            this.context.unwrap(argumentAt(call, 0)),
             kind,
         );
         if (source === undefined) {
             this.context.fail(
-                call.arguments[0]!,
+                argumentAt(call, 0),
                 "TypedArray.set expects a numeric sequence: a typed array, " +
                     "a number array or a numeric tuple.",
             );
@@ -3674,7 +3672,7 @@ export class DataLowerer {
         const offset =
             call.arguments.length === 2
                 ? this.context.compileNumber(
-                      call.arguments[1]!,
+                      argumentAt(call, 1),
                       "double",
                   )
                 : "0.0";
@@ -3727,7 +3725,7 @@ export class DataLowerer {
         }
         this.context.reachJsData();
         const value = this.compileForSink(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             element,
         );
         const index = `bbl::js::array_index_of(${owner.cpp}, ${value})`;
@@ -3775,7 +3773,7 @@ export class DataLowerer {
                 `Array.${method} requires exactly one callback and no thisArg.`,
             );
         }
-        const callback = this.context.unwrap(call.arguments[0]!);
+        const callback = this.context.unwrap(argumentAt(call, 0));
         if (
             !ts.isIdentifier(callback) &&
             !ts.isArrowFunction(callback) &&
@@ -4031,10 +4029,10 @@ export class DataLowerer {
                     return;
                 }
                 const key = this.context.unwrap(
-                    node.arguments[0]!,
+                    argumentAt(node, 0),
                 );
                 const value = this.context.unwrap(
-                    node.arguments[1]!,
+                    argumentAt(node, 1),
                 );
                 if (
                     ts.isPropertyAccessExpression(key) &&
@@ -4088,7 +4086,7 @@ export class DataLowerer {
             `static const auto ${source} = ${sourceCpp};`,
         );
         const key = this.compileForSink(
-            call.arguments[0]!,
+            argumentAt(call, 0),
             mapType.key,
         );
         const resultType = this.dataTypeAt(call) ?? {
@@ -4138,7 +4136,7 @@ export class DataLowerer {
             );
         }
         return this.context.compileNumber(
-            expression.arguments[0]!,
+            argumentAt(expression, 0),
             "double",
         );
     }
@@ -5481,7 +5479,7 @@ export class DataLowerer {
                             );
                         }
                         const value = this.compileForSink(
-                            unwrapped.arguments[0]!,
+                            argumentAt(unwrapped, 0),
                             dataType.element,
                         );
                         this.context.reachJsData();
