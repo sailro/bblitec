@@ -19,11 +19,15 @@ else()
 endif()
 option(BBLITE_VISUAL_CAPTURE "Build screenshot and render-state capture" ${BBLITE_VISUAL_CAPTURE_DEFAULT})
 
-# Image codecs reached by the scene's materialized assets (emitted by
-# generation since codec tree-shaking). Generated directories
-# predating the list carry the historical png+jpeg set.
+# Image codecs reached by the scene's materialized assets: generation
+# writes the list into features.cmake, and a tree without one is not a
+# tree this file knows how to build.
 if(NOT DEFINED BBLITE_IMAGE_CODECS)
-    set(BBLITE_IMAGE_CODECS "png" "jpeg")
+    message(
+        FATAL_ERROR
+        "${BBLITE_GENERATED_DIR}/features.cmake carries no BBLITE_IMAGE_CODECS "
+        "list; regenerate the scene (scene -- compile <id>)."
+    )
 endif()
 set(BBLITE_HAS_IMAGE_DECODER OFF)
 if(BBLITE_IMAGE_CODECS)
@@ -126,10 +130,38 @@ if(
         "tools/build-sdl-min.ps1 or use the toolchain SDL3."
     )
 endif()
+# The reverse mismatch is not an error -- an over-featured SDL links and
+# runs -- but a minimal build exists to ship only what the scene reaches,
+# and a subsystem the trimmed SDL keeps alive through SDL_InitSubSystem
+# survives dead-stripping. Name the smaller install.
+if(BBLITE_SDL_DIR AND BBLITE_MINSIZE)
+    foreach(bblite_sdl_subsystem IN ITEMS "AUDIO;audio:engine;-EnableAudio" "GAMEPAD;input:gamepad;-EnableGamepad")
+        list(GET bblite_sdl_subsystem 0 bblite_sdl_capability)
+        list(GET bblite_sdl_subsystem 1 bblite_sdl_feature)
+        list(GET bblite_sdl_subsystem 2 bblite_sdl_switch)
+        if(BBLITE_SDL_${bblite_sdl_capability} AND NOT "${bblite_sdl_feature}" IN_LIST BBLITE_RUNTIME_FEATURES)
+            message(
+                WARNING
+                "This minimal scene does not reach ${bblite_sdl_feature}, but "
+                "BBLITE_SDL_DIR declares BBLITE_SDL_${bblite_sdl_capability}=ON; "
+                "the subsystem ships in the executable. Point BBLITE_SDL_DIR at "
+                "an install built without ${bblite_sdl_switch} "
+                "(tools/build-sdl-min.ps1)."
+            )
+        endif()
+    endforeach()
+endif()
 
 if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES AND NOT "text-layout" IN_LIST VCPKG_MANIFEST_FEATURES)
     list(APPEND VCPKG_MANIFEST_FEATURES "text-layout")
 endif()
+
+# The vcpkg toolchain would copy every imported DLL beside the executable
+# after each link. The build tree hard-links them instead (below, with the
+# Dawn DLLs): one physical copy of ~30 MB of runtime libraries serves every
+# scene tree rather than one copy per tree. The toolchain's option() runs
+# during project(), so the choice is made here.
+set(VCPKG_APPLOCAL_DEPS OFF)
 
 project(babylon_lite_native LANGUAGES CXX)
 
@@ -271,20 +303,34 @@ else()
         "BBLITE_BACKEND must be SDL_GPU, DAWN, or BOTH (got '${BBLITE_BACKEND}')."
     )
 endif()
+# One authority for the renderer translation units. `featureSources`
+# (src/compiler/output-projection.ts) selects the SDL_GPU units a scene's
+# reached features need into BBLITE_RUNTIME_SOURCES -- pal_sdl_gpu.cpp for
+# renderer:scene, the sprite/effect/frame-graph units for theirs -- and
+# every one of them has a Dawn twin under the other backend's name. The
+# twins are derived from that selection here, so a unit added to (or
+# renamed in) the feature table follows into both backends without a
+# second list, and the Dawn scene unit follows renderer:scene exactly as
+# the SDL one does. A feature decides whether a renderer exists at all;
+# the backend selection decides which API draws it, and the two are
+# independent -- a build with either backend removed must still compile
+# every feature the scene reached.
+set(BBLITE_SDL_GPU_SOURCES ${BBLITE_RUNTIME_SOURCES})
+list(FILTER BBLITE_SDL_GPU_SOURCES INCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
+set(BBLITE_DAWN_SOURCES "")
+foreach(bblite_sdl_gpu_source IN LISTS BBLITE_SDL_GPU_SOURCES)
+    string(REPLACE "/src/pal_sdl_gpu" "/src/pal_dawn" bblite_dawn_source "${bblite_sdl_gpu_source}")
+    if(NOT EXISTS "${bblite_dawn_source}")
+        message(
+            FATAL_ERROR
+            "${bblite_sdl_gpu_source} has no Dawn twin at ${bblite_dawn_source}; "
+            "every SDL_GPU renderer unit is paired."
+        )
+    endif()
+    list(APPEND BBLITE_DAWN_SOURCES "${bblite_dawn_source}")
+endforeach()
 if(NOT BBLITE_BACKEND_SDL_GPU)
-    # Every SDL_GPU translation unit leaves with the backend. The feature
-    # list names them because a feature decides whether a renderer exists
-    # at all; the backend selection decides which API draws it, and the
-    # two are independent — a build with either backend removed must still
-    # compile every feature the scene reached.
-    list(
-        REMOVE_ITEM
-        BBLITE_RUNTIME_SOURCES
-        "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu.cpp"
-        "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_sprite.cpp"
-        "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_effect.cpp"
-        "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_frame_graph.cpp"
-    )
+    list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
 endif()
 
 add_executable(
@@ -292,20 +338,29 @@ add_executable(
     "${BBLITE_GENERATED_DIR}/main.cpp"
     # The one TU that includes the generated build stamp
     # (bblite_build_stamp): unconditional and scene-dependent by design,
-    # so ONLY it recompiles when the stamp changes and every other PAL
-    # object stays byte-identical across scenes.
+    # so only it recompiles when the stamp changes within one tree.
     "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
     ${BBLITE_RUNTIME_SOURCES}
     ${BBLITE_GENERATED_SOURCES}
 )
 
+# One feature, one macro. Every macro named here is defined in every
+# translation unit -- 1 when the generated tree reached any of the listed
+# features, 0 otherwise -- so a `#if` over it never meets an undefined
+# name, and the activation table below reads as the table it is.
+function(bblite_feature_define macro)
+    set(value 0)
+    foreach(feature IN LISTS ARGN)
+        if("${feature}" IN_LIST BBLITE_RUNTIME_FEATURES)
+            set(value 1)
+        endif()
+    endforeach()
+    target_compile_definitions(bblite_native PRIVATE "${macro}=${value}")
+endfunction()
+
 set(BBLITE_OFFSCREEN_SURFACES OFF)
-if("engine:device-recovery" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_DEVICE_RECOVERY=1)
-endif()
-if("platform:workers" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_WORKERS=1)
-endif()
+bblite_feature_define(BBLITE_DEVICE_RECOVERY "engine:device-recovery")
+bblite_feature_define(BBLITE_WORKERS "platform:workers")
 if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
     set(BBLITE_OFFSCREEN_SURFACES ON)
     if(BBLITE_BACKEND_SDL_GPU)
@@ -368,15 +423,7 @@ target_compile_definitions(bblite_native PRIVATE
     BBLITE_HAS_IMAGE_DECODER=$<BOOL:${BBLITE_HAS_IMAGE_DECODER}>
 )
 target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="shaders")
-if("mesh:update-positions" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native PRIVATE BBLITE_MESH_POSITION_UPDATE=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native PRIVATE BBLITE_MESH_POSITION_UPDATE=0
-    )
-endif()
+bblite_feature_define(BBLITE_MESH_POSITION_UPDATE "mesh:update-positions")
 
 if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
     # Deployed by its own always-run target rather than POST_BUILD on the
@@ -477,27 +524,14 @@ if(NOT SDL3_FOUND)
     )
 endif()
 target_link_libraries(bblite_native PRIVATE SDL3::SDL3)
-if("input:gamepad" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_GAMEPAD=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_GAMEPAD=0)
-endif()
-if("browser:file" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native PRIVATE BBLITE_HAS_BROWSER_FILE=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native PRIVATE BBLITE_HAS_BROWSER_FILE=0
-    )
-endif()
+bblite_feature_define(BBLITE_HAS_GAMEPAD "input:gamepad")
+bblite_feature_define(BBLITE_HAS_BROWSER_FILE "browser:file")
 
-if(BBLITE_BACKEND_SDL_GPU)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL_GPU=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL_GPU=0)
-endif()
+target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL_GPU=$<BOOL:${BBLITE_BACKEND_SDL_GPU}>)
 
+# Runtime libraries the executable loads beside itself, placed after each
+# link (the vcpkg install's DLLs join them at the end of this file).
+set(BBLITE_RUNTIME_LIBRARIES "")
 if(BBLITE_BACKEND_DAWN)
     find_package(
         Dawn CONFIG REQUIRED
@@ -519,29 +553,8 @@ if(BBLITE_BACKEND_DAWN)
         MAP_IMPORTED_CONFIG_MINSIZEREL "MinSizeRel;Release;RelWithDebInfo"
         MAP_IMPORTED_CONFIG_DEBUG "Debug;Release;MinSizeRel;RelWithDebInfo"
     )
-    target_sources(
-        bblite_native
-        PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn.cpp"
-    )
-    if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES OR
-       "renderer:canvas" IN_LIST BBLITE_RUNTIME_FEATURES OR "renderer:text" IN_LIST BBLITE_RUNTIME_FEATURES)
-        target_sources(
-            bblite_native
-            PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_sprite.cpp"
-        )
-    endif()
-    if("renderer:effect" IN_LIST BBLITE_RUNTIME_FEATURES)
-        target_sources(
-            bblite_native
-            PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_effect.cpp"
-        )
-    endif()
-    if("renderer:frame-graph" IN_LIST BBLITE_RUNTIME_FEATURES)
-        target_sources(
-            bblite_native
-            PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_frame_graph.cpp"
-        )
-    endif()
+    # The Dawn twins of the selected SDL_GPU units (derived above).
+    target_sources(bblite_native PRIVATE ${BBLITE_DAWN_SOURCES})
     target_link_libraries(bblite_native PRIVATE dawn::webgpu_dawn)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
     get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
@@ -553,15 +566,11 @@ if(BBLITE_BACKEND_DAWN)
         # from the executable directory or System32, so only an
         # intentionally placed SDK copy ever ships. A static Dawn
         # deploys no DLLs at all.
-        add_custom_command(
-            TARGET bblite_native POST_BUILD
-            COMMAND
-                "${CMAKE_COMMAND}" -E copy_if_different
-                "$<TARGET_FILE:dawn::webgpu_dawn>"
-                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
-                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
-                "$<TARGET_FILE_DIR:bblite_native>"
-            VERBATIM
+        list(
+            APPEND BBLITE_RUNTIME_LIBRARIES
+            "$<TARGET_FILE:dawn::webgpu_dawn>"
+            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
+            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
         )
     endif()
     # Whether the installed Dawn carries its built DXC
@@ -596,14 +605,10 @@ if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_link_libraries(bblite_native PRIVATE harfbuzz::harfbuzz)
 endif()
 
-if("renderer:scene" IN_LIST BBLITE_RUNTIME_FEATURES)
-    # BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
-    # because a loaded asset reaches scene transmission on its own and the
-    # reached-feature list only records what the scene's code asked for.
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=0)
-endif()
+# BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
+# because a loaded asset reaches scene transmission on its own and the
+# reached-feature list only records what the scene's code asked for.
+bblite_feature_define(BBLITE_HAS_PBR_RENDERER "renderer:scene")
 
 if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     # The exact RmlUi revision projected by our backend-neutral recorder
@@ -627,12 +632,63 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     if(EXISTS "${BBLITE_RMLUI_FEATURES}")
         include("${BBLITE_RMLUI_FEATURES}")
     endif()
+    # The rebuild that makes an artifact current, named by every refusal
+    # below: the shipping variants take the static runtime and, for a
+    # scene reaching inline SVG, the plugin.
+    set(BBLITE_RMLUI_BUILD_COMMAND "tools/build-rmlui.ps1")
+    if(BBLITE_MINSIZE)
+        string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -StaticRuntime")
+        if("ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES)
+            string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -EnableSvg")
+        endif()
+    endif()
     if(BBLITE_MINSIZE AND NOT BBLITE_RMLUI_STATIC_RUNTIME)
         message(
             FATAL_ERROR
             "A minimal UI build requires the static-CRT RmlUi variant. "
-            "Build it with tools/build-rmlui.ps1 -StaticRuntime and point "
+            "Build it with ${BBLITE_RMLUI_BUILD_COMMAND} and point "
             "BBLITE_RMLUI_DIR at that install."
+        )
+    endif()
+    # The artifact records the commit and the patch set (name=sha256, in
+    # name order) it was built from; the pin and native/patches say what
+    # they are now. An artifact that predates a patch would ship UI
+    # behaviour the development validation never saw, so a difference is
+    # a refusal naming the rebuild.
+    file(READ "${BBLITE_NATIVE_ROOT}/../upstream/rmlui.json" BBLITE_RMLUI_PIN)
+    string(JSON BBLITE_RMLUI_PINNED_COMMIT GET "${BBLITE_RMLUI_PIN}" commit)
+    file(GLOB BBLITE_RMLUI_PATCH_FILES "${BBLITE_NATIVE_ROOT}/patches/rmlui-*.patch")
+    list(SORT BBLITE_RMLUI_PATCH_FILES)
+    set(BBLITE_RMLUI_EXPECTED_PATCHES "")
+    foreach(bblite_rmlui_patch IN LISTS BBLITE_RMLUI_PATCH_FILES)
+        get_filename_component(bblite_rmlui_patch_name "${bblite_rmlui_patch}" NAME)
+        file(SHA256 "${bblite_rmlui_patch}" bblite_rmlui_patch_digest)
+        list(APPEND BBLITE_RMLUI_EXPECTED_PATCHES "${bblite_rmlui_patch_name}=${bblite_rmlui_patch_digest}")
+    endforeach()
+    if(NOT DEFINED BBLITE_RMLUI_COMMIT OR NOT DEFINED BBLITE_RMLUI_PATCHES)
+        message(
+            FATAL_ERROR
+            "The RmlUi install at ${BBLITE_RMLUI_DIR} records neither the "
+            "commit nor the patch set it was built from. Rebuild it with "
+            "${BBLITE_RMLUI_BUILD_COMMAND}."
+        )
+    endif()
+    if(NOT BBLITE_RMLUI_COMMIT STREQUAL BBLITE_RMLUI_PINNED_COMMIT)
+        message(
+            FATAL_ERROR
+            "The RmlUi install at ${BBLITE_RMLUI_DIR} was built from commit "
+            "${BBLITE_RMLUI_COMMIT}; upstream/rmlui.json pins "
+            "${BBLITE_RMLUI_PINNED_COMMIT}. Rebuild it with "
+            "${BBLITE_RMLUI_BUILD_COMMAND}."
+        )
+    endif()
+    if(NOT "${BBLITE_RMLUI_PATCHES}" STREQUAL "${BBLITE_RMLUI_EXPECTED_PATCHES}")
+        message(
+            FATAL_ERROR
+            "The RmlUi install at ${BBLITE_RMLUI_DIR} was built with the patch "
+            "set [${BBLITE_RMLUI_PATCHES}], but native/patches now holds "
+            "[${BBLITE_RMLUI_EXPECTED_PATCHES}]. Rebuild it with "
+            "${BBLITE_RMLUI_BUILD_COMMAND}."
         )
     endif()
     # The package config resolves Freetype::Freetype and lunasvg::lunasvg
@@ -659,8 +715,7 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
             FATAL_ERROR
             "This scene reaches bounded inline SVG, but the pinned RmlUi "
             "artifact was built without its SVG plugin. Rebuild it with "
-            "tools/build-rmlui.ps1 -StaticRuntime -EnableSvg for shipping "
-            "or tools/build-rmlui.ps1 for development."
+            "${BBLITE_RMLUI_BUILD_COMMAND}."
         )
     endif()
     if(BBLITE_MINSIZE AND RMLUI_SVG_PLUGIN AND
@@ -712,75 +767,15 @@ else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_UI=0)
 endif()
 
-if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_SPRITE_RENDERER=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_SPRITE_RENDERER=0
-    )
-endif()
-
-if("renderer:canvas" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_CANVAS_RENDERER=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_CANVAS_RENDERER=0)
-endif()
-
-if("renderer:effect" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_EFFECT_RENDERER=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_EFFECT_RENDERER=0
-    )
-endif()
-
-if("renderer:frame-graph" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_FRAME_GRAPH_RENDERER=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_FRAME_GRAPH_RENDERER=0
-    )
-endif()
-
-if("effect:wrapper" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_EFFECT_WRAPPER=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_EFFECT_WRAPPER=0
-    )
-endif()
-
+bblite_feature_define(BBLITE_HAS_SPRITE_RENDERER "renderer:sprite")
+bblite_feature_define(BBLITE_HAS_CANVAS_RENDERER "renderer:canvas")
+bblite_feature_define(BBLITE_HAS_EFFECT_RENDERER "renderer:effect")
+bblite_feature_define(BBLITE_HAS_FRAME_GRAPH_RENDERER "renderer:frame-graph")
+bblite_feature_define(BBLITE_HAS_EFFECT_WRAPPER "effect:wrapper")
 # The pin's mesh-phase Standard extension: reached only through
 # enableMaterialUvTransform(), which is what emits its uniform block and the
 # writer that fills it into standard_variants.hpp.
-if("material:standard-uv-transform" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_STANDARD_UV_TRANSFORM=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_STANDARD_UV_TRANSFORM=0
-    )
-endif()
-
+bblite_feature_define(BBLITE_HAS_STANDARD_UV_TRANSFORM "material:standard-uv-transform")
 # A material plugin whose getSamplers declares a texture/sampler pair the
 # composed Standard fragment reads. The record then carries the textures the
 # plugin's bindTextures filled them with, and both backends upload and bind
@@ -790,121 +785,36 @@ endif()
 # and compiles none of this, exactly as it renders none of it.
 if("material:plugin-textures" IN_LIST BBLITE_RUNTIME_FEATURES AND
    "material:plugins" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=1
-    )
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=1)
 else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=0
-    )
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=0)
 endif()
-
-if("effect:task" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_EFFECT_TASK=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_EFFECT_TASK=0
-    )
-endif()
-
-if("text:renderable" IN_LIST BBLITE_RUNTIME_FEATURES OR "renderer:text" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT=0)
-endif()
-
-if("text:renderable" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT_RENDERABLE=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT_RENDERABLE=0)
-endif()
-if("renderer:text" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT_RENDERER=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_TEXT_RENDERER=0)
-endif()
-
-if("sprite:billboard" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_BILLBOARDS=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_BILLBOARDS=0
-    )
-endif()
-
+bblite_feature_define(BBLITE_HAS_EFFECT_TASK "effect:task")
+bblite_feature_define(BBLITE_HAS_TEXT "text:renderable" "renderer:text")
+bblite_feature_define(BBLITE_HAS_TEXT_RENDERABLE "text:renderable")
+bblite_feature_define(BBLITE_HAS_TEXT_RENDERER "renderer:text")
+bblite_feature_define(BBLITE_HAS_BILLBOARDS "sprite:billboard")
 # A Gaussian splat cloud draws inside the scene's pass like a billboard, so
 # it needs no renderer of its own -- only its pipeline and its data textures.
-if("loader:splat" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_SPLATS=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_SPLATS=0
-    )
-endif()
-
+bblite_feature_define(BBLITE_HAS_SPLATS "loader:splat")
 # A GPU pick renders the candidates into a one-pixel target and reads the id
 # back, so it needs its own pipelines and attachments inside whichever
 # backend is compiled -- and nothing at all in a scene that never picks.
-if("picking:gpu" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_PICKING=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_PICKING=0
-    )
-endif()
-
+bblite_feature_define(BBLITE_HAS_PICKING "picking:gpu")
 # The detailed pick adds a third rgba32uint attachment carrying the winning
 # primitive index and the interpolated rest position, its own pipeline built
 # from the pin's second picking module, and a wider readback. A scene that
 # never arms `enableDetailedPicking` carries none of it.
-if("picking:detailed" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_DETAILED_PICKING=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_DETAILED_PICKING=0
-    )
-endif()
-
+bblite_feature_define(BBLITE_HAS_DETAILED_PICKING "picking:detailed")
 # The clustered light field binds a params block and three data textures into
 # the composed PBR fragment's own group, from the container the scene holds.
 # A scene that never adds one carries none of it.
-if("light:clustered" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_CLUSTERED_LIGHTS=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_CLUSTERED_LIGHTS=0
-    )
-endif()
+bblite_feature_define(BBLITE_HAS_CLUSTERED_LIGHTS "light:clustered")
 
 # The solver is reached only through `bblite/pal_physics.hpp`, whose
 # implementation is one translation unit the feature list selects
-# (`featureSources`). Nothing generated names Bullet.
+# (`featureSources`). Nothing generated names Bullet. The arms of that unit
+# follow the physics features the scene reached, one macro each.
 if("physics:world" IN_LIST BBLITE_RUNTIME_FEATURES)
     find_package(Bullet CONFIG REQUIRED)
     target_link_libraries(
@@ -912,10 +822,13 @@ if("physics:world" IN_LIST BBLITE_RUNTIME_FEATURES)
         PRIVATE BulletDynamics BulletCollision LinearMath
     )
 endif()
-
-if("physics:viewer" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_PHYSICS_VIEWER=1)
-endif()
+bblite_feature_define(BBLITE_PHYSICS_VIEWER "physics:viewer")
+bblite_feature_define(BBLITE_HAS_PHYSICS_QUERIES "physics:queries")
+bblite_feature_define(BBLITE_HAS_PHYSICS_CONSTRAINTS "physics:constraints")
+bblite_feature_define(BBLITE_HAS_PHYSICS_TRIGGER "physics:trigger")
+bblite_feature_define(BBLITE_HAS_PHYSICS_HEIGHTFIELD "physics:heightfield")
+bblite_feature_define(BBLITE_HAS_PHYSICS_CHARACTER "physics:character-controller")
+bblite_feature_define(BBLITE_HAS_PHYSICS_FLOATING_ORIGIN "physics:floating-origin")
 
 # The navigation toolset is reached only through
 # `bblite/pal_navigation.hpp`, whose implementation is one translation
@@ -931,9 +844,6 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
     )
     if("navigation:crowd" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_link_libraries(bblite_native PRIVATE RecastNavigation::DetourCrowd)
-        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_NAV_CROWD=1)
-    else()
-        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_NAV_CROWD=0)
     endif()
     # The tile-cache arm's own dependency: the two RecastDemo files the
     # overlay port builds into a library from the same pinned commit. Only
@@ -943,10 +853,9 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_link_libraries(
             bblite_native PRIVATE RecastNavigation::DetourTileCache RecastNavigation::RecastNavigationTileCache
         )
-        target_compile_definitions(
-            bblite_native PRIVATE BBLITE_HAS_NAV_TILE_CACHE=1
-        )
     endif()
+    bblite_feature_define(BBLITE_HAS_NAV_CROWD "navigation:crowd")
+    bblite_feature_define(BBLITE_HAS_NAV_TILE_CACHE "navigation:tile-cache")
 endif()
 
 # The Web Audio engine is reached only through `bblite/pal_audio.hpp`,
@@ -1023,33 +932,15 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
             "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
         )
     endif()
-    if(BBLITE_AUDIO_CAPTURE)
-        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO_CAPTURE=1)
-    else()
-        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO_CAPTURE=0)
-    endif()
-    if(BBLITE_AUDIO_DECODE_FILE)
-        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO_DECODE_FILE=1)
-    else()
-        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO_DECODE_FILE=0)
-    endif()
-    foreach(BBLITE_AUDIO_NODE_FEATURE IN ITEMS
-        BUFFER_SOURCE OSCILLATOR BIQUAD_FILTER STEREO_PANNER
+    target_compile_definitions(
+        bblite_native PRIVATE
+        BBLITE_HAS_AUDIO_CAPTURE=$<BOOL:${BBLITE_AUDIO_CAPTURE}>
+        BBLITE_HAS_AUDIO_DECODE_FILE=$<BOOL:${BBLITE_AUDIO_DECODE_FILE}>
     )
-        string(TOLOWER "${BBLITE_AUDIO_NODE_FEATURE}" BBLITE_AUDIO_NODE_LOWER)
-        string(REPLACE "_" "-" BBLITE_AUDIO_NODE_FEATURE_NAME "${BBLITE_AUDIO_NODE_LOWER}")
-        if("audio:${BBLITE_AUDIO_NODE_FEATURE_NAME}" IN_LIST BBLITE_RUNTIME_FEATURES)
-            target_compile_definitions(
-                bblite_native PRIVATE
-                "BBLITE_HAS_AUDIO_${BBLITE_AUDIO_NODE_FEATURE}=1"
-            )
-        else()
-            target_compile_definitions(
-                bblite_native PRIVATE
-                "BBLITE_HAS_AUDIO_${BBLITE_AUDIO_NODE_FEATURE}=0"
-            )
-        endif()
-    endforeach()
+    bblite_feature_define(BBLITE_HAS_AUDIO_BUFFER_SOURCE "audio:buffer-source")
+    bblite_feature_define(BBLITE_HAS_AUDIO_OSCILLATOR "audio:oscillator")
+    bblite_feature_define(BBLITE_HAS_AUDIO_BIQUAD_FILTER "audio:biquad-filter")
+    bblite_feature_define(BBLITE_HAS_AUDIO_STEREO_PANNER "audio:stereo-panner")
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO=1)
 else()
     target_compile_definitions(
@@ -1064,41 +955,9 @@ else()
     )
 endif()
 
-if("renderer:geometry-output" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_GEOMETRY_OUTPUT=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_GEOMETRY_OUTPUT=0
-    )
-endif()
-
-if("renderer:post-process" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_POST_PROCESS=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_POST_PROCESS=0
-    )
-endif()
-
-if("renderer:screen-space" IN_LIST BBLITE_RUNTIME_FEATURES)
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_SCREEN_SPACE=1
-    )
-else()
-    target_compile_definitions(
-        bblite_native
-        PRIVATE BBLITE_HAS_SCREEN_SPACE=0
-    )
-endif()
+bblite_feature_define(BBLITE_HAS_GEOMETRY_OUTPUT "renderer:geometry-output")
+bblite_feature_define(BBLITE_HAS_POST_PROCESS "renderer:post-process")
+bblite_feature_define(BBLITE_HAS_SCREEN_SPACE "renderer:screen-space")
 
 if(
     "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
@@ -1109,19 +968,46 @@ if(
     target_link_libraries(bblite_native PRIVATE nlohmann_json::nlohmann_json)
 endif()
 
-if(
-    "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
-    "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES
-)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_GLTF=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_GLTF=0)
-endif()
-
 if(MSVC)
     target_compile_options(bblite_native PRIVATE /W4 /WX /permissive- /EHsc)
 else()
     target_compile_options(bblite_native PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# The optimization level of the generated application unit alone. The
+# lowered main.cpp of the largest demos is the one object that bounds a
+# population rebuild (antigravity-racer's takes minutes under -O2 while
+# every PAL unit is done in seconds); `O1` compiles it at -O1 and leaves
+# the PAL and the generated upstream units at the configuration's level.
+# `configuration` keeps the configuration's level everywhere. Measured on
+# antigravity-racer and tetris with the differential parity gate before
+# the default was chosen; the shipping shape keeps its own /O1 below.
+set(
+    BBLITE_MAIN_OPT
+    "configuration"
+    CACHE STRING
+    "Optimization of the generated main.cpp: configuration or O1"
+)
+set_property(CACHE BBLITE_MAIN_OPT PROPERTY STRINGS "configuration" "O1")
+if(BBLITE_MAIN_OPT STREQUAL "O1")
+    if(NOT BBLITE_MINSIZE)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            set(BBLITE_MAIN_OPT_FLAGS /clang:-O1)
+        elseif(MSVC)
+            set(BBLITE_MAIN_OPT_FLAGS /O1)
+        else()
+            set(BBLITE_MAIN_OPT_FLAGS -O1)
+        endif()
+        set_property(
+            SOURCE "${BBLITE_GENERATED_DIR}/main.cpp"
+            APPEND PROPERTY COMPILE_OPTIONS ${BBLITE_MAIN_OPT_FLAGS}
+        )
+    endif()
+elseif(NOT BBLITE_MAIN_OPT STREQUAL "configuration")
+    message(
+        FATAL_ERROR
+        "BBLITE_MAIN_OPT must be configuration or O1 (got '${BBLITE_MAIN_OPT}')."
+    )
 endif()
 
 if(BBLITE_MINSIZE)
@@ -1136,16 +1022,7 @@ if(BBLITE_MINSIZE)
             )
             target_link_options(
                 bblite_native
-                PRIVATE
-                    /LTCG
-                    /OPT:REF
-                    /OPT:ICF
-                    /INCREMENTAL:NO
-                    /MAP
-                    # Lowered static data can create a large initializer frame.
-                    # Reserve virtual address space explicitly instead of relying
-                    # on Windows' 1 MiB default; pages remain demand-committed.
-                    /STACK:8388608
+                PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
             )
         else()
             target_compile_options(
@@ -1167,16 +1044,7 @@ if(BBLITE_MINSIZE)
         # tools/map-size-report.mjs attribution.
         target_link_options(
             bblite_native
-            PRIVATE
-                /LTCG
-                /OPT:REF
-                /OPT:ICF
-                /INCREMENTAL:NO
-                /MAP
-                # Lowered static data can create a large initializer frame.
-                # Reserve virtual address space explicitly instead of relying
-                # on Windows' 1 MiB default; pages remain demand-committed.
-                /STACK:8388608
+            PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
         )
     else()
         target_compile_options(
@@ -1185,6 +1053,13 @@ if(BBLITE_MINSIZE)
         )
         target_link_options(bblite_native PRIVATE -Wl,--gc-sections)
     endif()
+    if(MSVC)
+        # Lowered static data can create a large initializer frame. Reserve
+        # virtual address space explicitly instead of relying on Windows'
+        # 1 MiB default; pages remain demand-committed. One option for both
+        # Microsoft-ABI compilers, whose linker is the same.
+        target_link_options(bblite_native PRIVATE /STACK:8388608)
+    endif()
 endif()
 
 # Precompiled header. Every translation unit parses runtime.hpp, js_data.hpp
@@ -1192,8 +1067,9 @@ endif()
 # unit spends most of its compile there (docs/development.md carries the
 # measurement). Precompiling that set once per tree removes the parse from
 # every unit; the generated headers stay out, since they change with every
-# generation. Off for the one-off shipping shape, whose 48 MB precompile
-# would serve a single build.
+# generation. Off for the shipping shape: that build is the one compile of
+# every unit without a precompiled closure, so an include a unit owes and
+# only the PCH supplied fails there instead of in no build at all.
 if(BBLITE_MINSIZE)
     set(BBLITE_PCH_DEFAULT OFF)
 else()
@@ -1240,6 +1116,31 @@ if(BBLITE_PCH)
         list(APPEND BBLITE_PCH_HEADERS <bblite/ts_runtime.hpp>)
     endif()
     target_precompile_headers(bblite_native PRIVATE ${BBLITE_PCH_HEADERS})
+endif()
+
+# Runtime libraries beside the executable: the Dawn DLLs collected above
+# and, for a vcpkg build, every DLL of the consumed install (the set the
+# toolchain's applocal step would have copied is a subset of that
+# directory; the extra links cost nothing). Hard links where the file
+# system allows them, copies otherwise -- one physical file per library
+# for every scene tree on the volume. A static triplet has no bin
+# directory and a trimmed static SDL none either; both skip.
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    set(BBLITE_VCPKG_RUNTIME_DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+else()
+    set(BBLITE_VCPKG_RUNTIME_DIRECTORY "")
+endif()
+if(BBLITE_RUNTIME_LIBRARIES OR EXISTS "${BBLITE_VCPKG_RUNTIME_DIRECTORY}")
+    add_custom_command(
+        TARGET bblite_native POST_BUILD
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DBBLITE_FILES=${BBLITE_RUNTIME_LIBRARIES}"
+            "-DBBLITE_DIRECTORY=${BBLITE_VCPKG_RUNTIME_DIRECTORY}"
+            "-DBBLITE_DESTINATION=$<TARGET_FILE_DIR:bblite_native>"
+            -P "${BBLITE_NATIVE_ROOT}/link-runtime-libraries.cmake"
+        VERBATIM
+    )
 endif()
 
 message(STATUS "Babylon Lite native features: ${BBLITE_RUNTIME_FEATURES}")
