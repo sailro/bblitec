@@ -32,6 +32,7 @@
 #include <type_traits>
 
 #include <btBulletDynamicsCommon.h>
+#include <LinearMath/btAabbUtil2.h>
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
@@ -326,6 +327,7 @@ struct PhysicsWorldState {
     std::size_t trigger_body_count = 0;
     std::uint64_t stabilized_total = 0;
     std::unordered_map<std::uint64_t, ContactSnapshot> previous_contacts;
+    std::unordered_map<std::uint64_t, bool> recovering_overlaps;
     std::vector<PhysicsCollisionEvent> collision_events;
     /**
      * The trigger pairs that overlapped at the end of the previous step.
@@ -1024,6 +1026,27 @@ bool combine_material_contact(
     const btCollisionObjectWrapper* b,
     int /*partIdB*/,
     int /*indexB*/) {
+    // Deep overlap that exceeds the pair's incoming motion is positional
+    // error. The measured Havok recovery is about 5% per 60 Hz frame,
+    // capped at 1 m/s. Incoming impact contacts retain the rebound solver.
+    if (point.getDistance() < 0) {
+        const auto* body_a = body_entry_of(a->getCollisionObject());
+        const auto* body_b = body_entry_of(b->getCollisionObject());
+        const auto owner = body_a ? body_a->owner_world.lock() : nullptr;
+        if (body_a && body_b && owner) {
+            const auto relative = body_a->body->getVelocityInLocalPoint(point.getPositionWorldOnA() - body_a->body->getCenterOfMassPosition()) -
+                body_b->body->getVelocityInLocalPoint(point.getPositionWorldOnB() - body_b->body->getCenterOfMassPosition());
+            const auto delta = owner->dispatcher->substep_seconds;
+            const auto approach = std::max(btScalar(0), -relative.dot(point.m_normalWorldOnB));
+            const auto pair = pair_key(a->getCollisionObject(), b->getCollisionObject());
+            const bool initial_overlap = point.getDistance() < btScalar(-0.015) && -point.getDistance() > 2 * approach * delta;
+            if (initial_overlap || owner->recovering_overlaps.contains(pair)) {
+                owner->recovering_overlaps.try_emplace(pair, true);
+                point.m_contactPointFlags |= BT_CONTACT_FLAG_HAS_CONTACT_ERP;
+                point.m_contactERP = std::min(btScalar(0.0125), delta / -point.getDistance());
+            }
+        }
+    }
     const auto* left = material_of(a->getCollisionObject());
     const auto* right = material_of(b->getCollisionObject());
     if (left != nullptr && right != nullptr) {
@@ -1311,6 +1334,21 @@ MotionTypeOverlapFilter& motion_type_overlap_filter() {
     return filter;
 }
 
+class OverlapRecoverySolver final : public btSequentialImpulseConstraintSolver {
+    void convertContacts(btPersistentManifold** manifolds, int count, const btContactSolverInfo& settings) override {
+        for (int i = 0; i < count; ++i) {
+            auto contact_settings = settings;
+            for (int p = 0; p < manifolds[i]->getNumContacts(); ++p) {
+                if ((manifolds[i]->getContactPoint(p).m_contactPointFlags & BT_CONTACT_FLAG_HAS_CONTACT_ERP) != 0) {
+                    contact_settings.m_splitImpulsePenetrationThreshold = 0;
+                    break;
+                }
+            }
+            btSequentialImpulseConstraintSolver::convertContacts(manifolds + i, 1, contact_settings);
+        }
+    }
+};
+
 PhysicsWorldHandle physics_world_create() {
     // `gContactAddedCallback` is one process-global function pointer and the
     // assignment is idempotent.
@@ -1325,7 +1363,7 @@ PhysicsWorldHandle physics_world_create() {
     btGImpactCollisionAlgorithm::registerAlgorithm(entry.dispatcher.get());
     entry.broadphase = std::make_unique<btDbvtBroadphase>();
     entry.solver =
-        std::make_unique<btSequentialImpulseConstraintSolver>();
+        std::make_unique<OverlapRecoverySolver>();
     entry.world = std::make_unique<btDiscreteDynamicsWorld>(
         entry.dispatcher.get(),
         entry.broadphase.get(),
@@ -1509,6 +1547,23 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         schedule_landing_bounces(entry, substep_seconds, seconds);
     }
     entry.active_bounces.clear();
+    if (!entry.recovering_overlaps.empty()) {
+        for (auto& [pair, present] : entry.recovering_overlaps) { static_cast<void>(pair); present = false; }
+        for (int i = 0; i < entry.dispatcher->getNumManifolds(); ++i) {
+            auto* manifold = entry.dispatcher->getManifoldByIndexInternal(i);
+            const auto found = entry.recovering_overlaps.find(pair_key(
+                static_cast<const btCollisionObject*>(manifold->getBody0()), static_cast<const btCollisionObject*>(manifold->getBody1())));
+            if (found == entry.recovering_overlaps.end()) continue;
+            for (int p = 0; p < manifold->getNumContacts(); ++p) {
+                if (manifold->getContactPoint(p).getDistance() < 0) { found->second = true; break; }
+            }
+            if (!found->second) {
+                for (int p = 0; p < manifold->getNumContacts(); ++p)
+                    manifold->getContactPoint(p).m_contactPointFlags &= ~BT_CONTACT_FLAG_HAS_CONTACT_ERP;
+            }
+        }
+        std::erase_if(entry.recovering_overlaps, [](const auto& pair) { return !pair.second; });
+    }
     // Contacts can add velocity inside Bullet's solver. Havok's body limits
     // remain invariant after a step, so make that invariant observable here
     // too before transforms and counters are read.
@@ -1705,18 +1760,24 @@ const btConvexShape& convex_query_shape(const PhysicsShapeState& shape) {
 // The cross-solver query fixture observes both rim and side contacts.
 class QueryShape {
 public:
-    explicit QueryShape(const PhysicsShapeState& source) : source_(convex_query_shape(source)) {
+    explicit QueryShape(const PhysicsShapeState& source) : QueryShape(convex_query_shape(source)) {}
+    explicit QueryShape(const btConvexShape& source) : source_(source) {
         if (source_.getShapeType() == CYLINDER_SHAPE_PROXYTYPE) {
             const auto& cylinder = static_cast<const btCylinderShape&>(source_);
             const btVector3 half = cylinder.getHalfExtentsWithMargin();
             cylinder_.emplace(half);
             cylinder_->setMargin(btMin(btScalar(.015), half[half.minAxis()] * btScalar(.1)));
+        } else if (source_.getShapeType() == BOX_SHAPE_PROXYTYPE) {
+            const auto half = static_cast<const btBoxShape&>(source_).getHalfExtentsWithMargin();
+            box_.emplace(half);
+            box_->setMargin(btMin(btScalar(.015), half[half.minAxis()]));
         }
     }
-    const btConvexShape& get() const { return cylinder_ ? *cylinder_ : source_; }
+    const btConvexShape& get() const { return cylinder_ ? *cylinder_ : box_ ? *box_ : source_; }
 private:
     const btConvexShape& source_;
     std::optional<btCylinderShape> cylinder_;
+    std::optional<btBoxShape> box_;
 };
 
 bool query_accepts(const PhysicsShapeState& query, const PhysicsBodyState& body,
@@ -1732,13 +1793,14 @@ btPointCollector closest_convex_points(const btConvexShape& a, const btTransform
                                      double max_distance) {
     btVoronoiSimplexSolver simplex;
     btGjkEpaPenetrationDepthSolver penetration;
-    btGjkPairDetector detector(&a, &b, &simplex, &penetration);
+    const QueryShape target(b);
+    btGjkPairDetector detector(&a, &target.get(), &simplex, &penetration);
     btDiscreteCollisionDetectorInterface::ClosestPointInput input;
     input.m_transformA = a_transform;
     input.m_transformB = b_transform;
     // GJK tests the margin-free cores against this cutoff before expanding
     // them. A capsule's radius is its margin, so it must be included here.
-    const double core_distance = max_distance + a.getMargin() + b.getMargin();
+    const double core_distance = max_distance + a.getMargin() + target.get().getMargin();
     input.m_maximumDistanceSquared = static_cast<btScalar>(core_distance * core_distance);
     btPointCollector result;
     detector.getClosestPoints(input, result, nullptr);
@@ -1867,11 +1929,14 @@ void select_capsule_box_feature(btPointCollector& point, const PhysicsShapeState
     const btVector3 axis = query_node.getBasis().getColumn(capsule.getUpAxis());
     if (btFabs(axis.dot(point.m_normalOnBInWorld)) > btScalar(1e-5)) return;
     const btVector3 box_axis = target_transform.getBasis().transpose() * axis;
+    const btVector3 box_normal = target_transform.getBasis().transpose() * point.m_normalOnBInWorld;
+    if (box_normal.absolute()[box_normal.absolute().maxAxis()] < btScalar(1) - btScalar(1e-5)) return;
     const int dimension = box_axis.absolute().maxAxis();
     if (btFabs(box_axis[dimension]) < btScalar(1) - btScalar(1e-5)) return;
     const btScalar query_center = axis.dot((query_node * query.node_from_body).getOrigin());
     const btScalar target_center = axis.dot(target_transform.getOrigin());
-    const btScalar extent = box.getHalfExtentsWithMargin()[dimension];
+    const auto half = box.getHalfExtentsWithMargin();
+    const btScalar extent = half[dimension] - btMin(btScalar(.015), half[half.minAxis()]);
     const btScalar lower = btMax(query_center - capsule.getHalfHeight(), target_center - extent);
     const btScalar upper = btMin(query_center + capsule.getHalfHeight(), target_center + extent);
     if (lower <= upper) {
@@ -2013,7 +2078,27 @@ std::vector<PhysicsShapeQueryResult> physics_world_collect_shape_cast(
             return btScalar(1);
         }
     } collector(query, query_shape.get(), from_node, to_node, should_hit_triggers, ignored_body.value);
-    owner.world->convexSweepTest(&query_shape.get(), from_node * query.node_from_body, to_node * query.node_from_body, collector);
+    const auto from_shape = from_node * query.node_from_body;
+    const auto to_shape = to_node * query.node_from_body;
+    btVector3 sweep_low, sweep_high, end_low, end_high;
+    query_shape.get().getAabb(from_shape, sweep_low, sweep_high);
+    query_shape.get().getAabb(to_shape, end_low, end_high);
+    sweep_low.setMin(end_low); sweep_high.setMax(end_high);
+    for (const auto& body : owner.members) {
+        if (!query_accepts(query, *body, should_hit_triggers, ignored_body.value)) continue;
+        const auto* target = body->body->getCollisionShape();
+        btVector3 target_low, target_high;
+        target->getAabb(body->body->getWorldTransform(), target_low, target_high);
+        if (!TestAabbAgainstAabb2(sweep_low, sweep_high, target_low, target_high)) continue;
+        if (target->isConvex()) {
+            const QueryShape target_query(static_cast<const btConvexShape&>(*target));
+            btCollisionWorld::objectQuerySingle(&query_shape.get(), from_shape,
+                to_shape, body->body.get(), &target_query.get(), body->body->getWorldTransform(), collector, 0);
+        } else {
+            btCollisionWorld::objectQuerySingle(&query_shape.get(), from_shape,
+                to_shape, body->body.get(), target, body->body->getWorldTransform(), collector, 0);
+        }
+    }
     limit_collector(collector.hits, capacity);
     return std::move(collector.hits);
 }
@@ -2591,10 +2676,10 @@ PhysicsTransform physics_body_get_transform(PhysicsBodyHandle body) {
     return read_node_transform(body_at(body));
 }
 
-void physics_body_set_transform(
-    PhysicsBodyHandle body,
+namespace {
+void update_body_transform(
+    PhysicsBodyState& entry,
     const PhysicsTransform& transform) {
-    PhysicsBodyState& entry = body_at(body);
     entry.requested = transform;
     entry.contact_quiet_seconds = 0.0;
     write_world_transform(entry, transform);
@@ -2602,16 +2687,25 @@ void physics_body_set_transform(
     // active would keep every pair it touches in collision detection.
     if (!entry.body->isStaticObject()) entry.body->activate(true);
 }
+}
+
+void physics_body_set_transform(
+    PhysicsBodyHandle body,
+    const PhysicsTransform& transform) {
+    auto& entry = body_at(body);
+    update_body_transform(entry, transform);
+    // HP_Body_SetQTransform teleports: the next kinematic step must not
+    // derive a velocity from the position preceding this write.
+    entry.body->setInterpolationWorldTransform(entry.body->getWorldTransform());
+}
 
 void physics_body_set_target_transform(
     PhysicsBodyHandle body,
     const PhysicsTransform& transform) {
-    // `HP_Body_SetTargetQTransform` derives a velocity that carries the
-    // body to the target over one step, so resting bodies on top are
-    // dragged by friction rather than tunnelled through. Bullet has no such
-    // entry point; a kinematic body's motion state IS that behaviour, since
-    // the solver derives contact velocity from the swept transform.
-    physics_body_set_transform(body, transform);
+    // ACTION preserves Bullet's swept-pose path. Its immediate pose write
+    // and substep velocity differ from Havok's deferred target integration;
+    // the measured boundary is recorded in docs/fidelity.md.
+    update_body_transform(body_at(body), transform);
 }
 
 double physics_shape_default_mass(PhysicsShapeHandle shape) {

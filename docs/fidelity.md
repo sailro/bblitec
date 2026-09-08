@@ -196,6 +196,12 @@ Identical trajectories are not guaranteed. Solver substitutions include substeps
 speculative contacts, rebound reconstruction, damping/speed conversion and rest
 stabilization. The rebound rule is fitted behavior, not ported Havok internals.
 
+Deep initial overlaps use fitted positional recovery, approximately 5% per 60 Hz frame capped at 1 m/s;
+incoming impacts retain the rebound solver. Across 135 depth/timestep/mass/motion-type controls,
+four-step position error stays below 0.01. TELEPORT pose writes retain zero kinematic velocity.
+ACTION still uses Bullet's immediate swept pose; Havok instead integrates a deferred target and retains
+the derived velocity across later steps.
+
 Default physics follows variable frame delta, capped at 100 ms. Explicit
 scene/world fixed steps advance once per rendered frame, including the initial zero engine delta.
 Each scene resolves its callback delta once per update; there is no automatic
@@ -223,6 +229,10 @@ rim margin `min(0.015, 0.1 * minimumHalfExtent)`. Parallel cylinder/capsule cont
 overlap endpoint to match Havok's nonunique closest feature. These are measured solver adaptations.
 Scene49 is pixel-exact at its authored capture pose; rotated query fields and live contact markers differ
 from Havok by less than 0.005 in the checked poses.
+
+Box queries use a measured 0.015 rounded margin capped by the smallest half-extent. Capsule/box face
+ties select the capsule's authored first endpoint within the face overlap. In 32 face/edge proximity
+and cast controls, the largest Havok delta is 0.000355 (cast fraction).
 
 Rotation gizmos translate the pinned drag angle and quaternion arithmetic. Native GPU picks complete
 synchronously. Custom drag observables, sector readout, sibling-disable styling and multi-pointer/touch

@@ -16,6 +16,9 @@ The corpus/registry comparison leaves **3** numbered scenes unregistered.
 
 ## Compiler and lowering
 
+- [ ] Match Havok's deferred ACTION target pose and persistent kinematic velocity; the current Bullet
+  path writes the pose immediately and derives velocity over its first substep.
+
 - [ ] Replace positional/source-text recognizers with typed user-code IR, one
   symbol/alias resolver and an escape/retaining-sink model. Mutable callback
   captures and dynamic-import continuations need one ownership contract. The
