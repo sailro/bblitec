@@ -1219,6 +1219,7 @@ export class LoweringContext {
             node.getSourceFile(),
         ).filter(
             (child) =>
+                !ts.isJSDoc(child) &&
                 child.kind !== ts.SyntaxKind.CommaToken &&
                 child.kind !== ts.SyntaxKind.SemicolonToken,
         );

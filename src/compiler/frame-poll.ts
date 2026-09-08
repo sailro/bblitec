@@ -1,15 +1,15 @@
 import ts from "typescript";
+import { promiseExecutor } from "./promise-executor.js";
 
 /** A closed Promise executor: local setup, one zero-argument RAF poll, and its initial call. */
 export function framePollExecutor(expression: ts.Expression, checker: ts.TypeChecker, isGlobal: (identifier: ts.Identifier) => boolean): {
     setup: readonly ts.Statement[];
     condition: ts.Expression;
 } | undefined {
-    if (!ts.isNewExpression(expression) || !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== "Promise" || !isGlobal(expression.expression) || expression.arguments?.length !== 1) return undefined;
-    const executor = expression.arguments[0]!;
-    if (!ts.isArrowFunction(executor) || executor.parameters.length !== 1 ||
-        !ts.isIdentifier(executor.parameters[0]!.name) || !ts.isBlock(executor.body)) return undefined;
+    const head = promiseExecutor(expression, isGlobal);
+    if (!head) return undefined;
+    const { executor, resolve: resolveParameter } = head;
+    if (!ts.isBlock(executor.body)) return undefined;
     const statements = executor.body.statements;
     const declaration = statements.at(-2);
     const initialCall = statements.at(-1);
@@ -24,14 +24,14 @@ export function framePollExecutor(expression: ts.Expression, checker: ts.TypeChe
         !scheduled || !ts.isExpressionStatement(scheduled) || !ts.isCallExpression(scheduled.expression)) return undefined;
     const [resolve, done] = guard.thenStatement.statements;
     if (!resolve || !ts.isExpressionStatement(resolve) || !ts.isCallExpression(resolve.expression) ||
-        !ts.isIdentifier(resolve.expression.expression) || resolve.expression.expression.text !== executor.parameters[0]!.name.text || resolve.expression.arguments.length !== 0 ||
+        !ts.isIdentifier(resolve.expression.expression) || resolve.expression.expression.text !== resolveParameter.text || resolve.expression.arguments.length !== 0 ||
         !done || !ts.isReturnStatement(done) || done.expression) return undefined;
     const raf = scheduled.expression;
     if (!ts.isIdentifier(raf.expression) || raf.expression.text !== "requestAnimationFrame" || !isGlobal(raf.expression) || raf.arguments.length !== 1 ||
         !ts.isIdentifier(raf.arguments[0]!) || raf.arguments[0]!.text !== poll.name.text ||
         !ts.isIdentifier(initialCall.expression.expression) || initialCall.expression.expression.text !== poll.name.text || initialCall.expression.arguments.length !== 0) return undefined;
     const sameSymbol = (left: ts.Node, right: ts.Node) => checker.getSymbolAtLocation(left) !== undefined && checker.getSymbolAtLocation(left) === checker.getSymbolAtLocation(right);
-    if (!sameSymbol(resolve.expression.expression, executor.parameters[0]!.name) ||
+    if (!sameSymbol(resolve.expression.expression, resolveParameter) ||
         !sameSymbol(raf.arguments[0]!, poll.name) || !sameSymbol(initialCall.expression.expression, poll.name) ||
         executor.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) ||
         poll.initializer.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) return undefined;

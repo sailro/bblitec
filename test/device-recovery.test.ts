@@ -42,24 +42,62 @@ test("recovery declines unrepresented callbacks, listeners, options and poll sch
     }
 });
 
-test("recovery refuses pinned force and retirement contract drift", () => {
+test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract drift", () => {
     class EditedStore extends UpstreamSourceStore {
-        public edit?: [string, string];
+        public constructor(private readonly module: string, private readonly from: string, private readonly to: string) { super(); }
         public override getSourceFile(module: string): ts.SourceFile {
             const source = super.getSource(module);
-            const text = this.edit ? source.replace(...this.edit) : source;
+            if (module === `src/engine/${this.module}.ts`) assert.ok(source.includes(this.from), this.from);
+            const text = module === `src/engine/${this.module}.ts` ? source.replace(this.from, this.to) : source;
             return ts.createSourceFile(module, text, ts.ScriptTarget.Latest, true);
         }
     }
-    for (const [from, to, error] of [
-        ["engine._device.destroy()", "engine._device.submit()", /forced device destruction/],
-        ["disposeGpuResourceRetirements(engine);", "otherRetirements(engine);", /Recovery no longer calls disposeGpuResourceRetirements/],
-        ["settleTextureOwnership?.();", "otherOwnership?.();", /ownership settlement/],
+    for (const [module, from, to] of [
+        ["device-lost-recovery", "_forceNextLoss: false", "_forceNextLoss: true"],
+        ["device-lost-recovery", "let disabled = false", "let disabled = true"],
+        ["device-lost-recovery", "registrations.splice(index, 1)", "registrations.splice(index, 2)"],
+        ["device-lost-recovery", "state._armedDevice === device || state._recovering", "state._armedDevice === device && state._recovering"],
+        ["device-lost-recovery", 'info.reason === "destroyed" && !state._forceNextLoss', 'info.reason === "destroyed" && state._forceNextLoss'],
+        ["device-lost-recovery", "const registrations = [...state._registrations]", "const registrations = state._registrations"],
+        ["device-lost-recovery", "registration._onLost?.(info)", "registration._onRecovered?.()"],
+        ["device-lost-recovery", "arm(engine, state);\n                    for", "arm(engine, getState(engine));\n                    for"],
+        ["device-lost-recovery", "registration._onRecoveryFailed?.(error)", "arm(engine, state); registration._onRecoveryFailed?.(error)"],
+        ["device-lost-recovery-testing", "engine._device.destroy()", "engine._device.submit()"],
+        ["device-lost-scene-recovery", "options: DeviceLostRecoveryCallbacks = {}", "options: DeviceLostRecoveryCallbacks = { onLost() {} }"],
+        ["device-lost-scene-recovery", "_recoverOrder: 100", "_recoverOrder: 0"],
+        ["device-lost-scene-recovery", "_onRecovered: options.onRecovered", "_onRecovered: options.onLost"],
+        ["device-lost-recovery-run", "disposeGpuResourceRetirements(engine);", "otherRetirements(engine);"],
+        ["device-lost-recovery-run", "requiredFeatures: state._requiredFeatures", "requiredFeatures: []"],
+        ["device-lost-recovery-run", "(a._recoverOrder ?? 0) - (b._recoverOrder ?? 0)", "(b._recoverOrder ?? 0) - (a._recoverOrder ?? 0)"],
+        ["device-lost-recovery-run", "settleTextureOwnership?.();", "otherOwnership?.();"],
+        ["device-lost-recovery-run", "if (wasRunning)", "if (!wasRunning)"],
+        ["device-lost-recovery-run", "Promise.allSettled(textures.map", "Promise.all(textures.map"],
+        ["device-lost-recovery-run", "settleRebuiltTextureOwnership(state);", "settleRebuiltTextureOwnership(engine);"],
+        ["device-lost-recovery-run", "if (!handlers.has(context._kind))", "if (handlers.has(context._kind))"],
+        ["recovery-rebuild", "engine._pbrFallbackTex = undefined", "engine._pbrFallbackTex = null"],
+        ["recovery-rebuild", 'if (ctx._kind !== "scene")', 'if (ctx._kind !== "sprite")'],
+        ["recovery-rebuild", "scene._renderables.filter((r) => !!r._rebuild)", "scene._renderables.filter((r) => !r._rebuild)"],
+        ["recovery-rebuild", "scene._renderables.sort((a, b) => a.order - b.order)", "scene._renderables.sort((a, b) => b.order - a.order)"],
+        ["recovery-rebuild", "rebuilt.push(await rebuild())", "rebuilt.push(rebuild())"],
+        ["recovery-rebuild", "rt._lastVersion = -1", "rt._lastVersion = 0"],
+        ["recovery-rebuild", "indices.length", "positions.length"],
+        ["device-lost-recovery-capture", "includeMeshes = false", "includeMeshes = true"],
+        ["device-lost-recovery-capture", "data.slice(0, tex.width * tex.height * 4)", "data.slice(0)"],
+        ["device-lost-recovery-capture", "state._captureRefs--", "state._captureRefs++"],
+        ["gpu-resource-retirement", "batch.splice(0)", "batch.slice(0)"],
+        ["gpu-resource-retirement", "inFlight?.forEach(runBatch)", "inFlight?.forEach(() => undefined)"],
     ] as const) {
-        const store = new EditedStore();
-        store.edit = [from, to];
-        assert.throws(() => lowerDeviceRecovery(new LoweringContext(store)), error);
+        const store = new EditedStore(module, from, to);
+        assert.throws(() => lowerDeviceRecovery(new LoweringContext(store)), /native recovery contract/, `${module}: ${from}`);
     }
+});
+
+test("whole-function recovery contracts ignore documentation but retain executable structure", () => {
+    const context = new LoweringContext();
+    const file = ts.createSourceFile("contract.ts", "/** @internal A documented function. */ function recover(value = false) { return value; }", ts.ScriptTarget.Latest, true);
+    context.assertStatementShapes(file, file.statements, "function recover(value = false) { return value; }", "documentation-independent contract");
+    assert.throws(() => context.assertStatementShapes(file, file.statements,
+        "function recover(value = true) { return value; }", "default contract"), /default contract statement 1 changed/);
 });
 
 const nativeTools = optionalNativeFixtureTools(false);

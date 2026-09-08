@@ -1,31 +1,9 @@
 import { type LoweredSource, LoweringContext } from "./context.js";
+import { assertDeviceRecoveryContracts } from "./device-recovery-contract.js";
 
 export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
     const modulePath = "src/engine/device-lost-recovery.ts";
-    const enable = context.functionDeclaration(modulePath, "_enableDeviceLostRecovery").declaration;
-    context.assertStatementInventory(enable, enable.body!.statements, "_enableDeviceLostRecovery", "native scene registration",
-        ["variable statement", "variable statement", "if statement", "if statement", "expression statement", "expression statement", "variable statement", "return statement"]);
-    context.expectShapeCount(enable, "registrations.splice(index, 1)", "disabled registration removal");
-    const arm = context.functionDeclaration(modulePath, "arm").declaration;
-    for (const expression of ["registration._onLost?.(info)", "registration._onRecovered?.()", "registration._onRecoveryFailed?.(error)", "state._recovering = false"]) {
-        context.expectShapeCount(arm, expression, "recovery callback lifecycle", expression === "state._recovering = false" ? 2 : 1);
-    }
-    const force = context.functionDeclaration("src/engine/device-lost-recovery-testing.ts", "forceWebGpuDeviceLossForTesting").declaration;
-    context.assertStatementInventory(force, force.body!.statements, "forceWebGpuDeviceLossForTesting", "native deferred device destruction", ["if statement", "expression statement"]);
-    context.expectShapeCount(force, "engine._device.destroy()", "forced device destruction");
-    const recovery = context.functionDeclaration("src/engine/device-lost-recovery-run.ts", "runDeviceLostRecovery").declaration;
-    context.assertStatementInventory(recovery, recovery.body!.statements, "runDeviceLostRecovery", "native device reconstruction", [
-        "variable statement", "other statement", "variable statement", "expression statement", "expression statement", "expression statement",
-        "variable statement", "if statement", "variable statement", "if statement", "expression statement", "expression statement",
-        "expression statement", "expression statement", "variable statement", "variable statement", "other statement", "if statement",
-    ]);
-    context.expectShapeCount(recovery, "settleTextureOwnership?.()", "ownership settlement after handlers");
-    context.expectShapeCount(recovery, "(a._recoverOrder ?? 0) - (b._recoverOrder ?? 0)", "handler ordering");
-    for (const call of ["stopEngine", "assertEveryActiveContextKindIsRecoverable", "disposeGpuResourceRetirements", "resizeEngine", "rebuildRecoverableTextures", "startEngine"]) {
-        if (!context.hasCall(recovery, call)) context.contractError(recovery, `Recovery no longer calls ${call}.`);
-    }
-    context.functionDeclaration("src/engine/recovery-rebuild.ts", "rebuildRegisteredScenes");
-    context.functionDeclaration("src/engine/device-lost-scene-recovery.ts", "enableDeviceLostSceneRecovery");
+    assertDeviceRecoveryContracts(context);
     return { modulePath, symbolName: "_enableDeviceLostRecovery,arm,markNextDeviceLossForRecovery", header: "", source: `
 // ${context.provenance(modulePath, "_enableDeviceLostRecovery, arm")}
 // Native device recreation replays generated upload/composition products over retained CPU owners.
