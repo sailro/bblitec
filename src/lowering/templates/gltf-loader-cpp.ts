@@ -180,6 +180,7 @@ export function gltfLoaderCpp(
     const factorBake = lowered.factorBake;
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
+#include <bblite/pal_image_canvas.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/gltf_glb_parser.hpp>
@@ -1452,7 +1453,11 @@ ${sourceTextureReads ? `
             const auto handle = load_material(engine, gltf_material_object(material->_rawMatDef), *material, buffer, container, views,
                 image_json, texture_json, sampler_json, extension_image_fetcher,
                 source_material_index < animated_base_color.size() && animated_base_color[source_material_index],
-                material_features, extended_material, material_texture_wrap, sampled_material, &material_texture_cache, &material_sampler_context);
+                material_features, extended_material, material_texture_wrap, sampled_material, &material_texture_cache, &material_sampler_context,
+                [](const TextureData& texture) {
+                    if (!texture.compressed.mips.empty()) throw std::runtime_error("Canvas2D composition of compressed glTF images is unsupported.");
+                    return pal::decode_image(js::ArrayBuffer(texture.bytes));
+                });
 ${sourceTextureReads ? `            retain_source_albedo(handle, source_material_index);` : ""}
             return handle;
         }).get();

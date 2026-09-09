@@ -183,7 +183,13 @@ export function lowerGltfMaterialAssembly(context: LoweringContext): string {
         returnValue: (expression, lowerer) => lowerer.expression(expression!),
     });
     return `${gltfLoadPromise}
-struct GltfMaterialImageSource { std::size_t index; };
+struct GltfMaterialImageSource {
+    std::size_t index;
+    std::shared_ptr<const pal::DecodedImage> decoded;
+    explicit GltfMaterialImageSource(std::size_t value) : index(value) {}
+    explicit GltfMaterialImageSource(pal::DecodedImage value)
+        : index(std::numeric_limits<std::size_t>::max()), decoded(std::make_shared<const pal::DecodedImage>(std::move(value))) {}
+};
 using GltfMaterialImage = std::shared_ptr<const GltfMaterialImageSource>;
 using GltfMaterialImagePromise = GltfLoadPromise<GltfMaterialImage>;
 using GltfMaterialImageCache = std::unordered_map<std::size_t, GltfMaterialImagePromise>;

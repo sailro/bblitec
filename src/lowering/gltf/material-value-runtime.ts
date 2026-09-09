@@ -40,6 +40,7 @@ public:
     std::string text() const;
     const ts::JsonValue* source() const;
     const GltfMaterialTexture& texture() const;
+    const GltfMaterialImage& image() const;
     std::size_t size() const;
     GltfPbrValue get(const std::string& key, bool optional = false) const;
     GltfPbrValue at(double index, bool optional = false) const;
@@ -126,6 +127,10 @@ const GltfMaterialTexture& GltfPbrValue::texture() const {
     if (const auto* object = std::get_if<std::shared_ptr<GltfPbrObject>>(&value_))
         if ((*object)->texture) return *(*object)->texture;
     throw std::runtime_error("Expected a glTF material texture.");
+}
+const GltfMaterialImage& GltfPbrValue::image() const {
+    if (const auto* image = std::get_if<GltfMaterialImage>(&value_)) return *image;
+    throw std::runtime_error("Expected a glTF material bitmap.");
 }
 std::size_t GltfPbrValue::size() const {
     if (const auto* source = std::get_if<const ts::JsonValue*>(&value_)) {

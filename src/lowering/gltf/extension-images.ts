@@ -72,6 +72,28 @@ export function lowerGltfExtensionImages(context: LoweringContext): string {
         },
         returnValue: (expression, lowerer) => lowerer.expression(expression!),
     });
+    const uploads = object.properties.filter((property): property is ts.MethodDeclaration =>
+        ts.isMethodDeclaration(property) && ts.isIdentifier(property.name) && property.name.text === "_uploadImage");
+    const upload = uploads[0];
+    if (uploads.length !== 1 || !upload?.body || upload.parameters.length !== 2)
+        context.contractError(object, "Expected the extension bitmap upload method.");
+    const uploadBindings = new Map<string, PinnedBinding>();
+    upload.parameters.forEach((parameter, index) => {
+        if (!ts.isIdentifier(parameter.name)) context.contractError(parameter, "Expected a named bitmap upload parameter.");
+        uploadBindings.set(parameter.name.text, index ? { cpp: "srgb", type: "bool" }
+            : { cpp: "bitmap", type: "opaque", absentCpp: "!bitmap.truthy()" });
+    });
+    const uploadBody = lowerPinnedBody(file, upload.body.statements, {
+        bindings: uploadBindings, calls: new Map(),
+        expression(node, lowerer) {
+            if (!ts.isCallExpression(node) || !context.expressionMatchesShape(node.expression, "uploadTex")) return undefined;
+            if (node.arguments.length !== 5) context.contractError(node, "Expected the bitmap upload boundary.");
+            for (const [index, shape] of [[0, "engine"], [3, "sampler"], [4, "_generateMipmaps!"]] as const)
+                context.assertExpressionShape(node.arguments[index]!, shape, "Bitmap upload environment");
+            return `upload_image((${lowerer.expression(node.arguments[1]!)}).image(), ${lowerer.expression(node.arguments[2]!)})`;
+        },
+        returnValue: (expression, lowerer) => lowerer.expression(expression!),
+    });
     return `using GltfImageFetcher = std::function<GltfMaterialImagePromise(const ts::JsonValue*)>;
 // ${context.provenance(module, "uploadMeshes")}
 template<class ResolveImage> GltfImageFetcher make_gltf_extension_image_fetcher(
@@ -83,5 +105,9 @@ ${setup}
 template<class CachedTexture, class WrapTexture> GltfPbrValue gltf_extension_texture(
     GltfPbrValue info, bool srgb, const GltfImageFetcher& fetch_image, CachedTexture cached_texture, WrapTexture wrap_texture) {
 ${body}
+}
+// ${context.provenance(module, "uploadMeshes")}
+template<class UploadImage> GltfPbrValue gltf_extension_upload_image(GltfPbrValue bitmap, bool srgb, UploadImage upload_image) {
+${uploadBody}
 }`;
 }

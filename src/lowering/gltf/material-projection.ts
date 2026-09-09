@@ -34,7 +34,8 @@ MaterialHandle load_material(
     bool texture_wrap = false,
     bool sampled_material = false,
     GltfTextureCache* texture_cache = nullptr,
-    GltfSamplerContext* sampler_context = nullptr) {
+    GltfSamplerContext* sampler_context = nullptr,
+    const std::function<pal::DecodedImage(const TextureData&)>& decode_image = {}) {
     static_cast<void>(material_json);
     MaterialRecord material;
     if (core._baseColorFactor.size() != 4 || core._emissiveFactor.size() != 3)
@@ -62,6 +63,16 @@ MaterialHandle load_material(
         return result;
     };
     GltfPbrContext context;
+    context.decode_image = [&](const GltfMaterialImage& image) {
+        if (image->decoded) return *image->decoded;
+        if (!decode_image) throw std::runtime_error("Missing glTF bitmap decoder.");
+        return decode_image(image_data(buffer, container, views, images, image->index));
+    };
+    context.upload_image = [&](const GltfPbrValue& image, bool srgb) {
+        return gltf_extension_upload_image(image, srgb, [&](GltfMaterialImage bitmap, bool encoded) {
+            return GltfPbrValue{GltfMaterialTexture{std::move(bitmap), encoded, std::nullopt, nullptr, sampler_context->default_sampler}};
+        });
+    };
     context.default_textures = [&](const GltfPbrValue&) { return texture_values(gltf_default_pbr_textures(core, texture_cache, sampler_context), false); };
     context.sampled_textures = [&](const GltfPbrValue&) { return texture_values(gltf_sampled_pbr_textures(core, texture_cache, sampler_context), false); };
     context.extended_textures = [&](const GltfPbrValue&) { return texture_values(gltf_default_pbr_textures_ext(core, sampled_material, texture_cache, sampler_context), true); };
@@ -75,7 +86,15 @@ MaterialHandle load_material(
         if (value.nullish()) return TextureData{};
         const auto& texture = value.texture();
         if (texture.srgb != srgb) throw std::runtime_error("Unsupported glTF texture color space for material slot.");
-        auto result = texture.image ? image_data(buffer, container, views, images, texture.image->index) : TextureData{};
+        TextureData result;
+        if (texture.image) {
+            if (texture.image->decoded) {
+                const auto& image = *texture.image->decoded;
+                result.bytes = image.rgba;
+                result.rgba_width = static_cast<std::uint32_t>(image.width);
+                result.rgba_height = static_cast<std::uint32_t>(image.height);
+            } else result = image_data(buffer, container, views, images, texture.image->index);
+        }
         result.sampler = texture.sampler ? *texture.sampler : gltf_default_sampler_state();
         return result;
     };
@@ -131,8 +150,6 @@ ${animationPointerMaterials ? `    material.emissive_base_factor = material.emis
         const auto coord = props.get("occlusionTexCoord");
         const auto uv = coord.nullish() ? 0 : gltf_checked_index(coord.number());
         if (uv > 1) throw std::runtime_error("Reached glTF occlusion texture uses an unsupported texture-coordinate set.");
-        if (core._metallicRoughnessImage && core._metallicRoughnessImage != core._occlusionImage)
-            throw std::runtime_error("Reached glTF material uses distinct occlusion and metallic-roughness images.");
         const auto occlusion = props.get("occlusionTexture");
         if (uv == 1 && core._metallicRoughnessImage && occlusion.nullish())
             throw std::runtime_error("Reached glTF occlusion texture on TEXCOORD_1 composes an occlusion binding with no texture.");

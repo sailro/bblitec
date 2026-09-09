@@ -179,6 +179,8 @@ export function lowerGltfMaterialObjectFunction(
                     return `gltf_pbr_apply_feature(${value(callee.expression, lowerer)}, ${argument(0)}, ${argument(1)})`;
                 if (contextParameter && context.expressionMatchesShape(node.expression, `${contextParameter}._texture`) && node.arguments.length === 2)
                     return `${contextParameter}.texture(${argument(0)}, GltfPbrValue{${argument(1)}}.truthy())`;
+                if (contextParameter && context.expressionMatchesShape(node.expression, `${contextParameter}._uploadImage`) && node.arguments.length === 2)
+                    return `${contextParameter}.upload_image(${argument(0)}, GltfPbrValue{${argument(1)}}.truthy())`;
                 if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
                     if (node.arguments.length !== 1 || !ts.isStringLiteralLike(node.arguments[0]!) ||
                         !/^\.\.\/material\/pbr\/(set-(transmission|dispersion|metallic-reflectance|emissive|alpha-cutoff)|enable-material-uv-transform)\.js$/.test(node.arguments[0].text))

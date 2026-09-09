@@ -116,6 +116,7 @@ test("glTF material and extension image caches retain identities, null results a
     const loader = new GltfLowerer(contexts[0]!).lowerLoaderAdapter().source;
     const file = join(directory, "check.cpp"), executable = join(directory, "check.exe");
     writeFileSync(file, `#include <bblite/runtime.hpp>
+        #include <bblite/pal_image_canvas.hpp>
         #include <bblite/ts_runtime.hpp>
         #include <fstream>
         namespace bbl {

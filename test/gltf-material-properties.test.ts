@@ -196,6 +196,7 @@ for (const [variant, context] of [
     };
     const iorFunction = lowered.functions.find(target => target.name === "iorToF0Factor")!;
     writeFileSync(source, `#include <bblite/ts_runtime.hpp>
+        #include <bblite/pal_image_canvas.hpp>
         #include <bblite/runtime.hpp>
         #include <array>
         #include <cassert>
@@ -269,6 +270,43 @@ for (const [variant, context] of [
                 auto independent = texture.clone();
                 { const GltfPbrValue temporary{independent}; assert(!independent.identity->value.expired()); }
                 assert(independent.identity->value.expired());
+            }
+            {
+                const auto document = ts::json_parse(R"({"materials":[{"pbrMetallicRoughness":{"metallicRoughnessTexture":{"index":0}},"occlusionTexture":{"index":1}}],"textures":[{"source":0},{"source":1}],"images":[{},{}]})");
+                const auto& object = document.as_object();
+                GltfMaterialImageCache cache;
+                const auto resolve_image = [](std::size_t index) -> GltfMaterialImage { return std::make_shared<GltfMaterialImageSource>(index); };
+                const auto core = assemble_gltf_material(object, 0, cache, resolve_image);
+                const auto features = gltf_pbr_material_features(GltfPbrValue{&document});
+                assert(features.size() == 1);
+                const auto fetcher = make_gltf_extension_image_fetcher(object, double(features.size()), resolve_image);
+                Engine engine;
+                unsigned decodes = 0;
+                load_material(engine, core._rawMatDef->as_object(), core, {}, {}, {}, object.at("images").as_array(), object.at("textures").as_array(),
+                    {}, fetcher, false, features, false, false, false, nullptr, nullptr,
+                    [&](const TextureData& texture) {
+                        ++decodes;
+                        return texture.bytes[0] == 1 ? pal::DecodedImage{2, 1, {10,40,60,255, 14,44,66,255}}
+                            : pal::DecodedImage{2, 1, {20,3,5,255, 35,9,8,255}};
+                    });
+                assert(decodes == 2);
+                const auto& orm = engine.materials.back().metallic_roughness_texture;
+                assert(orm.rgba_width == 2 && orm.rgba_height == 1);
+                assert((std::vector<std::uint8_t>(orm.bytes.begin(), orm.bytes.end()) == std::vector<std::uint8_t>{20,40,60,255, 35,44,66,255}));
+                const auto bitmap = GltfPbrValue{core._metallicRoughnessImage};
+                unsigned uploads = 0;
+                const auto upload = [&](GltfMaterialImage image, bool srgb) { ++uploads; return GltfPbrValue{GltfMaterialTexture{std::move(image), srgb, std::nullopt, nullptr}}; };
+                const auto first = gltf_extension_upload_image(bitmap, false, upload);
+                const auto second = gltf_extension_upload_image(bitmap, false, upload);
+                assert(uploads == 2 && !first.equals(second));
+                assert(first.texture().image == second.texture().image && !first.texture().srgb);
+                const auto absent = GltfPbrValue::object();
+                absent.set("_metallicRoughnessImage", bitmap);
+                absent.set("_occlusionImage", bitmap);
+                const GltfPbrContext unused_context;
+                assert(gltf_pbr_gltf_ext_orm_applyMaterial(absent, unused_context).nullish());
+                absent.erase("_occlusionImage");
+                assert(gltf_pbr_gltf_ext_orm_applyMaterial(absent, unused_context).nullish());
             }
             {
                 MaterialRecord animated;

@@ -193,6 +193,9 @@ Canvas dimensions follow drawable extent. Off-center orthographic planes and wid
 
 Generated glTF loaders create supported meshes, materials, lights, cameras, skins and animation,
 including packaged external/compressed resources and reached material extensions. Unsupported branches refuse.
+Separate occlusion and metallic-roughness images use the pinned ORM composition and upload path.
+Its CPU Canvas2D adapter requires equally sized opaque images; scaling, alpha compositing and
+compressed bitmap composition refuse.
 `.babylon` loading supports parented meshes, container nodes, Standard materials, point lights and cameras.
 Mesh construction, hierarchy and material/scene control flow lower from the pin. `loadCamera` and
 `loadTextures` are honored; `maxMeshes` is unsupported.

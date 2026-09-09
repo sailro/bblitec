@@ -71,6 +71,7 @@ test("core glTF material assembly follows pinned defaults, branches, fetch order
         "_occlusionTexCoord", "_doubleSided", "_alphaMode", "_alphaCutoff"];
     const images = ["_baseColorImage", "_metallicRoughnessImage", "_normalImage", "_occlusionImage", "_emissiveImage"];
     writeFileSync(file, `#include <bblite/ts_runtime.hpp>
+        #include <bblite/pal_image_canvas.hpp>
         #include <cassert>
         #include <fstream>
         #include <memory>
@@ -196,6 +197,7 @@ test("glTF texture builders and native material projection preserve source selec
         .map(signature => cppFunction(loader, signature)).join("\n");
     const file = join(output, "check.cpp"), executable = join(output, "check.exe");
     writeFileSync(file, `#include <bblite/runtime.hpp>
+        #include <bblite/pal_image_canvas.hpp>
         #include <bblite/ts_runtime.hpp>
         #include <cassert>
         #include <fstream>
@@ -253,7 +255,6 @@ test("glTF texture builders and native material projection preserve source selec
                     }
                     const auto& tex = built[1];
                     const bool invalid = core._occlusionImage && (core._occlusionTexCoord > 1 ||
-                        (core._metallicRoughnessImage && core._occlusionImage != core._metallicRoughnessImage) ||
                         (core._occlusionTexCoord == 1 && core._metallicRoughnessImage && !tex.occlusionTexture));
                     const auto count = engine.materials.size();
                     try {

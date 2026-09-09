@@ -7,6 +7,7 @@ import { lowerGltfMaterialSetup } from "./material-setup.js";
 import { lowerGltfSamplers } from "./sampler-resolver.js";
 import { lowerGltfExtensionImages } from "./extension-images.js";
 import { lowerGltfMaterialCaches } from "./material-cache.js";
+import { lowerGltfOrmComposition } from "./orm-composition.js";
 
 const setters = [
     ["set-clearcoat", "setPbrClearCoat"], ["set-sheen", "setPbrSheen"], ["set-iridescence", "setPbrIridescence"],
@@ -45,8 +46,10 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
     add("src/loader-gltf/gltf-pbr-builder-ext.ts", "needsGltfUvTransform");
     add("src/loader-gltf/gltf-pbr-builder-ext.ts", "assemblePbrPropsExt");
     add("src/loader-gltf/gltf-pbr-builder-ext.ts", "applyGltfUvTransform");
+    add("src/loader-gltf/gltf-parser.ts", "getTextureImageIndex");
+    add("src/loader-gltf/gltf-parser.ts", "needsOrmComposite");
     for (const file of ["gltf-ext-clearcoat", "gltf-ext-iridescence", "gltf-ext-emissive-strength", "gltf-ext-sheen",
-        "gltf-ext-anisotropy", "gltf-ext-diffuse-transmission", "gltf-ext-unlit", "gltf-ext-spec-gloss", "gltf-ext-dielectric"])
+        "gltf-ext-anisotropy", "gltf-ext-diffuse-transmission", "gltf-ext-unlit", "gltf-ext-spec-gloss", "gltf-ext-dielectric", "gltf-ext-orm"])
         add(`src/loader-gltf/${file}.ts`, "applyMaterial", true);
     const registryModule = "src/loader-gltf/gltf-feature-registry.ts";
     const registry = context.sourceFile(registryModule);
@@ -74,8 +77,11 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
         const name = handler ? `gltf_pbr_feature_${features.length}` : `gltf_pbr_texture_wrap_${textureWrapTriggers.length}`;
         const parameter = ts.isArrowFunction(expression) ? expression.parameters[0]?.name : undefined;
         if (parameter && !ts.isIdentifier(parameter)) context.contractError(parameter, "Expected a feature document parameter.");
+        const predicate = ts.isIdentifier(expression) && functions.some(target => target.name === expression.text &&
+            target.module === context.moduleOfImport(registryModule, expression.text));
         const body = ts.isArrowFunction(expression)
             ? ts.isBlock(expression.body) ? expression.body.getText() : `{ return ${expression.body.getText()}; }`
+            : predicate ? `{ return ${expression.getText()}(document); }`
             : `{ return (document.extensionsUsed ?? []).includes(${expression.getText()}); }`;
         const file = ts.createSourceFile(registryModule, `function ${name}(${parameter?.getText() ?? "document"}) ${body}`, ts.ScriptTarget.Latest, true);
         const declaration = file.statements[0];
@@ -91,15 +97,28 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
     functions[functions.length - 1]!.contextParameter = "ctx";
     const bodies = functions.map(target => lowerGltfMaterialObjectFunction(context, target, name =>
         (functions.find(candidate => candidate.module === target.module && candidate.name === name) ??
-            functions.find(candidate => candidate.name === name))?.cpp));
+            functions.find(candidate => candidate.name === name))?.cpp, (call, lowerer) => {
+                if (target.module !== "src/loader-gltf/gltf-ext-orm.ts" || !context.expressionMatchesShape(call.expression, "compositeOrm")) return undefined;
+                if (call.arguments.length !== 2 || !target.contextParameter) context.contractError(call, "Expected two ORM bitmaps and their image context.");
+                return `gltf_pbr_composite_orm(${target.contextParameter}, ${call.arguments.map(argument => lowerer.expression(argument)).join(", ")})`;
+            }));
     const setup = lowerGltfMaterialSetup(context, name => functions.find(target => target.name === name)?.cpp);
     return { functions: [...functions, ...setup.functions], features, textureWrapTriggers, source: `${gltfMaterialValueRuntime}
 struct GltfPbrContext {
     std::function<GltfPbrValue(const GltfPbrValue&, bool)> texture;
+    std::function<GltfPbrValue(const GltfPbrValue&, bool)> upload_image;
+    std::function<pal::DecodedImage(const GltfMaterialImage&)> decode_image;
     std::function<GltfPbrValue(const GltfPbrValue&)> default_textures;
     std::function<GltfPbrValue(const GltfPbrValue&)> sampled_textures;
     std::function<GltfPbrValue(const GltfPbrValue&)> extended_textures;
 };
+${lowerGltfOrmComposition(context)}
+GltfPbrValue gltf_pbr_composite_orm(const GltfPbrContext& context, const GltfPbrValue& mr, const GltfPbrValue& occ) {
+    if (!context.decode_image) throw std::runtime_error("Missing glTF bitmap decoder.");
+    const auto mr_image = context.decode_image(mr.image());
+    const auto occ_image = context.decode_image(occ.image());
+    return GltfPbrValue{std::make_shared<GltfMaterialImageSource>(gltf_composite_orm(mr_image, occ_image))};
+}
 GltfPbrValue gltf_pbr_apply_feature(GltfPbrValue feature, GltfPbrValue material, const GltfPbrContext& context);
 ${lowerGltfExtensionImages(context)}
 ${lowerGltfMaterialCaches(context)}
