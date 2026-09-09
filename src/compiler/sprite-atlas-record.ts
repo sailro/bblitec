@@ -1,25 +1,21 @@
+import { EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { doubleLiteral } from "./data-types.js";
-import type {
-    DataType,
-    DataTypeRegistry,
-} from "./data-types.js";
-import type { Feature, Value } from "./types.js";
+import type { Value } from "./types.js";
 
-interface SpriteAtlasRecordContext {
-    readonly dataTypes: DataTypeRegistry;
-    dataValue(cpp: string, dataType: DataType): Value;
-    requireDefaultEngine(node: ts.Node): string;
-    allocateTemporaryCppName(label: string): string;
-    registerNativeFunction(
-        prototype: string,
-        definitionLines: string[],
-    ): void;
-    reachJsData(): void;
-    reachImageDecode(): void;
-    reachFeature(feature: Feature, site?: ts.Node): void;
-    fail(node: ts.Node, message: string): never;
-}
+interface SpriteAtlasRecordContext
+    extends Pick<LoweringServices,
+        | "dataTypes"
+        | "dataValue"
+        | "requireDefaultEngine"
+        | "allocateTemporaryCppName"
+        | "registerNativeFunction"
+        | "reachJsData"
+        | "reachImageDecode"
+        | "reachFeature"
+        | "fail"
+    > {}
 
 /**
  * Atlas-builder helpers already registered for one compilation, keyed on
@@ -31,7 +27,7 @@ interface SpriteAtlasRecordContext {
  * times. Keyed by context so parallel compilations in one process never
  * share a name.
  */
-const emittedAtlasHelpers = new WeakMap<
+const emittedAtlasHelpers = new EmissionWeakMap<
     SpriteAtlasRecordContext,
     Map<string, string>
 >();
@@ -257,7 +253,7 @@ export function compileSpriteAtlasRecord(
         const key = `${parameters}\n${bodyLines.join("\n")}`;
         let helpers = emittedAtlasHelpers.get(context);
         if (!helpers) {
-            helpers = new Map<string, string>();
+            helpers = new EmissionMap<string, string>();
             emittedAtlasHelpers.set(context, helpers);
         }
         let helper = helpers.get(key);

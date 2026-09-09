@@ -8,7 +8,7 @@ import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCom
 const tools = optionalNativeFixtureTools();
 const labsound = resolve("artifacts/tools/labsound");
 
-test("discarded one-shot graphs reclaim nodes and PCM while retained handles stay valid", {
+test("audio playback preserves loops, rates and graph ownership", {
     skip: !tools || !existsSync(join(labsound, "lib/LabSound.lib")),
 }, () => {
     const output = resolve("artifacts/audio-lifetime-check");

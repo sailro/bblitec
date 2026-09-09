@@ -223,7 +223,7 @@ test("a .babylon container's flatten answers with its own mesh list", () => {
 
     assert.match(
         result.cpp,
-        /for \(const bbl::MeshHandle [A-Za-z0-9_]+ : [A-Za-z0-9_.]*engine\.assets\[[^\]]+\]\.meshes\)/,
+        /for \(const bbl::MeshHandle [A-Za-z0-9_]+ : bbl::asset_mesh_walk\([^\n]+, 0\)\)/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -232,10 +232,8 @@ test("a .babylon container's flatten answers with its own mesh list", () => {
     assert.doesNotMatch(result.cpp, /collect_meshes/);
 });
 
-test("a .babylon container that parents a visible node refuses the flatten", () => {
-    assert.throws(
-        () =>
-            compileBabylonWalk({
+test("a parented .babylon flatten records its source walk", () => {
+    const result = compileBabylonWalk({
                 ...flatBabylonDocument,
                 meshes: [
                     ...flatBabylonDocument.meshes,
@@ -248,12 +246,9 @@ test("a .babylon container that parents a visible node refuses the flatten", () 
                         indices: [0, 1, 2],
                     },
                 ],
-            }),
-        (error: unknown) =>
-            error instanceof CompileError &&
-            /parents 'jaw' under 'skull'/.test(error.message) &&
-            /records only for unparented nodes/.test(error.message),
-    );
+            });
+    assert.deepEqual(result.manifest.assets.find(asset => asset.kind === "babylon")?.meshWalks, [0]);
+    assert.equal(result.manifest.meshWalks?.length, 1);
 });
 
 test("loadBabylon refuses maxMeshes, which would shorten the container", () => {

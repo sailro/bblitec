@@ -123,13 +123,11 @@ export function pinnedMathSpelling(name: string): string {
 }
 
 /**
- * `PINNED_MATH_FUNCTIONS` as the spelling map `PinnedNumericLowerer` takes:
- * `Math.x` to its `<cmath>` call over doubles. `std::max`/`std::min` pin the
- * template argument, or a mixed-width call is ambiguous. Callers that need a
- * member with different semantics (`Math.round`, `Math.hypot`) layer it on
- * top of this map and say why.
+ * Math calls for numeric scopes. min/max use double unless the scope requests
+ * deduced arguments for its existing scalar width. Other semantics, including
+ * Math.round and Math.hypot, are supplied by their dedicated helpers.
  */
-export function pinnedNumericMathCalls(): Map<
+export function pinnedNumericMathCalls(templateArgument: "double" | "deduced" = "double"): Map<
     string,
     (args: readonly string[]) => string
 > {
@@ -140,7 +138,7 @@ export function pinnedNumericMathCalls(): Map<
                 (args: readonly string[]) => string,
             ] => [
                 `Math.${name}`,
-                name === "max" || name === "min"
+                templateArgument === "double" && (name === "max" || name === "min")
                     ? (args) => `${spelling}<double>(${args.join(", ")})`
                     : (args) => `${spelling}(${args.join(", ")})`,
             ],

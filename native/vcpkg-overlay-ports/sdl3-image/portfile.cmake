@@ -16,28 +16,28 @@ vcpkg_from_github(
         png-grey-ramp-last-index.patch
 )
 
-vcpkg_check_features(
-    OUT_FEATURE_OPTIONS FEATURE_OPTIONS
-    FEATURES
-        avif    SDLIMAGE_AVIF
-        jpeg    SDLIMAGE_JPG
-        jxl     SDLIMAGE_JXL
-        png     SDLIMAGE_PNG
-        tiff    SDLIMAGE_TIF
-        webp    SDLIMAGE_WEBP
-)
+file(READ "${CMAKE_CURRENT_LIST_DIR}/vcpkg.json" port_manifest)
+string(JSON feature_count LENGTH "${port_manifest}" features)
+math(EXPR last_feature "${feature_count} - 1")
+set(codec_options "")
+foreach(index RANGE 0 ${last_feature})
+    string(JSON feature MEMBER "${port_manifest}" features ${index})
+    string(TOUPPER "${feature}" option)
+    # SDL abbreviates these two format names in its CMake options.
+    if(option STREQUAL "JPEG")
+        set(option JPG)
+    elseif(option STREQUAL "TIFF")
+        set(option TIF)
+    endif()
+    list(APPEND codec_options "${feature}" "SDLIMAGE_${option}")
+endforeach()
+vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS FEATURES ${codec_options})
 
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         ${FEATURE_OPTIONS}
-        # bblitec decodes PNG, JPEG and WebP -- the three image types
-        # generation can name in BBLITE_IMAGE_CODECS (src/cli.ts,
-        # `optionalImageCodecs`) -- and nothing else. The port builds every
-        # dependency-free format in by default, and a static executable
-        # keeps the SVG, XPM and BMP decoders it never calls (127 KiB of
-        # SDL_image in a 2.3 MB scene 1 executable, 81 of them formats no
-        # scene reaches). Everything but the feature-driven three is off.
+        # Codec features control external decoders; built-in formats stay off.
         -DSDLIMAGE_ANI=OFF
         -DSDLIMAGE_BMP=OFF
         -DSDLIMAGE_GIF=OFF

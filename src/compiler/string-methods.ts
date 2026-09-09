@@ -7,7 +7,7 @@ import type { Value } from "./types.js";
 export function compileStringValueMethod(lowerer: DataLowerer, call: ts.CallExpression, method: string, owner: Value): Value | undefined {
     if (!["substring", "repeat", "concat", "at", "codePointAt"].includes(method)) return undefined;
     const source = lowerer.context.allocateTemporaryCppName("string_receiver");
-    lowerer.context.emit(`const std::string ${source} = ${owner.cpp};`);
+    lowerer.context.emit({ kind: "declaration", type: "const std::string", name: source, initializer: owner.cpp });
     const number = (index: number, fallback: string): string =>
         lowerer.compileNumberArgument(call.arguments[index], fallback);
     const stringType: DataType = { kind: "string" };
@@ -15,7 +15,7 @@ export function compileStringValueMethod(lowerer: DataLowerer, call: ts.CallExpr
         const parts = call.arguments.map(argument => {
             const value = lowerer.compileForSink(argument, stringType);
             const name = lowerer.context.allocateTemporaryCppName("concat_string");
-            lowerer.context.emit(`const std::string ${name} = ${value};`);
+            lowerer.context.emit({ kind: "declaration", type: "const std::string", name: name, initializer: value });
             return name;
         });
         return lowerer.leafValue(`bbl::js::concat(${[source, ...parts].join(", ")})`, stringType);

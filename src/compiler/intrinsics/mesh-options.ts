@@ -1,3 +1,12 @@
+import { EmissionMap, EmissionSet } from "../emission-transaction.js";
+import type { LoweringServices } from "../lowering-services.js";
+// Mesh option lowering: the size arguments of the primitive builders.
+//
+// Each function turns a mesh factory's options argument into the
+// positional C++ arguments the PAL builder takes, resolving the pinned
+// defaults (a box side defaults to its size, a sphere diameter fans
+// out per axis) at compile time. The intrinsic lowerer in mesh.ts
+// calls these through its context.
 // Mesh option lowering: the size arguments of the primitive builders.
 //
 // Each function turns a mesh factory's options argument into the
@@ -6,7 +15,6 @@
 // out per axis) at compile time. The intrinsic lowerer in mesh.ts
 // calls these through its context.
 import ts from "typescript";
-import type { Value } from "../types.js";
 import { doubleLiteral } from "../../cpp-literals.js";
 import {
     compilePositiveInteger,
@@ -17,25 +25,16 @@ import {
 
 export interface MeshOptionContext
     extends ObjectValidationContext,
-        PositiveIntegerContext {
-    unwrap(expression: ts.Expression): ts.Expression;
-    compileValue(expression: ts.Expression): Value;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    expectStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    pinValueToTemporary(value: Value, label: string): Value;
-}
+    PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "unwrap"
+        | "compileValue"
+        | "expectObjectLiteral"
+        | "expectStaticArrayLiteral"
+        | "objectProperty"
+        | "compileNumber"
+        | "pinValueToTemporary"
+    > {}
 
 /**
  * The option names each builder accepts, spelled once.
@@ -83,7 +82,7 @@ export function compileBoxOptions(
             "Box options support size, width, height, and depth.",
         );
         if (precision === "double") {
-            const values = new Map<string, string>();
+            const values = new EmissionMap<string, string>();
             for (const property of unwrapped.properties) {
                 if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
                     context.fail(property, "Box data options require named numeric fields.");
@@ -234,7 +233,7 @@ export function compileSphereOptions(
                 "Expected sphere options as an object literal or static record.",
             );
         }
-        const supported: ReadonlySet<string> = new Set(
+        const supported: ReadonlySet<string> = new EmissionSet(
             SPHERE_OPTION_NAMES,
         );
         for (const name of Object.keys(

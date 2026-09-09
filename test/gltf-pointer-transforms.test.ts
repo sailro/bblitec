@@ -1,9 +1,9 @@
+import { inlineCpp } from "./generated-cpp.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { GLTF_MATERIAL_EXTENSION_PAYLOAD } from "../src/gltf-document.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -27,13 +27,6 @@ function runFixture(name: string, source: string): void {
     ]);
     assert.ok(execFileSync(executable, { encoding: "utf8" }).includes(`${name}: ok`));
 }
-
-test("material extension hydration is absent from unreached loaders", () => {
-    assert.ok(!lowerer.lowerLoaderAdapter().source.includes(GLTF_MATERIAL_EXTENSION_PAYLOAD));
-    const reached = lowerer.lowerLoaderAdapter({ materialExtensionPayload: true }).source;
-    assert.ok(reached.includes(GLTF_MATERIAL_EXTENSION_PAYLOAD));
-    assert.match(reached, /packaging.*material extension|material extension.*packaging/i);
-});
 
 for (const layer of [
     { name: "clearcoat", property: "_clearCoat", baseField: "ccParams", writer: "writeClearcoatUBO",
@@ -59,11 +52,11 @@ for (const layer of [
     const spec = variant.materialUboSpec as {
         _offsets: Map<string, number>; _totalBytes: number; _structBody: string;
     };
-    const header = pinnedPbrVariantsHeader(context, variant.vertexWgsl, 368, 20, 4, "test", [{
+    const header = inlineCpp(pinnedPbrVariantsHeader(context, variant.vertexWgsl, 368, 20, 4, "test", [{
         fragmentKey: variant.fragmentKey, pipeline: "test", selectors: [], vertex: "", fragment: "",
         vertexWgsl: variant.vertexWgsl, fragmentWgsl: variant.fragmentWgsl,
         materialUbo: { ...spec, _offsets: Object.fromEntries(spec._offsets) },
-    }], [], []);
+    }], [], []));
     const start = header.indexOf("struct PbrTestMaterialUniforms");
     const structEnd = header.indexOf("inline void write_PbrTest_material", start);
     const writerStart = header.indexOf(`inline void write_PbrTest_${layer.baseField}`, structEnd);
@@ -130,7 +123,6 @@ test("native pointer transforms preserve the pin's separate and shared occlusion
     const functionStart = source.indexOf("TextureTransformResolution material_transform_slot(", enumEnd);
     const functionEnd = source.indexOf("struct AnimatedNode", functionStart);
     assert.ok(enumStart >= 0 && enumEnd > enumStart && functionStart > enumEnd && functionEnd > functionStart);
-    assert.ok(/if \(occlusion_on_uv2 \|\| occlusion_needs_split\) \{\s*material\.has_occlusion_transform = true;/.test(source));
     runFixture("gltf-pointer-transforms-check", `#include <bblite/runtime.hpp>
 #include <cassert>
 #include <iostream>

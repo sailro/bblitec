@@ -12,11 +12,26 @@ export const nativeFixtureVcpkgRoot = resolve(
     "artifacts/vcpkg-installed/development-full/x64-windows",
 );
 
+/** Isolate a namespace-level record, including its member implementations. */
+export function cppRecord(source: string, signature: string): string {
+    const start = source.indexOf(signature);
+    const end = source.indexOf("\n};", start);
+    assert.ok(start >= 0 && end > start, signature);
+    return source.slice(start, end + 3);
+}
+
 /** Isolate an emitted declaration for a CPU fixture without changing its body. */
 export function cppFunction(source: string, signature: string): string {
     const start = source.indexOf(signature);
     assert.ok(start >= 0, signature);
-    const open = source.indexOf("{", start);
+    let parameters = source.indexOf("(", start), parameterDepth = 1;
+    assert.ok(parameters >= 0, signature);
+    while (parameterDepth && ++parameters < source.length) {
+        if (source[parameters] === "(") ++parameterDepth;
+        if (source[parameters] === ")") --parameterDepth;
+    }
+    assert.equal(parameterDepth, 0);
+    const open = source.indexOf("{", parameters);
     let depth = 1, end = open + 1;
     while (depth && end < source.length) {
         const char = source[end++];

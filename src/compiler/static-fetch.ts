@@ -1,3 +1,12 @@
+import { EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+// Generation-time fetch for immutable JSON inputs.
+//
+// A source URL that is statically known can be read while the synchronous
+// compiler runs. The response remains a compile-time value: `ok` and `status`
+// fold exactly, and `json()` turns the document into the same tuple/record
+// values an equivalent literal would have produced. No browser Response or
+// JSON parser leaks into the native program.
 // Generation-time fetch for immutable JSON inputs.
 //
 // A source URL that is statically known can be read while the synchronous
@@ -19,21 +28,19 @@ import {
 } from "./json-value.js";
 import type { CompileAsset, Value } from "./types.js";
 
-export interface StaticFetchContext {
-    readonly options: { fileName: string; workers?: unknown };
-    compileValue(expression: ts.Expression): Value;
-    unwrap(expression: ts.Expression): ts.Expression;
-    compileStringLiteral(expression: ts.Expression): string;
-    staticAssetUrlCandidates(): readonly string[];
-    cppString(value: string): string;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    registerAsset(
-        source: string,
-        kind: CompileAsset["kind"],
-    ): CompileAsset;
-    reachJsData(): void;
-    fail(node: ts.Node, message: string): never;
-}
+export interface StaticFetchContext
+    extends Pick<LoweringServices,
+        | "options"
+        | "compileValue"
+        | "unwrap"
+        | "compileStringLiteral"
+        | "staticAssetUrlCandidates"
+        | "cppString"
+        | "lookupOptional"
+        | "registerAsset"
+        | "reachJsData"
+        | "fail"
+    > {}
 
 export function compileStaticFetch(
     context: StaticFetchContext,
@@ -74,6 +81,7 @@ export function compileStaticFetch(
         kind: "static-fetch-response",
         cpp: "",
         staticString: source,
+        packagedSources: [source],
     };
 }
 
@@ -150,7 +158,7 @@ function compileDynamicCandidateFetch(
             }
         },
     ).filter(({ source }) => accepts(source));
-    const candidates = new Map<
+    const candidates = new EmissionMap<
         string,
         { logicalSource: string; source: string }
     >();
@@ -169,6 +177,7 @@ function compileDynamicCandidateFetch(
         kind: "static-fetch-response",
         cpp: "",
         nativeCompanionCaptures: { dynamicAssetPathCpp: selected.nativeCaptures ?? [] },
+        packagedSources: [...candidates.values()].map(candidate => candidate.source),
         dynamicAssetPathCpp:
             `([&](const std::string& key) -> std::string { ` +
             packagedAssetLookupBody(context, entries) + `})(${selected.cpp})`,
@@ -195,6 +204,7 @@ export function compileStaticFetchMethod(
                 dataType: { kind: "arraybuffer" },
                 dynamicAssetPathCpp: owner.dynamicAssetPathCpp,
                 nativeCompanionCaptures: { dynamicAssetPathCpp: owner.nativeCompanionCaptures?.dynamicAssetPathCpp ?? owner.nativeCaptures ?? [] },
+                ...(owner.packagedSources ? { fetchedBytes: { expression: call, sources: owner.packagedSources } } : {}),
             };
         }
         if (!owner.staticString) {
@@ -211,6 +221,7 @@ export function compileStaticFetchMethod(
                 "bbl::js::ArrayBuffer(bbl::pal::read_binary_file(" +
                 `bbl::asset_path(${context.cppString(asset.output)})))`,
             dataType: { kind: "arraybuffer" },
+            fetchedBytes: { expression: call, sources: [asset.source] },
         };
     }
     if (method === "text") {
@@ -367,6 +378,7 @@ function compileDynamicDirectoryFetch(
         kind: "static-fetch-response",
         cpp: "",
         nativeCompanionCaptures: { dynamicAssetPathCpp: suffix.nativeCaptures ?? [] },
+        packagedSources: files,
         dynamicAssetPathCpp:
             `([&](const std::string& key) -> std::string { ` +
             packagedAssetLookupBody(context, entries) + `})(${suffix.cpp})`,

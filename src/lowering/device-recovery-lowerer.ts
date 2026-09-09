@@ -50,7 +50,7 @@ void begin_device_recovery(Engine& engine) {
     for (const auto& registration : state.in_flight) if (registration->on_lost) registration->on_lost();
     const bool was_running = !engine.stopped;
     engine.stopped = true;
-    if (!engine.registered_sprite_renderers.empty() || !engine.registered_effect_renderers.empty() || !engine.registered_frame_graph_contexts.empty()) {
+    if (bbl::has_sprite_renderers(engine) || !engine.registered_effect_renderers.empty() || !engine.registered_frame_graph_contexts.empty()) {
         throw std::runtime_error("Every active rendering context must have an enabled recovery strategy; only scene contexts are represented.");
     }
     state.environments.clear(); state.shadows.clear(); state.renderable_counts.clear(); state.fallback = {};

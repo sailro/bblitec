@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 /**
  * The pinned Standard composition path: variants obtained from the pin's own
  * `composeStandardShader`, never re-derived.
@@ -542,7 +543,6 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
     const composition = await composeSceneStandardVariants(
         {
             babylonAssets: [],
-            diffuseUv2: false,
             fog: false,
             vertexColors: false,
             noColorViews: false,
@@ -608,7 +608,6 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
     const again = await composeSceneStandardVariants(
         {
             babylonAssets: [],
-            diffuseUv2: false,
             fog: false,
             vertexColors: false,
             noColorViews: false,
@@ -678,7 +677,7 @@ test("the babylon walk mirrors the generated loader's records", async () => {
                 materialId: "walls",
                 subMeshes: [
                     { materialIndex: 0, indexStart: 0, indexCount: 3 },
-                    // Out-of-range submeshes create no record.
+                    // The pin still creates a record when the slice is empty.
                     { materialIndex: 1, indexStart: 3, indexCount: 3 },
                 ],
             },
@@ -686,7 +685,7 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             { isVisible: false, positions: [0], normals: [0], indices: [0] },
         ],
     });
-    assert.equal(babylonRenderableCount(document), 1);
+    assert.equal(babylonRenderableCount(document), 2);
     const flags = await importPinnedModule<{
         HAS_DIFFUSE_TEXTURE: number;
         HAS_AMBIENT_TEXTURE: number;
@@ -700,7 +699,6 @@ test("the babylon walk mirrors the generated loader's records", async () => {
     const composition = await composeSceneStandardVariants(
         {
             babylonAssets: ["asset.babylon"],
-            diffuseUv2: false,
             fog: false,
             vertexColors: false,
             noColorViews: false,
@@ -769,7 +767,7 @@ test("the native-support block flows from the pin's own declarations", async () 
         MSH_HAS_MORPH_TARGETS: number;
         MSH_HAS_THIN_INSTANCES: number;
     }>("material/mesh-features.js");
-    const block = pinnedStandardSupportBlock(context, {
+    const block = inlineCpp(pinnedStandardSupportBlock(context, {
         selectors: [
             { features: 0, meshFeatures: 0, variant: 0 },
             {
@@ -783,7 +781,7 @@ test("the native-support block flows from the pin's own declarations", async () 
         plugins: false,
         renderableMeshFeatures: [0, 0, 4],
         runtimeMeshFeatures: 0,
-    });
+    }));
     // The pinned values, evaluated from their own declarations rather than
     // restated: NEEDS_UV, the pass bit, and the MSH_* runtime OR bits.
     assert.ok(
@@ -861,7 +859,7 @@ test("the native-support block flows from the pin's own declarations", async () 
     assert.ok(block.includes("standard_renderable_mesh_features"));
     // Deterministic emission.
     assert.equal(
-        pinnedStandardSupportBlock(context, {
+        inlineCpp(pinnedStandardSupportBlock(context, {
             selectors: [
                 { features: 0, meshFeatures: 0, variant: 0 },
                 {
@@ -875,7 +873,7 @@ test("the native-support block flows from the pin's own declarations", async () 
             plugins: false,
             renderableMeshFeatures: [0, 0, 4],
             runtimeMeshFeatures: 0,
-        }),
+        })),
         block,
     );
 });

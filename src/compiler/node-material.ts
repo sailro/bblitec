@@ -1,3 +1,5 @@
+import { EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 // Node-material lowering: the graph a scene hands the pin, read statically.
 //
 // `parseNodeMaterialFromSnippet` either fetches a snippet or takes the graph
@@ -14,7 +16,25 @@
 // compiler does not lower; that one is executed at generation, the way a drawn
 // atlas and a computed pixel buffer are, and only the module and export travel
 // from here.
-import { readdirSync } from "node:fs";
+// Node-material lowering: the graph a scene hands the pin, read statically.
+//
+// `parseNodeMaterialFromSnippet` either fetches a snippet or takes the graph
+// inline. Only the inline form reaches native, because a fetch is a network
+// read at page load and generation has no later moment to perform it in --
+// the same boundary every other asset crosses, except that a graph is not a
+// URL to materialize but a value already present in the source.
+//
+// The corpus writes that value two ways, and each gets the answer it deserves.
+// A module exporting the object outright is read here as data: object, array,
+// string, number, boolean and null, and nothing else -- the fold, because a
+// literal cannot drift. A module that BUILDS its graph at load, through id
+// counters, spread-composed inputs and arrays it pushes into, is code this
+// compiler does not lower; that one is executed at generation, the way a drawn
+// atlas and a computed pixel buffer are, and only the module and export travel
+// from here.
+import {
+    readdirSync,
+} from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { pinnedLibraryRoot } from "../pinned-shader-composer.js";
@@ -44,36 +64,20 @@ import type {
 
 export interface NodeMaterialContext
     extends ObjectValidationContext,
-        PositiveIntegerContext,
-        ExecutedModuleReferenceContext {
-    readonly checker: ts.TypeChecker;
-    readonly reachedNodeMaterials: CompiledNodeMaterial[];
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    resolveStaticExpression(
-        expression: ts.Expression,
-    ): ts.Expression;
-    compileStaticString(expression: ts.Expression): string;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: Value["kind"],
-        node: ts.Node,
-    ): void;
-    expectStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression;
-    /** The filter and light slot one recorded generator was built with. */
-    shadowGeneratorLight(
-        index: number,
-        node: ts.Node,
-    ): { lightIndex: number };
-}
+    PositiveIntegerContext,
+    ExecutedModuleReferenceContext,
+    Pick<LoweringServices,
+        | "checker"
+        | "reachedNodeMaterials"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "resolveStaticExpression"
+        | "compileStaticString"
+        | "compileValue"
+        | "expectKind"
+        | "expectStaticArrayLiteral"
+        | "shadowGeneratorLight"
+    > {}
 
 /** One entry of a call's `textures`, under the binding name it is keyed by. */
 interface NodeMaterialTexture {
@@ -108,7 +112,7 @@ let pinnedNodeBlockModules: ReadonlySet<string> | undefined;
 
 /** The actual block modules shipped by the installed pinned package. */
 function pinnedNodeBlockModuleInventory(): ReadonlySet<string> {
-    pinnedNodeBlockModules ??= new Set(
+    pinnedNodeBlockModules ??= new EmissionSet(
         readdirSync(
             join(pinnedLibraryRoot(), nodeBlockModuleDirectory),
             { withFileTypes: true },
@@ -186,7 +190,7 @@ function compileBlockLoader(
     }
 
     const emitters: NodeMaterialBlockEmitter[] = [];
-    const classNames = new Set<string>();
+    const classNames = new EmissionSet<string>();
     let hasRefusingDefault = false;
     for (const clause of statement.caseBlock.clauses) {
         if (ts.isDefaultClause(clause)) {

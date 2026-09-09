@@ -1,3 +1,13 @@
+import type { LoweringServices } from "./lowering-services.js";
+// Shared JSON-to-`Value` conversion for generation-time JSON inputs.
+//
+// Two lowerers turn a parsed JSON document into the compiler's
+// tuple/record values: the compressed-NME decoder and the static fetch
+// response. Their recursions are the same walk, but their outputs differ
+// deliberately — numeric width and how much static metadata each value
+// carries — so the shared converter takes those two policies as explicit
+// inputs. A drift in either output is then a visible policy edit here,
+// not an accident of two copies aging apart.
 // Shared JSON-to-`Value` conversion for generation-time JSON inputs.
 //
 // Two lowerers turn a parsed JSON document into the compiler's
@@ -12,10 +22,11 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 
 /** The two members both converter owners already expose. */
-interface JsonValueContext {
-    cppString(value: string): string;
-    fail(node: ts.Node, message: string): never;
-}
+interface JsonValueContext
+    extends Pick<LoweringServices,
+        | "cppString"
+        | "fail"
+    > {}
 
 /**
  * What deliberately differs between the two converters. Every member is

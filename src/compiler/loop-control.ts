@@ -18,6 +18,7 @@
  * only at a function-like whose return is its own.
  */
 import ts from "typescript";
+import { findAnalysisNode, findAnalysisNodeWithState } from "./analysis-walk.js";
 
 export interface LoopControlQuery {
     /** Count `break` (default true). */
@@ -40,31 +41,29 @@ export function enclosingLoopControl(
     const continues = query.continues ?? true;
     const returns = query.returns ?? false;
     const labeled = query.labeled ?? true;
-    let found: ts.Statement | undefined;
-    const visit = (node: ts.Node, insideSwitch: boolean): void => {
-        if (found) return;
-        if (ts.isIterationStatement(node, false) || ts.isFunctionLike(node)) {
-            return;
-        }
+    const found = findAnalysisNodeWithState(statement, query.insideSwitch ?? false, (node, insideSwitch) => {
         if (ts.isBreakStatement(node)) {
-            if (breaks && !insideSwitch && (labeled || !node.label)) {
-                found = node;
-            }
-            return;
+            return breaks && !insideSwitch && (labeled || !node.label);
         }
         if (ts.isContinueStatement(node)) {
-            if (continues && (labeled || !node.label)) found = node;
-            return;
+            return continues && (labeled || !node.label);
         }
-        if (returns && ts.isReturnStatement(node)) {
-            found = node;
-            return;
-        }
-        const nestedSwitch = insideSwitch || ts.isSwitchStatement(node);
-        ts.forEachChild(node, (child) => visit(child, nestedSwitch));
-    };
-    visit(statement, query.insideSwitch ?? false);
-    return found;
+        return returns && ts.isReturnStatement(node);
+    }, (node, insideSwitch) => insideSwitch || ts.isSwitchStatement(node), { functions: "skip", loops: "skip" });
+    return found && ts.isStatement(found) ? found : undefined;
+}
+
+/** Own returns, with the loop/switch boundary a native early return must cross. */
+export function forEachReturn(
+    roots: readonly ts.Node[],
+    action: (node: ts.ReturnStatement, insideBreakable: boolean) => void,
+): void {
+    for (const root of roots) findAnalysisNodeWithState(root, false, (node, insideBreakable) => {
+        if (!ts.isReturnStatement(node)) return false;
+        action(node, insideBreakable);
+        return "skip";
+    }, (node, insideBreakable) => insideBreakable || ts.isIterationStatement(node, false) || ts.isSwitchStatement(node),
+    { functions: "skip" });
 }
 
 export interface ReturnQuery {
@@ -77,15 +76,11 @@ export function firstReturn(
     roots: readonly ts.Node[],
     query: ReturnQuery = {},
 ): ts.ReturnStatement | undefined {
-    let found: ts.ReturnStatement | undefined;
-    const visit = (node: ts.Node): void => {
-        if (found || ts.isFunctionLike(node)) return;
-        if (ts.isReturnStatement(node)) {
-            if (!query.valued || node.expression) found = node;
-            return;
-        }
-        ts.forEachChild(node, visit);
-    };
-    for (const root of roots) visit(root);
-    return found;
+    for (const root of roots) {
+        const found = findAnalysisNode(root,
+            (node): node is ts.ReturnStatement => ts.isReturnStatement(node) && (!query.valued || !!node.expression),
+            { functions: "skip" });
+        if (found) return found;
+    }
+    return undefined;
 }

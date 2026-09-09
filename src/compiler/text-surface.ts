@@ -1,3 +1,5 @@
+import type { LoweringServices } from "./lowering-services.js";
+/** The text transform object retains its renderable; it is never a copied Vec3. */
 /** The text transform object retains its renderable; it is never a copied Vec3. */
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
@@ -17,21 +19,22 @@ const field = (name: string): string => ({rotationQuaternion:"rotation_quaternio
 const axes = (name: TextTransform): readonly string[] => name === "rotationQuaternion" ? ["x", "y", "z", "w"] : name === "positionPx" ? ["x","y"] : ["x", "y", "z"];
 const textKinds = ["text-data", "text-renderable", "text-layer", "text-renderer", "text-run", "text-vector"];
 
-interface TextSurfaceContext {
-    readonly checker: ts.TypeChecker;
-    unwrap(expression: ts.Expression): ts.Expression;
-    compileValue(expression: ts.Expression): Value;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    probeEmission<T>(probe: () => T, answered: (value: T) => boolean): T;
-    allocateTemporaryCppName(label: string): string;
-    emit(line: string): void;
-    expectKind(value: Value, kind: Value["kind"], node: ts.Node): void;
-    fail(node: ts.Node, message: string): never;
-    assertTextPipelineMutable(node: ts.Node): void;
-    isDefaultLibraryIdentifier(node: ts.Identifier): boolean;
-    reachFeature(feature: "text:data" | "text:weight", node: ts.Node): void;
-    promoteTextData(node: ts.Node): void;
-}
+interface TextSurfaceContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "unwrap"
+        | "compileValue"
+        | "lookupOptional"
+        | "probeEmission"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "expectKind"
+        | "fail"
+        | "assertTextPipelineMutable"
+        | "isDefaultLibraryIdentifier"
+        | "reachFeature"
+        | "promoteTextData"
+    > {}
 
 /** The opt-in package export retains a callable identity; loading it does not
  * install the pin's style seams until its setter receives a changed offset. */
@@ -56,7 +59,7 @@ export function compileTextModuleValue(context: TextSurfaceContext, expression: 
 /** Snapshot a JavaScript reference before evaluating the next argument/RHS. */
 export function retainTextValue(context: Pick<TextSurfaceContext, "allocateTemporaryCppName" | "emit">, value: Value): Value {
     const cpp = context.allocateTemporaryCppName("text_owner");
-    context.emit(`[[maybe_unused]] const auto ${cpp} = ${value.cpp};`);
+    context.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: value.cpp, attributes: "[[maybe_unused]] " });
     return { ...value, cpp };
 }
 
@@ -136,7 +139,7 @@ export function compileTextMutation(context: TextSurfaceContext, expression: ts.
             const value = context.compileValue(argument);
             context.expectKind(value, "number", argument);
             const cpp = context.allocateTemporaryCppName("text_argument");
-            context.emit(`const double ${cpp} = ${value.cpp};`);
+            context.emit({ kind: "declaration", type: "const double", name: cpp, initializer: value.cpp });
             return cpp;
         });
         return { kind: "void", cpp: `bbl::text_set_${field(owner.textTransform!)}(*(${owner.cpp}), ${args.join(", ")})` };
@@ -166,12 +169,12 @@ export function compileTextMutation(context: TextSurfaceContext, expression: ts.
     let previous: string | undefined;
     if (operator !== "=") {
         previous = context.allocateTemporaryCppName("text_previous");
-        context.emit(`const double ${previous} = ${readTextProperty(context, owner, name, left)!.cpp};`);
+        context.emit({ kind: "declaration", type: "const double", name: previous, initializer: readTextProperty(context, owner, name, left)!.cpp });
     }
     const right = assignment ? context.compileValue(assignment.right) : { kind: "number" as const, cpp: "1.0" };
     context.expectKind(right, boolean ? "boolean" : "number", assignment?.right ?? left);
     const result = context.allocateTemporaryCppName("text_result");
-    context.emit(`const ${boolean ? "bool" : "double"} ${result} = ${previous ? `${previous} ${operator[0]} (${right.cpp})` : right.cpp};`);
+    context.emit({ kind: "declaration", type: `const ${boolean ? "bool" : "double"}`, name: result, initializer: previous ? `${previous} ${operator[0]} (${right.cpp})` : right.cpp });
     context.emit(owner.kind === "text-vector"
         ? `bbl::text_write_${field(transform!)}(*(${owner.cpp}), ${axis}, ${result});`
         : `(${owner.cpp})->${field(name)} = ${result};`);

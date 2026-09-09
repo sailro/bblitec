@@ -1,13 +1,17 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { CameraMutationLowerer } from "./camera-mutation-lowerer.js";
+
+import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { pinnedHeader } from "./pinned-header.js";
 import {
     lowerObjectComponents,
     lowerPinnedFunction,
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
+const arcRotateEyeMembers = ["alpha", "beta", "radius", "target.x", "target.y", "target.z"] as const;
 
 export class CameraLowerer {
     public constructor(private readonly context: LoweringContext, private readonly trackVersions = false) {}
@@ -160,7 +164,7 @@ export class CameraLowerer {
         const module = "src/camera/arc-rotate.ts";
         const symbol = "localEyePosition";
         const members = new Map<string, PinnedBinding>(
-            ["alpha", "beta", "radius", "target.x", "target.y", "target.z"].map(
+            arcRotateEyeMembers.map(
                 (member): [string, PinnedBinding] => [
                     `cam.${member}`,
                     { cpp: `camera.${member}`, type: "scalar" },
@@ -235,14 +239,7 @@ std::array<CameraMatrixScalar, 16> camera_parented_world(
         return {
             modulePath,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/runtime.hpp>
-
-#include <array>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>"], `
 Vec3d arc_rotate_eye_position(const CameraRecord& camera);
 /**
  * The width the camera's world matrix is kept at.
@@ -259,15 +256,13 @@ using CameraMatrixScalar = ${highPrecisionMatrix ? "double" : "float"};
 std::array<CameraMatrixScalar, 16> camera_world_matrix(
     const CameraRecord& camera);
 Vec3d camera_position(const CameraRecord& camera);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/upstream/camera_math.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/runtime.hpp>
 
-#include <cmath>
+${highPrecisionMatrix ? "#include <bit>\n" : ""}#include <cmath>
 
 namespace bbl::upstream {
 
@@ -281,7 +276,14 @@ Vec3d arc_rotate_eye_position(const CameraRecord& camera) {
     // eye from alpha/beta/radius about its target.
     if (camera.kind != CameraKind::arc_rotate) return camera.position;`
         : "if (camera.kind == CameraKind::free) return camera.position;"}
-    return arc_rotate_local_eye_position(camera);
+${highPrecisionMatrix ? `    // Memoize the translated eye by its exact F64 inputs.
+    const std::array<std::uint64_t, ${arcRotateEyeMembers.length}> key{
+        ${arcRotateEyeMembers.map((member) => `std::bit_cast<std::uint64_t>(camera.${member})`).join(",\n        ")}};
+    static thread_local std::optional<std::pair<decltype(key), Vec3d>> cached;
+    if (!cached || cached->first != key) {
+        cached.emplace(key, arc_rotate_local_eye_position(camera));
+    }
+    return cached->second;` : "    return arc_rotate_local_eye_position(camera);"}
 }
 
 ${parentArm}${this.lowerLookAtWorld(highPrecisionMatrix)}
@@ -1507,12 +1509,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         return {
             modulePath,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/runtime.hpp>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/runtime.hpp>"], `
 // Event accumulation from the pinned attachControl/attachFreeControl
 // handlers. dx/dy are the pin's client-pixel pointer deltas and delta_y
 // is the DOM WheelEvent deltaY; the platform layer translates its native
@@ -1536,9 +1533,7 @@ double free_camera_move_speed(const CameraRecord& camera, double delta_ms);
 
 void apply_arc_rotate_inertia(CameraRecord& camera);
 void apply_free_camera_inertia(CameraRecord& camera);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(modulePath, symbolName, `${freeModule}#attachFreeControl`)}
 #include <bblite/upstream/camera_controls.hpp>
 

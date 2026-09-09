@@ -1,42 +1,33 @@
-// The adaptations manifest: what the native build changed and why.
-//
-// Each entry names one deliberate divergence from browser semantics
-// that this compilation actually took -- erased browser setup,
-// synchronous awaits, materialized assets, the platform and renderer
-// boundaries -- with its risk and the validation that covers it. The
-// list is derived from what the compiler reached, so a scene that
-// never touched a subsystem carries no entry for it.
-import type { CompileAdaptation } from "../fidelity.js";
+// The adaptations manifest describes semantic differences reached by this compilation.
+import type { LoweringServices } from "./lowering-services.js";
+import type {
+    CompileAdaptation,
+} from "../fidelity.js";
 import { pixelsSourcePrefix } from "../executed-module-assets.js";
 import { bakedDirectionMinimumLength } from "../lowering/pinned-vertex-normalization.js";
 import type {
-    CompileAsset,
-    CompiledShaderProgram,
     Feature,
-    GeometryOutputTaskManifest,
 } from "./types.js";
 
-export interface AdaptationContext {
-    readonly hasMainEntry: boolean;
-    readonly erasedBrowserExpressions: ReadonlySet<number>;
-    readonly erasedBrowserInstrumentation: ReadonlySet<number>;
-    readonly unwrappedAwaitExpressions: ReadonlySet<number>;
-    readonly jsDataReached: boolean;
-    readonly jsRandomReached: boolean;
-    readonly voxelFileStorageReached: boolean;
-    /** The canvas-owning texture producers this compilation executed. */
-    readonly browserTextureFunctions: ReadonlySet<string>;
-    readonly assets: ReadonlyMap<string, CompileAsset>;
-    readonly reachedShaderPrograms: readonly CompiledShaderProgram[];
-    readonly geometryOutputTasks: readonly GeometryOutputTaskManifest[];
-    readonly defaultRenderTaskAdapted: boolean;
-    /** Style properties this scene reached that render degraded (AP-3). */
-    readonly uiDegradedStyleProperties: ReadonlySet<string>;
-    /** Descendant sheet selectors kept as typed, non-widened scopes. */
-    readonly uiScopedSheetSelectors: ReadonlySet<string>;
-    /** Fixed-grid shapes structurally substituted by wrapping flex. */
-    readonly uiGridSubstitutions: ReadonlySet<string>;
-}
+export interface AdaptationContext
+    extends Pick<LoweringServices,
+        | "hasMainEntry"
+        | "erasedBrowserExpressions"
+        | "erasedBrowserInstrumentation"
+        | "unwrappedAwaitExpressions"
+        | "jsDataReached"
+        | "jsRandomReached"
+        | "voxelFileStorageReached"
+        | "browserTextureFunctions"
+        | "canvasReadbackFunctions"
+        | "assets"
+        | "reachedShaderPrograms"
+        | "geometryOutputTasks"
+        | "defaultRenderTaskAdapted"
+        | "uiDegradedStyleProperties"
+        | "uiScopedSheetSelectors"
+        | "uiGridSubstitutions"
+    > {}
 
 export function compileAdaptations(
     context: AdaptationContext,
@@ -113,70 +104,7 @@ export function compileAdaptations(
             validation: ["compiler browser-erasure tests", "generated main.cpp inspection"],
         });
     }
-    if (features.includes("loader:splat")) {
-        adaptations.push({
-            id: "splat-parse-at-generation",
-            category: "asset-materialization",
-            sourceSemantics:
-                "A splat entry point fetches its container and parses it " +
-                "on the main thread into the 32-byte-per-splat row buffer, " +
-                "taking a container-specific parser for each: a plain PLY " +
-                "or .splat, a compressed or spherical-harmonic PLY, or an " +
-                "SPZ.",
-            nativeSemantics:
-                "The pin's own parser runs at generation and the row buffer " +
-                "is packaged, because a PLY header is a per-exporter " +
-                "property list whose parsed VALUE is what must not drift. " +
-                "Every one of the pin's parsers runs there, on the pin's " +
-                "own container forks -- isPlyCompressedOrSH within " +
-                "loadSplat, and loadSPZ's separate entry point. The " +
-                "geometry build over that buffer stays a fold.",
-            risk: "low",
-            validation: [
-                "packaged rows are byte-identical to the pin's own .splat",
-                "lowered build_splat_geometry checksums match the pinned JS",
-            ],
-        });
-        adaptations.push({
-            id: "splat-synchronous-sort",
-            category: "async",
-            sourceSemantics:
-                "The splat depth sort runs in a worker; a frame draws " +
-                "whichever order has arrived, and mesh.firstSortReady " +
-                "resolves once the first one has.",
-            nativeSemantics:
-                "The sort runs on the frame's own thread before the draw " +
-                "that reads it, so every frame is already the state that " +
-                "promise waits for. The pinned kernel and its re-sort " +
-                "epsilon are unchanged.",
-            risk: "low",
-            validation: [
-                "scene 120 parity against the browser golden",
-                "lowered sort_splats_back_to_front from the pinned AST",
-            ],
-        });
-        adaptations.push({
-            id: "splat-hypot-approximation",
-            category: "determinism",
-            sourceSemantics:
-                "The quaternion normalisation divides by Math.hypot, which " +
-                "ECMAScript specifies as implementation-approximated.",
-            nativeSemantics:
-                "The root of the sum of squares, since no port can match an " +
-                "unspecified approximation by construction. Measured over " +
-                "scene 120's 345,217 splats: 10 of 2,785,280 emitted floats " +
-                "differ, every one a covariance entry below 1e-19. The " +
-                "transform bake reaches it again at a coarser sink -- its " +
-                "quaternion renormalisation divides by one and the result " +
-                "is rounded into a BYTE -- and scene 125 measures 0.000 on " +
-                "both backends there.",
-            risk: "low",
-            validation: [
-                "measured against the pinned builder on the packaged asset",
-                "scene 125 parity against the browser golden",
-            ],
-        });
-    }
+    appendSplatAdaptations(features, adaptations);
     if (features.includes("loader:splat-bake") || features.includes("loader:splat-data")) {
         adaptations.push({
             id: "splat-rows-retained-on-reach",
@@ -344,24 +272,18 @@ export function compileAdaptations(
             ],
         });
     }
-    if (
-        [...context.assets.values()].some(
-            (asset) =>
-                asset.kind === "pixels" &&
-                asset.source.startsWith("generated:data-url:"),
-        )
-    ) {
+    if (context.canvasReadbackFunctions.size > 0) {
         adaptations.push({
             id: "fetched-canvas-atlas",
             category: "asset-materialization",
             sourceSemantics:
-                "The scene fetches its source-owned voxel PNG tiles, draws them into one Canvas2D atlas, and reads the resulting RGBA pixels at run time.",
+                "The scene reads RGBA pixels from a canvas produced by a function with closed data arguments and local asset directories.",
             nativeSemantics:
-                "Generation executes that bounded atlas path in headless Chromium against the exact tracked PNGs and packages the resulting RGBA bytes for both native backends.",
+                "Generation executes the producer through the readback in Chromium and packages its RGBA bytes. Runtime engine state and requests outside the closed directories refuse.",
             risk: "medium",
             validation: [
-                "Voxel Sandbox browser-golden parity",
-                "transitive-input-keyed atlas bake cache",
+                "Canvas readback compiler fixtures",
+                "Minecraft browser-golden parity",
             ],
         });
     }
@@ -406,7 +328,7 @@ export function compileAdaptations(
             sourceSemantics:
                 "loadBasisTexture2D fetches the Binomial transcoder from a CDN at run time, transcodes the .basis file to the first compressed format the device reports, and uploads the mip chain it produced.",
             nativeSemantics:
-                "Generation runs the pin's own loader in headless Chromium and packages what the transcoder uploaded, as the KTX1 container the runtime's one compressed-texture reader takes. The transcoder is a WebAssembly module the page injects with a script tag, so a native runtime would carry a decompressor it has no other use for -- the reason Draco and meshopt decode at generation too -- and the target format is a device question both the reference and the compiled backends answer with BC7 on D3D12. The baked bytes depend on the Chrome that compiled them, as the drawn atlas and the pinned GGX prefilter already do.",
+                "Generation runs the pinned loader in headless Chromium and packages its GPU blocks with the pinned parser's mip list. Native upload views that shared payload. Both validated backends select BC7 on D3D12; the captured bytes depend on the Chrome build used for generation.",
             risk: "medium",
             validation: [
                 "scene 36 parity against the browser golden, which transcodes the same file at load",
@@ -447,76 +369,7 @@ export function compileAdaptations(
     // (`bakeNodeParticleSystems` in `cli.ts`), which is where the frozen
     // systems are known: a system a pure-2D binding took live is simulated
     // natively from the lowered graph and is no adaptation.
-    if (
-        (
-            [
-                "gizmo:axis-drag",
-                "gizmo:axis-scale",
-                "gizmo:plane-drag",
-                "gizmo:plane-rotation",
-                // The bounding-box cage splits the same way: everything
-                // it draws is generated, and the drag half it hangs on
-                // those same meshes is not reached.
-                "gizmo:bounding-box",
-            ] as const satisfies readonly Feature[]
-        ).some((feature) => features.includes(feature) &&
-            (!features.includes("gizmo:pointer-drag") ||
-                (feature !== "gizmo:axis-drag" && feature !== "gizmo:plane-drag" && feature !== "gizmo:plane-rotation")))
-    ) {
-        adaptations.push({
-            id: "display-only-editing-gizmo",
-            category: "platform",
-            sourceSemantics:
-                "An editing gizmo builds a rendered widget and a " +
-                "pointer-drag interaction over it: invisible collider " +
-                "meshes give the widget a pick region, `registerPointerDrag` " +
-                "binds pointer events on the canvas, and a drag swaps the " +
-                "widget's hover material, shows the rotation gizmo's " +
-                "sector readout and writes the attached node's position, " +
-                "rotation or scaling.",
-            nativeSemantics:
-                "The rendered widget and its per-frame follow are " +
-                "generated from the pinned factories; the drag is not " +
-                "reached, because this runtime has no pointer-input " +
-                "contract to bind one to. Every part whose only consumer " +
-                "is that drag is therefore not built -- the collider " +
-                "meshes, the hover and disabled materials, and the " +
-                "rotation sector quad. For the MESHES, generation asserts " +
-                "against the pin that each is hidden BEFORE any pointer " +
-                "event -- the walk stops at a nested function, so the " +
-                "second hide `createPlaneRotationGizmo` performs from its " +
-                "drag callback cannot answer for the build-time one, and " +
-                "`buildScaleArrow`'s `centered` arm cannot answer for the " +
-                "arrow arm beside it: the two share their local names, so " +
-                "each is asserted in its own scope. An upstream change " +
-                "that made one " +
-                "show fails generation by name rather than dropping it " +
-                "silently. The two extra materials carry no such " +
-                "assertion, and are simply not built because the pinned " +
-                "body assigns neither to a mesh before a drag. The " +
-                "widget's root is the transform node the camera and light " +
-                "gizmos already use where the pin makes an invisible " +
-                "zero-height cylinder for the same purpose, and that the " +
-                "pinned root IS invisible is itself asserted -- it is what " +
-                "makes the substitution sound. The BOUNDING-BOX cage " +
-                "splits the same way and builds no collider of its own: " +
-                "its drag hangs on the handles it already draws, so what " +
-                "is absent there is the hover material nothing assigns " +
-                "outside a drag callback, the disposer list, the " +
-                "per-rotator world axis only the rotation drag rotates " +
-                "around, and the local bounding diagonal only that drag " +
-                "divides by. Its root is the same transform-node " +
-                "substitution, asserted the same way, and generation also " +
-                "asserts the pin's own zero extents on the cylinder it " +
-                "stands in for.",
-            risk: "medium",
-            validation: [
-                "scenes 221 and 222 parity against the browser golden, which draws the same widgets before any pointer event",
-                "scene 224 parity against the same golden for the bounding-box cage, which the browser lays out before any pointer event too",
-                "generation fails when a pinned collider mesh, sector quad or widget root stops being hidden at build time",
-            ],
-        });
-    }
+    appendGizmoAdaptations(features, adaptations);
     if (features.includes("mesh:csg")) {
         adaptations.push({
             id: "executed-csg-solid",
@@ -621,80 +474,7 @@ export function compileAdaptations(
             validation: ["complete descriptor and producer drift/refusal tests", "viewer lifecycle and native constructor extraction controls", "both-backend image parity and live scene controls"],
         });
     }
-    if (features.includes("physics:world")) {
-        adaptations.push({
-            id: "substituted-physics-solver",
-            category: "platform",
-            sourceSemantics:
-                "`createHavokWorld(scene, hknp)` drives Havok Physics V2: " +
-                "the scene loads the Havok WASM module and the pinned " +
-                "physics layer calls its `HP_*` entry points to build " +
-                "bodies and shapes and to integrate one step per frame.",
-            nativeSemantics:
-                "The pinned layer is generated unchanged -- the step " +
-                "gate, the four phases of a frame, the aggregate's " +
-                "ordering and the bounding-box shape sizing are lowered " +
-                "from `src/physics/havok.ts` -- but the `HP_*` surface " +
-                "behind it is implemented over Bullet in the PAL, " +
-                "because the Havok module is a proprietary binary this " +
-                "project cannot redistribute. The scene's own `await " +
-                "HavokPhysics(...)` reaches nothing and emits nothing. " +
-                "This is the one adaptation here that is not " +
-                "bit-faithful by construction: two rigid-body solvers " +
-                "integrate different contact models, so a body's pose " +
-                "after N steps is a different number rather than a " +
-                "rounding of the same one. A physics scene's threshold " +
-                "therefore cannot be driven toward zero: scene 40 carries " +
-                "one set just above the measured distance between the two " +
-                "solvers, which gates this port's own solver rather than " +
-                "asserting agreement with the pinned one. The trajectory " +
-                "(`BBLITE_PHYSICS_TRACE`) is what grades the simulation " +
-                "itself.",
-            risk: "high",
-            validation: [
-                "free fall is exact: the measured pose after N steps " +
-                    "matches the closed form of the semi-implicit Euler " +
-                    "integration both solvers use, to float32 precision " +
-                    "(examples/physics-drop.ts, 1e-7 at magnitude 4)",
-                "a resting body settles at its geometric height " +
-                    "(sphere radius 1 on a ground plane at y=0 rests at " +
-                    "y=1.0 exactly), which is what the degenerate-box " +
-                    "sink in pal_physics_bullet.cpp is measured against",
-                "restitution is within 0.3% of the analytic rebound " +
-                    "apex for the reached coefficient",
-                "both GPU backends render the byte-identical frame from " +
-                    "the identical simulated pose",
-                "a `PhysicsShapeType.MESH` collider is the pin's own " +
-                    "triangle soup rather than the hull of it, and the " +
-                    "difference is measured where the two arms disagree: " +
-                    "a sphere dropped down an uncapped tube falls through " +
-                    "the mesh shape and rests on the hull four units " +
-                    "higher (examples/regression-physics-mesh-shape.ts, " +
-                    "byte-identical to the Havok golden on both backends " +
-                    "through the mesh arm)",
-                "multi-region floating origin is a fold rather than a " +
-                    "second substitution, and it is gated where the " +
-                    "mechanism is the only thing that can produce the " +
-                    "pose: `examples/regression-physics-floating-origin" +
-                    ".ts` drops a sphere at `5e6 + 0.3`, which float32 " +
-                    "cannot hold at that magnitude, through a region " +
-                    "migration and a region reclaim. Region-local it " +
-                    "rests where it was dropped, byte-identical between " +
-                    "the backends; simulated at raw world coordinates " +
-                    "the same scene rests away from the drop in x and z " +
-                    "(the current distances are in docs/status.md)",
-                "an aggregate's `startAsleep` sleeps in Bullet the way " +
-                    "`HP_World_AddBody`'s third argument sleeps in " +
-                    "Havok, and wakes on the same contact: scene 44's " +
-                    "two towers, frozen at the pin's own " +
-                    "`?captureAfter=5` (physics step 300, one second " +
-                    "after the dropped box wakes the sleeping tower, so " +
-                    "the pose is mid-collapse), are graded against the " +
-                    "browser golden identically on both backends (the " +
-                    "current distances are in docs/status.md)",
-            ],
-        });
-    }
+    appendPhysicsAdaptations(features, adaptations);
 
     if (features.includes("audio:engine")) {
         adaptations.push({
@@ -739,74 +519,7 @@ export function compileAdaptations(
         });
     }
 
-    if (features.includes("ui:rml")) {
-        const degraded = [...context.uiDegradedStyleProperties].sort();
-        const scoped = [...context.uiScopedSheetSelectors].sort();
-        const grids = [...context.uiGridSubstitutions].sort();
-        adaptations.push({
-            id: "substituted-ui-runtime",
-            category: "platform",
-            sourceSemantics:
-                "The scene's retained DOM, CSS, and Canvas2D chrome is " +
-                "laid out, styled, animated, and rasterized by the " +
-                "browser -- Blink's DOM, cascade, Web Animations, and " +
-                "font stack for the reference captures.",
-            nativeSemantics:
-                "The compiler lowers the reached UI surface into a typed " +
-                "retained IR that the PAL projects through RmlUi over the " +
-                "scene's own GPU backend. The projection is reviewed but " +
-                "not the browser: platform fonts (DirectWrite, CoreText, " +
-                "fontconfig) rasterize glyphs differently from the " +
-                "browser's font stack; `element.animate()` and retained-UI " +
-                "`element.removeEventListener()` lower to no-ops (CSS @keyframes " +
-                "animation is projected, and retained records share the " +
-                "engine lifetime); CSS `steps()`/`step-start`/`step-end` " +
-                "easings play as `linear-in-out` and the `ease*` family " +
-                "as `sine*`; canvas overlays composite below the DOM " +
-                "chrome regardless of z-index; typed author rules retain " +
-                "source order and specificity, and RmlUi evaluates reached " +
-                ":hover and max-width state against the live viewport; " +
-                "retained focus identity and host focus-visible outlines are " +
-                "projected without a general DOM activeElement object; color " +
-                "emoji use the platform face with explicit VS16 font runs, " +
-                "not general ZWJ/emoji-sequence shaping" +
-                (features.includes("renderer:canvas")
-                    ? "; a source without a Babylon engine receives a native " +
-                      "window and frame host for its primary Canvas2D surface; " +
-                      "rectangle edges use analytic backing-pixel coverage " +
-                      "through premultiplied UI meshes, with browser raster " +
-                      "quantization differences"
-                    : "") +
-                (scoped.length > 0
-                    ? `; the statically-proven descendant rule(s) ${scoped
-                         .map((selector) => `'${selector}'`)
-                         .join(", ")} remain scoped in the retained rule IR`
-                    : "") +
-                (grids.length > 0
-                    ? `; RmlUi has no grid formatting context, so ${grids
-                         .map((grid) => `'${grid}'`)
-                         .join(", ")} use an equivalent fixed-width wrapping-flex child container`
-                    : "") +
-                (features.includes("ui:inline-svg")
-                    ? "; bounded static svg/path/rect markup is rasterized " +
-                      "by RmlUi's LunaSVG plugin, with inherited currentColor " +
-                      "applied as the generated image tint"
-                    : "") +
-                (degraded.length > 0
-                    ? `; and the reached style ${
-                          degraded.length === 1
-                              ? `property ${degraded[0]} is`
-                              : `properties ${degraded.join(", ")} are`
-                      } accepted without a native rendering.`
-                    : "."),
-            risk: "high",
-            validation: [
-                "full-page 1280x720 parity captures composite the retained UI over the scene on both backends",
-                "canvas-only attribution runs (BBLITE_CAPTURE_UI=0) separate UI residuals from scene regressions",
-                "compiler UI lowering and refusal tests",
-            ],
-        });
-    }
+    appendUiAdaptations(context, features, adaptations);
     if (features.includes("backend:sdl")) {
         adaptations.push({
             id: "sdl-platform-boundary",
@@ -930,4 +643,273 @@ export function compileAdaptations(
         });
     }
     return adaptations;
+}
+
+function appendSplatAdaptations(features: Feature[], adaptations: CompileAdaptation[]): void {
+if (features.includes("loader:splat")) {
+    adaptations.push({
+        id: "splat-parse-at-generation",
+        category: "asset-materialization",
+        sourceSemantics: "A splat entry point fetches its container and parses it " +
+            "on the main thread into the 32-byte-per-splat row buffer, " +
+            "taking a container-specific parser for each: a plain PLY " +
+            "or .splat, a compressed or spherical-harmonic PLY, or an " +
+            "SPZ.",
+        nativeSemantics: "The pin's own parser runs at generation and the row buffer " +
+            "is packaged, because a PLY header is a per-exporter " +
+            "property list whose parsed VALUE is what must not drift. " +
+            "Every one of the pin's parsers runs there, on the pin's " +
+            "own container forks -- isPlyCompressedOrSH within " +
+            "loadSplat, and loadSPZ's separate entry point. The " +
+            "geometry build over that buffer stays a fold.",
+        risk: "low",
+        validation: [
+            "packaged rows are byte-identical to the pin's own .splat",
+            "lowered build_splat_geometry checksums match the pinned JS",
+        ],
+    });
+    adaptations.push({
+        id: "splat-synchronous-sort",
+        category: "async",
+        sourceSemantics: "The splat depth sort runs in a worker; a frame draws " +
+            "whichever order has arrived, and mesh.firstSortReady " +
+            "resolves once the first one has.",
+        nativeSemantics: "The sort runs on the frame's own thread before the draw " +
+            "that reads it, so every frame is already the state that " +
+            "promise waits for. The pinned kernel and its re-sort " +
+            "epsilon are unchanged.",
+        risk: "low",
+        validation: [
+            "scene 120 parity against the browser golden",
+            "lowered sort_splats_back_to_front from the pinned AST",
+        ],
+    });
+    adaptations.push({
+        id: "splat-hypot-approximation",
+        category: "determinism",
+        sourceSemantics: "The quaternion normalisation divides by Math.hypot, which " +
+            "ECMAScript specifies as implementation-approximated.",
+        nativeSemantics: "The root of the sum of squares, since no port can match an " +
+            "unspecified approximation by construction. Measured over " +
+            "scene 120's 345,217 splats: 10 of 2,785,280 emitted floats " +
+            "differ, every one a covariance entry below 1e-19. The " +
+            "transform bake reaches it again at a coarser sink -- its " +
+            "quaternion renormalisation divides by one and the result " +
+            "is rounded into a BYTE -- and scene 125 measures 0.000 on " +
+            "both backends there.",
+        risk: "low",
+        validation: [
+            "measured against the pinned builder on the packaged asset",
+            "scene 125 parity against the browser golden",
+        ],
+    });
+}
+}
+
+function appendPhysicsAdaptations(features: Feature[], adaptations: CompileAdaptation[]): void {
+if (features.includes("physics:world")) {
+    adaptations.push({
+        id: "substituted-physics-solver",
+        category: "platform",
+        sourceSemantics: "`createHavokWorld(scene, hknp)` drives Havok Physics V2: " +
+            "the scene loads the Havok WASM module and the pinned " +
+            "physics layer calls its `HP_*` entry points to build " +
+            "bodies and shapes and to integrate one step per frame.",
+        nativeSemantics: "The pinned layer is generated unchanged -- the step " +
+            "gate, the four phases of a frame, the aggregate's " +
+            "ordering and the bounding-box shape sizing are lowered " +
+            "from `src/physics/havok.ts` -- but the `HP_*` surface " +
+            "behind it is implemented over Bullet in the PAL, " +
+            "because the Havok module is a proprietary binary this " +
+            "project cannot redistribute. The scene's own `await " +
+            "HavokPhysics(...)` reaches nothing and emits nothing. " +
+            "This is the one adaptation here that is not " +
+            "bit-faithful by construction: two rigid-body solvers " +
+            "integrate different contact models, so a body's pose " +
+            "after N steps is a different number rather than a " +
+            "rounding of the same one. A physics scene's threshold " +
+            "therefore cannot be driven toward zero: scene 40 carries " +
+            "one set just above the measured distance between the two " +
+            "solvers, which gates this port's own solver rather than " +
+            "asserting agreement with the pinned one. The trajectory " +
+            "(`BBLITE_PHYSICS_TRACE`) is what grades the simulation " +
+            "itself.",
+        risk: "high",
+        validation: [
+            "free fall is exact: the measured pose after N steps " +
+                "matches the closed form of the semi-implicit Euler " +
+                "integration both solvers use, to float32 precision " +
+                "(examples/physics-drop.ts, 1e-7 at magnitude 4)",
+            "a resting body settles at its geometric height " +
+                "(sphere radius 1 on a ground plane at y=0 rests at " +
+                "y=1.0 exactly), which is what the degenerate-box " +
+                "sink in pal_physics_bullet.cpp is measured against",
+            "restitution is within 0.3% of the analytic rebound " +
+                "apex for the reached coefficient",
+            "both GPU backends render the byte-identical frame from " +
+                "the identical simulated pose",
+            "a `PhysicsShapeType.MESH` collider is the pin's own " +
+                "triangle soup, preserving concave openings; scenes " +
+                "104 and 105 exercise mesh colliders",
+            "multi-region floating origin is a fold rather than a " +
+                "second substitution, and it is gated where the " +
+                "mechanism is the only thing that can produce the " +
+                "pose: `examples/regression-physics-floating-origin" +
+                ".ts` drops a sphere at `5e6 + 0.3`, which float32 " +
+                "cannot hold at that magnitude, through a region " +
+                "migration and a region reclaim. Region-local it " +
+                "rests where it was dropped, byte-identical between " +
+                "the backends; simulated at raw world coordinates " +
+                "the same scene rests away from the drop in x and z " +
+                "(the current distances are in docs/status.md)",
+            "an aggregate's `startAsleep` sleeps in Bullet the way " +
+                "`HP_World_AddBody`'s third argument sleeps in " +
+                "Havok, and wakes on the same contact: scene 44's " +
+                "two towers, frozen at the pin's own " +
+                "`?captureAfter=5` (physics step 300, one second " +
+                "after the dropped box wakes the sleeping tower, so " +
+                "the pose is mid-collapse), are graded against the " +
+                "browser golden identically on both backends (the " +
+                "current distances are in docs/status.md)",
+        ],
+    });
+}
+}
+
+function appendUiAdaptations(context: AdaptationContext, features: Feature[], adaptations: CompileAdaptation[]): void {
+if (features.includes("ui:rml")) {
+    const degraded = [...context.uiDegradedStyleProperties].sort();
+    const scoped = [...context.uiScopedSheetSelectors].sort();
+    const grids = [...context.uiGridSubstitutions].sort();
+    adaptations.push({
+        id: "substituted-ui-runtime",
+        category: "platform",
+        sourceSemantics: "The scene's retained DOM, CSS, and Canvas2D chrome is " +
+            "laid out, styled, animated, and rasterized by the " +
+            "browser -- Blink's DOM, cascade, Web Animations, and " +
+            "font stack for the reference captures.",
+        nativeSemantics: "The compiler lowers the reached UI surface into a typed " +
+            "retained IR that the PAL projects through RmlUi over the " +
+            "scene's own GPU backend. The projection is reviewed but " +
+            "not the browser: platform fonts (DirectWrite, CoreText, " +
+            "fontconfig) rasterize glyphs differently from the " +
+            "browser's font stack; `element.animate()` and retained-UI " +
+            "`element.removeEventListener()` lower to no-ops (CSS @keyframes " +
+            "animation is projected, and retained records share the " +
+            "engine lifetime); CSS `steps()`/`step-start`/`step-end` " +
+            "easings play as `linear-in-out` and the `ease*` family " +
+            "as `sine*`; canvas overlays composite below the DOM " +
+            "chrome regardless of z-index; typed author rules retain " +
+            "source order and specificity, and RmlUi evaluates reached " +
+            ":hover and max-width state against the live viewport; " +
+            "retained focus identity and host focus-visible outlines are " +
+            "projected without a general DOM activeElement object; color " +
+            "emoji use the platform face with explicit VS16 font runs, " +
+            "not general ZWJ/emoji-sequence shaping" +
+            (features.includes("renderer:canvas")
+                ? "; a source without a Babylon engine receives a native " +
+                    "window and frame host for its primary Canvas2D surface; " +
+                    "rectangle edges use analytic backing-pixel coverage " +
+                    "through premultiplied UI meshes, with browser raster " +
+                    "quantization differences"
+                : "") +
+            (scoped.length > 0
+                ? `; the statically-proven descendant rule(s) ${scoped
+                    .map((selector) => `'${selector}'`)
+                    .join(", ")} remain scoped in the retained rule IR`
+                : "") +
+            (grids.length > 0
+                ? `; RmlUi has no grid formatting context, so ${grids
+                    .map((grid) => `'${grid}'`)
+                    .join(", ")} use an equivalent fixed-width wrapping-flex child container`
+                : "") +
+            (features.includes("ui:inline-svg")
+                ? "; bounded static svg/path/rect markup is rasterized " +
+                    "by RmlUi's LunaSVG plugin, with inherited currentColor " +
+                    "applied as the generated image tint"
+                : "") +
+            (degraded.length > 0
+                ? `; and the reached style ${degraded.length === 1
+                    ? `property ${degraded[0]} is`
+                    : `properties ${degraded.join(", ")} are`} accepted without a native rendering.`
+                : "."),
+        risk: "high",
+        validation: [
+            "full-page 1280x720 parity captures composite the retained UI over the scene on both backends",
+            "canvas-only attribution runs (BBLITE_CAPTURE_UI=0) separate UI residuals from scene regressions",
+            "compiler UI lowering and refusal tests",
+        ],
+    });
+}
+}
+
+function appendGizmoAdaptations(features: Feature[], adaptations: CompileAdaptation[]): void {
+// The frozen node-particle bake is recorded by generation
+// (`bakeNodeParticleSystems` in `cli.ts`), which is where the frozen
+// systems are known: a system a pure-2D binding took live is simulated
+// natively from the lowered graph and is no adaptation.
+if (([
+    "gizmo:axis-drag",
+    "gizmo:axis-scale",
+    "gizmo:plane-drag",
+    "gizmo:plane-rotation",
+    // The bounding-box cage splits the same way: everything
+    // it draws is generated, and the drag half it hangs on
+    // those same meshes is not reached.
+    "gizmo:bounding-box",
+] as const satisfies readonly Feature[]).some((feature) => features.includes(feature) &&
+    (!features.includes("gizmo:pointer-drag") ||
+        (feature !== "gizmo:axis-drag" && feature !== "gizmo:plane-drag" && feature !== "gizmo:plane-rotation")))) {
+    adaptations.push({
+        id: "display-only-editing-gizmo",
+        category: "platform",
+        sourceSemantics: "An editing gizmo builds a rendered widget and a " +
+            "pointer-drag interaction over it: invisible collider " +
+            "meshes give the widget a pick region, `registerPointerDrag` " +
+            "binds pointer events on the canvas, and a drag swaps the " +
+            "widget's hover material, shows the rotation gizmo's " +
+            "sector readout and writes the attached node's position, " +
+            "rotation or scaling.",
+        nativeSemantics: "The rendered widget and its per-frame follow are " +
+            "generated from the pinned factories; the drag is not " +
+            "reached, because this runtime has no pointer-input " +
+            "contract to bind one to. Every part whose only consumer " +
+            "is that drag is therefore not built -- the collider " +
+            "meshes, the hover and disabled materials, and the " +
+            "rotation sector quad. For the MESHES, generation asserts " +
+            "against the pin that each is hidden BEFORE any pointer " +
+            "event -- the walk stops at a nested function, so the " +
+            "second hide `createPlaneRotationGizmo` performs from its " +
+            "drag callback cannot answer for the build-time one, and " +
+            "`buildScaleArrow`'s `centered` arm cannot answer for the " +
+            "arrow arm beside it: the two share their local names, so " +
+            "each is asserted in its own scope. An upstream change " +
+            "that made one " +
+            "show fails generation by name rather than dropping it " +
+            "silently. The two extra materials carry no such " +
+            "assertion, and are simply not built because the pinned " +
+            "body assigns neither to a mesh before a drag. The " +
+            "widget's root is the transform node the camera and light " +
+            "gizmos already use where the pin makes an invisible " +
+            "zero-height cylinder for the same purpose, and that the " +
+            "pinned root IS invisible is itself asserted -- it is what " +
+            "makes the substitution sound. The BOUNDING-BOX cage " +
+            "splits the same way and builds no collider of its own: " +
+            "its drag hangs on the handles it already draws, so what " +
+            "is absent there is the hover material nothing assigns " +
+            "outside a drag callback, the disposer list, the " +
+            "per-rotator world axis only the rotation drag rotates " +
+            "around, and the local bounding diagonal only that drag " +
+            "divides by. Its root is the same transform-node " +
+            "substitution, asserted the same way, and generation also " +
+            "asserts the pin's own zero extents on the cylinder it " +
+            "stands in for.",
+        risk: "medium",
+        validation: [
+            "scenes 221 and 222 parity against the browser golden, which draws the same widgets before any pointer event",
+            "scene 224 parity against the same golden for the bounding-box cage, which the browser lays out before any pointer event too",
+            "generation fails when a pinned collider mesh, sector quad or widget root stops being hidden at build time",
+        ],
+    });
+}
 }

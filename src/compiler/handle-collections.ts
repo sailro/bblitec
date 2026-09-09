@@ -1,44 +1,14 @@
-// The handle-collection concept: one value kind for "a collection of
-// engine handles known at generation", and every operation the entry
-// compiler performs over one.
-//
-// Before this module the semantics lived as exact-shape arms spread over
-// expressions.ts (`scene.lights.push`, `set.systems.push`, the runtime
-// `.find` loop), statements.ts (three for-of emitters plus the recursive
-// imported-mesh walk proof) and compiler.ts (five iteration/index target
-// resolvers). They are folded here: the resolvers, the loop frame, the
-// pushes, the find, the walk proof and the new binding shapes all answer
-// through one module, so the next collection shape extends the concept
-// instead of becoming another sibling.
-//
-// What the concept adds beyond the fold:
-//
-// - `container.animationGroups ?? []` as a VALUE. The static-record `??`
-//   rule generalizes to asset-derived collections: the materialized asset
-//   decides presence, and either arm is the same native container — a
-//   file with no animations leaves the loader's vector empty, which is
-//   exactly the zero iterations `?? []` produces.
-// - The collection travels: bound to a local or passed as a
-//   `readonly T[]` parameter into an inlined user function, the binding
-//   carries the collection value, and every operation resolves through
-//   the same targets the inline property-read shapes already use — so
-//   the bound spellings emit the identical loop.
-// - `.find((c) => c.name === <static string>)` over an asset-derived
-//   collection resolves at generation: the members are the materialized
-//   document's own animations, named the way `createAnimationGroups`
-//   names them, so a hit is that group's handle as a compile-time value
-//   and a miss fails generation with the scene's own message. A find
-//   whose name is not static, or over a collection with no
-//   generation-known members, keeps the runtime loop.
-// - Handle identity: `group === sadPose` lowers — folded when both sides
-//   carry generation-known collection slots, compared by native `.value`
-//   otherwise. Engine handles are creation-ordered indices, so equal
-//   values name the same record.
+import { valueForKind } from "./types.js";
+import type { ValueBase } from "./types.js";
+// Handle collections carry engine identity, generation-known members and asset traversal contracts.
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
-import { handleCppType, type DataType } from "./data-types.js";
+import { handleCppType } from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
-import { resolveFunctionDeclaration } from "./user-functions.js";
+import { resolveFunctionDeclaration, tryResolveFunctionDeclaration } from "./user-functions.js";
+import { CompilerSymbols } from "./symbols.js";
 import {
     argumentAt,
     identifierText,
@@ -53,8 +23,6 @@ import {
 import type {
     CompileAsset,
     HandleCollectionInfo,
-    CompiledNodeParticles,
-    LightKind,
     Value,
     ValueKind,
 } from "./types.js";
@@ -69,7 +37,11 @@ import {
 } from "../gltf-document.js";
 // The same reader the material arms key their skinned mesh features by, so
 // "which meshes of this file are skinned" has one answer in the compiler.
-import { skinnedMeshIndices } from "../pinned-mesh-features.js";
+// The same reader the material arms key their skinned mesh features by, so
+// "which meshes of this file are skinned" has one answer in the compiler.
+import {
+    skinnedMeshIndices,
+} from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 
 /**
@@ -84,19 +56,17 @@ import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 export type HandleCollectionTarget = HandleCollectionInfo;
 
 /** What emitting a loop over one of those collections needs. */
-interface HandleCollectionLoopContext {
-    allocateTemporaryCppName(label: string): string;
-    allocateBlockPrefix(): string;
-    emit(line: string): void;
-    increaseIndent(): void;
-    decreaseIndent(): void;
-    pushScope(cppPrefix: string): void;
-    popScope(): void;
-    bindLocalValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void;
-}
+interface HandleCollectionLoopContext
+    extends Pick<LoweringServices,
+        | "allocateTemporaryCppName"
+        | "allocateBlockPrefix"
+        | "emit"
+        | "increaseIndent"
+        | "decreaseIndent"
+        | "pushScope"
+        | "popScope"
+        | "bindLocalValue"
+    > {}
 
 /**
  * The emitted range-for over an engine handle collection: the loop, its
@@ -108,7 +78,7 @@ export function emitHandleCollectionLoop<
     Context extends HandleCollectionLoopContext,
 >(
     context: Context,
-    target: HandleCollectionTarget,
+    target: Pick<HandleCollectionTarget, "temporaryLabel" | "elementCppType" | "containerCpp" | "elementKind" | "engineCpp">,
     binding: ts.Identifier,
     emitBody: (context: Context) => void,
     /**
@@ -117,7 +87,7 @@ export function emitHandleCollectionLoop<
      * one: the flatten walk carries the container it visits in full, and no
      * other collection can say that about its members.
      */
-    extraBinding?: Partial<Value>,
+    extraBinding?: Partial<ValueBase>,
 ): void {
     const item = context.allocateTemporaryCppName(
         target.temporaryLabel,
@@ -128,12 +98,11 @@ export function emitHandleCollectionLoop<
     context.increaseIndent();
     context.pushScope(context.allocateBlockPrefix());
     try {
-        context.bindLocalValue(binding, {
-            kind: target.elementKind,
+        context.bindLocalValue(binding, valueForKind(target.elementKind, {
             cpp: item,
             engineCpp: target.engineCpp,
             ...(extraBinding ?? {}),
-        });
+        }));
         emitBody(context);
     } finally {
         context.popScope();
@@ -168,7 +137,7 @@ function assetOwnerMapBuilder(
         const names = fn.parameters.flatMap((parameter) =>
             ts.isIdentifier(parameter.name) ? [parameter.name] : [],
         );
-        return new Set(names.map(name => name.text)).size === count ? names : undefined;
+        return new EmissionSet(names.map(name => name.text)).size === count ? names : undefined;
     };
     const loopBinding = (statement: ts.Statement): { loop: ts.ForOfStatement; name: ts.Identifier } | undefined => {
         if (!ts.isForOfStatement(statement) || statement.awaitModifier ||
@@ -228,7 +197,7 @@ function assetOwnerMapBuilder(
     const nextOwner = unwrapWalkExpression(argumentAt(recursive, 1));
     if (!ts.isConditionalExpression(nextOwner) || !guardedBy(nextOwner.condition, children.name, resolve, isRenderablePresenceGuard) ||
         !isIdentifierRead(nextOwner.whenTrue, ownerName) || !isPropertyReadOf(nextOwner.whenFalse, children.name, "name")) return undefined;
-    const helpers = new Set<ts.FunctionDeclaration>([visitor]);
+    const helpers = new EmissionSet<ts.FunctionDeclaration>([visitor]);
     for (const guard of [rootGuard.test, collect.test, descend.test, nextOwner.condition]) {
         const invocation = unwrapWalkExpression(guard);
         if (!ts.isCallExpression(invocation) || !ts.isIdentifier(invocation.expression)) return undefined;
@@ -238,57 +207,34 @@ function assetOwnerMapBuilder(
 }
 
 interface HandleCollectionsContext
-    extends HandleCollectionLoopContext {
-    guardStaticConstructionRead(operation: string): void;
-    readonly meshWalks: CompiledMeshWalk[];
-    readonly checker: ts.TypeChecker;
-    readonly dataTypes: {
-        fromTsType(
-            type: ts.Type,
-            node: ts.Node,
-        ): DataType | undefined;
-        cppType(type: DataType): string;
-    };
-    readonly options: { fileName: string };
-    readonly assetPayloads: ReadonlyMap<string, string>;
-    readonly reachedNodeParticles: CompiledNodeParticles;
-    unwrap(expression: ts.Expression): ts.Expression;
-    importedName(identifier: ts.Identifier): string | undefined;
-    fail(node: ts.Node, message: string): never;
-    compileValue(expression: ts.Expression): Value;
-    emitStatement(statement: ts.Statement): void;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    compileCondition(expression: ts.Expression): string;
-    compileStringLiteral(expression: ts.Expression): string;
-    cppString(value: string): string;
-    lookup(identifier: ts.Identifier): Value;
-    lookupOptional(
-        identifier: ts.Identifier,
-    ): Value | undefined;
-    resolveStaticExpression(
-        expression: ts.Expression,
-    ): ts.Expression;
-    probeStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression | undefined;
-    requireEngine(value: Value, node: ts.Node): string;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
-    expectSameEngine(
-        left: Value,
-        right: Value,
-        node: ts.Node,
-    ): void;
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    addSceneLight(scene: Value, light: Value, kind: LightKind): void;
-}
+    extends HandleCollectionLoopContext,
+    Pick<LoweringServices,
+        | "guardStaticConstructionRead"
+        | "meshWalks"
+        | "checker"
+        | "dataTypes"
+        | "options"
+        | "assetPayloads"
+        | "reachedNodeParticles"
+        | "unwrap"
+        | "importedName"
+        | "fail"
+        | "compileValue"
+        | "emitStatement"
+        | "isDefaultLibraryIdentifier"
+        | "compileCondition"
+        | "compileStringLiteral"
+        | "cppString"
+        | "lookup"
+        | "lookupOptional"
+        | "resolveStaticExpression"
+        | "probeStaticArrayLiteral"
+        | "requireEngine"
+        | "expectKind"
+        | "expectSameEngine"
+        | "expectArgumentCount"
+        | "addSceneLight"
+    > {}
 
 /**
  * The value kinds that stand for an engine handle.
@@ -373,7 +319,7 @@ export class HandleCollections {
         }
     }
 
-    private readonly meshCardinalities = new Map<string, number>();
+    private readonly meshCardinalities = new EmissionMap<string, number>();
 
     public collectionCardinality(target: HandleCollectionTarget, node: ts.Node): number | undefined {
         const asset = target.asset;
@@ -387,7 +333,7 @@ export class HandleCollections {
     }
 
     /** Members per asset source, decoded once per compile. */
-    private readonly membersBySource = new Map<
+    private readonly membersBySource = new EmissionMap<
         string,
         HandleCollectionMember[]
     >();
@@ -397,13 +343,12 @@ export class HandleCollections {
      * source. The proof reads the materialized document, and a scene
      * flattens the same container at several call sites.
      */
-    private readonly flattenedContainers = new Set<string>();
 
     /**
      * Driver loops whose whole effect was folded into the collection
      * binding the declaration above them now carries.
      */
-    private readonly foldedFlattenLoops = new Set<ts.Statement>();
+    private readonly foldedFlattenLoops = new EmissionSet<ts.Statement>();
 
     public constructor(
         private readonly context: HandleCollectionsContext,
@@ -716,7 +661,7 @@ export class HandleCollections {
         target: HandleCollectionTarget,
         walk: CompiledMeshWalk,
     ): HandleCollectionTarget {
-        if (owner.asset?.kind !== "gltf") return target;
+        if (owner.asset?.kind !== "gltf" && owner.asset?.kind !== "babylon") return target;
         const key = JSON.stringify(walk);
         let index = this.context.meshWalks.findIndex(
             candidate => JSON.stringify(candidate) === key,
@@ -730,32 +675,7 @@ export class HandleCollections {
         };
     }
 
-    /**
-     * Proves that flattening this container's entity hierarchy yields the
-     * mesh record its generated loader already built — which is what every
-     * flatten spelling above is answered with.
-     *
-     * For a glTF container the loader walks the document's whole node tree,
-     * so every renderable under the container's one root entity has a
-     * record; the walk and the record name the same set by construction.
-     *
-     * A `.babylon` container is not one root. Its entities are
-     * `[...lights, ...rootMeshes, ...rootTransformNodes]`
-     * (`src/loader-babylon/load-babylon.ts`), and the pin's own flatten
-     * skips the lights and descends the rest — so what the walk collects is
-     * every visible geometry node of the file. The generated loader instead
-     * creates a record per submesh of the visible geometry nodes that
-     * declare no `parentId`, in document order: for a file whose nodes are
-     * all roots those are the same meshes in the same order, and for one
-     * that parents a node they are not — the walk would reach a mesh the
-     * record does not hold. The document is on disk at generation, so which
-     * of the two it is gets read rather than assumed, and the parented file
-     * refuses here instead of being answered with a short list.
-     *
-     * Any other container kind refuses: `AssetRecord::meshes` is filled by
-     * the loader that built the record, and only these two build one from
-     * an entity hierarchy.
-     */
+    /** Packaged source walks preserve native mesh collections and source order. */
     private requireLoaderFlattenedContainer(
         asset: CompileAsset,
         node: ts.Node,
@@ -769,25 +689,6 @@ export class HandleCollections {
                 `Flattening a container's entities is lowered for a glTF or .babylon document, whose loader records every renderable it creates; '${asset.output}' is neither.`,
             );
         }
-        if (this.flattenedContainers.has(asset.source)) {
-            return;
-        }
-        const document = this.readAssetDocument(asset, node);
-        for (const mesh of asRecords(document.meshes)) {
-            if (mesh.isVisible === false) {
-                continue;
-            }
-            const parent = asString(mesh.parentId) ?? "";
-            if (parent !== "") {
-                this.context.fail(
-                    node,
-                    `Asset '${asset.output}' parents '${
-                        asString(mesh.name) ?? asString(mesh.id) ?? "a node"
-                    }' under '${parent}', and the generated .babylon loader creates records only for unparented nodes; the walk would collect a mesh the container does not hold.`,
-                );
-            }
-        }
-        this.flattenedContainers.add(asset.source);
     }
 
     /**
@@ -1102,7 +1003,7 @@ export class HandleCollections {
         if (owner.kind !== "asset") {
             return undefined;
         }
-        if (owner.asset?.kind !== "gltf") {
+        if ((owner.asset?.kind ?? owner.assetKind) !== "gltf") {
             this.context.fail(
                 unwrapped,
                 "Iterating entities to use each one is lowered for a glTF container, whose entities are one root node; another container's roots are not. Collecting the renderables under them is lowered for either.",
@@ -1146,7 +1047,7 @@ export class HandleCollections {
         if (owner.kind !== "asset") {
             return undefined;
         }
-        if (owner.asset?.kind !== "gltf") {
+        if ((owner.asset?.kind ?? owner.assetKind) !== "gltf") {
             this.context.fail(
                 collection,
                 "Indexing entities is lowered for a glTF container, whose first entity is its synthetic root transform; another container's roots are not.",
@@ -1209,20 +1110,19 @@ export class HandleCollections {
             `${target.temporaryLabel}_at`,
         );
         this.context.emit(
-            `const std::size_t ${slot} = static_cast<std::size_t>(${index.cpp});`,
+            { kind: "declaration", type: "const std::size_t", name: slot, initializer: `static_cast<std::size_t>(${index.cpp})` },
         );
         this.context.emit(
-            `const bool ${found} = ${slot} < ${target.containerCpp}.size();`,
+            { kind: "declaration", type: "const bool", name: found, initializer: `${slot} < ${target.containerCpp}.size()` },
         );
         this.context.emit(
-            `const ${target.elementCppType} ${element} = ${found} ? ${target.containerCpp}[${slot}] : ${target.elementCppType}{};`,
+            { kind: "declaration", type: `const ${target.elementCppType}`, name: element, initializer: `${found} ? ${target.containerCpp}[${slot}] : ${target.elementCppType}{}` },
         );
-        return {
-            kind: target.elementKind,
+        return valueForKind(target.elementKind, {
             cpp: element,
             engineCpp: target.engineCpp,
             optionalFoundCpp: found,
-        };
+        });
     }
 
     /**
@@ -1665,6 +1565,15 @@ export class HandleCollections {
         selector: ts.ArrowFunction,
         predicate: ts.ArrowFunction,
     ): Value {
+        const selectorParameter = selector.parameters[0]?.name;
+        if (!selectorParameter || !ts.isIdentifier(selectorParameter)) {
+            this.context.fail(selector, "Handle searches require one identifier parameter.");
+        }
+        const predicateParameter = predicate.parameters[0]?.name;
+        if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
+            this.context.fail(predicate, "Handle searches require one identifier parameter.");
+        }
+
         const result = this.context.allocateTemporaryCppName(
             "material_match",
         );
@@ -1672,12 +1581,12 @@ export class HandleCollections {
             "material_found",
         );
         this.context.emit(`${handleCppType("material")} ${result}{};`);
-        this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
+        this.context.emit({ kind: "declaration", type: "bool", name: found, initializer: "false", attributes: "[[maybe_unused]] " });
         let assetPbrMaterial = false;
         emitHandleCollectionLoop(
             this.context,
             target,
-            selector.parameters[0]!.name as ts.Identifier,
+            selectorParameter,
             (context) => {
                 const selected = context.compileValue(
                     selector.body as ts.Expression,
@@ -1693,7 +1602,7 @@ export class HandleCollections {
                     context.increaseIndent();
                 }
                 context.bindLocalValue(
-                    predicate.parameters[0]!.name as ts.Identifier,
+                    predicateParameter,
                     selected,
                 );
                 const test = context.compileCondition(
@@ -1734,26 +1643,19 @@ export class HandleCollections {
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined {
-        if (callee.text !== "findNode" || call.arguments.length !== 2) {
+        if (call.arguments.length !== 2) {
+            return undefined;
+        }
+        const declaration = tryResolveFunctionDeclaration(this.context.checker, callee);
+        if (
+            !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
+            !isAssetDescendantNameSearch(this.context.checker, declaration)
+        ) {
             return undefined;
         }
         const root = this.context.compileValue(argumentAt(call, 0));
         if (root.kind !== "asset-root") return undefined;
-        const declaration = resolveFunctionDeclaration(
-            this.context.checker,
-            callee,
-            (node, message) => this.context.fail(node, message),
-        );
-        if (
-            !declaration ||
-            !ts.isFunctionDeclaration(declaration) ||
-            !isAssetDescendantNameSearch(declaration)
-        ) {
-            this.context.fail(
-                callee,
-                "findNode over a glTF root is lowered only for the exact depth-first helper that tests root.name, recurses through root.children, returns the first hit, and otherwise returns undefined.",
-            );
-        }
         const name = this.context.compileStringLiteral(argumentAt(call, 1));
         if (!root.asset || root.asset.kind !== "gltf") {
             this.context.fail(
@@ -1773,7 +1675,7 @@ export class HandleCollections {
             "asset_descendant_mesh",
         );
         this.context.emit(`${handleCppType("mesh")} ${result}{};`);
-        this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
+        this.context.emit({ kind: "declaration", type: "bool", name: found, initializer: "false", attributes: "[[maybe_unused]] " });
         this.context.emit(
             `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${engine}.assets[${root.cpp}.value].meshes) {`,
@@ -1819,29 +1721,10 @@ export class HandleCollections {
         callee: ts.Identifier,
     ): Value | undefined {
         if (call.arguments.length !== 1) return undefined;
-        // A plain symbol lookup, NOT resolveFunctionDeclaration, unlike the
-        // name search beside it. That one gates on `callee.text ===
-        // "findNode"` first, so it only ever resolves the call it is
-        // about; this one matches on shape and has no name to gate on, so
-        // it runs for every one-argument call in the scene. Going through
-        // the strict resolver would make an ordinary generic, generator or
-        // rest-parameter helper fail HERE -- while merely being asked
-        // whether it is a skinned search -- rather than at the
-        // user-function path that owns that diagnostic. Asking the checker
-        // directly has no failure path, and every one of those shapes is
-        // rejected by the predicate below anyway.
-        const symbol = this.context.checker.getSymbolAtLocation(callee);
-        if (!symbol) return undefined;
-        const target =
-            (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.context.checker.getAliasedSymbol(symbol)
-                : symbol;
-        const declaration = target.declarations?.find(
-            (candidate): candidate is ts.FunctionDeclaration =>
-                ts.isFunctionDeclaration(candidate) && !!candidate.body,
-        );
+        const declaration = tryResolveFunctionDeclaration(this.context.checker, callee);
         if (
             !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
             !isAssetSkinnedDescendantSearch(declaration)
         ) {
             return undefined;
@@ -1866,7 +1749,7 @@ export class HandleCollections {
             "asset_skinned_mesh",
         );
         this.context.emit(`${handleCppType("mesh")} ${result}{};`);
-        this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
+        this.context.emit({ kind: "declaration", type: "bool", name: found, initializer: "false", attributes: "[[maybe_unused]] " });
         this.context.emit(
             `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${engine}.assets[${root.cpp}.value].meshes) {`,
@@ -2010,6 +1893,11 @@ export class HandleCollections {
         target: HandleCollectionTarget,
         predicate: ts.ArrowFunction,
     ): Value {
+        const predicateParameter = predicate.parameters[0]?.name;
+        if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
+            this.context.fail(predicate, "Handle searches require one identifier parameter.");
+        }
+
         const result = this.context.allocateTemporaryCppName(
             `${target.temporaryLabel}_match`,
         );
@@ -2024,14 +1912,14 @@ export class HandleCollections {
         // named camera). The search still needs the flag for callers that do
         // test it and for optional composition, so keep it and make that
         // deliberate unused case warning-clean.
-        this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
+        this.context.emit({ kind: "declaration", type: "bool", name: found, initializer: "false", attributes: "[[maybe_unused]] " });
         emitHandleCollectionLoop(
             this.context,
             target,
-            predicate.parameters[0]!.name as ts.Identifier,
+            predicateParameter,
             (context) => {
                 const item = context.lookup(
-                    predicate.parameters[0]!.name as ts.Identifier,
+                    predicateParameter,
                 ).cpp;
                 const test = context.compileCondition(
                     predicate.body as ts.Expression,
@@ -2045,12 +1933,11 @@ export class HandleCollections {
                 context.emit("}");
             },
         );
-        return {
-            kind: target.elementKind,
+        return valueForKind(target.elementKind, {
             cpp: result,
             engineCpp: target.engineCpp,
             optionalFoundCpp: found,
-        };
+        });
     }
 
     /**
@@ -2064,6 +1951,11 @@ export class HandleCollections {
         target: HandleCollectionTarget,
         predicate: ts.ArrowFunction,
     ): Value | undefined {
+        const predicateParameter = predicate.parameters[0]?.name;
+        if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
+            this.context.fail(predicate, "Handle searches require one identifier parameter.");
+        }
+
         // The members this resolution reads are the materialized
         // document's animations, so only the animationGroups collection
         // resolves here; any other collection (a container's cameras)
@@ -2076,7 +1968,7 @@ export class HandleCollections {
             predicate.body as ts.Expression,
         );
         const parameter = (
-            predicate.parameters[0]!.name as ts.Identifier
+            predicateParameter
         ).text;
         if (
             !ts.isBinaryExpression(body) ||
@@ -2118,8 +2010,7 @@ export class HandleCollections {
                     }.`,
             );
         }
-        return {
-            kind: target.elementKind,
+        return valueForKind(target.elementKind, {
             cpp: `${target.containerCpp}[${member.index}]`,
             engineCpp: target.engineCpp,
             // Resolved at generation, so the scene's own not-found guard
@@ -2127,7 +2018,7 @@ export class HandleCollections {
             optionalFoundCpp: "true",
             handleIdentity:
                 `${asset.source}#${target.property}[${member.index}]`,
-        };
+        });
     }
 
     /** A static string, or undefined — never a failure. */
@@ -2252,7 +2143,7 @@ export class HandleCollections {
      * corpus, so the read is memoized here rather than behind each
      * caller's own answer.
      */
-    private readonly assetDocuments = new Map<string, JsonObject>();
+    private readonly assetDocuments = new EmissionMap<string, JsonObject>();
 
     /**
      * The materialized document's JSON, from GLB, JSON glTF or `.babylon`
@@ -2500,7 +2391,7 @@ function singleReturnExpression(
 }
 
 /**
- * Proves Scene 269's recursive first-hit DFS exactly:
+ * Recognizes a recursive first-hit name search:
  *
  *     if (root.name === name) return root;
  *     for (const child of root.children) {
@@ -2516,8 +2407,19 @@ function singleReturnExpression(
  * the asset-root call site.
  */
 function isAssetDescendantNameSearch(
+    checker: ts.TypeChecker,
     declaration: ts.FunctionDeclaration,
 ): boolean {
+    const symbols = new CompilerSymbols(checker);
+    const isIdentifierRead = (expression: ts.Expression | undefined, name: ts.Identifier): boolean => {
+        const current = expression && unwrapWalkExpression(expression);
+        const binding = symbols.valueSymbol(name);
+        return !!binding && !!current && ts.isIdentifier(current) && symbols.valueSymbol(current) === binding;
+    };
+    const isPropertyReadOf = (expression: ts.Expression, name: ts.Identifier, property: string): boolean => {
+        const current = unwrapWalkExpression(expression);
+        return ts.isPropertyAccessExpression(current) && current.name.text === property && isIdentifierRead(current.expression, name);
+    };
     if (
         !declaration.name ||
         !declaration.body ||
@@ -2539,10 +2441,11 @@ function isAssetDescendantNameSearch(
     ) {
         return false;
     }
-    const root = declaration.parameters[0]!.name as ts.Identifier;
-    const name = declaration.parameters[1]!.name as ts.Identifier;
+    const root = declaration.parameters[0]!.name;
+    const name = declaration.parameters[1]!.name;
+    if (!ts.isIdentifier(root) || !ts.isIdentifier(name)) return false;
     if (
-        new Set([
+        new EmissionSet([
             declaration.name.text,
             root.text,
             name.text,
@@ -2651,12 +2554,13 @@ function isAssetDescendantNameSearch(
     const missValue = unwrapWalkExpression(miss.expression);
     return (
         missValue.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(missValue) && missValue.text === "undefined")
+        (ts.isIdentifier(missValue) && missValue.text === "undefined" &&
+            checker.getSymbolAtLocation(missValue) === checker.resolveName("undefined", undefined, ts.SymbolFlags.Value, false))
     );
 }
 
 /**
- * Proves scenes 218 and 219's recursive first-skinned DFS exactly:
+ * Recognizes a recursive first-skinned-mesh search:
  *
  *     const m = node as unknown as Mesh;
  *     if (m.skeleton) {
@@ -2697,9 +2601,9 @@ function isAssetSkinnedDescendantSearch(
     ) {
         return false;
     }
-    const root = declaration.parameters[0]!.name as ts.Identifier;
+    const root = declaration.parameters[0]!.name;
     if (
-        new Set([declaration.name.text, root.text, "undefined"]).size !== 3
+        new EmissionSet([declaration.name.text, root.text, "undefined"]).size !== 3
     ) {
         return false;
     }
@@ -2906,8 +2810,9 @@ export function isRecursiveImportedMeshWalk(
     ) {
         return undefined;
     }
-    const nodeParameter = owner.parameters[0]!.name as ts.Identifier;
-    const materialParameter = owner.parameters[1]!.name as ts.Identifier;
+    const nodeParameter = owner.parameters[0]!.name;
+    const materialParameter = owner.parameters[1]!.name;
+    if (!ts.isIdentifier(nodeParameter) || !ts.isIdentifier(materialParameter)) return undefined;
     if (
         [binding, nodeParameter, materialParameter].some(
             (identifier) => identifier.text === owner.name!.text,
@@ -3153,7 +3058,7 @@ function isImportedMeshFlattenWalk(
     ) {
         return false;
     }
-    const container = declaration.parameters[0]!.name as ts.Identifier;
+    const container = declaration.parameters[0]!.name;
     const [collected, worklist, loop, returned] =
         declaration.body.statements;
 
@@ -3727,8 +3632,9 @@ function isRecursiveMeshFlattenVisitor(
     ) {
         return false;
     }
-    const node = declaration.parameters[0]!.name as ts.Identifier;
-    const out = declaration.parameters[1]!.name as ts.Identifier;
+    const node = declaration.parameters[0]!.name;
+    const out = declaration.parameters[1]!.name;
+    if (!ts.isIdentifier(node) || !ts.isIdentifier(out)) return false;
 
     // `if (<renderable guard>(node)) meshes.push(node)` -- the collection.
     const collect = guardedArm(declaration.body.statements[0]!);

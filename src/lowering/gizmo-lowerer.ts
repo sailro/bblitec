@@ -44,6 +44,7 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
+    vec3MemberBindings,
     lowerObjectComponents,
     lowerPinnedFunction,
     lowerTupleComponents,
@@ -513,9 +514,7 @@ export class GizmoLowerer {
                 cppName: "direction_to_quat",
                 calls,
                 memberBindings: new Map([
-                    ["dir.x", { cpp: "static_cast<double>(dir.x)", type: "scalar" as const }],
-                    ["dir.y", { cpp: "static_cast<double>(dir.y)", type: "scalar" as const }],
-                    ["dir.z", { cpp: "static_cast<double>(dir.z)", type: "scalar" as const }],
+                    ...vec3MemberBindings("dir", (axis) => "static_cast<double>(dir." + axis + ")"),
                     // The pin's own constant, at the width its body reads
                     // it: a JavaScript number, so a double here.
                     ["Math.PI", { cpp: "pi_double", type: "scalar" as const }],
@@ -583,9 +582,7 @@ export class GizmoLowerer {
                 cppName: "length_vec3",
                 calls,
                 memberBindings: new Map([
-                    ["v.x", { cpp: "static_cast<double>(v.x)", type: "scalar" as const }],
-                    ["v.y", { cpp: "static_cast<double>(v.y)", type: "scalar" as const }],
-                    ["v.z", { cpp: "static_cast<double>(v.z)", type: "scalar" as const }],
+                    ...vec3MemberBindings("v", (axis) => "static_cast<double>(v." + axis + ")"),
                 ]),
                 returns: "double",
             },
@@ -607,9 +604,7 @@ export class GizmoLowerer {
                 cppName: "normalize_vec3",
                 calls,
                 memberBindings: new Map([
-                    ["v.x", { cpp: "static_cast<double>(v.x)", type: "scalar" as const }],
-                    ["v.y", { cpp: "static_cast<double>(v.y)", type: "scalar" as const }],
-                    ["v.z", { cpp: "static_cast<double>(v.z)", type: "scalar" as const }],
+                    ...vec3MemberBindings("v", (axis) => "static_cast<double>(v." + axis + ")"),
                 ]),
                 returns: {
                     type: "Vec3d",
@@ -738,9 +733,7 @@ export class GizmoLowerer {
                             },
                         ],
                     ),
-                    ["dir.x", { cpp: "static_cast<double>(dir.x)", type: "scalar" as const }],
-                    ["dir.y", { cpp: "static_cast<double>(dir.y)", type: "scalar" as const }],
-                    ["dir.z", { cpp: "static_cast<double>(dir.z)", type: "scalar" as const }],
+                    ...vec3MemberBindings("dir", (axis) => "static_cast<double>(dir." + axis + ")"),
                 ]),
                 returns: {
                     type: "Vec3d",
@@ -793,9 +786,7 @@ export class GizmoLowerer {
                 cppName: "look_at_quat",
                 calls,
                 memberBindings: new Map([
-                    ["dir.x", { cpp: "static_cast<double>(dir.x)", type: "scalar" as const }],
-                    ["dir.y", { cpp: "static_cast<double>(dir.y)", type: "scalar" as const }],
-                    ["dir.z", { cpp: "static_cast<double>(dir.z)", type: "scalar" as const }],
+                    ...vec3MemberBindings("dir", (axis) => "static_cast<double>(dir." + axis + ")"),
                 ]),
                 returns: this.quatReturn(MATH_MODULE, "lookAtQuat"),
             },
@@ -3279,9 +3270,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
         const scope: PinnedNumericScope = {
             bindings: new Map<string, PinnedBinding>([
                 ["q", { cpp: "q", type: "scalar" }],
-                ["p.x", { cpp: "p.x", type: "scalar" }],
-                ["p.y", { cpp: "p.y", type: "scalar" }],
-                ["p.z", { cpp: "p.z", type: "scalar" }],
+                ...vec3MemberBindings("p"),
             ]),
             calls: new Map([
                 [
@@ -3657,9 +3646,7 @@ std::array<float, 16> bbox_mat4_from_quat(
             "scaling",
             new PinnedNumericLowerer(file, {
                 bindings: new Map<string, PinnedBinding>([
-                    ["axis.x", { cpp: "axis.x", type: "scalar" }],
-                    ["axis.y", { cpp: "axis.y", type: "scalar" }],
-                    ["axis.z", { cpp: "axis.z", type: "scalar" }],
+                    ...vec3MemberBindings("axis"),
                     [
                         "length",
                         { cpp: "rotation_anchor_length", type: "scalar" },

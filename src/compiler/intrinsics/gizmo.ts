@@ -1,3 +1,9 @@
+import { valueForKind } from "../types.js";
+import type { LoweringServices } from "../lowering-services.js";
+// Utility layers host display and editing gizmos over a shared camera.
+// Explicit pointer-drag registration reaches native axis/plane translation,
+// including source-defined canvas proxies; other editing families retain the
+// documented display-only adaptation. Camera deferral callbacks remain live.
 // Utility layers host display and editing gizmos over a shared camera.
 // Explicit pointer-drag registration reaches native axis/plane translation,
 // including source-defined canvas proxies; other editing families retain the
@@ -6,49 +12,39 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { validateObjectProperties } from "../option-helpers.js";
 import type { Feature, Value, ValueKind } from "../types.js";
-import { handleCppType, type DataType } from "../data-types.js";
-import type { CapturedClosure, NativeCaptureBinding } from "../closure-captures.js";
+import { handleCppType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { compilePointerDragRegistration, pointerDispatcherCpp } from "../pointer-drag.js";
 
 /** Camera-owned callbacks querying the gizmo dispatcher. */
-export interface CameraDeferralContext {
-    compileStoredDataFunction(expression: ts.ArrowFunction, type: DataType & { kind: "function" }): string;
-    compileValue(expression: ts.Expression): Value;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    propertyName(name: ts.PropertyName): string | undefined;
-    fail(node: ts.Node, message: string): never;
-}
+export interface CameraDeferralContext
+    extends Pick<LoweringServices,
+        | "compileStoredDataFunction"
+        | "compileValue"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "propertyName"
+        | "fail"
+    > {}
 
 export interface GizmoIntrinsicContext
     extends IntrinsicCallContext,
-        CameraDeferralContext {
-    emit(line: string): void;
-    allocateTemporaryCppName(label: string): string;
-    withRecordScopes<T>(owner: Value, work: () => T): T;
-    compileCallbackWithValues(declaration: NonNullable<Value["callbackDeclaration"]>, arguments_: readonly Value[], node: ts.Node, discard?: boolean): Value;
-    emitDiscardedValue(value: Value): void;
-    captureManagedClosureLines(work: () => void): CapturedClosure;
-    registerNativeBinding(name: string, borrowed?: boolean): NativeCaptureBinding;
-    useNativeValue(value: Value): void;
-    requireEngine(value: Value, node: ts.Node): string;
-    requireDefaultEngine(node: ts.Node): string;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-}
+    CameraDeferralContext,
+    Pick<LoweringServices,
+        | "emit"
+        | "allocateTemporaryCppName"
+        | "withRecordScopes"
+        | "compileCallbackWithValues"
+        | "emitDiscardedValue"
+        | "captureManagedClosureLines"
+        | "registerNativeBinding"
+        | "useNativeValue"
+        | "requireEngine"
+        | "requireDefaultEngine"
+        | "expectSameEngine"
+        | "compileVec3"
+        | "compileNumber"
+    > {}
 
 /**
  * The options bag each factory takes, refused rather than half-supported.
@@ -270,14 +266,14 @@ function compileEditGizmo(
     for (const feature of shape.meshFeatures) {
         context.reachFeature(feature, call);
     }
-    return {
-        kind: shape.kind,
+    return valueForKind(shape.kind, {
+
         cpp:
             `${shape.cppFactory}(${engine.cpp}, ${layer.cpp}, ` +
             `${context.compileVec3(axisExpression, "double")}` +
             `${supplied.map((argument) => `, ${argument}`).join("")})`,
         engineCpp: engine.cpp,
-    };
+    });
 }
 
 export function compileCameraDeferralOptions(
@@ -436,13 +432,13 @@ function compileCompositeGizmo(
     // widgets do.
     context.reachFeature("mesh:transform-node", call);
     context.reachFeature("mesh:parenting", call);
-    return {
-        kind: shape.kind,
+    return valueForKind(shape.kind, {
+
         cpp:
             `${shape.cppFactory}(${engine.cpp}, ${layer.cpp}` +
             `${supplied.map((argument) => `, ${argument}`).join("")})`,
         engineCpp: engine.cpp,
-    };
+    });
 }
 
 /** `attach<Composite>GizmoToNode(gizmo, node)`. */

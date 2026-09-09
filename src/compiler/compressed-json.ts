@@ -1,3 +1,4 @@
+import type { LoweringServices } from "./lowering-services.js";
 // Generation-time lowering for source-owned compressed JSON documents.
 //
 // Babylon Lite keeps large NME graphs out of its browser bundles by storing
@@ -7,7 +8,18 @@
 // carry the parsed JSON through the compiler's existing record/tuple values.
 // The match is structural so this is a format capability rather than a scene
 // or export-name special case.
-import { gunzipSync } from "node:zlib";
+// Generation-time lowering for source-owned compressed JSON documents.
+//
+// Babylon Lite keeps large NME graphs out of its browser bundles by storing
+// gzip/base64 text in a scene-adjacent module.  The module's decoder uses the
+// browser Compression Streams surface, but its result is immutable input to a
+// generated graph, not runtime scene state.  Recognize that source shape and
+// carry the parsed JSON through the compiler's existing record/tuple values.
+// The match is structural so this is a format capability rather than a scene
+// or export-name special case.
+import {
+    gunzipSync,
+} from "node:zlib";
 import ts from "typescript";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -19,13 +31,14 @@ import type { Value } from "./types.js";
 import { runModuleJsonSync } from "./module-json-sync.js";
 import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
 
-interface CompressedJsonContext {
-    readonly checker: ts.TypeChecker;
-    compileStringLiteral(expression: ts.Expression): string;
-    compileValue(expression: ts.Expression): Value;
-    cppString(value: string): string;
-    fail(node: ts.Node, message: string): never;
-}
+interface CompressedJsonContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "compileStringLiteral"
+        | "compileValue"
+        | "cppString"
+        | "fail"
+    > {}
 
 function functionDeclaration(
     checker: ts.TypeChecker,

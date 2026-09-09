@@ -40,6 +40,11 @@ The harness-ready gate shares this storage. Recovery global disposal hooks remai
 resume through engine frame boundaries. `drawCallCount` measures native GPU draw commands, including
 transport passes; browser context accounting can differ.
 
+Uncaught source exceptions in ordinary engine callbacks propagate through the PAL to the generated
+entry handler, which reports the error and exits with status 1. A local source catch still handles
+its own exception. Realm tasks use their installed error handler; without one, they rethrow.
+This differs from a browser reporting a callback exception and continuing its event loop.
+
 ## Shader contract
 
 PBR/Standard use pinned composers; node materials use the pinned graph compiler;
@@ -51,6 +56,13 @@ The specialized shared vertex path uses a baked world and fixed PAL bindings.
 Its deformation path uses four influences with a 64-matrix palette and supported
 attribute/storage morph transport. `shared-material-vertex-transport` records
 these differences from ordinary color material composition.
+
+Lifted utility shaders also adapt stage inputs: the texture skybox computes its affine fog
+distance in the fragment from interpolated world position, which can change floating-point rounding.
+The HDR background reconstructs `positionUVW` as world position minus the background centre;
+this represents the admitted translated cube. SDL's single-sample image-processing wrapper samples
+at texel centres instead of the pin's integer load. The single-sample transmission grab replaces
+the multisample average with a mip-zero load while retaining the pinned manual bilinear filter.
 
 ### Numeric width
 

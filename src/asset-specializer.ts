@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { compressedTextureFormat } from "./compressed-texture-format.js";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { CompileAsset } from "./compiler.js";
@@ -224,12 +225,8 @@ const supportedExtensions = new Set<string>([
     // Resolved by the same module through the pin's own hooks; a survivor is
     // refused by name beside the sparse one, below.
     GAUSSIAN_SPLATTING_EXTENSION,
-    // Resolved at packaging (gltf-packager.ts): every redirected KTX2 image
-    // is transcoded by the pin's own loader and written back as the KTX1
-    // container the generated loader parses, the texture takes an ordinary
-    // `source`, and the packaged document drops the extension. Listed for the
-    // same reason as the geometry extensions above -- a direct
-    // `specializeGltf` call over a pre-packaging asset still sees it.
+    // Packaging replaces each redirected KTX2 image with the pin's GPU blocks
+    // and mip list. Direct specialization can still see the source extension.
     "KHR_texture_basisu",
 ]);
 
@@ -696,23 +693,14 @@ export function gltfHasGaussianSplats(path: string): boolean {
     return hasGaussianSplats(parseGlbJson(path));
 }
 
-/**
- * Whether packaging left transcoded KTX1 containers on this document.
- *
- * `KHR_texture_basisu` is resolved at generation like the geometry
- * extensions are, so what the loader ships against is the container rather
- * than the extension — which packaging drops. `texture:compressed` selects
- * the generated `parseKtx1` translation unit and only the runtime feature
- * list can do that, so an asset carrying one joins the feature after
- * materialization, exactly as its punctual lights join `light:*`.
- */
+/** Packaged mip lists reach the compressed-texture reader after materialization. */
 export function gltfHasCompressedImages(path: string): boolean {
     return hasCompressedImages(parseGlbJson(path));
 }
 
 function hasCompressedImages(document: JsonRecord): boolean {
     return asRecords(document.images).some(
-        (image) => image.mimeType === "image/ktx",
+        (image) => image.mimeType === compressedTextureFormat.mimeType,
     );
 }
 
@@ -742,7 +730,6 @@ export interface AssetSpecializationFeatures {
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
     materialSpecular: boolean;
-    materialExtensionPayload: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -783,7 +770,6 @@ export function emitAssetSpecializations(
             animationPointerMaterials: false,
             assetTransmission: false,
             materialSpecular: false,
-            materialExtensionPayload: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -881,8 +867,6 @@ export function emitAssetSpecializations(
         ),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),
-        materialExtensionPayload: usesExtension("KHR_materials_anisotropy") ||
-            usesExtension("KHR_materials_diffuse_transmission"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
         punctualLights: usesExtension("KHR_lights_punctual"),
         eightInfluenceSkinning: specializations.some(

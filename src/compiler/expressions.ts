@@ -1,3 +1,16 @@
+import { EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+// Expression lowering: the value switch and its call dispatch.
+//
+// `compileValue` is the one door every value position goes through. It
+// recognizes the expression's syntactic shape and hands each shape to
+// the module that owns it -- data paths and constructors to the data
+// lowerer, local classes to the class lowerer, property reads to the
+// compiler's property path, and calls to `compileCall`, whose order
+// (immediate promises, math and data methods, scene collection pushes,
+// record and class methods, bound callbacks, registered intrinsics,
+// native functions, user functions) is the resolution order a call site
+// observes.
 // Expression lowering: the value switch and its call dispatch.
 //
 // `compileValue` is the one door every value position goes through. It
@@ -10,12 +23,11 @@
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
-import {isHandleKind} from "./data-types.js";
+import { isHandleKind } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import { compileNumberPredicate, numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
-    compileAudioDecodeAssetCall,
     compileAudioMethodCall,
     isSupportedAudioMethodProperty,
 } from "./audio-surface.js";
@@ -33,12 +45,10 @@ import {
     mathMemberAccess,
     mathMemberCall,
 } from "./math-intrinsics.js";
-import type { ClassLowerer } from "./classes.js";
 import {
     compileCompressedJsonCall,
     compileCompressedJsonPromiseThen,
 } from "./compressed-json.js";
-import type { DataLowerer } from "./data-lowering.js";
 import { compileIsArrayOverData } from "./data-methods.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
 import {
@@ -47,7 +57,6 @@ import {
     compileJsonTypeOf,
 } from "./json-bridge.js";
 import { compileWebStorageCall } from "./web-storage.js";
-import type { NativeFunctionLowerer } from "./native-functions.js";
 import {
     compileImmediatePromise,
     type PromiseLoweringContext,
@@ -55,23 +64,11 @@ import {
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandleCpp } from "./properties.js";
-import type { StaticEvaluator } from "./static-evaluator.js";
-import type { CompilerSymbols } from "./symbols.js";
 import type {
-    CompiledNodeParticles,
-    Feature,
-    FrameCallbackSignature,
     Value,
-    ValueKind,
-    VariableBinding,
 } from "./types.js";
 import type {
-    HandleCollections,
-    HandleCollectionTarget,
-} from "./handle-collections.js";
-import type {
     UserFunctionContext,
-    UserFunctionLowerer,
 } from "./user-functions.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { commonResourceValue } from "./types.js";
@@ -87,7 +84,7 @@ import { commonResourceValue } from "./types.js";
  * template as a discarded statement, which is dead work whose only visible
  * trace is the compiler rejecting the discard.
  */
-export const PURE_NUMBER_FORMATTERS = new Set([
+export const PURE_NUMBER_FORMATTERS = new EmissionSet([
     "toFixed",
     "toPrecision",
     "toExponential",
@@ -118,173 +115,85 @@ function containsEvaluatedCall(node: ts.Node): boolean {
 
 export interface ExpressionContext
     extends PromiseLoweringContext,
-        UserFunctionContext {
-    compileWorkerValue(expression: ts.Expression): Value | undefined;
-    readonly checker: ts.TypeChecker;
-    readonly evaluator: StaticEvaluator;
-    /** The scene's node-particle program; a systems.push lands on it. */
-    readonly reachedNodeParticles: CompiledNodeParticles;
-    readonly dataLowerer: DataLowerer;
-    readonly classLowerer: ClassLowerer;
-    readonly userFunctions: UserFunctionLowerer;
-    readonly nativeFunctions: NativeFunctionLowerer;
-    readonly symbols: CompilerSymbols;
-    readonly variableScopes: ReadonlyArray<
-        Map<ts.Symbol, VariableBinding>
-    >;
-    unwrap(expression: ts.Expression): ts.Expression;
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    activeThis(): Value | undefined;
-    lookup(identifier: ts.Identifier): Value;
-    lookupOptional(
-        identifier: ts.Identifier,
-    ): Value | undefined;
-    resolveThisField(name: string): Value | undefined;
-    resolveStaticExpression(
-        expression: ts.Expression,
-    ): ts.Expression;
-    canvasSizeValue(
-        expression: ts.Expression,
-    ): Value | undefined;
-    compilePropertyAccess(
-        expression: ts.PropertyAccessExpression,
-    ): Value;
-    readResolvedProperty(
-        owner: Value,
-        expression: ts.PropertyAccessExpression,
-    ): Value | undefined;
-    registerClassInstance(
-        instance: Value,
-        declaration: ts.ClassDeclaration,
-    ): void;
-    classOf(
-        instance: Value,
-    ): ts.ClassDeclaration | undefined;
-    withRecordScopes<T>(owner: Value, work: () => T): T;
-    probeEmission<T>(
-        probe: () => T,
-        answered?: (result: T) => boolean,
-    ): T;
-    recordAccessor(
-        owner: Value,
-        mapType: string,
-        entries: readonly string[],
-        canHoist: boolean,
-    ): string;
-    requireEngine(value: Value, node: ts.Node): string;
-    /** Whether generation has seen a thin-instance pool set on this mesh. */
-    meshHasThinInstancePool(owner: Value): boolean;
-    compileCondition(expression: ts.Expression): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileBoolean(expression: ts.Expression): string;
-    compileStringLiteral(
-        expression: ts.Expression,
-    ): string;
-    registerAsset(
-        source: string,
-        kind: import("./types.js").CompileAsset["kind"],
-    ): import("./types.js").CompileAsset;
-    moduleRelativeAssetUrl(
-        expression: ts.Expression,
-    ): string | undefined;
-    compileDynamicModuleRelativeAssetUrl(
-        expression: ts.Expression,
-    ): Value | undefined;
-    materializeStaticNativeValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): Value;
-    isNumberExpression(
-        expression: ts.Expression,
-    ): boolean;
-    propertyName(
-        name: ts.PropertyName,
-    ): string | undefined;
-    namesLocalFunction(
-        identifier: ts.Identifier,
-    ): boolean;
-    cppString(value: string): string;
-    isBrowserOnlyExpression(
-        expression: ts.Expression,
-    ): boolean;
-    isBrowserOnlyHandler(handler: ts.Expression): boolean;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    isDeferredCallbackCall(call: ts.CallExpression): boolean;
-    compileFrameCallback(
-        expression: ts.Expression,
-        signature?: FrameCallbackSignature,
-    ): string;
-    requireDefaultEngine(node: ts.Node): string;
-    evaluateBrowserValue(
-        expression: ts.Expression,
-    ): Value["browserValue"] | undefined;
-    /** The handle-collection concept: every collection operation. */
-    readonly handleCollections: HandleCollections;
-    handleCollectionIterationTarget(
-        expression: ts.Expression,
-    ): HandleCollectionTarget | undefined;
-    assetRootElementAccess(
-        expression: ts.ElementAccessExpression,
-    ): Value | undefined;
-    compileRegisteredConstant(importedName: string): Value | undefined;
-    compileRegisteredIntrinsic(
-        importedName: string,
-        call: ts.CallExpression,
-    ): Value | undefined;
-    compileThinInstanceUploadHelper(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined;
-    compilePixelsTextureUpload(
-        call: ts.CallExpression,
-    ): Value | undefined;
-    compileStaticFetch(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined;
-    compileVoxelFileCall(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined;
-    compileBrowserTextureFunctionCall(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined;
-    compileExecutedUrlFunctionCall(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined;
-    compileStaticFetchMethod(
-        call: ts.CallExpression,
-        owner: Value,
-        method: string,
-    ): Value | undefined;
-    compilePlatformCall(call: ts.CallExpression): Value | undefined;
-    reachJson(): void;
-    reachLocalStorage(): void;
-    compileAnimationFrameCall(call: ts.CallExpression): Value | undefined;
-    compileBrowserGeneratedString(
-        call: ts.CallExpression,
-    ): Value | undefined;
-    reachFeature(feature: Feature, site?: ts.Node): void;
-    reachJsData(): void;
-    noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
-    enterRuntimeControlFlow(): void;
-    leaveRuntimeControlFlow(): void;
-    isInRuntimeIteration(): boolean;
-    isInNativeFunctionBody(): boolean;
-    isLocalCallbackEvaluationRepeated(declaration: ts.Node): boolean;
-    callbackEvaluationIdentity(): object | undefined;
-}
+    UserFunctionContext,
+    Pick<LoweringServices,
+        | "compileWorkerValue"
+        | "checker"
+        | "options"
+        | "evaluator"
+        | "reachedNodeParticles"
+        | "dataLowerer"
+        | "bindDataTuple"
+        | "classLowerer"
+        | "userFunctions"
+        | "nativeFunctions"
+        | "symbols"
+        | "variableScopes"
+        | "unwrap"
+        | "expectArgumentCount"
+        | "expectKind"
+        | "expectSameEngine"
+        | "activeThis"
+        | "lookup"
+        | "lookupOptional"
+        | "resolveThisField"
+        | "resolveStaticExpression"
+        | "canvasSizeValue"
+        | "compilePropertyAccess"
+        | "readResolvedProperty"
+        | "registerClassInstance"
+        | "classOf"
+        | "withRecordScopes"
+        | "probeEmission"
+        | "recordAccessor"
+        | "requireEngine"
+        | "meshHasThinInstancePool"
+        | "compileCondition"
+        | "compileNumber"
+        | "compileBoolean"
+        | "compileStringLiteral"
+        | "registerAsset"
+        | "moduleRelativeAssetUrl"
+        | "compileDynamicModuleRelativeAssetUrl"
+        | "materializeStaticNativeValue"
+        | "isNumberExpression"
+        | "propertyName"
+        | "namesLocalFunction"
+        | "cppString"
+        | "isBrowserOnlyExpression"
+        | "isBrowserOnlyHandler"
+        | "isDefaultLibraryIdentifier"
+        | "isDeferredCallbackCall"
+        | "compileFrameCallback"
+        | "requireDefaultEngine"
+        | "evaluateBrowserValue"
+        | "handleCollections"
+        | "handleCollectionIterationTarget"
+        | "assetRootElementAccess"
+        | "compileRegisteredConstant"
+        | "compileRegisteredIntrinsic"
+        | "compileThinInstanceUploadHelper"
+        | "compilePixelsTextureUpload"
+        | "compileStaticFetch"
+        | "compileVoxelFileCall"
+        | "compileBrowserTextureFunctionCall"
+        | "compileExecutedUrlFunctionCall"
+        | "compileStaticFetchMethod"
+        | "compilePlatformCall"
+        | "reachJson"
+        | "reachLocalStorage"
+        | "compileAnimationFrameCall"
+        | "compileBrowserGeneratedString"
+        | "reachFeature"
+        | "reachJsData"
+        | "noteMaterialColorRead"
+        | "enterRuntimeControlFlow"
+        | "leaveRuntimeControlFlow"
+        | "isInRuntimeIteration"
+        | "isInNativeFunctionBody"
+        | "isLocalCallbackEvaluationRepeated"
+        | "callbackEvaluationIdentity"
+    > {}
 
 export class ExpressionLowerer {
     public constructor(
@@ -683,554 +592,8 @@ export class ExpressionLowerer {
             );
         }
         if (ts.isElementAccessExpression(unwrapped)) {
-            // `baked.clips[<name>]`: one row of the bake's own map, read
-            // natively because the bake decided the layout.
-            const clipOwner = this.context.unwrap(unwrapped.expression);
-            if (
-                ts.isPropertyAccessExpression(clipOwner) &&
-                clipOwner.name.text === "clips"
-            ) {
-                const map = this.context.probeEmission(() => {
-                    const value = this.compileValue(clipOwner);
-                    return value.kind === "vat-clip-map" ? value : undefined;
-                });
-                if (map) {
-                    return this.compileVatClipRow(map, unwrapped);
-                }
-            }
-            const browserFile = compileBrowserFileElementAccess(
-                this.context,
-                unwrapped,
-            );
-            if (browserFile) {
-                return browserFile;
-            }
-            const json = compileJsonRead(this.context, unwrapped);
-            if (json) {
-                return json;
-            }
-            if (!assertedNonNull) {
-                // Determining whether an unchecked element read can carry an
-                // existence predicate resolves its owner. A call-shaped owner
-                // emits while it resolves, so a declined probe must discard
-                // those lines before the ordinary element path compiles the
-                // owner for real. Otherwise `makeRow().values[i]` evaluates
-                // `makeRow()` twice even though JavaScript evaluates it once.
-                const guardable = this.context.probeEmission(() =>
-                    this.context.dataLowerer.compileGuardableElementAccess(
-                        unwrapped,
-                    ),
-                );
-                if (guardable) return guardable;
-            }
-            const ownerExpression = this.context.unwrap(
-                unwrapped.expression,
-            );
-            if (ts.isConditionalExpression(ownerExpression)) {
-                const condition = this.context.compileCondition(
-                    ownerExpression.condition,
-                );
-                const selectedOwner =
-                    condition === "true"
-                        ? ownerExpression.whenTrue
-                        : condition === "false"
-                          ? ownerExpression.whenFalse
-                          : undefined;
-                const indexed = (owner: ts.Expression): Value =>
-                    this.context.dataLowerer
-                        .compileMaterializedElementAccess(
-                            owner,
-                            unwrapped.argumentExpression,
-                        ) ??
-                    this.compileValue(
-                        ts.factory.createElementAccessExpression(
-                            owner,
-                            unwrapped.argumentExpression,
-                        ),
-                    );
-                if (selectedOwner) {
-                    return indexed(selectedOwner);
-                }
-                // Indexing distributes over a value-selecting conditional.
-                // This lets each static table materialize under the shared
-                // runtime index while preserving the conditional at the
-                // selected element, rather than trying to index a
-                // generation-only tuple.
-                return this.selectValue(
-                    condition,
-                    indexed(ownerExpression.whenTrue),
-                    indexed(ownerExpression.whenFalse),
-                    unwrapped,
-                );
-            }
-            const data = this.context.dataLowerer.compileDataPath(
-                unwrapped,
-                "read",
-            );
-            if (data) {
-                return data;
-            }
-            const assetRoot =
-                this.context.assetRootElementAccess(unwrapped);
-            if (assetRoot) {
-                return assetRoot;
-            }
-            const collectionElement =
-                this.context.handleCollections.collectionElementAccess(
-                    unwrapped,
-                );
-            if (collectionElement) {
-                return collectionElement;
-            }
-            const owner = this.compileValue(
-                unwrapped.expression,
-            );
-            const dataElement =
-                this.context.dataLowerer.compileElementFromValue(
-                    owner,
-                    unwrapped.argumentExpression,
-                );
-            if (dataElement) {
-                return assertedNonNull && dataElement.kind === "data"
-                    ? this.context.dataLowerer.narrowOptional(
-                          dataElement,
-                          expression,
-                          true,
-                      )
-                    : dataElement;
-            }
-            const key = this.compileValue(
-                unwrapped.argumentExpression,
-            );
-            if (key.staticString !== undefined) {
-                const property =
-                    ts.factory.createPropertyAccessExpression(
-                        unwrapped.expression,
-                        key.staticString,
-                    );
-                ts.setTextRange(property, unwrapped);
-                ts.setOriginalNode(property, unwrapped);
-                ts.setTextRange(
-                    property.name,
-                    unwrapped.argumentExpression,
-                );
-                ts.setOriginalNode(
-                    property.name,
-                    unwrapped.argumentExpression,
-                );
-                const resolved =
-                    this.context.readResolvedProperty(
-                        owner,
-                        property,
-                    );
-                if (resolved) return resolved;
-            }
-            if (owner.kind === "camera-world-matrix") {
-                const index = this.compileValue(
-                    unwrapped.argumentExpression,
-                );
-                if (
-                    index.kind !== "number" ||
-                    index.staticNumber === undefined ||
-                    ![12, 13, 14].includes(
-                        index.staticNumber,
-                    )
-                ) {
-                    this.context.fail(
-                        unwrapped.argumentExpression,
-                        "Reached camera world-matrix access supports translation indices 12-14.",
-                    );
-                }
-                // The pinned `getCameraPosition` reads these three back out
-                // of the camera's float32 world matrix, so the rounded
-                // stored value is what a scene observes -- not the double
-                // the eye was composed at.
-                const element = index.staticNumber as
-                    | 12
-                    | 13
-                    | 14;
-                return {
-                    kind: "number",
-                    cpp: `bbl::upstream::camera_world_matrix(${this.context.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value])[${element}]`,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
-            if (owner.kind === "node-particle-column") {
-                return readFrozenParticleElement(
-                    this.context, owner,
-                    this.context.compileNumber(unwrapped.argumentExpression, "double"),
-                    unwrapped,
-                );
-            }
-            if (owner.kind === "node-particle-set") {
-                const slot = this.compileValue(
-                    unwrapped.argumentExpression,
-                );
-                if (
-                    slot.kind !== "number" ||
-                    slot.staticNumber === undefined ||
-                    !Number.isInteger(slot.staticNumber) ||
-                    slot.staticNumber < 0
-                ) {
-                    this.context.fail(
-                        unwrapped.argumentExpression,
-                        "A node-particle set's systems are indexed by a " +
-                            "static non-negative integer.",
-                    );
-                }
-                // How many systems the set has is the graph's answer, not
-                // this call's: the bake builds it and refuses an index it
-                // has no system for.
-                return {
-                    kind: "node-particle-system",
-                    cpp: "",
-                    ...(owner.nodeParticleSetIndex !== undefined
-                        ? {
-                              nodeParticleSetIndex:
-                                  owner.nodeParticleSetIndex,
-                          }
-                        : {}),
-                    nodeParticleSystemIndex: slot.staticNumber,
-                    ...(owner.engineCpp
-                        ? { engineCpp: owner.engineCpp }
-                        : {}),
-                };
-            }
-            if (
-                owner.kind === "node-particle-2d-binding" &&
-                owner.nodeParticleLive
-            ) {
-                // `binding.bridges[k]`: one bridge of a live binding. How
-                // many bridges the binding has is the graph's system
-                // count, which the bake reports; the generated registrar
-                // throws for an index it has no mapping for.
-                const slot = this.compileValue(unwrapped.argumentExpression);
-                if (
-                    slot.kind !== "number" ||
-                    slot.staticNumber === undefined ||
-                    !Number.isInteger(slot.staticNumber) ||
-                    slot.staticNumber < 0
-                ) {
-                    this.context.fail(
-                        unwrapped.argumentExpression,
-                        "A pure-2D binding's bridges are indexed by a static " +
-                            "non-negative integer.",
-                    );
-                }
-                return {
-                    ...owner,
-                    kind: "node-particle-2d-bridge",
-                    nodeParticleBridgeIndex: slot.staticNumber,
-                    nodeParticleSystemIndex: slot.staticNumber,
-                };
-            }
-            if (owner.kind === "record") {
-                const rawKey = this.compileValue(
-                    unwrapped.argumentExpression,
-                );
-                const key =
-                    rawKey.kind === "data"
-                        ? this.context.dataLowerer.narrowOptional(
-                              rawKey,
-                              unwrapped.argumentExpression,
-                          )
-                        : rawKey;
-                const property =
-                    key.kind === "string"
-                        ? key.staticString
-                        : key.kind === "number" &&
-                            key.staticNumber !== undefined
-                          ? String(key.staticNumber)
-                          : undefined;
-                if (property === undefined) {
-                    const dynamicString =
-                        key.kind === "string" ||
-                        (key.kind === "data" &&
-                            (key.dataType?.kind === "string" ||
-                                (key.dataType?.kind === "optional" &&
-                                    key.dataType.inner.kind === "string")));
-                    const dynamicEnum =
-                        key.kind === "data" &&
-                        key.dataType?.kind === "enum";
-                    if (
-                        key.kind !== "number" &&
-                        !dynamicString &&
-                        !dynamicEnum
-                    ) {
-                        this.context.fail(
-                            unwrapped.argumentExpression,
-                            "Dynamic compile-time record access requires a string or numeric key.",
-                        );
-                    }
-                    const indexedType =
-                        this.context.dataLowerer.dataTypeAt(
-                            unwrapped,
-                        );
-                    if (!indexedType) {
-                        this.context.fail(
-                            unwrapped,
-                            "Dynamic numeric record values must belong to the native data model.",
-                        );
-                    }
-                    // Record<number, T> is typed as T by TypeScript even
-                    // though a numeric property can be absent at runtime.
-                    // The lookup is therefore nullable whether or not the
-                    // checker already included undefined at this site.
-                    const ownerDataType =
-                        this.context.dataLowerer.dataTypeAt(
-                            unwrapped.expression,
-                        );
-                    const declaredValueType =
-                        ownerDataType?.kind === "map"
-                            ? ownerDataType.value
-                            : ownerDataType?.kind === "enummap"
-                              ? ownerDataType.element
-                              : indexedType;
-                    // Materializing a compile-time record as a native Map
-                    // stores its object values behind another container.
-                    // JavaScript Map/Record lookup must return the same object,
-                    // so object-valued entries need reference representation
-                    // whether or not a later mutation made that identity
-                    // obvious during the initial type scan.
-                    const valueType =
-                        this.context.dataTypes.markStoredObjectReferences(
-                            declaredValueType,
-                        );
-                    const keyType = this.context.checker.getTypeAtLocation(
-                        unwrapped.argumentExpression,
-                    );
-                    const closedEnumKey =
-                        dynamicEnum ||
-                        (keyType.flags & ts.TypeFlags.EnumLike) !== 0 ||
-                        (keyType.symbol?.flags ?? 0) & ts.SymbolFlags.Enum;
-                    const ownerHasOptionalProperties =
-                        this.context.checker
-                            .getTypeAtLocation(unwrapped.expression)
-                            .getProperties()
-                            .some(
-                                (member) =>
-                                    (member.flags & ts.SymbolFlags.Optional) !==
-                                    0,
-                            );
-                    const totalClosedKey =
-                        closedEnumKey &&
-                        indexedType.kind !== "optional" &&
-                        !ownerHasOptionalProperties;
-                    const resultType = totalClosedKey
-                        ? valueType
-                        : valueType.kind === "optional"
-                          ? valueType
-                          : indexedType.kind === "optional"
-                            ? indexedType
-                            : ({
-                                  kind: "optional",
-                                  inner: indexedType,
-                              } as const);
-                    const valueCpp =
-                        this.context.dataTypes.cppType(
-                            valueType,
-                        );
-                    let entries: string[] = [];
-                    const entryLines = this.context.captureEmittedLines(() => {
-                        entries = Object.entries(
-                            owner.recordProperties ?? {},
-                        ).map(([name, value]) => {
-                            if (dynamicEnum) {
-                                return `{${this.context.dataTypes.enumMemberCpp(key.dataType as Extract<DataType, { kind: "enum" }>, name, unwrapped)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
-                            }
-                            if (dynamicString) {
-                                return `{${this.context.cppString(name)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
-                            }
-                            const numericKey = Number(name);
-                            if (!Number.isFinite(numericKey)) {
-                                this.context.fail(
-                                    unwrapped.expression,
-                                    `Dynamic numeric record has non-numeric key '${name}'.`,
-                                );
-                            }
-                            return `{${doubleLiteral(numericKey)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
-                        });
-                    });
-                    for (const line of entryLines) this.context.emit(line);
-                    this.context.reachJsData();
-                    const keyCpp = dynamicString
-                        ? "std::string"
-                        : dynamicEnum
-                          ? this.context.dataTypes.cppType(key.dataType!)
-                          : "double";
-                    const mapType =
-                        `bbl::js::Map<${keyCpp}, ${valueCpp}>`;
-                    const table = this.context.recordAccessor(
-                        owner,
-                        mapType,
-                        entries,
-                        entryLines.length === 0 &&
-                            (this.isModuleConstantRecord(
-                                unwrapped.expression,
-                            ) ||
-                                Object.values(
-                                    owner.recordProperties ?? {},
-                                ).every((value) =>
-                                    this.canHoistRecordValue(value),
-                                )),
-                    );
-                    const lookup =
-                        `${table}.${totalClosedKey ? "at" : "get"}(${key.cpp})`;
-                    const recordValues = Object.values(
-                        owner.recordProperties ?? {},
-                    );
-                    const animationGroupSource =
-                        recordValues.length > 0 &&
-                        recordValues[0]!.animationGroupSource !==
-                            undefined &&
-                        recordValues.every(
-                            (value) =>
-                                value.animationGroupSource ===
-                                recordValues[0]!
-                                    .animationGroupSource,
-                        )
-                            ? recordValues[0]!
-                                  .animationGroupSource
-                            : undefined;
-                    const engineCpp =
-                        recordValues.length > 0 &&
-                        recordValues[0]!.engineCpp !== undefined &&
-                        recordValues.every(
-                            (value) =>
-                                value.engineCpp ===
-                                recordValues[0]!.engineCpp,
-                        )
-                            ? recordValues[0]!.engineCpp
-                            : undefined;
-                    if (resultType.kind === "handle") {
-                        return {
-                            ...this.context.dataLowerer.leafValue(
-                                lookup,
-                                resultType,
-                            ),
-                            ...(animationGroupSource
-                                ? { animationGroupSource }
-                                : {}),
-                            ...(engineCpp ? { engineCpp } : {}),
-                        };
-                    }
-                    if (
-                        valueType.kind === "struct" &&
-                        this.context.dataTypes.isReferenceStruct(
-                            valueType.name,
-                        )
-                    ) {
-                        // A shared pointer already carries JavaScript's
-                        // object-or-undefined state. Wrapping it in the
-                        // optional data type would later spell `.has_value()`
-                        // on a pointer, while narrowing it eagerly would lose
-                        // the missing-key guard.
-                        return this.context.dataLowerer.leafValue(
-                            lookup,
-                            valueType,
-                        );
-                    }
-                    return {
-                        kind: "data",
-                        cpp: lookup,
-                        dataType: resultType,
-                        ...(resultType.kind === "optional"
-                            ? { preserveUncheckedLookup: true as const }
-                            : {}),
-                    };
-                }
-                const value =
-                    owner.recordProperties?.[property];
-                if (!value) {
-                    this.context.fail(
-                        unwrapped.argumentExpression,
-                        `Compile-time record has no property '${property}'.`,
-                    );
-                }
-                return value;
-            }
-            if (owner.kind !== "tuple") {
-                this.context.fail(
-                    unwrapped.expression,
-                    `Element access is not supported for ${owner.kind}.`,
-                );
-            }
-            const index = this.compileValue(
-                unwrapped.argumentExpression,
-            );
-            const staticIndex =
-                index.kind === "number"
-                    ? (index.staticNumber ??
-                      staticNumberValue(
-                          this.context,
-                          unwrapped.argumentExpression,
-                      ))
-                    : undefined;
-            if (
-                index.kind !== "number"
-            ) {
-                this.context.fail(
-                    unwrapped.argumentExpression,
-                    "Static tuple access requires a numeric index.",
-                );
-            }
-            if (staticIndex === undefined) {
-                const elements = owner.tupleElements ?? [];
-                if (elements.length === 0) {
-                    this.context.fail(
-                        unwrapped,
-                        "A runtime index cannot read an empty static tuple.",
-                    );
-                }
-                let selected = elements[0]!;
-                for (let lane = 1; lane < elements.length; lane += 1) {
-                    selected = this.selectValue(
-                        `(${index.cpp}) == ${lane}`,
-                        elements[lane]!,
-                        selected,
-                        unwrapped,
-                    );
-                }
-                return selected;
-            }
-            if (!Number.isInteger(staticIndex)) {
-                this.context.fail(
-                    unwrapped.argumentExpression,
-                    "Static tuple access requires an integer index.",
-                );
-            }
-            const value =
-                owner.tupleElements?.[staticIndex];
-            if (!value) {
-                const resultType =
-                    this.context.checker.getTypeAtLocation(unwrapped);
-                const resultMembers =
-                    (resultType.flags & ts.TypeFlags.Union) !== 0
-                        ? (resultType as ts.UnionType).types
-                        : [resultType];
-                if (
-                    resultMembers.some(
-                        (member) =>
-                            (member.flags &
-                                (ts.TypeFlags.Undefined |
-                                    ts.TypeFlags.Null)) !==
-                            0,
-                    ) ||
-                    (ts.isBinaryExpression(unwrapped.parent) &&
-                        unwrapped.parent.left === unwrapped &&
-                        unwrapped.parent.operatorToken.kind ===
-                            ts.SyntaxKind.QuestionQuestionToken)
-                ) {
-                    return { kind: "json-null", cpp: "" };
-                }
-                this.context.fail(
-                    unwrapped,
-                    `Tuple index ${staticIndex} is out of range.`,
-                );
-            }
-            return value;
+            const value = this.compileIndexedValue(unwrapped, expression, assertedNonNull);
+            if (value) return value;
         }
         if (ts.isCallExpression(unwrapped)) {
             if (
@@ -1280,194 +643,8 @@ export class ExpressionLowerer {
             return this.compileCall(unwrapped);
         }
         if (ts.isConditionalExpression(unwrapped)) {
-            // Optional/vector/struct conditionals normally ask their native
-            // sink to lower both branches. Before doing that, retain the
-            // ordinary value path's stronger answer when a side-effect-free
-            // condition is generation-known. This is especially important
-            // for a static record's optional field: the selected value is a
-            // string, not native optional storage merely because the checker
-            // still exposes the unselected `undefined` branch.
-            const foldedCondition = !containsEvaluatedCall(
-                unwrapped.condition,
-            )
-                ? this.context.probeEmission(
-                      () =>
-                          this.context.compileCondition(
-                              unwrapped.condition,
-                          ),
-                      (condition) =>
-                          condition === "true" ||
-                          condition === "false",
-                  )
-                : undefined;
-            if (
-                foldedCondition === "true" ||
-                foldedCondition === "false"
-            ) {
-                const taken =
-                    foldedCondition === "true"
-                        ? unwrapped.whenTrue
-                        : unwrapped.whenFalse;
-                const dropped =
-                    foldedCondition === "true"
-                        ? unwrapped.whenFalse
-                        : unwrapped.whenTrue;
-                const selected = this.compileValue(taken);
-                // When the arm generation just discarded was the NULL one,
-                // the binding it feeds can no longer be absent -- and the
-                // scene's own guard over it is therefore settled. Say so on
-                // the value, the way a find the materialized asset resolved
-                // at generation carries the constant "true": the guard then
-                // folds through the ordinary optional path instead of
-                // needing a per-kind truthiness rule. Scene 140 writes
-                // `const sg = noShadows ? null : createPcf(...)` and then
-                // `if (sg)`, with `noShadows` folded from its query.
-                const droppedNode = this.context.unwrap(dropped);
-                const droppedIsNullish =
-                    droppedNode.kind === ts.SyntaxKind.NullKeyword ||
-                    (ts.isIdentifier(droppedNode) &&
-                        droppedNode.text === "undefined");
-                // Only for a RESOURCE, because `optionalFoundCpp` means
-                // presence and the consumers read it as truthiness. Those
-                // two agree for a handle -- a mesh that exists is truthy
-                // -- and part company for a value JavaScript can call
-                // falsy while holding it: `flag ? 0 : null` surviving as
-                // 0 would fold `if (n)` to true. A data or primitive arm
-                // keeps whatever truthiness the ordinary path gives it.
-                const survivorIsResource =
-                    selected.kind !== "number" &&
-                    selected.kind !== "string" &&
-                    selected.kind !== "boolean" &&
-                    selected.kind !== "data";
-                if (
-                    droppedIsNullish &&
-                    survivorIsResource &&
-                    selected.optionalFoundCpp === undefined &&
-                    selected.truthinessCpp === undefined
-                ) {
-                    return { ...selected, optionalFoundCpp: "true" };
-                }
-                return selected;
-            }
-            const conditionalType =
-                this.context.dataLowerer.dataTypeAt(
-                    unwrapped,
-                );
-            if (
-                conditionalType?.kind === "number" ||
-                conditionalType?.kind === "vector" ||
-                (conditionalType?.kind === "struct" &&
-                    this.context.dataTypes.isReferenceStruct(conditionalType.name))
-            ) {
-                const condition = this.context.compileCondition(unwrapped.condition);
-                if (condition === "true" || condition === "false") {
-                    // Keep the selected Value's generation-known metadata.
-                    // A string-only sink would discard staticNumber, for
-                    // example when the chosen number configures engine MSAA.
-                    return this.compileValue(condition === "true"
-                        ? unwrapped.whenTrue : unwrapped.whenFalse);
-                }
-                // The common sink keeps all branch preparation inside the
-                // selected arm, including optional Map.get temporaries and
-                // array literals that need runtime storage of different sizes.
-                return this.context.dataValue(
-                    this.inRuntimeControlFlow(() =>
-                        this.context.dataLowerer.compileConditionalForSink(
-                            unwrapped, conditionalType, condition,
-                        ),
-                    ),
-                    conditionalType,
-                );
-            }
-            if (conditionalType?.kind === "optional") {
-                const objectIdentity =
-                    conditionalType.inner.kind === "struct"
-                        ? this.inRuntimeControlFlow(() =>
-                              this.context.dataLowerer.objectIdentity(
-                                  unwrapped,
-                              ),
-                          )
-                        : undefined;
-                return {
-                    kind: "data",
-                    cpp:
-                        objectIdentity ??
-                        this.inRuntimeControlFlow(() =>
-                            this.context.dataLowerer.compileForSink(
-                                unwrapped,
-                                conditionalType,
-                            ),
-                        ),
-                    dataType: conditionalType,
-                    ...(objectIdentity
-                        ? {
-                              objectIdentityCpp: objectIdentity,
-                              optionalFoundCpp: `(${objectIdentity}) != nullptr`,
-                          }
-                        : {}),
-                };
-            }
-            const condition = this.context.compileCondition(
-                unwrapped.condition,
-            );
-            if (condition === "true" || condition === "false") {
-                return this.compileValue(
-                    condition === "true"
-                        ? unwrapped.whenTrue
-                        : unwrapped.whenFalse,
-                );
-            }
-            const whenTrue = this.inRuntimeControlFlow(() =>
-                this.compileValue(
-                    unwrapped.whenTrue,
-                ),
-            );
-            const whenFalse = this.inRuntimeControlFlow(() =>
-                this.compileValue(
-                    unwrapped.whenFalse,
-                ),
-            );
-            // A tuple value is a compile-time list of element values with
-            // no native expression of its own, so selecting between two
-            // tuples is selecting element by element. Same arity is the
-            // condition for that to be the same thing.
-            if (
-                whenTrue.kind === "tuple" &&
-                whenFalse.kind === "tuple"
-            ) {
-                const trueElements =
-                    whenTrue.tupleElements ?? [];
-                const falseElements =
-                    whenFalse.tupleElements ?? [];
-                if (
-                    trueElements.length !==
-                    falseElements.length
-                ) {
-                    this.context.fail(
-                        unwrapped,
-                        "Conditional tuple branches must have the same length.",
-                    );
-                }
-                return {
-                    kind: "tuple",
-                    cpp: "",
-                    tupleElements: trueElements.map(
-                        (element, index) =>
-                            this.selectValue(
-                                condition,
-                                element,
-                                falseElements[index]!,
-                                unwrapped,
-                            ),
-                    ),
-                };
-            }
-            return this.selectValue(
-                condition,
-                whenTrue,
-                whenFalse,
-                unwrapped,
-            );
+            const value = this.compileConditionalValue(unwrapped);
+            if (value) return value;
         }
         if (ts.isArrayLiteralExpression(unwrapped)) {
             if (
@@ -1531,187 +708,8 @@ export class ExpressionLowerer {
             };
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
-            const properties: Record<string, Value> = {};
-            const methods: Record<
-                string,
-                | ts.Identifier
-                | ts.ArrowFunction
-                | ts.FunctionExpression
-                | ts.MethodDeclaration
-            > = {};
-            const getters: Record<
-                string,
-                ts.GetAccessorDeclaration
-            > = {};
-            const setters: Record<
-                string,
-                ts.SetAccessorDeclaration
-            > = {};
-            for (const property of unwrapped.properties) {
-                if (ts.isSpreadAssignment(property)) {
-                    const spread = this.compileValue(
-                        property.expression,
-                    );
-                    if (
-                        spread.kind !== "record" &&
-                        spread.recordProperties === undefined
-                    ) {
-                        this.context.fail(
-                            property,
-                            "Compile-time object spread requires a plain record value or a data record with a complete static property snapshot " +
-                                `(received ${spread.kind}${spread.dataType ? ` ${JSON.stringify(spread.dataType)}` : ""}).`,
-                        );
-                    }
-                    Object.assign(
-                        properties,
-                        spread.recordProperties ?? {},
-                    );
-                    Object.assign(
-                        methods,
-                        spread.recordMethods ?? {},
-                    );
-                    Object.assign(
-                        getters,
-                        spread.recordGetters ?? {},
-                    );
-                    Object.assign(
-                        setters,
-                        spread.recordSetters ?? {},
-                    );
-                    continue;
-                }
-                if (
-                    ts.isGetAccessorDeclaration(property)
-                ) {
-                    const name = this.context.propertyName(
-                        property.name,
-                    );
-                    if (!name) {
-                        this.context.fail(
-                            property.name,
-                            "Static record properties require literal names.",
-                        );
-                    }
-                    getters[name] = property;
-                    continue;
-                }
-                if (
-                    ts.isSetAccessorDeclaration(property)
-                ) {
-                    const name = this.context.propertyName(
-                        property.name,
-                    );
-                    if (!name) {
-                        this.context.fail(
-                            property.name,
-                            "Static record properties require literal names.",
-                        );
-                    }
-                    setters[name] = property;
-                    continue;
-                }
-                if (ts.isMethodDeclaration(property)) {
-                    const name = this.context.propertyName(
-                        property.name,
-                    );
-                    if (!name) {
-                        this.context.fail(
-                            property.name,
-                            "Static record methods require literal names.",
-                        );
-                    }
-                    methods[name] = property;
-                    continue;
-                }
-                if (ts.isPropertyAssignment(property)) {
-                    const name = this.context.propertyName(
-                        property.name,
-                    );
-                    if (!name) {
-                        this.context.fail(
-                            property.name,
-                            "Static record properties require literal names.",
-                        );
-                    }
-                    const initializer = this.context.unwrap(
-                        property.initializer,
-                    );
-                    if (
-                        ts.isIdentifier(initializer) &&
-                        this.context.namesLocalFunction(initializer)
-                    ) {
-                        methods[name] = initializer;
-                        continue;
-                    }
-                    if (
-                        ts.isArrowFunction(initializer) ||
-                        ts.isFunctionExpression(initializer)
-                    ) {
-                        methods[name] = initializer;
-                        continue;
-                    }
-                    properties[name] = this.laneValue(
-                        property.initializer,
-                    );
-                } else if (
-                    ts.isShorthandPropertyAssignment(
-                        property,
-                    )
-                ) {
-                    if (
-                        this.context.namesLocalFunction(
-                            property.name,
-                        )
-                    ) {
-                        methods[property.name.text] =
-                            property.name;
-                        continue;
-                    }
-                    properties[property.name.text] =
-                        this.laneValue(property.name);
-                } else {
-                    this.context.fail(
-                        property,
-                        "Static records support property assignments, methods, getters, and properties naming a local function.",
-                    );
-                }
-            }
-            const closes =
-                Object.keys(methods).length > 0 ||
-                Object.keys(getters).length > 0 ||
-                Object.keys(setters).length > 0;
-            const evaluationIdentity =
-                this.context.callbackEvaluationIdentity();
-            return {
-                kind: "record",
-                cpp: "",
-                recordProperties: properties,
-                recordMethods: methods,
-                recordGetters: getters,
-                recordSetters: setters,
-                // Only a record with code in it needs its scope: a
-                // plain property already holds a resolved value.
-                ...(closes
-                    ? {
-                          recordScopes: [
-                              ...this.context.variableScopes,
-                          ],
-                          ...(this.context.isInRuntimeIteration() ||
-                          this.context.isInNativeFunctionBody()
-                              ? {
-                                    repeatedCallbackEvaluation:
-                                        true as const,
-                                }
-                              : {}),
-                          ...(evaluationIdentity
-                              ? {
-                                    callbackEvaluationIdentity:
-                                        evaluationIdentity,
-                                }
-                              : {}),
-                      }
-                    : {}),
-            };
+            const value = this.compileObjectValue(unwrapped);
+            if (value) return value;
         }
         if (ts.isPostfixUnaryExpression(unwrapped)) {
             const value =
@@ -3016,563 +2014,8 @@ export class ExpressionLowerer {
             if (animationFrame) return animationFrame;
         }
         if (ts.isPropertyAccessExpression(callee)) {
-            // `renderer._beforeUpdate.push(hook)`: sprite-renderer.ts keeps
-            // its per-frame hooks in an ordinary array a caller pushes onto,
-            // and `spriteRendererUpdate` runs them before it reads its
-            // layers. It is a renderer-owned list rather than the scene's,
-            // so the push is recognized here rather than through an
-            // intrinsic name.
-            if (
-                callee.name.text === "push" &&
-                ts.isPropertyAccessExpression(callee.expression) &&
-                callee.expression.name.text === "_beforeUpdate"
-            ) {
-                const renderer = this.context.compileValue(
-                    callee.expression.expression,
-                );
-                if (renderer.kind !== "sprite-renderer") {
-                    this.context.fail(
-                        callee.expression.expression,
-                        "'_beforeUpdate' is the SpriteRenderer's own " +
-                            `per-frame hook list; received ${renderer.kind}.`,
-                    );
-                }
-                this.context.expectArgumentCount(call, 1, 1);
-                const engineCpp = this.context.requireEngine(
-                    renderer,
-                    call,
-                );
-                return {
-                    kind: "void",
-                    cpp:
-                        "bbl::sprite_renderer_before_update(" +
-                        `${engineCpp}, ${renderer.cpp}, ` +
-                        `${this.context.compileFrameCallback(
-                            argumentAt(call, 0),
-                        )})`,
-                    engineCpp,
-                };
-            }
-            if (callee.name.text === "call") {
-                const callable = this.compileValue(callee.expression);
-                if (
-                    callable.kind === "data" &&
-                    callable.dataType?.kind === "function"
-                ) {
-                    const functionType = callable.dataType;
-                    const supplied = call.arguments.slice(1);
-                    if (supplied.length !== functionType.parameters.length) {
-                        this.context.fail(
-                            call,
-                            `Function.call expected ${functionType.parameters.length} arguments after thisArg, received ${supplied.length}.`,
-                        );
-                    }
-                    const argumentsCpp = functionType.parameters.map(
-                        (type, index) =>
-                            this.context.dataLowerer.compileForSink(
-                                supplied[index]!,
-                                type,
-                            ),
-                    );
-                    const cpp = `${callable.cpp}(${argumentsCpp.join(", ")})`;
-                    return functionType.result
-                        ? this.context.dataLowerer.leafValue(
-                              cpp,
-                              functionType.result,
-                          )
-                        : { kind: "void", cpp };
-                }
-            }
-            if (
-                ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "Object" &&
-                (callee.name.text === "keys" ||
-                    callee.name.text === "values") &&
-                !this.context.lookupOptional(callee.expression)
-            ) {
-                return this.compileObjectProjection(
-                    call,
-                    callee.name.text,
-                );
-            }
-            if (
-                ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "String" &&
-                callee.name.text === "fromCharCode" &&
-                !this.context.lookupOptional(callee.expression)
-            ) {
-                this.context.reachJsData();
-                return {
-                    kind: "data",
-                    cpp:
-                        call.arguments.length === 0
-                            ? "std::string{}"
-                            : call.arguments.length === 1
-                            ? `bbl::js::string_from_char_code(${this.context.compileNumber(argumentAt(call, 0), "double")})`
-                            : `bbl::js::string_from_char_codes({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
-                    dataType: { kind: "string" },
-                };
-            }
-            if (callee.name.text === "toString") {
-                const owner = this.compileValue(
-                    callee.expression,
-                );
-                if (owner.kind === "number") {
-                    this.context.expectArgumentCount(call, 0, 0);
-                    this.context.reachJsData();
-                    return {
-                        kind: "data",
-                        cpp: `bbl::js::number_to_string(${owner.cpp})`,
-                        dataType: { kind: "string" },
-                    };
-                }
-            }
-            if (PURE_NUMBER_FORMATTERS.has(callee.name.text)) {
-                this.context.expectArgumentCount(call, 0, 1);
-                const owner = this.compileValue(callee.expression);
-                const number =
-                    owner.staticNumber ??
-                    this.generationTimeNumber(
-                        callee.expression,
-                    );
-                const digits = call.arguments[0]
-                    ? staticNumberValue(
-                          this.context,
-                          call.arguments[0],
-                      )
-                    : undefined;
-                if (
-                    callee.name.text === "toFixed" &&
-                    owner.kind === "number" &&
-                    number === undefined &&
-                    (call.arguments.length === 0 ||
-                        (digits !== undefined && Number.isInteger(digits)))
-                ) {
-                    const precision = digits ?? 0;
-                    if (precision < 0 || precision > 100) {
-                        this.context.fail(call, "Number.toFixed precision must be between 0 and 100.");
-                    }
-                    this.context.reachJsData();
-                    return {
-                        kind: "data",
-                        cpp: `bbl::js::number_to_fixed(${owner.cpp}, ${precision})`,
-                        dataType: { kind: "string" },
-                    };
-                }
-                if (
-                    owner.kind !== "number" ||
-                    number === undefined ||
-                    (call.arguments.length > 0 &&
-                        (digits === undefined ||
-                            !Number.isInteger(digits)))
-                ) {
-                    this.context.fail(
-                        call,
-                        `Number.${callee.name.text} in a generation-time string requires a static number and integer precision (received '${owner.cpp}').`,
-                    );
-                }
-                let text: string;
-                if (callee.name.text === "toFixed") {
-                    if (digits !== undefined && (digits < 0 || digits > 100)) {
-                        this.context.fail(call, "Number.toFixed precision must be between 0 and 100.");
-                    }
-                    text = digits === undefined
-                        ? number.toFixed()
-                        : number.toFixed(digits);
-                } else if (callee.name.text === "toPrecision") {
-                    if (digits !== undefined && (digits < 1 || digits > 100)) {
-                        this.context.fail(call, "Number.toPrecision precision must be between 1 and 100.");
-                    }
-                    text = digits === undefined
-                        ? number.toPrecision()
-                        : number.toPrecision(digits);
-                } else {
-                    if (digits !== undefined && (digits < 0 || digits > 100)) {
-                        this.context.fail(call, "Number.toExponential precision must be between 0 and 100.");
-                    }
-                    text = digits === undefined
-                        ? number.toExponential()
-                        : number.toExponential(digits);
-                }
-                return {
-                    kind: "string",
-                    cpp: this.context.cppString(text),
-                    staticString: text,
-                };
-            }
-            const staticOwner = this.compileStaticOwner(
-                callee.expression,
-            );
-            if (staticOwner) {
-                if (staticOwner.kind === "tuple" && callee.name.text === "flat") {
-                    this.context.expectArgumentCount(call, 0, 1);
-                    const depth = call.arguments[0] ? staticNumberValue(this.context, call.arguments[0]) : 1;
-                    if (depth === undefined) this.context.fail(call, "Array.flat requires a generation-known depth for tuple input.");
-                    const remaining = Number.isNaN(depth) ? 0 : Math.max(0, Math.trunc(depth));
-                    const flatten = (elements: readonly Value[], level: number): Value[] => elements.flatMap(element => {
-                        if (level > 0 && element.kind === "tuple") return flatten(element.tupleElements ?? [], level - 1);
-                        if (level > 0 && element.dataType?.kind === "vector") {
-                            this.context.fail(call, "Tuple Array.flat cannot flatten an array with runtime length.");
-                        }
-                        return [element];
-                    });
-                    return { kind: "tuple", cpp: "", tupleElements: flatten(staticOwner.tupleElements ?? [], remaining) };
-                }
-                const fetched =
-                    this.context.compileStaticFetchMethod(
-                        call,
-                        staticOwner,
-                        callee.name.text,
-                    );
-                if (fetched) return fetched;
-                const mapped = this.compileStaticTupleMap(
-                    call,
-                    staticOwner,
-                    callee.name.text,
-                );
-                if (mapped) return mapped;
-            }
-            const regexpExpression = this.context.unwrap(
-                callee.expression,
-            );
-            const regexpType = this.context.checker.getTypeAtLocation(
-                regexpExpression,
-            );
-            const boundRegexp = ts.isIdentifier(regexpExpression)
-                ? this.context.lookupOptional(regexpExpression)
-                : undefined;
-            const regexpOwner =
-                boundRegexp?.kind === "regexp"
-                    ? boundRegexp
-                    : regexpType.symbol?.name === "RegExp" ||
-                        regexpExpression.kind ===
-                            ts.SyntaxKind.RegularExpressionLiteral
-                      ? this.compileValue(regexpExpression)
-                      : undefined;
-            if (regexpOwner?.kind === "regexp") {
-                if (
-                    callee.name.text !== "exec" &&
-                    callee.name.text !== "test"
-                ) {
-                    this.context.fail(
-                        callee.name,
-                        `RegExp method '${callee.name.text}' is not supported.`,
-                    );
-                }
-                this.context.expectArgumentCount(call, 1, 1);
-                const input = this.context.dataLowerer.compileForSink(
-                    argumentAt(call, 0),
-                    { kind: "string" },
-                );
-                this.context.reachJsData();
-                if (callee.name.text === "test") {
-                    return {
-                        kind: "boolean",
-                        cpp: `${regexpOwner.cpp}.test(${input})`,
-                    };
-                }
-                return {
-                    kind: "data",
-                    cpp: `${regexpOwner.cpp}.exec(${input})`,
-                    dataType: {
-                        kind: "optional",
-                        inner: {
-                            kind: "vector",
-                            element: { kind: "string" },
-                        },
-                    },
-                };
-            }
-            // The handle-collection concept owns the collection calls; the
-            // three dispatch positions stay exactly where the arms sat so
-            // the resolution order a call site observes is unchanged.
-            const pushed =
-                this.context.handleCollections.compileParticleSystemsPush(
-                    call,
-                    callee,
-                );
-            if (pushed) return pushed;
-            const math =
-                this.context.dataLowerer.compileMathCall(call);
-            if (math) {
-                return math;
-            }
-            const arrayFrom =
-                this.context.dataLowerer.compileArrayFrom(call);
-            if (arrayFrom) {
-                return arrayFrom;
-            }
-            // Resolve engine-handle searches before the plain-data method
-            // probe compiles their owner. A fused `meshes.map(...).find(...)`
-            // has no native intermediate array for that probe to lower.
-            const found =
-                this.context.handleCollections.compileFind(
-                    call,
-                    callee,
-                );
-            if (found) {
-                return found;
-            }
-            const method = this.context.probeEmission(() =>
-                this.context.dataLowerer.compileDataMethodCall(call),
-            );
-            if (method) {
-                return method;
-            }
-            // The Web Audio surface: `ctx.createGain()`,
-            // `node.connect(...)`, `param.setValueAtTime(...)`. Babylon
-            // Lite is function-shaped and the browser API is not, so the
-            // audio family is the one place a handle carries methods.
-            const audio = compileAudioMethodCall(
-                this.context,
-                call,
-                callee,
-            );
-            if (audio) {
-                return audio;
-            }
-            // The second such surface: a VatHandle is a closure bundle
-            // upstream, so its playback methods ride the handle too.
-            const vat = compileVatMethodCall(
-                this.context,
-                call,
-                callee,
-            );
-            if (vat) {
-                return vat;
-            }
-            const lightPush =
-                this.context.handleCollections.compileSceneLightPush(
-                    call,
-                    callee,
-                );
-            if (lightPush) {
-                return lightPush;
-            }
-            // After the data-model arm above, so a list of plain data still
-            // grows through its own `push_back`; this one owns the case that
-            // arm declines, a compile-time tuple of engine handles.
-            const handlePush =
-                this.context.handleCollections.compileHandleTuplePush(
-                    call,
-                    callee,
-                );
-            if (handlePush) {
-                return handlePush;
-            }
-            const staticMethod =
-                this.context.classLowerer.resolveStaticMethod(callee);
-            if (staticMethod) {
-                const factory =
-                    this.context.classLowerer.compileNullableResourceFactory(
-                        call,
-                        staticMethod,
-                    );
-                if (factory) return factory;
-                return this.context.userFunctions.compileCallbackCall(
-                    this.context,
-                    call,
-                    staticMethod,
-                );
-            }
-            // A method on a constructed instance inlines with `this`
-            // bound to that instance's field record.
-            const receiver = this.context.unwrap(callee.expression);
-            if (
-                ts.isIdentifier(receiver) ||
-                receiver.kind === ts.SyntaxKind.ThisKeyword ||
-                ts.isPropertyAccessExpression(receiver) ||
-                ts.isElementAccessExpression(receiver) ||
-                ts.isConditionalExpression(receiver) ||
-                ts.isCallExpression(receiver)
-            ) {
-                const receiverValue = ts.isIdentifier(receiver)
-                    ? this.context.lookupOptional(receiver)
-                    : receiver.kind === ts.SyntaxKind.ThisKeyword
-                      ? this.context.activeThis()
-                      : this.compileValue(receiver);
-                const instance = receiverValue
-                    ? (this.context.classLowerer.hydrate(receiverValue) ??
-                          receiverValue)
-                    : undefined;
-                const optionalCall =
-                    call.questionDotToken !== undefined ||
-                    callee.questionDotToken !== undefined;
-                if (instance?.kind === "json-null" && optionalCall) {
-                    return { kind: "void", cpp: "" };
-                }
-                if (instance?.kind === "splat-mesh" && callee.name.text === "updateData") {
-                    this.context.expectArgumentCount(call, 1, 1);
-                    if (instance.optionalFoundCpp) {
-                        this.context.fail(call, "updateData requires a present splat cloud.");
-                    }
-                    // Resolve the receiver before evaluating an argument
-                    // that may replace the source binding.
-                    const engine = this.context.requireEngine(instance, call);
-                    const cloud = this.context.allocateTemporaryCppName("splat_update_receiver");
-                    this.context.emit(`const auto ${cloud} = ${instance.cpp};`);
-                    const buffer = this.context.dataLowerer.compileForSink(
-                        argumentAt(call, 0), { kind: "arraybuffer" },
-                    );
-                    this.context.reachFeature("loader:splat-data", call);
-                    return {
-                        kind: "void",
-                        cpp: `bbl::update_splat_data(${engine}, ${cloud}, ${buffer})`,
-                    };
-                }
-                const declaration = instance
-                    ? this.context.classOf(instance)
-                    : undefined;
-                // A record property naming a local function inlines at
-                // the call site exactly as a direct call to that
-                // function does, by handing the identifier the literal
-                // wrote to the same resolver.
-                const recordMethod =
-                    instance?.recordMethods?.[
-                        callee.name.text
-                    ];
-                const recordCallback =
-                    instance?.recordProperties?.[
-                        callee.name.text
-                    ];
-                if (
-                    instance &&
-                    call.questionDotToken &&
-                    !recordMethod &&
-                    !recordCallback
-                ) {
-                    return { kind: "void", cpp: "" };
-                }
-                if (instance && recordMethod) {
-                    // A literal written in the record has no identifier
-                    // to resolve, so it takes the callback path a
-                    // function-literal argument already takes. Both
-                    // arrive at the same inliner.
-                    if (!ts.isIdentifier(recordMethod)) {
-                        return this.context.userFunctions.compileCallbackCall(
-                            this.context,
-                            call,
-                            recordMethod,
-                            (work) =>
-                                this.context.withRecordScopes(
-                                    instance,
-                                    work,
-                                ),
-                        );
-                    }
-                    const method =
-                        this.context.userFunctions.compile(
-                            this.context,
-                            call,
-                            recordMethod,
-                            // Only the body runs in the record's
-                            // scope; the arguments were written at
-                            // the call site and resolve there.
-                            (work) =>
-                                this.context.withRecordScopes(
-                                    instance,
-                                    work,
-                                ),
-                        );
-                    if (method) {
-                        return method;
-                    }
-                }
-                if (
-                    recordCallback?.kind === "callback" &&
-                    recordCallback.callbackDeclaration
-                ) {
-                    const inRecordScope = <T>(work: () => T): T =>
-                        recordCallback.callbackRecordOwner
-                            ? this.context.withRecordScopes(
-                                  recordCallback.callbackRecordOwner,
-                                  work,
-                              )
-                            : work();
-                    return ts.isIdentifier(
-                        recordCallback.callbackDeclaration,
-                    )
-                        ? this.context.userFunctions.compile(
-                              this.context,
-                              call,
-                              recordCallback.callbackDeclaration,
-                              inRecordScope,
-                          )!
-                        : this.context.userFunctions.compileCallbackCall(
-                              this.context,
-                              call,
-                              recordCallback.callbackDeclaration,
-                              inRecordScope,
-                          );
-                }
-                if (
-                    recordCallback?.kind === "data" &&
-                    recordCallback.dataType?.kind === "function" &&
-                    !call.questionDotToken &&
-                    !callee.questionDotToken
-                ) {
-                    const functionType = recordCallback.dataType;
-                    const argumentsCpp =
-                        this.context.dataLowerer.compileFunctionArguments(
-                          call,
-                          functionType,
-                          `Stored callback field '${callee.name.text}'`,
-                        );
-                    const cpp =
-                        `${recordCallback.cpp}(${argumentsCpp.join(", ")})`;
-                    return functionType.result
-                        ? this.context.dataLowerer.leafValue(
-                            cpp,
-                            functionType.result,
-                          )
-                        : { kind: "void", cpp };
-                }
-                if (instance && declaration) {
-                    const optionalFound =
-                        instance.optionalFoundCpp ??
-                        (instance.dataType?.kind === "struct" &&
-                        this.context.dataTypes.isReferenceStruct(
-                            instance.dataType.name,
-                        )
-                            ? `static_cast<bool>(${instance.cpp})`
-                            : undefined);
-                    if (optionalCall && optionalFound !== undefined) {
-                        if (!ts.isExpressionStatement(call.parent)) {
-                            this.context.fail(
-                                call,
-                                "Optional class method calls returning a value are not lowered.",
-                            );
-                        }
-                        this.context.emit(`if (${optionalFound}) {`);
-                        this.context.increaseIndent();
-                        const result =
-                            this.context.classLowerer.compileMethodCall(
-                                instance,
-                                callee.name.text,
-                                call,
-                                declaration,
-                            );
-                        if (result.kind !== "void") {
-                            this.context.fail(
-                                call,
-                                "Optional class method calls returning a value are not lowered.",
-                            );
-                        }
-                        if (result.cpp) {
-                            this.context.emit(`${result.cpp};`);
-                        }
-                        this.context.decreaseIndent();
-                        this.context.emit("}");
-                        return { kind: "void", cpp: "" };
-                    }
-                    return this.context.classLowerer.compileMethodCall(
-                        instance,
-                        callee.name.text,
-                        call,
-                        declaration,
-                    );
-                }
-            }
+            const value = this.compilePropertyCall(callee, call);
+            if (value) return value;
         }
         if (
             ts.isArrowFunction(callee) ||
@@ -3969,14 +2412,6 @@ export class ExpressionLowerer {
             );
         if (assetSkinned) {
             return assetSkinned;
-        }
-        const decodedAudio = compileAudioDecodeAssetCall(
-            this.context,
-            call,
-            callee,
-        );
-        if (decodedAudio) {
-            return decodedAudio;
         }
         // Ahead of inlining: a canvas-owning texture producer's body is not
         // a body this compiler can lower, so the structural gate decides
@@ -4419,4 +2854,964 @@ export class ExpressionLowerer {
             this.context.popScope();
         }
     }
+
+    private compileIndexedValue(unwrapped: ts.ElementAccessExpression, expression: ts.Expression, assertedNonNull: boolean): Value | undefined {
+        // `baked.clips[<name>]`: one row of the bake's own map, read
+        // natively because the bake decided the layout.
+        const clipOwner = this.context.unwrap(unwrapped.expression);
+        if (ts.isPropertyAccessExpression(clipOwner) &&
+            clipOwner.name.text === "clips") {
+            const map = this.context.probeEmission(() => {
+                const value = this.compileValue(clipOwner);
+                return value.kind === "vat-clip-map" ? value : undefined;
+            });
+            if (map) {
+                return this.compileVatClipRow(map, unwrapped);
+            }
+        }
+        const browserFile = compileBrowserFileElementAccess(this.context, unwrapped);
+        if (browserFile) {
+            return browserFile;
+        }
+        const json = compileJsonRead(this.context, unwrapped);
+        if (json) {
+            return json;
+        }
+        if (!assertedNonNull) {
+            // Determining whether an unchecked element read can carry an
+            // existence predicate resolves its owner. A call-shaped owner
+            // emits while it resolves, so a declined probe must discard
+            // those lines before the ordinary element path compiles the
+            // owner for real. Otherwise `makeRow().values[i]` evaluates
+            // `makeRow()` twice even though JavaScript evaluates it once.
+            const guardable = this.context.probeEmission(() => this.context.dataLowerer.compileGuardableElementAccess(unwrapped));
+            if (guardable)
+                return guardable;
+        }
+        const ownerExpression = this.context.unwrap(unwrapped.expression);
+        if (ts.isConditionalExpression(ownerExpression)) {
+            const condition = this.context.compileCondition(ownerExpression.condition);
+            const selectedOwner = condition === "true"
+                ? ownerExpression.whenTrue
+                : condition === "false"
+                    ? ownerExpression.whenFalse
+                    : undefined;
+            const indexed = (owner: ts.Expression): Value => this.context.dataLowerer
+                .compileMaterializedElementAccess(owner, unwrapped.argumentExpression) ??
+                this.compileValue(ts.factory.createElementAccessExpression(owner, unwrapped.argumentExpression));
+            if (selectedOwner) {
+                return indexed(selectedOwner);
+            }
+            // Indexing distributes over a value-selecting conditional.
+            // This lets each static table materialize under the shared
+            // runtime index while preserving the conditional at the
+            // selected element, rather than trying to index a
+            // generation-only tuple.
+            return this.selectValue(condition, indexed(ownerExpression.whenTrue), indexed(ownerExpression.whenFalse), unwrapped);
+        }
+        const data = this.context.dataLowerer.compileDataPath(unwrapped, "read");
+        if (data) {
+            return data;
+        }
+        const assetRoot = this.context.assetRootElementAccess(unwrapped);
+        if (assetRoot) {
+            return assetRoot;
+        }
+        const collectionElement = this.context.handleCollections.collectionElementAccess(unwrapped);
+        if (collectionElement) {
+            return collectionElement;
+        }
+        const owner = this.compileValue(unwrapped.expression);
+        const dataElement = this.context.dataLowerer.compileElementFromValue(owner, unwrapped.argumentExpression);
+        if (dataElement) {
+            return assertedNonNull && dataElement.kind === "data"
+                ? this.context.dataLowerer.narrowOptional(dataElement, expression, true)
+                : dataElement;
+        }
+        const key = this.compileValue(unwrapped.argumentExpression);
+        if (key.staticString !== undefined) {
+            const property = ts.factory.createPropertyAccessExpression(unwrapped.expression, key.staticString);
+            ts.setTextRange(property, unwrapped);
+            ts.setOriginalNode(property, unwrapped);
+            ts.setTextRange(property.name, unwrapped.argumentExpression);
+            ts.setOriginalNode(property.name, unwrapped.argumentExpression);
+            const resolved = this.context.readResolvedProperty(owner, property);
+            if (resolved)
+                return resolved;
+        }
+        if (owner.kind === "camera-world-matrix") {
+            const index = this.compileValue(unwrapped.argumentExpression);
+            if (index.kind !== "number" ||
+                index.staticNumber === undefined ||
+                ![12, 13, 14].includes(index.staticNumber)) {
+                this.context.fail(unwrapped.argumentExpression, "Reached camera world-matrix access supports translation indices 12-14.");
+            }
+            // The pinned `getCameraPosition` reads these three back out
+            // of the camera's float32 world matrix, so the rounded
+            // stored value is what a scene observes -- not the double
+            // the eye was composed at.
+            const element = index.staticNumber as 12 | 13 | 14;
+            return {
+                kind: "number",
+                cpp: `bbl::upstream::camera_world_matrix(${this.context.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value])[${element}]`,
+                ...(owner.engineCpp
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            };
+        }
+        if (owner.kind === "node-particle-column") {
+            return readFrozenParticleElement(this.context, owner, this.context.compileNumber(unwrapped.argumentExpression, "double"), unwrapped);
+        }
+        if (owner.kind === "node-particle-set") {
+            const slot = this.compileValue(unwrapped.argumentExpression);
+            if (slot.kind !== "number" ||
+                slot.staticNumber === undefined ||
+                !Number.isInteger(slot.staticNumber) ||
+                slot.staticNumber < 0) {
+                this.context.fail(unwrapped.argumentExpression, "A node-particle set's systems are indexed by a " +
+                    "static non-negative integer.");
+            }
+            // How many systems the set has is the graph's answer, not
+            // this call's: the bake builds it and refuses an index it
+            // has no system for.
+            return {
+                kind: "node-particle-system",
+                cpp: "",
+                ...(owner.nodeParticleSetIndex !== undefined
+                    ? {
+                        nodeParticleSetIndex: owner.nodeParticleSetIndex,
+                    }
+                    : {}),
+                nodeParticleSystemIndex: slot.staticNumber,
+                ...(owner.engineCpp
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            };
+        }
+        if (owner.kind === "node-particle-2d-binding" &&
+            owner.nodeParticleLive) {
+            // `binding.bridges[k]`: one bridge of a live binding. How
+            // many bridges the binding has is the graph's system
+            // count, which the bake reports; the generated registrar
+            // throws for an index it has no mapping for.
+            const slot = this.compileValue(unwrapped.argumentExpression);
+            if (slot.kind !== "number" ||
+                slot.staticNumber === undefined ||
+                !Number.isInteger(slot.staticNumber) ||
+                slot.staticNumber < 0) {
+                this.context.fail(unwrapped.argumentExpression, "A pure-2D binding's bridges are indexed by a static " +
+                    "non-negative integer.");
+            }
+            return {
+                ...owner,
+                kind: "node-particle-2d-bridge",
+                nodeParticleBridgeIndex: slot.staticNumber,
+                nodeParticleSystemIndex: slot.staticNumber,
+            };
+        }
+        if (owner.kind === "record") {
+            const rawKey = this.compileValue(unwrapped.argumentExpression);
+            const key = rawKey.kind === "data"
+                ? this.context.dataLowerer.narrowOptional(rawKey, unwrapped.argumentExpression)
+                : rawKey;
+            const property = key.kind === "string"
+                ? key.staticString
+                : key.kind === "number" &&
+                    key.staticNumber !== undefined
+                    ? String(key.staticNumber)
+                    : undefined;
+            if (property === undefined) {
+                const dynamicString = key.kind === "string" ||
+                    (key.kind === "data" &&
+                        (key.dataType?.kind === "string" ||
+                            (key.dataType?.kind === "optional" &&
+                                key.dataType.inner.kind === "string")));
+                const dynamicEnum = key.kind === "data" &&
+                    key.dataType?.kind === "enum";
+                if (key.kind !== "number" &&
+                    !dynamicString &&
+                    !dynamicEnum) {
+                    this.context.fail(unwrapped.argumentExpression, "Dynamic compile-time record access requires a string or numeric key.");
+                }
+                const indexedType = this.context.dataLowerer.dataTypeAt(unwrapped);
+                if (!indexedType) {
+                    this.context.fail(unwrapped, "Dynamic numeric record values must belong to the native data model.");
+                }
+                // Record<number, T> is typed as T by TypeScript even
+                // though a numeric property can be absent at runtime.
+                // The lookup is therefore nullable whether or not the
+                // checker already included undefined at this site.
+                const ownerDataType = this.context.dataLowerer.dataTypeAt(unwrapped.expression);
+                const declaredValueType = ownerDataType?.kind === "map"
+                    ? ownerDataType.value
+                    : ownerDataType?.kind === "enummap"
+                        ? ownerDataType.element
+                        : indexedType;
+                // Materializing a compile-time record as a native Map
+                // stores its object values behind another container.
+                // JavaScript Map/Record lookup must return the same object,
+                // so object-valued entries need reference representation
+                // whether or not a later mutation made that identity
+                // obvious during the initial type scan.
+                const valueType = this.context.dataTypes.markStoredObjectReferences(declaredValueType);
+                const keyType = this.context.checker.getTypeAtLocation(unwrapped.argumentExpression);
+                const closedEnumKey = dynamicEnum ||
+                    (keyType.flags & ts.TypeFlags.EnumLike) !== 0 ||
+                    (keyType.symbol?.flags ?? 0) & ts.SymbolFlags.Enum;
+                const ownerHasOptionalProperties = this.context.checker
+                    .getTypeAtLocation(unwrapped.expression)
+                    .getProperties()
+                    .some((member) => (member.flags & ts.SymbolFlags.Optional) !==
+                    0);
+                const totalClosedKey = closedEnumKey &&
+                    indexedType.kind !== "optional" &&
+                    !ownerHasOptionalProperties;
+                const resultType = totalClosedKey
+                    ? valueType
+                    : valueType.kind === "optional"
+                        ? valueType
+                        : indexedType.kind === "optional"
+                            ? indexedType
+                            : ({
+                                kind: "optional",
+                                inner: indexedType,
+                            } as const);
+                const valueCpp = this.context.dataTypes.cppType(valueType);
+                let entries: string[] = [];
+                const entryLines = this.context.captureEmittedLines(() => {
+                    entries = Object.entries(owner.recordProperties ?? {}).map(([name, value]) => {
+                        if (dynamicEnum) {
+                            return `{${this.context.dataTypes.enumMemberCpp(key.dataType as Extract<DataType, {
+                                kind: "enum";
+                            }>, name, unwrapped)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                        }
+                        if (dynamicString) {
+                            return `{${this.context.cppString(name)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                        }
+                        const numericKey = Number(name);
+                        if (!Number.isFinite(numericKey)) {
+                            this.context.fail(unwrapped.expression, `Dynamic numeric record has non-numeric key '${name}'.`);
+                        }
+                        return `{${doubleLiteral(numericKey)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                    });
+                });
+                for (const line of entryLines)
+                    this.context.emit(line);
+                this.context.reachJsData();
+                const keyCpp = dynamicString
+                    ? "std::string"
+                    : dynamicEnum
+                        ? this.context.dataTypes.cppType(key.dataType!)
+                        : "double";
+                const mapType = `bbl::js::Map<${keyCpp}, ${valueCpp}>`;
+                const table = this.context.recordAccessor(owner, mapType, entries, entryLines.length === 0 &&
+                    (this.isModuleConstantRecord(unwrapped.expression) ||
+                        Object.values(owner.recordProperties ?? {}).every((value) => this.canHoistRecordValue(value))));
+                const lookup = `${table}.${totalClosedKey ? "at" : "get"}(${key.cpp})`;
+                const recordValues = Object.values(owner.recordProperties ?? {});
+                const animationGroupSource = recordValues.length > 0 &&
+                    recordValues[0]!.animationGroupSource !==
+                        undefined &&
+                    recordValues.every((value) => value.animationGroupSource ===
+                        recordValues[0]!
+                            .animationGroupSource)
+                    ? recordValues[0]!
+                        .animationGroupSource
+                    : undefined;
+                const engineCpp = recordValues.length > 0 &&
+                    recordValues[0]!.engineCpp !== undefined &&
+                    recordValues.every((value) => value.engineCpp ===
+                        recordValues[0]!.engineCpp)
+                    ? recordValues[0]!.engineCpp
+                    : undefined;
+                if (resultType.kind === "handle") {
+                    const value = this.context.dataLowerer.leafValue(lookup, resultType);
+                    if (value.kind === "animation-group" && animationGroupSource) {
+                        value.animationGroupSource = animationGroupSource;
+                    }
+                    return {
+                        ...value,
+                        ...(engineCpp ? { engineCpp } : {}),
+                    };
+                }
+                if (valueType.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(valueType.name)) {
+                    // A shared pointer already carries JavaScript's
+                    // object-or-undefined state. Wrapping it in the
+                    // optional data type would later spell `.has_value()`
+                    // on a pointer, while narrowing it eagerly would lose
+                    // the missing-key guard.
+                    return this.context.dataLowerer.leafValue(lookup, valueType);
+                }
+                return {
+                    kind: "data",
+                    cpp: lookup,
+                    dataType: resultType,
+                    ...(resultType.kind === "optional"
+                        ? { preserveUncheckedLookup: true as const }
+                        : {}),
+                };
+            }
+            const value = owner.recordProperties?.[property];
+            if (!value) {
+                this.context.fail(unwrapped.argumentExpression, `Compile-time record has no property '${property}'.`);
+            }
+            return value;
+        }
+        if (owner.kind !== "tuple") {
+            this.context.fail(unwrapped.expression, `Element access is not supported for ${owner.kind}.`);
+        }
+        const index = this.compileValue(unwrapped.argumentExpression);
+        const staticIndex = index.kind === "number"
+            ? (index.staticNumber ??
+                staticNumberValue(this.context, unwrapped.argumentExpression))
+            : undefined;
+        if (index.kind !== "number") {
+            this.context.fail(unwrapped.argumentExpression, "Static tuple access requires a numeric index.");
+        }
+        if (staticIndex === undefined) {
+            const elements = owner.tupleElements ?? [];
+            if (elements.length === 0) {
+                this.context.fail(unwrapped, "A runtime index cannot read an empty static tuple.");
+            }
+            let selected = elements[0]!;
+            for (let lane = 1; lane < elements.length; lane += 1) {
+                selected = this.selectValue(`(${index.cpp}) == ${lane}`, elements[lane]!, selected, unwrapped);
+            }
+            return selected;
+        }
+        if (!Number.isInteger(staticIndex)) {
+            this.context.fail(unwrapped.argumentExpression, "Static tuple access requires an integer index.");
+        }
+        const value = owner.tupleElements?.[staticIndex];
+        if (!value) {
+            const resultType = this.context.checker.getTypeAtLocation(unwrapped);
+            const resultMembers = (resultType.flags & ts.TypeFlags.Union) !== 0
+                ? (resultType as ts.UnionType).types
+                : [resultType];
+            if (resultMembers.some((member) => (member.flags &
+                (ts.TypeFlags.Undefined |
+                    ts.TypeFlags.Null)) !==
+                0) ||
+                (ts.isBinaryExpression(unwrapped.parent) &&
+                    unwrapped.parent.left === unwrapped &&
+                    unwrapped.parent.operatorToken.kind ===
+                        ts.SyntaxKind.QuestionQuestionToken)) {
+                return { kind: "json-null", cpp: "" };
+            }
+            this.context.fail(unwrapped, `Tuple index ${staticIndex} is out of range.`);
+        }
+        return value;
+    }
+
+    private compileConditionalValue(unwrapped: ts.ConditionalExpression): Value | undefined {
+        // Optional/vector/struct conditionals normally ask their native
+        // sink to lower both branches. Before doing that, retain the
+        // ordinary value path's stronger answer when a side-effect-free
+        // condition is generation-known. This is especially important
+        // for a static record's optional field: the selected value is a
+        // string, not native optional storage merely because the checker
+        // still exposes the unselected `undefined` branch.
+        const foldedCondition = !containsEvaluatedCall(unwrapped.condition)
+            ? this.context.probeEmission(() => this.context.compileCondition(unwrapped.condition), (condition) => condition === "true" ||
+                condition === "false")
+            : undefined;
+        if (foldedCondition === "true" ||
+            foldedCondition === "false") {
+            const taken = foldedCondition === "true"
+                ? unwrapped.whenTrue
+                : unwrapped.whenFalse;
+            const dropped = foldedCondition === "true"
+                ? unwrapped.whenFalse
+                : unwrapped.whenTrue;
+            const selected = this.compileValue(taken);
+            // When the arm generation just discarded was the NULL one,
+            // the binding it feeds can no longer be absent -- and the
+            // scene's own guard over it is therefore settled. Say so on
+            // the value, the way a find the materialized asset resolved
+            // at generation carries the constant "true": the guard then
+            // folds through the ordinary optional path instead of
+            // needing a per-kind truthiness rule. Scene 140 writes
+            // `const sg = noShadows ? null : createPcf(...)` and then
+            // `if (sg)`, with `noShadows` folded from its query.
+            const droppedNode = this.context.unwrap(dropped);
+            const droppedIsNullish = droppedNode.kind === ts.SyntaxKind.NullKeyword ||
+                (ts.isIdentifier(droppedNode) &&
+                    droppedNode.text === "undefined");
+            // Only for a RESOURCE, because `optionalFoundCpp` means
+            // presence and the consumers read it as truthiness. Those
+            // two agree for a handle -- a mesh that exists is truthy
+            // -- and part company for a value JavaScript can call
+            // falsy while holding it: `flag ? 0 : null` surviving as
+            // 0 would fold `if (n)` to true. A data or primitive arm
+            // keeps whatever truthiness the ordinary path gives it.
+            const survivorIsResource = selected.kind !== "number" &&
+                selected.kind !== "string" &&
+                selected.kind !== "boolean" &&
+                selected.kind !== "data";
+            if (droppedIsNullish &&
+                survivorIsResource &&
+                selected.optionalFoundCpp === undefined &&
+                selected.truthinessCpp === undefined) {
+                return { ...selected, optionalFoundCpp: "true" };
+            }
+            return selected;
+        }
+        const conditionalType = this.context.dataLowerer.dataTypeAt(unwrapped);
+        if (conditionalType?.kind === "number" ||
+            conditionalType?.kind === "vector" ||
+            (conditionalType?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(conditionalType.name))) {
+            const condition = this.context.compileCondition(unwrapped.condition);
+            if (condition === "true" || condition === "false") {
+                // Keep the selected Value's generation-known metadata.
+                // A string-only sink would discard staticNumber, for
+                // example when the chosen number configures engine MSAA.
+                return this.compileValue(condition === "true"
+                    ? unwrapped.whenTrue : unwrapped.whenFalse);
+            }
+            // The common sink keeps all branch preparation inside the
+            // selected arm, including optional Map.get temporaries and
+            // array literals that need runtime storage of different sizes.
+            return this.context.dataValue(this.inRuntimeControlFlow(() => this.context.dataLowerer.compileConditionalForSink(unwrapped, conditionalType, condition)), conditionalType);
+        }
+        if (conditionalType?.kind === "optional") {
+            const objectIdentity = conditionalType.inner.kind === "struct"
+                ? this.inRuntimeControlFlow(() => this.context.dataLowerer.objectIdentity(unwrapped))
+                : undefined;
+            return {
+                kind: "data",
+                cpp: objectIdentity ??
+                    this.inRuntimeControlFlow(() => this.context.dataLowerer.compileForSink(unwrapped, conditionalType)),
+                dataType: conditionalType,
+                ...(objectIdentity
+                    ? {
+                        objectIdentityCpp: objectIdentity,
+                        optionalFoundCpp: `(${objectIdentity}) != nullptr`,
+                    }
+                    : {}),
+            };
+        }
+        const condition = this.context.compileCondition(unwrapped.condition);
+        if (condition === "true" || condition === "false") {
+            return this.compileValue(condition === "true"
+                ? unwrapped.whenTrue
+                : unwrapped.whenFalse);
+        }
+        const whenTrue = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenTrue));
+        const whenFalse = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenFalse));
+        // A tuple value is a compile-time list of element values with
+        // no native expression of its own, so selecting between two
+        // tuples is selecting element by element. Same arity is the
+        // condition for that to be the same thing.
+        if (whenTrue.kind === "tuple" &&
+            whenFalse.kind === "tuple") {
+            const trueElements = whenTrue.tupleElements ?? [];
+            const falseElements = whenFalse.tupleElements ?? [];
+            if (trueElements.length !==
+                falseElements.length) {
+                this.context.fail(unwrapped, "Conditional tuple branches must have the same length.");
+            }
+            return {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: trueElements.map((element, index) => this.selectValue(condition, element, falseElements[index]!, unwrapped)),
+            };
+        }
+        return this.selectValue(condition, whenTrue, whenFalse, unwrapped);
+    }
+
+    private compileObjectValue(unwrapped: ts.ObjectLiteralExpression): Value | undefined {
+        const properties: Record<string, Value> = {};
+        const methods: Record<string, ts.Identifier | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration> = {};
+        const getters: Record<string, ts.GetAccessorDeclaration> = {};
+        const setters: Record<string, ts.SetAccessorDeclaration> = {};
+        for (const property of unwrapped.properties) {
+            if (ts.isSpreadAssignment(property)) {
+                const spread = this.compileValue(property.expression);
+                if (spread.kind !== "record" &&
+                    spread.recordProperties === undefined) {
+                    this.context.fail(property, "Compile-time object spread requires a plain record value or a data record with a complete static property snapshot " +
+                        `(received ${spread.kind}${spread.dataType ? ` ${JSON.stringify(spread.dataType)}` : ""}).`);
+                }
+                Object.assign(properties, spread.recordProperties ?? {});
+                Object.assign(methods, spread.recordMethods ?? {});
+                Object.assign(getters, spread.recordGetters ?? {});
+                Object.assign(setters, spread.recordSetters ?? {});
+                continue;
+            }
+            if (ts.isGetAccessorDeclaration(property)) {
+                const name = this.context.propertyName(property.name);
+                if (!name) {
+                    this.context.fail(property.name, "Static record properties require literal names.");
+                }
+                getters[name] = property;
+                continue;
+            }
+            if (ts.isSetAccessorDeclaration(property)) {
+                const name = this.context.propertyName(property.name);
+                if (!name) {
+                    this.context.fail(property.name, "Static record properties require literal names.");
+                }
+                setters[name] = property;
+                continue;
+            }
+            if (ts.isMethodDeclaration(property)) {
+                const name = this.context.propertyName(property.name);
+                if (!name) {
+                    this.context.fail(property.name, "Static record methods require literal names.");
+                }
+                methods[name] = property;
+                continue;
+            }
+            if (ts.isPropertyAssignment(property)) {
+                const name = this.context.propertyName(property.name);
+                if (!name) {
+                    this.context.fail(property.name, "Static record properties require literal names.");
+                }
+                const initializer = this.context.unwrap(property.initializer);
+                if (ts.isIdentifier(initializer) &&
+                    this.context.namesLocalFunction(initializer)) {
+                    methods[name] = initializer;
+                    continue;
+                }
+                if (ts.isArrowFunction(initializer) ||
+                    ts.isFunctionExpression(initializer)) {
+                    methods[name] = initializer;
+                    continue;
+                }
+                const value = this.laneValue(property.initializer);
+                properties[name] = value.staticString !== undefined &&
+                    this.context.checker.getTypeAtLocation(property.name).isStringLiteral()
+                    ? { ...value, readOnly: true } : value;
+            }
+            else if (ts.isShorthandPropertyAssignment(property)) {
+                if (this.context.namesLocalFunction(property.name)) {
+                    methods[property.name.text] =
+                        property.name;
+                    continue;
+                }
+                properties[property.name.text] =
+                    this.laneValue(property.name);
+            }
+            else {
+                this.context.fail(property, "Static records support property assignments, methods, getters, and properties naming a local function.");
+            }
+        }
+        const closes = Object.keys(methods).length > 0 ||
+            Object.keys(getters).length > 0 ||
+            Object.keys(setters).length > 0;
+        const evaluationIdentity = this.context.callbackEvaluationIdentity();
+        return {
+            kind: "record",
+            cpp: "",
+            recordProperties: properties,
+            recordMethods: methods,
+            recordGetters: getters,
+            recordSetters: setters,
+            // Only a record with code in it needs its scope: a
+            // plain property already holds a resolved value.
+            ...(closes
+                ? {
+                    recordScopes: [
+                        ...this.context.variableScopes,
+                    ],
+                    ...(this.context.isInRuntimeIteration() ||
+                        this.context.isInNativeFunctionBody()
+                        ? {
+                            repeatedCallbackEvaluation: true as const,
+                        }
+                        : {}),
+                    ...(evaluationIdentity
+                        ? {
+                            callbackEvaluationIdentity: evaluationIdentity,
+                        }
+                        : {}),
+                }
+                : {}),
+        };
+    }
+
+    private compilePropertyCall(callee: ts.PropertyAccessExpression, call: ts.CallExpression): Value | undefined {
+        // `renderer._beforeUpdate.push(hook)`: sprite-renderer.ts keeps
+        // its per-frame hooks in an ordinary array a caller pushes onto,
+        // and `spriteRendererUpdate` runs them before it reads its
+        // layers. It is a renderer-owned list rather than the scene's,
+        // so the push is recognized here rather than through an
+        // intrinsic name.
+        if (callee.name.text === "push" &&
+            ts.isPropertyAccessExpression(callee.expression) &&
+            callee.expression.name.text === "_beforeUpdate") {
+            const renderer = this.context.compileValue(callee.expression.expression);
+            if (renderer.kind !== "sprite-renderer") {
+                this.context.fail(callee.expression.expression, "'_beforeUpdate' is the SpriteRenderer's own " +
+                    `per-frame hook list; received ${renderer.kind}.`);
+            }
+            this.context.expectArgumentCount(call, 1, 1);
+            const engineCpp = this.context.requireEngine(renderer, call);
+            return {
+                kind: "void",
+                cpp: "bbl::sprite_renderer_before_update(" +
+                    `${engineCpp}, ${renderer.cpp}, ` +
+                    `${this.context.compileFrameCallback(argumentAt(call, 0))})`,
+                engineCpp,
+            };
+        }
+        if (callee.name.text === "call") {
+            const callable = this.compileValue(callee.expression);
+            if (callable.kind === "data" &&
+                callable.dataType?.kind === "function") {
+                const functionType = callable.dataType;
+                const supplied = call.arguments.slice(1);
+                if (supplied.length !== functionType.parameters.length) {
+                    this.context.fail(call, `Function.call expected ${functionType.parameters.length} arguments after thisArg, received ${supplied.length}.`);
+                }
+                const argumentsCpp = functionType.parameters.map((type, index) => this.context.dataLowerer.compileForSink(supplied[index]!, type));
+                const cpp = `${callable.cpp}(${argumentsCpp.join(", ")})`;
+                return functionType.result
+                    ? this.context.dataLowerer.leafValue(cpp, functionType.result)
+                    : { kind: "void", cpp };
+            }
+        }
+        if (ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "Object" &&
+            (callee.name.text === "keys" ||
+                callee.name.text === "values") &&
+            !this.context.lookupOptional(callee.expression)) {
+            return this.compileObjectProjection(call, callee.name.text);
+        }
+        if (ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "String" &&
+            callee.name.text === "fromCharCode" &&
+            !this.context.lookupOptional(callee.expression)) {
+            this.context.reachJsData();
+            return {
+                kind: "data",
+                cpp: call.arguments.length === 0
+                    ? "std::string{}"
+                    : call.arguments.length === 1
+                        ? `bbl::js::string_from_char_code(${this.context.compileNumber(argumentAt(call, 0), "double")})`
+                        : `bbl::js::string_from_char_codes({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
+                dataType: { kind: "string" },
+            };
+        }
+        if (callee.name.text === "toString") {
+            const owner = this.compileValue(callee.expression);
+            if (owner.kind === "number") {
+                this.context.expectArgumentCount(call, 0, 0);
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: `bbl::js::number_to_string(${owner.cpp})`,
+                    dataType: { kind: "string" },
+                };
+            }
+        }
+        if (PURE_NUMBER_FORMATTERS.has(callee.name.text)) {
+            this.context.expectArgumentCount(call, 0, 1);
+            const owner = this.compileValue(callee.expression);
+            const number = owner.staticNumber ??
+                this.generationTimeNumber(callee.expression);
+            const digits = call.arguments[0]
+                ? staticNumberValue(this.context, call.arguments[0])
+                : undefined;
+            if (callee.name.text === "toFixed" &&
+                owner.kind === "number" &&
+                number === undefined &&
+                (call.arguments.length === 0 ||
+                    (digits !== undefined && Number.isInteger(digits)))) {
+                const precision = digits ?? 0;
+                if (precision < 0 || precision > 100) {
+                    this.context.fail(call, "Number.toFixed precision must be between 0 and 100.");
+                }
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: `bbl::js::number_to_fixed(${owner.cpp}, ${precision})`,
+                    dataType: { kind: "string" },
+                };
+            }
+            if (owner.kind !== "number" ||
+                number === undefined ||
+                (call.arguments.length > 0 &&
+                    (digits === undefined ||
+                        !Number.isInteger(digits)))) {
+                this.context.fail(call, `Number.${callee.name.text} in a generation-time string requires a static number and integer precision (received '${owner.cpp}').`);
+            }
+            let text: string;
+            if (callee.name.text === "toFixed") {
+                if (digits !== undefined && (digits < 0 || digits > 100)) {
+                    this.context.fail(call, "Number.toFixed precision must be between 0 and 100.");
+                }
+                text = digits === undefined
+                    ? number.toFixed()
+                    : number.toFixed(digits);
+            }
+            else if (callee.name.text === "toPrecision") {
+                if (digits !== undefined && (digits < 1 || digits > 100)) {
+                    this.context.fail(call, "Number.toPrecision precision must be between 1 and 100.");
+                }
+                text = digits === undefined
+                    ? number.toPrecision()
+                    : number.toPrecision(digits);
+            }
+            else {
+                if (digits !== undefined && (digits < 0 || digits > 100)) {
+                    this.context.fail(call, "Number.toExponential precision must be between 0 and 100.");
+                }
+                text = digits === undefined
+                    ? number.toExponential()
+                    : number.toExponential(digits);
+            }
+            return {
+                kind: "string",
+                cpp: this.context.cppString(text),
+                staticString: text,
+            };
+        }
+        const staticOwner = this.compileStaticOwner(callee.expression);
+        if (staticOwner) {
+            if (staticOwner.kind === "tuple" && callee.name.text === "flat") {
+                this.context.expectArgumentCount(call, 0, 1);
+                const depth = call.arguments[0] ? staticNumberValue(this.context, call.arguments[0]) : 1;
+                if (depth === undefined)
+                    this.context.fail(call, "Array.flat requires a generation-known depth for tuple input.");
+                const remaining = Number.isNaN(depth) ? 0 : Math.max(0, Math.trunc(depth));
+                const flatten = (elements: readonly Value[], level: number): Value[] => elements.flatMap(element => {
+                    if (level > 0 && element.kind === "tuple")
+                        return flatten(element.tupleElements ?? [], level - 1);
+                    if (level > 0 && element.dataType?.kind === "tuple") {
+                        const cpp = this.context.bindDataTuple(element, element.dataType.arity);
+                        return Array.from({ length: element.dataType.arity }, (_, index) =>
+                            this.context.dataLowerer.leafValue(`${cpp}[${index}]`, { kind: "number" }));
+                    }
+                    if (level > 0 && element.dataType?.kind === "vector") {
+                        this.context.fail(call, "Tuple Array.flat cannot flatten an array with runtime length.");
+                    }
+                    return [element];
+                });
+                return { kind: "tuple", cpp: "", tupleElements: flatten(staticOwner.tupleElements ?? [], remaining) };
+            }
+            const fetched = this.context.compileStaticFetchMethod(call, staticOwner, callee.name.text);
+            if (fetched)
+                return fetched;
+            const mapped = this.compileStaticTupleMap(call, staticOwner, callee.name.text);
+            if (mapped)
+                return mapped;
+        }
+        const regexpExpression = this.context.unwrap(callee.expression);
+        const regexpType = this.context.checker.getTypeAtLocation(regexpExpression);
+        const boundRegexp = ts.isIdentifier(regexpExpression)
+            ? this.context.lookupOptional(regexpExpression)
+            : undefined;
+        const regexpOwner = boundRegexp?.kind === "regexp"
+            ? boundRegexp
+            : regexpType.symbol?.name === "RegExp" ||
+                regexpExpression.kind ===
+                    ts.SyntaxKind.RegularExpressionLiteral
+                ? this.compileValue(regexpExpression)
+                : undefined;
+        if (regexpOwner?.kind === "regexp") {
+            if (callee.name.text !== "exec" &&
+                callee.name.text !== "test") {
+                this.context.fail(callee.name, `RegExp method '${callee.name.text}' is not supported.`);
+            }
+            this.context.expectArgumentCount(call, 1, 1);
+            const input = this.context.dataLowerer.compileForSink(argumentAt(call, 0), { kind: "string" });
+            this.context.reachJsData();
+            if (callee.name.text === "test") {
+                return {
+                    kind: "boolean",
+                    cpp: `${regexpOwner.cpp}.test(${input})`,
+                };
+            }
+            return {
+                kind: "data",
+                cpp: `${regexpOwner.cpp}.exec(${input})`,
+                dataType: {
+                    kind: "optional",
+                    inner: {
+                        kind: "vector",
+                        element: { kind: "string" },
+                    },
+                },
+            };
+        }
+        // The handle-collection concept owns the collection calls; the
+        // three dispatch positions stay exactly where the arms sat so
+        // the resolution order a call site observes is unchanged.
+        const pushed = this.context.handleCollections.compileParticleSystemsPush(call, callee);
+        if (pushed)
+            return pushed;
+        const math = this.context.dataLowerer.compileMathCall(call);
+        if (math) {
+            return math;
+        }
+        const arrayFrom = this.context.dataLowerer.compileArrayFrom(call);
+        if (arrayFrom) {
+            return arrayFrom;
+        }
+        // Resolve engine-handle searches before the plain-data method
+        // probe compiles their owner. A fused `meshes.map(...).find(...)`
+        // has no native intermediate array for that probe to lower.
+        const found = this.context.handleCollections.compileFind(call, callee);
+        if (found) {
+            return found;
+        }
+        const method = this.context.probeEmission(() => this.context.dataLowerer.compileDataMethodCall(call));
+        if (method) {
+            return method;
+        }
+        // The Web Audio surface: `ctx.createGain()`,
+        // `node.connect(...)`, `param.setValueAtTime(...)`. Babylon
+        // Lite is function-shaped and the browser API is not, so the
+        // audio family is the one place a handle carries methods.
+        const audio = compileAudioMethodCall(this.context, call, callee);
+        if (audio) {
+            return audio;
+        }
+        // The second such surface: a VatHandle is a closure bundle
+        // upstream, so its playback methods ride the handle too.
+        const vat = compileVatMethodCall(this.context, call, callee);
+        if (vat) {
+            return vat;
+        }
+        const lightPush = this.context.handleCollections.compileSceneLightPush(call, callee);
+        if (lightPush) {
+            return lightPush;
+        }
+        // After the data-model arm above, so a list of plain data still
+        // grows through its own `push_back`; this one owns the case that
+        // arm declines, a compile-time tuple of engine handles.
+        const handlePush = this.context.handleCollections.compileHandleTuplePush(call, callee);
+        if (handlePush) {
+            return handlePush;
+        }
+        const staticMethod = this.context.classLowerer.resolveStaticMethod(callee);
+        if (staticMethod) {
+            const factory = this.context.classLowerer.compileNullableResourceFactory(call, staticMethod);
+            if (factory)
+                return factory;
+            return this.context.userFunctions.compileCallbackCall(this.context, call, staticMethod);
+        }
+        // A method on a constructed instance inlines with `this`
+        // bound to that instance's field record.
+        const receiver = this.context.unwrap(callee.expression);
+        if (ts.isIdentifier(receiver) ||
+            receiver.kind === ts.SyntaxKind.ThisKeyword ||
+            ts.isPropertyAccessExpression(receiver) ||
+            ts.isElementAccessExpression(receiver) ||
+            ts.isConditionalExpression(receiver) ||
+            ts.isCallExpression(receiver)) {
+            const receiverValue = ts.isIdentifier(receiver)
+                ? this.context.lookupOptional(receiver)
+                : receiver.kind === ts.SyntaxKind.ThisKeyword
+                    ? this.context.activeThis()
+                    : this.compileValue(receiver);
+            const instance = receiverValue
+                ? (this.context.classLowerer.hydrate(receiverValue) ??
+                    receiverValue)
+                : undefined;
+            const optionalCall = call.questionDotToken !== undefined ||
+                callee.questionDotToken !== undefined;
+            if (instance?.kind === "json-null" && optionalCall) {
+                return { kind: "void", cpp: "" };
+            }
+            if (instance?.kind === "splat-mesh" && callee.name.text === "updateData") {
+                this.context.expectArgumentCount(call, 1, 1);
+                if (instance.optionalFoundCpp) {
+                    this.context.fail(call, "updateData requires a present splat cloud.");
+                }
+                // Resolve the receiver before evaluating an argument
+                // that may replace the source binding.
+                const engine = this.context.requireEngine(instance, call);
+                const cloud = this.context.allocateTemporaryCppName("splat_update_receiver");
+                this.context.emit({ kind: "declaration", type: "const auto", name: cloud, initializer: instance.cpp });
+                const buffer = this.context.dataLowerer.compileForSink(argumentAt(call, 0), { kind: "arraybuffer" });
+                this.context.reachFeature("loader:splat-data", call);
+                return {
+                    kind: "void",
+                    cpp: `bbl::update_splat_data(${engine}, ${cloud}, ${buffer})`,
+                };
+            }
+            const declaration = instance
+                ? this.context.classOf(instance)
+                : undefined;
+            // A record property naming a local function inlines at
+            // the call site exactly as a direct call to that
+            // function does, by handing the identifier the literal
+            // wrote to the same resolver.
+            const recordMethod = instance?.recordMethods?.[callee.name.text];
+            const recordCallback = instance?.recordProperties?.[callee.name.text];
+            if (instance &&
+                call.questionDotToken &&
+                !recordMethod &&
+                !recordCallback) {
+                return { kind: "void", cpp: "" };
+            }
+            if (instance && recordMethod) {
+                // A literal written in the record has no identifier
+                // to resolve, so it takes the callback path a
+                // function-literal argument already takes. Both
+                // arrive at the same inliner.
+                if (!ts.isIdentifier(recordMethod)) {
+                    return this.context.userFunctions.compileCallbackCall(this.context, call, recordMethod, (work) => this.context.withRecordScopes(instance, work));
+                }
+            const method = this.context.userFunctions.compile(this.context, call, recordMethod,
+                // Only the body runs in the record's
+                // scope; the arguments were written at
+                // the call site and resolve there.
+                (work) => this.context.withRecordScopes(instance, work));
+                if (method) {
+                    return method;
+                }
+            }
+            if (recordCallback?.kind === "callback" &&
+                recordCallback.callbackDeclaration) {
+                const inRecordScope = <T>(work: () => T): T => recordCallback.callbackRecordOwner
+                    ? this.context.withRecordScopes(recordCallback.callbackRecordOwner, work)
+                    : work();
+                return ts.isIdentifier(recordCallback.callbackDeclaration)
+                    ? this.context.userFunctions.compile(this.context, call, recordCallback.callbackDeclaration, inRecordScope)!
+                    : this.context.userFunctions.compileCallbackCall(this.context, call, recordCallback.callbackDeclaration, inRecordScope);
+            }
+            if (recordCallback?.kind === "data" &&
+                recordCallback.dataType?.kind === "function" &&
+                !call.questionDotToken &&
+                !callee.questionDotToken) {
+                const functionType = recordCallback.dataType;
+                const argumentsCpp = this.context.dataLowerer.compileFunctionArguments(call, functionType, `Stored callback field '${callee.name.text}'`);
+                const cpp = `${recordCallback.cpp}(${argumentsCpp.join(", ")})`;
+                return functionType.result
+                    ? this.context.dataLowerer.leafValue(cpp, functionType.result)
+                    : { kind: "void", cpp };
+            }
+            if (instance && declaration) {
+                const optionalFound = instance.optionalFoundCpp ??
+                    (instance.dataType?.kind === "struct" &&
+                        this.context.dataTypes.isReferenceStruct(instance.dataType.name)
+                        ? `static_cast<bool>(${instance.cpp})`
+                        : undefined);
+                if (optionalCall && optionalFound !== undefined) {
+                    if (!ts.isExpressionStatement(call.parent)) {
+                        this.context.fail(call, "Optional class method calls returning a value are not lowered.");
+                    }
+                    this.context.emit(`if (${optionalFound}) {`);
+                    this.context.increaseIndent();
+                    const result = this.context.classLowerer.compileMethodCall(instance, callee.name.text, call, declaration);
+                    if (result.kind !== "void") {
+                        this.context.fail(call, "Optional class method calls returning a value are not lowered.");
+                    }
+                    if (result.cpp) {
+                        this.context.emit(`${result.cpp};`);
+                    }
+                    this.context.decreaseIndent();
+                    this.context.emit("}");
+                    return { kind: "void", cpp: "" };
+                }
+                return this.context.classLowerer.compileMethodCall(instance, callee.name.text, call, declaration);
+            }
+        }
+    }
+
 }

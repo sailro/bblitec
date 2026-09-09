@@ -1,3 +1,4 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import {
@@ -5,74 +6,33 @@ import {
     staticNumberValue,
     validateObjectProperties,
 } from "../option-helpers.js";
-import type { PropertyAnimationTargetKind } from "../property-animation.js";
-import type { CompilerSymbols } from "../symbols.js";
-import type { FrameCallbackSignature, Value } from "../types.js";
+import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
-interface CompiledAnimationClip {
-    cpp: string;
-    frameRate: string;
-    duration: string;
-    target: PropertyAnimationTargetKind;
-    paths: readonly string[];
-}
 
 export interface AnimationIntrinsicContext
-    extends IntrinsicCallContext {
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    compilePropertyAnimationClip(
-        nameExpression: ts.Expression,
-        tracksExpression: ts.Expression,
-        optionsExpression: ts.Expression | undefined,
-    ): CompiledAnimationClip;
-    compilePropertyAnimationGroupOptions(
-        expression: ts.Expression | undefined,
-        clip: Value,
-    ): string;
-    compilePropertyAnimationTargets(
-        target: Value,
-        paths: readonly string[],
-        node: ts.Expression,
-    ): { cpp: string; engineCpp: string };
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    resolveStaticExpression(
-        expression: ts.Expression,
-    ): ts.Expression;
-    lookup(identifier: ts.Identifier): Value;
-    lookupOptional(
-        identifier: ts.Identifier,
-    ): Value | undefined;
-    requirePresentationHost(node: ts.Node): string;
-    compileFrameCallback(expression: ts.Expression, signature?: FrameCallbackSignature, retainCaptures?: boolean): string;
-    requireCompatibleFrameConductor(owner: "manager" | "persistent", site: ts.Node): void;
-    requireEngine(value: Value, node: ts.Node): string;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    fail(node: ts.Node, message: string): never;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    propertyName(name: ts.PropertyName): string | undefined;
-    /**
-     * A list of glTF animation groups as one native vector expression:
-     * a loaded container's own collection, or a static array of groups.
-     */
-    compileAnimationGroupList(
-        expression: ts.Expression,
-    ): { cpp: string; engineCpp: string };
-    /**
-     * The resolved import symbols, so a pinned enum member is told apart
-     * from a local of the same name by what it resolves to.
-     */
-    readonly symbols: CompilerSymbols;
-}
+    extends IntrinsicCallContext,
+    Pick<LoweringServices,
+        | "isDefaultLibraryIdentifier"
+        | "compilePropertyAnimationClip"
+        | "compilePropertyAnimationGroupOptions"
+        | "compilePropertyAnimationTargets"
+        | "compileNumber"
+        | "resolveStaticExpression"
+        | "lookup"
+        | "lookupOptional"
+        | "requirePresentationHost"
+        | "compileFrameCallback"
+        | "requireCompatibleFrameConductor"
+        | "requireEngine"
+        | "expectSameEngine"
+        | "fail"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "propertyName"
+        | "compileAnimationGroupList"
+        | "symbols"
+    > {}
 
 /**
  * Which arm of the pin's `AnimationGroupMaskMode` an argument names.

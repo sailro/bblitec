@@ -1,5 +1,8 @@
 #pragma once
-#include "pal_window.hpp"
+#include "pal_dawn_device.hpp"
+#include "pal_dawn_resources.hpp"
+#include "pal_owned_gpu_record.hpp"
+#include "pal_device_options.hpp"
 
 // Dawn mechanics shared by the renderers that draw through it.
 //
@@ -148,7 +151,7 @@ inline WGPUTexture upload_dawn_rgba_texture(
         : (WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst);
     descriptor.mipLevelCount = mip_levels;
     descriptor.size = WGPUExtent3D{width, height, 1};
-    WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
     if (!texture) dawn_error("wgpuDeviceCreateTexture rgba texture");
     WGPUTexelCopyTextureInfo destination =
         WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -159,18 +162,8 @@ inline WGPUTexture upload_dawn_rgba_texture(
     const WGPUExtent3D size{width, height, 1};
     wgpuQueueWriteTexture(
         queue, &destination, rgba, bytes, &layout, &size);
-    return texture;
+    return texture.release();
 }
-
-/** One texture a sprite-family pass samples: the atlas, or a custom
- *  shader's extra. The three handles are created, bound and released
- *  together, so they travel together. */
-struct DawnSampledTexture {
-    WGPUTexture texture = nullptr;
-    WGPUTextureView view = nullptr;
-    WGPUSampler sampler = nullptr;
-    std::uint64_t uploaded_version = 0;
-};
 
 /**
  * The texture-group layout entries for `pairs` sampled textures.
@@ -205,15 +198,20 @@ dawn_texture_pair_layout_entries(std::size_t pairs) {
 /** Appends one texture and its sampler at the next two bindings. */
 inline void append_dawn_texture_pair(
     std::vector<WGPUBindGroupEntry>& into,
-    const DawnSampledTexture& texture) {
+    WGPUTextureView view, WGPUSampler sampler) {
     WGPUBindGroupEntry sampled = WGPU_BIND_GROUP_ENTRY_INIT;
     sampled.binding = static_cast<std::uint32_t>(into.size());
-    sampled.textureView = texture.view;
+    sampled.textureView = view;
     WGPUBindGroupEntry sampler_entry = WGPU_BIND_GROUP_ENTRY_INIT;
     sampler_entry.binding = static_cast<std::uint32_t>(into.size() + 1u);
-    sampler_entry.sampler = texture.sampler;
+    sampler_entry.sampler = sampler;
     into.push_back(sampled);
     into.push_back(sampler_entry);
+}
+
+inline void append_dawn_texture_pair(
+    std::vector<WGPUBindGroupEntry>& into, const DawnSampledTexture& texture) {
+    append_dawn_texture_pair(into, texture.view, texture.sampler);
 }
 
 inline void wait_for(WGPUInstance instance, WGPUFuture future) {
@@ -231,22 +229,6 @@ inline void wait_for(WGPUInstance instance, WGPUFuture future) {
         dawn_error("wgpuInstanceWaitAny failed.");
     }
 }
-
-/** The device-level state every Dawn renderer holds. */
-struct DawnDevice {
-    SDL_Window* window = nullptr;
-    WGPUInstance instance = nullptr;
-    WGPUAdapter adapter = nullptr;
-    WGPUDevice device = nullptr;
-    WGPUQueue queue = nullptr;
-    WGPUSurface surface = nullptr;
-    WGPUTextureFormat surface_format = WGPUTextureFormat_BGRA8Unorm;
-    WGPUPresentMode present_mode = WGPUPresentMode_Fifo;
-    std::uint32_t surface_width = 0;
-    std::uint32_t surface_height = 0;
-    std::string uncaptured_error;
-    std::atomic_bool device_lost = false;
-};
 
 #if BBLITE_OFFSCREEN_SURFACES
 class SharedDawnErrors {
@@ -276,21 +258,11 @@ struct DawnOffscreenDevice final : OffscreenDevice {
 };
 #endif
 
-struct DawnDeviceOptions {
+struct DawnDeviceHost {
 #if BBLITE_OFFSCREEN_SURFACES
-    SDL_Window* host_window = nullptr;
+    SDL_Window* window = nullptr;
     SharedDawnErrors* shared_errors = nullptr;
 #endif
-    bool hidden_test_pass = false;
-    /** Benchmarks present immediately; everything else keeps vsync. */
-    bool immediate_present = false;
-    // There is no gpu_debug option on this backend, and none of its three
-    // drivers reads BBLITE_GPU_DEBUG: Dawn's validation is always on, so
-    // the flag is a documented no-op here rather than a refusal — parity
-    // passes the same environment to both backends.
-    /** Zero leaves the WebGPU default in place. */
-    std::uint32_t max_vertex_attributes = 0;
-    std::uint32_t max_color_attachment_bytes_per_sample = 0;
 };
 
 inline void configure_dawn_surface(
@@ -338,8 +310,9 @@ inline bool resize_dawn_surface(
 
 inline void create_dawn_device(
     const EngineOptions& engine_options,
-    const DawnDeviceOptions& options,
-    DawnDevice& state) {
+    const DeviceOptions& options,
+    DawnDevice& state,
+    [[maybe_unused]] const DawnDeviceHost& host = {}) {
 #if BBLITE_OFFSCREEN_SURFACES
     if (auto* run = OffscreenRun::current()) {
         auto* shared = dynamic_cast<DawnOffscreenDevice*>(&run->device());
@@ -376,9 +349,15 @@ inline void create_dawn_device(
     if (!initialize_run_sdl(init_flags)) {
         dawn_error(std::string("SDL_Init: ") + SDL_GetError());
     }
+    state.sdl_initialized = true;
+#if BBLITE_OFFSCREEN_SURFACES
+    state.owns_window = !host.window;
+    // The presentation host owns SDL and its window.
+    if (host.window) state.sdl_initialized = false;
+#endif
     state.window =
 #if BBLITE_OFFSCREEN_SURFACES
-        options.host_window ? options.host_window :
+        host.window ? host.window :
 #endif
         acquire_run_window(
         engine_options,
@@ -508,7 +487,7 @@ inline void create_dawn_device(
         }
     }
 #if BBLITE_OFFSCREEN_SURFACES
-    if (options.shared_errors) {
+    if (host.shared_errors) {
         // A shared native device requires Dawn's explicit threading feature.
         // Command encoders still belong exclusively to their creating thread.
         if (!wgpuAdapterHasFeature(state.adapter, WGPUFeatureName_ImplicitDeviceSynchronization)) {
@@ -570,19 +549,19 @@ inline void create_dawn_device(
     device_descriptor.deviceLostCallbackInfo.userdata1 =
         &state;
 #if BBLITE_OFFSCREEN_SURFACES
-    if (options.shared_errors) {
+    if (host.shared_errors) {
         device_descriptor.uncapturedErrorCallbackInfo.callback =
             [](WGPUDevice const*, WGPUErrorType, WGPUStringView message, void* errors, void*) {
                 static_cast<SharedDawnErrors*>(errors)->report(view_text(message));
             };
-        device_descriptor.uncapturedErrorCallbackInfo.userdata1 = options.shared_errors;
+        device_descriptor.uncapturedErrorCallbackInfo.userdata1 = host.shared_errors;
         device_descriptor.deviceLostCallbackInfo.callback =
             [](WGPUDevice const*, WGPUDeviceLostReason reason, WGPUStringView message, void* errors, void*) {
                 if (reason != WGPUDeviceLostReason_Destroyed) {
                     static_cast<SharedDawnErrors*>(errors)->report("device lost: " + view_text(message));
                 }
             };
-        device_descriptor.deviceLostCallbackInfo.userdata1 = options.shared_errors;
+        device_descriptor.deviceLostCallbackInfo.userdata1 = host.shared_errors;
     }
 #endif
     WGPURequestDeviceCallbackInfo device_callback =
@@ -644,12 +623,11 @@ inline WGPUShaderModule load_wgsl_module(
     WGPUShaderModuleDescriptor descriptor{};
     descriptor.nextInChain = &wgsl.chain;
     descriptor.label = string_view(base_name.c_str());
-    WGPUShaderModule module =
-        wgpuDeviceCreateShaderModule(device, &descriptor);
+    DawnShaderModule module{wgpuDeviceCreateShaderModule(device, &descriptor)};
     if (!module) {
         dawn_error("wgpuDeviceCreateShaderModule " + base_name);
     }
-    return module;
+    return module.release();
 }
 
 /**
@@ -663,23 +641,17 @@ inline WGPUShaderModule load_wgsl_module(
  * driver's layers over a node-particle texture.
  */
 struct DawnMipGenerator {
-    WGPUShaderModule vertex_module = nullptr;
-    WGPUShaderModule fragment_module = nullptr;
-    WGPUSampler sampler = nullptr;
-    std::map<WGPUTextureFormat, WGPURenderPipeline> pipelines;
+    DawnShaderModule vertex_module;
+    DawnShaderModule fragment_module;
+    DawnSampler sampler;
+    std::map<WGPUTextureFormat, DawnRenderPipeline> pipelines;
 };
 
 inline void release_dawn_mip_generator(DawnMipGenerator& mips) {
-    for (auto& [format, pipeline] : mips.pipelines) {
-        if (pipeline) wgpuRenderPipelineRelease(pipeline);
-    }
     mips.pipelines.clear();
-    if (mips.sampler) wgpuSamplerRelease(mips.sampler);
-    if (mips.fragment_module) wgpuShaderModuleRelease(mips.fragment_module);
-    if (mips.vertex_module) wgpuShaderModuleRelease(mips.vertex_module);
-    mips.sampler = nullptr;
-    mips.fragment_module = nullptr;
-    mips.vertex_module = nullptr;
+    mips.sampler.reset();
+    mips.fragment_module.reset();
+    mips.vertex_module.reset();
 }
 
 inline WGPURenderPipeline mip_pipeline_for(
@@ -697,7 +669,7 @@ inline WGPURenderPipeline mip_pipeline_for(
             WGPU_SAMPLER_DESCRIPTOR_INIT;
         sampler_descriptor.magFilter = WGPUFilterMode_Linear;
         sampler_descriptor.minFilter = WGPUFilterMode_Linear;
-        mips.sampler = wgpuDeviceCreateSampler(device, &sampler_descriptor);
+        mips.sampler = require_dawn_resource(wgpuDeviceCreateSampler(device, &sampler_descriptor), "mip sampler");
     }
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
@@ -712,11 +684,11 @@ inline WGPURenderPipeline mip_pipeline_for(
     fragment.targetCount = 1;
     fragment.targets = &color_target;
     descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(device, &descriptor);
-    if (!pipeline) dawn_error("mip blit pipeline creation failed.");
-    mips.pipelines[format] = pipeline;
-    return pipeline;
+    DawnRenderPipeline pipeline{require_dawn_resource(
+        wgpuDeviceCreateRenderPipeline(device, &descriptor), "mip blit pipeline")};
+    const auto result = pipeline.get();
+    mips.pipelines.emplace(format, std::move(pipeline));
+    return result;
 }
 
 // The pinned generator blits one face at a time for cube textures
@@ -733,8 +705,7 @@ inline void record_mipmaps(
     std::int32_t face = -1) {
     if (mip_count <= 1) return;
     WGPURenderPipeline pipeline = mip_pipeline_for(device, mips, format);
-    WGPUBindGroupLayout layout =
-        wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
+    DawnBindGroupLayout layout{require_dawn_resource(wgpuRenderPipelineGetBindGroupLayout(pipeline, 0), "mip layout")};
     for (std::uint32_t level = 1; level < mip_count; ++level) {
         WGPUTextureViewDescriptor source_descriptor =
             WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
@@ -754,10 +725,8 @@ inline void record_mipmaps(
                 static_cast<std::uint32_t>(face);
             target_descriptor.arrayLayerCount = 1;
         }
-        WGPUTextureView source =
-            wgpuTextureCreateView(texture, &source_descriptor);
-        WGPUTextureView target =
-            wgpuTextureCreateView(texture, &target_descriptor);
+        DawnTextureView source{create_dawn_texture_view(texture, &source_descriptor)};
+        DawnTextureView target{create_dawn_texture_view(texture, &target_descriptor)};
 
         std::array<WGPUBindGroupEntry, 2> entries{};
         entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
@@ -771,8 +740,7 @@ inline void record_mipmaps(
         bind_descriptor.layout = layout;
         bind_descriptor.entryCount = entries.size();
         bind_descriptor.entries = entries.data();
-        WGPUBindGroup bind_group =
-            wgpuDeviceCreateBindGroup(device, &bind_descriptor);
+        DawnBindGroup bind_group{require_dawn_resource(wgpuDeviceCreateBindGroup(device, &bind_descriptor), "mip binding")};
 
         WGPURenderPassColorAttachment color_attachment =
             WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -783,18 +751,12 @@ inline void record_mipmaps(
             WGPU_RENDER_PASS_DESCRIPTOR_INIT;
         pass_descriptor.colorAttachmentCount = 1;
         pass_descriptor.colorAttachments = &color_attachment;
-        WGPURenderPassEncoder pass =
-            wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+        DawnRenderPass pass{require_dawn_resource(wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor), "mip render pass")};
         wgpuRenderPassEncoderSetPipeline(pass, pipeline);
         wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
         wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
         wgpuRenderPassEncoderEnd(pass);
-        wgpuRenderPassEncoderRelease(pass);
-        wgpuBindGroupRelease(bind_group);
-        wgpuTextureViewRelease(target);
-        wgpuTextureViewRelease(source);
     }
-    wgpuBindGroupLayoutRelease(layout);
 }
 
 /** The whole chain in one submitted encoder, for a texture uploaded once. */
@@ -807,13 +769,11 @@ inline void generate_mipmaps(
     std::uint32_t mip_count,
     std::int32_t face = -1) {
     if (mip_count <= 1) return;
-    WGPUCommandEncoder encoder =
-        wgpuDeviceCreateCommandEncoder(device, nullptr);
+    DawnCommandEncoder encoder{require_dawn_resource(wgpuDeviceCreateCommandEncoder(device, nullptr), "mip encoder")};
     record_mipmaps(device, mips, encoder, texture, format, mip_count, face);
-    WGPUCommandBuffer command = wgpuCommandEncoderFinish(encoder, nullptr);
-    wgpuQueueSubmit(queue, 1, &command);
-    wgpuCommandBufferRelease(command);
-    wgpuCommandEncoderRelease(encoder);
+    DawnCommandBuffer command{require_dawn_resource(wgpuCommandEncoderFinish(encoder, nullptr), "mip command")};
+    const auto submitted = command.get();
+    wgpuQueueSubmit(queue, 1, &submitted);
 }
 
 /**
@@ -855,9 +815,9 @@ inline WGPUSampler create_texture_sampler(
     }
     descriptor.maxAnisotropy = static_cast<std::uint16_t>(
         std::max(1.0f, sampler.max_anisotropy));
-    WGPUSampler result = wgpuDeviceCreateSampler(device, &descriptor);
+    DawnSampler result{wgpuDeviceCreateSampler(device, &descriptor)};
     if (!result) dawn_error("wgpuDeviceCreateSampler material");
-    return result;
+    return result.release();
 }
 
 /** Uploads one extra texture with the sampler its record carries. */
@@ -875,7 +835,7 @@ inline DawnSampledTexture upload_dawn_extra_texture(
         extra.height,
         1,
         extra.srgb);
-    texture.view = wgpuTextureCreateView(texture.texture, nullptr);
+    texture.view = create_dawn_texture_view(texture.texture, nullptr);
     texture.sampler = create_texture_sampler(device, extra.sampler);
     texture.uploaded_version = extra.version;
     return texture;
@@ -906,11 +866,6 @@ inline void update_dawn_extra_texture(
 /** Releases what {@link upload_dawn_extra_texture} built. */
 inline void release_dawn_extra_textures(
     std::vector<DawnSampledTexture>& extras) {
-    for (const DawnSampledTexture& extra : extras) {
-        if (extra.sampler) wgpuSamplerRelease(extra.sampler);
-        if (extra.view) wgpuTextureViewRelease(extra.view);
-        if (extra.texture) wgpuTextureRelease(extra.texture);
-    }
     extras.clear();
 }
 
@@ -926,7 +881,7 @@ inline void release_dawn_extra_textures(
  * before it, {@link finish_dawn_surface_capture} after.
  */
 struct DawnSurfaceCapture {
-    WGPUBuffer readback = nullptr;
+    DawnBuffer readback;
     std::uint32_t bytes_per_row = 0;
 };
 

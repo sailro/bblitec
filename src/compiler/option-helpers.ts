@@ -1,3 +1,13 @@
+import { EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+// Shared option-lowering helpers.
+//
+// The option compilers agree on three small contracts: an options
+// object may only carry the properties the reached lowering reads, a
+// count lowers to a positive integer literal (or the engine's own
+// msaaSamples), and an optional flag folds to a static boolean. They
+// are declared once here so every per-domain option module states the
+// same rule instead of carrying its own copy.
 // Shared option-lowering helpers.
 //
 // The option compilers agree on three small contracts: an options
@@ -16,12 +26,11 @@ import {
     mathUnaryFold,
 } from "./math-intrinsics.js";
 
-export interface ObjectValidationContext {
-    propertyName(
-        name: ts.PropertyName,
-    ): string | undefined;
-    fail(node: ts.Node, message: string): never;
-}
+export interface ObjectValidationContext
+    extends Pick<LoweringServices,
+        | "propertyName"
+        | "fail"
+    > {}
 
 export function validateObjectProperties(
     context: ObjectValidationContext,
@@ -29,7 +38,7 @@ export function validateObjectProperties(
     supported: readonly string[],
     message: string,
 ): void {
-    const supportedNames = new Set(supported);
+    const supportedNames = new EmissionSet(supported);
     for (const property of object.properties) {
         const name =
             ts.isPropertyAssignment(property) ||
@@ -42,22 +51,17 @@ export function validateObjectProperties(
     }
 }
 
-export interface PositiveIntegerContext {
-    resolveStaticExpression(
-        expression: ts.Expression,
-    ): ts.Expression;
-    /**
-     * `canvas.width` / `canvas.height` as the number generation
-     * configured, or undefined for anything else. Read only by
-     * `staticNumberValue`; see the note there.
-     */
-    staticCanvasSize?(expression: ts.Expression): number | undefined;
-    lookup(identifier: ts.Identifier): Value;
-    /** The binding, or undefined where this scope has none. */
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    fail(node: ts.Node, message: string): never;
-}
+export interface PositiveIntegerContext
+    extends Pick<LoweringServices,
+        | "resolveStaticExpression"
+        | "lookup"
+        | "lookupOptional"
+        | "isDefaultLibraryIdentifier"
+        | "fail"
+    >,
+    Partial<Pick<LoweringServices,
+        | "staticCanvasSize"
+    >> {}
 
 export function compilePositiveInteger(
     context: PositiveIntegerContext,
@@ -89,18 +93,18 @@ export function compilePositiveInteger(
     return `${value}u`;
 }
 
-export interface StaticBooleanContext {
-    resolveStaticExpression(
-        expression: ts.Expression,
-    ): ts.Expression;
-    compileBoolean(expression: ts.Expression): string;
-    fail(node: ts.Node, message: string): never;
-}
+export interface StaticBooleanContext
+    extends Pick<LoweringServices,
+        | "resolveStaticExpression"
+        | "compileBoolean"
+        | "fail"
+    > {}
 
 interface StaticNumberSelectionContext
-    extends PositiveIntegerContext {
-    compileCondition(expression: ts.Expression): string;
-}
+    extends PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "compileCondition"
+    > {}
 
 /**
  * A static number after following any statically settled conditional arms.
@@ -128,10 +132,11 @@ export function selectedStaticNumberValue(
  * that folds. Undefined when a condition stays live, so each caller keeps
  * its own domain-specific refusal rather than inheriting a number's.
  */
-interface StaticSelectionContext {
-    compileCondition(expression: ts.Expression): string;
-    resolveStaticExpression(expression: ts.Expression): ts.Expression;
-}
+interface StaticSelectionContext
+    extends Pick<LoweringServices,
+        | "compileCondition"
+        | "resolveStaticExpression"
+    > {}
 
 export function selectedStaticExpression(
     context: StaticSelectionContext,
@@ -214,11 +219,10 @@ export function compileStaticNumber(
 export const notJson = Symbol("not a JSON literal");
 
 /** What reading a JSON literal out of the source needs. */
-export interface StaticJsonContext {
-    resolveStaticExpression(
-        expression: ts.Expression,
-    ): ts.Expression;
-}
+export interface StaticJsonContext
+    extends Pick<LoweringServices,
+        | "resolveStaticExpression"
+    > {}
 
 /**
  * One JSON value out of the source, or `notJson`.

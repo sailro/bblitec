@@ -42,7 +42,6 @@ export const GLB_BINARY_CHUNK = 0x004e4942;
  */
 export const GAUSSIAN_SPLATTING_EXTENSION = "KHR_gaussian_splatting";
 export const GAUSSIAN_SPLAT_DOCUMENT_KEY = "__bblitecGaussianSplats";
-export const GLTF_MATERIAL_EXTENSION_PAYLOAD = "__bblitecMaterialExtensions";
 export const GLTF_SOURCE_ALBEDO_IDENTITIES = "__bblitecSourceAlbedoIdentities";
 export const GLTF_MESH_WALKS = "__bblitecMeshWalks";
 

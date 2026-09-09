@@ -195,6 +195,47 @@ test("inlines a method on an instance read back out of a container", () => {
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
+test("stored constructor properties preserve generic values, defaults, optional fields and array ownership", { skip: !nativeTools }, () => {
+    const result = compileSource(`
+        let defaults = 0;
+        function defaultTitle(): string { defaults += 1; return "default"; }
+        class Item<T> {
+            constructor(public value: T, readonly title = defaultTitle(), public optional?: number) {}
+            read(): T { return this.value; }
+        }
+        const items: Item<number>[] = [new Item(4), new Item(7, "second", 0)];
+        const words: Item<string>[] = [new Item("word")];
+        const alias = items[0]!;
+        alias.value += 5;
+        if (items[0]!.read() !== 9 || items[1]!.read() !== 7 || words[0]!.read() !== "word")
+            throw new Error("constructor field identity and type");
+        if (defaults !== 2 || items[0]!.title !== "default" || items[1]!.title !== "second")
+            throw new Error("constructor defaults evaluated once");
+        if (items[0]!.optional !== undefined || items[1]!.optional !== 0)
+            throw new Error("optional constructor property presence");
+        items[0]!.optional = 3;
+        if (alias.optional !== 3) throw new Error("optional constructor property write");
+        class Samples {
+            constructor(readonly values: readonly number[]) {}
+            total(): number { return this.values.reduce((sum, value) => sum + value, 0); }
+        }
+        const samples: Samples[] = [new Samples([1,2,3].map(value => value * 2))];
+        if (samples[0]!.total() !== 12) throw new Error("constructor array lifetime");
+        const values = [1, 2, 3];
+        const retained: Samples[] = [new Samples(values)];
+        if (retained[0]!.values !== values) throw new Error("constructor array identity");
+        values[1] = 8;
+        if (retained[0]!.total() !== 12) throw new Error("constructor array alias mutation");
+    `);
+    const output = resolve("artifacts/class-parameter-properties");
+    mkdirSync(output, { recursive: true });
+    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
+    writeFileSync(source, result.cpp);
+    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source]);
+    execFileSync(executable, { stdio: "pipe" });
+});
+
 test("optional class getters skip absent receivers and evaluate present false/true results once", { skip: !nativeTools }, () => {
     const result = compileSource(`
         class Item {

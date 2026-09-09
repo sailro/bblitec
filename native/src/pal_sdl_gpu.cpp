@@ -41,6 +41,7 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_shared.hpp"
+#include "pal_frame_session.hpp"
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
 #include "pal_sdl_gpu_text.hpp"
 #endif
@@ -178,7 +179,7 @@ struct SharedComposedMaterialTextures;
 using SharedPluginMaterialTextures = SharedMaterialTextures;
 #endif
 
-struct GpuMesh {
+struct GpuMeshResources {
     SDL_GPUBuffer* vertices = nullptr;
     // Shader-material meshes keep immutable local-space geometry in the
     // state cache. Their entries borrow those buffers and bind the ordinary
@@ -358,6 +359,10 @@ struct GpuMesh {
     std::uint64_t transform_version = 0;
     bool gpu_world_transform = false;
 };
+struct GpuState;
+void release_gpu_mesh_resources(GpuState*, GpuMeshResources&) noexcept;
+using GpuMesh = OwnedGpuRecord<GpuMeshResources, std::remove_pointer_t<GpuState*>, release_gpu_mesh_resources>;
+
 
 [[maybe_unused]] inline SDL_GPUBuffer* morph_storage_buffer_for(
     const GpuMesh& mesh,
@@ -398,23 +403,23 @@ struct SharedShaderGeometry {
     // Kept only below `shared_geometry_bytes_kept_below` vertices.
     std::vector<GpuVertex> vertices;
     std::vector<std::uint32_t> indices;
-    SDL_GPUBuffer* vertex_buffer = nullptr;
-    SDL_GPUBuffer* index_buffer = nullptr;
+    OwnedSdlBuffer vertex_buffer{};
+    OwnedSdlBuffer index_buffer{};
     std::size_t users = 0;
 };
 
 /** Texture/sampler pairs belong to a material, not to each mesh. */
-struct SharedMaterialTextures {
+struct SharedMaterialTextures : SdlSampledTextures {
+    using SdlSampledTextures::SdlSampledTextures;
     MaterialHandle material{};
-    std::vector<SDL_GPUTextureSamplerBinding> bindings;
     std::size_t users = 0;
 };
 
 /** Generated PBR/Standard texture-slot bindings owned once per material. */
-struct SharedComposedMaterialTextures {
+struct SharedComposedMaterialTextures : SdlSampledTextures {
+    using SdlSampledTextures::SdlSampledTextures;
     MaterialHandle material{};
     bool standard_material = false;
-    std::vector<SDL_GPUTextureSamplerBinding> bindings;
     std::size_t users = 0;
 };
 
@@ -435,8 +440,8 @@ mesh_shader_textures(const GpuMesh& mesh) {
  * as the generation bug it would be.
  */
 struct GpuMeshSlotMembers {
-    SDL_GPUTexture* GpuMesh::* texture = nullptr;
-    SDL_GPUSampler* GpuMesh::* sampler = nullptr;
+    SDL_GPUTexture* GpuMeshResources::* texture = nullptr;
+    SDL_GPUSampler* GpuMeshResources::* sampler = nullptr;
 };
 
 /**
@@ -890,7 +895,7 @@ struct PinnedStageShadowRows {
 };
 #endif
 
-struct GpuState {
+struct GpuState : SdlGpuDevice {
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     NodeCaptureState node_capture;
 #endif
@@ -918,8 +923,6 @@ struct GpuState {
     /** The clustered light field's three data textures and their sampler. */
     ClusteredLightGpu clustered;
 #endif
-    SDL_Window* window = nullptr;
-    SDL_GPUDevice* device = nullptr;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     UiSdlGpuResources ui;
 #endif
@@ -941,11 +944,7 @@ struct GpuState {
     // generation derived from it -- is the authority on its registers.
     std::vector<PinnedStageSlots> shader_vertex_slots;
     std::vector<PinnedStageSlots> shader_fragment_slots;
-    struct StorageBuffer {
-        SDL_GPUBuffer* buffer = nullptr;
-        std::size_t size = 0;
-        std::uint64_t version = 0;
-    };
+    using StorageBuffer = VersionedGpuBuffer<SDL_GPUBuffer*>;
     std::vector<StorageBuffer> storage_buffers;
     std::vector<SDL_GPUTextureSamplerBinding>
         shader_texture_binding_scratch;
@@ -1265,37 +1264,13 @@ void sync_shader_storage_buffers(
     GpuState& state,
     const Engine& engine,
     GpuBufferUploadBatch& uploads) {
-    state.storage_buffers.resize(engine.storage_buffers.size());
-    for (std::size_t index = 0; index < engine.storage_buffers.size(); ++index) {
-        const Engine::StorageBufferRecord& source =
-            engine.storage_buffers[index];
-        GpuState::StorageBuffer& target = state.storage_buffers[index];
-        if (source.disposed) {
-            if (target.buffer) {
-                SDL_ReleaseGPUBuffer(state.device, target.buffer);
-                target = {};
-            }
-            continue;
-        }
-        if (source.bytes.empty()) {
-            gpu_error("A shader storage buffer cannot be empty.");
-        }
-        if (!target.buffer || target.size != source.bytes.size()) {
-            if (target.buffer) {
-                SDL_ReleaseGPUBuffer(state.device, target.buffer);
-            }
-            target.buffer = uploads.upload(
-                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                source.bytes.data(),
-                source.bytes.size());
-            target.size = source.bytes.size();
-            target.version = source.version;
-        } else if (target.version != source.version) {
-            uploads.update(
-                target.buffer, source.bytes.data(), source.bytes.size());
-            target.version = source.version;
-        }
-    }
+    sync_storage_records(engine.storage_buffers, state.storage_buffers,
+        [] {},
+        [&](SDL_GPUBuffer* buffer) { SDL_ReleaseGPUBuffer(state.device, buffer); },
+        [&](const void* bytes, std::size_t size) {
+            return uploads.upload(SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, bytes, size);
+        },
+        [&](SDL_GPUBuffer* buffer, const void* bytes, std::size_t size) { uploads.update(buffer, bytes, size); });
 }
 
 SDL_GPUBuffer* shader_storage_buffer(
@@ -1315,7 +1290,7 @@ SDL_GPUBuffer* shader_storage_buffer(
     if (slot >= material.shader_storage_buffers.size()) return nullptr;
     const StorageBufferHandle handle = material.shader_storage_buffers[slot];
     return handle.value < state.storage_buffers.size()
-        ? state.storage_buffers[handle.value].buffer
+        ? handle_at(state.storage_buffers, handle).buffer
         : nullptr;
 }
 
@@ -1325,7 +1300,7 @@ void bind_shader_material_textures(
     SDL_GPURenderPass* pass,
     [[maybe_unused]] const Scene& scene,
     [[maybe_unused]] const Engine& engine,
-    const MaterialRecord& material,
+    [[maybe_unused]] const MaterialRecord& material,
     std::uint32_t variant,
     const GpuMesh& mesh) {
     const auto& names = state.shader_fragment_slots[variant].textures;
@@ -1340,6 +1315,7 @@ void bind_shader_material_textures(
         uploaded.begin(), uploaded.end());
     const upstream::ShaderVariantInfo& info =
         upstream::shader_variant_info(variant);
+#if BBLITE_SHADOWS_CSM
     for (std::size_t packed = 0; packed < names.size(); ++packed) {
         const auto declared = std::find_if(
             info.samplers.begin(),
@@ -1354,17 +1330,18 @@ void bind_shader_material_textures(
         if (generator.value == invalid_handle) continue;
 #if BBLITE_SHADOW_RECEIVERS
         if (generator.value >= state.shadow_generators.size() ||
-            !state.shadow_generators[generator.value].map ||
+            !handle_at(state.shadow_generators, generator).map ||
             !state.shadow_comparison_sampler) {
             gpu_error("Shader CSM receiver texture is not ready.");
         }
         state.shader_texture_binding_scratch[packed] = {
-            state.shadow_generators[generator.value].map,
+            handle_at(state.shadow_generators, generator).map,
             state.shadow_comparison_sampler};
 #else
         gpu_error("Shader CSM texture in a build with no shadow receiver.");
 #endif
     }
+#endif
     if (state.shader_texture_binding_scratch.size() != names.size()) {
         gpu_error(
             (std::string("Shader material texture binding count is stale for '") +
@@ -1663,7 +1640,7 @@ void ensure_ui_sdl_buffer(
     if (!buffer) gpu_error("SDL_CreateGPUBuffer UI");
 }
 
-SDL_GPUTransferBuffer* upload_ui_sdl_buffer(
+OwnedSdlTransfer upload_ui_sdl_buffer(
     SDL_GPUDevice* device,
     SDL_GPUCopyPass* copy,
     SDL_GPUBuffer* destination,
@@ -1672,14 +1649,13 @@ SDL_GPUTransferBuffer* upload_ui_sdl_buffer(
     SDL_GPUTransferBufferCreateInfo transfer_info{};
     transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     transfer_info.size = size;
-    SDL_GPUTransferBuffer* transfer =
-        SDL_CreateGPUTransferBuffer(device, &transfer_info);
-    if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer UI");
-    void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
+    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
+    if (!transfer.get()) gpu_error("SDL_CreateGPUTransferBuffer UI");
+    void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
     if (!mapped) gpu_error("SDL_MapGPUTransferBuffer UI");
     std::memcpy(mapped, data, size);
-    SDL_UnmapGPUTransferBuffer(device, transfer);
-    const SDL_GPUTransferBufferLocation source{transfer, 0};
+    SDL_UnmapGPUTransferBuffer(device, transfer.get());
+    const SDL_GPUTransferBufferLocation source{transfer.get(), 0};
     const SDL_GPUBufferRegion target{destination, 0, size};
     SDL_UploadToGPUBuffer(copy, &source, &target, true);
     return transfer;
@@ -1755,9 +1731,9 @@ void render_ui_sdl_frame(
         SDL_ReleaseGPUTexture(state.device, texture->second);
         texture = ui.textures.erase(texture);
     }
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     if (!copy) gpu_error("SDL_BeginGPUCopyPass UI");
-    std::vector<SDL_GPUTransferBuffer*> transfers;
+    std::vector<OwnedSdlTransfer> transfers;
     transfers.push_back(upload_ui_sdl_buffer(
         state.device,
         copy,
@@ -1785,14 +1761,14 @@ void render_ui_sdl_frame(
         texture_info.layer_count_or_depth = 1;
         texture_info.num_levels = 1;
         texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-        SDL_GPUTexture* texture =
-            SDL_CreateGPUTexture(state.device, &texture_info);
+        OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(state.device, &texture_info), {state.device}};
+        auto* texture = texture_owner.get();
         if (!texture) gpu_error("SDL_CreateGPUTexture UI source");
         SDL_GPUTransferBufferCreateInfo transfer_info{};
         transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         transfer_info.size = static_cast<Uint32>(source_texture.rgba->size());
-        SDL_GPUTransferBuffer* transfer =
-            SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
+        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(state.device, &transfer_info), {state.device}};
+        auto* transfer = transfer_owner.get();
         if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer UI texture");
         void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, false);
         if (!mapped) gpu_error("SDL_MapGPUTransferBuffer UI texture");
@@ -1817,13 +1793,12 @@ void render_ui_sdl_frame(
             source_texture.height,
             1};
         SDL_UploadToGPUTexture(copy, &source, &destination, false);
-        transfers.push_back(transfer);
+        transfers.push_back(std::move(transfer_owner));
         ui.textures.emplace(source_texture.id, texture);
+        static_cast<void>(texture_owner.release());
     }
-    SDL_EndGPUCopyPass(copy);
-    for (SDL_GPUTransferBuffer* transfer : transfers) {
-        SDL_ReleaseGPUTransferBuffer(state.device, transfer);
-    }
+    copy.end();
+    transfers.clear();
 
     std::size_t draw_begin = 0;
     for (std::size_t segment = 0; segment <= frame.backdrops.size(); ++segment) {
@@ -1841,8 +1816,7 @@ void render_ui_sdl_frame(
     } else {
         layer_target.store_op = SDL_GPU_STOREOP_STORE;
     }
-    SDL_GPURenderPass* layer_pass =
-        SDL_BeginGPURenderPass(command, &layer_target, 1, nullptr);
+    SdlRenderPass layer_pass{SDL_BeginGPURenderPass(command, &layer_target, 1, nullptr)};
     if (!layer_pass) gpu_error("SDL_BeginGPURenderPass UI layer");
     const SDL_GPUBufferBinding vertex_binding{ui.vertices, 0};
     const SDL_GPUBufferBinding index_binding{ui.indices, 0};
@@ -1889,14 +1863,13 @@ void render_ui_sdl_frame(
             0,
             0);
     }
-    SDL_EndGPURenderPass(layer_pass);
+    layer_pass.end();
 
     SDL_GPUColorTargetInfo composite_target{};
     composite_target.texture = target;
     composite_target.load_op = SDL_GPU_LOADOP_LOAD;
     composite_target.store_op = SDL_GPU_STOREOP_STORE;
-    SDL_GPURenderPass* composite_pass =
-        SDL_BeginGPURenderPass(command, &composite_target, 1, nullptr);
+    SdlRenderPass composite_pass{SDL_BeginGPURenderPass(command, &composite_target, 1, nullptr)};
     if (!composite_pass) gpu_error("SDL_BeginGPURenderPass UI composite");
     SDL_BindGPUGraphicsPipeline(composite_pass, ui.composite_pipeline);
     SDL_BindGPUVertexBuffers(composite_pass, 0, &vertex_binding, 1);
@@ -1923,7 +1896,7 @@ void render_ui_sdl_frame(
         frame.composite_first_index,
         0,
         0);
-    SDL_EndGPURenderPass(composite_pass);
+    composite_pass.end();
     if (segment < frame.backdrops.size()) {
         render_ui_backdrop_sdl(state.device, command, target, target_format,
             ui.vertices, ui.indices, ui.sampler, ui.composite_pipeline,
@@ -2223,7 +2196,7 @@ const GpuState::EsmBlur* esm_caster_params_for(
         return nullptr;
     }
     const std::uint32_t esm_index =
-        engine.shadow_generators[material->esm_shadow_generator.value]
+        handle_at(engine.shadow_generators, material->esm_shadow_generator)
             .esm_index;
     if (esm_index >= state.esm_blurs.size()) return nullptr;
     return &state.esm_blurs[esm_index];
@@ -2712,16 +2685,15 @@ void upload_pinned_float_texture(
     if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
     std::memcpy(mapped, data, bytes);
     SDL_UnmapGPUTransferBuffer(state.device, transfer);
-    SDL_GPUCommandBuffer* command =
-        SDL_AcquireGPUCommandBuffer(state.device);
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(state.device)};
     if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     SDL_GPUTextureTransferInfo source{transfer, 0, width, height};
     SDL_GPUTextureRegion destination{
         texture, 0, 0, 0, 0, 0, width, height, 1};
     SDL_UploadToGPUTexture(copy, &source, &destination, true);
-    SDL_EndGPUCopyPass(copy);
-    if (!SDL_SubmitGPUCommandBuffer(command)) {
+    copy.end();
+    if (!command.submit()) {
         gpu_error("SDL_SubmitGPUCommandBuffer");
     }
 }
@@ -2827,66 +2799,30 @@ void write_pinned_bone_texture(
  * change afterwards and they carry their own version.
  */
 void write_pinned_vat_texture(
-    GpuState& state,
-    GpuMesh& mesh,
-    const MeshRecord& record,
-    const Engine& engine) {
-    if (!record.has_vat) return;
-    if (record.vat.bake >= engine.vat_bakes.size()) return;
-    const VatBakeRecord& bake = engine.vat_bakes[record.vat.bake];
-    if (bake.bone_count == 0 || bake.frame_count == 0) return;
-    ensure_pinned_bone_sampler(state);
-    const VatTextureLayout layout =
-        vat_texture_layout(bake.bone_count, bake.frame_count);
-    if (
-        mesh.pinned_vat_bones != bake.bone_count ||
-        mesh.pinned_vat_frames != bake.frame_count) {
-        if (mesh.pinned_vat_texture) {
-            SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_texture);
-        }
-        mesh.pinned_vat_texture = create_pinned_float_texture(
-            state,
-            layout.width,
-            layout.height,
-            "SDL_CreateGPUTexture pinned VAT");
-        mesh.pinned_vat_bones = bake.bone_count;
-        mesh.pinned_vat_frames = bake.frame_count;
-        upload_pinned_float_texture(
-            state,
-            mesh.pinned_vat_texture,
-            bake.data.data(),
-            layout.width,
-            layout.height,
-            layout.bytes);
-    }
+    GpuState& state, GpuMesh& mesh, const MeshRecord& record, const Engine& engine) {
+    sync_pinned_vat(mesh, record, engine,
+        [&](const VatBakeRecord& bake, const VatTextureLayout& layout) {
+            ensure_pinned_bone_sampler(state);
+            if (mesh.pinned_vat_texture) SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_texture);
+            mesh.pinned_vat_texture = create_pinned_float_texture(state, layout.width, layout.height,
+                "SDL_CreateGPUTexture pinned VAT");
+            upload_pinned_float_texture(state, mesh.pinned_vat_texture, bake.data.data(),
+                layout.width, layout.height, layout.bytes);
+        }, [](const VatData&) {},
 #if BBLITE_VAT_INSTANCES
-    const VatData& vat = record.vat;
-    if (vat.instance_texels == 0) return;
-    if (mesh.pinned_vat_instance_texels != vat.instance_texels) {
-        if (mesh.pinned_vat_instance_texture) {
-            SDL_ReleaseGPUTexture(
-                state.device,
-                mesh.pinned_vat_instance_texture);
+        [&](const VatData& vat) {
+            if (mesh.pinned_vat_instance_texture) SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_instance_texture);
+            mesh.pinned_vat_instance_texture = create_pinned_float_texture(state, vat.instance_texels, 1u,
+                "SDL_CreateGPUTexture pinned VAT instances");
+        },
+        [&](const VatData& vat, const VatTextureLayout& layout) {
+            upload_pinned_float_texture(state, mesh.pinned_vat_instance_texture, vat.instance_params.data(),
+                layout.width, layout.height, layout.bytes);
         }
-        mesh.pinned_vat_instance_texture = create_pinned_float_texture(
-            state,
-            vat.instance_texels,
-            1u,
-            "SDL_CreateGPUTexture pinned VAT instances");
-        mesh.pinned_vat_instance_texels = vat.instance_texels;
-        mesh.pinned_vat_instance_version = 0;
-    }
-    if (mesh.pinned_vat_instance_version != vat.instance_version) {
-        upload_pinned_float_texture(
-            state,
-            mesh.pinned_vat_instance_texture,
-            vat.instance_params.data(),
-            vat.instance_texels,
-            1u,
-            vat.instance_texels * 16u);
-        mesh.pinned_vat_instance_version = vat.instance_version;
-    }
+#else
+        [](const VatData&) {}, [](const VatData&, const VatTextureLayout&) {}
 #endif
+    );
 }
 #endif
 
@@ -2945,7 +2881,7 @@ void draw_pinned_variant(
     const upstream::PbrVariantEntry& variant_entry =
         upstream::pbr_variants[pinned_variant];
     const MeshRecord& pinned_record =
-        engine.meshes[item.mesh.value];
+        handle_at(engine.meshes, item.mesh);
     // `pinned_draw_conventions` states the skinned, baked and
     // palette-world contract these booleans carry.
     const PinnedDrawConventions conventions =
@@ -3162,7 +3098,7 @@ void draw_pinned_variant(
     // The thin-instance arm's second stream and the instance count; a
     // non-instanced variant binds neither and draws once.
     const bool instanced_draw =
-        pinned_record_instanced(engine.meshes[item.mesh.value]);
+        pinned_record_instanced(handle_at(engine.meshes, item.mesh));
     SDL_GPUBuffer* pinned_colors = nullptr;
 #if BBLITE_GPU_INSTANCE_COLORS
     // The selected coloured PBR arm declares the pin's `ti-color` stream at
@@ -3892,8 +3828,7 @@ void run_esm_blur(
         target.load_op = SDL_GPU_LOADOP_CLEAR;
         target.store_op = SDL_GPU_STOREOP_STORE;
         target.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
-        SDL_GPURenderPass* pass =
-            SDL_BeginGPURenderPass(command, &target, 1, nullptr);
+        SdlRenderPass pass{SDL_BeginGPURenderPass(command, &target, 1, nullptr)};
         SDL_BindGPUGraphicsPipeline(pass, blur.pipeline);
         SDL_GPUTextureSamplerBinding binding{};
         binding.texture = read;
@@ -3911,7 +3846,7 @@ void run_esm_blur(
             direction.data(),
             static_cast<Uint32>(direction.size() * sizeof(float)));
         count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
-        SDL_EndGPURenderPass(pass);
+        pass.end();
     };
     blur_pass(blur.blur_h, blur.source, resources.blur_directions[0]);
     blur_pass(blur.blur_v, blur.blur_h, resources.blur_directions[1]);
@@ -3992,11 +3927,11 @@ void update_shadow_generators(
             const upstream::ShadowReceiverBlock& block,
             bool moved) {
             GpuState::ShadowGenerator& gpu =
-                state.shadow_generators[handle.value];
+                handle_at(state.shadow_generators, handle);
             gpu.block = block;
             if (generator.map_target.value < state.render_targets.size()) {
                 const GpuRenderTarget& target =
-                    state.render_targets[generator.map_target.value];
+                    handle_at(state.render_targets, generator.map_target);
 #if BBLITE_SHADOWS_ESM
                 if (generator.filter == ShadowFilter::esm_directional) {
                     // `sg._depthTexture` is the SECOND blur half, never the
@@ -4381,7 +4316,7 @@ void draw_standard_variant(
     }
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
-    const MeshRecord& record = engine.meshes[item.mesh.value];
+    const MeshRecord& record = handle_at(engine.meshes, item.mesh);
     const upstream::MeshUniforms pinned_mesh =
         pinned_mesh_block(
             scene,
@@ -4672,13 +4607,14 @@ SDL_GPUTexture* upload_compressed_texture(
             "This device cannot sample '" +
             std::string(compressed.format) + "' textures.");
     }
-    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+    OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(device, &texture_info), {device}};
+    auto* texture = texture_owner.get();
     if (!texture) gpu_error("SDL_CreateGPUTexture compressed");
 
-    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
     if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
-    std::vector<SDL_GPUTransferBuffer*> transfers;
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    std::vector<OwnedSdlTransfer> transfers;
     transfers.reserve(compressed.mips.size());
     for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
         const CompressedMipLevel& mip = compressed.mips[level];
@@ -4687,10 +4623,10 @@ SDL_GPUTexture* upload_compressed_texture(
         SDL_GPUTransferBufferCreateInfo transfer_info{};
         transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         transfer_info.size = static_cast<Uint32>(mip.bytes.size());
-        SDL_GPUTransferBuffer* transfer =
-            SDL_CreateGPUTransferBuffer(device, &transfer_info);
+        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
+        auto* transfer = transfer_owner.get();
         if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
-        transfers.push_back(transfer);
+        transfers.push_back(std::move(transfer_owner));
         void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
         if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
         std::memcpy(mapped, mip.bytes.data(), mip.bytes.size());
@@ -4708,14 +4644,12 @@ SDL_GPUTexture* upload_compressed_texture(
             1};
         SDL_UploadToGPUTexture(copy, &source, &destination, false);
     }
-    SDL_EndGPUCopyPass(copy);
-    if (!SDL_SubmitGPUCommandBuffer(command)) {
+    copy.end();
+    if (!command.submit()) {
         gpu_error("SDL_SubmitGPUCommandBuffer");
     }
-    for (SDL_GPUTransferBuffer* transfer : transfers) {
-        SDL_ReleaseGPUTransferBuffer(device, transfer);
-    }
-    return texture;
+    transfers.clear();
+    return texture_owner.release();
 }
 
 SDL_GPUTexture* upload_texture(
@@ -4745,34 +4679,36 @@ SDL_GPUTexture* upload_texture(
         static_cast<std::uint32_t>(image.width),
         static_cast<std::uint32_t>(image.height));
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+    OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(device, &texture_info), {device}};
+    auto* texture = texture_owner.get();
     if (!texture) gpu_error("SDL_CreateGPUTexture");
 
     SDL_GPUTransferBufferCreateInfo transfer_info{};
     transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     transfer_info.size = static_cast<Uint32>(image.rgba.size());
-    SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device, &transfer_info);
+    OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
+    auto* transfer = transfer_owner.get();
     if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
     void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
     if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
     std::memcpy(mapped, image.rgba.data(), image.rgba.size());
     SDL_UnmapGPUTransferBuffer(device, transfer);
 
-    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
     if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     SDL_GPUTextureTransferInfo source{transfer, 0, static_cast<Uint32>(image.width), static_cast<Uint32>(image.height)};
     SDL_GPUTextureRegion destination{
         texture, 0, 0, 0, 0, 0,
         static_cast<Uint32>(image.width), static_cast<Uint32>(image.height), 1};
     SDL_UploadToGPUTexture(copy, &source, &destination, false);
-    SDL_EndGPUCopyPass(copy);
+    copy.end();
     if (texture_info.num_levels > 1) {
         SDL_GenerateMipmapsForGPUTexture(command, texture);
     }
-    if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer");
-    SDL_ReleaseGPUTransferBuffer(device, transfer);
-    return texture;
+    if (!command.submit()) gpu_error("SDL_SubmitGPUCommandBuffer");
+    transfer_owner.reset();
+    return texture_owner.release();
 }
 
 SDL_GPUTexture* upload_cube_texture(
@@ -4812,32 +4748,30 @@ SDL_GPUTexture* upload_cube_texture(
         static_cast<std::uint32_t>(width),
         static_cast<std::uint32_t>(height));
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUTexture* texture =
-        SDL_CreateGPUTexture(device, &texture_info);
+    OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(device, &texture_info), {device}};
+    auto* texture = texture_owner.get();
     if (!texture) gpu_error("SDL_CreateGPUTexture reflection cube");
 
-    SDL_GPUCommandBuffer* command =
-        SDL_AcquireGPUCommandBuffer(device);
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
     if (!command) {
         gpu_error("SDL_AcquireGPUCommandBuffer reflection cube");
     }
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
-    std::array<SDL_GPUTransferBuffer*, 6> transfers{};
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    std::array<OwnedSdlTransfer, 6> transfers{};
     for (std::size_t index = 0; index < images.size(); ++index) {
         const DecodedImage& image = images[index];
         SDL_GPUTransferBufferCreateInfo transfer_info{};
         transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         transfer_info.size =
             static_cast<Uint32>(image.rgba.size());
-        transfers[index] =
-            SDL_CreateGPUTransferBuffer(device, &transfer_info);
+        transfers[index] = OwnedSdlTransfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
         if (!transfers[index]) {
             gpu_error(
                 "SDL_CreateGPUTransferBuffer reflection cube");
         }
         void* mapped = SDL_MapGPUTransferBuffer(
             device,
-            transfers[index],
+            transfers[index].get(),
             false);
         if (!mapped) {
             gpu_error("SDL_MapGPUTransferBuffer reflection cube");
@@ -4846,9 +4780,9 @@ SDL_GPUTexture* upload_cube_texture(
             mapped,
             image.rgba.data(),
             image.rgba.size());
-        SDL_UnmapGPUTransferBuffer(device, transfers[index]);
+        SDL_UnmapGPUTransferBuffer(device, transfers[index].get());
         const SDL_GPUTextureTransferInfo source{
-            transfers[index],
+            transfers[index].get(),
             0,
             static_cast<Uint32>(width),
             static_cast<Uint32>(height),
@@ -4870,17 +4804,14 @@ SDL_GPUTexture* upload_cube_texture(
             &destination,
             false);
     }
-    SDL_EndGPUCopyPass(copy);
+    copy.end();
     if (texture_info.num_levels > 1) {
         SDL_GenerateMipmapsForGPUTexture(command, texture);
     }
-    if (!SDL_SubmitGPUCommandBuffer(command)) {
+    if (!command.submit()) {
         gpu_error("SDL_SubmitGPUCommandBuffer reflection cube");
     }
-    for (SDL_GPUTransferBuffer* transfer : transfers) {
-        SDL_ReleaseGPUTransferBuffer(device, transfer);
-    }
-    return texture;
+    return texture_owner.release();
 }
 
 
@@ -4939,13 +4870,14 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
     texture_info.layer_count_or_depth = layers;
     texture_info.num_levels = mip_count;
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+    OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(device, &texture_info), {device}};
+    auto* texture = texture_owner.get();
     if (!texture) gpu_error("SDL_CreateGPUTexture environment");
 
-    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
     if (!command) gpu_error("SDL_AcquireGPUCommandBuffer environment");
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
-    std::vector<SDL_GPUTransferBuffer*> transfers;
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    std::vector<OwnedSdlTransfer> transfers;
     transfers.reserve(static_cast<std::size_t>(mip_count) * 6);
     for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
         for (std::uint32_t face = 0; face < layers; ++face) {
@@ -4994,7 +4926,8 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
             SDL_GPUTransferBufferCreateInfo transfer_info{};
             transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
             transfer_info.size = static_cast<Uint32>(byte_size);
-            SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device, &transfer_info);
+            OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
+            auto* transfer = transfer_owner.get();
             if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer environment");
             void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
             if (!mapped) gpu_error("SDL_MapGPUTransferBuffer environment");
@@ -5011,7 +4944,7 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                     row_size);
             }
             SDL_UnmapGPUTransferBuffer(device, transfer);
-            transfers.push_back(transfer);
+            transfers.push_back(std::move(transfer_owner));
             const SDL_GPUTextureTransferInfo source{
                 transfer, 0, static_cast<Uint32>(image_width), static_cast<Uint32>(image_height)};
             const SDL_GPUTextureRegion destination{
@@ -5020,12 +4953,10 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
             SDL_UploadToGPUTexture(copy, &source, &destination, false);
         }
     }
-    SDL_EndGPUCopyPass(copy);
-    if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer environment");
-    for (SDL_GPUTransferBuffer* transfer : transfers) {
-        SDL_ReleaseGPUTransferBuffer(device, transfer);
-    }
-    return texture;
+    copy.end();
+    if (!command.submit()) gpu_error("SDL_SubmitGPUCommandBuffer environment");
+    transfers.clear();
+    return texture_owner.release();
 }
 
 SDL_GPUTexture* upload_dds_skybox(SDL_GPUDevice* device, const EnvironmentState& environment) {
@@ -5046,13 +4977,14 @@ SDL_GPUTexture* upload_dds_skybox(SDL_GPUDevice* device, const EnvironmentState&
     texture_info.layer_count_or_depth = 6;
     texture_info.num_levels = environment.skybox_mip_count;
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+    OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(device, &texture_info), {device}};
+    auto* texture = texture_owner.get();
     if (!texture) gpu_error("SDL_CreateGPUTexture DDS skybox");
 
-    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
     if (!command) gpu_error("SDL_AcquireGPUCommandBuffer DDS skybox");
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
-    std::vector<SDL_GPUTransferBuffer*> transfers;
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    std::vector<OwnedSdlTransfer> transfers;
     transfers.reserve(static_cast<std::size_t>(environment.skybox_mip_count) * 6);
     // The face/mip/offset walk and its truncation guard are the shared
     // half; only the upload below is this backend's.
@@ -5067,24 +4999,23 @@ SDL_GPUTexture* upload_dds_skybox(SDL_GPUDevice* device, const EnvironmentState&
             SDL_GPUTransferBufferCreateInfo transfer_info{};
             transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
             transfer_info.size = static_cast<Uint32>(byte_size);
-            SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device, &transfer_info);
+            OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
+            auto* transfer = transfer_owner.get();
             if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer DDS skybox");
             void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
             if (!mapped) gpu_error("SDL_MapGPUTransferBuffer DDS skybox");
             std::memcpy(mapped, data.bytes.data() + offset, byte_size);
             SDL_UnmapGPUTransferBuffer(device, transfer);
-            transfers.push_back(transfer);
+            transfers.push_back(std::move(transfer_owner));
             const SDL_GPUTextureTransferInfo source{transfer, 0, size, size};
             const SDL_GPUTextureRegion destination{
                 texture, mip, face, 0, 0, 0, size, size, 1};
             SDL_UploadToGPUTexture(copy, &source, &destination, false);
         });
-    SDL_EndGPUCopyPass(copy);
-    if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer DDS skybox");
-    for (SDL_GPUTransferBuffer* transfer : transfers) {
-        SDL_ReleaseGPUTransferBuffer(device, transfer);
-    }
-    return texture;
+    copy.end();
+    if (!command.submit()) gpu_error("SDL_SubmitGPUCommandBuffer DDS skybox");
+    transfers.clear();
+    return texture_owner.release();
 }
 
 void release_sized_texture(
@@ -5368,6 +5299,8 @@ void create_frame_graph_textures(
         !surface_targets_changed(engine, state.render_targets, width, height)) {
         return;
     }
+    const auto target_plans = plan_render_targets(engine, width, height, surface_format,
+        [](TextureFormatClass format) { return texture_format(format); });
     release_frame_graph_textures(state);
 #if BBLITE_SHADOW_RECEIVERS
     // Every shadow map was just released with the other targets, so the
@@ -5381,40 +5314,14 @@ void create_frame_graph_textures(
     for (std::size_t index = 0; index < engine.render_targets.size(); ++index) {
         const RenderTargetRecord& record = engine.render_targets[index];
         GpuRenderTarget& target = state.render_targets[index];
-        std::tie(target.width, target.height) = surface_target_extent(engine, record, width, height);
-        // A composite's intermediate takes a fraction of whatever its
-        // source resolved to. Creation order guarantees that source is
-        // already sized: `create_render_target` refuses a forward reference.
-        if (record.scale_source.value != invalid_handle) {
-            const GpuRenderTarget& scale_source =
-                state.render_targets[record.scale_source.value];
-            const ScaledExtents scaled = scaled_target_extents(
-                record,
-                scale_source.width,
-                scale_source.height);
-            target.width = scaled.width;
-            target.height = scaled.height;
-        }
-        // The swapchain owns no texture here -- its view is acquired per
-        // frame -- but a target that follows it still needs its format.
-        if (record.swapchain) {
-            target.color_format = surface_format;
-            continue;
-        }
+        const auto& planned = target_plans[index];
+        target.width = planned.width;
+        target.height = planned.height;
+        target.color_format = planned.color_format;
+        if (record.swapchain) continue;
         target.allocation = ++state.render_target_allocations;
-        const SDL_GPUSampleCount samples =
-            task_sample_count(state, record.samples);
-        // "The source's format" is what a composite's intermediate asks for
-        // when it names none, so it resolves through the target it scales
-        // from rather than falling back to the surface.
-        const SDL_GPUTextureFormat color_format =
-            record.has_format
-                ? texture_format(record.format)
-                : record.scale_source.value != invalid_handle
-                      ? state.render_targets[record.scale_source.value]
-                            .color_format
-                      : surface_format;
-        target.color_format = color_format;
+        const auto samples = task_sample_count(state, record.samples);
+        const auto color_format = planned.color_format;
         if (record.has_color) {
             target.color = create_frame_texture(
                 state.device,
@@ -5552,7 +5459,8 @@ void save_geometry_id_buffer_png(
     color_info.layer_count_or_depth = 1;
     color_info.num_levels = 1;
     color_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUTexture* color = SDL_CreateGPUTexture(state.device, &color_info);
+    OwnedSdlTexture color_owner{SDL_CreateGPUTexture(state.device, &color_info), {state.device}};
+    auto* color = color_owner.get();
     if (!color) gpu_error("SDL_CreateGPUTexture ID buffer");
 
     SDL_GPUTextureCreateInfo depth_info{};
@@ -5564,16 +5472,17 @@ void save_geometry_id_buffer_png(
     depth_info.layer_count_or_depth = 1;
     depth_info.num_levels = 1;
     depth_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUTexture* depth = SDL_CreateGPUTexture(state.device, &depth_info);
+    OwnedSdlTexture depth_owner{SDL_CreateGPUTexture(state.device, &depth_info), {state.device}};
+    auto* depth = depth_owner.get();
     if (!depth) {
-        SDL_ReleaseGPUTexture(state.device, color);
+        color_owner.reset();
         gpu_error("SDL_CreateGPUTexture ID depth");
     }
 
-    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(state.device);
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(state.device)};
     if (!command) {
-        SDL_ReleaseGPUTexture(state.device, depth);
-        SDL_ReleaseGPUTexture(state.device, color);
+        depth_owner.reset();
+        color_owner.reset();
         gpu_error("SDL_AcquireGPUCommandBuffer ID buffer");
     }
     SDL_PushGPUVertexUniformData(
@@ -5594,8 +5503,7 @@ void save_geometry_id_buffer_png(
     depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
     depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-    SDL_GPURenderPass* pass =
-        SDL_BeginGPURenderPass(command, &target, 1, &depth_target);
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &target, 1, &depth_target)};
     for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
         SDL_BindGPUGraphicsPipeline(
             pass,
@@ -5618,7 +5526,7 @@ void save_geometry_id_buffer_png(
             const upstream::RenderItem& item = render_plan[mesh_index];
             const MaterialRecord* material =
                 item.material.value < engine.materials.size()
-                    ? &engine.materials[item.material.value]
+                    ? &handle_at(engine.materials, item.material)
                     : nullptr;
             const bool double_sided =
                 item.cull_mode == upstream::RenderCullMode::none;
@@ -5668,7 +5576,7 @@ void save_geometry_id_buffer_png(
                 0);
         }
     }
-    SDL_EndGPURenderPass(pass);
+    pass.end();
     save_texture_png(
         state.device,
         command,
@@ -5677,16 +5585,16 @@ void save_geometry_id_buffer_png(
         width,
         height,
         path);
-    SDL_ReleaseGPUTexture(state.device, depth);
-    SDL_ReleaseGPUTexture(state.device, color);
+    depth_owner.reset();
+    color_owner.reset();
 }
 
 // Release every GPU resource a mesh entry owns. Used by shutdown and
 // by runtime scene removal, which drops entries mid-run (SDL defers the
 // actual destruction until the GPU is done with them).
-void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
+void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResources& mesh) noexcept {
     if (mesh.owns_geometry_buffers) {
-        SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
+        SDL_ReleaseGPUBuffer(state->device, mesh.vertices);
     } else if (mesh.shared_geometry) {
         release_shared_user(
             mesh.shared_geometry,
@@ -5694,13 +5602,13 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
     }
 #if BBLITE_PBR_VARIANTS > 0
     if (mesh.pinned_vertices) {
-        SDL_ReleaseGPUBuffer(state.device, mesh.pinned_vertices);
+        SDL_ReleaseGPUBuffer(state->device, mesh.pinned_vertices);
         mesh.pinned_vertices = nullptr;
     }
 #endif
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
     if (mesh.pinned_bone_texture) {
-        SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
+        SDL_ReleaseGPUTexture(state->device, mesh.pinned_bone_texture);
         mesh.pinned_bone_texture = nullptr;
         mesh.pinned_bone_count = 0;
     }
@@ -5708,7 +5616,7 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
 #if BBLITE_PBR_VARIANTS > 0
 #if BBLITE_VAT
     if (mesh.pinned_vat_texture) {
-        SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_texture);
+        SDL_ReleaseGPUTexture(state->device, mesh.pinned_vat_texture);
         mesh.pinned_vat_texture = nullptr;
         mesh.pinned_vat_bones = 0;
         mesh.pinned_vat_frames = 0;
@@ -5716,7 +5624,7 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
 #if BBLITE_VAT_INSTANCES
     if (mesh.pinned_vat_instance_texture) {
         SDL_ReleaseGPUTexture(
-            state.device,
+            state->device,
             mesh.pinned_vat_instance_texture);
         mesh.pinned_vat_instance_texture = nullptr;
         mesh.pinned_vat_instance_texels = 0;
@@ -5726,21 +5634,21 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
 #endif
     // Aliased to `instances` for thin-instanced meshes, owned otherwise.
     if (mesh.pinned_instances && mesh.pinned_instances != mesh.instances) {
-        SDL_ReleaseGPUBuffer(state.device, mesh.pinned_instances);
+        SDL_ReleaseGPUBuffer(state->device, mesh.pinned_instances);
     }
     mesh.pinned_instances = nullptr;
 #endif
     if (mesh.owns_geometry_buffers) {
-        SDL_ReleaseGPUBuffer(state.device, mesh.indices);
+        SDL_ReleaseGPUBuffer(state->device, mesh.indices);
     }
-    SDL_ReleaseGPUBuffer(state.device, mesh.instances);
+    SDL_ReleaseGPUBuffer(state->device, mesh.instances);
 #if BBLITE_GPU_INSTANCE_COLORS
-    SDL_ReleaseGPUBuffer(state.device, mesh.instance_colors);
+    SDL_ReleaseGPUBuffer(state->device, mesh.instance_colors);
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
     if (mesh.owns_morph_buffers) {
-        SDL_ReleaseGPUBuffer(state.device, mesh.morph_deltas);
-        SDL_ReleaseGPUBuffer(state.device, mesh.morph_weights);
+        SDL_ReleaseGPUBuffer(state->device, mesh.morph_deltas);
+        SDL_ReleaseGPUBuffer(state->device, mesh.morph_weights);
     }
 #endif
     if (mesh.shared_composed_textures) {
@@ -5757,8 +5665,8 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
             const GpuMeshSlotMembers members =
                 mesh_slot_members(slot_row.source);
             if (members.texture == nullptr) continue;
-            SDL_ReleaseGPUTexture(state.device, mesh.*members.texture);
-            SDL_ReleaseGPUSampler(state.device, mesh.*members.sampler);
+            SDL_ReleaseGPUTexture(state->device, mesh.*members.texture);
+            SDL_ReleaseGPUSampler(state->device, mesh.*members.sampler);
         }
     }
     // The shader material's own pairs, which the upload loop created
@@ -5768,7 +5676,7 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
             mesh.shared_shader_textures,
             "Shader material texture reference count underflow.");
     } else {
-        release_sprite_fragment_textures(state.device, mesh.shader_textures);
+        release_sprite_fragment_textures(state->device, mesh.shader_textures);
     }
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
     if (mesh.shared_plugin_textures) {
@@ -5777,14 +5685,17 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
             "Plugin material texture reference count underflow.");
     }
 #endif
+    mesh = GpuMeshResources{};
 }
+
+void release_gpu_mesh(GpuState&, GpuMesh& mesh) { mesh.reset(); }
 
 void prune_shared_shader_geometries(GpuState& state) {
     prune_unused_shared(
         state.shared_shader_geometries,
         [&](SharedShaderGeometry& geometry) {
-            SDL_ReleaseGPUBuffer(state.device, geometry.vertex_buffer);
-            SDL_ReleaseGPUBuffer(state.device, geometry.index_buffer);
+            geometry.vertex_buffer.reset();
+            geometry.index_buffer.reset();
         });
 }
 
@@ -5901,12 +5812,8 @@ void release(GpuState& state) {
     release_all_shared(
         state.shared_shader_geometries,
         [&](SharedShaderGeometry& geometry) {
-            SDL_ReleaseGPUBuffer(
-                state.device,
-                geometry.vertex_buffer);
-            SDL_ReleaseGPUBuffer(
-                state.device,
-                geometry.index_buffer);
+            geometry.vertex_buffer.reset();
+            geometry.index_buffer.reset();
         });
     release_all_shared(
         state.shared_shader_material_textures,
@@ -6185,14 +6092,7 @@ void release(GpuState& state) {
 #if BBLITE_LOCAL_CUBEMAP
     state.local_cubemaps.clear();
 #endif
-    if (state.window && state.device) SDL_ReleaseWindowFromGPUDevice(state.device, state.window);
-#if BBLITE_OFFSCREEN_SURFACES
-    if (state.device && !OffscreenRun::current()) SDL_DestroyGPUDevice(state.device);
-#else
-    if (state.device) SDL_DestroyGPUDevice(state.device);
-#endif
-    if (state.window) release_run_window(state.window);
-    quit_run_sdl();
+    state.release();
 }
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -6314,11 +6214,11 @@ struct PreparedSdlPostProcessPass {
 void write_sdl_post_process_uniforms(
     GpuState& state, Engine& engine, TaskHandle handle, std::size_t index,
     std::uint32_t width, std::uint32_t height) {
-    PostProcessPassOptions& pass = engine.frame_tasks[handle.value].post_process.passes[index];
-    auto& uniforms = state.post_process_tasks[handle.value][index].uniform_data;
+    PostProcessPassOptions& pass = handle_at(engine.frame_tasks, handle).post_process.passes[index];
+    auto& uniforms = handle_at(state.post_process_tasks, handle)[index].uniform_data;
     if (uniforms.empty()) return;
     const PostProcessExtent extent = resolve_post_process_extent(
-        engine.render_targets[pass.output_target.value], state.render_targets, pass, width, height);
+        handle_at(engine.render_targets, pass.output_target), state.render_targets, pass, width, height);
     std::fill(uniforms.begin(), uniforms.end(), 0.0f);
     upstream::write_post_process_uniforms(engine, pass, extent.output_width, extent.output_height,
         extent.source_width, extent.source_height, uniforms.data());
@@ -6342,14 +6242,14 @@ PreparedSdlPostProcessPass prepare_post_process_pass(
     prepared.task = handle;
     prepared.child = index;
     PostProcessPassOptions& pass =
-        engine.frame_tasks[handle.value].post_process.passes[index];
+        handle_at(engine.frame_tasks, handle).post_process.passes[index];
     const upstream::PostProcessShaderInfo& shader_info =
         upstream::post_process_shader_infos[
             pass.shader_index];
     GpuPostProcessTask& gpu =
-        state.post_process_tasks[handle.value][index];
+        handle_at(state.post_process_tasks, handle)[index];
     const RenderTargetRecord& output_record =
-        engine.render_targets[pass.output_target.value];
+        handle_at(engine.render_targets, pass.output_target);
     const PostProcessExtent extent = resolve_post_process_extent(
         output_record,
         state.render_targets,
@@ -6382,7 +6282,7 @@ PreparedSdlPostProcessPass prepare_post_process_pass(
         gpu.program = post_process_program(
             state,
             shader_info.module_index,
-            state.render_targets[pass.output_target.value].color_format,
+            handle_at(state.render_targets, pass.output_target).color_format,
             presents
                 ? SDL_GPU_SAMPLECOUNT_1
                 : task_sample_count(state, output_record.samples),
@@ -6496,13 +6396,13 @@ void encode_post_process_pass(
     const PreparedSdlPostProcessPass& prepared, SDL_GPUTexture*& capture_texture) {
     // Repeated executions bind one persistent uniform buffer in the pin.
     // Resolve its final bytes by task/child identity at submission encoding.
-    const auto& uniforms = state.post_process_tasks[prepared.task.value][prepared.child].uniform_data;
+    const auto& uniforms = handle_at(state.post_process_tasks, prepared.task)[prepared.child].uniform_data;
     if (!uniforms.empty()) {
         const Uint32 bytes = static_cast<Uint32>(uniforms.size() * sizeof(float));
         if (prepared.vertex_uniforms) SDL_PushGPUVertexUniformData(command, 0, uniforms.data(), bytes);
         if (prepared.fragment_uniforms) SDL_PushGPUFragmentUniformData(command, 0, uniforms.data(), bytes);
     }
-    SDL_GPURenderPass* post_pass = SDL_BeginGPURenderPass(command, &prepared.target, 1, nullptr);
+    SdlRenderPass post_pass{SDL_BeginGPURenderPass(command, &prepared.target, 1, nullptr)};
     SDL_BindGPUGraphicsPipeline(post_pass, prepared.pipeline);
     if (prepared.has_viewport) {
         SDL_SetGPUViewport(post_pass, &prepared.viewport);
@@ -6516,14 +6416,13 @@ void encode_post_process_pass(
             prepared.texture_count);
     }
     count_gpu_draw(SDL_DrawGPUPrimitives, post_pass, 3, 1, 0, 0);
-    SDL_EndGPURenderPass(post_pass);
+    post_pass.end();
     if (prepared.presents) {
-        SDL_GPURenderPass* present_pass =
-            SDL_BeginGPURenderPass(
+        SdlRenderPass present_pass{SDL_BeginGPURenderPass(
                 command,
                 &prepared.present_target,
                 1,
-                nullptr);
+                nullptr)};
         SDL_BindGPUGraphicsPipeline(
             present_pass,
             state.blit_pipeline);
@@ -6537,7 +6436,7 @@ void encode_post_process_pass(
             &present_binding,
             1);
         count_gpu_draw(SDL_DrawGPUPrimitives, present_pass, 3, 1, 0, 0);
-        SDL_EndGPURenderPass(present_pass);
+        present_pass.end();
         capture_texture = state.post_process_present;
     }
 }
@@ -6705,7 +6604,7 @@ void record_screen_space_stage(
             uniforms,
             static_cast<Uint32>(info.uniform_bytes));
     }
-    SDL_GPURenderPass* pass = begin_screen_space_pass(command, target);
+    SdlRenderPass pass{begin_screen_space_pass(command, target)};
     SDL_BindGPUGraphicsPipeline(pass, program.pipeline.get());
     std::array<SDL_GPUTextureSamplerBinding, max_post_process_textures>
         bindings{};
@@ -6725,7 +6624,7 @@ void record_screen_space_stage(
             static_cast<Uint32>(program.fragment_roles.size()));
     }
     count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
-    SDL_EndGPURenderPass(pass);
+    pass.end();
 }
 
 /** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
@@ -6756,7 +6655,7 @@ void record_screen_space_task(
     SDL_GPUTexture*& capture_texture,
     SourceTexture source_texture,
     TargetTexture target_texture) {
-    FrameTaskRecord& record = engine.frame_tasks[handle.value];
+    FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
     const GpuRenderTarget& raw = state.render_targets.at(task.raw.value);
     const GpuRenderTarget& stable =
@@ -6767,54 +6666,17 @@ void record_screen_space_task(
         engine,
         handle,
         screen_space_frame_inputs(state.render_targets, task));
-    if (decision.clear_identity) {
-        clear_screen_space_target(command, stable.color);
-        clear_screen_space_target(command, history.color);
-    }
-    if (decision.run_effect) {
-        record_screen_space_stage(
-            state,
-            task,
-            screen_space_program(state, task.producer_shader),
-            command,
-            raw.color,
-            decision.producer_uniforms.data());
-        record_screen_space_stage(
-            state,
-            task,
-            screen_space_program(state, task.resolve_shader),
-            command,
-            stable.color,
-            decision.temporal_uniforms.data());
-        record_post_process_pass(
-            state,
-            engine,
-            handle,
-            command,
-            swapchain,
-            swapchain_format,
-            width,
-            height,
-            0,
-            capture_texture,
-            source_texture,
-            target_texture);
-    }
-    if (record.post_process.passes.size() > 1) {
-        record_post_process_pass(
-            state,
-            engine,
-            handle,
-            command,
-            swapchain,
-            swapchain_format,
-            width,
-            height,
-            1,
-            capture_texture,
-            source_texture,
-            target_texture);
-    }
+    record_screen_space_decision(decision, record.post_process.passes.size() > 1,
+        [&](bool previous) { clear_screen_space_target(command, previous ? history.color : stable.color); },
+        [&](bool producer, const float* uniforms) {
+            record_screen_space_stage(state, task,
+                screen_space_program(state, producer ? task.producer_shader : task.resolve_shader),
+                command, producer ? raw.color : stable.color, uniforms);
+        },
+        [&](std::size_t child) {
+            record_post_process_pass(state, engine, handle, command, swapchain, swapchain_format,
+                width, height, child, capture_texture, source_texture, target_texture);
+        });
 }
 #endif
 
@@ -7165,7 +7027,7 @@ inline void record_cloud_pick_draw(
     double width,
     double height) {
     if (splat.vertex_count == 0) return;
-    const SplatMeshRecord& record = engine.splat_meshes[splat.mesh.value];
+    const SplatMeshRecord& record = handle_at(engine.splat_meshes, splat.mesh);
     SDL_BindGPUGraphicsPipeline(pass, state.pick_cloud_pipeline);
 
     std::array<float, 16> shear{};
@@ -7226,120 +7088,1232 @@ inline void record_cloud_pick_draw(
 #endif
 #endif
 
-SceneRun run_gpu_engine(Engine& engine) {
-    const FrameOptions frame_options = read_frame_options();
-    const bool cpu_profile =
-        environment_variable("BBLITE_CPU_PROFILE") == "1";
-    const bool mem_profile =
-        environment_variable("BBLITE_MEM_PROFILE") == "1";
-    CpuStartupMark cpu_startup_mark(cpu_profile, "sdl");
-    reject_unsupported_frame_options(
-        frame_options,
-        "SDL_GPU",
-        /*supports_single_sample=*/true,
-        /*supports_copy_task=*/true);
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-    if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
-        throw std::runtime_error("GPU renderer requires a registered scene.");
+GpuMesh upload_sdl_scene_mesh(
+    GpuState& state, Engine& engine, const upstream::RenderItem& item,
+    GpuBufferUploadBatch* buffer_uploads = nullptr) {
+    const ModelGeometry& geometry = engine.geometries[item.geometry];
+    const MeshRecord& mesh_record =
+        handle_at(engine.meshes, item.mesh);
+    const bool use_source_indices = mesh_record.detached_imported_mesh
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        || item.material_kind == upstream::RenderMaterialKind::node
+#endif
+        ;
+    std::vector<std::uint32_t> source_indices;
+    if (use_source_indices && geometry.source_indices_reversed) {
+        node_source_indices(geometry, source_indices);
     }
-    // Keep every planned wrapper alive through event dispatch. A UI callback
-    // may replace the root or finish registering an awaited auxiliary scene;
-    // either change rebuilds the backend before stale plans are used again.
-    const std::vector<std::shared_ptr<Scene>> active_registered_scenes =
-        engine.registered_scenes;
-    const std::shared_ptr<Scene> active_scene =
-        active_registered_scenes.front();
-    Scene& scene = *active_scene;
-    apply_animation_seek(frame_options, scene);
-    // Read by the image-skybox and ground arms, which not every feature set
-    // compiles.
-    [[maybe_unused]] const bool background_enabled =
-        frame_options.background_enabled(scene.environment);
-    const bool use_skybox =
-        frame_options.skybox_enabled(scene.environment);
-    const bool use_ground =
-        frame_options.ground_enabled(scene.environment);
-    const std::string id_buffer_path = frame_options.id_buffer_path;
-    const std::string cluster_buffer_path =
-        frame_options.cluster_buffer_path;
-    SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
-#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
-    init_flags |= SDL_INIT_GAMEPAD;
-#endif
-    if (!initialize_run_sdl(init_flags)) gpu_error("SDL_Init");
-    cpu_startup_mark("sdl-init");
-
-    GpuState state;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-    UiRmlRuntime* ui_runtime = nullptr;
-#endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-    std::vector<SpritePass> sprite_passes;
-    std::vector<SDL_GPUTexture*> sprite_render_textures;
-    SceneSpritePass scene_sprite_pass;
-    bool has_scene_sprite_pass = false;
-    const auto release_sprite_passes = [&]() {
-        if (has_scene_sprite_pass) {
-            release_scene_sprite_pass(state.device, scene_sprite_pass);
-            has_scene_sprite_pass = false;
-        }
-        for (SpritePass& pass : sprite_passes) {
-            release_sprite_pass(state.device, pass);
-        }
-        sprite_passes.clear();
-        for (SDL_GPUTexture* texture : sprite_render_textures) {
-            if (texture) SDL_ReleaseGPUTexture(state.device, texture);
-        }
-        sprite_render_textures.clear();
+    const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
+    const bool shader_material =
+        item.material_kind ==
+        upstream::RenderMaterialKind::shader;
+    const std::vector<GpuVertex> vertices =
+        shader_material
+            ? local_vertices(engine, geometry, &mesh_record)
+            : transformed_vertices(engine, geometry, mesh_record);
+    const auto upload_mesh_buffer = [&, buffer_uploads](
+                                        SDL_GPUBufferUsageFlags usage,
+                                        const void* data,
+                                        std::size_t size) {
+        return buffer_uploads
+            ? buffer_uploads->upload(usage, data, size)
+            : upload_buffer(state.device, usage, data, size);
     };
+    GpuMesh gpu_mesh{&state};
+    if (shader_material) {
+#if BBLITE_MESH_POSITION_UPDATE
+        // A procedural position stream is mutable and therefore
+        // cannot borrow the immutable shader-geometry cache.
+        gpu_mesh.vertices = upload_mesh_buffer(
+            SDL_GPU_BUFFERUSAGE_VERTEX,
+            vertices.data(),
+            vertices.size() * sizeof(GpuVertex));
+        gpu_mesh.indices = upload_mesh_buffer(
+            SDL_GPU_BUFFERUSAGE_INDEX,
+            upload_indices.data(),
+            upload_indices.size() * sizeof(std::uint32_t));
+#else
+        const SharedGeometryIdentity identity =
+            shared_geometry_identity(vertices, upload_indices);
+        gpu_mesh.shared_geometry = find_shared_shader_geometry(
+            state.shared_shader_geometries,
+            identity,
+            vertices,
+            upload_indices);
+        if (!gpu_mesh.shared_geometry) {
+            const bool keep_bytes =
+                shared_geometry_keeps_bytes(vertices);
+            auto created = std::make_unique<SharedShaderGeometry>(
+                SharedShaderGeometry{
+                    .identity = identity,
+                    .vertices = keep_bytes
+                        ? vertices
+                        : std::vector<GpuVertex>{},
+                    .indices = keep_bytes
+                        ? upload_indices
+                        : std::vector<std::uint32_t>{},
+                });
+            created->vertex_buffer = OwnedSdlBuffer{upload_mesh_buffer(
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                vertices.data(),
+                vertices.size() * sizeof(GpuVertex)), {state.device}};
+            created->index_buffer = OwnedSdlBuffer{upload_mesh_buffer(
+                SDL_GPU_BUFFERUSAGE_INDEX,
+                upload_indices.data(),
+                upload_indices.size() *
+                    sizeof(std::uint32_t)), {state.device}};
+            state.shared_shader_geometries.push_back(std::move(created));
+            gpu_mesh.shared_geometry = state.shared_shader_geometries.back().get();
+        }
+        ++gpu_mesh.shared_geometry->users;
+        gpu_mesh.vertices =
+            gpu_mesh.shared_geometry->vertex_buffer.get();
+        gpu_mesh.indices =
+            gpu_mesh.shared_geometry->index_buffer.get();
+        gpu_mesh.owns_geometry_buffers = false;
 #endif
-    // Declared outside the renderer scope so its upload batches and other
-    // run-local GPU resources are destroyed before their device is released.
-    const auto run_cleanup = js::finally([&]() noexcept {
+    } else {
+        gpu_mesh.vertices = upload_mesh_buffer(
+            SDL_GPU_BUFFERUSAGE_VERTEX,
+            vertices.data(),
+            vertices.size() * sizeof(GpuVertex));
+        gpu_mesh.indices = upload_mesh_buffer(
+            SDL_GPU_BUFFERUSAGE_INDEX,
+            upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        if (item.material_kind == upstream::RenderMaterialKind::node) {
+            state.node_capture.upload(gpu_mesh.vertices, "node-vertices", vertices.data(), vertices.size() * sizeof(GpuVertex));
+            state.node_capture.upload(gpu_mesh.indices, "node-indices", upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
+        }
+#endif
+    }
+#if BBLITE_PBR_VARIANTS > 0
+    if (
+        item.material_kind ==
+        upstream::RenderMaterialKind::pbr) {
+        const std::vector<GpuVertex> pinned =
+            pinned_convention_vertices(
+                vertices,
+                mesh_record.mirrored_x);
+        gpu_mesh.pinned_vertices = upload_mesh_buffer(
+            SDL_GPU_BUFFERUSAGE_VERTEX,
+            pinned.data(),
+            pinned.size() * sizeof(GpuVertex));
+    }
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+    gpu_mesh.morph_deltas = state.empty_morph_deltas;
+    gpu_mesh.morph_weights = state.empty_morph_weights;
+    if (
+        mesh_record.gpu_deformation &&
+        !geometry.morph_positions.empty()) {
+        gpu_mesh.morph_deltas = nullptr;
+        gpu_mesh.morph_weights = nullptr;
+        gpu_mesh.owns_morph_buffers = true;
+        const std::vector<float> deltas =
+            pack_morph_deltas(geometry);
+        gpu_mesh.morph_deltas = upload_mesh_buffer(
+            SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+            deltas.data(),
+            deltas.size() * sizeof(float));
+        const std::vector<std::uint8_t> weights_blob =
+            pack_morph_weights(geometry, mesh_record);
+        gpu_mesh.morph_weights = upload_mesh_buffer(
+            SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+            weights_blob.data(),
+            weights_blob.size());
+        gpu_mesh.morph_weights_version =
+            mesh_record.morph_weights_version;
+    }
+#endif
+#if BBLITE_GPU_INSTANCING
+    {
+        std::vector<std::array<float, 16>>
+            instance_matrices =
+                mesh_record.instance_matrices;
+        if (instance_matrices.empty()) {
+            std::array<float, 16> identity{};
+            identity[0] = 1.0f;
+            identity[5] = 1.0f;
+            identity[10] = 1.0f;
+            identity[15] = 1.0f;
+            instance_matrices.push_back(identity);
+        }
+        // The buffer holds the full capacity pool; dynamic pools
+        // draw record.instance_count of it and re-upload through the
+        // version-gated per-frame sync below.
+        gpu_mesh.instances = upload_mesh_buffer(
+            SDL_GPU_BUFFERUSAGE_VERTEX |
+                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+            instance_matrices.data(),
+            instance_matrices.size() *
+                sizeof(instance_matrices.front()));
+#if BBLITE_PBR_VARIANTS > 0
+        // PBR's pinned vertex stream needs the mirror-conjugated
+        // matrix stream even for scene-code pools; Standard draws
+        // keep consuming `instances` above verbatim.
+        const std::vector<std::array<float, 16>> pinned_matrices =
+            pinned_instance_matrices(mesh_record);
+        if (!pinned_matrices.empty()) {
+            gpu_mesh.pinned_instances = upload_mesh_buffer(
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                pinned_matrices.data(),
+                pinned_matrices.size() *
+                    sizeof(pinned_matrices.front()));
+        }
+#endif
+        gpu_mesh.instance_count =
+            mesh_record.thin_instanced
+                ? mesh_record.instance_count
+                : static_cast<std::uint32_t>(
+                      instance_matrices.size());
+        gpu_mesh.instance_version =
+            mesh_record.instance_version;
+        gpu_mesh.instance_capacity =
+            static_cast<std::uint32_t>(
+                instance_matrices.size());
+#if BBLITE_GPU_INSTANCE_COLORS
+        {
+            // One tightly-packed RGBA row per matrix-pool slot. A
+            // colour setter may first run after registration, so
+            // the fallback must reserve the established capacity,
+            // not one row, before the versioned upload fills it.
+            std::vector<float> instance_colors =
+                mesh_record.instance_colors;
+            instance_colors.resize(
+                std::max(
+                    instance_colors.size(),
+                    instance_matrices.size() * 4),
+                1.0f);
+            gpu_mesh.instance_colors = upload_mesh_buffer(
+                SDL_GPU_BUFFERUSAGE_VERTEX,
+                instance_colors.data(),
+                instance_colors.size() * sizeof(float));
+        }
+#endif
+    }
+#endif
+    gpu_mesh.index_count = static_cast<std::uint32_t>(
+        geometry.indices.size());
+    gpu_mesh.transform_version =
+        mesh_record.transform_version;
+    gpu_mesh.position_version = geometry.position_version;
+    gpu_mesh.gpu_world_transform =
+        mesh_record.gpu_world_transform;
+    const bool standard_material =
+        item.material_kind == upstream::RenderMaterialKind::standard;
+    const MaterialRecord* material = nullptr;
+    if (item.material.value < engine.materials.size()) {
+        material = &handle_at(engine.materials, item.material);
+        if (
+            standard_material &&
+            material->reflection_cube <
+                state.reflection_cubes.size()) {
+            gpu_mesh.reflection =
+                state.reflection_cubes[
+                    material->reflection_cube];
+        }
+    }
+    if (standard_material && !gpu_mesh.reflection) {
+        gpu_mesh.reflection =
+            state.reflection_fallback;
+    }
+    // One backend upload per MATERIAL, then one borrowed pointer per
+    // render item. Which record field fills a slot, its sRGB view
+    // and fallback texel remain the generated table's. The cache is
+    // essential for fractured meshes: their hundreds of pieces
+    // intentionally share a very small material set.
+    const bool composed_material =
+        item.material_kind == upstream::RenderMaterialKind::pbr ||
+        item.material_kind ==
+            upstream::RenderMaterialKind::standard;
+    if (composed_material) {
+        const auto found = std::find_if(
+            state.shared_composed_material_textures.begin(),
+            state.shared_composed_material_textures.end(),
+            [&](const auto& candidate) {
+                return candidate->material.value ==
+                        item.material.value &&
+                    candidate->standard_material == standard_material;
+            });
+        if (
+            found !=
+            state.shared_composed_material_textures.end()) {
+            gpu_mesh.shared_composed_textures = found->get();
+        } else {
+            auto created =
+                std::make_unique<SharedComposedMaterialTextures>(state.device);
+            created->material = item.material;
+            created->standard_material = standard_material;
+            for (
+                const upstream::MaterialTextureSlot& slot_row :
+                upstream::material_texture_slots) {
+                if (
+                    slot_row.slot ==
+                    upstream::material_texture_no_slot) {
+                    continue;
+                }
+                const TextureData* data = material
+                    ? material_slot_texture(
+                          *material,
+                          slot_row.source,
+                          standard_material)
+                    : nullptr;
+                const TextureData empty{};
+                auto& binding = created->bindings.emplace_back();
+                binding.texture = upload_texture(
+                        state.device,
+                        data ? *data : empty,
+                        material_slot_srgb(
+                            slot_row.srgb,
+                            material,
+                            standard_material),
+                        material_slot_fallback(
+                            slot_row.fallback,
+                            material,
+                            standard_material));
+                binding.sampler = create_texture_sampler(
+                        state.device,
+                        data
+                            ? data->sampler
+                            : TextureSamplerState{});
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+                if (engine.device_recovery && !engine.device_recovery->fallback.object && (!data || !data->has_image())) {
+                    engine.device_recovery->fallback = publish_gpu_texture_identity(engine);
+                }
+#endif
+            }
+            state.shared_composed_material_textures.push_back(std::move(created));
+            gpu_mesh.shared_composed_textures = state.shared_composed_material_textures.back().get();
+        }
+
+        std::size_t binding_index = 0;
+        for (
+            const upstream::MaterialTextureSlot& slot_row :
+            upstream::material_texture_slots) {
+            if (
+                slot_row.slot ==
+                upstream::material_texture_no_slot) {
+                continue;
+            }
+            const GpuMeshSlotMembers members =
+                mesh_slot_members(slot_row.source);
+            if (members.texture == nullptr) {
+                gpu_error(
+                    "generated texture slot has no SDL_GPU member.");
+            }
+            if (
+                binding_index >=
+                gpu_mesh.shared_composed_textures->bindings.size()) {
+                gpu_error(
+                    "shared material texture binding shortfall.");
+            }
+            const SDL_GPUTextureSamplerBinding& binding =
+                gpu_mesh.shared_composed_textures
+                    ->bindings[binding_index++];
+            gpu_mesh.*members.texture = binding.texture;
+            gpu_mesh.*members.sampler = binding.sampler;
+        }
+        ++gpu_mesh.shared_composed_textures->users;
+    }
+    // A shader material's own samplers sit outside the generated
+    // slot table: the caller named them, so they bind as fragment
+    // samplers of their own.
+    //
+    // The record stores them in the order `samplers` declared, and
+    // the compiled stage keeps whichever its WGSL reads, densely,
+    // at registers the compaction pass assigned. So the upload
+    // walks that stage's sidecar and pulls each surviving name's
+    // texture out of the declared order -- the same name-to-
+    // resource resolution the composed Standard variants use. A
+    // register naming something the material never declared is a
+    // generation bug, not a draw to skip.
+    // The caller's own texture slots -- a shader material's declared
+    // samplers and a node graph's `TextureBlock` bindings alike --
+    // upload the same way: the image's own bytes, the material's own
+    // sampler, and the white fallback every slot takes.
+    const auto upload_material_slot_texture =
+        [&](std::vector<SDL_GPUTextureSamplerBinding>& bindings, const auto& texture) {
+            auto& binding = bindings.emplace_back();
+            binding.texture = upload_texture(state.device, texture.data,
+                texture.srgb, {255, 255, 255, 255});
+            binding.sampler = create_texture_sampler(state.device, texture.data.sampler);
+        };
+    // The caller-owned texture families share one per-MATERIAL
+    // cache -- keyed by handle, and a material is exactly one
+    // family -- so two meshes sharing one material decode and
+    // upload its images once, the same shell the Dawn backend
+    // keeps. Only the fill differs: a node graph's textures
+    // upload in the order the variant table declares them,
+    // because that is the order the draw resolves a declared
+    // binding by -- the compaction that reorders a shader
+    // material's slots does not reach them, since a node stage
+    // names its bindings `nodeTex_<name>` and the draw matches on
+    // the name rather than on a register. A shader material's
+    // upload instead walks the compiled stage's sidecar and pulls
+    // each surviving name's texture out of the declared order.
+    if (
+        material &&
+        (material->shader_material || material->node_material)) {
+        gpu_mesh.shared_shader_textures =
+            find_shared_shader_material_textures(
+                state.shared_shader_material_textures,
+                item.material);
+        if (!gpu_mesh.shared_shader_textures) {
+            auto created =
+                std::make_unique<SharedShaderMaterialTextures>(state.device);
+            created->material = item.material;
+            if (material->node_material) {
+                for (
+                    const FileTexture& texture :
+                    material->shader_textures) {
+                    upload_material_slot_texture(created->bindings, texture);
+                }
+            } else {
+                const upstream::ShaderVariantInfo& shader_info =
+                    upstream::shader_variant_info(
+                        material->shader_variant);
+                const PinnedStageSlots& slots =
+                    state.shader_fragment_slots[
+                        material->shader_variant];
+                for (
+                    const std::string& texture_name :
+                    slots.textures) {
+                    const auto declared = std::find_if(
+                        shader_info.samplers.begin(),
+                        shader_info.samplers.end(),
+                        [&](const char* candidate) {
+                            return texture_name == candidate;
+                        });
+                    if (declared == shader_info.samplers.end()) {
+                        gpu_error(
+                            shader_sampler_unmapped(
+                                shader_info,
+                                texture_name)
+                                .c_str());
+                    }
+                    const std::size_t slot =
+                        static_cast<std::size_t>(
+                            declared -
+                            shader_info.samplers.begin());
+                    if (slot >= material->shader_textures.size()) {
+                        gpu_error(
+                            shader_sampler_shortfall(
+                                shader_info,
+                                material->shader_textures.size())
+                                .c_str());
+                    }
+#if BBLITE_SHADOWS_CSM
+                    const bool csm_texture =
+                        slot < material->shader_csm_textures.size() &&
+                        material->shader_csm_textures[slot].value !=
+                            invalid_handle;
+#else
+                    constexpr bool csm_texture = false;
+#endif
+                    if (csm_texture) created->bindings.emplace_back();
+                    else upload_material_slot_texture(created->bindings, material->shader_textures[slot]);
+                }
+            }
+            state.shared_shader_material_textures.push_back(std::move(created));
+            gpu_mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
+        }
+        ++gpu_mesh.shared_shader_textures->users;
+    }
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    // The textures this material's plugins bound, uploaded once per
+    // material through the same caller-owned slot path: the
+    // payload's own bytes, its own encoding, its own sampler and
+    // the white fallback. `standard_plugin_bindings` resolves a
+    // composed binding name to a position in this list.
+    if (material && !material->plugin_textures.empty()) {
+        gpu_mesh.shared_plugin_textures =
+            find_shared_shader_material_textures(
+                state.shared_plugin_material_textures,
+                item.material);
+        if (!gpu_mesh.shared_plugin_textures) {
+            auto created =
+                std::make_unique<SharedPluginMaterialTextures>(state.device);
+            created->material = item.material;
+            for (
+                const MaterialPluginTexture& texture :
+                material->plugin_textures) {
+                upload_material_slot_texture(created->bindings, texture);
+            }
+            state.shared_plugin_material_textures.push_back(std::move(created));
+            gpu_mesh.shared_plugin_textures = state.shared_plugin_material_textures.back().get();
+        }
+        ++gpu_mesh.shared_plugin_textures->users;
+    }
+#endif
+    return gpu_mesh;
+}
+
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+void sync_sdl_scene_sprites(
+    GpuState& state, Engine& engine, std::vector<SpritePass>& sprite_passes,
+    std::vector<SDL_GPUTexture*>& sprite_render_textures, SDL_GPUTextureFormat swapchain_format) {
+    sprite_render_textures.resize(engine.sprite_render_textures.size(), nullptr);
+    sync_retained_textures(engine.sprite_render_textures,
+        [&](std::size_t index) { return sprite_render_textures[index] != nullptr; },
+        [&] { refuse_disposed_sprite_render_texture_in_use(engine); },
+        [&](std::size_t index) {
+            auto& texture = sprite_render_textures[index];
+            if (texture) SDL_ReleaseGPUTexture(state.device, texture);
+            texture = nullptr;
+        },
+        [&](std::size_t index, const SpriteRenderTextureRecord& texture) {
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D;
+            info.format = swapchain_format;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.width = texture.width;
+            info.height = texture.height;
+            info.layer_count_or_depth = 1;
+            info.num_levels = 1;
+            info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+            sprite_render_textures[index] = SDL_CreateGPUTexture(state.device, &info);
+            if (!sprite_render_textures[index]) gpu_error("sprite render texture");
+        });
+    while (sprite_passes.size() < engine.sprite_renderers.size()) {
+        sprite_passes.push_back(create_sprite_pass(state.device, engine,
+            SpriteRendererHandle{static_cast<std::uint32_t>(sprite_passes.size())},
+            sprite_render_textures, swapchain_format));
+    }
+}
+#endif
+#endif
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
+PickingInfo pick_sdl_scene(
+    GpuState& state, Engine& engine, const upstream::RenderPlan& root_plan,
+    const std::vector<upstream::RenderPlan>& overlay_plans,
+    const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
+    [[maybe_unused]] GpuPickerHandle picker, double x, double y, const Engine::PickFilter* filter
+#if BBLITE_HAS_BILLBOARDS
+    , BillboardPickContributor& billboard_pick
+#endif
+) {
+    const auto layer = picker_scene_index(engine, picker, active_registered_scenes);
+    if (!layer) return PickingInfo{};
+    const Scene& scene = *active_registered_scenes[*layer];
+    const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
+    auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
+#if BBLITE_HAS_DETAILED_PICKING
+    // `picker._detailedPicking`, which `enableDetailedPicking`
+    // armed: it selects the pin's second pipeline module and the
+    // third attachment, so it is read per pick rather than per
+    // picker resource.
+    const bool detailed = detailed_pick_armed(engine, picker);
+#else
+    constexpr bool detailed = false;
+#endif
+    const CameraRecord* camera_record =
+        scene.camera.value < engine.cameras.size()
+            ? &handle_at(engine.cameras, scene.camera)
+            : nullptr;
+    if (!camera_record) return PickingInfo{};
+    // Native has no CSS box, so the pin's backing/client scale is
+    // 1 and the sample is the coordinate the scene passed. The
+    // viewport is the whole surface: no reached scene picks
+    // through a camera viewport, and one that did would need the
+    // pin's `resolveCameraViewport` offset here -- so one that
+    // carries a viewport refuses by name rather than picking
+    // against a frustum the pass never drew.
+    const double width =
+        static_cast<double>(engine.options.width);
+    const double height =
+        static_cast<double>(engine.options.height);
+    if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
+        return PickingInfo{};
+    }
+    if (camera_record->viewport.has_value()) {
+        gpu_error(
+            "A GPU pick through a camera viewport needs the "
+            "pin's resolveCameraViewport pointer mapping, which "
+            "is not ported: no reached scene both picks and "
+            "splits.");
+    }
+    const std::array<float, 16> view_projection =
+        upstream::build_view_projection(
+            *camera_record,
+            upstream::effective_aspect_ratio(
+                *camera_record,
+                width,
+                height));
+
+    ensure_pick_targets(state.device, state.pick_targets);
+    ensure_pick_pipelines(state);
+
+#if BBLITE_HAS_SPLATS
+    // Source updateData writes its existing textures immediately;
+    // submit those copies before opening the pick command buffer.
+    for (SplatPass& splat : state.splat_passes) {
+        sync_splat_data(state.device,
+            handle_at(engine.splat_meshes, splat.mesh), splat);
+    }
+#endif
+
+    const PickSceneUniforms scene_uniforms =
+        build_pick_scene_uniforms(
+            view_projection, x, y, width, height);
+
+#if BBLITE_HAS_BILLBOARDS
+    // Before the pick command buffer exists, because the instance
+    // upload submits one of its own -- the same ordering the frame
+    // loop's billboard upload takes.
+    billboard_pick.prepare(state.device, engine, scene);
+#endif
+
+    // Ids start at 1 so that 0 stays "nothing", which is what the
+    // cleared colour attachment reads back as.
+    std::uint32_t next_id = 1;
+    std::vector<PickRange> ranges;
+    // The shared collector owns the plan walk, the generated pick
+    // predicate and the id/range assignment; only "does this row
+    // have GPU buffers" is answered here.
+    const std::vector<PickMeshCandidate> candidates =
+        collect_pick_mesh_candidates(
+            engine,
+            scene,
+            render_plan,
+            pick_meshes.size(),
+            [&](std::size_t item_index) {
+                const GpuMesh& gpu = pick_meshes[item_index];
+                return gpu.vertices && gpu.indices;
+            },
+            ranges,
+            next_id,
+            filter, detailed);
+    // `pickAsyncImpl` takes no pick source under a supplied filter.
+    [[maybe_unused]] const bool pick_sources = filter == nullptr;
+    validate_pick_contributors(engine, scene, detailed, pick_sources);
+
+#if BBLITE_DEFORM_PICKING
+    GpuBufferUploadBatch pose_uploads(state.device);
+    for (const auto& candidate : candidates) {
+        if (candidate.deform < 0) continue;
+        const auto& item = render_plan.items[candidate.item_index];
+        const auto& record = handle_at(engine.meshes, item.mesh);
+        auto& gpu = pick_meshes[candidate.item_index];
+#if BBLITE_DEFORM_PICKING_MORPH
+        sync_morph_weights(pose_uploads, gpu, engine.geometries[item.geometry], record);
+#endif
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+        if (record.skinned) write_pinned_bone_texture(state, gpu, record);
+#endif
+    }
+    // Queue uploads before recording the pick so SDL buffer cycling
+    // cannot leave a draw bound to the previous weight storage.
+    pose_uploads.submit();
+#endif
+
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(state.device)};
+    if (!command) gpu_error("SDL_AcquireGPUCommandBuffer pick");
+
+    SDL_GPUColorTargetInfo color_targets[pick_color_targets]{};
+    color_targets[0].texture = state.pick_targets.color;
+    color_targets[0].load_op = SDL_GPU_LOADOP_CLEAR;
+    color_targets[0].store_op = SDL_GPU_STOREOP_STORE;
+    color_targets[0].clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+    color_targets[1].texture = state.pick_targets.depth_color;
+    color_targets[1].load_op = SDL_GPU_LOADOP_CLEAR;
+    color_targets[1].store_op = SDL_GPU_STOREOP_STORE;
+    // The pin clears the depth attachment to 1 and the depth
+    // buffer to 0: the colour lane holds the winning fragment's
+    // clip depth, and 1 is "nothing here" under reverse-Z.
+    color_targets[1].clear_color = {1.0f, 0.0f, 0.0f, 0.0f};
+    Uint32 color_target_count = 2;
+#if BBLITE_HAS_DETAILED_PICKING
+    if (detailed) {
+        color_targets[2].texture = state.pick_targets.detail;
+        color_targets[2].load_op = SDL_GPU_LOADOP_CLEAR;
+        color_targets[2].store_op = SDL_GPU_STOREOP_STORE;
+        // The pin's own 0xffffffff, which `readDetailTarget`
+        // reads back as "no primitive". Only a MISS reads it --
+        // a resolved id means the winning fragment wrote this
+        // attachment in the same draw.
+        color_targets[2].clear_color = {
+            static_cast<float>(pick_detail_clear_red),
+            0.0f, 0.0f, 0.0f};
+        color_target_count = 3;
+    }
+#endif
+
+    SDL_GPUDepthStencilTargetInfo depth_target{};
+    depth_target.texture = state.pick_targets.depth;
+    depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
+    depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+    depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depth_target.clear_depth = 0.0f;
+    depth_target.cycle = true;
+
+    SdlRenderPass pass{SDL_BeginGPURenderPass(
+        command, color_targets, color_target_count, &depth_target)};
+    if (!pass) gpu_error("SDL_BeginGPURenderPass pick");
+
+
+#if BBLITE_HAS_DETAILED_PICKING
+    const int mesh_scene_slot = detailed
+        ? state.pick_detailed_scene_slot
+        : state.pick_mesh_scene_slot;
+    const int mesh_uniform_slot = detailed
+        ? state.pick_detailed_uniform_slot
+        : state.pick_mesh_uniform_slot;
+    const int frag_scene_slot = detailed
+        ? state.pick_detailed_frag_scene_slot
+        : state.pick_frag_scene_slot;
+    const int frag_mesh_slot = detailed
+        ? state.pick_detailed_frag_mesh_slot
+        : state.pick_frag_mesh_slot;
+    SDL_BindGPUGraphicsPipeline(
+        pass,
+        detailed ? state.pick_detailed_pipeline
+                 : state.pick_mesh_pipeline);
+#else
+    const int mesh_scene_slot = state.pick_mesh_scene_slot;
+    const int mesh_uniform_slot = state.pick_mesh_uniform_slot;
+    const int frag_scene_slot = state.pick_frag_scene_slot;
+    const int frag_mesh_slot = state.pick_frag_mesh_slot;
+    SDL_BindGPUGraphicsPipeline(pass, state.pick_mesh_pipeline);
+#endif
+    // Loop-invariant: pushed uniform state persists across draws,
+    // and every cloud draw below rebinds its own slots.
+    SDL_PushGPUVertexUniformData(
+        command,
+        static_cast<Uint32>(mesh_scene_slot),
+        &scene_uniforms,
+        sizeof(scene_uniforms));
+    push_stage_uniform(
+        command,
+        frag_scene_slot,
+        &scene_uniforms,
+        sizeof(scene_uniforms));
+#if BBLITE_GPU_INSTANCING
+    bool regular_pick_pipeline_bound = true;
+#endif
+#if BBLITE_DEFORM_PICKING
+    // Which pipeline is bound right now. The pass draws two
+    // programs -- the affine projection and the pin's deform one
+    // -- so the bind and the scene block that follows it move
+    // with the candidate rather than sitting above the loop.
+    int deform_bound = -1;
+    const std::size_t deform_mode =
+#if BBLITE_HAS_DETAILED_PICKING
+        detailed ? 1u :
+#endif
+        0u;
+#endif
+    for (const PickMeshCandidate& candidate : candidates) {
+        const GpuMesh& gpu = pick_meshes[candidate.item_index];
+#if BBLITE_GPU_INSTANCING
+        if (candidate.thin) {
+#if BBLITE_HAS_DETAILED_PICKING
+            if (detailed) {
+                gpu_error(
+                    "detailed thin-instance picking was not composed");
+            }
+#endif
+            if (!gpu.instances) {
+                gpu_error(
+                    "a thin-instance pick candidate has no instance buffer");
+            }
+            SDL_BindGPUGraphicsPipeline(
+                pass, state.pick_thin_pipeline);
+            SDL_PushGPUVertexUniformData(
+                command,
+                static_cast<Uint32>(state.pick_thin_scene_slot),
+                &scene_uniforms,
+                sizeof(scene_uniforms));
+            SDL_PushGPUVertexUniformData(
+                command,
+                static_cast<Uint32>(state.pick_thin_uniform_slot),
+                &candidate.uniforms,
+                sizeof(candidate.uniforms));
+            push_stage_uniform(
+                command,
+                state.pick_thin_frag_scene_slot,
+                &scene_uniforms,
+                sizeof(scene_uniforms));
+            push_stage_uniform(
+                command,
+                state.pick_thin_frag_mesh_slot,
+                &candidate.uniforms,
+                sizeof(candidate.uniforms));
+            SDL_GPUBuffer* instance_storage = gpu.instances;
+            SDL_BindGPUVertexStorageBuffers(
+                pass, 0, &instance_storage, 1);
+            SDL_GPUBufferBinding vertex_binding{};
+            vertex_binding.buffer = gpu.vertices;
+            SDL_BindGPUVertexBuffers(
+                pass, 0, &vertex_binding, 1);
+            SDL_GPUBufferBinding index_binding{};
+            index_binding.buffer = gpu.indices;
+            SDL_BindGPUIndexBuffer(
+                pass,
+                &index_binding,
+                SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+                pass,
+                gpu.index_count,
+                candidate.instance_count,
+                0,
+                0,
+                0);
+            regular_pick_pipeline_bound = false;
+            continue;
+        }
+        if (!regular_pick_pipeline_bound) {
+            SDL_BindGPUGraphicsPipeline(
+                pass,
+#if BBLITE_HAS_DETAILED_PICKING
+                detailed ? state.pick_detailed_pipeline :
+#endif
+                           state.pick_mesh_pipeline);
+            SDL_PushGPUVertexUniformData(
+                command,
+                static_cast<Uint32>(mesh_scene_slot),
+                &scene_uniforms,
+                sizeof(scene_uniforms));
+            push_stage_uniform(
+                command,
+                frag_scene_slot,
+                &scene_uniforms,
+                sizeof(scene_uniforms));
+            regular_pick_pipeline_bound = true;
+#if BBLITE_DEFORM_PICKING
+            deform_bound = -1;
+#endif
+        }
+#endif
+        int candidate_mesh_slot = mesh_uniform_slot;
+#if BBLITE_DEFORM_PICKING
+        const int deform_draw = candidate.deform;
+        const auto* deform_program = deform_draw >= 0
+            ? &state.pick_deform_programs[static_cast<std::size_t>(deform_draw)][deform_mode]
+            : nullptr;
+        if (deform_draw != deform_bound) {
+            deform_bound = deform_draw;
+            SDL_BindGPUGraphicsPipeline(pass, deform_program ? deform_program->pipeline :
+#if BBLITE_HAS_DETAILED_PICKING
+                detailed ? state.pick_detailed_pipeline :
+#endif
+                state.pick_mesh_pipeline);
+            SDL_PushGPUVertexUniformData(command,
+                static_cast<Uint32>(deform_program ? deform_program->scene_slot : mesh_scene_slot),
+                &scene_uniforms, sizeof(scene_uniforms));
+            push_stage_uniform(command, frag_scene_slot, &scene_uniforms, sizeof(scene_uniforms));
+        }
+        if (deform_program) {
+            candidate_mesh_slot = deform_program->mesh_slot;
+            // Reuse the visible draw's current pose resources, resolved
+            // through this vertex stage's own reflected slot order.
+            bind_stage_textures(pass, deform_program->vertex_slots, false, "deformation pick",
+                [&](const std::string& name, std::size_t) -> SDL_GPUTextureSamplerBinding {
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+                    if (name == "boneSampler") return {gpu.pinned_bone_texture, state.pinned_bone_sampler};
+#endif
+                    gpu_error(("unmapped deformation pick texture: " + name).c_str());
+                });
+            bind_stage_storage(pass, deform_program->vertex_slots, false, "deformation pick",
+                state.storage_binding_scratch,
+                [&](const std::string& name, std::size_t) -> SDL_GPUBuffer* {
+                    return morph_storage_buffer_for(gpu, name);
+                });
+        }
+#endif
+        SDL_PushGPUVertexUniformData(
+            command,
+            static_cast<Uint32>(candidate_mesh_slot),
+            &candidate.uniforms,
+            sizeof(candidate.uniforms));
+        push_stage_uniform(
+            command,
+            frag_mesh_slot,
+            &candidate.uniforms,
+            sizeof(candidate.uniforms));
+        SDL_GPUBufferBinding vertex_binding{};
+        vertex_binding.buffer = gpu.vertices;
+        SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+        SDL_GPUBufferBinding index_binding{};
+        index_binding.buffer = gpu.indices;
+        SDL_BindGPUIndexBuffer(
+            pass,
+            &index_binding,
+            SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+            pass, gpu.index_count, 1, 0, 0, 0);
+    }
+#if BBLITE_HAS_SPLATS
+    for (const SplatPass& splat : state.splat_passes) {
+        if (!pick_sources) break;
+        record_cloud_pick_draw(
+            command,
+            pass,
+            state,
+            engine,
+            splat,
+            *camera_record,
+            next_id,
+            x,
+            y,
+            width,
+            height);
+        ranges.push_back(
+            {next_id,
+             PickedNodeKind::splat_mesh,
+             splat.mesh.value});
+        ++next_id;
+    }
+#endif
+#if BBLITE_HAS_BILLBOARDS
+    // The last contributor in the pin's own order: meshes own
+    // 1..M, then each registered pick source's contiguous range.
+    if (pick_sources) {
+        billboard_pick.record(
+            command,
+            pass,
+            engine,
+            scene,
+            upstream::build_view_matrix(
+                upstream::camera_world_matrix(*camera_record)),
+            scene_uniforms,
+            ranges,
+            next_id);
+    }
+#endif
+    pass.end();
+
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    SDL_GPUTextureRegion region{};
+    region.w = 1;
+    region.h = 1;
+    region.d = 1;
+    SDL_GPUTextureTransferInfo destination{};
+    destination.transfer_buffer = state.pick_targets.staging;
+    destination.pixels_per_row = 1;
+    destination.rows_per_layer = 1;
+    region.texture = state.pick_targets.color;
+    destination.offset = 0;
+    SDL_DownloadFromGPUTexture(copy, &region, &destination);
+    region.texture = state.pick_targets.depth_color;
+    destination.offset = pick_depth_offset;
+    SDL_DownloadFromGPUTexture(copy, &region, &destination);
+#if BBLITE_HAS_DETAILED_PICKING
+    if (detailed) {
+        region.texture = state.pick_targets.detail;
+        destination.offset = pick_detail_offset;
+        SDL_DownloadFromGPUTexture(copy, &region, &destination);
+    }
+#endif
+    copy.end();
+
+    SDL_GPUFence* fence =
+        command.submit_with_fence();
+    if (!fence) {
+        gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence pick");
+    }
+    if (!SDL_WaitForGPUFences(state.device, true, &fence, 1)) {
+        SDL_ReleaseGPUFence(state.device, fence);
+        gpu_error("SDL_WaitForGPUFences pick");
+    }
+    SDL_ReleaseGPUFence(state.device, fence);
+
+    const auto* mapped = static_cast<const std::uint8_t*>(
+        SDL_MapGPUTransferBuffer(
+            state.device, state.pick_targets.staging, false));
+    if (!mapped) gpu_error("SDL_MapGPUTransferBuffer pick");
+    const std::uint32_t pick_id = decode_pick_id(mapped);
+    float pick_depth = 1.0f;
+    std::memcpy(
+        &pick_depth, mapped + pick_depth_offset, sizeof(pick_depth));
+#if BBLITE_HAS_DETAILED_PICKING
+    const PickDetailReadback pick_detail =
+        detailed
+            ? decode_pick_detail(mapped + pick_detail_offset)
+            : PickDetailReadback{};
+#endif
+    SDL_UnmapGPUTransferBuffer(
+        state.device, state.pick_targets.staging);
+
+    PickingInfo info = resolve_pick_result(ranges, pick_id);
+    populate_picked_point(
+        info,
+        view_projection,
+        x,
+        y,
+        width,
+        height,
+        pick_depth);
+#if BBLITE_HAS_DETAILED_PICKING
+    if (detailed) {
+        finish_detailed_pick(
+            engine,
+            info,
+            pick_detail,
+            view_projection,
+            x,
+            y,
+            width,
+            height);
+    }
+#endif
+    return info;
+}
+#endif
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+class SdlSceneRun {
+
+    struct Resources {
+        GpuState state;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-        destroy_ui_rml_runtime(ui_runtime);
+        UiRmlRuntime* ui_runtime = nullptr;
 #endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-        release_sprite_passes();
+        std::vector<SpritePass> sprite_passes;
+        std::vector<SDL_GPUTexture*> sprite_render_textures;
+        SceneSpritePass scene_sprite_pass;
+        bool has_scene_sprite_pass = false;
 #endif
-        release(state);
-    });
-    {
-        const bool hidden_test_pass =
-            frame_options.test_pass;
+        ~Resources() {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+            destroy_ui_rml_runtime(ui_runtime);
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+            if (has_scene_sprite_pass) release_scene_sprite_pass(state.device, scene_sprite_pass);
+            for (SpritePass& pass : sprite_passes) release_sprite_pass(state.device, pass);
+            for (SDL_GPUTexture* texture : sprite_render_textures)
+                if (texture) SDL_ReleaseGPUTexture(state.device, texture);
+#endif
+            release(state);
+        }
+    };
+
+    struct State : FrameSession {
+        const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
+        const bool mem_profile = environment_variable("BBLITE_MEM_PROFILE") == "1";
+        CpuStartupMark cpu_startup_mark{cpu_profile, "sdl"};
+        const std::vector<std::shared_ptr<Scene>> active_registered_scenes = engine.registered_scenes;
+        const std::shared_ptr<Scene> active_scene = active_registered_scenes.front();
+        Scene& scene = *active_scene;
+        Resources resources;
+        SDL_GPUTextureFormat swapchain_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+#if BBLITE_RENDERER_TRANSMISSION
+        bool transmission_enabled = false;
+#else
+        static constexpr bool transmission_enabled = false;
+#endif
 #if BBLITE_OFFSCREEN_SURFACES
-        auto* offscreen = OffscreenRun::current();
+        OffscreenRun* offscreen = nullptr;
+        std::optional<SdlOffscreenTarget> offscreen_target;
+#endif
+        upstream::RenderPlan render_plan;
+        std::vector<upstream::RenderPlan> overlay_plans;
+        std::vector<std::uint64_t> overlay_topology_versions;
+        std::vector<upstream::RenderDrawLists> task_draw_lists;
+        std::uint64_t synced_render_topology_version = 0, synced_draw_list_epoch = 0;
+        std::uint32_t synced_material_family_mask = 0;
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        std::optional<SdlTextResourceOps> text_ops;
+#endif
+        CameraRecord fallback_camera;
+        CameraRecord* camera = nullptr;
+        CameraPointerState pointer_state;
+        SurfaceCameraPointerState surface_pointer_state;
+        CameraTraceState camera_trace_state;
+        std::vector<float> shader_block_scratch;
+#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
+        std::vector<std::array<float, 16>> pinned_instance_scratch;
+#endif
+#if BBLITE_HAS_PICKING
+#if BBLITE_HAS_BILLBOARDS
+        BillboardPickContributor billboard_pick;
+#endif
+        std::optional<PickHookGuard> pick_hook_guard;
+#endif
+        std::optional<GpuBufferUploadBatch> frame_buffer_uploads;
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        std::optional<DrawCountScope> draw_count_scope;
+#endif
+        explicit State(Engine& target) : FrameSession(target) {}
+    } data_;
+
+    struct Frame {
+        bool yield_when_skipped = false, graph = false;
+#if BBLITE_OFFSCREEN_SURFACES
+        SDL_GPUTexture* offscreen_texture = nullptr;
+#endif
+        SdlGpuCommand command{nullptr};
+        SDL_GPUTexture* swapchain = nullptr;
+        Uint32 width = 0, height = 0;
+        double start = 0, delta_ms = 0, updated = 0, uploaded = 0, acquired = 0;
+        std::size_t profile_transformed_meshes = 0, profile_transformed_vertices = 0;
+        bool capture_ready = false, capture_frame = false, capture_ids = false, capture_clusters = false;
+        PixelViewport surface_extent{};
+        double aspect = 0;
+        std::array<float, 16> matrix{}, skybox_matrix{}, frame_view{}, frame_projection{};
+        std::array<float, 4> frame_camera_position{};
+        ShaderPassMatrices frame_pass_matrices{};
+        SDL_GPUTexture* capture_texture = nullptr;
+        SDL_GPUTexture* visible_color = nullptr;
+    };
+    std::optional<Frame> frame_;
+
+    void rebuild_task_draw_lists() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+        [[maybe_unused]] auto& task_draw_lists = data_.task_draw_lists;
+
+        task_draw_lists.resize(engine.frame_tasks.size());
+        for (upstream::RenderDrawLists& lists : task_draw_lists) {
+            lists = {};
+        }
+        for (std::size_t layer = 0; layer < engine.registered_scenes.size(); ++layer) {
+            const Scene& task_scene = *engine.registered_scenes[layer];
+            const upstream::RenderPlan& task_plan = layer == 0
+                ? render_plan : overlay_plans[layer - 1];
+        for (const TaskHandle handle : task_scene.tasks) {
+            if (handle.value >= engine.frame_tasks.size()) {
+                throw std::runtime_error(
+                    "Scene frame task handle is invalid.");
+            }
+            handle_at(task_draw_lists, handle) =
+                upstream::build_render_task_draw_lists(
+                    task_plan.items,
+                    engine,
+                    handle_at(engine.frame_tasks, handle));
+        }
+        }
+    }
+
+    void capture_render_state() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame_options = data_.frame_options;
+        [[maybe_unused]] auto& captures = data_.captures;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& state = data_.resources.state;
+        [[maybe_unused]] auto& camera = *data_.camera;
+        [[maybe_unused]] auto& width = frame_->width;
+        [[maybe_unused]] auto& height = frame_->height;
+        [[maybe_unused]] const auto& matrix = frame_->matrix;
+        [[maybe_unused]] const auto& capture_ready = frame_->capture_ready;
+
+        if (
+            capture_ready &&
+            !captures.render_capture_saved &&
+            !frame_options.render_capture_path.empty()) {
+            write_render_capture(
+                frame_options.render_capture_path,
+                "sdl_gpu",
+                scene,
+                engine,
+                camera,
+                render_plan,
+                matrix,
+                static_cast<int>(width),
+                static_cast<int>(height),
+                frame
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+                , &state.text->owner->capture
+#elif BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            , nullptr
+#endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            , &state.node_capture.capture
+#endif
+                );
+            captures.render_capture_saved = true;
+        }
+    }
+
+public:
+    static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_update;
+    explicit SdlSceneRun(Engine& engine) : data_(engine) {}
+    bool keep_running() const { return data_.keep_running(); }
+    void discard_frame() { frame_.reset(); }
+    bool yield_when_skipped() const { return frame_ && frame_->yield_when_skipped; }
+
+    void setup() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame_options = data_.frame_options;
+        [[maybe_unused]] auto& cpu_startup_mark = data_.cpu_startup_mark;
+        [[maybe_unused]] auto& active_registered_scenes = data_.active_registered_scenes;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+        [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
+        [[maybe_unused]] auto& task_draw_lists = data_.task_draw_lists;
+        [[maybe_unused]] auto& synced_render_topology_version = data_.synced_render_topology_version;
+        [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
+        [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
+        [[maybe_unused]] auto& fallback_camera = data_.fallback_camera;
+        [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
+        [[maybe_unused]] auto& transmission_enabled = data_.transmission_enabled;
+        [[maybe_unused]] auto& state = data_.resources.state;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& sprite_render_textures = data_.resources.sprite_render_textures;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& scene_sprite_pass = data_.resources.scene_sprite_pass;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
+#endif
+        [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
+        [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
+#if BBLITE_HAS_PICKING && BBLITE_HAS_BILLBOARDS
+        [[maybe_unused]] auto& billboard_pick = data_.billboard_pick;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen = data_.offscreen;
+#endif
+        reject_unsupported_frame_options(
+            frame_options,
+            "SDL_GPU",
+            /*supports_single_sample=*/true,
+            /*supports_copy_task=*/true);
+        apply_animation_seek(frame_options, scene);
+        // Read by the image-skybox and ground arms, which not every feature set
+        // compiles.
+        [[maybe_unused]] const bool background_enabled =
+            frame_options.background_enabled(scene.environment);
+        const bool use_skybox =
+            frame_options.skybox_enabled(scene.environment);
+        const bool use_ground =
+            frame_options.ground_enabled(scene.environment);
+
+
+
+#if BBLITE_OFFSCREEN_SURFACES
+        offscreen = OffscreenRun::current();
         if (offscreen) {
             auto* shared = dynamic_cast<SdlOffscreenDevice*>(&offscreen->device());
             if (!shared) throw std::runtime_error("Offscreen surface does not own an SDL GPU device.");
             state.device = shared->device;
+            state.owns_device = false;
             sync_engine_canvas_size(nullptr, engine);
             if (!frame_options.screenshot_path.empty()) {
                 throw std::runtime_error("Capture offscreen output from its presentation host.");
             }
         } else {
 #endif
-        state.window = acquire_run_window(
-            engine.options,
-            hidden_test_pass
-                ? SDL_WINDOW_RESIZABLE |
-                    SDL_WINDOW_NOT_FOCUSABLE
-                : SDL_WINDOW_RESIZABLE);
-        if (!state.window) gpu_error("SDL_CreateWindow");
+        create_sdl_gpu_device(engine.options, frame_device_options(frame_options), state);
         sync_engine_canvas_size(state.window, engine);
-        const bool gpu_debug =
-            frame_options.gpu_debug;
-        state.device = SDL_CreateGPUDevice(
-            SDL_GPU_SHADERFORMAT_DXIL |
-                SDL_GPU_SHADERFORMAT_SPIRV |
-                SDL_GPU_SHADERFORMAT_MSL,
-            gpu_debug,
-            nullptr);
-        if (!state.device) gpu_error("SDL_CreateGPUDevice");
-        if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) gpu_error("SDL_ClaimWindowForGPUDevice");
 #if BBLITE_OFFSCREEN_SURFACES
         }
-        SdlOffscreenTarget offscreen_target(state.device);
+        data_.offscreen_target.emplace(state.device);
 #endif
         for (const SDL_GPUTextureFormat candidate : {
                  SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
@@ -7355,7 +8329,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                 break;
             }
         }
-        const SDL_GPUTextureFormat swapchain_format =
+        swapchain_format =
 #if BBLITE_OFFSCREEN_SURFACES
             offscreen ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM :
 #endif
@@ -7368,7 +8342,7 @@ SceneRun run_gpu_engine(Engine& engine) {
             static_cast<std::uint32_t>(engine.options.height));
 #endif
 #if BBLITE_RENDERER_TRANSMISSION
-        const bool transmission_enabled = scene.transmission_enabled;
+        transmission_enabled = scene.transmission_enabled;
         // The frame-graph path takes the main pass's else arm, where the
         // mid-pass scene-colour grab never runs — refuse, exactly as the
         // Dawn backend does, rather than render transmission-less.
@@ -7380,7 +8354,7 @@ SceneRun run_gpu_engine(Engine& engine) {
 #else
         // A tree that composes no transmission carries no grab path; the
         // remaining arms below fold to their plain side.
-        constexpr bool transmission_enabled = false;
+
 #endif
         if (
             !frame_options.single_sample &&
@@ -7406,30 +8380,6 @@ SceneRun run_gpu_engine(Engine& engine) {
                 state.depth_format,
                 SDL_GPU_SAMPLECOUNT_4)) {
             state.sample_count = SDL_GPU_SAMPLECOUNT_4;
-        }
-        const bool benchmark_mode = frame_options.benchmark_requested;
-        if (
-#if BBLITE_OFFSCREEN_SURFACES
-            state.window &&
-#endif
-            benchmark_mode && SDL_WindowSupportsGPUPresentMode(
-                state.device,
-                state.window,
-                SDL_GPU_PRESENTMODE_IMMEDIATE)) {
-            if (!SDL_SetGPUSwapchainParameters(
-                    state.device,
-                    state.window,
-                    SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-                    SDL_GPU_PRESENTMODE_IMMEDIATE)) {
-                gpu_error("SDL_SetGPUSwapchainParameters");
-            }
-        }
-        if (
-#if BBLITE_OFFSCREEN_SURFACES
-            !offscreen &&
-#endif
-            !SDL_SetGPUAllowedFramesInFlight(state.device, 3)) {
-            gpu_error("SDL_SetGPUAllowedFramesInFlight");
         }
         cpu_startup_mark("window-device");
 
@@ -7727,57 +8677,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         // Sprite rendering contexts and their render targets may be created
         // by a before-render callback. Mirror all newly appended CPU records
         // in handle order both here and immediately after each callback run.
-        const auto sync_sprite_gpu_contexts = [&]() {
-            sprite_render_textures.resize(
-                engine.sprite_render_textures.size(), nullptr);
-            // The one refusal walk covers every disposed record, so it
-            // runs once per sync -- at the first disposed record, before
-            // any release -- rather than once per record per frame.
-            bool disposed_refused = false;
-            for (std::size_t index = 0;
-                 index < engine.sprite_render_textures.size();
-                 ++index) {
-                const SpriteRenderTextureRecord& texture =
-                    engine.sprite_render_textures[index];
-                SDL_GPUTexture*& gpu_texture =
-                    sprite_render_textures[index];
-                if (texture.disposed) {
-                    if (!disposed_refused) {
-                        refuse_disposed_sprite_render_texture_in_use(
-                            engine);
-                        disposed_refused = true;
-                    }
-                    if (gpu_texture) {
-                        SDL_ReleaseGPUTexture(state.device, gpu_texture);
-                    }
-                    gpu_texture = nullptr;
-                    continue;
-                }
-                if (gpu_texture) continue;
-                SDL_GPUTextureCreateInfo info{};
-                info.type = SDL_GPU_TEXTURETYPE_2D;
-                info.format = swapchain_format;
-                info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-                    SDL_GPU_TEXTUREUSAGE_SAMPLER;
-                info.width = texture.width;
-                info.height = texture.height;
-                info.layer_count_or_depth = 1;
-                info.num_levels = 1;
-                info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-                gpu_texture = SDL_CreateGPUTexture(state.device, &info);
-                if (!gpu_texture) gpu_error("sprite render texture");
-            }
-            while (sprite_passes.size() < engine.sprite_renderers.size()) {
-                sprite_passes.push_back(create_sprite_pass(
-                    state.device,
-                    engine,
-                    SpriteRendererHandle{static_cast<std::uint32_t>(
-                        sprite_passes.size())},
-                    sprite_render_textures,
-                    swapchain_format));
-            }
-        };
-        sync_sprite_gpu_contexts();
+        sync_sdl_scene_sprites(state, engine, sprite_passes, sprite_render_textures, swapchain_format);
         if (!scene.depth_hosted_sprite_layers.empty()) {
             scene_sprite_pass = create_scene_sprite_pass(
                 state.device,
@@ -8664,7 +9564,7 @@ SceneRun run_gpu_engine(Engine& engine) {
 
         cpu_startup_mark("environment-background");
         upstream::initialize_composition_feature_rows(engine);
-        upstream::RenderPlan render_plan =
+        render_plan =
             upstream::build_render_plan(scene, engine);
         // Every item's kind and variant against the generated tables
         // before anything uploads — the same shared walk the Dawn
@@ -8672,7 +9572,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         // rather than at (or past) the draw.
         validate_render_plan_items(render_plan);
         cpu_startup_mark("render-plan");
-        std::vector<upstream::RenderPlan> overlay_plans;
+
 #if BBLITE_HAS_PICKING
         // The pick pass. Installed once the mesh buffers and the cloud
         // textures exist, because that is what it draws; a pick taken
@@ -8681,12 +9581,12 @@ SceneRun run_gpu_engine(Engine& engine) {
         // the hook when this scope ends, however it ends: the hook holds
         // `state`, the scene and the render plan by reference, all of
         // which die with the scope.
-        PickHookGuard pick_hook_guard(engine);
+        data_.pick_hook_guard.emplace(engine);
 #if BBLITE_HAS_BILLBOARDS
         // The contributor's own GPU state, scoped to the hook it serves:
         // upstream it lives in the closure the picker cached and frees in
         // `disposePicker`, which is this scope.
-        BillboardPickContributor billboard_pick;
+
 #endif
         engine.pick_hook =
             [&state, &engine, &root_plan = render_plan, &overlay_plans, &active_registered_scenes
@@ -8695,958 +9595,15 @@ SceneRun run_gpu_engine(Engine& engine) {
              &billboard_pick
 #endif
         ]([[maybe_unused]] GpuPickerHandle picker, double x, double y, const Engine::PickFilter* filter) -> PickingInfo {
-            const auto layer = picker_scene_index(engine, picker, active_registered_scenes);
-            if (!layer) return PickingInfo{};
-            const Scene& scene = *active_registered_scenes[*layer];
-            const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
-            auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
-#if BBLITE_HAS_DETAILED_PICKING
-            // `picker._detailedPicking`, which `enableDetailedPicking`
-            // armed: it selects the pin's second pipeline module and the
-            // third attachment, so it is read per pick rather than per
-            // picker resource.
-            const bool detailed = detailed_pick_armed(engine, picker);
-#endif
-            const CameraRecord* camera_record =
-                scene.camera.value < engine.cameras.size()
-                    ? &engine.cameras[scene.camera.value]
-                    : nullptr;
-            if (!camera_record) return PickingInfo{};
-            // Native has no CSS box, so the pin's backing/client scale is
-            // 1 and the sample is the coordinate the scene passed. The
-            // viewport is the whole surface: no reached scene picks
-            // through a camera viewport, and one that did would need the
-            // pin's `resolveCameraViewport` offset here -- so one that
-            // carries a viewport refuses by name rather than picking
-            // against a frustum the pass never drew.
-            const double width =
-                static_cast<double>(engine.options.width);
-            const double height =
-                static_cast<double>(engine.options.height);
-            if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
-                return PickingInfo{};
-            }
-            if (camera_record->viewport.has_value()) {
-                gpu_error(
-                    "A GPU pick through a camera viewport needs the "
-                    "pin's resolveCameraViewport pointer mapping, which "
-                    "is not ported: no reached scene both picks and "
-                    "splits.");
-            }
-            const std::array<float, 16> view_projection =
-                upstream::build_view_projection(
-                    *camera_record,
-                    upstream::effective_aspect_ratio(
-                        *camera_record,
-                        width,
-                        height));
-
-            ensure_pick_targets(state.device, state.pick_targets);
-            ensure_pick_pipelines(state);
-
-#if BBLITE_HAS_SPLATS
-            // Source updateData writes its existing textures immediately;
-            // submit those copies before opening the pick command buffer.
-            for (SplatPass& splat : state.splat_passes) {
-                sync_splat_data(state.device,
-                    engine.splat_meshes[splat.mesh.value], splat);
-            }
-#endif
-
-            const PickSceneUniforms scene_uniforms =
-                build_pick_scene_uniforms(
-                    view_projection, x, y, width, height);
-
+            return pick_sdl_scene(state, engine, root_plan, overlay_plans, active_registered_scenes, picker, x, y, filter
 #if BBLITE_HAS_BILLBOARDS
-            // Before the pick command buffer exists, because the instance
-            // upload submits one of its own -- the same ordering the frame
-            // loop's billboard upload takes.
-            billboard_pick.prepare(state.device, engine, scene);
+                , billboard_pick
 #endif
-
-            // Ids start at 1 so that 0 stays "nothing", which is what the
-            // cleared colour attachment reads back as.
-            std::uint32_t next_id = 1;
-            std::vector<PickRange> ranges;
-            // The shared collector owns the plan walk, the generated pick
-            // predicate and the id/range assignment; only "does this row
-            // have GPU buffers" is answered here.
-            const std::vector<PickMeshCandidate> candidates =
-                collect_pick_mesh_candidates(
-                    engine,
-                    scene,
-                    render_plan,
-                    pick_meshes.size(),
-                    [&](std::size_t item_index) {
-                        const GpuMesh& gpu = pick_meshes[item_index];
-                        return gpu.vertices && gpu.indices;
-                    },
-                    ranges,
-                    next_id,
-                    filter);
-            // `pickAsyncImpl` takes no pick source under a supplied filter.
-            [[maybe_unused]] const bool pick_sources = filter == nullptr;
-
-#if BBLITE_DEFORM_PICKING
-            GpuBufferUploadBatch pose_uploads(state.device);
-            for (const auto& candidate : candidates) {
-                if (candidate.deform < 0) continue;
-                const auto& item = render_plan.items[candidate.item_index];
-                const auto& record = engine.meshes[item.mesh.value];
-                auto& gpu = pick_meshes[candidate.item_index];
-#if BBLITE_DEFORM_PICKING_MORPH
-                sync_morph_weights(pose_uploads, gpu, engine.geometries[item.geometry], record);
-#endif
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
-                if (record.skinned) write_pinned_bone_texture(state, gpu, record);
-#endif
-            }
-            // Queue uploads before recording the pick so SDL buffer cycling
-            // cannot leave a draw bound to the previous weight storage.
-            pose_uploads.submit();
-#endif
-
-            SDL_GPUCommandBuffer* command =
-                SDL_AcquireGPUCommandBuffer(state.device);
-            if (!command) gpu_error("SDL_AcquireGPUCommandBuffer pick");
-
-            SDL_GPUColorTargetInfo color_targets[pick_color_targets]{};
-            color_targets[0].texture = state.pick_targets.color;
-            color_targets[0].load_op = SDL_GPU_LOADOP_CLEAR;
-            color_targets[0].store_op = SDL_GPU_STOREOP_STORE;
-            color_targets[0].clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
-            color_targets[1].texture = state.pick_targets.depth_color;
-            color_targets[1].load_op = SDL_GPU_LOADOP_CLEAR;
-            color_targets[1].store_op = SDL_GPU_STOREOP_STORE;
-            // The pin clears the depth attachment to 1 and the depth
-            // buffer to 0: the colour lane holds the winning fragment's
-            // clip depth, and 1 is "nothing here" under reverse-Z.
-            color_targets[1].clear_color = {1.0f, 0.0f, 0.0f, 0.0f};
-            Uint32 color_target_count = 2;
-#if BBLITE_HAS_DETAILED_PICKING
-            if (detailed) {
-                color_targets[2].texture = state.pick_targets.detail;
-                color_targets[2].load_op = SDL_GPU_LOADOP_CLEAR;
-                color_targets[2].store_op = SDL_GPU_STOREOP_STORE;
-                // The pin's own 0xffffffff, which `readDetailTarget`
-                // reads back as "no primitive". Only a MISS reads it --
-                // a resolved id means the winning fragment wrote this
-                // attachment in the same draw.
-                color_targets[2].clear_color = {
-                    static_cast<float>(pick_detail_clear_red),
-                    0.0f, 0.0f, 0.0f};
-                color_target_count = 3;
-            }
-#endif
-
-            SDL_GPUDepthStencilTargetInfo depth_target{};
-            depth_target.texture = state.pick_targets.depth;
-            depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
-            depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
-            depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-            depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-            depth_target.clear_depth = 0.0f;
-            depth_target.cycle = true;
-
-            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(
-                command, color_targets, color_target_count, &depth_target);
-            if (!pass) gpu_error("SDL_BeginGPURenderPass pick");
-
-
-#if BBLITE_HAS_DETAILED_PICKING
-            const int mesh_scene_slot = detailed
-                ? state.pick_detailed_scene_slot
-                : state.pick_mesh_scene_slot;
-            const int mesh_uniform_slot = detailed
-                ? state.pick_detailed_uniform_slot
-                : state.pick_mesh_uniform_slot;
-            const int frag_scene_slot = detailed
-                ? state.pick_detailed_frag_scene_slot
-                : state.pick_frag_scene_slot;
-            const int frag_mesh_slot = detailed
-                ? state.pick_detailed_frag_mesh_slot
-                : state.pick_frag_mesh_slot;
-            SDL_BindGPUGraphicsPipeline(
-                pass,
-                detailed ? state.pick_detailed_pipeline
-                         : state.pick_mesh_pipeline);
-#else
-            const int mesh_scene_slot = state.pick_mesh_scene_slot;
-            const int mesh_uniform_slot = state.pick_mesh_uniform_slot;
-            const int frag_scene_slot = state.pick_frag_scene_slot;
-            const int frag_mesh_slot = state.pick_frag_mesh_slot;
-            SDL_BindGPUGraphicsPipeline(pass, state.pick_mesh_pipeline);
-#endif
-            // Loop-invariant: pushed uniform state persists across draws,
-            // and every cloud draw below rebinds its own slots.
-            SDL_PushGPUVertexUniformData(
-                command,
-                static_cast<Uint32>(mesh_scene_slot),
-                &scene_uniforms,
-                sizeof(scene_uniforms));
-            push_stage_uniform(
-                command,
-                frag_scene_slot,
-                &scene_uniforms,
-                sizeof(scene_uniforms));
-#if BBLITE_GPU_INSTANCING
-            bool regular_pick_pipeline_bound = true;
-#endif
-#if BBLITE_DEFORM_PICKING
-            // Which pipeline is bound right now. The pass draws two
-            // programs -- the affine projection and the pin's deform one
-            // -- so the bind and the scene block that follows it move
-            // with the candidate rather than sitting above the loop.
-            int deform_bound = -1;
-            const std::size_t deform_mode =
-#if BBLITE_HAS_DETAILED_PICKING
-                detailed ? 1u :
-#endif
-                0u;
-#endif
-            for (const PickMeshCandidate& candidate : candidates) {
-                const GpuMesh& gpu = pick_meshes[candidate.item_index];
-#if BBLITE_GPU_INSTANCING
-                if (candidate.thin) {
-#if BBLITE_HAS_DETAILED_PICKING
-                    if (detailed) {
-                        gpu_error(
-                            "detailed thin-instance picking was not composed");
-                    }
-#endif
-                    if (!gpu.instances) {
-                        gpu_error(
-                            "a thin-instance pick candidate has no instance buffer");
-                    }
-                    SDL_BindGPUGraphicsPipeline(
-                        pass, state.pick_thin_pipeline);
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        static_cast<Uint32>(state.pick_thin_scene_slot),
-                        &scene_uniforms,
-                        sizeof(scene_uniforms));
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        static_cast<Uint32>(state.pick_thin_uniform_slot),
-                        &candidate.uniforms,
-                        sizeof(candidate.uniforms));
-                    push_stage_uniform(
-                        command,
-                        state.pick_thin_frag_scene_slot,
-                        &scene_uniforms,
-                        sizeof(scene_uniforms));
-                    push_stage_uniform(
-                        command,
-                        state.pick_thin_frag_mesh_slot,
-                        &candidate.uniforms,
-                        sizeof(candidate.uniforms));
-                    SDL_GPUBuffer* instance_storage = gpu.instances;
-                    SDL_BindGPUVertexStorageBuffers(
-                        pass, 0, &instance_storage, 1);
-                    SDL_GPUBufferBinding vertex_binding{};
-                    vertex_binding.buffer = gpu.vertices;
-                    SDL_BindGPUVertexBuffers(
-                        pass, 0, &vertex_binding, 1);
-                    SDL_GPUBufferBinding index_binding{};
-                    index_binding.buffer = gpu.indices;
-                    SDL_BindGPUIndexBuffer(
-                        pass,
-                        &index_binding,
-                        SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                        pass,
-                        gpu.index_count,
-                        candidate.instance_count,
-                        0,
-                        0,
-                        0);
-                    regular_pick_pipeline_bound = false;
-                    continue;
-                }
-                if (!regular_pick_pipeline_bound) {
-                    SDL_BindGPUGraphicsPipeline(
-                        pass,
-#if BBLITE_HAS_DETAILED_PICKING
-                        detailed ? state.pick_detailed_pipeline :
-#endif
-                                   state.pick_mesh_pipeline);
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        static_cast<Uint32>(mesh_scene_slot),
-                        &scene_uniforms,
-                        sizeof(scene_uniforms));
-                    push_stage_uniform(
-                        command,
-                        frag_scene_slot,
-                        &scene_uniforms,
-                        sizeof(scene_uniforms));
-                    regular_pick_pipeline_bound = true;
-#if BBLITE_DEFORM_PICKING
-                    deform_bound = -1;
-#endif
-                }
-#endif
-                int candidate_mesh_slot = mesh_uniform_slot;
-#if BBLITE_DEFORM_PICKING
-                const int deform_draw = candidate.deform;
-                const auto* deform_program = deform_draw >= 0
-                    ? &state.pick_deform_programs[static_cast<std::size_t>(deform_draw)][deform_mode]
-                    : nullptr;
-                if (deform_draw != deform_bound) {
-                    deform_bound = deform_draw;
-                    SDL_BindGPUGraphicsPipeline(pass, deform_program ? deform_program->pipeline :
-#if BBLITE_HAS_DETAILED_PICKING
-                        detailed ? state.pick_detailed_pipeline :
-#endif
-                        state.pick_mesh_pipeline);
-                    SDL_PushGPUVertexUniformData(command,
-                        static_cast<Uint32>(deform_program ? deform_program->scene_slot : mesh_scene_slot),
-                        &scene_uniforms, sizeof(scene_uniforms));
-                    push_stage_uniform(command, frag_scene_slot, &scene_uniforms, sizeof(scene_uniforms));
-                }
-                if (deform_program) {
-                    candidate_mesh_slot = deform_program->mesh_slot;
-                    // Reuse the visible draw's current pose resources, resolved
-                    // through this vertex stage's own reflected slot order.
-                    bind_stage_textures(pass, deform_program->vertex_slots, false, "deformation pick",
-                        [&](const std::string& name, std::size_t) -> SDL_GPUTextureSamplerBinding {
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
-                            if (name == "boneSampler") return {gpu.pinned_bone_texture, state.pinned_bone_sampler};
-#endif
-                            gpu_error(("unmapped deformation pick texture: " + name).c_str());
-                        });
-                    bind_stage_storage(pass, deform_program->vertex_slots, false, "deformation pick",
-                        state.storage_binding_scratch,
-                        [&](const std::string& name, std::size_t) -> SDL_GPUBuffer* {
-                            return morph_storage_buffer_for(gpu, name);
-                        });
-                }
-#endif
-                SDL_PushGPUVertexUniformData(
-                    command,
-                    static_cast<Uint32>(candidate_mesh_slot),
-                    &candidate.uniforms,
-                    sizeof(candidate.uniforms));
-                push_stage_uniform(
-                    command,
-                    frag_mesh_slot,
-                    &candidate.uniforms,
-                    sizeof(candidate.uniforms));
-                SDL_GPUBufferBinding vertex_binding{};
-                vertex_binding.buffer = gpu.vertices;
-                SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-                SDL_GPUBufferBinding index_binding{};
-                index_binding.buffer = gpu.indices;
-                SDL_BindGPUIndexBuffer(
-                    pass,
-                    &index_binding,
-                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                    pass, gpu.index_count, 1, 0, 0, 0);
-            }
-#if BBLITE_HAS_SPLATS
-            for (const SplatPass& splat : state.splat_passes) {
-                if (!pick_sources) break;
-                record_cloud_pick_draw(
-                    command,
-                    pass,
-                    state,
-                    engine,
-                    splat,
-                    *camera_record,
-                    next_id,
-                    x,
-                    y,
-                    width,
-                    height);
-                ranges.push_back(
-                    {next_id,
-                     PickedNodeKind::splat_mesh,
-                     splat.mesh.value});
-                ++next_id;
-            }
-#endif
-#if BBLITE_HAS_BILLBOARDS
-            // The last contributor in the pin's own order: meshes own
-            // 1..M, then each registered pick source's contiguous range.
-            if (pick_sources) {
-                billboard_pick.record(
-                    command,
-                    pass,
-                    engine,
-                    scene,
-                    upstream::build_view_matrix(
-                        upstream::camera_world_matrix(*camera_record)),
-                    scene_uniforms,
-                    ranges,
-                    next_id);
-            }
-#endif
-            SDL_EndGPURenderPass(pass);
-
-            SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
-            SDL_GPUTextureRegion region{};
-            region.w = 1;
-            region.h = 1;
-            region.d = 1;
-            SDL_GPUTextureTransferInfo destination{};
-            destination.transfer_buffer = state.pick_targets.staging;
-            destination.pixels_per_row = 1;
-            destination.rows_per_layer = 1;
-            region.texture = state.pick_targets.color;
-            destination.offset = 0;
-            SDL_DownloadFromGPUTexture(copy, &region, &destination);
-            region.texture = state.pick_targets.depth_color;
-            destination.offset = pick_depth_offset;
-            SDL_DownloadFromGPUTexture(copy, &region, &destination);
-#if BBLITE_HAS_DETAILED_PICKING
-            if (detailed) {
-                region.texture = state.pick_targets.detail;
-                destination.offset = pick_detail_offset;
-                SDL_DownloadFromGPUTexture(copy, &region, &destination);
-            }
-#endif
-            SDL_EndGPUCopyPass(copy);
-
-            SDL_GPUFence* fence =
-                SDL_SubmitGPUCommandBufferAndAcquireFence(command);
-            if (!fence) {
-                gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence pick");
-            }
-            if (!SDL_WaitForGPUFences(state.device, true, &fence, 1)) {
-                SDL_ReleaseGPUFence(state.device, fence);
-                gpu_error("SDL_WaitForGPUFences pick");
-            }
-            SDL_ReleaseGPUFence(state.device, fence);
-
-            const auto* mapped = static_cast<const std::uint8_t*>(
-                SDL_MapGPUTransferBuffer(
-                    state.device, state.pick_targets.staging, false));
-            if (!mapped) gpu_error("SDL_MapGPUTransferBuffer pick");
-            const std::uint32_t pick_id = decode_pick_id(mapped);
-            float pick_depth = 1.0f;
-            std::memcpy(
-                &pick_depth, mapped + pick_depth_offset, sizeof(pick_depth));
-#if BBLITE_HAS_DETAILED_PICKING
-            const PickDetailReadback pick_detail =
-                detailed
-                    ? decode_pick_detail(mapped + pick_detail_offset)
-                    : PickDetailReadback{};
-#endif
-            SDL_UnmapGPUTransferBuffer(
-                state.device, state.pick_targets.staging);
-
-            PickingInfo info = resolve_pick_result(ranges, pick_id);
-            populate_picked_point(
-                info,
-                view_projection,
-                x,
-                y,
-                width,
-                height,
-                pick_depth);
-#if BBLITE_HAS_DETAILED_PICKING
-            if (detailed) {
-                finish_detailed_pick(
-                    engine,
-                    info,
-                    pick_detail,
-                    view_projection,
-                    x,
-                    y,
-                    width,
-                    height);
-            }
-#endif
-            return info;
+            );
         };
 #endif
-        const auto upload_render_item =
-            [&](
-                const upstream::RenderItem& item,
-                GpuBufferUploadBatch* buffer_uploads = nullptr) -> GpuMesh {
-            const ModelGeometry& geometry = engine.geometries[item.geometry];
-            const MeshRecord& mesh_record =
-                engine.meshes[item.mesh.value];
-            const bool use_source_indices = mesh_record.detached_imported_mesh
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                || item.material_kind == upstream::RenderMaterialKind::node
-#endif
-                ;
-            std::vector<std::uint32_t> source_indices;
-            if (use_source_indices && geometry.source_indices_reversed) {
-                node_source_indices(geometry, source_indices);
-            }
-            const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
-            const bool shader_material =
-                item.material_kind ==
-                upstream::RenderMaterialKind::shader;
-            const std::vector<GpuVertex> vertices =
-                shader_material
-                    ? local_vertices(engine, geometry, &mesh_record)
-                    : transformed_vertices(engine, geometry, mesh_record);
-            const auto upload_mesh_buffer = [&, buffer_uploads](
-                                                SDL_GPUBufferUsageFlags usage,
-                                                const void* data,
-                                                std::size_t size) {
-                return buffer_uploads
-                    ? buffer_uploads->upload(usage, data, size)
-                    : upload_buffer(state.device, usage, data, size);
-            };
-            GpuMesh gpu_mesh;
-            if (shader_material) {
-#if BBLITE_MESH_POSITION_UPDATE
-                // A procedural position stream is mutable and therefore
-                // cannot borrow the immutable shader-geometry cache.
-                gpu_mesh.vertices = upload_mesh_buffer(
-                    SDL_GPU_BUFFERUSAGE_VERTEX,
-                    vertices.data(),
-                    vertices.size() * sizeof(GpuVertex));
-                gpu_mesh.indices = upload_mesh_buffer(
-                    SDL_GPU_BUFFERUSAGE_INDEX,
-                    upload_indices.data(),
-                    upload_indices.size() * sizeof(std::uint32_t));
-#else
-                const SharedGeometryIdentity identity =
-                    shared_geometry_identity(vertices, upload_indices);
-                gpu_mesh.shared_geometry = find_shared_shader_geometry(
-                    state.shared_shader_geometries,
-                    identity,
-                    vertices,
-                    upload_indices);
-                if (!gpu_mesh.shared_geometry) {
-                    const bool keep_bytes =
-                        shared_geometry_keeps_bytes(vertices);
-                    auto created = std::make_unique<SharedShaderGeometry>(
-                        SharedShaderGeometry{
-                            .identity = identity,
-                            .vertices = keep_bytes
-                                ? vertices
-                                : std::vector<GpuVertex>{},
-                            .indices = keep_bytes
-                                ? upload_indices
-                                : std::vector<std::uint32_t>{},
-                        });
-                    created->vertex_buffer = upload_mesh_buffer(
-                        SDL_GPU_BUFFERUSAGE_VERTEX,
-                        vertices.data(),
-                        vertices.size() * sizeof(GpuVertex));
-                    created->index_buffer = upload_mesh_buffer(
-                        SDL_GPU_BUFFERUSAGE_INDEX,
-                        upload_indices.data(),
-                        upload_indices.size() *
-                            sizeof(std::uint32_t));
-                    gpu_mesh.shared_geometry = created.get();
-                    state.shared_shader_geometries.push_back(
-                        std::move(created));
-                }
-                ++gpu_mesh.shared_geometry->users;
-                gpu_mesh.vertices =
-                    gpu_mesh.shared_geometry->vertex_buffer;
-                gpu_mesh.indices =
-                    gpu_mesh.shared_geometry->index_buffer;
-                gpu_mesh.owns_geometry_buffers = false;
-#endif
-            } else {
-                gpu_mesh.vertices = upload_mesh_buffer(
-                    SDL_GPU_BUFFERUSAGE_VERTEX,
-                    vertices.data(),
-                    vertices.size() * sizeof(GpuVertex));
-                gpu_mesh.indices = upload_mesh_buffer(
-                    SDL_GPU_BUFFERUSAGE_INDEX,
-                    upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                if (item.material_kind == upstream::RenderMaterialKind::node) {
-                    state.node_capture.upload(gpu_mesh.vertices, "node-vertices", vertices.data(), vertices.size() * sizeof(GpuVertex));
-                    state.node_capture.upload(gpu_mesh.indices, "node-indices", upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
-                }
-#endif
-            }
-#if BBLITE_PBR_VARIANTS > 0
-            if (
-                item.material_kind ==
-                upstream::RenderMaterialKind::pbr) {
-                const std::vector<GpuVertex> pinned =
-                    pinned_convention_vertices(
-                        vertices,
-                        mesh_record.mirrored_x);
-                gpu_mesh.pinned_vertices = upload_mesh_buffer(
-                    SDL_GPU_BUFFERUSAGE_VERTEX,
-                    pinned.data(),
-                    pinned.size() * sizeof(GpuVertex));
-            }
-#endif
-#if BBLITE_GPU_MORPH_STORAGE
-            gpu_mesh.morph_deltas = state.empty_morph_deltas;
-            gpu_mesh.morph_weights = state.empty_morph_weights;
-            if (
-                mesh_record.gpu_deformation &&
-                !geometry.morph_positions.empty()) {
-                const std::vector<float> deltas =
-                    pack_morph_deltas(geometry);
-                gpu_mesh.morph_deltas = upload_mesh_buffer(
-                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                    deltas.data(),
-                    deltas.size() * sizeof(float));
-                const std::vector<std::uint8_t> weights_blob =
-                    pack_morph_weights(geometry, mesh_record);
-                gpu_mesh.morph_weights = upload_mesh_buffer(
-                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                    weights_blob.data(),
-                    weights_blob.size());
-                gpu_mesh.morph_weights_version =
-                    mesh_record.morph_weights_version;
-                gpu_mesh.owns_morph_buffers = true;
-            }
-#endif
-#if BBLITE_GPU_INSTANCING
-            {
-                std::vector<std::array<float, 16>>
-                    instance_matrices =
-                        mesh_record.instance_matrices;
-                if (instance_matrices.empty()) {
-                    std::array<float, 16> identity{};
-                    identity[0] = 1.0f;
-                    identity[5] = 1.0f;
-                    identity[10] = 1.0f;
-                    identity[15] = 1.0f;
-                    instance_matrices.push_back(identity);
-                }
-                // The buffer holds the full capacity pool; dynamic pools
-                // draw record.instance_count of it and re-upload through the
-                // version-gated per-frame sync below.
-                gpu_mesh.instances = upload_mesh_buffer(
-                    SDL_GPU_BUFFERUSAGE_VERTEX |
-                        SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                    instance_matrices.data(),
-                    instance_matrices.size() *
-                        sizeof(instance_matrices.front()));
-#if BBLITE_PBR_VARIANTS > 0
-                // PBR's pinned vertex stream needs the mirror-conjugated
-                // matrix stream even for scene-code pools; Standard draws
-                // keep consuming `instances` above verbatim.
-                const std::vector<std::array<float, 16>> pinned_matrices =
-                    pinned_instance_matrices(mesh_record);
-                if (!pinned_matrices.empty()) {
-                    gpu_mesh.pinned_instances = upload_mesh_buffer(
-                        SDL_GPU_BUFFERUSAGE_VERTEX,
-                        pinned_matrices.data(),
-                        pinned_matrices.size() *
-                            sizeof(pinned_matrices.front()));
-                }
-#endif
-                gpu_mesh.instance_count =
-                    mesh_record.thin_instanced
-                        ? mesh_record.instance_count
-                        : static_cast<std::uint32_t>(
-                              instance_matrices.size());
-                gpu_mesh.instance_version =
-                    mesh_record.instance_version;
-                gpu_mesh.instance_capacity =
-                    static_cast<std::uint32_t>(
-                        instance_matrices.size());
-#if BBLITE_GPU_INSTANCE_COLORS
-                {
-                    // One tightly-packed RGBA row per matrix-pool slot. A
-                    // colour setter may first run after registration, so
-                    // the fallback must reserve the established capacity,
-                    // not one row, before the versioned upload fills it.
-                    std::vector<float> instance_colors =
-                        mesh_record.instance_colors;
-                    instance_colors.resize(
-                        std::max(
-                            instance_colors.size(),
-                            instance_matrices.size() * 4),
-                        1.0f);
-                    gpu_mesh.instance_colors = upload_mesh_buffer(
-                        SDL_GPU_BUFFERUSAGE_VERTEX,
-                        instance_colors.data(),
-                        instance_colors.size() * sizeof(float));
-                }
-#endif
-            }
-#endif
-            gpu_mesh.index_count = static_cast<std::uint32_t>(
-                geometry.indices.size());
-            gpu_mesh.transform_version =
-                mesh_record.transform_version;
-            gpu_mesh.position_version = geometry.position_version;
-            gpu_mesh.gpu_world_transform =
-                mesh_record.gpu_world_transform;
-            const bool standard_material =
-                item.material_kind == upstream::RenderMaterialKind::standard;
-            const MaterialRecord* material = nullptr;
-            if (item.material.value < engine.materials.size()) {
-                material = &engine.materials[item.material.value];
-                if (
-                    standard_material &&
-                    material->reflection_cube <
-                        state.reflection_cubes.size()) {
-                    gpu_mesh.reflection =
-                        state.reflection_cubes[
-                            material->reflection_cube];
-                }
-            }
-            if (standard_material && !gpu_mesh.reflection) {
-                gpu_mesh.reflection =
-                    state.reflection_fallback;
-            }
-            // One backend upload per MATERIAL, then one borrowed pointer per
-            // render item. Which record field fills a slot, its sRGB view
-            // and fallback texel remain the generated table's. The cache is
-            // essential for fractured meshes: their hundreds of pieces
-            // intentionally share a very small material set.
-            const bool composed_material =
-                item.material_kind == upstream::RenderMaterialKind::pbr ||
-                item.material_kind ==
-                    upstream::RenderMaterialKind::standard;
-            if (composed_material) {
-                const auto found = std::find_if(
-                    state.shared_composed_material_textures.begin(),
-                    state.shared_composed_material_textures.end(),
-                    [&](const auto& candidate) {
-                        return candidate->material.value ==
-                                item.material.value &&
-                            candidate->standard_material == standard_material;
-                    });
-                if (
-                    found !=
-                    state.shared_composed_material_textures.end()) {
-                    gpu_mesh.shared_composed_textures = found->get();
-                } else {
-                    auto created =
-                        std::make_unique<SharedComposedMaterialTextures>();
-                    created->material = item.material;
-                    created->standard_material = standard_material;
-                    for (
-                        const upstream::MaterialTextureSlot& slot_row :
-                        upstream::material_texture_slots) {
-                        if (
-                            slot_row.slot ==
-                            upstream::material_texture_no_slot) {
-                            continue;
-                        }
-                        const TextureData* data = material
-                            ? material_slot_texture(
-                                  *material,
-                                  slot_row.source,
-                                  standard_material)
-                            : nullptr;
-                        const TextureData empty{};
-                        created->bindings.push_back({
-                            upload_texture(
-                                state.device,
-                                data ? *data : empty,
-                                material_slot_srgb(
-                                    slot_row.srgb,
-                                    material,
-                                    standard_material),
-                                material_slot_fallback(
-                                    slot_row.fallback,
-                                    material,
-                                    standard_material)),
-                            create_texture_sampler(
-                                state.device,
-                                data
-                                    ? data->sampler
-                                    : TextureSamplerState{}),
-                        });
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-                        if (engine.device_recovery && !engine.device_recovery->fallback.object && (!data || !data->has_image())) {
-                            engine.device_recovery->fallback = publish_gpu_texture_identity(engine);
-                        }
-#endif
-                    }
-                    gpu_mesh.shared_composed_textures = created.get();
-                    state.shared_composed_material_textures.push_back(
-                        std::move(created));
-                }
-
-                std::size_t binding_index = 0;
-                for (
-                    const upstream::MaterialTextureSlot& slot_row :
-                    upstream::material_texture_slots) {
-                    if (
-                        slot_row.slot ==
-                        upstream::material_texture_no_slot) {
-                        continue;
-                    }
-                    const GpuMeshSlotMembers members =
-                        mesh_slot_members(slot_row.source);
-                    if (members.texture == nullptr) {
-                        gpu_error(
-                            "generated texture slot has no SDL_GPU member.");
-                    }
-                    if (
-                        binding_index >=
-                        gpu_mesh.shared_composed_textures->bindings.size()) {
-                        gpu_error(
-                            "shared material texture binding shortfall.");
-                    }
-                    const SDL_GPUTextureSamplerBinding& binding =
-                        gpu_mesh.shared_composed_textures
-                            ->bindings[binding_index++];
-                    gpu_mesh.*members.texture = binding.texture;
-                    gpu_mesh.*members.sampler = binding.sampler;
-                }
-                ++gpu_mesh.shared_composed_textures->users;
-            }
-            // A shader material's own samplers sit outside the generated
-            // slot table: the caller named them, so they bind as fragment
-            // samplers of their own.
-            //
-            // The record stores them in the order `samplers` declared, and
-            // the compiled stage keeps whichever its WGSL reads, densely,
-            // at registers the compaction pass assigned. So the upload
-            // walks that stage's sidecar and pulls each surviving name's
-            // texture out of the declared order -- the same name-to-
-            // resource resolution the composed Standard variants use. A
-            // register naming something the material never declared is a
-            // generation bug, not a draw to skip.
-            // The caller's own texture slots -- a shader material's declared
-            // samplers and a node graph's `TextureBlock` bindings alike --
-            // upload the same way: the image's own bytes, the material's own
-            // sampler, and the white fallback every slot takes.
-            const auto upload_material_slot_texture =
-                [&](const FileTexture& texture) {
-                    return SDL_GPUTextureSamplerBinding{
-                        upload_texture(
-                            state.device,
-                            texture.data,
-                            texture.srgb,
-                            {255, 255, 255, 255}),
-                        create_texture_sampler(
-                            state.device,
-                            texture.data.sampler)};
-                };
-            // The caller-owned texture families share one per-MATERIAL
-            // cache -- keyed by handle, and a material is exactly one
-            // family -- so two meshes sharing one material decode and
-            // upload its images once, the same shell the Dawn backend
-            // keeps. Only the fill differs: a node graph's textures
-            // upload in the order the variant table declares them,
-            // because that is the order the draw resolves a declared
-            // binding by -- the compaction that reorders a shader
-            // material's slots does not reach them, since a node stage
-            // names its bindings `nodeTex_<name>` and the draw matches on
-            // the name rather than on a register. A shader material's
-            // upload instead walks the compiled stage's sidecar and pulls
-            // each surviving name's texture out of the declared order.
-            if (
-                material &&
-                (material->shader_material || material->node_material)) {
-                gpu_mesh.shared_shader_textures =
-                    find_shared_shader_material_textures(
-                        state.shared_shader_material_textures,
-                        item.material);
-                if (!gpu_mesh.shared_shader_textures) {
-                    auto created =
-                        std::make_unique<SharedShaderMaterialTextures>(
-                            SharedShaderMaterialTextures{
-                                .material = item.material,
-                                .bindings = {},
-                            });
-                    if (material->node_material) {
-                        for (
-                            const FileTexture& texture :
-                            material->shader_textures) {
-                            created->bindings.push_back(
-                                upload_material_slot_texture(texture));
-                        }
-                    } else {
-                        const upstream::ShaderVariantInfo& shader_info =
-                            upstream::shader_variant_info(
-                                material->shader_variant);
-                        const PinnedStageSlots& slots =
-                            state.shader_fragment_slots[
-                                material->shader_variant];
-                        for (
-                            const std::string& texture_name :
-                            slots.textures) {
-                            const auto declared = std::find_if(
-                                shader_info.samplers.begin(),
-                                shader_info.samplers.end(),
-                                [&](const char* candidate) {
-                                    return texture_name == candidate;
-                                });
-                            if (declared == shader_info.samplers.end()) {
-                                gpu_error(
-                                    shader_sampler_unmapped(
-                                        shader_info,
-                                        texture_name)
-                                        .c_str());
-                            }
-                            const std::size_t slot =
-                                static_cast<std::size_t>(
-                                    declared -
-                                    shader_info.samplers.begin());
-                            if (slot >= material->shader_textures.size()) {
-                                gpu_error(
-                                    shader_sampler_shortfall(
-                                        shader_info,
-                                        material->shader_textures.size())
-                                        .c_str());
-                            }
-                            const bool csm_texture =
-                                slot < material->shader_csm_textures.size() &&
-                                material->shader_csm_textures[slot].value !=
-                                    invalid_handle;
-                            created->bindings.push_back(
-                                csm_texture
-                                    ? SDL_GPUTextureSamplerBinding{}
-                                    : upload_material_slot_texture(
-                                          material->shader_textures[slot]));
-                        }
-                    }
-                    gpu_mesh.shared_shader_textures = created.get();
-                    state.shared_shader_material_textures.push_back(
-                        std::move(created));
-                }
-                ++gpu_mesh.shared_shader_textures->users;
-            }
-#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
-            // The textures this material's plugins bound, uploaded once per
-            // material through the same caller-owned slot path: the
-            // payload's own bytes, its own encoding, its own sampler and
-            // the white fallback. `standard_plugin_bindings` resolves a
-            // composed binding name to a position in this list.
-            if (material && !material->plugin_textures.empty()) {
-                gpu_mesh.shared_plugin_textures =
-                    find_shared_shader_material_textures(
-                        state.shared_plugin_material_textures,
-                        item.material);
-                if (!gpu_mesh.shared_plugin_textures) {
-                    auto created =
-                        std::make_unique<SharedPluginMaterialTextures>(
-                            SharedPluginMaterialTextures{
-                                .material = item.material,
-                                .bindings = {},
-                            });
-                    for (
-                        const MaterialPluginTexture& texture :
-                        material->plugin_textures) {
-                        created->bindings.push_back(
-                            SDL_GPUTextureSamplerBinding{
-                                upload_texture(
-                                    state.device,
-                                    texture.data,
-                                    texture.srgb,
-                                    {255, 255, 255, 255}),
-                                create_texture_sampler(
-                                    state.device,
-                                    texture.data.sampler)});
-                    }
-                    gpu_mesh.shared_plugin_textures = created.get();
-                    state.shared_plugin_material_textures.push_back(
-                        std::move(created));
-                }
-                ++gpu_mesh.shared_plugin_textures->users;
-            }
-#endif
-            return gpu_mesh;
-        };
         for (const upstream::RenderItem& item : render_plan.items) {
-            state.meshes.push_back(upload_render_item(item));
+            state.meshes.push_back(upload_sdl_scene_mesh(state, engine, item));
         }
         // Swapchain overlay layers: every scene registered after the first.
         // `configureSwapchainOverlayScene` is the pin's own trigger -- a
@@ -9655,7 +9612,7 @@ SceneRun run_gpu_engine(Engine& engine) {
         // a layer, exactly as it does upstream. Each layer owns a plan and
         // an uploaded mesh array because a draw command indexes its plan.
         // Each layer rematches changed rows before encoding the next frame.
-        std::vector<std::uint64_t> overlay_topology_versions;
+
         for (
             std::size_t layer = 1;
             layer < engine.registered_scenes.size();
@@ -9668,7 +9625,7 @@ SceneRun run_gpu_engine(Engine& engine) {
             std::vector<GpuMesh> overlay_layer_meshes;
             overlay_layer_meshes.reserve(overlay_plan.items.size());
             for (const upstream::RenderItem& item : overlay_plan.items) {
-                overlay_layer_meshes.push_back(upload_render_item(item));
+                overlay_layer_meshes.push_back(upload_sdl_scene_mesh(state, engine, item));
             }
             overlay_plans.push_back(std::move(overlay_plan));
             state.overlay_meshes.push_back(
@@ -9677,43 +9634,21 @@ SceneRun run_gpu_engine(Engine& engine) {
                 overlay_scene->render_topology_version);
         }
         cpu_startup_mark("mesh-uploads");
-        std::vector<upstream::RenderDrawLists> task_draw_lists(
-            engine.frame_tasks.size());
-        const auto rebuild_task_draw_lists = [&] {
-            task_draw_lists.resize(engine.frame_tasks.size());
-            for (upstream::RenderDrawLists& lists : task_draw_lists) {
-                lists = {};
-            }
-            for (std::size_t layer = 0; layer < engine.registered_scenes.size(); ++layer) {
-                const Scene& task_scene = *engine.registered_scenes[layer];
-                const upstream::RenderPlan& task_plan = layer == 0
-                    ? render_plan : overlay_plans[layer - 1];
-            for (const TaskHandle handle : task_scene.tasks) {
-                if (handle.value >= engine.frame_tasks.size()) {
-                    throw std::runtime_error(
-                        "Scene frame task handle is invalid.");
-                }
-                task_draw_lists[handle.value] =
-                    upstream::build_render_task_draw_lists(
-                        task_plan.items,
-                        engine,
-                        engine.frame_tasks[handle.value]);
-            }
-            }
-        };
+        task_draw_lists.resize(engine.frame_tasks.size());
+
         rebuild_task_draw_lists();
         cpu_startup_mark("draw-lists-ready");
-        std::uint64_t synced_render_topology_version =
+        synced_render_topology_version =
             scene.render_topology_version;
-        std::uint64_t synced_draw_list_epoch =
+        synced_draw_list_epoch =
             engine.draw_list_epoch;
-        std::uint32_t synced_material_family_mask =
+        synced_material_family_mask =
             scene.material_family_mask;
 
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         state.text = std::make_unique<SdlTextRenderer>(state.device,
             !environment_variable("BBLITE_RENDER_CAPTURE").empty());
-        SdlTextResourceOps text_ops{state.text->owner};
+        auto& text_ops = data_.text_ops.emplace(state.text->owner);
         const std::string text_color_format = swapchain_format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
             ? "bgra8unorm" : swapchain_format == SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM ? "rgba8unorm"
             : throw std::runtime_error("Unrepresented default text color target.");
@@ -9724,440 +9659,496 @@ SceneRun run_gpu_engine(Engine& engine) {
             }, text_ops);
         text_ops.sampler = state.text->sampler;
 #endif
-        CameraRecord fallback_camera;
-        CameraRecord& camera =
-            scene.camera.value < engine.cameras.size()
-                ? engine.cameras[scene.camera.value]
-                : fallback_camera;
-        CameraPointerState pointer_state;
-        SurfaceCameraPointerState surface_pointer_state;
-        CameraTraceState camera_trace_state;
-        PlatformInputReplay input_replay;
-        const std::string screenshot_path = frame_options.screenshot_path;
-        const long screenshot_frame = frame_options.screenshot_frame;
+
+        data_.camera = &(scene.camera.value < engine.cameras.size()
+                ? handle_at(engine.cameras, scene.camera)
+                : fallback_camera);
+
+
+
+
+
+
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-        const bool capture_ui = frame_options.capture_ui;
+
 #endif
-        const bool benchmark = frame_options.benchmarking();
-        const long warmup = frame_options.benchmark_warmup();
-        const long limit = frame_options.frame_budget();
-        CaptureGate captures(frame_options, limit, &engine);
-        std::vector<double> samples;
-        bool running = true;
-        long frame = 0;
-        FrameClock frame_clock;
+
+
+
+
+
+
+
+
         // Caller-owned scratch for the custom-shader stage blocks: the
         // packer fills it in place, so the per-draw pushes reuse one
         // allocation across draws and frames.
-        std::vector<float> shader_block_scratch;
+
 #if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
-        std::vector<std::array<float, 16>> pinned_instance_scratch;
+
 #endif
         // The shared drain owns the per-event contract; the scene loop
         // only adds its camera-controls dispatch, which rides the hook so
         // every event the scene receives also reaches the camera -- and
         // none does in a deterministic test pass.
-        const auto camera_pointer_hook = [&](const SDL_Event& event) {
-            if (hidden_test_pass && !is_replayed_ui_event(event)) return;
-            dispatch_surface_camera_pointer(engine, event, camera, pointer_state, surface_pointer_state);
-        };
+
         // One batch for the run: its transfer buffer persists across
         // frames, so a per-frame mesh mutation stages its dirty span and
         // shares one copy-pass submission instead of paying a
         // transfer-buffer create/release per frame.
-        GpuBufferUploadBatch frame_buffer_uploads(state.device);
+        data_.frame_buffer_uploads.emplace(state.device);
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-        DrawCountScope draw_count_scope(engine);
+        data_.draw_count_scope.emplace(engine);
 #endif
-        while (captures.keep_running(running, frame)) {
+    }
+
+    FramePreparation prepare() {
+        frame_.emplace();
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& input_replay = data_.input_replay;
+        [[maybe_unused]] auto& running = data_.running;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& active_registered_scenes = data_.active_registered_scenes;
+        [[maybe_unused]] auto& pointer_state = data_.pointer_state;
+        [[maybe_unused]] auto& surface_pointer_state = data_.surface_pointer_state;
+        [[maybe_unused]] auto& state = data_.resources.state;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
+#endif
+        [[maybe_unused]] auto& camera = *data_.camera;
+        [[maybe_unused]] auto& hidden_test_pass = data_.frame_options.test_pass;
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen = data_.offscreen;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen_target = *data_.offscreen_target;
+#endif
+        [[maybe_unused]] auto& start = frame_->start;
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen_texture = frame_->offscreen_texture;
+#endif
+        const auto camera_pointer_hook = [&](const SDL_Event& event) {
+        if (hidden_test_pass && !is_replayed_ui_event(event)) return;
+        dispatch_surface_camera_pointer(engine, event, camera, pointer_state, surface_pointer_state);
+        };
+
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-            engine.draw_call_count = 0;
+        engine.draw_call_count = 0;
 #endif
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-            state.node_capture.capture.begin_frame(static_cast<std::uint64_t>(frame));
+        state.node_capture.capture.begin_frame(static_cast<std::uint64_t>(frame));
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-            poll_platform_events(
-                engine,
-                running,
-                hidden_test_pass,
-                [&](SDL_Event& event) {
-                    return handle_ui_rml_event(*ui_runtime, event);
-                },
-                camera_pointer_hook);
+        poll_platform_events(
+            engine,
+            running,
+            hidden_test_pass,
+            [&](SDL_Event& event) {
+                return handle_ui_rml_event(*ui_runtime, event);
+            },
+            camera_pointer_hook);
 #else
-            poll_platform_events(
-                engine,
-                running,
-                hidden_test_pass,
-                [](const SDL_Event&) { return true; },
-                camera_pointer_hook);
+        poll_platform_events(
+            engine,
+            running,
+            hidden_test_pass,
+            [](const SDL_Event&) { return true; },
+            camera_pointer_hook);
 #endif
 #if BBLITE_OFFSCREEN_SURFACES
-            if (offscreen && !running) break;
+        if (offscreen && !running) return FramePreparation::stop;
 #endif
-            input_replay.dispatch(frame, state.window, engine);
-            if (request_renderer_restart_if_scene_set_changed(
-                    engine, active_registered_scenes)) {
-                break;
-            }
-            // The swapchain is acquired before the scene advances, because
-            // SDL only reports an unavailable texture *from*
-            // `SDL_WaitAndAcquireGPUSwapchainTexture` -- it cannot be tested
-            // for first. An iteration that gets none produces no frame, so it
-            // must not advance the clock, run the before-render callbacks or
-            // upload anything either; those all live below the check now, and
-            // time stops behind a minimised window the way a throttled
-            // `requestAnimationFrame` stops it. The cost of the early acquire
-            // is holding the image across the scene half of the frame.
-            //
-            // The benchmark bracket therefore starts here, covering the whole
-            // loop body; `pal_dawn.cpp` starts its own at the same point so
-            // the published pair stays comparable.
-            const double start = monotonic_milliseconds();
+        input_replay.dispatch(frame, state.window, engine);
+        sync_engine_canvas_size(state.window, engine);
+        if (request_renderer_restart_if_scene_set_changed(
+                engine, active_registered_scenes)) {
+            return FramePreparation::restart;
+        }
+        // The swapchain is acquired before the scene advances, because
+        // SDL only reports an unavailable texture *from*
+        // `SDL_WaitAndAcquireGPUSwapchainTexture` -- it cannot be tested
+        // for first. An iteration that gets none produces no frame, so it
+        // must not advance the clock, run the before-render callbacks or
+        // upload anything either; those all live below the check now, and
+        // time stops behind a minimised window the way a throttled
+        // `requestAnimationFrame` stops it. The cost of the early acquire
+        // is holding the image across the scene half of the frame.
+        //
+        // The benchmark bracket therefore starts here, covering the whole
+        // loop body; `pal_dawn.cpp` starts its own at the same point so
+        // the published pair stays comparable.
+        start = monotonic_milliseconds();
 #if BBLITE_OFFSCREEN_SURFACES
-            SDL_GPUTexture* offscreen_texture = nullptr;
-            if (offscreen) {
-                offscreen_texture = offscreen_target.acquire(
-                    static_cast<Uint32>(engine.options.width),
-                    static_cast<Uint32>(engine.options.height), *offscreen);
-                if (!offscreen_texture) { BBLITE_FRAME_YIELD(false); continue; }
-            }
+        offscreen_texture = nullptr;
+        if (offscreen) {
+            offscreen_texture = offscreen_target.acquire(
+                static_cast<Uint32>(engine.options.width),
+                static_cast<Uint32>(engine.options.height), *offscreen);
+            if (!offscreen_texture) { frame_->yield_when_skipped = true; return FramePreparation::skip; }
+        }
 #endif
-            SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(state.device);
-            if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
-            SDL_GPUTexture* swapchain = nullptr;
-            Uint32 width = 0;
-            Uint32 height = 0;
+
+        return FramePreparation::ready;
+    }
+
+    bool acquire() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
+        [[maybe_unused]] auto& state = data_.resources.state;
 #if BBLITE_OFFSCREEN_SURFACES
-            if (offscreen) {
-                width = static_cast<Uint32>(engine.options.width);
-                height = static_cast<Uint32>(engine.options.height);
-                swapchain = offscreen_texture;
-            } else
+        [[maybe_unused]] auto& offscreen = data_.offscreen;
 #endif
-            if (!SDL_WaitAndAcquireGPUSwapchainTexture(
-                    command,
-                    state.window,
-                    &swapchain,
-                    &width,
-                    &height)) {
-                gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
-            }
-            if (!swapchain) {
-                SDL_CancelGPUCommandBuffer(command);
-                continue;
-            }
-            // The three phase stamps below feed only the CPU profile, so
-            // with profiling off they cost nothing; `start` and `end` stay
-            // unconditional because the benchmark bracket reads them.
-            const double acquired =
-                cpu_profile ? monotonic_milliseconds() : 0.0;
-            // The frame trace, sprite passes and animated billboard passes
-            // read the frame's own delta.
-            const double delta_ms =
-                advance_frame(
-                    engine,
-                    scene,
-                    frame_clock,
-                    frame_options.frame_delta_ms);
-            // A before-render callback can replace the scene (for example,
-            // leaving Attract mode with Escape). Its old plan and material
-            // views are no longer valid, even though the wrapper stays alive.
-            if (request_renderer_restart_if_scene_set_changed(
-                    engine, active_registered_scenes)) {
-                // SDL forbids cancelling after acquiring a swapchain image.
-                // Submit the empty buffer to release it without stale draws.
-                if (!SDL_SubmitGPUCommandBuffer(command)) {
-                    gpu_error("SDL_SubmitGPUCommandBuffer on scene replacement");
-                }
-                break;
-            }
+        [[maybe_unused]] auto& acquired = frame_->acquired;
+        [[maybe_unused]] auto& width = frame_->width;
+        [[maybe_unused]] auto& height = frame_->height;
+        [[maybe_unused]] auto& swapchain = frame_->swapchain;
+        [[maybe_unused]] auto& command = frame_->command;
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen_texture = frame_->offscreen_texture;
+#endif
+        command = SdlGpuCommand{SDL_AcquireGPUCommandBuffer(state.device)};
+        if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
+        swapchain = nullptr;
+        width = 0;
+        height = 0;
+#if BBLITE_OFFSCREEN_SURFACES
+        if (offscreen) {
+            width = static_cast<Uint32>(engine.options.width);
+            height = static_cast<Uint32>(engine.options.height);
+            swapchain = offscreen_texture;
+        } else
+#endif
+        if (!command.acquire_swapchain(state.window,
+                &swapchain,
+                &width,
+                &height)) {
+            gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
+        }
+        if (!swapchain) {
+            command.reset();
+            return false;
+        }
+        // The three phase stamps below feed only the CPU profile, so
+        // with profiling off they cost nothing; `start` and `end` stay
+        // unconditional because the benchmark bracket reads them.
+        acquired =
+            cpu_profile ? monotonic_milliseconds() : 0.0;
+        // The frame trace, sprite passes and animated billboard passes
+        // read the frame's own delta.
+
+        return true;
+    }
+
+    FramePreparation update() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame_options = data_.frame_options;
+        [[maybe_unused]] auto& frame_clock = data_.frame_clock;
+        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
+        [[maybe_unused]] auto& active_registered_scenes = data_.active_registered_scenes;
+        [[maybe_unused]] auto& scene = data_.scene;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-            // Browser layout observes DOM changes made by this turn's RAF
-            // callbacks before painting the frame.
-            update_ui_rml_runtime(*ui_runtime, width, height);
+        [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
 #endif
-            const double updated =
-                cpu_profile ? monotonic_milliseconds() : 0.0;
-            std::size_t profile_transformed_meshes = 0;
-            std::size_t profile_transformed_vertices = 0;
-            trace_dynamic_frame(engine, delta_ms, frame);
+        [[maybe_unused]] auto& delta_ms = frame_->delta_ms;
+        [[maybe_unused]] auto& updated = frame_->updated;
+        [[maybe_unused]] auto& width = frame_->width;
+        [[maybe_unused]] auto& height = frame_->height;
+        [[maybe_unused]] auto& command = frame_->command;
+        delta_ms =
+            advance_frame(
+                engine,
+                scene,
+                frame_clock,
+                frame_options.frame_delta_ms);
+        // A before-render callback can replace the scene (for example,
+        // leaving Attract mode with Escape). Its old plan and material
+        // views are no longer valid, even though the wrapper stays alive.
+        if (request_renderer_restart_if_scene_set_changed(
+                engine, active_registered_scenes)) {
+            // SDL forbids cancelling after acquiring a swapchain image.
+            // Submit the empty buffer to release it without stale draws.
+            if (!command.submit()) {
+                gpu_error("SDL_SubmitGPUCommandBuffer on scene replacement");
+            }
+            return FramePreparation::restart;
+        }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        // Browser layout observes DOM changes made by this turn's RAF
+        // callbacks before painting the frame.
+        update_ui_rml_runtime(*ui_runtime, width, height);
+#endif
+        updated =
+            cpu_profile ? monotonic_milliseconds() : 0.0;
+
+        return FramePreparation::ready;
+    }
+
+    void synchronize() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& captures = data_.captures;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+        [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
+        [[maybe_unused]] auto& task_draw_lists = data_.task_draw_lists;
+        [[maybe_unused]] auto& synced_render_topology_version = data_.synced_render_topology_version;
+        [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
+        [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
+        [[maybe_unused]] auto& camera_trace_state = data_.camera_trace_state;
+        [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
+        [[maybe_unused]] auto& state = data_.resources.state;
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-            // `_update` for every sprite context precedes every `_record`,
-            // sharing the scene's one batched upload submission. Registration
-            // controls drawing, not whether its layer data stays current.
-            sync_sprite_gpu_contexts();
-            for (SpritePass& sprite_pass : sprite_passes) {
-                // `spriteRendererUpdate` runs the renderer's own hooks
-                // before it reads its layers, so an overlay HUD's hook is
-                // seen by this frame rather than the next.
-                run_sprite_renderer_before_update(
-                    engine, sprite_pass.renderer, delta_ms);
-                sync_sprite_pass_layers(
-                    state.device,
-                    engine,
-                    sprite_pass,
-                    sprite_render_textures);
-                upload_sprite_pass(
-                    state.device,
-                    engine,
-                    sprite_pass,
-                    delta_ms,
-                    frame_buffer_uploads);
-            }
-            if (has_scene_sprite_pass) {
-                upload_scene_sprite_pass(
-                    state.device,
-                    engine,
-                    scene_sprite_pass,
-                    delta_ms,
-                    frame_buffer_uploads);
-            }
+        [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
 #endif
-            // One scene's plan synced against the meshes uploaded for it.
-            // A swapchain overlay layer is a second (plan, mesh array)
-            // pair, so this takes them rather than closing over the base
-            // scene's -- the per-frame republish is the same work either
-            // way.
-            const auto sync_plan_meshes =
-                [&](
-                    const upstream::RenderPlan& sync_plan,
-                    std::vector<GpuMesh>& sync_meshes) {
-            for (
-                std::size_t index = 0;
-                index < sync_plan.items.size() &&
-                index < sync_meshes.size();
-                ++index) {
-                const upstream::RenderItem& item =
-                    sync_plan.items[index];
-                const MeshRecord& mesh =
-                    engine.meshes[item.mesh.value];
-                GpuMesh& gpu_mesh = sync_meshes[index];
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& sprite_render_textures = data_.resources.sprite_render_textures;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& scene_sprite_pass = data_.resources.scene_sprite_pass;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
+#endif
+        [[maybe_unused]] auto& camera = *data_.camera;
+        [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
+        [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
+        [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
+        [[maybe_unused]] auto& screenshot_frame = data_.frame_options.screenshot_frame;
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        [[maybe_unused]] auto& text_ops = *data_.text_ops;
+#endif
+#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
+        [[maybe_unused]] auto& pinned_instance_scratch = data_.pinned_instance_scratch;
+#endif
+        [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
+        [[maybe_unused]] const auto& delta_ms = frame_->delta_ms;
+        [[maybe_unused]] auto& uploaded = frame_->uploaded;
+        [[maybe_unused]] auto& width = frame_->width;
+        [[maybe_unused]] auto& height = frame_->height;
+        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
+        [[maybe_unused]] auto& surface_extent = frame_->surface_extent;
+        [[maybe_unused]] auto& aspect = frame_->aspect;
+        [[maybe_unused]] auto& matrix = frame_->matrix;
+        [[maybe_unused]] auto& skybox_matrix = frame_->skybox_matrix;
+        [[maybe_unused]] auto& frame_view = frame_->frame_view;
+        [[maybe_unused]] auto& frame_projection = frame_->frame_projection;
+        [[maybe_unused]] auto& frame_camera_position = frame_->frame_camera_position;
+        [[maybe_unused]] auto& frame_pass_matrices = frame_->frame_pass_matrices;
+        [[maybe_unused]] auto& capture_ready = frame_->capture_ready;
+        [[maybe_unused]] auto& capture_frame = frame_->capture_frame;
+        [[maybe_unused]] auto& capture_ids = frame_->capture_ids;
+        [[maybe_unused]] auto& capture_clusters = frame_->capture_clusters;
+        profile_transformed_meshes = 0;
+        profile_transformed_vertices = 0;
+        trace_dynamic_frame(engine, delta_ms, frame);
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        // `_update` for every sprite context precedes every `_record`,
+        // sharing the scene's one batched upload submission. Registration
+        // controls drawing, not whether its layer data stays current.
+        sync_sdl_scene_sprites(state, engine, sprite_passes, sprite_render_textures, swapchain_format);
+        for (SpritePass& sprite_pass : sprite_passes) {
+            // `spriteRendererUpdate` runs the renderer's own hooks
+            // before it reads its layers, so an overlay HUD's hook is
+            // seen by this frame rather than the next.
+            run_sprite_renderer_before_update(
+                engine, sprite_pass.renderer, delta_ms);
+            sync_sprite_pass_layers(
+                state.device,
+                engine,
+                sprite_pass,
+                sprite_render_textures);
+            upload_sprite_pass(
+                state.device,
+                engine,
+                sprite_pass,
+                delta_ms,
+                frame_buffer_uploads);
+        }
+        if (has_scene_sprite_pass) {
+            upload_scene_sprite_pass(
+                state.device,
+                engine,
+                scene_sprite_pass,
+                delta_ms,
+                frame_buffer_uploads);
+        }
+#endif
+        // One scene's plan synced against the meshes uploaded for it.
+        // A swapchain overlay layer is a second (plan, mesh array)
+        // pair, so this takes them rather than closing over the base
+        // scene's -- the per-frame republish is the same work either
+        // way.
+        const auto sync_plan_meshes =
+            [&](
+                const upstream::RenderPlan& sync_plan,
+                std::vector<GpuMesh>& sync_meshes) {
+        for (
+            std::size_t index = 0;
+            index < sync_plan.items.size() &&
+            index < sync_meshes.size();
+            ++index) {
+            const upstream::RenderItem& item =
+                sync_plan.items[index];
+            const MeshRecord& mesh =
+                handle_at(engine.meshes, item.mesh);
+            GpuMesh& gpu_mesh = sync_meshes[index];
 #if BBLITE_GPU_INSTANCING
-                if (
-                    mesh.thin_instanced &&
-                    gpu_mesh.instance_version !=
-                        mesh.instance_version) {
-                    // A pool that grew past what registration allocated
-                    // cannot be filled by an update: the three instance
-                    // buffers are recreated at the new capacity, which is
-                    // also a full upload, so the dirty-range write below is
-                    // skipped for that frame. The old buffers are released
-                    // here because SDL retires one only once the command
-                    // buffers still holding it have finished. Nothing
-                    // caches these handles -- every pass reads GpuMesh live
-                    // at the draw -- so a shadow or depth task later this
-                    // frame binds the new buffers.
-                    const bool recreated =
-                        thin_instance_pool_grew(
-                            mesh,
-                            gpu_mesh.instance_capacity);
-                    if (recreated) {
-                        const std::size_t rows =
-                            mesh.instance_matrices.size();
-                        SDL_GPUBuffer* const previous_instances =
-                            gpu_mesh.instances;
-                        SDL_ReleaseGPUBuffer(
-                            state.device,
-                            previous_instances);
-                        gpu_mesh.instances =
-                            frame_buffer_uploads.upload(
-                                SDL_GPU_BUFFERUSAGE_VERTEX |
-                                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                                mesh.instance_matrices.data(),
-                                rows *
-                                    sizeof(mesh.instance_matrices
-                                               .front()));
-#if BBLITE_PBR_VARIANTS > 0
-                        // The PBR family's mirror-conjugated stream is
-                        // allocated for every pool registration saw, and its
-                        // draw predicate is the LIVE record -- so a mesh
-                        // registered with no pool at all, whose first
-                        // addThinInstance lands here, has none yet and would
-                        // bind a null buffer. Allocate it whenever the
-                        // record now instances, null included, rather than
-                        // only refreshing an existing one. A build with no
-                        // PBR variant compiles this out, so Standard pays
-                        // nothing for it.
-                        if (
-                            gpu_mesh.pinned_instances &&
-                            gpu_mesh.pinned_instances !=
-                                previous_instances) {
-                            // Aliased to `instances` for some pools and
-                            // owned otherwise, exactly as release_gpu_mesh
-                            // reads it.
-                            SDL_ReleaseGPUBuffer(
-                                state.device,
-                                gpu_mesh.pinned_instances);
-                        }
-                        {
-                            pinned_instance_matrices(
-                                mesh,
-                                rows,
-                                pinned_instance_scratch);
-                            gpu_mesh.pinned_instances =
-                                frame_buffer_uploads.upload(
-                                    SDL_GPU_BUFFERUSAGE_VERTEX,
-                                    pinned_instance_scratch.data(),
-                                    rows *
-                                        sizeof(pinned_instance_scratch
-                                                   .front()));
-                        }
-#endif
-#if BBLITE_GPU_INSTANCE_COLORS
-                        if (gpu_mesh.instance_colors) {
-                            // The colour mirror is the scene's own array
-                            // and may still be the shorter one; pad to the
-                            // pool the way registration does.
-                            std::vector<float> instance_colors =
-                                mesh.instance_colors;
-                            instance_colors.resize(rows * 4, 1.0f);
-                            SDL_ReleaseGPUBuffer(
-                                state.device,
-                                gpu_mesh.instance_colors);
-                            gpu_mesh.instance_colors =
-                                frame_buffer_uploads.upload(
-                                    SDL_GPU_BUFFERUSAGE_VERTEX,
-                                    instance_colors.data(),
-                                    instance_colors.size() *
-                                        sizeof(float));
-                        }
-#endif
-                        gpu_mesh.instance_capacity =
-                            static_cast<std::uint32_t>(rows);
-                    }
-                    // Re-upload the pinned dirty range [0, count) from
-                    // the record pool; slots past the active count keep
-                    // their previous contents and are never drawn.
-                    const std::size_t active_count =
-                        thin_instance_active_count(mesh);
-                    if (!recreated && active_count > 0) {
-                        frame_buffer_uploads.update(
-                            gpu_mesh.instances,
+            if (
+                mesh.thin_instanced &&
+                gpu_mesh.instance_version !=
+                    mesh.instance_version) {
+                // A pool that grew past what registration allocated
+                // cannot be filled by an update: the three instance
+                // buffers are recreated at the new capacity, which is
+                // also a full upload, so the dirty-range write below is
+                // skipped for that frame. The old buffers are released
+                // here because SDL retires one only once the command
+                // buffers still holding it have finished. Nothing
+                // caches these handles -- every pass reads GpuMesh live
+                // at the draw -- so a shadow or depth task later this
+                // frame binds the new buffers.
+                const bool recreated =
+                    thin_instance_pool_grew(
+                        mesh,
+                        gpu_mesh.instance_capacity);
+                if (recreated) {
+                    const std::size_t rows =
+                        mesh.instance_matrices.size();
+                    SDL_GPUBuffer* const previous_instances =
+                        gpu_mesh.instances;
+                    SDL_ReleaseGPUBuffer(
+                        state.device,
+                        previous_instances);
+                    gpu_mesh.instances =
+                        frame_buffer_uploads.upload(
+                            SDL_GPU_BUFFERUSAGE_VERTEX |
+                                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                             mesh.instance_matrices.data(),
-                            active_count *
+                            rows *
                                 sizeof(mesh.instance_matrices
                                            .front()));
 #if BBLITE_PBR_VARIANTS > 0
-                        if (gpu_mesh.pinned_instances) {
-                            pinned_instance_matrices(
-                                mesh,
-                                active_count,
-                                pinned_instance_scratch);
-                            frame_buffer_uploads.update(
-                                gpu_mesh.pinned_instances,
+                    // The PBR family's mirror-conjugated stream is
+                    // allocated for every pool registration saw, and its
+                    // draw predicate is the LIVE record -- so a mesh
+                    // registered with no pool at all, whose first
+                    // addThinInstance lands here, has none yet and would
+                    // bind a null buffer. Allocate it whenever the
+                    // record now instances, null included, rather than
+                    // only refreshing an existing one. A build with no
+                    // PBR variant compiles this out, so Standard pays
+                    // nothing for it.
+                    if (
+                        gpu_mesh.pinned_instances &&
+                        gpu_mesh.pinned_instances !=
+                            previous_instances) {
+                        // Aliased to `instances` for some pools and
+                        // owned otherwise, exactly as release_gpu_mesh
+                        // reads it.
+                        SDL_ReleaseGPUBuffer(
+                            state.device,
+                            gpu_mesh.pinned_instances);
+                    }
+                    {
+                        pinned_instance_matrices(
+                            mesh,
+                            rows,
+                            pinned_instance_scratch);
+                        gpu_mesh.pinned_instances =
+                            frame_buffer_uploads.upload(
+                                SDL_GPU_BUFFERUSAGE_VERTEX,
                                 pinned_instance_scratch.data(),
-                                active_count *
-                                    sizeof(pinned_instance_scratch.front()));
-                        }
+                                rows *
+                                    sizeof(pinned_instance_scratch
+                                               .front()));
+                    }
 #endif
 #if BBLITE_GPU_INSTANCE_COLORS
-                        if (
-                            gpu_mesh.instance_colors &&
-                            mesh.instance_colors.size() >=
-                                active_count * 4) {
-                            frame_buffer_uploads.update(
-                                gpu_mesh.instance_colors,
-                                mesh.instance_colors.data(),
-                                active_count * 4 * sizeof(float));
-                        }
-#endif
+                    if (gpu_mesh.instance_colors) {
+                        // The colour mirror is the scene's own array
+                        // and may still be the shorter one; pad to the
+                        // pool the way registration does.
+                        std::vector<float> instance_colors =
+                            mesh.instance_colors;
+                        instance_colors.resize(rows * 4, 1.0f);
+                        SDL_ReleaseGPUBuffer(
+                            state.device,
+                            gpu_mesh.instance_colors);
+                        gpu_mesh.instance_colors =
+                            frame_buffer_uploads.upload(
+                                SDL_GPU_BUFFERUSAGE_VERTEX,
+                                instance_colors.data(),
+                                instance_colors.size() *
+                                    sizeof(float));
                     }
-                    gpu_mesh.instance_count =
-                        static_cast<std::uint32_t>(
-                            active_count);
-                    gpu_mesh.instance_version =
-                        mesh.instance_version;
+#endif
+                    gpu_mesh.instance_capacity =
+                        static_cast<std::uint32_t>(rows);
                 }
+                // Re-upload the pinned dirty range [0, count) from
+                // the record pool; slots past the active count keep
+                // their previous contents and are never drawn.
+                const std::size_t active_count =
+                    thin_instance_active_count(mesh);
+                if (!recreated && active_count > 0) {
+                    frame_buffer_uploads.update(
+                        gpu_mesh.instances,
+                        mesh.instance_matrices.data(),
+                        active_count *
+                            sizeof(mesh.instance_matrices
+                                       .front()));
+#if BBLITE_PBR_VARIANTS > 0
+                    if (gpu_mesh.pinned_instances) {
+                        pinned_instance_matrices(
+                            mesh,
+                            active_count,
+                            pinned_instance_scratch);
+                        frame_buffer_uploads.update(
+                            gpu_mesh.pinned_instances,
+                            pinned_instance_scratch.data(),
+                            active_count *
+                                sizeof(pinned_instance_scratch.front()));
+                    }
+#endif
+#if BBLITE_GPU_INSTANCE_COLORS
+                    if (
+                        gpu_mesh.instance_colors &&
+                        mesh.instance_colors.size() >=
+                            active_count * 4) {
+                        frame_buffer_uploads.update(
+                            gpu_mesh.instance_colors,
+                            mesh.instance_colors.data(),
+                            active_count * 4 * sizeof(float));
+                    }
+#endif
+                }
+                gpu_mesh.instance_count =
+                    static_cast<std::uint32_t>(
+                        active_count);
+                gpu_mesh.instance_version =
+                    mesh.instance_version;
+            }
 #endif
 #if BBLITE_MESH_POSITION_UPDATE
-                const ModelGeometry& geometry =
-                    engine.geometries[item.geometry];
-                if (
-                    gpu_mesh.position_version !=
-                    geometry.position_version) {
-                    const std::vector<GpuVertex> vertices =
-                        item.material_kind ==
-                                upstream::RenderMaterialKind::shader
-                            ? local_vertices(engine, geometry)
-                            : transformed_vertices(engine, geometry, mesh);
-                    frame_buffer_uploads.update(
-                        gpu_mesh.vertices,
-                        vertices.data(),
-                        vertices.size() * sizeof(GpuVertex));
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                state.node_capture.update(gpu_mesh.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
-#endif
-#if BBLITE_PBR_VARIANTS > 0
-                    if (gpu_mesh.pinned_vertices) {
-                        const std::vector<GpuVertex> pinned =
-                            pinned_convention_vertices(
-                                vertices,
-                                mesh.mirrored_x);
-                        frame_buffer_uploads.update(
-                            gpu_mesh.pinned_vertices,
-                            pinned.data(),
-                            pinned.size() * sizeof(GpuVertex));
-                    }
-#endif
-                    gpu_mesh.position_version =
-                        geometry.position_version;
-                    // The upload used the current transform as well, so the
-                    // ordinary transform path has nothing left to publish.
-                    gpu_mesh.transform_version = mesh.transform_version;
-                    gpu_mesh.gpu_world_transform =
-                        mesh.gpu_world_transform;
-                }
-#endif
-                if (
-                    mesh.gpu_deformation &&
-                    !engine.geometries[item.geometry].flat_normals) {
-#if BBLITE_GPU_MORPH_STORAGE
-                    sync_morph_weights(frame_buffer_uploads, gpu_mesh, engine.geometries[item.geometry], mesh);
-#endif
-                    gpu_mesh.transform_version =
-                        mesh.transform_version;
-                    continue;
-                }
-                if (
-                    gpu_mesh.transform_version == mesh.transform_version &&
-                    gpu_mesh.gpu_world_transform ==
-                        mesh.gpu_world_transform) {
-                    continue;
-                }
-                // Shader geometry stays local. Its transform version is
-                // consumed by the per-draw world/WVP uniform below, so a
-                // transform-only animation requires no buffer upload.
-                if (
-                    item.material_kind ==
-                    upstream::RenderMaterialKind::shader) {
-                    gpu_mesh.gpu_world_transform =
-                        mesh.gpu_world_transform;
-                    gpu_mesh.transform_version = mesh.transform_version;
-                    continue;
-                }
-                if (
-                    mesh.gpu_world_transform &&
-                    gpu_mesh.gpu_world_transform) {
-                    // Runtime simulation changes only the draw world. The
-                    // local vertex buffers uploaded for this mode are stable.
-                    gpu_mesh.transform_version = mesh.transform_version;
-                    continue;
-                }
+            const ModelGeometry& geometry =
+                engine.geometries[item.geometry];
+            if (
+                gpu_mesh.position_version !=
+                geometry.position_version) {
                 const std::vector<GpuVertex> vertices =
-                    transformed_vertices(
-                        engine,
-                        engine.geometries[item.geometry],
-                        mesh);
-                ++profile_transformed_meshes;
-                profile_transformed_vertices += vertices.size();
+                    item.material_kind ==
+                            upstream::RenderMaterialKind::shader
+                        ? local_vertices(engine, geometry)
+                        : transformed_vertices(engine, geometry, mesh);
                 frame_buffer_uploads.update(
                     gpu_mesh.vertices,
                     vertices.data(),
                     vertices.size() * sizeof(GpuVertex));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                state.node_capture.update(gpu_mesh.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
+            state.node_capture.update(gpu_mesh.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
 #endif
 #if BBLITE_PBR_VARIANTS > 0
                 if (gpu_mesh.pinned_vertices) {
@@ -10171,3392 +10162,880 @@ SceneRun run_gpu_engine(Engine& engine) {
                         pinned.size() * sizeof(GpuVertex));
                 }
 #endif
-                gpu_mesh.transform_version =
-                    mesh.transform_version;
+                gpu_mesh.position_version =
+                    geometry.position_version;
+                // The upload used the current transform as well, so the
+                // ordinary transform path has nothing left to publish.
+                gpu_mesh.transform_version = mesh.transform_version;
                 gpu_mesh.gpu_world_transform =
                     mesh.gpu_world_transform;
             }
-            };
-            const bool overlays_updated = refresh_overlay_render_plans(
-                engine, overlay_plans, state.overlay_meshes, overlay_topology_versions,
-                engine.draw_list_epoch != synced_draw_list_epoch,
-                [&](GpuMesh& mesh) { release_gpu_mesh(state, mesh); },
-                [&](const upstream::RenderItem& item) { return upload_render_item(item, &frame_buffer_uploads); });
-            if (overlays_updated) {
-                prune_shared_shader_geometries(state);
-                prune_shared_shader_material_textures(state);
-                prune_shared_composed_material_textures(state);
-            }
-            sync_plan_meshes(render_plan, state.meshes);
-            for (
-                std::size_t layer = 0;
-                layer < overlay_plans.size() &&
-                layer < state.overlay_meshes.size();
-                ++layer) {
-                sync_plan_meshes(
-                    overlay_plans[layer],
-                    state.overlay_meshes[layer]);
-            }
-            bool topology_updated = overlays_updated;
+#endif
             if (
-                scene.render_topology_version !=
-                synced_render_topology_version) {
-                const std::size_t previous_item_count =
-                    render_plan.items.size();
-                // SDL releases GPU resources only when pending command
-                // buffers are finished with them. The rematch below can
-                // therefore retire removed entries immediately without
-                // stalling every runtime topology update on the whole GPU.
-                const std::uint32_t added_families =
-                    scene.material_family_mask &
-                    ~synced_material_family_mask;
-                // The table half of the guard is shared with Dawn; the
-                // built-pipeline checks below are this backend's own
-                // residue — its modules are built eagerly at startup, so
-                // a family the initial plan never reached has none.
-                reject_uncomposed_family_growth(added_families);
-                if (
-                    (added_families & material_family_shader) != 0 &&
-                    state.shader_pipelines.empty()) {
-                    throw std::runtime_error(
-                        "Post-registration shader material family has no reached pipeline.");
-                }
-                if (
-                    (added_families & material_family_grid) != 0 &&
-                    !state.grid_pipeline) {
-                    throw std::runtime_error(
-                        "Post-registration Grid material family has no reached pipeline.");
-                }
-                upstream::RenderPlan updated_plan =
-                    upstream::build_render_plan(scene, engine);
-                validate_render_plan_items(updated_plan);
-                std::vector<GpuMesh> updated_meshes =
-                    rematch_render_meshes(
-                        render_plan.items,
-                        updated_plan.items,
-                        state.meshes,
-                        [&](GpuMesh& mesh) {
-                            release_gpu_mesh(state, mesh);
-                        },
-                        [&](const upstream::RenderItem& item) {
-                            return upload_render_item(
-                                item,
-                                &frame_buffer_uploads);
-                        });
-                prune_shared_shader_geometries(state);
-                prune_shared_shader_material_textures(state);
-                prune_shared_composed_material_textures(state);
-                state.meshes = std::move(updated_meshes);
-                render_plan = std::move(updated_plan);
-                synced_render_topology_version =
-                    scene.render_topology_version;
-                synced_material_family_mask =
-                    scene.material_family_mask;
-                const std::size_t shader_item_count =
-                    static_cast<std::size_t>(std::count_if(
-                        render_plan.items.begin(),
-                        render_plan.items.end(),
-                        [](const upstream::RenderItem& item) {
-                            return item.material_kind ==
-                                upstream::RenderMaterialKind::shader;
-                        }));
-                trace_scene_topology(
-                    scene,
+                mesh.gpu_deformation &&
+                !engine.geometries[item.geometry].flat_normals) {
+#if BBLITE_GPU_MORPH_STORAGE
+                sync_morph_weights(frame_buffer_uploads, gpu_mesh, engine.geometries[item.geometry], mesh);
+#endif
+                gpu_mesh.transform_version =
+                    mesh.transform_version;
+                continue;
+            }
+            if (
+                gpu_mesh.transform_version == mesh.transform_version &&
+                gpu_mesh.gpu_world_transform ==
+                    mesh.gpu_world_transform) {
+                continue;
+            }
+            // Shader geometry stays local. Its transform version is
+            // consumed by the per-draw world/WVP uniform below, so a
+            // transform-only animation requires no buffer upload.
+            if (
+                item.material_kind ==
+                upstream::RenderMaterialKind::shader) {
+                gpu_mesh.gpu_world_transform =
+                    mesh.gpu_world_transform;
+                gpu_mesh.transform_version = mesh.transform_version;
+                continue;
+            }
+            if (
+                mesh.gpu_world_transform &&
+                gpu_mesh.gpu_world_transform) {
+                // Runtime simulation changes only the draw world. The
+                // local vertex buffers uploaded for this mode are stable.
+                gpu_mesh.transform_version = mesh.transform_version;
+                continue;
+            }
+            const std::vector<GpuVertex> vertices =
+                transformed_vertices(
                     engine,
-                    previous_item_count,
-                    render_plan.items.size(),
-                    shader_item_count,
-                    state.shared_shader_geometries.size(),
-                    state.shared_shader_material_textures.size(),
-                    frame);
-                topology_updated = true;
-            } else if (
-                engine.draw_list_epoch != synced_draw_list_epoch) {
-                // The pin's visibility epoch re-records the cached opaque
-                // render bundles; the draw lists are this port's bundles,
-                // so only they and the task lists rebuild -- mesh GPU
-                // state is untouched. A culling-enabled thin-instance pool
-                // moves the second epoch only when its live count crosses
-                // zero, matching the pin's direct-bucket membership.
-                render_plan.draw_lists =
-                    upstream::build_render_draw_lists(
-                        render_plan.items,
-                        engine);
-            }
-            if (topology_updated || engine.draw_list_epoch != synced_draw_list_epoch) {
-                rebuild_task_draw_lists();
-            }
-            synced_draw_list_epoch = engine.draw_list_epoch;
-            sync_shader_storage_buffers(
-                state, engine, frame_buffer_uploads);
-            frame_buffer_uploads.submit();
-            const double uploaded =
-                cpu_profile ? monotonic_milliseconds() : 0.0;
-            update_surface_cameras(engine, camera);
-            trace_camera_state(camera, camera_trace_state, frame);
-            upstream::sort_transparent_draws(
-                render_plan.draw_lists.transparent,
-                engine,
-                camera);
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
-            // The pin's bone palettes for every draw the gate resolves,
-            // streamed here because a copy pass cannot open inside the render
-            // pass. The draw branch below keys its skinned handling on the
-            // texture this leaves behind.
-            {
-                // A palette is per PLAN ITEM, not per draw, and the same
-                // item is drawn by the main lists and again by every task
-                // that names it as a caster -- a cascaded generator alone
-                // draws each of its casters once per cascade. Each upload
-                // is a transfer buffer, a copy pass and its own submit, so
-                // the sweep streams an item once and the later sightings of
-                // it cost one lookup.
-                std::vector<bool>& streamed = state.streamed_palettes;
-                streamed.assign(state.meshes.size(), false);
-                const auto stream_palettes =
-                    [&](const Scene& palette_scene,
-                        std::vector<GpuMesh>& meshes,
-                        const upstream::RenderDrawList& list) {
-                    for (
-                        const upstream::RenderDrawCommand& draw :
-                        list.commands) {
-                        if (draw.item_index >= meshes.size()) continue;
-                        if (draw.item.mesh.value >= engine.meshes.size()) {
-                            continue;
-                        }
-                        if (streamed[draw.item_index]) continue;
-                        bool skeleton_draw = false;
-#if defined(BBLITE_STANDARD_SKELETON)
-                        if (draw.item.material_kind ==
-                            upstream::RenderMaterialKind::standard) {
-                            const std::size_t variant = standard_variant_for_draw(
-                                palette_scene, engine, draw);
-                            skeleton_draw = variant != npos &&
-                                upstream::standard_variant_skeleton(
-                                    upstream::standard_variants[variant]);
-                        }
+                    engine.geometries[item.geometry],
+                    mesh);
+            ++profile_transformed_meshes;
+            profile_transformed_vertices += vertices.size();
+            frame_buffer_uploads.update(
+                gpu_mesh.vertices,
+                vertices.data(),
+                vertices.size() * sizeof(GpuVertex));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            state.node_capture.update(gpu_mesh.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
 #endif
 #if BBLITE_PBR_VARIANTS > 0
-                        const std::size_t palette_variant =
-                            pinned_variant_for_draw(palette_scene, engine, draw);
-                        if (palette_variant != npos) {
-#if BBLITE_VAT
-                            // Copy passes must precede render passes for
-                            // baked palettes as well as live palettes.
-                            if (pinned_variant_vat(palette_variant)) {
-                                write_pinned_vat_texture(
-                                    state,
-                                    meshes[draw.item_index],
-                                    engine.meshes[draw.item.mesh.value],
-                                    engine);
-                                streamed[draw.item_index] = true;
-                                continue;
-                            }
-#endif
-                            skeleton_draw = pinned_variant_skeleton(palette_variant);
-                        }
-#endif
-                        if (!skeleton_draw) continue;
-                        write_pinned_bone_texture(
-                            state,
-                            meshes[draw.item_index],
-                            engine.meshes[draw.item.mesh.value]);
-                        streamed[draw.item_index] = true;
-                    }
-                };
-                stream_palettes(scene, state.meshes, render_plan.draw_lists.opaque);
-                stream_palettes(scene, state.meshes, render_plan.draw_lists.transparent);
-                for (const upstream::RenderDrawLists& task_lists :
-                     task_draw_lists) {
-                    stream_palettes(scene, state.meshes, task_lists.opaque);
-                    stream_palettes(scene, state.meshes, task_lists.transparent);
-                }
-                for (std::size_t layer = 0;
-                     layer < overlay_plans.size() &&
-                     layer < state.overlay_meshes.size(); ++layer) {
-                    const Scene* overlay_scene =
-                        engine.registered_scenes[layer + 1u].get();
-                    if (!overlay_scene) continue;
-                    auto& meshes = state.overlay_meshes[layer];
-                    streamed.assign(meshes.size(), false);
-                    stream_palettes(*overlay_scene, meshes,
-                                    overlay_plans[layer].draw_lists.opaque);
-                    stream_palettes(*overlay_scene, meshes,
-                                    overlay_plans[layer].draw_lists.transparent);
-                }
+            if (gpu_mesh.pinned_vertices) {
+                const std::vector<GpuVertex> pinned =
+                    pinned_convention_vertices(
+                        vertices,
+                        mesh.mirrored_x);
+                frame_buffer_uploads.update(
+                    gpu_mesh.pinned_vertices,
+                    pinned.data(),
+                    pinned.size() * sizeof(GpuVertex));
             }
 #endif
-            const bool capture_ready =
-                frame >= screenshot_frame &&
-                !topology_updated &&
-                captures.drains_resolved();
-            const bool capture_frame =
-                capture_ready &&
-                !captures.screenshot_saved &&
-                !screenshot_path.empty();
-            const bool capture_ids =
-                capture_ready &&
-                !captures.id_buffer_saved &&
-                !id_buffer_path.empty();
-            const bool capture_clusters =
-                capture_ready &&
-                !captures.cluster_buffer_saved &&
-                !cluster_buffer_path.empty();
-            // getEffectiveAspectRatio divides two JavaScript numbers,
-            // so the ratio reaches the projection writer in double. It
-            // is the pinned function itself: a camera carrying a
-            // viewport scales the target ratio by the viewport's own,
-            // and one without takes the pin's literal 1.
-            const PixelViewport surface_extent = scene_surface_extent(
-                engine, scene, width, height);
-            const double aspect =
-                upstream::effective_aspect_ratio(
-                    camera,
-                    static_cast<double>(surface_extent.width),
-                    static_cast<double>(surface_extent.height));
-            const std::array<float, 16> matrix =
-                upstream::build_view_projection(camera, aspect);
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-            state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-            const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera), aspect};
-            state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera : nullptr,
-                static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height), text_ops);
-#endif
-            const std::array<float, 16> skybox_matrix =
-                upstream::build_skybox_view_projection(
-                    camera,
-                    aspect);
-            // The frame's own two factors, built once. Three consumers read
-            // them and each used to build its own: a shader material may
-            // declare either beside the product, the pin's splat UBO stores
-            // them separately, and the billboard sort reads the view. The
-            // projection is the pin's `getProjectionMatrix` -- the arm that
-            // branches on the camera -- rather than the perspective writer
-            // the skybox deliberately takes.
-            const std::array<float, 16> frame_view =
-                upstream::build_view_matrix(
-                    upstream::camera_world_matrix(camera));
-            const std::array<float, 16> frame_projection =
-                upstream::build_scene_projection(camera, aspect);
-            const std::array<float, 4> frame_camera_position =
-                shader_camera_position(scene, engine, camera);
-            ShaderPassMatrices frame_pass_matrices{
-                matrix.data(), &frame_view, &frame_projection};
-            frame_pass_matrices.camera_position =
-                &frame_camera_position;
-#if BBLITE_HAS_BILLBOARDS
-            // The sorted order depends on the camera alone, so the upload
-            // happens here -- before the frame's command buffer is acquired,
-            // because it submits one of its own -- and the draw below reads
-            // the same matrix.
-            for (BillboardPass& billboard : state.billboard_passes) {
-                upload_billboard_pass(
-                    state.device,
-                    scene,
-                    engine,
-                    billboard,
-                    frame_view,
-                    delta_ms);
-            }
-#endif
-#if BBLITE_HAS_SPLATS
-            // The sort runs on this thread before the draw that reads it,
-            // which is the state `firstSortReady` waits for. The view and
-            // projection are built once for the frame here and the draw
-            // below reads the same matrices, as the billboard pass does.
-            for (SplatPass& splat : state.splat_passes) {
-                upload_splat_pass(
-                    state.device, engine, splat, frame_view);
-            }
-#endif
-#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
-            // The cluster binning, in the same place the splat sort runs and
-            // for the same reason: it reads this frame's camera and the draw
-            // below reads what it wrote.
-            if (ClusteredLightContainer* clustered =
-                    upstream::clustered_container(
-                        engine, scene.clustered_lights)) {
-                upload_clustered_lights(
-                    state.device,
-                    *clustered,
-                    frame_view,
-                    frame_projection,
-                    camera.near_plane,
-                    camera.far_plane,
-                    state.clustered);
-            }
-#endif
-            const auto capture_render_state = [&] {
+            gpu_mesh.transform_version =
+                mesh.transform_version;
+            gpu_mesh.gpu_world_transform =
+                mesh.gpu_world_transform;
+        }
+        };
+        const bool overlays_updated = refresh_overlay_render_plans(
+            engine, overlay_plans, state.overlay_meshes, overlay_topology_versions,
+            engine.draw_list_epoch != synced_draw_list_epoch,
+            [&](GpuMesh& mesh) { release_gpu_mesh(state, mesh); },
+            [&](const upstream::RenderItem& item) { return upload_sdl_scene_mesh(state, engine, item, &frame_buffer_uploads); });
+        if (overlays_updated) {
+            prune_shared_shader_geometries(state);
+            prune_shared_shader_material_textures(state);
+            prune_shared_composed_material_textures(state);
+        }
+        sync_plan_meshes(render_plan, state.meshes);
+        for (
+            std::size_t layer = 0;
+            layer < overlay_plans.size() &&
+            layer < state.overlay_meshes.size();
+            ++layer) {
+            sync_plan_meshes(
+                overlay_plans[layer],
+                state.overlay_meshes[layer]);
+        }
+        bool topology_updated = overlays_updated;
+        if (
+            scene.render_topology_version !=
+            synced_render_topology_version) {
+            const std::size_t previous_item_count =
+                render_plan.items.size();
+            // SDL releases GPU resources only when pending command
+            // buffers are finished with them. The rematch below can
+            // therefore retire removed entries immediately without
+            // stalling every runtime topology update on the whole GPU.
+            const std::uint32_t added_families =
+                scene.material_family_mask &
+                ~synced_material_family_mask;
+            // The table half of the guard is shared with Dawn; the
+            // built-pipeline checks below are this backend's own
+            // residue — its modules are built eagerly at startup, so
+            // a family the initial plan never reached has none.
+            reject_uncomposed_family_growth(added_families);
             if (
-                capture_ready &&
-                !captures.render_capture_saved &&
-                !frame_options.render_capture_path.empty()) {
-                write_render_capture(
-                    frame_options.render_capture_path,
-                    "sdl_gpu",
-                    scene,
-                    engine,
-                    camera,
-                    render_plan,
-                    matrix,
-                    static_cast<int>(width),
-                    static_cast<int>(height),
-                    frame
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-                    , &state.text->owner->capture
-#elif BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                , nullptr
-#endif
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                , &state.node_capture.capture
-#endif
-                    );
-                captures.render_capture_saved = true;
+                (added_families & material_family_shader) != 0 &&
+                state.shader_pipelines.empty()) {
+                throw std::runtime_error(
+                    "Post-registration shader material family has no reached pipeline.");
             }
-            };
-#if (!defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA) && (!defined(BBLITE_HAS_TEXT) || !BBLITE_HAS_TEXT)
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-            if (!state.node_capture.capture.enabled())
-#endif
-            capture_render_state();
-#endif
-            if (!scene.tasks.empty()) {
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                if (!engine.stopped)
-#endif
-                create_frame_graph_textures(
-                    state,
-                    engine,
-                    swapchain_format,
-                    width,
-                    height);
-                SDL_GPUTexture* capture_texture = nullptr;
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                // Queue occurrences, preserving task aliases and cross-scene order.
-                // No draw is encoded if a later logical hook throws.
-                std::vector<std::variant<PreparedSdlScenePass, PreparedSdlPostProcessPass>> temporal_passes;
-                if (!engine.stopped) {
-#endif
-                // Each registered context owns its tasks, camera and draw indices.
-                // Finish its graph before composing the next context's surface.
-                for (std::size_t graph_layer = 0;
-                     graph_layer < engine.registered_scenes.size(); ++graph_layer) {
-                const Scene& graph_scene = *engine.registered_scenes[graph_layer];
-                const auto& graph_meshes = graph_layer == 0
-                    ? state.meshes : state.overlay_meshes[graph_layer - 1];
-                const auto& graph_plan = graph_layer == 0
-                    ? render_plan : overlay_plans[graph_layer - 1];
-                const CameraRecord& graph_camera = graph_scene.camera.value < engine.cameras.size()
-                    ? engine.cameras[graph_scene.camera.value] : fallback_camera;
-                const PixelViewport graph_extent = scene_surface_extent(
-                    engine, graph_scene, width, height);
-                const double graph_aspect = upstream::effective_aspect_ratio(
-                    graph_camera, graph_extent.width, graph_extent.height);
-                const auto graph_matrix = upstream::build_view_projection(graph_camera, graph_aspect);
-                const auto graph_view = upstream::build_view_matrix(
-                    upstream::camera_world_matrix(graph_camera));
-                const auto graph_projection = upstream::build_scene_projection(graph_camera, graph_aspect);
-                const auto graph_eye = shader_camera_position(graph_scene, engine, graph_camera);
-                ShaderPassMatrices graph_pass_matrices{
-                    graph_matrix.data(), &graph_view, &graph_projection};
-                graph_pass_matrices.camera_position = &graph_eye;
-#if BBLITE_SHADOW_RECEIVERS
-                update_shadow_generators(state, graph_scene, engine);
-                // CSM receiver-data callbacks can rewrite a shader storage
-                // buffer; publish that rewrite before any caster or colour
-                // draw in this command buffer reads it.
-                sync_shader_storage_buffers(
-                    state, engine, frame_buffer_uploads);
-                frame_buffer_uploads.submit();
-#endif
-                SDL_PushGPUVertexUniformData(
-                    command,
-                    0,
-                    graph_matrix.data(),
-                    sizeof(graph_matrix));
-
-                const auto target_texture = [&](
-                                                RenderTargetHandle handle,
-                                                bool sampled) {
-                    if (handle.value >= state.render_targets.size()) {
-                        throw std::runtime_error(
-                            "Frame graph render target handle is invalid.");
-                    }
-                    const RenderTargetRecord& record =
-                        engine.render_targets[handle.value];
-                    if (record.swapchain) return swapchain;
-                    const GpuRenderTarget& target =
-                        state.render_targets[handle.value];
-                    if (pal::render_target_samples_depth(record)) {
-                        if (sampled && record.has_depth && target.depth) {
-                            return target.depth;
-                        }
-                        pal::fail_render_target_has_no_texture();
-                    }
-                    return sampled ? target.sampled_color : target.color;
-                };
-                /** The depth texture a reference names. */
-                const auto task_depth_texture =
-                    [&](const RenderTextureRef& reference)
-                    -> SDL_GPUTexture* {
-                    if (
-                        reference.source !=
-                            RenderTextureSource::geometry_depth ||
-                        reference.task.value >=
-                            state.geometry_tasks.size()) {
-                        throw std::runtime_error(
-                            "Render task depth must name a geometry task.");
-                    }
-                    SDL_GPUTexture* depth =
-                        state.geometry_tasks[reference.task.value].depth;
-                    if (!depth) {
-                        throw std::runtime_error(
-                            "Geometry task has no depth attachment to "
-                            "share.");
-                    }
-                    return depth;
-                };
-                const auto source_texture =
-                    [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
-                    if (source.source == RenderTextureSource::render_target) {
-                        return target_texture(source.target, true);
-                    }
-                    if (source.task.value >= engine.frame_tasks.size()) {
-                        throw std::runtime_error(
-                            "Frame graph source task handle is invalid.");
-                    }
-                    const FrameTaskRecord& task =
-                        engine.frame_tasks[source.task.value];
-                    if (task.kind != FrameTaskKind::geometry) {
-                        throw std::runtime_error(
-                            "Frame graph source task is not geometry.");
-                    }
-                    if (
-                        source.source ==
-                        RenderTextureSource::geometry_output) {
-                        return target_texture(task.geometry.target, true);
-                    }
-                    const auto found = std::find_if(
-                        task.geometry.attachments.begin(),
-                        task.geometry.attachments.end(),
-                        [&](const GeometryTextureDescription& description) {
-                            return description.type == source.geometry_type;
-                        });
-                    if (found == task.geometry.attachments.end()) {
-                        throw std::runtime_error(
-                            "Geometry source attachment was not requested.");
-                    }
-                    const std::size_t attachment_index =
-                        static_cast<std::size_t>(
-                            std::distance(
-                                task.geometry.attachments.begin(),
-                                found));
-                    return state.geometry_tasks[source.task.value]
-                        .sampled_colors[attachment_index];
-                };
-                const auto gpu_mesh_index = [&](MeshHandle handle) {
-                    for (std::size_t index = 0;
-                         index < graph_plan.items.size();
-                         ++index) {
-                        if (
-                            graph_plan.items[index].mesh.value ==
-                            handle.value) {
-                            return index;
-                        }
-                    }
-                    return graph_meshes.size();
-                };
-                // The compiler-owned default render task replaces the
-                // ordinary scene pass when another feature (notably a
-                // shadow generator) materializes the frame graph. Its
-                // auto-mirrored mesh lists are only the opaque/transparent
-                // stages, so retain the background stages explicitly around
-                // those lists. Arbitrary user render tasks keep their own
-                // render-list-only contract (`scene_stages == false`).
-                const auto draw_task_skyboxes = [&] (
-                    SDL_GPURenderPass* task_pass,
-                    const std::array<float, 16>& task_matrix,
-                    const CameraRecord& task_camera,
-                    double task_aspect) {
-#if BBLITE_GPU_INSTANCING
-                    const std::array<float, 16> identity_parent_world{
-                        1.0f, 0.0f, 0.0f, 0.0f,
-                        0.0f, 1.0f, 0.0f, 0.0f,
-                        0.0f, 0.0f, 1.0f, 0.0f,
-                        0.0f, 0.0f, 0.0f, 1.0f,
-                    };
-#endif
-                    for (const SkyboxLayer layer : skybox_stage_order) {
-                        if (layer == SkyboxLayer::environment) {
-                            if (!state.skybox.enabled) continue;
-                            const std::array<float, 16> task_skybox_matrix =
-                                upstream::build_skybox_view_projection(
-                                    task_camera,
-                                    task_aspect);
-                            if (graph_scene.environment.skybox_uses_environment) {
-                                SDL_PushGPUVertexUniformData(
-                                    command,
-                                    0,
-                                    task_skybox_matrix.data(),
-                                    sizeof(task_skybox_matrix));
-                            } else {
-                                const upstream::SkyboxVertexUniforms
-                                    vertex_uniforms =
-                                        upstream::build_skybox_vertex_uniforms(
-                                            graph_scene.environment,
-                                            task_matrix);
-                                SDL_PushGPUVertexUniformData(
-                                    command,
-                                    0,
-                                    &vertex_uniforms,
-                                    sizeof(vertex_uniforms));
-                            }
-#if BBLITE_GPU_DEFORMATION
-                            if (graph_scene.environment.skybox_uses_environment) {
-                                const DeformationUniforms skybox_deformation =
-                                    build_deformation_uniforms(
-                                        MeshRecord{},
-                                        false);
-                                SDL_PushGPUVertexUniformData(
-                                    command,
-                                    1,
-                                    &skybox_deformation,
-                                    sizeof(skybox_deformation));
-                            }
-#endif
-                            const upstream::SkyboxUniforms skybox =
-                                upstream::build_skybox_uniforms(
-                                    graph_scene.environment,
-                                    graph_scene.transmission_enabled);
-                            SDL_BindGPUGraphicsPipeline(
-                                task_pass,
-                                state.skybox_pipeline);
-                            SDL_PushGPUFragmentUniformData(
-                                command,
-                                0,
-                                &skybox,
-                                sizeof(skybox));
-                            const SDL_GPUBufferBinding index_binding{
-                                state.skybox.indices,
-                                0,
-                            };
-                            const SDL_GPUTextureSamplerBinding texture_binding{
-                                state.skybox.texture,
-                                state.background_sampler,
-                            };
-#if BBLITE_GPU_INSTANCING
-                            if (graph_scene.environment.skybox_uses_environment) {
-                                const std::array<SDL_GPUBufferBinding, 2>
-                                    vertex_bindings{
-                                        SDL_GPUBufferBinding{
-                                            state.skybox.vertices,
-                                            0,
-                                        },
-                                        SDL_GPUBufferBinding{
-                                            state.background_instances,
-                                            0,
-                                        },
-                                    };
-                                SDL_BindGPUVertexBuffers(
-                                    task_pass,
-                                    0,
-                                    vertex_bindings.data(),
-                                    static_cast<Uint32>(
-                                        vertex_bindings.size()));
-                                SDL_PushGPUVertexUniformData(
-                                    command,
-                                    instance_uniform_slot,
-                                    identity_parent_world.data(),
-                                    sizeof(identity_parent_world));
-                            } else {
-                                const SDL_GPUBufferBinding vertex_binding{
-                                    state.skybox.vertices,
-                                    0,
-                                };
-                                SDL_BindGPUVertexBuffers(
-                                    task_pass,
-                                    0,
-                                    &vertex_binding,
-                                    1);
-                            }
-#else
-                            const SDL_GPUBufferBinding vertex_binding{
-                                state.skybox.vertices,
-                                0,
-                            };
-                            SDL_BindGPUVertexBuffers(
-                                task_pass,
-                                0,
-                                &vertex_binding,
-                                1);
-#endif
-#if BBLITE_GPU_MORPH_STORAGE
-                            if (graph_scene.environment.skybox_uses_environment) {
-                                const std::array<SDL_GPUBuffer*, 2>
-                                    morph_storage{
-                                        state.empty_morph_deltas,
-                                        state.empty_morph_weights,
-                                    };
-                                SDL_BindGPUVertexStorageBuffers(
-                                    task_pass,
-                                    0,
-                                    morph_storage.data(),
-                                    static_cast<Uint32>(
-                                        morph_storage.size()));
-                            }
-#endif
-                            SDL_BindGPUIndexBuffer(
-                                task_pass,
-                                &index_binding,
-                                SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                            SDL_BindGPUFragmentSamplers(
-                                task_pass,
-                                0,
-                                &texture_binding,
-                                1);
-                            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                                task_pass,
-                                36,
-                                1,
-                                0,
-                                0,
-                                0);
-                            continue;
-                        }
-#if BBLITE_SOLID_SKYBOX
-                        if (layer == SkyboxLayer::solid) {
-                            if (!state.solid_skybox.enabled) continue;
-                            const upstream::SolidSkyboxSceneUniforms
-                                skybox_scene =
-                                    upstream::build_solid_skybox_scene_uniforms(
-                                        task_camera,
-                                        task_matrix);
-                            const upstream::SolidSkyboxUniforms skybox_mesh =
-                                upstream::build_solid_skybox_uniforms(graph_scene);
-                            SDL_PushGPUVertexUniformData(
-                                command,
-                                0,
-                                &skybox_scene,
-                                sizeof(skybox_scene));
-                            SDL_PushGPUVertexUniformData(
-                                command,
-                                1,
-                                &skybox_mesh,
-                                sizeof(skybox_mesh));
-                            SDL_PushGPUFragmentUniformData(
-                                command,
-                                0,
-                                &skybox_mesh,
-                                sizeof(skybox_mesh));
-                            SDL_BindGPUGraphicsPipeline(
-                                task_pass,
-                                state.solid_skybox.pipeline);
-                            const SDL_GPUBufferBinding vertex_binding{
-                                state.solid_skybox.vertices,
-                                0,
-                            };
-                            const SDL_GPUBufferBinding index_binding{
-                                state.solid_skybox.indices,
-                                0,
-                            };
-                            SDL_BindGPUVertexBuffers(
-                                task_pass,
-                                0,
-                                &vertex_binding,
-                                1);
-                            SDL_BindGPUIndexBuffer(
-                                task_pass,
-                                &index_binding,
-                                SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                                task_pass,
-                                36,
-                                1,
-                                0,
-                                0,
-                                0);
-                            continue;
-                        }
-#endif
-#if BBLITE_IMAGE_SKYBOX
-                        if (layer == SkyboxLayer::image) {
-                            if (!state.image_skybox.enabled) continue;
-                            SDL_PushGPUVertexUniformData(
-                                command,
-                                0,
-                                task_matrix.data(),
-                                sizeof(task_matrix));
-                            const upstream::ImageSkyboxUniforms uniforms =
-                                upstream::build_image_skybox_uniforms(
-                                    graph_scene,
-                                    task_camera);
-                            SDL_BindGPUGraphicsPipeline(
-                                task_pass,
-                                state.image_skybox.pipeline);
-                            SDL_PushGPUFragmentUniformData(
-                                command,
-                                0,
-                                &uniforms,
-                                sizeof(uniforms));
-                            const SDL_GPUBufferBinding vertex_binding{
-                                state.image_skybox.vertices,
-                                0,
-                            };
-                            const SDL_GPUBufferBinding index_binding{
-                                state.image_skybox.indices,
-                                0,
-                            };
-                            const SDL_GPUTextureSamplerBinding texture_binding{
-                                state.image_skybox.texture,
-                                state.background_sampler,
-                            };
-                            SDL_BindGPUVertexBuffers(
-                                task_pass,
-                                0,
-                                &vertex_binding,
-                                1);
-                            SDL_BindGPUIndexBuffer(
-                                task_pass,
-                                &index_binding,
-                                SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                            SDL_BindGPUFragmentSamplers(
-                                task_pass,
-                                0,
-                                &texture_binding,
-                                1);
-                            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                                task_pass,
-                                36,
-                                1,
-                                0,
-                                0,
-                                0);
-                        }
-#endif
-                    }
-                    // The generic mesh paths treat slot zero as already
-                    // holding the task matrix. A skybox above used that slot
-                    // for its own scene block, so restore it before the
-                    // mirrored lists run.
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        0,
-                        task_matrix.data(),
-                        sizeof(task_matrix));
-                };
-                const auto draw_task_ground = [&] (
-                    SDL_GPURenderPass* task_pass,
-                    const std::array<float, 16>& task_matrix,
-                    const CameraRecord& task_camera) {
-                    if (!state.background.enabled) return;
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        0,
-                        task_matrix.data(),
-                        sizeof(task_matrix));
-#if BBLITE_GPU_DEFORMATION
-                    const DeformationUniforms ground_deformation =
-                        build_deformation_uniforms(MeshRecord{}, false);
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        1,
-                        &ground_deformation,
-                        sizeof(ground_deformation));
-#endif
-                    const upstream::BackgroundUniforms background =
-                        upstream::build_background_uniforms(
-                            graph_scene.environment,
-                            task_camera,
-                            graph_scene.transmission_enabled);
-                    SDL_BindGPUGraphicsPipeline(
-                        task_pass,
-                        state.background_pipeline);
-                    SDL_PushGPUFragmentUniformData(
-                        command,
-                        0,
-                        &background,
-                        sizeof(background));
-                    const SDL_GPUBufferBinding index_binding{
-                        state.background.indices,
-                        0,
-                    };
-                    const SDL_GPUTextureSamplerBinding texture_binding{
-                        state.background.texture,
-                        state.ground_sampler,
-                    };
-#if BBLITE_GPU_INSTANCING
-                    const std::array<float, 16> identity_parent_world{
-                        1.0f, 0.0f, 0.0f, 0.0f,
-                        0.0f, 1.0f, 0.0f, 0.0f,
-                        0.0f, 0.0f, 1.0f, 0.0f,
-                        0.0f, 0.0f, 0.0f, 1.0f,
-                    };
-                    const std::array<SDL_GPUBufferBinding, 2>
-                        vertex_bindings{
-                            SDL_GPUBufferBinding{
-                                state.background.vertices,
-                                0,
-                            },
-                            SDL_GPUBufferBinding{
-                                state.background_instances,
-                                0,
-                            },
-                        };
-                    SDL_BindGPUVertexBuffers(
-                        task_pass,
-                        0,
-                        vertex_bindings.data(),
-                        static_cast<Uint32>(vertex_bindings.size()));
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        instance_uniform_slot,
-                        identity_parent_world.data(),
-                        sizeof(identity_parent_world));
-#else
-                    const SDL_GPUBufferBinding vertex_binding{
-                        state.background.vertices,
-                        0,
-                    };
-                    SDL_BindGPUVertexBuffers(
-                        task_pass,
-                        0,
-                        &vertex_binding,
-                        1);
-#endif
-#if BBLITE_GPU_MORPH_STORAGE
-                    const std::array<SDL_GPUBuffer*, 2> morph_storage{
-                        state.empty_morph_deltas,
-                        state.empty_morph_weights,
-                    };
-                    SDL_BindGPUVertexStorageBuffers(
-                        task_pass,
-                        0,
-                        morph_storage.data(),
-                        static_cast<Uint32>(morph_storage.size()));
-#endif
-                    SDL_BindGPUIndexBuffer(
-                        task_pass,
-                        &index_binding,
-                        SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                    SDL_BindGPUFragmentSamplers(
-                        task_pass,
-                        0,
-                        &texture_binding,
-                        1);
-                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                        task_pass,
-                        6,
-                        1,
-                        0,
-                        0,
-                        0);
-                };
-#if BBLITE_HAS_BILLBOARDS
-                const auto draw_task_billboards = [&](
-                                                        SDL_GPURenderPass* pass,
-                                                        BillboardDepthMode mode,
-                                                        const std::array<float, 16>& view_projection,
-                                                        const std::array<float, 16>& view) {
-                    for (const BillboardPass& billboard :
-                         state.billboard_passes) {
-                        if (
-                            engine.billboard_systems[
-                                billboard.system.value].depth_mode != mode) {
-                            continue;
-                        }
-                        record_billboard_pass(
-                            command,
-                            pass,
-                            engine,
-                            billboard,
-                            view_projection,
-                            view);
-                    }
-                };
-#endif
-                const auto draw_scene = [&](
-                                          const Scene& draw_context,
-                                          const std::vector<GpuMesh>& draw_meshes,
-                                          SDL_GPURenderPass* task_pass,
-                                          SDL_GPUGraphicsPipeline* grid_opaque,
-                                          SDL_GPUGraphicsPipeline* grid_double_sided,
-                                          SDL_GPUGraphicsPipeline* grid_transparent,
-                                          SDL_GPUGraphicsPipeline* grid_transparent_double_sided,
-                                          const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_pipelines,
-                                          const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_a2c_pipelines,
-                                          const std::array<float, 16>& draw_matrix,
-                                          [[maybe_unused]] const CameraRecord& draw_camera,
-                                          // The three matrices this pass
-                                          // renders with, for a shader
-                                          // material declaring the product
-                                          // or either of its factors.
-                                          [[maybe_unused]] const
-                                              ShaderPassMatrices&
-                                                  draw_pass_matrices,
-                                          const upstream::RenderDrawLists& draw_lists,
-                                          [[maybe_unused]] const FrameTaskRecord* geometry_task,
-                                          [[maybe_unused]] const PinnedGeometryParams* geometry_params,
-                                          [[maybe_unused]] SDL_GPUBuffer* geometry_params_buffer,
-                                          // Set when this pass renders one
-                                          // generator's shadow map: the
-                                          // pass block takes the light's
-                                          // own matrices and every pipeline
-                                          // renders standard-Z.
-                                          [[maybe_unused]] const
-                                              ShadowGeneratorRecord*
-                                                  shadow_generator =
-                                                      nullptr,
-                                          [[maybe_unused]] bool
-                                              draw_scene_billboard_stages =
-                                                  false
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                                          , std::vector<PreparedSdlDraw>* deferred = nullptr,
-                                          const std::shared_ptr<PersistentSceneUniforms>& deferred_scene = {},
-                                          std::optional<SDL_GPUSampleCount> deferred_samples = {}
-#endif
-                                          ) {
-                    bool scene_matrix_bound = true;
-                    // One dispatch for both passes; only the sources
-                    // differ (`secondary_pipeline_for`).
-                    const SecondaryPipelines secondary{
-                        grid_opaque,
-                        grid_double_sided,
-                        grid_transparent,
-                        grid_transparent_double_sided,
-                        &shader_variant_pipelines,
-                        &shader_variant_a2c_pipelines,
-                    };
-                    const auto pipeline_for =
-                        [&](
-                            upstream::RenderPipelineKind kind,
-                            std::uint32_t shader_variant) {
-                        return secondary_pipeline_for(
-                            secondary,
-                            kind,
-                            shader_variant,
-                            "task dispatch");
-                    };
-#if BBLITE_PINNED_MATERIALS
-                    // The pass's scene and lights blocks, once per pass
-                    // rather than per draw: their builders run camera and
-                    // view math whose repetition was pure cost. Every
-                    // pinned family reads them, the node graphs included --
-                    // this is the frame-state question, not the
-                    // composed-variant one.
-                    upstream::SceneUniforms pass_scene_block =
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                        deferred_scene ? temporal_clean_scene_block(*deferred_scene) :
-#endif
-                        pinned_scene_block(
-                            draw_context,
-                            engine,
-                            draw_camera,
-                            draw_matrix);
-#if BBLITE_SHADOW_RECEIVERS
-                    // The pin installs the light-space matrices on a camera
-                    // facade whose caches it pins, so its caster pass reads
-                    // them straight back. There is no facade here: the pass
-                    // block takes the generator's own biased view-projection
-                    // and its light-space view directly.
-                    // The PASS's own matrices, not the generator's: a
-                    // cascaded generator renders one pass per cascade and
-                    // each carries its own cascade's pair, which the
-                    // caller has already resolved into these two.
-                    if (shadow_generator && draw_pass_matrices.view) {
-                        pass_scene_block.viewProjection = draw_matrix;
-                        pass_scene_block.view = *draw_pass_matrices.view;
-                    }
-#endif
-                    // A caster pass of the two COMPOSED families declares
-                    // no lights block in either stage -- its fragment is
-                    // the no-colour view -- so building the pin's 16-entry
-                    // array for it would be ~2 KB zeroed and copied per
-                    // frame for nothing. A node caster is the exception:
-                    // the pin re-compiles the graph's own bodies for it, so
-                    // its fragment still runs the lighting the graph wrote
-                    // and still declares `nmeLights`. The exception is the
-                    // NODE SHADOW define, not the node variant one -- a
-                    // graph that neither casts nor receives never reaches a
-                    // caster pass, and would otherwise pay for one.
-                    const std::vector<std::uint8_t> pass_lights_block =
-#if BBLITE_SHADOW_RECEIVERS && BBLITE_NODE_SHADOWS == 0
-                        shadow_generator
-                            ? std::vector<std::uint8_t>{}
-                            :
-#endif
-                        pinned_lights_block(draw_context, engine);
-#endif
-                    const auto draw_list =
-                        [&](const upstream::RenderDrawList& list) {
-                        SDL_GPUGraphicsPipeline* bound_pipeline =
-                            nullptr;
-                        for (
-                            const upstream::RenderDrawCommand& draw :
-                            list.commands) {
-                            if (
-                                draw.item_index >=
-                                draw_meshes.size()) {
-                                continue;
-                            }
-                            const GpuMesh& mesh =
-                                draw_meshes[draw.item_index];
-                            const upstream::RenderItem& draw_item =
-                                draw.item;
-                            const MaterialRecord* material =
-                                draw_item.material.value <
-                                        engine.materials.size()
-                                    ? &engine.materials[
-                                          draw_item.material.value]
-                                    : nullptr;
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                            if (deferred && draw_item.material_kind != upstream::RenderMaterialKind::standard) {
-                                throw std::runtime_error("Deferred temporal rendering requires a prepared material draw adapter.");
-                            }
-#endif
-#if BBLITE_PBR_VARIANTS > 0
-                            // The task pass draws PBR through the pin's own
-                            // stages exactly as the main pass does, from the
-                            // task's own camera and matrix.
-                            if (
-                                draw_item.material_kind ==
-                                upstream::RenderMaterialKind::pbr) {
-                                const std::size_t task_shader =
-                                    geometry_task
-                                        ? static_cast<std::size_t>(
-                                              geometry_task->geometry
-                                                  .shader_index)
-                                        : npos;
-                                pal::PinnedVariantKey pinned_key;
-                                const std::size_t pinned_variant =
-                                    pinned_variant_for_draw(
-                                        draw_context,
-                                        engine,
-                                        draw,
-                                        task_shader,
-                                        &pinned_key);
-                                if (pinned_variant == npos) {
-                                    gpu_error(
-                                        ("PBR draw for mesh " +
-                                         std::to_string(
-                                             draw_item.mesh.value) +
-                                         ", material " +
-                                         std::to_string(
-                                             draw_item.material.value) +
-                                         " resolves no pinned variant in a "
-                                         "render task: " +
-                                         pal::pinned_variant_request(
-                                             pinned_key,
-                                             task_shader))
-                                            .c_str());
-                                }
-                                ensure_pinned_slots(state, pinned_variant);
-                                draw_pinned_variant(
-                                    state,
-                                    command,
-                                    task_pass,
-                                    draw_context,
-                                    engine,
-                                    pass_scene_block,
-                                    pass_lights_block,
-                                    draw,
-                                    mesh,
-                                    material,
-                                    pinned_variant,
-                                    bound_pipeline,
-                                    geometry_task,
-                                    geometry_params,
-                                    geometry_params_buffer,
-                                    shadow_generator != nullptr
-#if BBLITE_SHADOWS_ESM
-                                    ,
-                                    shadow_generator &&
-                                            shadow_generator->filter ==
-                                                ShadowFilter::esm_directional
-                                        ? shadow_generator->esm_index
-                                        : invalid_handle
-#endif
-                                    );
-                                continue;
-                            }
-#endif
-#if BBLITE_STANDARD_VARIANTS > 0
-                            // The task pass draws Standard through the
-                            // pin's own stages exactly as it draws PBR,
-                            // from the task's own camera and matrix.
-                            if (
-                                draw_item.material_kind ==
-                                upstream::RenderMaterialKind::standard) {
-                                StandardVariantKey standard_key;
-                                const std::size_t standard_variant =
-                                    standard_variant_for_draw(
-                                        draw_context,
-                                        engine,
-                                        draw,
-                                        geometry_task
-                                            ? static_cast<std::size_t>(
-                                                  geometry_task->geometry
-                                                      .shader_index)
-                                            : npos,
-                                        &standard_key);
-                                if (standard_variant == npos) {
-                                    gpu_error(
-                                        ("Standard draw for mesh " +
-                                         std::to_string(
-                                             draw_item.mesh.value) +
-                                         ", material " +
-                                         std::to_string(
-                                             draw_item.material.value) +
-                                         " resolves no composed variant in "
-                                         "a render task: " +
-                                         standard_variant_request(
-                                             engine,
-                                             draw))
-                                            .c_str());
-                                }
-                                draw_standard_variant(
-                                    state,
-                                    command,
-                                    task_pass,
-                                    draw_context,
-                                    engine,
-                                    pass_scene_block,
-                                    pass_lights_block,
-                                    draw,
-                                    mesh,
-                                    material,
-                                    standard_variant,
-                                    standard_key.features,
-                                    bound_pipeline,
-                                    geometry_task,
-                                    geometry_params,
-                                    material_render_textures(
-                                        material,
-                                        source_texture),
-                                    geometry_params_buffer,
-                                    shadow_generator != nullptr
-#if BBLITE_SHADOWS_ESM
-                                    ,
-                                    shadow_generator &&
-                                            shadow_generator->filter ==
-                                                ShadowFilter::esm_directional
-                                        ? shadow_generator->esm_index
-                                        : invalid_handle
-#elif defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                                    , invalid_handle
-#endif
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                                    , deferred, deferred_scene, deferred_samples
-#endif
-                                    );
-                                continue;
-                            }
-#else
-                            if (
-                                draw_item.material_kind ==
-                                upstream::RenderMaterialKind::standard) {
-                                gpu_error(
-                                    "Standard draw in a build with no "
-                                    "composed variant table; the "
-                                    "transcribed fragment is retired.");
-                            }
-#endif
-#if BBLITE_NODE_VARIANTS > 0
-                            // A node graph in a task pass: a shadow caster,
-                            // or -- when the task is a geometry-output one --
-                            // the graph's own MRT view. The family's own
-                            // dispatcher either way, with the task deciding
-                            // which of the graph's compiled modules draws.
-                            if (
-                                draw_item.material_kind ==
-                                upstream::RenderMaterialKind::node) {
-                                draw_node_variant(
-                                    state,
-                                    command,
-                                    task_pass,
-                                    draw_context,
-                                    engine,
-                                    pass_scene_block,
-                                    pass_lights_block,
-                                    draw,
-                                    mesh,
-                                    draw_item.shader_variant,
-                                    bound_pipeline,
-                                    shadow_generator != nullptr,
-                                    material,
-#if BBLITE_SHADOWS_ESM
-                                    shadow_generator &&
-                                            shadow_generator->filter ==
-                                                ShadowFilter::esm_directional
-                                        ? shadow_generator->esm_index
-                                        : invalid_handle,
-#else
-                                    invalid_handle,
-#endif
-                                    geometry_task,
-                                    geometry_params,
-                                    geometry_params_buffer
-                                );
-                                continue;
-                            }
-#else
-                            if (
-                                draw_item.material_kind ==
-                                upstream::RenderMaterialKind::node) {
-                                gpu_error(
-                                    "a node material in a build with no "
-                                    "composed graphs.");
-                            }
-#endif
-                            SDL_GPUGraphicsPipeline* pipeline =
-                                pipeline_for(draw.pipeline, draw.item.shader_variant);
-                            if (!pipeline) {
-                                throw std::runtime_error(
-                                    "Reached secondary render pipeline was not created.");
-                            }
-                            if (pipeline != bound_pipeline) {
-                                SDL_BindGPUGraphicsPipeline(
-                                    task_pass,
-                                    pipeline);
-                                bound_pipeline = pipeline;
-                            }
-                            const bool grid_bucket =
-                                draw_item.material_kind ==
-                                upstream::RenderMaterialKind::grid;
-                            const bool shader_bucket =
-                                draw_item.material_kind ==
-                                upstream::RenderMaterialKind::shader;
-                            if (shader_bucket) {
-                                if (!material) {
-                                    throw std::runtime_error(
-                                        "Shader draw has an invalid material.");
-                                }
-                                const ShaderDrawMatrices shader_matrices(
-                                    engine,
-                                    engine.meshes[
-                                        draw_item.mesh.value],
-                                    draw_pass_matrices);
-                                const ShaderPassMatrices
-                                    shader_pass_matrices =
-                                        shader_matrices.apply(
-                                            draw_pass_matrices);
-                                // Per-stage blocks from the generated
-                                // variant table: [the declared system
-                                // matrices][custom floats gathered from
-                                // the material's flat value storage].
-                                const upstream::ShaderVariantInfo&
-                                    shader_info =
-                                        upstream::shader_variant_info(
-                                            draw_item.shader_variant);
-                                const auto push_stage_block =
-                                    [&](
-                                        const upstream::
-                                            ShaderVariantStageBlock&
-                                                block,
-                                        bool fragment_stage) {
-                                    if (!block.present) return;
-                                    shader_stage_block_floats(
-                                        block,
-                                        shader_pass_matrices,
-                                        *material,
-                                        shader_block_scratch);
-                                    if (fragment_stage) {
-                                        SDL_PushGPUFragmentUniformData(
-                                            command,
-                                            0,
-                                            shader_block_scratch.data(),
-                                            static_cast<Uint32>(
-                                                shader_block_scratch
-                                                    .size() *
-                                                sizeof(float)));
-                                    } else {
-                                        SDL_PushGPUVertexUniformData(
-                                            command,
-                                            0,
-                                            shader_block_scratch.data(),
-                                            static_cast<Uint32>(
-                                                shader_block_scratch
-                                                    .size() *
-                                                sizeof(float)));
-                                    }
-                                };
-                                push_stage_block(
-                                    shader_info.vertex,
-                                    false);
-                                push_stage_block(
-                                    shader_info.fragment,
-                                    true);
-                                bind_stage_storage(
-                                    task_pass,
-                                    state.shader_vertex_slots[
-                                        draw_item.shader_variant],
-                                    false,
-                                    "shader material vertex stage",
-                                    state.storage_binding_scratch,
-                                    [&](const std::string& name,
-                                        std::size_t) {
-                                        return shader_storage_buffer(
-                                            state, *material,
-                                            shader_info, name);
-                                    });
-                                bind_stage_storage(
-                                    task_pass,
-                                    state.shader_fragment_slots[
-                                        draw_item.shader_variant],
-                                    true,
-                                    "shader material fragment stage",
-                                    state.storage_binding_scratch,
-                                    [&](const std::string& name,
-                                        std::size_t) {
-                                        return shader_storage_buffer(
-                                            state, *material,
-                                            shader_info, name);
-                                    });
-                                bind_shader_material_textures(
-                                    state,
-                                    task_pass,
-                                    draw_context,
-                                    engine,
-                                    *material,
-                                    draw_item.shader_variant,
-                                    mesh);
-                                if (shader_info.vertex.present) {
-                                    // A pure scene-matrix vertex block
-                                    // leaves the shared binding valid;
-                                    // custom vertex floats invalidate
-                                    // it for the next draw.
-                                    scene_matrix_bound =
-                                        block_is_shared_scene_matrix(
-                                            shader_info.vertex);
-                                }
-                            } else {
-                                if (!scene_matrix_bound) {
-                                    SDL_PushGPUVertexUniformData(
-                                        command,
-                                        0,
-                                        draw_matrix.data(),
-                                        sizeof(draw_matrix));
-                                    scene_matrix_bound = true;
-                                }
-#if BBLITE_GPU_DEFORMATION
-                            if (!grid_bucket) {
-                                const DeformationUniforms deformation =
-                                    build_deformation_uniforms(
-                                        engine.meshes[
-                                            draw_item.mesh.value],
-                                        engine.geometries[
-                                            draw_item.geometry].flat_normals);
-                                SDL_PushGPUVertexUniformData(
-                                    command,
-                                    1,
-                                    &deformation,
-                                    sizeof(deformation));
-                            }
-#endif
-#if BBLITE_GPU_INSTANCING
-                            if (!grid_bucket) {
-                                const std::array<float, 16> parent_world =
-                                    instance_parent_draw_world(
-                                        engine.meshes[
-                                            draw_item.mesh.value],
-                                        draw_context,
-                                        engine);
-                                SDL_PushGPUVertexUniformData(
-                                    command,
-                                    instance_uniform_slot,
-                                    parent_world.data(),
-                                    sizeof(parent_world));
-                            }
-#endif
-                            if (grid_bucket) {
-                                const upstream::GridUniforms fragment =
-                                    upstream::build_grid_uniforms(
-                                        engine,
-                                        draw_item);
-                                SDL_PushGPUFragmentUniformData(
-                                    command,
-                                    0,
-                                    &fragment,
-                                    sizeof(fragment));
-                            }
-                            }
-                            const SDL_GPUBufferBinding index_binding{
-                                mesh.indices,
-                                0,
-                            };
-                            bind_mesh_vertex_buffers(
-                                task_pass,
-                                mesh);
-                            SDL_BindGPUIndexBuffer(
-                                task_pass,
-                                &index_binding,
-                                SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                                task_pass,
-                                mesh.index_count,
-                                mesh.instance_count,
-                                0,
-                                0,
-                                0);
-                        }
-                    };
-                    draw_list(draw_lists.opaque);
-#if BBLITE_HAS_BILLBOARDS
-                    if (draw_scene_billboard_stages) {
-                        draw_task_billboards(
-                            task_pass,
-                            BillboardDepthMode::cutout,
-                            draw_matrix,
-                            *draw_pass_matrices.view);
-                    }
-#endif
-                    draw_list(draw_lists.transparent);
-                };
-
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                if (graph_layer == 0) {
-                    for (const auto& registered : engine.registered_scenes) {
-                        for (const TaskHandle recorded_handle : registered->tasks) {
-                            auto& recorded = engine.frame_tasks.at(recorded_handle.value);
-                            if (!recorded.post_process.taa) continue;
-                            auto& first = state.post_process_tasks.at(recorded_handle.value).at(0);
-                            if (first.temporal_recorded) continue;
-                            upstream::record_taa_post_process(*recorded.post_process.taa, [&] {
-                                for (std::size_t child = 0; child < recorded.post_process.passes.size(); ++child) {
-                                    (void)prepare_post_process_pass(state, engine, recorded_handle, swapchain,
-                                        swapchain_format, width, height, child, source_texture, target_texture);
-                                }
-                            });
-                            first.temporal_recorded = true;
-                        }
-                    }
-                }
-#endif
-                for (const TaskHandle handle : graph_scene.tasks) {
-                    if (handle.value >= engine.frame_tasks.size()) {
-                        throw std::runtime_error(
-                            "Scene frame task handle is invalid.");
-                    }
-                    [[maybe_unused]] FrameTaskRecord& task =
-                        engine.frame_tasks[handle.value];
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                    if (task.kind != FrameTaskKind::render && task.kind != FrameTaskKind::post_process) {
-                        throw std::runtime_error("Temporal submission requires a prepared frame-task encoding adapter.");
-                    }
-#endif
-                    if (task.kind == FrameTaskKind::render) {
-                        if (
-                            task.render.target.value >=
-                            engine.render_targets.size()) {
-                            throw std::runtime_error(
-                                "Render task target is invalid.");
-                        }
-                        const RenderTargetRecord& target_record =
-                            engine.render_targets[task.render.target.value];
-                        GpuRenderTarget& target =
-                            state.render_targets[task.render.target.value];
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                        if (task.source_scene != graph_scene.state || task.render.scene_stages ||
-                            task.render.shadow_generator.value != invalid_handle || !target.color ||
-                            target.color_format != state.pinned_color_format) {
-                            throw std::runtime_error("Temporal source requires a prepared Standard color pass in its owning scene.");
-                        }
-#endif
-                        const CameraRecord& task_camera =
-                            task.render.has_camera &&
-                                    task.render.camera.value <
-                                        engine.cameras.size()
-                                ? engine.cameras[task.render.camera.value]
-                                : graph_camera;
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                        CameraRecord* source_camera = task.render.has_camera
-                            ? &engine.cameras.at(task.render.camera.value)
-                            : task.source_scene->camera.value < engine.cameras.size()
-                                ? &engine.cameras[task.source_scene->camera.value] : nullptr;
-                        prepare_temporal_scene_uniforms(task, source_camera,
-                            target.width, target.height, graph_extent.width, graph_extent.height,
-                            [](const float*, std::size_t) {});
-#endif
-                        // `_writePassSceneUBO` folds the camera's own
-                        // viewport into whichever extent the task was
-                        // configured for -- the canvas or the target.
-                        const double task_aspect =
-                            task.render.canvas_size
-                                ? upstream::effective_aspect_ratio(
-                                      task_camera,
-                                      static_cast<double>(graph_extent.width),
-                                      static_cast<double>(graph_extent.height))
-                                : upstream::effective_aspect_ratio(
-                                      task_camera,
-                                      static_cast<double>(target.width),
-                                      static_cast<double>(target.height));
-                        // A shadow task renders from the light, not from
-                        // a camera: the generator's own matrices replace
-                        // both of these below, so building and pushing a
-                        // camera view-projection first would be a dead pass
-                        // over the camera basis and a dead push.
-                        const bool shadow_task =
-                            task.render.shadow_generator.value !=
-                            invalid_handle;
-                        const std::array<float, 16> task_matrix = shadow_task
-                            ? std::array<float, 16>{}
-                            : upstream::build_view_projection(
-                                task_camera,
-                                task_aspect);
-                        // The task's own two factors, beside its product,
-                        // for a shader material that declares one. A shadow
-                        // task renders from the light instead and supplies
-                        // what the generator carries.
-                        const std::array<float, 16> task_view =
-                            upstream::build_view_matrix(
-                                upstream::camera_world_matrix(task_camera));
-                        const std::array<float, 16> task_projection =
-                            upstream::build_scene_projection(
-                                task_camera, task_aspect);
-                        const std::array<float, 4> task_camera_position =
-                            shader_camera_position(
-                                graph_scene, engine, task_camera);
-                        ShaderPassMatrices task_pass_matrices{
-                            task_matrix.data(),
-                            &task_view,
-                            &task_projection};
-                        task_pass_matrices.camera_position =
-                            &task_camera_position;
-                        if (!shadow_task) {
-                            SDL_PushGPUVertexUniformData(
-                                command,
-                                0,
-                                task_matrix.data(),
-                                sizeof(task_matrix));
-                        }
-#if BBLITE_SHADOW_RECEIVERS
-                        if (
-                            task.render.shadow_generator.value <
-                                engine.shadow_generators.size()) {
-                            // The pin's render gate: `renderEsmShadowMap` /
-                            // `renderPcfShadowMap` return before the caster
-                            // pass and both blur passes when nothing moved
-                            // since the last render, and the map textures
-                            // persist — the receiver keeps sampling last
-                            // render's bit-identical content. The verdict
-                            // was written onto the gate by
-                            // `refresh_shadow_generators` earlier this
-                            // frame.
-                            if (!state.shadow_refresh.gates[
-                                    task.render.shadow_generator.value]
-                                     .due) {
-                                continue;
-                            }
-                            if (!target_record.has_depth || !target.depth) {
-                                throw std::runtime_error(
-                                    "Shadow render task has no depth attachment.");
-                            }
-                            const ShadowGeneratorRecord& generator =
-                                engine.shadow_generators[
-                                    task.render.shadow_generator.value];
-                            // A cascaded generator has one pass per
-                            // cascade, each clearing and writing its own
-                            // layer of the shared depth array and
-                            // rendering through that cascade's own biased
-                            // view-projection. Every other generator has
-                            // one pass, one layer and one pair.
-                            const pal::ShadowCasterMatrices caster =
-                                pal::shadow_caster_matrices(engine, task);
-                            const std::array<float, 16>&
-                                caster_view_projection =
-                                    caster.view_projection;
-                            const std::array<float, 16>& caster_view =
-                                caster.view;
-                            SDL_GPUDepthStencilTargetInfo shadow_depth{};
-                            shadow_depth.texture = target.depth;
-                            shadow_depth.layer = static_cast<Uint8>(
-                                task.render.depth_layer);
-                            // The pin's own shadow target clears to ITS
-                            // far value, which standard-Z puts at 1 where
-                            // this port's reverse-Z puts it at 0.
-                            shadow_depth.clear_depth =
-                                pass_depth_clear(true);
-                            shadow_depth.load_op = SDL_GPU_LOADOP_CLEAR;
-                            shadow_depth.store_op = SDL_GPU_STOREOP_STORE;
-                            shadow_depth.stencil_load_op =
-                                SDL_GPU_LOADOP_DONT_CARE;
-                            shadow_depth.stencil_store_op =
-                                SDL_GPU_STOREOP_DONT_CARE;
-                            // An ESM caster pass STORES a colour: the
-                            // exponential depth its material view writes.
-                            // A PCF one has no colour attachment at all,
-                            // which is the difference between the two
-                            // pinned targets.
-                            SDL_GPUColorTargetInfo shadow_color{};
-                            if (target_record.has_color) {
-                                if (!target.color) {
-                                    throw std::runtime_error(
-                                        "ESM shadow task has no colour "
-                                        "attachment.");
-                                }
-                                shadow_color.texture = target.color;
-                                shadow_color.load_op = SDL_GPU_LOADOP_CLEAR;
-                                shadow_color.store_op =
-                                    SDL_GPU_STOREOP_STORE;
-                                // `createRenderTask({clrColor:{0,0,0,0}})`.
-                                shadow_color.clear_color =
-                                    SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
-                            }
-                            SDL_GPURenderPass* shadow_pass =
-                                SDL_BeginGPURenderPass(
-                                    command,
-                                    target_record.has_color
-                                        ? &shadow_color
-                                        : nullptr,
-                                    target_record.has_color ? 1u : 0u,
-                                    &shadow_depth);
-                            SDL_PushGPUVertexUniformData(
-                                command,
-                                0,
-                                caster_view_projection.data(),
-                                sizeof(caster_view_projection));
-                            ShaderPassMatrices caster_pass_matrices{
-                                caster_view_projection.data(),
-                                &caster_view,
-                                nullptr};
-                            caster_pass_matrices.camera_position =
-                                &task_camera_position;
-                            draw_scene(
-                            graph_scene, graph_meshes,
-                                shadow_pass,
-                                nullptr,
-                                nullptr,
-                                nullptr,
-                                nullptr,
-                                state.shader_shadow_pipelines,
-                                state.shader_shadow_pipelines,
-                                caster_view_projection,
-                                task_camera,
-                                caster_pass_matrices,
-                                task_draw_lists[handle.value],
-                                nullptr,
-                                nullptr,
-                                nullptr,
-                                &generator);
-                            SDL_EndGPURenderPass(shadow_pass);
-#if BBLITE_SHADOWS_ESM
-                            // `renderEsmShadowMap` blurs the map it just
-                            // drew, in two passes, before anything samples
-                            // it.
-                            if (
-                                generator.filter ==
-                                ShadowFilter::esm_directional) {
-                                run_esm_blur(
-                                    state,
-                                    command,
-                                    generator.esm_index);
-                            }
-#endif
-                            continue;
-                        }
-#endif
-                        if (!target_record.has_color) {
-                            if (!target_record.has_depth || !target.depth) {
-                                throw std::runtime_error(
-                                    "Depth-only render task has no depth attachment.");
-                            }
-                            if (task.render_meshes.empty()) {
-                                throw std::runtime_error(
-                                    "Depth-only render task requires explicit meshes.");
-                            }
-                            SDL_GPUDepthStencilTargetInfo task_depth{};
-                            task_depth.texture = target.depth;
-                            // Zero for every target but a layered one, and
-                            // the record carries the layer either way --
-                            // an ordinary pass into a layered target would
-                            // otherwise silently write layer 0.
-                            task_depth.layer = static_cast<Uint8>(
-                                task.render.depth_layer);
-                            task_depth.clear_depth =
-                                upstream::pinned_depth_clear;
-                            task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
-                            task_depth.store_op =
-                                target_record.sampled_depth
-                                    ? SDL_GPU_STOREOP_STORE
-                                    : SDL_GPU_STOREOP_DONT_CARE;
-                            task_depth.stencil_load_op =
-                                SDL_GPU_LOADOP_DONT_CARE;
-                            task_depth.stencil_store_op =
-                                SDL_GPU_STOREOP_DONT_CARE;
-                            SDL_GPURenderPass* task_pass =
-                                SDL_BeginGPURenderPass(
-                                    command,
-                                    nullptr,
-                                    0,
-                                    &task_depth);
-                            const std::size_t pipeline_index =
-                                target_record.samples == 4 ? 1u : 0u;
-                            for (int sided_mode = 0;
-                                 sided_mode < 2;
-                                 ++sided_mode) {
-                                SDL_BindGPUGraphicsPipeline(
-                                    task_pass,
-                                    sided_mode == 0
-                                        ? state.depth_only_pipelines[
-                                              pipeline_index]
-                                        : state
-                                              .depth_only_double_sided_pipelines[
-                                                  pipeline_index]);
-                                for (
-                                    const RenderTaskMesh& entry :
-                                    task.render_meshes) {
-                                    if (
-                                        entry.material.value >=
-                                        engine.materials.size()) {
-                                        throw std::runtime_error(
-                                            "Depth task material override is invalid.");
-                                    }
-                                    const MaterialRecord& material =
-                                        engine.materials[
-                                            entry.material.value];
-                                    if (!material.no_color) {
-                                        throw std::runtime_error(
-                                            "Depth-only render task requires a no-color material view.");
-                                    }
-                                    if (
-                                        material.double_sided !=
-                                        (sided_mode == 1)) {
-                                        continue;
-                                    }
-                                    // geometry-renderer-task.ts skips a hidden mesh at the draw
-                                    // itself. This path consumes no draw list -- it walks the task's
-                                    // own meshes and resolves each against the plan -- so it cannot
-                                    // inherit append_draw's answer and asks the same predicate.
-                                    if (!upstream::mesh_draws(
-                                            engine.meshes[
-                                                entry.mesh.value])) {
-                                        continue;
-                                    }
-                                    const std::size_t mesh_index =
-                                        gpu_mesh_index(entry.mesh);
-                                    if (
-                                        mesh_index >=
-                                        graph_meshes.size()) {
-                                        throw std::runtime_error(
-                                            "Depth task mesh is not in the scene.");
-                                    }
-                                    const GpuMesh& mesh =
-                                        graph_meshes[mesh_index];
-                                    const SDL_GPUBufferBinding index_binding{
-                                        mesh.indices,
-                                        0,
-                                    };
-                                    bind_mesh_vertex_buffers(
-                                        task_pass,
-                                        mesh);
-                                    SDL_BindGPUIndexBuffer(
-                                        task_pass,
-                                        &index_binding,
-                                        SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                                        task_pass,
-                                        mesh.index_count,
-                                        mesh.instance_count,
-                                        0,
-                                        0,
-                                        0);
-                                }
-                            }
-                            SDL_EndGPURenderPass(task_pass);
-                            continue;
-                        }
-                        SDL_GPUColorTargetInfo target_info{};
-                        target_info.texture =
-                            target_record.swapchain
-                                ? swapchain
-                                : target.color;
-                        target_info.clear_color = SDL_FColor{
-                            task.render.clear_color.r,
-                            task.render.clear_color.g,
-                            task.render.clear_color.b,
-                            task.render.clear_color.a,
-                        };
-                        target_info.load_op =
-                            task.render.clear
-                                ? SDL_GPU_LOADOP_CLEAR
-                                : SDL_GPU_LOADOP_LOAD;
-                        target_info.store_op = SDL_GPU_STOREOP_STORE;
-                        // The pin resolves into `rst` at end-of-pass, and
-                        // ignores it outright when the task's own target is
-                        // single-sample. That is the count the target was
-                        // *allocated* at, not the one it asked for: a run
-                        // forced to one sample resolves nothing.
-                        if (
-                            task.render.resolve_target.value !=
-                                invalid_handle &&
-                            task_sample_count(state, target_record.samples) !=
-                                SDL_GPU_SAMPLECOUNT_1) {
-                            target_info.store_op =
-                                SDL_GPU_STOREOP_RESOLVE_AND_STORE;
-                            target_info.resolve_texture = target_texture(
-                                task.render.resolve_target,
-                                false);
-                        }
-                        SDL_GPUDepthStencilTargetInfo task_depth{};
-                        SDL_GPUDepthStencilTargetInfo* task_depth_pointer =
-                            nullptr;
-                        // The pin's external-depth arm: a task handed another
-                        // task's depth binds that texture and LOADS it,
-                        // because a geometry output is eager and its owner
-                        // already cleared and wrote it.
-                        if (
-                            task.render.depth.source ==
-                            RenderTextureSource::geometry_depth) {
-                            task_depth.texture =
-                                task_depth_texture(task.render.depth);
-                            task_depth.load_op = SDL_GPU_LOADOP_LOAD;
-                            task_depth.store_op = SDL_GPU_STOREOP_STORE;
-                            task_depth.stencil_load_op =
-                                SDL_GPU_LOADOP_LOAD;
-                            task_depth.stencil_store_op =
-                                SDL_GPU_STOREOP_STORE;
-                            task_depth_pointer = &task_depth;
-                        } else if (target_record.has_depth && target.depth) {
-                            task_depth.texture = target.depth;
-                            // Its own layer, as the two passes above take
-                            // theirs; zero for every target but a layered
-                            // one, and an ordinary pass into a layered
-                            // target would otherwise write layer 0.
-                            task_depth.layer = static_cast<Uint8>(
-                                task.render.depth_layer);
-                            task_depth.clear_depth =
-                                upstream::pinned_depth_clear;
-                            task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
-                            task_depth.store_op =
-                                target_record.sampled_depth
-                                    ? SDL_GPU_STOREOP_STORE
-                                    : SDL_GPU_STOREOP_DONT_CARE;
-                            task_depth.stencil_load_op =
-                                SDL_GPU_LOADOP_DONT_CARE;
-                            task_depth.stencil_store_op =
-                                SDL_GPU_STOREOP_DONT_CARE;
-                            task_depth_pointer = &task_depth;
-                        }
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                        PreparedSdlScenePass prepared;
-                        prepared.target = target_info;
-                        if (task_depth_pointer) prepared.depth = *task_depth_pointer;
-                        if (source_camera && task_camera.viewport) {
-                            const auto rectangle = upstream::resolve_camera_viewport(task_camera, target.width, target.height);
-                            prepared.viewport = SDL_GPUViewport{static_cast<float>(rectangle.x), static_cast<float>(rectangle.y),
-                                static_cast<float>(rectangle.width), static_cast<float>(rectangle.height), 0.0f, 1.0f};
-                            prepared.scissor = SDL_Rect{rectangle.x, rectangle.y, rectangle.width, rectangle.height};
-                        }
-                        if (source_camera) upstream::sort_transparent_draws(task_draw_lists[handle.value].transparent, engine, task_camera);
-                        draw_scene(graph_scene, graph_meshes, nullptr, nullptr, nullptr, nullptr, nullptr, {}, {},
-                            task_matrix, task_camera, task_pass_matrices, task_draw_lists[handle.value],
-                            nullptr, nullptr, nullptr, nullptr, false, &prepared.draws, task.scene_uniforms,
-                            task_sample_count(state, target_record.samples));
-                        temporal_passes.emplace_back(std::move(prepared));
-                        continue;
-#endif
-                        SDL_GPURenderPass* task_pass =
-                            SDL_BeginGPURenderPass(
-                                command,
-                                &target_info,
-                                1,
-                                task_depth_pointer);
-                        upstream::sort_transparent_draws(
-                            task_draw_lists[handle.value].transparent,
-                            engine,
-                            task_camera);
-                        if (task.render.scene_stages) {
-                            draw_task_skyboxes(
-                                task_pass,
-                                task_matrix,
-                                task_camera,
-                                task_aspect);
-                        }
-                        draw_scene(
-                            graph_scene, graph_meshes,
-                            task_pass,
-                            state.grid_pipeline,
-                            state.grid_double_sided_pipeline,
-                            state.grid_transparent_pipeline,
-                            state
-                                .grid_transparent_double_sided_pipeline,
-                            state.shader_pipelines,
-                            state.shader_a2c_pipelines,
-                            task_matrix,
-                            task_camera,
-                            task_pass_matrices,
-                            task_draw_lists[handle.value],
-                            nullptr,
-                            nullptr,
-                            nullptr,
-                            nullptr,
-                            task.render.scene_stages);
-                        if (task.render.scene_stages) {
-                            draw_task_ground(
-                                task_pass,
-                                task_matrix,
-                                task_camera);
-#if BBLITE_HAS_BILLBOARDS
-                            draw_task_billboards(
-                                task_pass,
-                                BillboardDepthMode::transparent,
-                                task_matrix,
-                                task_view);
-#endif
-                        }
-                        SDL_EndGPURenderPass(task_pass);
-                        if (graph_layer == 0 && task.render.scene_stages) {
-                            // Utility layers share the primary surface's MSAA
-                            // attachment, before its resolve/present tasks run.
-                            for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
-                                const Scene& utility = *engine.registered_scenes[layer + 1];
-                                if (utility.surface_canvas || !utility.tasks.empty()) continue;
-                                const CameraRecord& utility_camera = utility.camera.value < engine.cameras.size()
-                                    ? engine.cameras[utility.camera.value] : task_camera;
-                                const double utility_aspect = upstream::effective_aspect_ratio(
-                                    utility_camera, target.width, target.height);
-                                const auto utility_matrix = upstream::build_view_projection(utility_camera, utility_aspect);
-                                const auto utility_view = upstream::build_view_matrix(upstream::camera_world_matrix(utility_camera));
-                                const auto utility_projection = upstream::build_scene_projection(utility_camera, utility_aspect);
-                                const auto utility_eye = shader_camera_position(utility, engine, utility_camera);
-                                ShaderPassMatrices utility_matrices{utility_matrix.data(), &utility_view, &utility_projection};
-                                utility_matrices.camera_position = &utility_eye;
-                                target_info.load_op = SDL_GPU_LOADOP_LOAD;
-                                if (task_depth_pointer) task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
-                                SDL_GPURenderPass* utility_pass = SDL_BeginGPURenderPass(
-                                    command, &target_info, 1, task_depth_pointer);
-                                set_pass_camera_viewport(utility_pass, utility, engine, utility_camera, target.width, target.height);
-                                SDL_PushGPUVertexUniformData(command, 0, utility_matrix.data(), sizeof(utility_matrix));
-                                upstream::sort_transparent_draws(overlay_plans[layer].draw_lists.transparent, engine, utility_camera);
-                                draw_scene(utility, state.overlay_meshes[layer], utility_pass,
-                                    state.grid_pipeline, state.grid_double_sided_pipeline,
-                                    state.grid_transparent_pipeline, state.grid_transparent_double_sided_pipeline,
-                                    state.shader_pipelines, state.shader_a2c_pipelines,
-                                    utility_matrix, utility_camera, utility_matrices, overlay_plans[layer].draw_lists,
-                                    nullptr, nullptr, nullptr);
-                                SDL_EndGPURenderPass(utility_pass);
-                            }
-                        }
-                        continue;
-                    }
-                    if (task.kind == FrameTaskKind::geometry) {
-                        GpuGeometryTask& geometry =
-                            state.geometry_tasks[handle.value];
-                        const SDL_GPUSampleCount task_samples =
-                            task_sample_count(
-                                state,
-                                task.geometry.samples);
-                        std::vector<SDL_GPUColorTargetInfo> target_infos;
-                        target_infos.reserve(
-                            task.geometry.attachments.size() +
-                            (task.geometry.target.value != invalid_handle
-                                 ? 1u
-                                 : 0u));
-                        for (
-                            std::size_t index = 0;
-                            index < task.geometry.attachments.size();
-                            ++index) {
-                            SDL_GPUColorTargetInfo target_info{};
-                            target_info.texture = geometry.colors[index];
-                            target_info.clear_color =
-                                geometry_clear_color(
-                                    task.geometry.attachments[index].type);
-                            target_info.load_op = SDL_GPU_LOADOP_CLEAR;
-                            target_info.store_op =
-                                task_samples == SDL_GPU_SAMPLECOUNT_1
-                                    ? SDL_GPU_STOREOP_STORE
-                                    : SDL_GPU_STOREOP_RESOLVE;
-                            target_info.resolve_texture =
-                                task_samples == SDL_GPU_SAMPLECOUNT_1
-                                    ? nullptr
-                                    : geometry.sampled_colors[index];
-                            target_infos.push_back(target_info);
-                        }
-                        if (
-                            task.geometry.target.value != invalid_handle) {
-                            GpuRenderTarget& output_target =
-                                state.render_targets[
-                                    task.geometry.target.value];
-                            SDL_GPUColorTargetInfo target_info{};
-                            target_info.texture = output_target.color;
-                            target_info.clear_color = SDL_FColor{
-                                task.geometry.target_clear_color.r,
-                                task.geometry.target_clear_color.g,
-                                task.geometry.target_clear_color.b,
-                                task.geometry.target_clear_color.a,
-                            };
-                            target_info.load_op =
-                                task.geometry.clear_target
-                                    ? SDL_GPU_LOADOP_CLEAR
-                                    : SDL_GPU_LOADOP_LOAD;
-                            target_info.store_op =
-                                task_samples == SDL_GPU_SAMPLECOUNT_1
-                                    ? SDL_GPU_STOREOP_STORE
-                                    : SDL_GPU_STOREOP_RESOLVE;
-                            target_info.resolve_texture =
-                                task_samples == SDL_GPU_SAMPLECOUNT_1
-                                    ? nullptr
-                                    : output_target.sampled_color;
-                            target_infos.push_back(target_info);
-                        }
-                        SDL_GPUDepthStencilTargetInfo task_depth{};
-                        // The pin's gpUniforms for the task's MRT variants:
-                        // last frame's view-projection (seeded with the
-                        // current one on the first frame) and the camera's
-                        // near/far planes.
-                        if (!geometry.has_previous_view_projection) {
-                            geometry.previous_view_projection =
-                                graph_matrix;
-                            geometry.has_previous_view_projection = true;
-                        }
-                        const PinnedGeometryParams geometry_params{
-                            geometry.previous_view_projection,
-                            {
-                                static_cast<float>(graph_camera.near_plane),
-                                static_cast<float>(graph_camera.far_plane),
-                                0.0f,
-                                0.0f,
-                            },
-                        };
-#if BBLITE_PINNED_MATERIALS
-                        // The same block as a real buffer, for a composed
-                        // geometry fragment whose gp the shader compile
-                        // demoted out of SDL_GPU's four uniform slots --
-                        // which happens to either family once scene, lights,
-                        // mesh and material fill them. The upload runs on its
-                        // own command buffer, submitted (and so executed)
-                        // ahead of this frame's, and cycles the buffer so a
-                        // frame still in flight keeps last frame's contents.
-                        {
-                            if (!geometry.params) {
-                                geometry.params = upload_buffer(
-                                    state.device,
-                                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                                    &geometry_params,
-                                    sizeof(geometry_params));
-                            } else {
-                                update_buffer(
-                                    state.device,
-                                    geometry.params,
-                                    &geometry_params,
-                                    sizeof(geometry_params));
-                            }
-                        }
-#endif
-                        task_depth.texture = geometry.depth;
-                        task_depth.clear_depth = upstream::pinned_depth_clear;
-                        task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
-                        task_depth.store_op = geometry.depth_borrowed
-                            ? SDL_GPU_STOREOP_STORE
-                            : SDL_GPU_STOREOP_DONT_CARE;
-                        task_depth.stencil_load_op =
-                            SDL_GPU_LOADOP_DONT_CARE;
-                        task_depth.stencil_store_op =
-                            SDL_GPU_STOREOP_DONT_CARE;
-                        SDL_GPURenderPass* task_pass =
-                            SDL_BeginGPURenderPass(
-                                command,
-                                target_infos.data(),
-                                static_cast<Uint32>(target_infos.size()),
-                                &task_depth);
-                        SDL_PushGPUVertexUniformData(
-                            command,
-                            0,
-                            graph_matrix.data(),
-                            sizeof(graph_matrix));
-                        upstream::sort_transparent_draws(
-                            task_draw_lists[handle.value].transparent,
-                            engine,
-                            graph_camera);
-                        draw_scene(
-                            graph_scene, graph_meshes,
-                            task_pass,
-                            nullptr,
-                            nullptr,
-                            nullptr,
-                            nullptr,
-                            {},
-                            {},
-                            graph_matrix,
-                            graph_camera,
-                            graph_pass_matrices,
-                            task_draw_lists[handle.value],
-                            &task,
-                            &geometry_params,
-                            geometry.params);
-#if BBLITE_GEOMETRY_TASK_FAMILIES
-                        // The previous view-projection is a property of the
-                        // TASK, tracked only when a composed family reads it.
-                        geometry.previous_view_projection =
-                            graph_matrix;
-#endif
-                        SDL_EndGPURenderPass(task_pass);
-                        continue;
-                    }
-
-#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
-                    if (task.kind == FrameTaskKind::effect) {
-                        // The same two halves the swapchain renderer draws
-                        // through, recorded into the frame graph's command
-                        // buffer instead: the pin ships two entry points
-                        // over one pass, not two passes.
-                        if (
-                            state.effect_tasks.size() <
-                            engine.frame_tasks.size()) {
-                            state.effect_tasks.resize(
-                                engine.frame_tasks.size());
-                        }
-                        EffectPass& pass = state.effect_tasks[handle.value];
-                        const RenderTargetRecord& target_record =
-                            engine.render_targets[task.effect.target.value];
-                        if (!pass.pipeline) {
-                            pass = create_effect_pass(
-                                state.device,
-                                engine,
-                                task.effect.effect,
-                                target_record.swapchain
-                                    ? swapchain_format
-                                    : state
-                                          .render_targets[
-                                              task.effect.target.value]
-                                          .color_format,
-                                // Through the MSAA gate like every other
-                                // task pipeline, so a single-sample run
-                                // matches the 1-sample texture the gate
-                                // allocated (Dawn's site reads the same
-                                // gate).
-                                target_record.swapchain
-                                    ? 1u
-                                    : gpu_sample_count_value(
-                                          task_sample_count(
-                                              state,
-                                              target_record.samples)));
-                        }
-                        SDL_GPUColorTargetInfo effect_target{};
-                        effect_target.texture =
-                            target_texture(task.effect.target, false);
-                        effect_target.load_op = task.effect.clear
-                            ? SDL_GPU_LOADOP_CLEAR
-                            : SDL_GPU_LOADOP_LOAD;
-                        effect_target.clear_color = SDL_FColor{
-                            task.effect.clear_color.r,
-                            task.effect.clear_color.g,
-                            task.effect.clear_color.b,
-                            task.effect.clear_color.a};
-                        effect_target.store_op = SDL_GPU_STOREOP_STORE;
-                        SDL_GPURenderPass* effect_pass =
-                            SDL_BeginGPURenderPass(
-                                command,
-                                &effect_target,
-                                1,
-                                nullptr);
-                        record_effect_pass(
-                            command,
-                            effect_pass,
-                            engine,
-                            pass,
-                            task.effect.effect);
-                        SDL_EndGPURenderPass(effect_pass);
-                        continue;
-                    }
-#endif
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-                    if (task.kind == FrameTaskKind::post_process) {
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                        if (task.post_process.taa) {
-                            auto& taa = *task.post_process.taa;
-                            auto& source = engine.frame_tasks.at(task.post_process.source_tasks.at(0).value);
-                            if (!source.source_scene || !source.scene_uniforms) {
-                                throw std::runtime_error("Temporal task source has no retained scene UBO.");
-                            }
-                            CameraRecord* camera = source.source_scene->camera.value < engine.cameras.size()
-                                ? &engine.cameras[source.source_scene->camera.value] : nullptr;
-                            [[maybe_unused]] const double draws = upstream::execute_taa_post_process(taa,
-                                task.post_process.passes.at(0).params[0], camera,
-                                [](CameraRecord* value) { return upstream::scene_camera_change_key(*value); },
-                                [&](std::size_t child) {
-                                    write_sdl_post_process_uniforms(state, engine, handle, child, width, height);
-                                },
-                                [&](std::size_t child) -> std::optional<double> {
-                                    temporal_passes.emplace_back(prepare_post_process_pass(state, engine, handle, swapchain,
-                                        swapchain_format, width, height, child, source_texture, target_texture, false));
-                                    return upstream::post_process_leaf_draw_count();
-                                },
-                                [&](TaaPostProcessState& value) {
-                                    const auto& blend = task.post_process.passes.at(0);
-                                    const auto extent = resolve_post_process_extent(engine.render_targets.at(blend.output_target.value),
-                                        state.render_targets, blend, width, height);
-                                    advance_temporal_jitter(value, *source.scene_uniforms, extent.source_width, extent.source_height,
-                                        [](std::size_t, const float*, std::size_t) {});
-                                });
-                            ++taa.execution_count;
-                        } else {
-                            for (std::size_t child = 0; child < task.post_process.passes.size(); ++child) {
-                                temporal_passes.emplace_back(prepare_post_process_pass(state, engine, handle, swapchain,
-                                    swapchain_format, width, height, child, source_texture, target_texture));
-                            }
-                        }
-                        continue;
-#endif
-                        // A composite records the chain its own factory
-                        // built; a plain effect is the same loop over one.
-                        for (
-                            std::size_t index = 0;
-                            index < task.post_process.passes.size();
-                            ++index) {
-                            record_post_process_pass(
-                                state,
-                                engine,
-                                handle,
-                                command,
-                                swapchain,
-                                swapchain_format,
-                                width,
-                                height,
-                                index,
-                                capture_texture,
-                                source_texture,
-                                target_texture);
-                        }
-                        continue;
-                    }
-#endif
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
-                    if (task.kind == FrameTaskKind::screen_space) {
-                        record_screen_space_task(
-                            state,
-                            engine,
-                            handle,
-                            command,
-                            swapchain,
-                            swapchain_format,
-                            width,
-                            height,
-                            capture_texture,
-                            source_texture,
-                            target_texture);
-                        continue;
-                    }
-#endif
-                    const CopyTaskOptions& copy = task.copy;
-                    if (frame_options.skip_copy_task(copy)) continue;
-                    const bool force_full_viewport = frame_options.full_copy_viewport(copy);
-                    if (
-                        copy.resolve_target.value != invalid_handle &&
-                        copy.target.value == invalid_handle) {
-                        if (
-                            copy.source.source !=
-                            RenderTextureSource::render_target) {
-                            throw std::runtime_error(
-                                "Resolve source must be a render target.");
-                        }
-                        if (state.sample_count ==
-                            SDL_GPU_SAMPLECOUNT_1) {
-                            // Nothing to average: the pinned resolve of a
-                            // single-sample source is the source, so the
-                            // frame graph's resolve step is a texture copy
-                            // — the same degradation `pal_dawn.cpp` makes.
-                            // Asking for STOREOP_RESOLVE here instead
-                            // builds a command list D3D12 refuses to
-                            // close, which is why every geometry-output
-                            // scene failed under BBLITE_MSAA=1.
-                            const GpuRenderTarget& resolve_source =
-                                state.render_targets[
-                                    copy.source.target.value];
-                            SDL_GPUTextureLocation copy_source{};
-                            copy_source.texture = target_texture(
-                                copy.source.target,
-                                false);
-                            SDL_GPUTextureLocation copy_destination{};
-                            copy_destination.texture = target_texture(
-                                copy.resolve_target,
-                                false);
-                            SDL_GPUCopyPass* resolve_copy =
-                                SDL_BeginGPUCopyPass(command);
-                            SDL_CopyGPUTextureToTexture(
-                                resolve_copy,
-                                &copy_source,
-                                &copy_destination,
-                                resolve_source.width,
-                                resolve_source.height,
-                                1,
-                                false);
-                            SDL_EndGPUCopyPass(resolve_copy);
-                            continue;
-                        }
-                        SDL_GPUColorTargetInfo resolve_info{};
-                        resolve_info.texture =
-                            target_texture(copy.source.target, false);
-                        resolve_info.load_op = SDL_GPU_LOADOP_LOAD;
-                        resolve_info.store_op = SDL_GPU_STOREOP_RESOLVE;
-                        resolve_info.resolve_texture =
-                            target_texture(copy.resolve_target, false);
-                        SDL_GPURenderPass* resolve_pass =
-                            SDL_BeginGPURenderPass(
-                                command,
-                                &resolve_info,
-                                1,
-                                nullptr);
-                        SDL_EndGPURenderPass(resolve_pass);
-                        continue;
-                    }
-
-                    const RenderTargetRecord& target_record =
-                        engine.render_targets[copy.target.value];
-                    // A copy writing a VIEWPORT of the swapchain composes
-                    // with whatever else wrote the rest of it -- scene 187
-                    // presents SMAA into one half and the raw image into
-                    // the other -- and an SDL_GPU swapchain texture cannot
-                    // be read back. So it draws into the same readable
-                    // present copy a presenting post-process pass uses, and
-                    // that copy is what gets blitted and captured. Drawing
-                    // straight to the swapchain instead left the capture
-                    // reading this copy's own source: half the frame, at
-                    // half the width.
-                    const auto surface_pane = target_record.swapchain && !force_full_viewport
-                        ? scene_surface_pane(engine, graph_scene, width, height)
-                        : std::nullopt;
-                    if (surface_pane) {
-                        create_color(state, swapchain_format, width, height);
-                        SDL_GPUColorTargetInfo surface_target{};
-                        surface_target.texture = state.color;
-                        surface_target.load_op = graph_layer == 0
-                            ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-                        surface_target.store_op = SDL_GPU_STOREOP_STORE;
-                        SDL_GPURenderPass* surface_pass = SDL_BeginGPURenderPass(
-                            command, &surface_target, 1, nullptr);
-                        const SDL_GPUViewport viewport{
-                            static_cast<float>(surface_pane->x),
-                            static_cast<float>(surface_pane->y),
-                            static_cast<float>(surface_pane->width),
-                            static_cast<float>(surface_pane->height), 0.0f, 1.0f};
-                        const SDL_Rect scissor{surface_pane->x, surface_pane->y,
-                            surface_pane->width, surface_pane->height};
-                        SDL_SetGPUViewport(surface_pass, &viewport);
-                        SDL_SetGPUScissor(surface_pass, &scissor);
-                        SDL_BindGPUGraphicsPipeline(surface_pass, state.blit_pipeline);
-                        const SDL_GPUTextureSamplerBinding binding{
-                            source_texture(copy.source), state.background_sampler};
-                        SDL_BindGPUFragmentSamplers(surface_pass, 0, &binding, 1);
-                        count_gpu_draw(SDL_DrawGPUPrimitives, surface_pass, 3, 1, 0, 0);
-                        SDL_EndGPURenderPass(surface_pass);
-                        capture_texture = state.color;
-                        continue;
-                    }
-                    const bool partial_present =
-                        target_record.swapchain &&
-                        copy.has_viewport &&
-                        !force_full_viewport;
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-                    if (partial_present && !state.post_process_present) {
-                        state.post_process_present = create_frame_texture(
-                            state.device,
-                            swapchain_format,
-                            SDL_GPU_SAMPLECOUNT_1,
-                            width,
-                            height,
-                            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-                                SDL_GPU_TEXTUREUSAGE_SAMPLER);
-                    }
-#else
-                    if (partial_present) {
-                        throw std::runtime_error(
-                            "A copy task writing a viewport of the "
-                            "swapchain needs the readable present copy, "
-                            "which only a post-process build carries.");
-                    }
-#endif
-                    SDL_GPUColorTargetInfo blit_target{};
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-                    blit_target.texture = partial_present
-                        ? state.post_process_present
-                        : target_texture(copy.target, false);
-#else
-                    blit_target.texture =
-                        target_texture(copy.target, false);
-#endif
-                    blit_target.load_op =
-                        copy.has_viewport && !force_full_viewport
-                            ? SDL_GPU_LOADOP_LOAD
-                            : SDL_GPU_LOADOP_DONT_CARE;
-                    blit_target.store_op = SDL_GPU_STOREOP_STORE;
-                    SDL_GPURenderPass* blit_pass =
-                        SDL_BeginGPURenderPass(
-                            command,
-                            &blit_target,
-                            1,
-                            nullptr);
-                    SDL_BindGPUGraphicsPipeline(
-                        blit_pass,
-                        target_record.samples == 4
-                            ? state.blit_msaa_pipeline
-                            : state.blit_pipeline);
-                    if (force_full_viewport || copy.has_viewport) {
-#if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
-                        const GpuRenderTarget& target =
-                            state.render_targets[copy.target.value];
-                        const NormalizedViewport normalized_viewport =
-                            force_full_viewport
-                                ? NormalizedViewport{}
-                                : copy.viewport;
-                        const PixelViewport pixel_viewport =
-                            upstream::resolve_copy_viewport(
-                                normalized_viewport,
-                                target.width,
-                                target.height);
-                        const SDL_GPUViewport gpu_viewport{
-                            static_cast<float>(pixel_viewport.x),
-                            static_cast<float>(pixel_viewport.y),
-                            static_cast<float>(pixel_viewport.width),
-                            static_cast<float>(pixel_viewport.height),
-                            0.0f,
-                            1.0f,
-                        };
-                        SDL_SetGPUViewport(
-                            blit_pass,
-                            &gpu_viewport);
-                        const SDL_Rect scissor{
-                            pixel_viewport.x,
-                            pixel_viewport.y,
-                            pixel_viewport.width,
-                            pixel_viewport.height,
-                        };
-                        SDL_SetGPUScissor(blit_pass, &scissor);
-#else
-                        throw std::runtime_error(
-                            "Viewport copy requires geometry-output support.");
-#endif
-                    }
-                    const SDL_GPUTextureSamplerBinding texture_binding{
-                        source_texture(copy.source),
-                        state.background_sampler,
-                    };
-                    SDL_BindGPUFragmentSamplers(
-                        blit_pass,
-                        0,
-                        &texture_binding,
-                        1);
-                    count_gpu_draw(SDL_DrawGPUPrimitives, blit_pass, 3, 1, 0, 0);
-                    SDL_EndGPURenderPass(blit_pass);
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-                    if (partial_present) {
-                        // Present what the frame composed, and capture the
-                        // same texture -- the post-process present pass
-                        // does exactly this after its own draw.
-                        SDL_GPUBlitInfo present_blit{};
-                        present_blit.source = SDL_GPUBlitRegion{
-                            state.post_process_present,
-                            0, 0, 0, 0, width, height};
-                        present_blit.destination = SDL_GPUBlitRegion{
-                            target_texture(copy.target, false),
-                            0, 0, 0, 0, width, height};
-                        present_blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                        present_blit.flip_mode = SDL_FLIP_NONE;
-                        present_blit.filter = SDL_GPU_FILTER_NEAREST;
-                        SDL_BlitGPUTexture(command, &present_blit);
-                        capture_texture = state.post_process_present;
-                    } else
-#endif
-                    if (target_record.swapchain) {
-                        capture_texture = source_texture(copy.source);
-                    }
-                }
-                }
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                for (const auto& prepared : temporal_passes) {
-                    if (const auto* source = std::get_if<PreparedSdlScenePass>(&prepared)) {
-                        encode_sdl_prepared_scene(command, *source);
-                    } else {
-                        encode_post_process_pass(state, command, std::get<PreparedSdlPostProcessPass>(prepared), capture_texture);
-                    }
-                }
-                } else if (state.post_process_present) {
-                    // stopEngine clears the pin's render callback. Keep presenting
-                    // its final image without executing history or jitter again.
-                    SDL_GPUBlitInfo present{};
-                    const bool resized = width != state.frame_graph_width || height != state.frame_graph_height;
-                    if (resized) create_color(state, swapchain_format, width, height);
-                    present.source = SDL_GPUBlitRegion{state.post_process_present, 0, 0, 0, 0,
-                        state.frame_graph_width, state.frame_graph_height};
-                    present.destination = SDL_GPUBlitRegion{resized ? state.color : swapchain, 0, 0, 0, 0, width, height};
-                    present.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                    present.filter = SDL_GPU_FILTER_NEAREST;
-                    SDL_BlitGPUTexture(command, &present);
-                    capture_texture = resized ? state.color : state.post_process_present;
-                }
-                capture_render_state();
-#endif
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                capture_render_state();
-#endif
-                if (capture_texture == state.color && capture_texture) {
-                    SDL_GPUBlitInfo present{};
-                    present.source = SDL_GPUBlitRegion{state.color, 0, 0, 0, 0, width, height};
-                    present.destination = SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
-                    present.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                    present.filter = SDL_GPU_FILTER_NEAREST;
-                    SDL_BlitGPUTexture(command, &present);
-                }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-                SDL_GPUTexture* ui_target =
-                    capture_frame && capture_ui
-                        ? capture_texture
-                        : swapchain;
-                if (!ui_target) {
-                    throw std::runtime_error(
-                        "Frame graph did not present a native UI target.");
-                }
-                render_ui_sdl_frame(
-                    state,
-                    command,
-                    ui_target,
-                    swapchain_format,
-                    record_ui_rml_frame(*ui_runtime, width, height));
-                if (ui_target != swapchain) {
-                    // The graph presented before the overlay was recorded.
-                    // Present the same composite that the explicit UI
-                    // screenshot mode reads back below.
-                    SDL_GPUBlitInfo ui_blit{};
-                    ui_blit.source = SDL_GPUBlitRegion{
-                        ui_target,
-                        0,
-                        0,
-                        0,
-                        0,
-                        width,
-                        height};
-                    ui_blit.destination = SDL_GPUBlitRegion{
-                        swapchain,
-                        0,
-                        0,
-                        0,
-                        0,
-                        width,
-                        height};
-                    ui_blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                    ui_blit.flip_mode = SDL_FLIP_NONE;
-                    ui_blit.filter = SDL_GPU_FILTER_NEAREST;
-                    SDL_BlitGPUTexture(command, &ui_blit);
-                }
-#endif
-                if (capture_frame) {
-                    if (!capture_texture) {
-                        throw std::runtime_error(
-                            "Frame graph did not present a capture source.");
-                    }
-                    save_texture_png(
-                        state.device,
-                        command,
-                        capture_texture,
-                        swapchain_format,
-                        width,
-                        height,
-                        screenshot_path);
-                    captures.screenshot_saved = true;
-                }
-#if BBLITE_OFFSCREEN_SURFACES
-                else if (offscreen) {
-                    offscreen_target.publish(command, *offscreen);
-                }
-#endif
-                else if (!SDL_SubmitGPUCommandBuffer(command)) {
-                    gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
-                }
-            } else {
-            if (capture_frame || transmission_enabled) {
-                create_color(
-                    state,
-                    transmission_enabled
-                        ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
-                        : swapchain_format,
-                    width,
-                    height);
+            if (
+                (added_families & material_family_grid) != 0 &&
+                !state.grid_pipeline) {
+                throw std::runtime_error(
+                    "Post-registration Grid material family has no reached pipeline.");
             }
-#if BBLITE_RENDERER_TRANSMISSION
-            if (transmission_enabled) {
-                create_transmission_color(state);
-                create_processed_color(
-                    state,
-                    swapchain_format,
-                    width,
-                    height);
-            }
-#endif
-            create_msaa_color(
-                state,
-                transmission_enabled
-                    ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
-                    : swapchain_format,
-                width,
-                height);
-            create_depth(state, width, height);
-            SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
-
-            SDL_GPUColorTargetInfo color_info{};
-            const bool multisampled =
-                state.sample_count != SDL_GPU_SAMPLECOUNT_1;
-            color_info.texture =
-                multisampled
-                    ? state.msaa_color
-                    : capture_frame || transmission_enabled
-                        ? state.color
-                        : swapchain;
-            // The pin's inverse runs in f64 and WebGPU's clear value stays
-            // double; SDL_FColor is the one store that narrows, so the cast
-            // sits at the store exactly like the pin's own f32 boundaries.
-            color_info.clear_color = transmission_enabled
-                ? SDL_FColor{
-                      static_cast<float>(
-                          upstream::inverse_image_processed_channel(
-                              scene.clear_color.r,
-                              scene.environment.exposure,
-                              scene.environment.contrast,
-                              scene.environment.tone_mapping_enabled)),
-                      static_cast<float>(
-                          upstream::inverse_image_processed_channel(
-                              scene.clear_color.g,
-                              scene.environment.exposure,
-                              scene.environment.contrast,
-                              scene.environment.tone_mapping_enabled)),
-                      static_cast<float>(
-                          upstream::inverse_image_processed_channel(
-                              scene.clear_color.b,
-                              scene.environment.exposure,
-                              scene.environment.contrast,
-                              scene.environment.tone_mapping_enabled)),
-                      scene.clear_color.a}
-                : SDL_FColor{
-                      scene.clear_color.r,
-                      scene.clear_color.g,
-                      scene.clear_color.b,
-                      scene.clear_color.a};
-            color_info.load_op = SDL_GPU_LOADOP_CLEAR;
-            // Resolve opaque color for transmission sampling while preserving
-            // the multisample attachment so transmissive draws can resume it.
-            // An overlay layer preserves it for the same reason the pin's own
-            // overlay does: "both scenes must use the base task's MSAA colour
-            // texture before the overlay can load its pixels and resolve the
-            // composited result" (scene/swapchain-overlay.ts).
-            color_info.store_op =
-                multisampled
-                    ? transmission_enabled || !overlay_plans.empty()
-                        ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
-                        : SDL_GPU_STOREOP_RESOLVE
-                    : SDL_GPU_STOREOP_STORE;
-            color_info.resolve_texture =
-                multisampled
-                    ? capture_frame || transmission_enabled
-                        ? state.color
-                        : swapchain
-                    : nullptr;
-            SDL_GPUDepthStencilTargetInfo depth_info{};
-            depth_info.texture = state.depth;
-            depth_info.clear_depth = upstream::pinned_depth_clear;
-            depth_info.load_op = SDL_GPU_LOADOP_CLEAR;
-            depth_info.store_op = SDL_GPU_STOREOP_DONT_CARE;
-            if (transmission_enabled) {
-                depth_info.store_op = SDL_GPU_STOREOP_STORE;
-            }
-            depth_info.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-            depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-            SDL_GPURenderPass* pass =
-                SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
-            set_pass_camera_viewport(
-                pass, scene, engine, camera, width, height);
-            bool scene_matrix_bound = true;
-#if BBLITE_RENDERER_TRANSMISSION
-            // The pin's transmission grab fires once, before the first
-            // transmissive draw: the opaque scene colour resolved so far is
-            // blitted into the 1024x1024 mip-chained refraction texture the
-            // composed fragments sample.
-            bool transmission_copied = false;
-#endif
-#if BBLITE_GPU_INSTANCING
-            const std::array<float, 16> identity_parent_world{
-                1.0f, 0.0f, 0.0f, 0.0f,
-                0.0f, 1.0f, 0.0f, 0.0f,
-                0.0f, 0.0f, 1.0f, 0.0f,
-                0.0f, 0.0f, 0.0f, 1.0f,
-            };
-#endif
-            const auto draw_skybox = [&] {
-                if (!state.skybox.enabled) return;
-                const upstream::SkyboxUniforms skybox =
-                    upstream::build_skybox_uniforms(
-                        scene.environment,
-                        transmission_enabled);
-                if (scene.environment.skybox_uses_environment) {
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        0,
-                        skybox_matrix.data(),
-                        sizeof(skybox_matrix));
-                } else {
-                    const upstream::SkyboxVertexUniforms vertex_uniforms =
-                        upstream::build_skybox_vertex_uniforms(
-                            scene.environment,
-                            matrix);
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        0,
-                        &vertex_uniforms,
-                        sizeof(vertex_uniforms));
-                }
-#if BBLITE_GPU_DEFORMATION
-                // Background geometry carries zeroed joint weights; without
-                // a fresh identity deformation block the previous mesh
-                // draw's skinning uniforms would collapse the quad.
-                if (scene.environment.skybox_uses_environment) {
-                    const DeformationUniforms skybox_deformation =
-                        build_deformation_uniforms(MeshRecord{}, false);
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        1,
-                        &skybox_deformation,
-                        sizeof(skybox_deformation));
-                }
-#endif
-                SDL_BindGPUGraphicsPipeline(pass, state.skybox_pipeline);
-                SDL_PushGPUFragmentUniformData(command, 0, &skybox, sizeof(skybox));
-                const SDL_GPUBufferBinding index_binding{state.skybox.indices, 0};
-                const SDL_GPUTextureSamplerBinding texture_binding{
-                    state.skybox.texture,
-                    state.background_sampler,
-                };
-#if BBLITE_GPU_INSTANCING
-                if (scene.environment.skybox_uses_environment) {
-                    const std::array<SDL_GPUBufferBinding, 2>
-                        skybox_vertex_bindings{
-                            SDL_GPUBufferBinding{
-                                state.skybox.vertices,
-                                0,
-                            },
-                            SDL_GPUBufferBinding{
-                                state.background_instances,
-                                0,
-                            },
-                        };
-                    SDL_BindGPUVertexBuffers(
-                        pass,
-                        0,
-                        skybox_vertex_bindings.data(),
-                        static_cast<Uint32>(
-                            skybox_vertex_bindings.size()));
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        instance_uniform_slot,
-                        identity_parent_world.data(),
-                        sizeof(identity_parent_world));
-                } else {
-                    const SDL_GPUBufferBinding vertex_binding{
-                        state.skybox.vertices,
-                        0,
-                    };
-                    SDL_BindGPUVertexBuffers(
-                        pass,
-                        0,
-                        &vertex_binding,
-                        1);
-                }
-#else
-                const SDL_GPUBufferBinding vertex_binding{state.skybox.vertices, 0};
-                SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-#endif
-#if BBLITE_GPU_MORPH_STORAGE
-                if (scene.environment.skybox_uses_environment) {
-                    const std::array<SDL_GPUBuffer*, 2> morph_storage{
-                        state.empty_morph_deltas,
-                        state.empty_morph_weights,
-                    };
-                    SDL_BindGPUVertexStorageBuffers(
-                        pass,
-                        0,
-                        morph_storage.data(),
-                        static_cast<Uint32>(morph_storage.size()));
-                }
-#endif
-                SDL_BindGPUIndexBuffer(
-                    pass,
-                    &index_binding,
-                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 36, 1, 0, 0, 0);
-                scene_matrix_bound = false;
-            };
-#if BBLITE_SOLID_SKYBOX
-            const auto draw_solid_skybox = [&] {
-                if (!state.solid_skybox.enabled) return;
-                // The pinned vertex stage reads its own scene block --
-                // scene.viewProjection, scene.view and scene.vEyePosition,
-                // the last of which it offsets the cube by -- so the draw
-                // binds that layout over the frame's matrix.
-                const upstream::SolidSkyboxSceneUniforms
-                    solid_skybox_scene =
-                        upstream::build_solid_skybox_scene_uniforms(
-                            camera,
-                            matrix);
-                const upstream::SolidSkyboxUniforms solid_skybox_mesh =
-                    upstream::build_solid_skybox_uniforms(scene);
-                SDL_PushGPUVertexUniformData(
-                    command,
-                    0,
-                    &solid_skybox_scene,
-                    sizeof(solid_skybox_scene));
-                SDL_PushGPUVertexUniformData(
-                    command,
-                    1,
-                    &solid_skybox_mesh,
-                    sizeof(solid_skybox_mesh));
-                SDL_PushGPUFragmentUniformData(
-                    command,
-                    0,
-                    &solid_skybox_mesh,
-                    sizeof(solid_skybox_mesh));
-                SDL_BindGPUGraphicsPipeline(
-                    pass,
-                    state.solid_skybox.pipeline);
-                const SDL_GPUBufferBinding vertex_binding{
-                    state.solid_skybox.vertices,
-                    0,
-                };
-                const SDL_GPUBufferBinding index_binding{
-                    state.solid_skybox.indices,
-                    0,
-                };
-                SDL_BindGPUVertexBuffers(
-                    pass,
-                    0,
-                    &vertex_binding,
-                    1);
-                SDL_BindGPUIndexBuffer(
-                    pass,
-                    &index_binding,
-                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 36, 1, 0, 0, 0);
-                scene_matrix_bound = false;
-            };
-#endif
-#if BBLITE_IMAGE_SKYBOX
-            const auto draw_image_skybox = [&] {
-                if (!state.image_skybox.enabled) return;
-                SDL_PushGPUVertexUniformData(
-                    command,
-                    0,
-                    matrix.data(),
-                    sizeof(matrix));
-                const upstream::ImageSkyboxUniforms
-                    image_skybox_uniforms =
-                        upstream::build_image_skybox_uniforms(
-                            scene,
-                            camera);
-                SDL_BindGPUGraphicsPipeline(
-                    pass,
-                    state.image_skybox.pipeline);
-                SDL_PushGPUFragmentUniformData(
-                    command,
-                    0,
-                    &image_skybox_uniforms,
-                    sizeof(image_skybox_uniforms));
-                const SDL_GPUBufferBinding vertex_binding{
-                    state.image_skybox.vertices,
-                    0,
-                };
-                const SDL_GPUBufferBinding index_binding{
-                    state.image_skybox.indices,
-                    0,
-                };
-                const SDL_GPUTextureSamplerBinding
-                    texture_binding{
-                        state.image_skybox.texture,
-                        state.background_sampler,
-                    };
-                SDL_BindGPUVertexBuffers(
-                    pass,
-                    0,
-                    &vertex_binding,
-                    1);
-                SDL_BindGPUIndexBuffer(
-                    pass,
-                    &index_binding,
-                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                SDL_BindGPUFragmentSamplers(
-                    pass,
-                    0,
-                    &texture_binding,
-                    1);
-                count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                    pass,
-                    36,
-                    1,
-                    0,
-                    0,
-                    0);
-                scene_matrix_bound = true;
-            };
-#endif
-            const auto pipeline_for =
-                [&](
-                    upstream::RenderPipelineKind kind,
-                    std::uint32_t shader_variant) {
-                return secondary_pipeline_for(
-                    SecondaryPipelines{
-                        state.grid_pipeline,
-                        state.grid_double_sided_pipeline,
-                        state.grid_transparent_pipeline,
-                        state.grid_transparent_double_sided_pipeline,
-                        &state.shader_pipelines,
-                        &state.shader_a2c_pipelines,
+            upstream::RenderPlan updated_plan =
+                upstream::build_render_plan(scene, engine);
+            validate_render_plan_items(updated_plan);
+            std::vector<GpuMesh> updated_meshes =
+                rematch_render_meshes(
+                    render_plan.items,
+                    updated_plan.items,
+                    state.meshes,
+                    [&](GpuMesh& mesh) {
+                        release_gpu_mesh(state, mesh);
                     },
-                    kind,
-                    shader_variant,
-                    "main dispatch");
-            };
-            // Which scene the pass being recorded belongs to. The base
-            // scene records first and a swapchain overlay layer repoints
-            // these before its own pass: the draw walk is the same one,
-            // and what changes is the scene it reads its light selection,
-            // its plan and its uploaded meshes from.
-            // Which scene the pass being recorded belongs to: the base
-            // scene, or the overlay layer whose own plan is being drawn.
-            // Every reader is a material-variant draw, so a build that
-            // composes no variants at all -- a splat-only scene, say --
-            // sets it and never reads it.
-            [[maybe_unused]] const Scene* pass_scene = &scene;
-            const std::vector<GpuMesh>* pass_meshes = &state.meshes;
-            const std::array<float, 16>* pass_matrix = &matrix;
-#if BBLITE_PINNED_MATERIALS
-            // The frame's scene and lights blocks, once per frame rather
-            // than per draw — the same hoist the Dawn backend's
-            // write_pinned_frame_blocks already makes.
-            upstream::SceneUniforms pass_scene_block =
-                pinned_scene_block(scene, engine, camera, matrix);
-            std::vector<std::uint8_t> pass_lights_block =
-                pinned_lights_block(scene, engine);
-#endif
-            const auto draw_render_list =
-                [&](const upstream::RenderDrawList& list) {
-                SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
+                    [&](const upstream::RenderItem& item) {
+                        return upload_sdl_scene_mesh(state, engine,
+                            item,
+                            &frame_buffer_uploads);
+                    });
+            prune_shared_shader_geometries(state);
+            prune_shared_shader_material_textures(state);
+            prune_shared_composed_material_textures(state);
+            state.meshes = std::move(updated_meshes);
+            render_plan = std::move(updated_plan);
+            synced_render_topology_version =
+                scene.render_topology_version;
+            synced_material_family_mask =
+                scene.material_family_mask;
+            const std::size_t shader_item_count =
+                static_cast<std::size_t>(std::count_if(
+                    render_plan.items.begin(),
+                    render_plan.items.end(),
+                    [](const upstream::RenderItem& item) {
+                        return item.material_kind ==
+                            upstream::RenderMaterialKind::shader;
+                    }));
+            trace_scene_topology(
+                scene,
+                engine,
+                previous_item_count,
+                render_plan.items.size(),
+                shader_item_count,
+                state.shared_shader_geometries.size(),
+                state.shared_shader_material_textures.size(),
+                frame);
+            topology_updated = true;
+        } else if (
+            engine.draw_list_epoch != synced_draw_list_epoch) {
+            // The pin's visibility epoch re-records the cached opaque
+            // render bundles; the draw lists are this port's bundles,
+            // so only they and the task lists rebuild -- mesh GPU
+            // state is untouched. A culling-enabled thin-instance pool
+            // moves the second epoch only when its live count crosses
+            // zero, matching the pin's direct-bucket membership.
+            render_plan.draw_lists =
+                upstream::build_render_draw_lists(
+                    render_plan.items,
+                    engine);
+        }
+        if (topology_updated || engine.draw_list_epoch != synced_draw_list_epoch) {
+            rebuild_task_draw_lists();
+        }
+        synced_draw_list_epoch = engine.draw_list_epoch;
+        sync_shader_storage_buffers(
+            state, engine, frame_buffer_uploads);
+        frame_buffer_uploads.submit();
+        uploaded =
+            cpu_profile ? monotonic_milliseconds() : 0.0;
+        update_surface_cameras(engine, camera);
+        trace_camera_state(camera, camera_trace_state, frame);
+        upstream::sort_transparent_draws(
+            render_plan.draw_lists.transparent,
+            engine,
+            camera);
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+        // The pin's bone palettes for every draw the gate resolves,
+        // streamed here because a copy pass cannot open inside the render
+        // pass. The draw branch below keys its skinned handling on the
+        // texture this leaves behind.
+        {
+            // A palette is per PLAN ITEM, not per draw, and the same
+            // item is drawn by the main lists and again by every task
+            // that names it as a caster -- a cascaded generator alone
+            // draws each of its casters once per cascade. Each upload
+            // is a transfer buffer, a copy pass and its own submit, so
+            // the sweep streams an item once and the later sightings of
+            // it cost one lookup.
+            std::vector<bool>& streamed = state.streamed_palettes;
+            streamed.assign(state.meshes.size(), false);
+            const auto stream_palettes =
+                [&](const Scene& palette_scene,
+                    std::vector<GpuMesh>& meshes,
+                    const upstream::RenderDrawList& list) {
                 for (
                     const upstream::RenderDrawCommand& draw :
                     list.commands) {
-                    if (
-                        draw.item_index >=
-                        (*pass_meshes).size()) {
+                    if (draw.item_index >= meshes.size()) continue;
+                    if (draw.item.mesh.value >= engine.meshes.size()) {
                         continue;
                     }
-                    const upstream::RenderItem& item = draw.item;
-                    const GpuMesh& mesh =
-                        (*pass_meshes)[draw.item_index];
-                    const MaterialRecord* material =
-                        item.material.value <
-                                engine.materials.size()
-                            ? &engine.materials[
-                                  item.material.value]
-                            : nullptr;
-#if BBLITE_RENDERER_TRANSMISSION
-                    if (
-                        transmission_enabled &&
-                        !transmission_copied &&
-                        transmissive_draw_material(material)) {
-                        // executePassWithTransmission: end the pass (which
-                        // resolves the multisampled colour), copy it into
-                        // the refraction texture with its mip chain, and
-                        // resume loading what was stored.
-                        SDL_EndGPURenderPass(pass);
-                        SDL_GPUBlitInfo transmission_blit{};
-                        transmission_blit.source = SDL_GPUBlitRegion{
-                            state.color,
-                            0,
-                            0,
-                            0,
-                            0,
-                            width,
-                            height,
-                        };
-                        transmission_blit.destination = SDL_GPUBlitRegion{
-                            state.transmission_color,
-                            0,
-                            0,
-                            0,
-                            0,
-                            state.transmission_width,
-                            state.transmission_height,
-                        };
-                        transmission_blit.load_op =
-                            SDL_GPU_LOADOP_DONT_CARE;
-                        transmission_blit.flip_mode = SDL_FLIP_NONE;
-                        transmission_blit.filter = SDL_GPU_FILTER_LINEAR;
-                        SDL_BlitGPUTexture(command, &transmission_blit);
-                        SDL_GenerateMipmapsForGPUTexture(
-                            command,
-                            state.transmission_color);
-                        color_info.load_op = SDL_GPU_LOADOP_LOAD;
-                        color_info.store_op =
-                            multisampled
-                                ? SDL_GPU_STOREOP_RESOLVE
-                                : SDL_GPU_STOREOP_STORE;
-                        depth_info.load_op = SDL_GPU_LOADOP_LOAD;
-                        pass = SDL_BeginGPURenderPass(
-                            command,
-                            &color_info,
-                            1,
-                            &depth_info);
-                        // A restarted pass starts at the whole target
-                        // again, so the camera's rectangle is set once
-                        // per PASS rather than once per frame.
-                        set_pass_camera_viewport(
-                            pass,
-                            scene,
-                            engine,
-                            camera,
-                            width,
-                            height);
-                        bound_pipeline = nullptr;
-                        transmission_copied = true;
+                    if (streamed[draw.item_index]) continue;
+                    bool skeleton_draw = false;
+#if defined(BBLITE_STANDARD_SKELETON)
+                    if (draw.item.material_kind ==
+                        upstream::RenderMaterialKind::standard) {
+                        const std::size_t variant = standard_variant_for_draw(
+                            palette_scene, engine, draw);
+                        skeleton_draw = variant != npos &&
+                            upstream::standard_variant_skeleton(
+                                upstream::standard_variants[variant]);
                     }
 #endif
 #if BBLITE_PBR_VARIANTS > 0
-                    // Babylon Lite's own composed stages own every PBR draw:
-                    // the transcribed fragment is retired, so a draw the
-                    // shared gate refuses is an error naming the mesh rather
-                    // than a silent fallback.
-                    pal::PinnedVariantKey pinned_key;
-                    const std::size_t pinned_variant =
-                        item.material_kind ==
-                            upstream::RenderMaterialKind::pbr
-                            ? pinned_variant_for_draw(
-                                  *pass_scene,
-                                  engine,
-                                  draw,
-                                  npos,
-                                  &pinned_key)
-                            : npos;
-                    if (
-                        item.material_kind ==
-                            upstream::RenderMaterialKind::pbr &&
-                        pinned_variant == npos) {
-                        gpu_error(
-                            ("PBR draw for mesh " +
-                             std::to_string(item.mesh.value) +
-                             ", material " +
-                             std::to_string(item.material.value) +
-                             " resolves no pinned variant: " +
-                             pal::pinned_variant_request(pinned_key))
-                                .c_str());
-                    }
-                    if (pinned_variant != npos) {
-                        ensure_pinned_slots(state, pinned_variant);
-                    }
-                    if (pinned_variant != npos) {
-                        draw_pinned_variant(
-                            state,
-                            command,
-                            pass,
-                            *pass_scene,
-                            engine,
-                            pass_scene_block,
-                            pass_lights_block,
-                            draw,
-                            mesh,
-                            material,
-                            pinned_variant,
-                            bound_pipeline);
-                        continue;
-                    }
-#else
-                    if (
-                        item.material_kind ==
-                        upstream::RenderMaterialKind::pbr) {
-                        gpu_error(
-                            "PBR draw in a build with no composed variant "
-                            "table; the transcribed fragment is retired.");
+                    const std::size_t palette_variant =
+                        pinned_variant_for_draw(palette_scene, engine, draw);
+                    if (palette_variant != npos) {
+#if BBLITE_VAT
+                        // Copy passes must precede render passes for
+                        // baked palettes as well as live palettes.
+                        if (pinned_variant_vat(palette_variant)) {
+                            write_pinned_vat_texture(
+                                state,
+                                meshes[draw.item_index],
+                                handle_at(engine.meshes, draw.item.mesh),
+                                engine);
+                            streamed[draw.item_index] = true;
+                            continue;
+                        }
+#endif
+                        skeleton_draw = pinned_variant_skeleton(palette_variant);
                     }
 #endif
-#if BBLITE_STANDARD_VARIANTS > 0
-                    // Babylon Lite's own composed stages own every Standard
-                    // draw too; a draw the gate refuses is an error naming
-                    // the mesh rather than a silent fallback.
-                    if (
-                        item.material_kind ==
-                        upstream::RenderMaterialKind::standard) {
-                        // The main pass carries no frame graph, so a
-                        // render-target texture on a material has nothing
-                        // to resolve against — refused by name rather
-                        // than trusted to never happen.
-                        if (
-                            material &&
-                            (material->has_emissive_render_texture ||
-                             material->has_diffuse_render_texture)) {
-                            gpu_error(
-                                "a Standard material samples a "
-                                "render-target texture in the main pass, "
-                                "which carries no frame graph to resolve "
-                                "it.");
-                        }
-                        StandardVariantKey standard_key;
-                        const std::size_t standard_variant =
-                            standard_variant_for_draw(
-                                *pass_scene,
-                                engine,
-                                draw,
-                                npos,
-                                &standard_key);
-                        if (standard_variant == npos) {
-                            gpu_error(
-                                ("Standard draw for mesh " +
-                                 std::to_string(item.mesh.value) +
-                                 ", material " +
-                                 std::to_string(item.material.value) +
-                                 " resolves no composed variant: " +
-                                 standard_variant_request(engine, draw))
-                                    .c_str());
-                        }
-                        draw_standard_variant(
-                            state,
-                            command,
-                            pass,
-                            *pass_scene,
-                            engine,
-                            pass_scene_block,
-                            pass_lights_block,
-                            draw,
-                            mesh,
-                            material,
-                            standard_variant,
-                            standard_key.features,
-                            bound_pipeline);
-                        continue;
-                    }
-#else
-                    if (
-                        item.material_kind ==
-                        upstream::RenderMaterialKind::standard) {
-                        gpu_error(
-                            "Standard draw in a build with no composed "
-                            "variant table; the transcribed fragment is "
-                            "retired.");
-                    }
+                    if (!skeleton_draw) continue;
+                    write_pinned_bone_texture(
+                        state,
+                        meshes[draw.item_index],
+                        handle_at(engine.meshes, draw.item.mesh));
+                    streamed[draw.item_index] = true;
+                }
+            };
+            stream_palettes(scene, state.meshes, render_plan.draw_lists.opaque);
+            stream_palettes(scene, state.meshes, render_plan.draw_lists.transparent);
+            for (const upstream::RenderDrawLists& task_lists :
+                 task_draw_lists) {
+                stream_palettes(scene, state.meshes, task_lists.opaque);
+                stream_palettes(scene, state.meshes, task_lists.transparent);
+            }
+            for (std::size_t layer = 0;
+                 layer < overlay_plans.size() &&
+                 layer < state.overlay_meshes.size(); ++layer) {
+                const Scene* overlay_scene =
+                    engine.registered_scenes[layer + 1u].get();
+                if (!overlay_scene) continue;
+                auto& meshes = state.overlay_meshes[layer];
+                streamed.assign(meshes.size(), false);
+                stream_palettes(*overlay_scene, meshes,
+                                overlay_plans[layer].draw_lists.opaque);
+                stream_palettes(*overlay_scene, meshes,
+                                overlay_plans[layer].draw_lists.transparent);
+            }
+        }
 #endif
-#if BBLITE_NODE_VARIANTS > 0
-                    // A node graph's own compiled stages, the third
-                    // composed family. Its variant is the graph's index,
-                    // which the plan carries on the item.
-                    if (
-                        item.material_kind ==
-                        upstream::RenderMaterialKind::node) {
-                        draw_node_variant(
-                            state,
-                            command,
-                            pass,
-                            *pass_scene,
-                            engine,
-                            pass_scene_block,
-                            pass_lights_block,
-                            draw,
-                            mesh,
-                            item.shader_variant,
-                            bound_pipeline,
-                            false,
-                            material);
-                        continue;
-                    }
-#else
-                    if (
-                        item.material_kind ==
-                        upstream::RenderMaterialKind::node) {
-                        gpu_error(
-                            "a node material in a build with no composed "
-                            "graphs.");
-                    }
+        capture_ready =
+            frame >= screenshot_frame &&
+            !topology_updated &&
+            captures.drains_resolved();
+        capture_frame =
+            capture_ready &&
+            !captures.screenshot_saved &&
+            !screenshot_path.empty();
+        capture_ids =
+            capture_ready &&
+            !captures.id_buffer_saved &&
+            !id_buffer_path.empty();
+        capture_clusters =
+            capture_ready &&
+            !captures.cluster_buffer_saved &&
+            !cluster_buffer_path.empty();
+        // getEffectiveAspectRatio divides two JavaScript numbers,
+        // so the ratio reaches the projection writer in double. It
+        // is the pinned function itself: a camera carrying a
+        // viewport scales the target ratio by the viewport's own,
+        // and one without takes the pin's literal 1.
+        surface_extent = scene_surface_extent(
+            engine, scene, width, height);
+        aspect =
+            upstream::effective_aspect_ratio(
+                camera,
+                static_cast<double>(surface_extent.width),
+                static_cast<double>(surface_extent.height));
+        matrix =
+            upstream::build_view_projection(camera, aspect);
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        validate_text_scene(scene);
+        state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+        const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera), aspect};
+        state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera : nullptr,
+            static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height), text_ops);
 #endif
-                    SDL_GPUGraphicsPipeline* pipeline =
-                        pipeline_for(draw.pipeline, draw.item.shader_variant);
-                    if (!pipeline) {
-                        throw std::runtime_error(
-                            "Reached render pipeline was not created.");
+        skybox_matrix =
+            upstream::build_skybox_view_projection(
+                camera,
+                aspect);
+        // The frame's own two factors, built once. Three consumers read
+        // them and each used to build its own: a shader material may
+        // declare either beside the product, the pin's splat UBO stores
+        // them separately, and the billboard sort reads the view. The
+        // projection is the pin's `getProjectionMatrix` -- the arm that
+        // branches on the camera -- rather than the perspective writer
+        // the skybox deliberately takes.
+        frame_view =
+            upstream::build_view_matrix(
+                upstream::camera_world_matrix(camera));
+        frame_projection =
+            upstream::build_scene_projection(camera, aspect);
+        frame_camera_position =
+            shader_camera_position(scene, engine, camera);
+        frame_pass_matrices = {
+            matrix.data(), &frame_view, &frame_projection};
+        frame_pass_matrices.camera_position =
+            &frame_camera_position;
+#if BBLITE_HAS_BILLBOARDS
+        // The sorted order depends on the camera alone, so the upload
+        // happens here -- before the frame's command buffer is acquired,
+        // because it submits one of its own -- and the draw below reads
+        // the same matrix.
+        for (BillboardPass& billboard : state.billboard_passes) {
+            upload_billboard_pass(
+                state.device,
+                scene,
+                engine,
+                billboard,
+                frame_view,
+                delta_ms);
+        }
+#endif
+#if BBLITE_HAS_SPLATS
+        // The sort runs on this thread before the draw that reads it,
+        // which is the state `firstSortReady` waits for. The view and
+        // projection are built once for the frame here and the draw
+        // below reads the same matrices, as the billboard pass does.
+        for (SplatPass& splat : state.splat_passes) {
+            upload_splat_pass(
+                state.device, engine, splat, frame_view);
+        }
+#endif
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+        // The cluster binning, in the same place the splat sort runs and
+        // for the same reason: it reads this frame's camera and the draw
+        // below reads what it wrote.
+        if (ClusteredLightContainer* clustered =
+                upstream::clustered_container(
+                    engine, scene.clustered_lights)) {
+            upload_clustered_lights(
+                state.device,
+                *clustered,
+                frame_view,
+                frame_projection,
+                camera.near_plane,
+                camera.far_plane,
+                state.clustered);
+        }
+#endif
+
+#if (!defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA) && (!defined(BBLITE_HAS_TEXT) || !BBLITE_HAS_TEXT)
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        if (!state.node_capture.capture.enabled())
+#endif
+        capture_render_state();
+#endif
+    }
+
+    void encode() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame_options = data_.frame_options;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+        [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
+        [[maybe_unused]] auto& task_draw_lists = data_.task_draw_lists;
+        [[maybe_unused]] auto& fallback_camera = data_.fallback_camera;
+        [[maybe_unused]] auto& shader_block_scratch = data_.shader_block_scratch;
+        [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
+        [[maybe_unused]] auto& transmission_enabled = data_.transmission_enabled;
+        [[maybe_unused]] auto& state = data_.resources.state;
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& sprite_render_textures = data_.resources.sprite_render_textures;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& scene_sprite_pass = data_.resources.scene_sprite_pass;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
+#endif
+        [[maybe_unused]] auto& camera = *data_.camera;
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        [[maybe_unused]] auto& text_ops = *data_.text_ops;
+#endif
+        [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
+        [[maybe_unused]] auto& width = frame_->width;
+        [[maybe_unused]] auto& height = frame_->height;
+        [[maybe_unused]] const auto& matrix = frame_->matrix;
+        [[maybe_unused]] const auto& skybox_matrix = frame_->skybox_matrix;
+        [[maybe_unused]] const auto& frame_view = frame_->frame_view;
+        [[maybe_unused]] const auto& frame_projection = frame_->frame_projection;
+        [[maybe_unused]] const auto& frame_camera_position = frame_->frame_camera_position;
+        [[maybe_unused]] auto& frame_pass_matrices = frame_->frame_pass_matrices;
+        [[maybe_unused]] const auto& capture_frame = frame_->capture_frame;
+        [[maybe_unused]] auto& swapchain = frame_->swapchain;
+        [[maybe_unused]] auto& command = frame_->command;
+        [[maybe_unused]] auto& capture_texture = frame_->capture_texture;
+        [[maybe_unused]] auto& visible_color = frame_->visible_color;
+        frame_->graph = !scene.tasks.empty();
+        if (frame_->graph) {
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            if (!engine.stopped)
+#endif
+            create_frame_graph_textures(
+                state,
+                engine,
+                swapchain_format,
+                width,
+                height);
+            capture_texture = nullptr;
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            // Queue occurrences, preserving task aliases and cross-scene order.
+            // No draw is encoded if a later logical hook throws.
+            std::vector<std::variant<PreparedSdlScenePass, PreparedSdlPostProcessPass>> temporal_passes;
+            if (!engine.stopped) {
+#endif
+            // Each registered context owns its tasks, camera and draw indices.
+            // Finish its graph before composing the next context's surface.
+            for (std::size_t graph_layer = 0;
+                 graph_layer < engine.registered_scenes.size(); ++graph_layer) {
+            const Scene& graph_scene = *engine.registered_scenes[graph_layer];
+            const auto& graph_meshes = graph_layer == 0
+                ? state.meshes : state.overlay_meshes[graph_layer - 1];
+            const auto& graph_plan = graph_layer == 0
+                ? render_plan : overlay_plans[graph_layer - 1];
+            const CameraRecord& graph_camera = graph_scene.camera.value < engine.cameras.size()
+                ? handle_at(engine.cameras, graph_scene.camera) : fallback_camera;
+            const PixelViewport graph_extent = scene_surface_extent(
+                engine, graph_scene, width, height);
+            const double graph_aspect = upstream::effective_aspect_ratio(
+                graph_camera, graph_extent.width, graph_extent.height);
+            const auto graph_matrix = upstream::build_view_projection(graph_camera, graph_aspect);
+            const auto graph_view = upstream::build_view_matrix(
+                upstream::camera_world_matrix(graph_camera));
+            const auto graph_projection = upstream::build_scene_projection(graph_camera, graph_aspect);
+            const auto graph_eye = shader_camera_position(graph_scene, engine, graph_camera);
+            ShaderPassMatrices graph_pass_matrices{
+                graph_matrix.data(), &graph_view, &graph_projection};
+            graph_pass_matrices.camera_position = &graph_eye;
+#if BBLITE_SHADOW_RECEIVERS
+            update_shadow_generators(state, graph_scene, engine);
+            // CSM receiver-data callbacks can rewrite a shader storage
+            // buffer; publish that rewrite before any caster or colour
+            // draw in this command buffer reads it.
+            sync_shader_storage_buffers(
+                state, engine, frame_buffer_uploads);
+            frame_buffer_uploads.submit();
+#endif
+            SDL_PushGPUVertexUniformData(
+                command,
+                0,
+                graph_matrix.data(),
+                sizeof(graph_matrix));
+
+            const auto target_texture = [&](
+                                            RenderTargetHandle handle,
+                                            bool sampled) {
+                if (handle.value >= state.render_targets.size()) {
+                    throw std::runtime_error(
+                        "Frame graph render target handle is invalid.");
+                }
+                const RenderTargetRecord& record =
+                    handle_at(engine.render_targets, handle);
+                if (record.swapchain) return swapchain;
+                const GpuRenderTarget& target =
+                    handle_at(state.render_targets, handle);
+                if (pal::render_target_samples_depth(record)) {
+                    if (sampled && record.has_depth && target.depth) {
+                        return target.depth;
                     }
-                    if (pipeline != bound_pipeline) {
-                        SDL_BindGPUGraphicsPipeline(
-                            pass,
-                            pipeline);
-                        bound_pipeline = pipeline;
-                    }
+                    pal::fail_render_target_has_no_texture();
+                }
+                return sampled ? target.sampled_color : target.color;
+            };
+            /** The depth texture a reference names. */
+            const auto task_depth_texture =
+                [&](const RenderTextureRef& reference)
+                -> SDL_GPUTexture* {
+                if (
+                    reference.source !=
+                        RenderTextureSource::geometry_depth ||
+                    reference.task.value >=
+                        state.geometry_tasks.size()) {
+                    throw std::runtime_error(
+                        "Render task depth must name a geometry task.");
+                }
+                SDL_GPUTexture* depth =
+                    handle_at(state.geometry_tasks, reference.task).depth;
+                if (!depth) {
+                    throw std::runtime_error(
+                        "Geometry task has no depth attachment to "
+                        "share.");
+                }
+                return depth;
+            };
+            const auto source_texture =
+                [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
+                if (source.source == RenderTextureSource::render_target) {
+                    return target_texture(source.target, true);
+                }
+                if (source.task.value >= engine.frame_tasks.size()) {
+                    throw std::runtime_error(
+                        "Frame graph source task handle is invalid.");
+                }
+                const FrameTaskRecord& task =
+                    handle_at(engine.frame_tasks, source.task);
+                if (task.kind != FrameTaskKind::geometry) {
+                    throw std::runtime_error(
+                        "Frame graph source task is not geometry.");
+                }
+                if (
+                    source.source ==
+                    RenderTextureSource::geometry_output) {
+                    return target_texture(task.geometry.target, true);
+                }
+                const auto found = std::find_if(
+                    task.geometry.attachments.begin(),
+                    task.geometry.attachments.end(),
+                    [&](const GeometryTextureDescription& description) {
+                        return description.type == source.geometry_type;
+                    });
+                if (found == task.geometry.attachments.end()) {
+                    throw std::runtime_error(
+                        "Geometry source attachment was not requested.");
+                }
+                const std::size_t attachment_index =
+                    static_cast<std::size_t>(
+                        std::distance(
+                            task.geometry.attachments.begin(),
+                            found));
+                return handle_at(state.geometry_tasks, source.task)
+                    .sampled_colors[attachment_index];
+            };
+            const auto gpu_mesh_index = [&](MeshHandle handle) {
+                for (std::size_t index = 0;
+                     index < graph_plan.items.size();
+                     ++index) {
                     if (
-                        item.material_kind ==
-                        upstream::RenderMaterialKind::shader) {
-                        if (!material) {
-                            throw std::runtime_error(
-                                "Shader draw has an invalid material.");
-                        }
-                        const ShaderDrawMatrices shader_matrices(
-                            engine,
-                            engine.meshes[item.mesh.value],
-                            frame_pass_matrices);
-                        const ShaderPassMatrices shader_pass_matrices =
-                            shader_matrices.apply(frame_pass_matrices);
-                        // Per-stage blocks from the generated variant
-                        // table: [optional scene worldViewProjection]
-                        // [custom floats gathered from the material's
-                        // flat value storage].
-                        const upstream::ShaderVariantInfo& shader_info =
-                            upstream::shader_variant_info(
-                                item.shader_variant);
-                        const auto push_stage_block =
-                            [&](
-                                const upstream::ShaderVariantStageBlock&
-                                    block,
-                                bool fragment_stage) {
-                            if (!block.present) return;
-                            shader_stage_block_floats(
-                                block,
-                                shader_pass_matrices,
-                                *material,
-                                shader_block_scratch);
-                            if (fragment_stage) {
-                                SDL_PushGPUFragmentUniformData(
-                                    command,
-                                    0,
-                                    shader_block_scratch.data(),
-                                    static_cast<Uint32>(
-                                        shader_block_scratch.size() *
-                                        sizeof(float)));
-                            } else {
-                                SDL_PushGPUVertexUniformData(
-                                    command,
-                                    0,
-                                    shader_block_scratch.data(),
-                                    static_cast<Uint32>(
-                                        shader_block_scratch.size() *
-                                        sizeof(float)));
-                            }
-                        };
-                        push_stage_block(shader_info.vertex, false);
-                        push_stage_block(shader_info.fragment, true);
-                        bind_stage_storage(
-                            pass,
-                            state.shader_vertex_slots[item.shader_variant],
-                            false,
-                            "shader material vertex stage",
-                            state.storage_binding_scratch,
-                            [&](const std::string& name, std::size_t) {
-                                return shader_storage_buffer(
-                                    state, *material, shader_info, name);
-                            });
-                        bind_stage_storage(
-                            pass,
-                            state.shader_fragment_slots[item.shader_variant],
-                            true,
-                            "shader material fragment stage",
-                            state.storage_binding_scratch,
-                            [&](const std::string& name, std::size_t) {
-                                return shader_storage_buffer(
-                                    state, *material, shader_info, name);
-                            });
-                        bind_shader_material_textures(
-                            state,
-                            pass,
-                            *pass_scene,
-                            engine,
-                            *material,
-                            item.shader_variant,
-                            mesh);
-                        if (shader_info.vertex.present) {
-                            scene_matrix_bound =
-                                block_is_shared_scene_matrix(
-                                    shader_info.vertex);
-                        }
-                    } else {
-                        if (!scene_matrix_bound) {
+                        graph_plan.items[index].mesh.value ==
+                        handle.value) {
+                        return index;
+                    }
+                }
+                return graph_meshes.size();
+            };
+            // The compiler-owned default render task replaces the
+            // ordinary scene pass when another feature (notably a
+            // shadow generator) materializes the frame graph. Its
+            // auto-mirrored mesh lists are only the opaque/transparent
+            // stages, so retain the background stages explicitly around
+            // those lists. Arbitrary user render tasks keep their own
+            // render-list-only contract (`scene_stages == false`).
+            const auto draw_task_skyboxes = [&] (
+                SDL_GPURenderPass* task_pass,
+                const std::array<float, 16>& task_matrix,
+                const CameraRecord& task_camera,
+                double task_aspect) {
+#if BBLITE_GPU_INSTANCING
+                const std::array<float, 16> identity_parent_world{
+                    1.0f, 0.0f, 0.0f, 0.0f,
+                    0.0f, 1.0f, 0.0f, 0.0f,
+                    0.0f, 0.0f, 1.0f, 0.0f,
+                    0.0f, 0.0f, 0.0f, 1.0f,
+                };
+#endif
+                for (const SkyboxLayer layer : skybox_stage_order) {
+                    if (layer == SkyboxLayer::environment) {
+                        if (!state.skybox.enabled) continue;
+                        const std::array<float, 16> task_skybox_matrix =
+                            upstream::build_skybox_view_projection(
+                                task_camera,
+                                task_aspect);
+                        if (graph_scene.environment.skybox_uses_environment) {
                             SDL_PushGPUVertexUniformData(
                                 command,
                                 0,
-                                pass_matrix->data(),
-                                sizeof(*pass_matrix));
-                            scene_matrix_bound = true;
+                                task_skybox_matrix.data(),
+                                sizeof(task_skybox_matrix));
+                        } else {
+                            const upstream::SkyboxVertexUniforms
+                                vertex_uniforms =
+                                    upstream::build_skybox_vertex_uniforms(
+                                        graph_scene.environment,
+                                        task_matrix);
+                            SDL_PushGPUVertexUniformData(
+                                command,
+                                0,
+                                &vertex_uniforms,
+                                sizeof(vertex_uniforms));
                         }
 #if BBLITE_GPU_DEFORMATION
-                        if (
-                            item.material_kind !=
-                            upstream::RenderMaterialKind::grid) {
-                            const DeformationUniforms deformation =
+                        if (graph_scene.environment.skybox_uses_environment) {
+                            const DeformationUniforms skybox_deformation =
                                 build_deformation_uniforms(
-                                    engine.meshes[
-                                        item.mesh.value],
-                                    engine.geometries[
-                                        item.geometry].flat_normals);
-                            dump_deformation_uniforms(
-                                item.mesh.value,
-                                deformation);
+                                    MeshRecord{},
+                                    false);
                             SDL_PushGPUVertexUniformData(
                                 command,
                                 1,
-                                &deformation,
-                                sizeof(deformation));
+                                &skybox_deformation,
+                                sizeof(skybox_deformation));
                         }
 #endif
+                        const upstream::SkyboxUniforms skybox =
+                            upstream::build_skybox_uniforms(
+                                graph_scene.environment,
+                                graph_scene.transmission_enabled);
+                        SDL_BindGPUGraphicsPipeline(
+                            task_pass,
+                            state.skybox_pipeline);
+                        SDL_PushGPUFragmentUniformData(
+                            command,
+                            0,
+                            &skybox,
+                            sizeof(skybox));
+                        const SDL_GPUBufferBinding index_binding{
+                            state.skybox.indices,
+                            0,
+                        };
+                        const SDL_GPUTextureSamplerBinding texture_binding{
+                            state.skybox.texture,
+                            state.background_sampler,
+                        };
 #if BBLITE_GPU_INSTANCING
-                        if (
-                            item.material_kind !=
-                            upstream::RenderMaterialKind::grid) {
-                            const std::array<float, 16> parent_world =
-                                instance_parent_draw_world(
-                                    engine.meshes[
-                                        item.mesh.value],
-                                    *pass_scene,
-                                    engine);
+                        if (graph_scene.environment.skybox_uses_environment) {
+                            const std::array<SDL_GPUBufferBinding, 2>
+                                vertex_bindings{
+                                    SDL_GPUBufferBinding{
+                                        state.skybox.vertices,
+                                        0,
+                                    },
+                                    SDL_GPUBufferBinding{
+                                        state.background_instances,
+                                        0,
+                                    },
+                                };
+                            SDL_BindGPUVertexBuffers(
+                                task_pass,
+                                0,
+                                vertex_bindings.data(),
+                                static_cast<Uint32>(
+                                    vertex_bindings.size()));
                             SDL_PushGPUVertexUniformData(
                                 command,
                                 instance_uniform_slot,
-                                parent_world.data(),
-                                sizeof(parent_world));
+                                identity_parent_world.data(),
+                                sizeof(identity_parent_world));
+                        } else {
+                            const SDL_GPUBufferBinding vertex_binding{
+                                state.skybox.vertices,
+                                0,
+                            };
+                            SDL_BindGPUVertexBuffers(
+                                task_pass,
+                                0,
+                                &vertex_binding,
+                                1);
+                        }
+#else
+                        const SDL_GPUBufferBinding vertex_binding{
+                            state.skybox.vertices,
+                            0,
+                        };
+                        SDL_BindGPUVertexBuffers(
+                            task_pass,
+                            0,
+                            &vertex_binding,
+                            1);
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+                        if (graph_scene.environment.skybox_uses_environment) {
+                            const std::array<SDL_GPUBuffer*, 2>
+                                morph_storage{
+                                    state.empty_morph_deltas,
+                                    state.empty_morph_weights,
+                                };
+                            SDL_BindGPUVertexStorageBuffers(
+                                task_pass,
+                                0,
+                                morph_storage.data(),
+                                static_cast<Uint32>(
+                                    morph_storage.size()));
                         }
 #endif
-                        if (
-                            item.material_kind ==
-                            upstream::RenderMaterialKind::grid) {
-                            const upstream::GridUniforms fragment =
-                                upstream::build_grid_uniforms(
-                                    engine,
-                                    item);
-                            SDL_PushGPUFragmentUniformData(
-                                command,
-                                0,
-                                &fragment,
-                                sizeof(fragment));
-                        }
+                        SDL_BindGPUIndexBuffer(
+                            task_pass,
+                            &index_binding,
+                            SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                        SDL_BindGPUFragmentSamplers(
+                            task_pass,
+                            0,
+                            &texture_binding,
+                            1);
+                        count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+                            task_pass,
+                            36,
+                            1,
+                            0,
+                            0,
+                            0);
+                        continue;
                     }
-                    const SDL_GPUBufferBinding index_binding{
-                        mesh.indices,
-                        0,
-                    };
-                    bind_mesh_vertex_buffers(
-                        pass,
-                        mesh);
-                    SDL_BindGPUIndexBuffer(
-                        pass,
-                        &index_binding,
-                        SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
-                        pass,
-                        mesh.index_count,
-                        mesh.instance_count,
-                        0,
-                        0,
-                        0);
+#if BBLITE_SOLID_SKYBOX
+                    if (layer == SkyboxLayer::solid) {
+                        if (!state.solid_skybox.enabled) continue;
+                        const upstream::SolidSkyboxSceneUniforms
+                            skybox_scene =
+                                upstream::build_solid_skybox_scene_uniforms(
+                                    task_camera,
+                                    task_matrix);
+                        const upstream::SolidSkyboxUniforms skybox_mesh =
+                            upstream::build_solid_skybox_uniforms(graph_scene);
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            0,
+                            &skybox_scene,
+                            sizeof(skybox_scene));
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            1,
+                            &skybox_mesh,
+                            sizeof(skybox_mesh));
+                        SDL_PushGPUFragmentUniformData(
+                            command,
+                            0,
+                            &skybox_mesh,
+                            sizeof(skybox_mesh));
+                        SDL_BindGPUGraphicsPipeline(
+                            task_pass,
+                            state.solid_skybox.pipeline);
+                        const SDL_GPUBufferBinding vertex_binding{
+                            state.solid_skybox.vertices,
+                            0,
+                        };
+                        const SDL_GPUBufferBinding index_binding{
+                            state.solid_skybox.indices,
+                            0,
+                        };
+                        SDL_BindGPUVertexBuffers(
+                            task_pass,
+                            0,
+                            &vertex_binding,
+                            1);
+                        SDL_BindGPUIndexBuffer(
+                            task_pass,
+                            &index_binding,
+                            SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                        count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+                            task_pass,
+                            36,
+                            1,
+                            0,
+                            0,
+                            0);
+                        continue;
+                    }
+#endif
+#if BBLITE_IMAGE_SKYBOX
+                    if (layer == SkyboxLayer::image) {
+                        if (!state.image_skybox.enabled) continue;
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            0,
+                            task_matrix.data(),
+                            sizeof(task_matrix));
+                        const upstream::ImageSkyboxUniforms uniforms =
+                            upstream::build_image_skybox_uniforms(
+                                graph_scene,
+                                task_camera);
+                        SDL_BindGPUGraphicsPipeline(
+                            task_pass,
+                            state.image_skybox.pipeline);
+                        SDL_PushGPUFragmentUniformData(
+                            command,
+                            0,
+                            &uniforms,
+                            sizeof(uniforms));
+                        const SDL_GPUBufferBinding vertex_binding{
+                            state.image_skybox.vertices,
+                            0,
+                        };
+                        const SDL_GPUBufferBinding index_binding{
+                            state.image_skybox.indices,
+                            0,
+                        };
+                        const SDL_GPUTextureSamplerBinding texture_binding{
+                            state.image_skybox.texture,
+                            state.background_sampler,
+                        };
+                        SDL_BindGPUVertexBuffers(
+                            task_pass,
+                            0,
+                            &vertex_binding,
+                            1);
+                        SDL_BindGPUIndexBuffer(
+                            task_pass,
+                            &index_binding,
+                            SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                        SDL_BindGPUFragmentSamplers(
+                            task_pass,
+                            0,
+                            &texture_binding,
+                            1);
+                        count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+                            task_pass,
+                            36,
+                            1,
+                            0,
+                            0,
+                            0);
+                    }
+#endif
                 }
+                // The generic mesh paths treat slot zero as already
+                // holding the task matrix. A skybox above used that slot
+                // for its own scene block, so restore it before the
+                // mirrored lists run.
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    0,
+                    task_matrix.data(),
+                    sizeof(task_matrix));
             };
-            const auto draw_ground = [&] {
+            const auto draw_task_ground = [&] (
+                SDL_GPURenderPass* task_pass,
+                const std::array<float, 16>& task_matrix,
+                const CameraRecord& task_camera) {
                 if (!state.background.enabled) return;
-                if (!scene_matrix_bound) {
-                    SDL_PushGPUVertexUniformData(
-                        command,
-                        0,
-                        matrix.data(),
-                        sizeof(matrix));
-                }
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    0,
+                    task_matrix.data(),
+                    sizeof(task_matrix));
 #if BBLITE_GPU_DEFORMATION
-                // Background geometry carries zeroed joint weights; without
-                // a fresh identity deformation block the previous mesh
-                // draw's skinning uniforms would collapse the quad.
                 const DeformationUniforms ground_deformation =
                     build_deformation_uniforms(MeshRecord{}, false);
                 SDL_PushGPUVertexUniformData(
@@ -13567,23 +11046,34 @@ SceneRun run_gpu_engine(Engine& engine) {
 #endif
                 const upstream::BackgroundUniforms background =
                     upstream::build_background_uniforms(
-                        scene.environment,
-                        camera,
-                        transmission_enabled);
-                SDL_BindGPUGraphicsPipeline(pass, state.background_pipeline);
+                        graph_scene.environment,
+                        task_camera,
+                        graph_scene.transmission_enabled);
+                SDL_BindGPUGraphicsPipeline(
+                    task_pass,
+                    state.background_pipeline);
                 SDL_PushGPUFragmentUniformData(
                     command,
                     0,
                     &background,
                     sizeof(background));
-                const SDL_GPUBufferBinding index_binding{state.background.indices, 0};
+                const SDL_GPUBufferBinding index_binding{
+                    state.background.indices,
+                    0,
+                };
                 const SDL_GPUTextureSamplerBinding texture_binding{
                     state.background.texture,
                     state.ground_sampler,
                 };
 #if BBLITE_GPU_INSTANCING
+                const std::array<float, 16> identity_parent_world{
+                    1.0f, 0.0f, 0.0f, 0.0f,
+                    0.0f, 1.0f, 0.0f, 0.0f,
+                    0.0f, 0.0f, 1.0f, 0.0f,
+                    0.0f, 0.0f, 0.0f, 1.0f,
+                };
                 const std::array<SDL_GPUBufferBinding, 2>
-                    ground_vertex_bindings{
+                    vertex_bindings{
                         SDL_GPUBufferBinding{
                             state.background.vertices,
                             0,
@@ -13594,21 +11084,1885 @@ SceneRun run_gpu_engine(Engine& engine) {
                         },
                     };
                 SDL_BindGPUVertexBuffers(
-                    pass,
+                    task_pass,
                     0,
-                    ground_vertex_bindings.data(),
-                    static_cast<Uint32>(
-                        ground_vertex_bindings.size()));
+                    vertex_bindings.data(),
+                    static_cast<Uint32>(vertex_bindings.size()));
                 SDL_PushGPUVertexUniformData(
                     command,
                     instance_uniform_slot,
                     identity_parent_world.data(),
                     sizeof(identity_parent_world));
 #else
-                const SDL_GPUBufferBinding vertex_binding{state.background.vertices, 0};
-                SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+                const SDL_GPUBufferBinding vertex_binding{
+                    state.background.vertices,
+                    0,
+                };
+                SDL_BindGPUVertexBuffers(
+                    task_pass,
+                    0,
+                    &vertex_binding,
+                    1);
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
+                const std::array<SDL_GPUBuffer*, 2> morph_storage{
+                    state.empty_morph_deltas,
+                    state.empty_morph_weights,
+                };
+                SDL_BindGPUVertexStorageBuffers(
+                    task_pass,
+                    0,
+                    morph_storage.data(),
+                    static_cast<Uint32>(morph_storage.size()));
+#endif
+                SDL_BindGPUIndexBuffer(
+                    task_pass,
+                    &index_binding,
+                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_BindGPUFragmentSamplers(
+                    task_pass,
+                    0,
+                    &texture_binding,
+                    1);
+                count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+                    task_pass,
+                    6,
+                    1,
+                    0,
+                    0,
+                    0);
+            };
+#if BBLITE_HAS_BILLBOARDS
+            const auto draw_task_billboards = [&](
+                                                    SDL_GPURenderPass* pass,
+                                                    BillboardDepthMode mode,
+                                                    const std::array<float, 16>& view_projection,
+                                                    const std::array<float, 16>& view) {
+                for (const BillboardPass& billboard :
+                     state.billboard_passes) {
+                    if (
+                        engine.billboard_systems[
+                            billboard.system.value].depth_mode != mode) {
+                        continue;
+                    }
+                    record_billboard_pass(
+                        command,
+                        pass,
+                        engine,
+                        billboard,
+                        view_projection,
+                        view);
+                }
+            };
+#endif
+            const auto draw_scene = [&](
+                                      const Scene& draw_context,
+                                      const std::vector<GpuMesh>& draw_meshes,
+                                      SDL_GPURenderPass* task_pass,
+                                      SDL_GPUGraphicsPipeline* grid_opaque,
+                                      SDL_GPUGraphicsPipeline* grid_double_sided,
+                                      SDL_GPUGraphicsPipeline* grid_transparent,
+                                      SDL_GPUGraphicsPipeline* grid_transparent_double_sided,
+                                      const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_pipelines,
+                                      const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_a2c_pipelines,
+                                      const std::array<float, 16>& draw_matrix,
+                                      [[maybe_unused]] const CameraRecord& draw_camera,
+                                      // The three matrices this pass
+                                      // renders with, for a shader
+                                      // material declaring the product
+                                      // or either of its factors.
+                                      [[maybe_unused]] const
+                                          ShaderPassMatrices&
+                                              draw_pass_matrices,
+                                      const upstream::RenderDrawLists& draw_lists,
+                                      [[maybe_unused]] const FrameTaskRecord* geometry_task,
+                                      [[maybe_unused]] const PinnedGeometryParams* geometry_params,
+                                      [[maybe_unused]] SDL_GPUBuffer* geometry_params_buffer,
+                                      // Set when this pass renders one
+                                      // generator's shadow map: the
+                                      // pass block takes the light's
+                                      // own matrices and every pipeline
+                                      // renders standard-Z.
+                                      [[maybe_unused]] const
+                                          ShadowGeneratorRecord*
+                                              shadow_generator =
+                                                  nullptr,
+                                      [[maybe_unused]] bool
+                                          draw_scene_billboard_stages =
+                                              false
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                                      , std::vector<PreparedSdlDraw>* deferred = nullptr,
+                                      const std::shared_ptr<PersistentSceneUniforms>& deferred_scene = {},
+                                      std::optional<SDL_GPUSampleCount> deferred_samples = {}
+#endif
+                                      ) {
+                bool scene_matrix_bound = true;
+                // One dispatch for both passes; only the sources
+                // differ (`secondary_pipeline_for`).
+                const SecondaryPipelines secondary{
+                    grid_opaque,
+                    grid_double_sided,
+                    grid_transparent,
+                    grid_transparent_double_sided,
+                    &shader_variant_pipelines,
+                    &shader_variant_a2c_pipelines,
+                };
+                const auto pipeline_for =
+                    [&](
+                        upstream::RenderPipelineKind kind,
+                        std::uint32_t shader_variant) {
+                    return secondary_pipeline_for(
+                        secondary,
+                        kind,
+                        shader_variant,
+                        "task dispatch");
+                };
+#if BBLITE_PINNED_MATERIALS
+                // The pass's scene and lights blocks, once per pass
+                // rather than per draw: their builders run camera and
+                // view math whose repetition was pure cost. Every
+                // pinned family reads them, the node graphs included --
+                // this is the frame-state question, not the
+                // composed-variant one.
+                upstream::SceneUniforms pass_scene_block =
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                    deferred_scene ? temporal_clean_scene_block(*deferred_scene) :
+#endif
+                    pinned_scene_block(
+                        draw_context,
+                        engine,
+                        draw_camera,
+                        draw_matrix);
+#if BBLITE_SHADOW_RECEIVERS
+                // The pin installs the light-space matrices on a camera
+                // facade whose caches it pins, so its caster pass reads
+                // them straight back. There is no facade here: the pass
+                // block takes the generator's own biased view-projection
+                // and its light-space view directly.
+                // The PASS's own matrices, not the generator's: a
+                // cascaded generator renders one pass per cascade and
+                // each carries its own cascade's pair, which the
+                // caller has already resolved into these two.
+                if (shadow_generator && draw_pass_matrices.view) {
+                    pass_scene_block.viewProjection = draw_matrix;
+                    pass_scene_block.view = *draw_pass_matrices.view;
+                }
+#endif
+                // A caster pass of the two COMPOSED families declares
+                // no lights block in either stage -- its fragment is
+                // the no-colour view -- so building the pin's 16-entry
+                // array for it would be ~2 KB zeroed and copied per
+                // frame for nothing. A node caster is the exception:
+                // the pin re-compiles the graph's own bodies for it, so
+                // its fragment still runs the lighting the graph wrote
+                // and still declares `nmeLights`. The exception is the
+                // NODE SHADOW define, not the node variant one -- a
+                // graph that neither casts nor receives never reaches a
+                // caster pass, and would otherwise pay for one.
+                const std::vector<std::uint8_t> pass_lights_block =
+#if BBLITE_SHADOW_RECEIVERS && BBLITE_NODE_SHADOWS == 0
+                    shadow_generator
+                        ? std::vector<std::uint8_t>{}
+                        :
+#endif
+                    pinned_lights_block(draw_context, engine);
+#endif
+                const auto draw_list =
+                    [&](const upstream::RenderDrawList& list) {
+                    SDL_GPUGraphicsPipeline* bound_pipeline =
+                        nullptr;
+                    for (
+                        const upstream::RenderDrawCommand& draw :
+                        list.commands) {
+                        if (
+                            draw.item_index >=
+                            draw_meshes.size()) {
+                            continue;
+                        }
+                        const GpuMesh& mesh =
+                            draw_meshes[draw.item_index];
+                        const upstream::RenderItem& draw_item =
+                            draw.item;
+                        const MaterialRecord* material =
+                            draw_item.material.value <
+                                    engine.materials.size()
+                                ? &engine.materials[
+                                      draw_item.material.value]
+                                : nullptr;
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                        if (deferred && draw_item.material_kind != upstream::RenderMaterialKind::standard) {
+                            throw std::runtime_error("Deferred temporal rendering requires a prepared material draw adapter.");
+                        }
+#endif
+#if BBLITE_PBR_VARIANTS > 0
+                        // The task pass draws PBR through the pin's own
+                        // stages exactly as the main pass does, from the
+                        // task's own camera and matrix.
+                        if (
+                            draw_item.material_kind ==
+                            upstream::RenderMaterialKind::pbr) {
+                            const std::size_t task_shader =
+                                geometry_task
+                                    ? static_cast<std::size_t>(
+                                          geometry_task->geometry
+                                              .shader_index)
+                                    : npos;
+                            pal::PinnedVariantKey pinned_key;
+                            const std::size_t pinned_variant =
+                                pinned_variant_for_draw(
+                                    draw_context,
+                                    engine,
+                                    draw,
+                                    task_shader,
+                                    &pinned_key);
+                            if (pinned_variant == npos) {
+                                gpu_error(
+                                    ("PBR draw for mesh " +
+                                     std::to_string(
+                                         draw_item.mesh.value) +
+                                     ", material " +
+                                     std::to_string(
+                                         draw_item.material.value) +
+                                     " resolves no pinned variant in a "
+                                     "render task: " +
+                                     pal::pinned_variant_request(
+                                         pinned_key,
+                                         task_shader))
+                                        .c_str());
+                            }
+                            ensure_pinned_slots(state, pinned_variant);
+                            draw_pinned_variant(
+                                state,
+                                command,
+                                task_pass,
+                                draw_context,
+                                engine,
+                                pass_scene_block,
+                                pass_lights_block,
+                                draw,
+                                mesh,
+                                material,
+                                pinned_variant,
+                                bound_pipeline,
+                                geometry_task,
+                                geometry_params,
+                                geometry_params_buffer,
+                                shadow_generator != nullptr
+#if BBLITE_SHADOWS_ESM
+                                ,
+                                shadow_generator &&
+                                        shadow_generator->filter ==
+                                            ShadowFilter::esm_directional
+                                    ? shadow_generator->esm_index
+                                    : invalid_handle
+#endif
+                                );
+                            continue;
+                        }
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+                        // The task pass draws Standard through the
+                        // pin's own stages exactly as it draws PBR,
+                        // from the task's own camera and matrix.
+                        if (
+                            draw_item.material_kind ==
+                            upstream::RenderMaterialKind::standard) {
+                            StandardVariantKey standard_key;
+                            const std::size_t standard_variant =
+                                standard_variant_for_draw(
+                                    draw_context,
+                                    engine,
+                                    draw,
+                                    geometry_task
+                                        ? static_cast<std::size_t>(
+                                              geometry_task->geometry
+                                                  .shader_index)
+                                        : npos,
+                                    &standard_key);
+                            if (standard_variant == npos) {
+                                gpu_error(
+                                    ("Standard draw for mesh " +
+                                     std::to_string(
+                                         draw_item.mesh.value) +
+                                     ", material " +
+                                     std::to_string(
+                                         draw_item.material.value) +
+                                     " resolves no composed variant in "
+                                     "a render task: " +
+                                     standard_variant_request(
+                                         engine,
+                                         draw))
+                                        .c_str());
+                            }
+                            draw_standard_variant(
+                                state,
+                                command,
+                                task_pass,
+                                draw_context,
+                                engine,
+                                pass_scene_block,
+                                pass_lights_block,
+                                draw,
+                                mesh,
+                                material,
+                                standard_variant,
+                                standard_key.features,
+                                bound_pipeline,
+                                geometry_task,
+                                geometry_params,
+                                material_render_textures(
+                                    material,
+                                    source_texture),
+                                geometry_params_buffer,
+                                shadow_generator != nullptr
+#if BBLITE_SHADOWS_ESM
+                                ,
+                                shadow_generator &&
+                                        shadow_generator->filter ==
+                                            ShadowFilter::esm_directional
+                                    ? shadow_generator->esm_index
+                                    : invalid_handle
+#elif defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                                , invalid_handle
+#endif
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                                , deferred, deferred_scene, deferred_samples
+#endif
+                                );
+                            continue;
+                        }
+#else
+                        if (
+                            draw_item.material_kind ==
+                            upstream::RenderMaterialKind::standard) {
+                            gpu_error(
+                                "Standard draw in a build with no "
+                                "composed variant table; the "
+                                "transcribed fragment is retired.");
+                        }
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+                        // A node graph in a task pass: a shadow caster,
+                        // or -- when the task is a geometry-output one --
+                        // the graph's own MRT view. The family's own
+                        // dispatcher either way, with the task deciding
+                        // which of the graph's compiled modules draws.
+                        if (
+                            draw_item.material_kind ==
+                            upstream::RenderMaterialKind::node) {
+                            draw_node_variant(
+                                state,
+                                command,
+                                task_pass,
+                                draw_context,
+                                engine,
+                                pass_scene_block,
+                                pass_lights_block,
+                                draw,
+                                mesh,
+                                draw_item.shader_variant,
+                                bound_pipeline,
+                                shadow_generator != nullptr,
+                                material,
+#if BBLITE_SHADOWS_ESM
+                                shadow_generator &&
+                                        shadow_generator->filter ==
+                                            ShadowFilter::esm_directional
+                                    ? shadow_generator->esm_index
+                                    : invalid_handle,
+#else
+                                invalid_handle,
+#endif
+                                geometry_task,
+                                geometry_params,
+                                geometry_params_buffer
+                            );
+                            continue;
+                        }
+#else
+                        if (
+                            draw_item.material_kind ==
+                            upstream::RenderMaterialKind::node) {
+                            gpu_error(
+                                "a node material in a build with no "
+                                "composed graphs.");
+                        }
+#endif
+                        SDL_GPUGraphicsPipeline* pipeline =
+                            pipeline_for(draw.pipeline, draw.item.shader_variant);
+                        if (!pipeline) {
+                            throw std::runtime_error(
+                                "Reached secondary render pipeline was not created.");
+                        }
+                        if (pipeline != bound_pipeline) {
+                            SDL_BindGPUGraphicsPipeline(
+                                task_pass,
+                                pipeline);
+                            bound_pipeline = pipeline;
+                        }
+                        const bool grid_bucket =
+                            draw_item.material_kind ==
+                            upstream::RenderMaterialKind::grid;
+                        const bool shader_bucket =
+                            draw_item.material_kind ==
+                            upstream::RenderMaterialKind::shader;
+                        if (shader_bucket) {
+                            if (!material) {
+                                throw std::runtime_error(
+                                    "Shader draw has an invalid material.");
+                            }
+                            const ShaderDrawMatrices shader_matrices(
+                                engine,
+                                engine.meshes[
+                                    draw_item.mesh.value],
+                                draw_pass_matrices);
+                            const ShaderPassMatrices
+                                shader_pass_matrices =
+                                    shader_matrices.apply(
+                                        draw_pass_matrices);
+                            // Per-stage blocks from the generated
+                            // variant table: [the declared system
+                            // matrices][custom floats gathered from
+                            // the material's flat value storage].
+                            const upstream::ShaderVariantInfo&
+                                shader_info =
+                                    upstream::shader_variant_info(
+                                        draw_item.shader_variant);
+                            const auto push_stage_block =
+                                [&](
+                                    const upstream::
+                                        ShaderVariantStageBlock&
+                                            block,
+                                    bool fragment_stage) {
+                                if (!block.present) return;
+                                shader_stage_block_floats(
+                                    block,
+                                    shader_pass_matrices,
+                                    *material,
+                                    shader_block_scratch);
+                                if (fragment_stage) {
+                                    SDL_PushGPUFragmentUniformData(
+                                        command,
+                                        0,
+                                        shader_block_scratch.data(),
+                                        static_cast<Uint32>(
+                                            shader_block_scratch
+                                                .size() *
+                                            sizeof(float)));
+                                } else {
+                                    SDL_PushGPUVertexUniformData(
+                                        command,
+                                        0,
+                                        shader_block_scratch.data(),
+                                        static_cast<Uint32>(
+                                            shader_block_scratch
+                                                .size() *
+                                            sizeof(float)));
+                                }
+                            };
+                            push_stage_block(
+                                shader_info.vertex,
+                                false);
+                            push_stage_block(
+                                shader_info.fragment,
+                                true);
+                            bind_stage_storage(
+                                task_pass,
+                                state.shader_vertex_slots[
+                                    draw_item.shader_variant],
+                                false,
+                                "shader material vertex stage",
+                                state.storage_binding_scratch,
+                                [&](const std::string& name,
+                                    std::size_t) {
+                                    return shader_storage_buffer(
+                                        state, *material,
+                                        shader_info, name);
+                                });
+                            bind_stage_storage(
+                                task_pass,
+                                state.shader_fragment_slots[
+                                    draw_item.shader_variant],
+                                true,
+                                "shader material fragment stage",
+                                state.storage_binding_scratch,
+                                [&](const std::string& name,
+                                    std::size_t) {
+                                    return shader_storage_buffer(
+                                        state, *material,
+                                        shader_info, name);
+                                });
+                            bind_shader_material_textures(
+                                state,
+                                task_pass,
+                                draw_context,
+                                engine,
+                                *material,
+                                draw_item.shader_variant,
+                                mesh);
+                            if (shader_info.vertex.present) {
+                                // A pure scene-matrix vertex block
+                                // leaves the shared binding valid;
+                                // custom vertex floats invalidate
+                                // it for the next draw.
+                                scene_matrix_bound =
+                                    block_is_shared_scene_matrix(
+                                        shader_info.vertex);
+                            }
+                        } else {
+                            if (!scene_matrix_bound) {
+                                SDL_PushGPUVertexUniformData(
+                                    command,
+                                    0,
+                                    draw_matrix.data(),
+                                    sizeof(draw_matrix));
+                                scene_matrix_bound = true;
+                            }
+#if BBLITE_GPU_DEFORMATION
+                        if (!grid_bucket) {
+                            const DeformationUniforms deformation =
+                                build_deformation_uniforms(
+                                    engine.meshes[
+                                        draw_item.mesh.value],
+                                    engine.geometries[
+                                        draw_item.geometry].flat_normals);
+                            SDL_PushGPUVertexUniformData(
+                                command,
+                                1,
+                                &deformation,
+                                sizeof(deformation));
+                        }
+#endif
+#if BBLITE_GPU_INSTANCING
+                        if (!grid_bucket) {
+                            const std::array<float, 16> parent_world =
+                                instance_parent_draw_world(
+                                    engine.meshes[
+                                        draw_item.mesh.value],
+                                    draw_context,
+                                    engine);
+                            SDL_PushGPUVertexUniformData(
+                                command,
+                                instance_uniform_slot,
+                                parent_world.data(),
+                                sizeof(parent_world));
+                        }
+#endif
+                        if (grid_bucket) {
+                            const upstream::GridUniforms fragment =
+                                upstream::build_grid_uniforms(
+                                    engine,
+                                    draw_item);
+                            SDL_PushGPUFragmentUniformData(
+                                command,
+                                0,
+                                &fragment,
+                                sizeof(fragment));
+                        }
+                        }
+                        const SDL_GPUBufferBinding index_binding{
+                            mesh.indices,
+                            0,
+                        };
+                        bind_mesh_vertex_buffers(
+                            task_pass,
+                            mesh);
+                        SDL_BindGPUIndexBuffer(
+                            task_pass,
+                            &index_binding,
+                            SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                        count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+                            task_pass,
+                            mesh.index_count,
+                            mesh.instance_count,
+                            0,
+                            0,
+                            0);
+                    }
+                };
+                draw_list(draw_lists.opaque);
+#if BBLITE_HAS_BILLBOARDS
+                if (draw_scene_billboard_stages) {
+                    draw_task_billboards(
+                        task_pass,
+                        BillboardDepthMode::cutout,
+                        draw_matrix,
+                        *draw_pass_matrices.view);
+                }
+#endif
+                draw_list(draw_lists.transparent);
+            };
+
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            if (graph_layer == 0) {
+                for (const auto& registered : engine.registered_scenes) {
+                    for (const TaskHandle recorded_handle : registered->tasks) {
+                        auto& recorded = engine.frame_tasks.at(recorded_handle.value);
+                        if (!recorded.post_process.taa) continue;
+                        auto& first = state.post_process_tasks.at(recorded_handle.value).at(0);
+                        if (first.temporal_recorded) continue;
+                        upstream::record_taa_post_process(*recorded.post_process.taa, [&] {
+                            for (std::size_t child = 0; child < recorded.post_process.passes.size(); ++child) {
+                                (void)prepare_post_process_pass(state, engine, recorded_handle, swapchain,
+                                    swapchain_format, width, height, child, source_texture, target_texture);
+                            }
+                        });
+                        first.temporal_recorded = true;
+                    }
+                }
+            }
+#endif
+            for (const TaskHandle handle : graph_scene.tasks) {
+                if (handle.value >= engine.frame_tasks.size()) {
+                    throw std::runtime_error(
+                        "Scene frame task handle is invalid.");
+                }
+                [[maybe_unused]] FrameTaskRecord& task =
+                    handle_at(engine.frame_tasks, handle);
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                if (task.kind != FrameTaskKind::render && task.kind != FrameTaskKind::post_process) {
+                    throw std::runtime_error("Temporal submission requires a prepared frame-task encoding adapter.");
+                }
+#endif
+                if (task.kind == FrameTaskKind::render) {
+                    if (
+                        task.render.target.value >=
+                        engine.render_targets.size()) {
+                        throw std::runtime_error(
+                            "Render task target is invalid.");
+                    }
+                    const RenderTargetRecord& target_record =
+                        handle_at(engine.render_targets, task.render.target);
+                    GpuRenderTarget& target =
+                        handle_at(state.render_targets, task.render.target);
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                    if (task.source_scene != graph_scene.state || task.render.scene_stages ||
+                        task.render.shadow_generator.value != invalid_handle || !target.color ||
+                        target.color_format != state.pinned_color_format) {
+                        throw std::runtime_error("Temporal source requires a prepared Standard color pass in its owning scene.");
+                    }
+#endif
+                    const CameraRecord& task_camera =
+                        task.render.has_camera &&
+                                task.render.camera.value <
+                                    engine.cameras.size()
+                            ? handle_at(engine.cameras, task.render.camera)
+                            : graph_camera;
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                    CameraRecord* source_camera = task.render.has_camera
+                        ? &engine.cameras.at(task.render.camera.value)
+                        : task.source_scene->camera.value < engine.cameras.size()
+                            ? &handle_at(engine.cameras, task.source_scene->camera) : nullptr;
+                    validate_temporal_source(engine, task, source_camera, handle_at(task_draw_lists, handle));
+                    prepare_temporal_scene_uniforms(task, source_camera,
+                        target.width, target.height, graph_extent.width, graph_extent.height,
+                        [](const float*, std::size_t) {});
+#endif
+                    // `_writePassSceneUBO` folds the camera's own
+                    // viewport into whichever extent the task was
+                    // configured for -- the canvas or the target.
+                    const double task_aspect =
+                        task.render.canvas_size
+                            ? upstream::effective_aspect_ratio(
+                                  task_camera,
+                                  static_cast<double>(graph_extent.width),
+                                  static_cast<double>(graph_extent.height))
+                            : upstream::effective_aspect_ratio(
+                                  task_camera,
+                                  static_cast<double>(target.width),
+                                  static_cast<double>(target.height));
+                    // A shadow task renders from the light, not from
+                    // a camera: the generator's own matrices replace
+                    // both of these below, so building and pushing a
+                    // camera view-projection first would be a dead pass
+                    // over the camera basis and a dead push.
+                    const bool shadow_task =
+                        task.render.shadow_generator.value !=
+                        invalid_handle;
+                    const std::array<float, 16> task_matrix = shadow_task
+                        ? std::array<float, 16>{}
+                        : upstream::build_view_projection(
+                            task_camera,
+                            task_aspect);
+                    // The task's own two factors, beside its product,
+                    // for a shader material that declares one. A shadow
+                    // task renders from the light instead and supplies
+                    // what the generator carries.
+                    const std::array<float, 16> task_view =
+                        upstream::build_view_matrix(
+                            upstream::camera_world_matrix(task_camera));
+                    const std::array<float, 16> task_projection =
+                        upstream::build_scene_projection(
+                            task_camera, task_aspect);
+                    const std::array<float, 4> task_camera_position =
+                        shader_camera_position(
+                            graph_scene, engine, task_camera);
+                    ShaderPassMatrices task_pass_matrices{
+                        task_matrix.data(),
+                        &task_view,
+                        &task_projection};
+                    task_pass_matrices.camera_position =
+                        &task_camera_position;
+                    if (!shadow_task) {
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            0,
+                            task_matrix.data(),
+                            sizeof(task_matrix));
+                    }
+#if BBLITE_SHADOW_RECEIVERS
+                    if (
+                        task.render.shadow_generator.value <
+                            engine.shadow_generators.size()) {
+                        // The pin's render gate: `renderEsmShadowMap` /
+                        // `renderPcfShadowMap` return before the caster
+                        // pass and both blur passes when nothing moved
+                        // since the last render, and the map textures
+                        // persist — the receiver keeps sampling last
+                        // render's bit-identical content. The verdict
+                        // was written onto the gate by
+                        // `refresh_shadow_generators` earlier this
+                        // frame.
+                        if (!state.shadow_refresh.gates[
+                                task.render.shadow_generator.value]
+                                 .due) {
+                            continue;
+                        }
+                        if (!target_record.has_depth || !target.depth) {
+                            throw std::runtime_error(
+                                "Shadow render task has no depth attachment.");
+                        }
+                        const ShadowGeneratorRecord& generator =
+                            engine.shadow_generators[
+                                task.render.shadow_generator.value];
+                        // A cascaded generator has one pass per
+                        // cascade, each clearing and writing its own
+                        // layer of the shared depth array and
+                        // rendering through that cascade's own biased
+                        // view-projection. Every other generator has
+                        // one pass, one layer and one pair.
+                        const pal::ShadowCasterMatrices caster =
+                            pal::shadow_caster_matrices(engine, task);
+                        const std::array<float, 16>&
+                            caster_view_projection =
+                                caster.view_projection;
+                        const std::array<float, 16>& caster_view =
+                            caster.view;
+                        SDL_GPUDepthStencilTargetInfo shadow_depth{};
+                        shadow_depth.texture = target.depth;
+                        shadow_depth.layer = static_cast<Uint8>(
+                            task.render.depth_layer);
+                        // The pin's own shadow target clears to ITS
+                        // far value, which standard-Z puts at 1 where
+                        // this port's reverse-Z puts it at 0.
+                        shadow_depth.clear_depth =
+                            pass_depth_clear(true);
+                        shadow_depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                        shadow_depth.store_op = SDL_GPU_STOREOP_STORE;
+                        shadow_depth.stencil_load_op =
+                            SDL_GPU_LOADOP_DONT_CARE;
+                        shadow_depth.stencil_store_op =
+                            SDL_GPU_STOREOP_DONT_CARE;
+                        // An ESM caster pass STORES a colour: the
+                        // exponential depth its material view writes.
+                        // A PCF one has no colour attachment at all,
+                        // which is the difference between the two
+                        // pinned targets.
+                        SDL_GPUColorTargetInfo shadow_color{};
+                        if (target_record.has_color) {
+                            if (!target.color) {
+                                throw std::runtime_error(
+                                    "ESM shadow task has no colour "
+                                    "attachment.");
+                            }
+                            shadow_color.texture = target.color;
+                            shadow_color.load_op = SDL_GPU_LOADOP_CLEAR;
+                            shadow_color.store_op =
+                                SDL_GPU_STOREOP_STORE;
+                            // `createRenderTask({clrColor:{0,0,0,0}})`.
+                            shadow_color.clear_color =
+                                SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
+                        }
+                        SdlRenderPass shadow_pass{SDL_BeginGPURenderPass(
+                                command,
+                                target_record.has_color
+                                    ? &shadow_color
+                                    : nullptr,
+                                target_record.has_color ? 1u : 0u,
+                                &shadow_depth)};
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            0,
+                            caster_view_projection.data(),
+                            sizeof(caster_view_projection));
+                        ShaderPassMatrices caster_pass_matrices{
+                            caster_view_projection.data(),
+                            &caster_view,
+                            nullptr};
+                        caster_pass_matrices.camera_position =
+                            &task_camera_position;
+                        draw_scene(
+                        graph_scene, graph_meshes,
+                            shadow_pass,
+                            nullptr,
+                            nullptr,
+                            nullptr,
+                            nullptr,
+                            state.shader_shadow_pipelines,
+                            state.shader_shadow_pipelines,
+                            caster_view_projection,
+                            task_camera,
+                            caster_pass_matrices,
+                            handle_at(task_draw_lists, handle),
+                            nullptr,
+                            nullptr,
+                            nullptr,
+                            &generator);
+                        shadow_pass.end();
+#if BBLITE_SHADOWS_ESM
+                        // `renderEsmShadowMap` blurs the map it just
+                        // drew, in two passes, before anything samples
+                        // it.
+                        if (
+                            generator.filter ==
+                            ShadowFilter::esm_directional) {
+                            run_esm_blur(
+                                state,
+                                command,
+                                generator.esm_index);
+                        }
+#endif
+                        continue;
+                    }
+#endif
+                    if (!target_record.has_color) {
+                        if (!target_record.has_depth || !target.depth) {
+                            throw std::runtime_error(
+                                "Depth-only render task has no depth attachment.");
+                        }
+                        if (task.render_meshes.empty()) {
+                            throw std::runtime_error(
+                                "Depth-only render task requires explicit meshes.");
+                        }
+                        SDL_GPUDepthStencilTargetInfo task_depth{};
+                        task_depth.texture = target.depth;
+                        // Zero for every target but a layered one, and
+                        // the record carries the layer either way --
+                        // an ordinary pass into a layered target would
+                        // otherwise silently write layer 0.
+                        task_depth.layer = static_cast<Uint8>(
+                            task.render.depth_layer);
+                        task_depth.clear_depth =
+                            upstream::pinned_depth_clear;
+                        task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                        task_depth.store_op =
+                            target_record.sampled_depth
+                                ? SDL_GPU_STOREOP_STORE
+                                : SDL_GPU_STOREOP_DONT_CARE;
+                        task_depth.stencil_load_op =
+                            SDL_GPU_LOADOP_DONT_CARE;
+                        task_depth.stencil_store_op =
+                            SDL_GPU_STOREOP_DONT_CARE;
+                        SdlRenderPass task_pass{SDL_BeginGPURenderPass(
+                                command,
+                                nullptr,
+                                0,
+                                &task_depth)};
+                        const std::size_t pipeline_index =
+                            target_record.samples == 4 ? 1u : 0u;
+                        for (int sided_mode = 0;
+                             sided_mode < 2;
+                             ++sided_mode) {
+                            SDL_BindGPUGraphicsPipeline(
+                                task_pass,
+                                sided_mode == 0
+                                    ? state.depth_only_pipelines[
+                                          pipeline_index]
+                                    : state
+                                          .depth_only_double_sided_pipelines[
+                                              pipeline_index]);
+                            for (
+                                const RenderTaskMesh& entry :
+                                task.render_meshes) {
+                                if (
+                                    entry.material.value >=
+                                    engine.materials.size()) {
+                                    throw std::runtime_error(
+                                        "Depth task material override is invalid.");
+                                }
+                                const MaterialRecord& material =
+                                    engine.materials[
+                                        entry.material.value];
+                                if (!material.no_color) {
+                                    throw std::runtime_error(
+                                        "Depth-only render task requires a no-color material view.");
+                                }
+                                if (
+                                    material.double_sided !=
+                                    (sided_mode == 1)) {
+                                    continue;
+                                }
+                                // geometry-renderer-task.ts skips a hidden mesh at the draw
+                                // itself. This path consumes no draw list -- it walks the task's
+                                // own meshes and resolves each against the plan -- so it cannot
+                                // inherit append_draw's answer and asks the same predicate.
+                                if (!upstream::mesh_draws(
+                                        engine.meshes[
+                                            entry.mesh.value])) {
+                                    continue;
+                                }
+                                const std::size_t mesh_index =
+                                    gpu_mesh_index(entry.mesh);
+                                if (
+                                    mesh_index >=
+                                    graph_meshes.size()) {
+                                    throw std::runtime_error(
+                                        "Depth task mesh is not in the scene.");
+                                }
+                                const GpuMesh& mesh =
+                                    graph_meshes[mesh_index];
+                                const SDL_GPUBufferBinding index_binding{
+                                    mesh.indices,
+                                    0,
+                                };
+                                bind_mesh_vertex_buffers(
+                                    task_pass,
+                                    mesh);
+                                SDL_BindGPUIndexBuffer(
+                                    task_pass,
+                                    &index_binding,
+                                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                                count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+                                    task_pass,
+                                    mesh.index_count,
+                                    mesh.instance_count,
+                                    0,
+                                    0,
+                                    0);
+                            }
+                        }
+                        task_pass.end();
+                        continue;
+                    }
+                    SDL_GPUColorTargetInfo target_info{};
+                    target_info.texture =
+                        target_record.swapchain
+                            ? swapchain
+                            : target.color;
+                    target_info.clear_color = SDL_FColor{
+                        task.render.clear_color.r,
+                        task.render.clear_color.g,
+                        task.render.clear_color.b,
+                        task.render.clear_color.a,
+                    };
+                    target_info.load_op =
+                        task.render.clear
+                            ? SDL_GPU_LOADOP_CLEAR
+                            : SDL_GPU_LOADOP_LOAD;
+                    target_info.store_op = SDL_GPU_STOREOP_STORE;
+                    // The pin resolves into `rst` at end-of-pass, and
+                    // ignores it outright when the task's own target is
+                    // single-sample. That is the count the target was
+                    // *allocated* at, not the one it asked for: a run
+                    // forced to one sample resolves nothing.
+                    if (
+                        task.render.resolve_target.value !=
+                            invalid_handle &&
+                        task_sample_count(state, target_record.samples) !=
+                            SDL_GPU_SAMPLECOUNT_1) {
+                        target_info.store_op =
+                            SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+                        target_info.resolve_texture = target_texture(
+                            task.render.resolve_target,
+                            false);
+                    }
+                    SDL_GPUDepthStencilTargetInfo task_depth{};
+                    SDL_GPUDepthStencilTargetInfo* task_depth_pointer =
+                        nullptr;
+                    // The pin's external-depth arm: a task handed another
+                    // task's depth binds that texture and LOADS it,
+                    // because a geometry output is eager and its owner
+                    // already cleared and wrote it.
+                    if (
+                        task.render.depth.source ==
+                        RenderTextureSource::geometry_depth) {
+                        task_depth.texture =
+                            task_depth_texture(task.render.depth);
+                        task_depth.load_op = SDL_GPU_LOADOP_LOAD;
+                        task_depth.store_op = SDL_GPU_STOREOP_STORE;
+                        task_depth.stencil_load_op =
+                            SDL_GPU_LOADOP_LOAD;
+                        task_depth.stencil_store_op =
+                            SDL_GPU_STOREOP_STORE;
+                        task_depth_pointer = &task_depth;
+                    } else if (target_record.has_depth && target.depth) {
+                        task_depth.texture = target.depth;
+                        // Its own layer, as the two passes above take
+                        // theirs; zero for every target but a layered
+                        // one, and an ordinary pass into a layered
+                        // target would otherwise write layer 0.
+                        task_depth.layer = static_cast<Uint8>(
+                            task.render.depth_layer);
+                        task_depth.clear_depth =
+                            upstream::pinned_depth_clear;
+                        task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                        task_depth.store_op =
+                            target_record.sampled_depth
+                                ? SDL_GPU_STOREOP_STORE
+                                : SDL_GPU_STOREOP_DONT_CARE;
+                        task_depth.stencil_load_op =
+                            SDL_GPU_LOADOP_DONT_CARE;
+                        task_depth.stencil_store_op =
+                            SDL_GPU_STOREOP_DONT_CARE;
+                        task_depth_pointer = &task_depth;
+                    }
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                    PreparedSdlScenePass prepared;
+                    prepared.target = target_info;
+                    if (task_depth_pointer) prepared.depth = *task_depth_pointer;
+                    if (source_camera && task_camera.viewport) {
+                        const auto rectangle = upstream::resolve_camera_viewport(task_camera, target.width, target.height);
+                        prepared.viewport = SDL_GPUViewport{static_cast<float>(rectangle.x), static_cast<float>(rectangle.y),
+                            static_cast<float>(rectangle.width), static_cast<float>(rectangle.height), 0.0f, 1.0f};
+                        prepared.scissor = SDL_Rect{rectangle.x, rectangle.y, rectangle.width, rectangle.height};
+                    }
+                    if (source_camera) upstream::sort_transparent_draws(handle_at(task_draw_lists, handle).transparent, engine, task_camera);
+                    draw_scene(graph_scene, graph_meshes, nullptr, nullptr, nullptr, nullptr, nullptr, {}, {},
+                        task_matrix, task_camera, task_pass_matrices, handle_at(task_draw_lists, handle),
+                        nullptr, nullptr, nullptr, nullptr, false, &prepared.draws, task.scene_uniforms,
+                        task_sample_count(state, target_record.samples));
+                    temporal_passes.emplace_back(std::move(prepared));
+                    continue;
+#endif
+                    SdlRenderPass task_pass{SDL_BeginGPURenderPass(
+                            command,
+                            &target_info,
+                            1,
+                            task_depth_pointer)};
+                    upstream::sort_transparent_draws(
+                        handle_at(task_draw_lists, handle).transparent,
+                        engine,
+                        task_camera);
+                    if (task.render.scene_stages) {
+                        draw_task_skyboxes(
+                            task_pass,
+                            task_matrix,
+                            task_camera,
+                            task_aspect);
+                    }
+                    draw_scene(
+                        graph_scene, graph_meshes,
+                        task_pass,
+                        state.grid_pipeline,
+                        state.grid_double_sided_pipeline,
+                        state.grid_transparent_pipeline,
+                        state
+                            .grid_transparent_double_sided_pipeline,
+                        state.shader_pipelines,
+                        state.shader_a2c_pipelines,
+                        task_matrix,
+                        task_camera,
+                        task_pass_matrices,
+                        handle_at(task_draw_lists, handle),
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        task.render.scene_stages);
+                    if (task.render.scene_stages) {
+                        draw_task_ground(
+                            task_pass,
+                            task_matrix,
+                            task_camera);
+#if BBLITE_HAS_BILLBOARDS
+                        draw_task_billboards(
+                            task_pass,
+                            BillboardDepthMode::transparent,
+                            task_matrix,
+                            task_view);
+#endif
+                    }
+                    task_pass.end();
+                    if (graph_layer == 0 && task.render.scene_stages) {
+                        // Utility layers share the primary surface's MSAA
+                        // attachment, before its resolve/present tasks run.
+                        for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
+                            const Scene& utility = *engine.registered_scenes[layer + 1];
+                            if (utility.surface_canvas || !utility.tasks.empty()) continue;
+                            const CameraRecord& utility_camera = utility.camera.value < engine.cameras.size()
+                                ? handle_at(engine.cameras, utility.camera) : task_camera;
+                            const double utility_aspect = upstream::effective_aspect_ratio(
+                                utility_camera, target.width, target.height);
+                            const auto utility_matrix = upstream::build_view_projection(utility_camera, utility_aspect);
+                            const auto utility_view = upstream::build_view_matrix(upstream::camera_world_matrix(utility_camera));
+                            const auto utility_projection = upstream::build_scene_projection(utility_camera, utility_aspect);
+                            const auto utility_eye = shader_camera_position(utility, engine, utility_camera);
+                            ShaderPassMatrices utility_matrices{utility_matrix.data(), &utility_view, &utility_projection};
+                            utility_matrices.camera_position = &utility_eye;
+                            target_info.load_op = SDL_GPU_LOADOP_LOAD;
+                            if (task_depth_pointer) task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                            SdlRenderPass utility_pass{SDL_BeginGPURenderPass(
+                                command, &target_info, 1, task_depth_pointer)};
+                            set_pass_camera_viewport(utility_pass, utility, engine, utility_camera, target.width, target.height);
+                            SDL_PushGPUVertexUniformData(command, 0, utility_matrix.data(), sizeof(utility_matrix));
+                            upstream::sort_transparent_draws(overlay_plans[layer].draw_lists.transparent, engine, utility_camera);
+                            draw_scene(utility, state.overlay_meshes[layer], utility_pass,
+                                state.grid_pipeline, state.grid_double_sided_pipeline,
+                                state.grid_transparent_pipeline, state.grid_transparent_double_sided_pipeline,
+                                state.shader_pipelines, state.shader_a2c_pipelines,
+                                utility_matrix, utility_camera, utility_matrices, overlay_plans[layer].draw_lists,
+                                nullptr, nullptr, nullptr);
+                            utility_pass.end();
+                        }
+                    }
+                    continue;
+                }
+                if (task.kind == FrameTaskKind::geometry) {
+                    GpuGeometryTask& geometry =
+                        handle_at(state.geometry_tasks, handle);
+                    const SDL_GPUSampleCount task_samples =
+                        task_sample_count(
+                            state,
+                            task.geometry.samples);
+                    std::vector<SDL_GPUColorTargetInfo> target_infos;
+                    target_infos.reserve(
+                        task.geometry.attachments.size() +
+                        (task.geometry.target.value != invalid_handle
+                             ? 1u
+                             : 0u));
+                    for (
+                        std::size_t index = 0;
+                        index < task.geometry.attachments.size();
+                        ++index) {
+                        SDL_GPUColorTargetInfo target_info{};
+                        target_info.texture = geometry.colors[index];
+                        target_info.clear_color =
+                            geometry_clear_color(
+                                task.geometry.attachments[index].type);
+                        target_info.load_op = SDL_GPU_LOADOP_CLEAR;
+                        target_info.store_op =
+                            task_samples == SDL_GPU_SAMPLECOUNT_1
+                                ? SDL_GPU_STOREOP_STORE
+                                : SDL_GPU_STOREOP_RESOLVE;
+                        target_info.resolve_texture =
+                            task_samples == SDL_GPU_SAMPLECOUNT_1
+                                ? nullptr
+                                : geometry.sampled_colors[index];
+                        target_infos.push_back(target_info);
+                    }
+                    if (
+                        task.geometry.target.value != invalid_handle) {
+                        GpuRenderTarget& output_target =
+                            state.render_targets[
+                                task.geometry.target.value];
+                        SDL_GPUColorTargetInfo target_info{};
+                        target_info.texture = output_target.color;
+                        target_info.clear_color = SDL_FColor{
+                            task.geometry.target_clear_color.r,
+                            task.geometry.target_clear_color.g,
+                            task.geometry.target_clear_color.b,
+                            task.geometry.target_clear_color.a,
+                        };
+                        target_info.load_op =
+                            task.geometry.clear_target
+                                ? SDL_GPU_LOADOP_CLEAR
+                                : SDL_GPU_LOADOP_LOAD;
+                        target_info.store_op =
+                            task_samples == SDL_GPU_SAMPLECOUNT_1
+                                ? SDL_GPU_STOREOP_STORE
+                                : SDL_GPU_STOREOP_RESOLVE;
+                        target_info.resolve_texture =
+                            task_samples == SDL_GPU_SAMPLECOUNT_1
+                                ? nullptr
+                                : output_target.sampled_color;
+                        target_infos.push_back(target_info);
+                    }
+                    SDL_GPUDepthStencilTargetInfo task_depth{};
+                    // The pin's gpUniforms for the task's MRT variants:
+                    // last frame's view-projection (seeded with the
+                    // current one on the first frame) and the camera's
+                    // near/far planes.
+                    if (!geometry.has_previous_view_projection) {
+                        geometry.previous_view_projection =
+                            graph_matrix;
+                        geometry.has_previous_view_projection = true;
+                    }
+                    const PinnedGeometryParams geometry_params{
+                        geometry.previous_view_projection,
+                        {
+                            static_cast<float>(graph_camera.near_plane),
+                            static_cast<float>(graph_camera.far_plane),
+                            0.0f,
+                            0.0f,
+                        },
+                    };
+#if BBLITE_PINNED_MATERIALS
+                    // The same block as a real buffer, for a composed
+                    // geometry fragment whose gp the shader compile
+                    // demoted out of SDL_GPU's four uniform slots --
+                    // which happens to either family once scene, lights,
+                    // mesh and material fill them. The upload runs on its
+                    // own command buffer, submitted (and so executed)
+                    // ahead of this frame's, and cycles the buffer so a
+                    // frame still in flight keeps last frame's contents.
+                    {
+                        if (!geometry.params) {
+                            geometry.params = upload_buffer(
+                                state.device,
+                                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                                &geometry_params,
+                                sizeof(geometry_params));
+                        } else {
+                            update_buffer(
+                                state.device,
+                                geometry.params,
+                                &geometry_params,
+                                sizeof(geometry_params));
+                        }
+                    }
+#endif
+                    task_depth.texture = geometry.depth;
+                    task_depth.clear_depth = upstream::pinned_depth_clear;
+                    task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                    task_depth.store_op = geometry.depth_borrowed
+                        ? SDL_GPU_STOREOP_STORE
+                        : SDL_GPU_STOREOP_DONT_CARE;
+                    task_depth.stencil_load_op =
+                        SDL_GPU_LOADOP_DONT_CARE;
+                    task_depth.stencil_store_op =
+                        SDL_GPU_STOREOP_DONT_CARE;
+                    SdlRenderPass task_pass{SDL_BeginGPURenderPass(
+                            command,
+                            target_infos.data(),
+                            static_cast<Uint32>(target_infos.size()),
+                            &task_depth)};
+                    SDL_PushGPUVertexUniformData(
+                        command,
+                        0,
+                        graph_matrix.data(),
+                        sizeof(graph_matrix));
+                    upstream::sort_transparent_draws(
+                        handle_at(task_draw_lists, handle).transparent,
+                        engine,
+                        graph_camera);
+                    draw_scene(
+                        graph_scene, graph_meshes,
+                        task_pass,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        {},
+                        {},
+                        graph_matrix,
+                        graph_camera,
+                        graph_pass_matrices,
+                        handle_at(task_draw_lists, handle),
+                        &task,
+                        &geometry_params,
+                        geometry.params);
+#if BBLITE_GEOMETRY_TASK_FAMILIES
+                    // The previous view-projection is a property of the
+                    // TASK, tracked only when a composed family reads it.
+                    geometry.previous_view_projection =
+                        graph_matrix;
+#endif
+                    task_pass.end();
+                    continue;
+                }
+
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+                if (task.kind == FrameTaskKind::effect) {
+                    // The same two halves the swapchain renderer draws
+                    // through, recorded into the frame graph's command
+                    // buffer instead: the pin ships two entry points
+                    // over one pass, not two passes.
+                    if (
+                        state.effect_tasks.size() <
+                        engine.frame_tasks.size()) {
+                        state.effect_tasks.resize(
+                            engine.frame_tasks.size());
+                    }
+                    EffectPass& pass = handle_at(state.effect_tasks, handle);
+                    const RenderTargetRecord& target_record =
+                        handle_at(engine.render_targets, task.effect.target);
+                    if (!pass.pipeline) {
+                        pass = create_effect_pass(
+                            state.device,
+                            engine,
+                            task.effect.effect,
+                            target_record.swapchain
+                                ? swapchain_format
+                                : state
+                                      .render_targets[
+                                          task.effect.target.value]
+                                      .color_format,
+                            // Through the MSAA gate like every other
+                            // task pipeline, so a single-sample run
+                            // matches the 1-sample texture the gate
+                            // allocated (Dawn's site reads the same
+                            // gate).
+                            target_record.swapchain
+                                ? 1u
+                                : gpu_sample_count_value(
+                                      task_sample_count(
+                                          state,
+                                          target_record.samples)));
+                    }
+                    SDL_GPUColorTargetInfo effect_target{};
+                    effect_target.texture =
+                        target_texture(task.effect.target, false);
+                    effect_target.load_op = task.effect.clear
+                        ? SDL_GPU_LOADOP_CLEAR
+                        : SDL_GPU_LOADOP_LOAD;
+                    effect_target.clear_color = SDL_FColor{
+                        task.effect.clear_color.r,
+                        task.effect.clear_color.g,
+                        task.effect.clear_color.b,
+                        task.effect.clear_color.a};
+                    effect_target.store_op = SDL_GPU_STOREOP_STORE;
+                    SdlRenderPass effect_pass{SDL_BeginGPURenderPass(
+                            command,
+                            &effect_target,
+                            1,
+                            nullptr)};
+                    record_effect_pass(
+                        command,
+                        effect_pass,
+                        engine,
+                        pass,
+                        task.effect.effect);
+                    effect_pass.end();
+                    continue;
+                }
+#endif
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+                if (task.kind == FrameTaskKind::post_process) {
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                    if (task.post_process.taa) {
+                        auto& taa = *task.post_process.taa;
+                        auto& source = engine.frame_tasks.at(task.post_process.source_tasks.at(0).value);
+                        if (!source.source_scene || !source.scene_uniforms) {
+                            throw std::runtime_error("Temporal task source has no retained scene UBO.");
+                        }
+                        CameraRecord* camera = source.source_scene->camera.value < engine.cameras.size()
+                            ? &handle_at(engine.cameras, source.source_scene->camera) : nullptr;
+                        [[maybe_unused]] const double draws = upstream::execute_taa_post_process(taa,
+                            task.post_process.passes.at(0).params[0], camera,
+                            [](CameraRecord* value) { return upstream::scene_camera_change_key(*value); },
+                            [&](std::size_t child) {
+                                write_sdl_post_process_uniforms(state, engine, handle, child, width, height);
+                            },
+                            [&](std::size_t child) -> std::optional<double> {
+                                temporal_passes.emplace_back(prepare_post_process_pass(state, engine, handle, swapchain,
+                                    swapchain_format, width, height, child, source_texture, target_texture, false));
+                                return upstream::post_process_leaf_draw_count();
+                            },
+                            [&](TaaPostProcessState& value) {
+                                const auto& blend = task.post_process.passes.at(0);
+                                const auto extent = resolve_post_process_extent(engine.render_targets.at(blend.output_target.value),
+                                    state.render_targets, blend, width, height);
+                                advance_temporal_jitter(value, *source.scene_uniforms, extent.source_width, extent.source_height,
+                                    [](std::size_t, const float*, std::size_t) {});
+                            });
+                        ++taa.execution_count;
+                    } else {
+                        for (std::size_t child = 0; child < task.post_process.passes.size(); ++child) {
+                            temporal_passes.emplace_back(prepare_post_process_pass(state, engine, handle, swapchain,
+                                swapchain_format, width, height, child, source_texture, target_texture));
+                        }
+                    }
+                    continue;
+#endif
+                    // A composite records the chain its own factory
+                    // built; a plain effect is the same loop over one.
+                    for (
+                        std::size_t index = 0;
+                        index < task.post_process.passes.size();
+                        ++index) {
+                        record_post_process_pass(
+                            state,
+                            engine,
+                            handle,
+                            command,
+                            swapchain,
+                            swapchain_format,
+                            width,
+                            height,
+                            index,
+                            capture_texture,
+                            source_texture,
+                            target_texture);
+                    }
+                    continue;
+                }
+#endif
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+                if (task.kind == FrameTaskKind::screen_space) {
+                    record_screen_space_task(
+                        state,
+                        engine,
+                        handle,
+                        command,
+                        swapchain,
+                        swapchain_format,
+                        width,
+                        height,
+                        capture_texture,
+                        source_texture,
+                        target_texture);
+                    continue;
+                }
+#endif
+                const CopyTaskOptions& copy = task.copy;
+                if (frame_options.skip_copy_task(copy)) continue;
+                const bool force_full_viewport = frame_options.full_copy_viewport(copy);
+                if (
+                    copy.resolve_target.value != invalid_handle &&
+                    copy.target.value == invalid_handle) {
+                    if (
+                        copy.source.source !=
+                        RenderTextureSource::render_target) {
+                        throw std::runtime_error(
+                            "Resolve source must be a render target.");
+                    }
+                    if (state.sample_count ==
+                        SDL_GPU_SAMPLECOUNT_1) {
+                        // Nothing to average: the pinned resolve of a
+                        // single-sample source is the source, so the
+                        // frame graph's resolve step is a texture copy
+                        // — the same degradation `pal_dawn.cpp` makes.
+                        // Asking for STOREOP_RESOLVE here instead
+                        // builds a command list D3D12 refuses to
+                        // close, which is why every geometry-output
+                        // scene failed under BBLITE_MSAA=1.
+                        const GpuRenderTarget& resolve_source =
+                            state.render_targets[
+                                copy.source.target.value];
+                        SDL_GPUTextureLocation copy_source{};
+                        copy_source.texture = target_texture(
+                            copy.source.target,
+                            false);
+                        SDL_GPUTextureLocation copy_destination{};
+                        copy_destination.texture = target_texture(
+                            copy.resolve_target,
+                            false);
+                        SdlCopyPass resolve_copy{SDL_BeginGPUCopyPass(command)};
+                        SDL_CopyGPUTextureToTexture(
+                            resolve_copy,
+                            &copy_source,
+                            &copy_destination,
+                            resolve_source.width,
+                            resolve_source.height,
+                            1,
+                            false);
+                        resolve_copy.end();
+                        continue;
+                    }
+                    SDL_GPUColorTargetInfo resolve_info{};
+                    resolve_info.texture =
+                        target_texture(copy.source.target, false);
+                    resolve_info.load_op = SDL_GPU_LOADOP_LOAD;
+                    resolve_info.store_op = SDL_GPU_STOREOP_RESOLVE;
+                    resolve_info.resolve_texture =
+                        target_texture(copy.resolve_target, false);
+                    SdlRenderPass resolve_pass{SDL_BeginGPURenderPass(
+                            command,
+                            &resolve_info,
+                            1,
+                            nullptr)};
+                    resolve_pass.end();
+                    continue;
+                }
+
+                const RenderTargetRecord& target_record =
+                    handle_at(engine.render_targets, copy.target);
+                // A copy writing a VIEWPORT of the swapchain composes
+                // with whatever else wrote the rest of it -- scene 187
+                // presents SMAA into one half and the raw image into
+                // the other -- and an SDL_GPU swapchain texture cannot
+                // be read back. So it draws into the same readable
+                // present copy a presenting post-process pass uses, and
+                // that copy is what gets blitted and captured. Drawing
+                // straight to the swapchain instead left the capture
+                // reading this copy's own source: half the frame, at
+                // half the width.
+                const auto surface_pane = target_record.swapchain && !force_full_viewport
+                    ? scene_surface_pane(engine, graph_scene, width, height)
+                    : std::nullopt;
+                if (surface_pane) {
+                    create_color(state, swapchain_format, width, height);
+                    SDL_GPUColorTargetInfo surface_target{};
+                    surface_target.texture = state.color;
+                    surface_target.load_op = graph_layer == 0
+                        ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+                    surface_target.store_op = SDL_GPU_STOREOP_STORE;
+                    SdlRenderPass surface_pass{SDL_BeginGPURenderPass(
+                        command, &surface_target, 1, nullptr)};
+                    const SDL_GPUViewport viewport{
+                        static_cast<float>(surface_pane->x),
+                        static_cast<float>(surface_pane->y),
+                        static_cast<float>(surface_pane->width),
+                        static_cast<float>(surface_pane->height), 0.0f, 1.0f};
+                    const SDL_Rect scissor{surface_pane->x, surface_pane->y,
+                        surface_pane->width, surface_pane->height};
+                    SDL_SetGPUViewport(surface_pass, &viewport);
+                    SDL_SetGPUScissor(surface_pass, &scissor);
+                    SDL_BindGPUGraphicsPipeline(surface_pass, state.blit_pipeline);
+                    const SDL_GPUTextureSamplerBinding binding{
+                        source_texture(copy.source), state.background_sampler};
+                    SDL_BindGPUFragmentSamplers(surface_pass, 0, &binding, 1);
+                    count_gpu_draw(SDL_DrawGPUPrimitives, surface_pass, 3, 1, 0, 0);
+                    surface_pass.end();
+                    capture_texture = state.color;
+                    continue;
+                }
+                const bool partial_present =
+                    target_record.swapchain &&
+                    copy.has_viewport &&
+                    !force_full_viewport;
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+                if (partial_present && !state.post_process_present) {
+                    state.post_process_present = create_frame_texture(
+                        state.device,
+                        swapchain_format,
+                        SDL_GPU_SAMPLECOUNT_1,
+                        width,
+                        height,
+                        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                            SDL_GPU_TEXTUREUSAGE_SAMPLER);
+                }
+#else
+                if (partial_present) {
+                    throw std::runtime_error(
+                        "A copy task writing a viewport of the "
+                        "swapchain needs the readable present copy, "
+                        "which only a post-process build carries.");
+                }
+#endif
+                SDL_GPUColorTargetInfo blit_target{};
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+                blit_target.texture = partial_present
+                    ? state.post_process_present
+                    : target_texture(copy.target, false);
+#else
+                blit_target.texture =
+                    target_texture(copy.target, false);
+#endif
+                blit_target.load_op =
+                    copy.has_viewport && !force_full_viewport
+                        ? SDL_GPU_LOADOP_LOAD
+                        : SDL_GPU_LOADOP_DONT_CARE;
+                blit_target.store_op = SDL_GPU_STOREOP_STORE;
+                SdlRenderPass blit_pass{SDL_BeginGPURenderPass(
+                        command,
+                        &blit_target,
+                        1,
+                        nullptr)};
+                SDL_BindGPUGraphicsPipeline(
+                    blit_pass,
+                    target_record.samples == 4
+                        ? state.blit_msaa_pipeline
+                        : state.blit_pipeline);
+                if (force_full_viewport || copy.has_viewport) {
+#if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
+                    const GpuRenderTarget& target =
+                        handle_at(state.render_targets, copy.target);
+                    const NormalizedViewport normalized_viewport =
+                        force_full_viewport
+                            ? NormalizedViewport{}
+                            : copy.viewport;
+                    const PixelViewport pixel_viewport =
+                        upstream::resolve_copy_viewport(
+                            normalized_viewport,
+                            target.width,
+                            target.height);
+                    const SDL_GPUViewport gpu_viewport{
+                        static_cast<float>(pixel_viewport.x),
+                        static_cast<float>(pixel_viewport.y),
+                        static_cast<float>(pixel_viewport.width),
+                        static_cast<float>(pixel_viewport.height),
+                        0.0f,
+                        1.0f,
+                    };
+                    SDL_SetGPUViewport(
+                        blit_pass,
+                        &gpu_viewport);
+                    const SDL_Rect scissor{
+                        pixel_viewport.x,
+                        pixel_viewport.y,
+                        pixel_viewport.width,
+                        pixel_viewport.height,
+                    };
+                    SDL_SetGPUScissor(blit_pass, &scissor);
+#else
+                    throw std::runtime_error(
+                        "Viewport copy requires geometry-output support.");
+#endif
+                }
+                const SDL_GPUTextureSamplerBinding texture_binding{
+                    source_texture(copy.source),
+                    state.background_sampler,
+                };
+                SDL_BindGPUFragmentSamplers(
+                    blit_pass,
+                    0,
+                    &texture_binding,
+                    1);
+                count_gpu_draw(SDL_DrawGPUPrimitives, blit_pass, 3, 1, 0, 0);
+                blit_pass.end();
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+                if (partial_present) {
+                    // Present what the frame composed, and capture the
+                    // same texture -- the post-process present pass
+                    // does exactly this after its own draw.
+                    SDL_GPUBlitInfo present_blit{};
+                    present_blit.source = SDL_GPUBlitRegion{
+                        state.post_process_present,
+                        0, 0, 0, 0, width, height};
+                    present_blit.destination = SDL_GPUBlitRegion{
+                        target_texture(copy.target, false),
+                        0, 0, 0, 0, width, height};
+                    present_blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                    present_blit.flip_mode = SDL_FLIP_NONE;
+                    present_blit.filter = SDL_GPU_FILTER_NEAREST;
+                    SDL_BlitGPUTexture(command, &present_blit);
+                    capture_texture = state.post_process_present;
+                } else
+#endif
+                if (target_record.swapchain) {
+                    capture_texture = source_texture(copy.source);
+                }
+            }
+            }
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            for (const auto& prepared : temporal_passes) {
+                if (const auto* source = std::get_if<PreparedSdlScenePass>(&prepared)) {
+                    encode_sdl_prepared_scene(command, *source);
+                } else {
+                    encode_post_process_pass(state, command, std::get<PreparedSdlPostProcessPass>(prepared), capture_texture);
+                }
+            }
+            } else if (state.post_process_present) {
+                // stopEngine clears the pin's render callback. Keep presenting
+                // its final image without executing history or jitter again.
+                SDL_GPUBlitInfo present{};
+                const bool resized = width != state.frame_graph_width || height != state.frame_graph_height;
+                if (resized) create_color(state, swapchain_format, width, height);
+                present.source = SDL_GPUBlitRegion{state.post_process_present, 0, 0, 0, 0,
+                    state.frame_graph_width, state.frame_graph_height};
+                present.destination = SDL_GPUBlitRegion{resized ? state.color : swapchain, 0, 0, 0, 0, width, height};
+                present.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                present.filter = SDL_GPU_FILTER_NEAREST;
+                SDL_BlitGPUTexture(command, &present);
+                capture_texture = resized ? state.color : state.post_process_present;
+            }
+            capture_render_state();
+#endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            capture_render_state();
+#endif
+        } else {
+        if (capture_frame || transmission_enabled) {
+            create_color(
+                state,
+                transmission_enabled
+                    ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
+                    : swapchain_format,
+                width,
+                height);
+        }
+#if BBLITE_RENDERER_TRANSMISSION
+        if (transmission_enabled) {
+            create_transmission_color(state);
+            create_processed_color(
+                state,
+                swapchain_format,
+                width,
+                height);
+        }
+#endif
+        create_msaa_color(
+            state,
+            transmission_enabled
+                ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
+                : swapchain_format,
+            width,
+            height);
+        create_depth(state, width, height);
+        SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
+
+        SDL_GPUColorTargetInfo color_info{};
+        const bool multisampled =
+            state.sample_count != SDL_GPU_SAMPLECOUNT_1;
+        color_info.texture =
+            multisampled
+                ? state.msaa_color
+                : capture_frame || transmission_enabled
+                    ? state.color
+                    : swapchain;
+        // The pin's inverse runs in f64 and WebGPU's clear value stays
+        // double; SDL_FColor is the one store that narrows, so the cast
+        // sits at the store exactly like the pin's own f32 boundaries.
+        color_info.clear_color = transmission_enabled
+            ? SDL_FColor{
+                  static_cast<float>(
+                      upstream::inverse_image_processed_channel(
+                          scene.clear_color.r,
+                          scene.environment.exposure,
+                          scene.environment.contrast,
+                          scene.environment.tone_mapping_enabled)),
+                  static_cast<float>(
+                      upstream::inverse_image_processed_channel(
+                          scene.clear_color.g,
+                          scene.environment.exposure,
+                          scene.environment.contrast,
+                          scene.environment.tone_mapping_enabled)),
+                  static_cast<float>(
+                      upstream::inverse_image_processed_channel(
+                          scene.clear_color.b,
+                          scene.environment.exposure,
+                          scene.environment.contrast,
+                          scene.environment.tone_mapping_enabled)),
+                  scene.clear_color.a}
+            : SDL_FColor{
+                  scene.clear_color.r,
+                  scene.clear_color.g,
+                  scene.clear_color.b,
+                  scene.clear_color.a};
+        color_info.load_op = SDL_GPU_LOADOP_CLEAR;
+        // Resolve opaque color for transmission sampling while preserving
+        // the multisample attachment so transmissive draws can resume it.
+        // An overlay layer preserves it for the same reason the pin's own
+        // overlay does: "both scenes must use the base task's MSAA colour
+        // texture before the overlay can load its pixels and resolve the
+        // composited result" (scene/swapchain-overlay.ts).
+        color_info.store_op =
+            multisampled
+                ? transmission_enabled || !overlay_plans.empty()
+                    ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
+                    : SDL_GPU_STOREOP_RESOLVE
+                : SDL_GPU_STOREOP_STORE;
+        color_info.resolve_texture =
+            multisampled
+                ? capture_frame || transmission_enabled
+                    ? state.color
+                    : swapchain
+                : nullptr;
+        SDL_GPUDepthStencilTargetInfo depth_info{};
+        depth_info.texture = state.depth;
+        depth_info.clear_depth = upstream::pinned_depth_clear;
+        depth_info.load_op = SDL_GPU_LOADOP_CLEAR;
+        depth_info.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        if (transmission_enabled) {
+            depth_info.store_op = SDL_GPU_STOREOP_STORE;
+        }
+        depth_info.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+        SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info)};
+        set_pass_camera_viewport(
+            pass, scene, engine, camera, width, height);
+        bool scene_matrix_bound = true;
+#if BBLITE_RENDERER_TRANSMISSION
+        // The pin's transmission grab fires once, before the first
+        // transmissive draw: the opaque scene colour resolved so far is
+        // blitted into the 1024x1024 mip-chained refraction texture the
+        // composed fragments sample.
+        bool transmission_copied = false;
+#endif
+#if BBLITE_GPU_INSTANCING
+        const std::array<float, 16> identity_parent_world{
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        };
+#endif
+        const auto draw_skybox = [&] {
+            if (!state.skybox.enabled) return;
+            const upstream::SkyboxUniforms skybox =
+                upstream::build_skybox_uniforms(
+                    scene.environment,
+                    transmission_enabled);
+            if (scene.environment.skybox_uses_environment) {
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    0,
+                    skybox_matrix.data(),
+                    sizeof(skybox_matrix));
+            } else {
+                const upstream::SkyboxVertexUniforms vertex_uniforms =
+                    upstream::build_skybox_vertex_uniforms(
+                        scene.environment,
+                        matrix);
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    0,
+                    &vertex_uniforms,
+                    sizeof(vertex_uniforms));
+            }
+#if BBLITE_GPU_DEFORMATION
+            // Background geometry carries zeroed joint weights; without
+            // a fresh identity deformation block the previous mesh
+            // draw's skinning uniforms would collapse the quad.
+            if (scene.environment.skybox_uses_environment) {
+                const DeformationUniforms skybox_deformation =
+                    build_deformation_uniforms(MeshRecord{}, false);
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    1,
+                    &skybox_deformation,
+                    sizeof(skybox_deformation));
+            }
+#endif
+            SDL_BindGPUGraphicsPipeline(pass, state.skybox_pipeline);
+            SDL_PushGPUFragmentUniformData(command, 0, &skybox, sizeof(skybox));
+            const SDL_GPUBufferBinding index_binding{state.skybox.indices, 0};
+            const SDL_GPUTextureSamplerBinding texture_binding{
+                state.skybox.texture,
+                state.background_sampler,
+            };
+#if BBLITE_GPU_INSTANCING
+            if (scene.environment.skybox_uses_environment) {
+                const std::array<SDL_GPUBufferBinding, 2>
+                    skybox_vertex_bindings{
+                        SDL_GPUBufferBinding{
+                            state.skybox.vertices,
+                            0,
+                        },
+                        SDL_GPUBufferBinding{
+                            state.background_instances,
+                            0,
+                        },
+                    };
+                SDL_BindGPUVertexBuffers(
+                    pass,
+                    0,
+                    skybox_vertex_bindings.data(),
+                    static_cast<Uint32>(
+                        skybox_vertex_bindings.size()));
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    instance_uniform_slot,
+                    identity_parent_world.data(),
+                    sizeof(identity_parent_world));
+            } else {
+                const SDL_GPUBufferBinding vertex_binding{
+                    state.skybox.vertices,
+                    0,
+                };
+                SDL_BindGPUVertexBuffers(
+                    pass,
+                    0,
+                    &vertex_binding,
+                    1);
+            }
+#else
+            const SDL_GPUBufferBinding vertex_binding{state.skybox.vertices, 0};
+            SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+            if (scene.environment.skybox_uses_environment) {
                 const std::array<SDL_GPUBuffer*, 2> morph_storage{
                     state.empty_morph_deltas,
                     state.empty_morph_weights,
@@ -13618,389 +12972,1083 @@ SceneRun run_gpu_engine(Engine& engine) {
                     0,
                     morph_storage.data(),
                     static_cast<Uint32>(morph_storage.size()));
+            }
 #endif
+            SDL_BindGPUIndexBuffer(
+                pass,
+                &index_binding,
+                SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
+            count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 36, 1, 0, 0, 0);
+            scene_matrix_bound = false;
+        };
+#if BBLITE_SOLID_SKYBOX
+        const auto draw_solid_skybox = [&] {
+            if (!state.solid_skybox.enabled) return;
+            // The pinned vertex stage reads its own scene block --
+            // scene.viewProjection, scene.view and scene.vEyePosition,
+            // the last of which it offsets the cube by -- so the draw
+            // binds that layout over the frame's matrix.
+            const upstream::SolidSkyboxSceneUniforms
+                solid_skybox_scene =
+                    upstream::build_solid_skybox_scene_uniforms(
+                        camera,
+                        matrix);
+            const upstream::SolidSkyboxUniforms solid_skybox_mesh =
+                upstream::build_solid_skybox_uniforms(scene);
+            SDL_PushGPUVertexUniformData(
+                command,
+                0,
+                &solid_skybox_scene,
+                sizeof(solid_skybox_scene));
+            SDL_PushGPUVertexUniformData(
+                command,
+                1,
+                &solid_skybox_mesh,
+                sizeof(solid_skybox_mesh));
+            SDL_PushGPUFragmentUniformData(
+                command,
+                0,
+                &solid_skybox_mesh,
+                sizeof(solid_skybox_mesh));
+            SDL_BindGPUGraphicsPipeline(
+                pass,
+                state.solid_skybox.pipeline);
+            const SDL_GPUBufferBinding vertex_binding{
+                state.solid_skybox.vertices,
+                0,
+            };
+            const SDL_GPUBufferBinding index_binding{
+                state.solid_skybox.indices,
+                0,
+            };
+            SDL_BindGPUVertexBuffers(
+                pass,
+                0,
+                &vertex_binding,
+                1);
+            SDL_BindGPUIndexBuffer(
+                pass,
+                &index_binding,
+                SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 36, 1, 0, 0, 0);
+            scene_matrix_bound = false;
+        };
+#endif
+#if BBLITE_IMAGE_SKYBOX
+        const auto draw_image_skybox = [&] {
+            if (!state.image_skybox.enabled) return;
+            SDL_PushGPUVertexUniformData(
+                command,
+                0,
+                matrix.data(),
+                sizeof(matrix));
+            const upstream::ImageSkyboxUniforms
+                image_skybox_uniforms =
+                    upstream::build_image_skybox_uniforms(
+                        scene,
+                        camera);
+            SDL_BindGPUGraphicsPipeline(
+                pass,
+                state.image_skybox.pipeline);
+            SDL_PushGPUFragmentUniformData(
+                command,
+                0,
+                &image_skybox_uniforms,
+                sizeof(image_skybox_uniforms));
+            const SDL_GPUBufferBinding vertex_binding{
+                state.image_skybox.vertices,
+                0,
+            };
+            const SDL_GPUBufferBinding index_binding{
+                state.image_skybox.indices,
+                0,
+            };
+            const SDL_GPUTextureSamplerBinding
+                texture_binding{
+                    state.image_skybox.texture,
+                    state.background_sampler,
+                };
+            SDL_BindGPUVertexBuffers(
+                pass,
+                0,
+                &vertex_binding,
+                1);
+            SDL_BindGPUIndexBuffer(
+                pass,
+                &index_binding,
+                SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            SDL_BindGPUFragmentSamplers(
+                pass,
+                0,
+                &texture_binding,
+                1);
+            count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
+                pass,
+                36,
+                1,
+                0,
+                0,
+                0);
+            scene_matrix_bound = true;
+        };
+#endif
+        const auto pipeline_for =
+            [&](
+                upstream::RenderPipelineKind kind,
+                std::uint32_t shader_variant) {
+            return secondary_pipeline_for(
+                SecondaryPipelines{
+                    state.grid_pipeline,
+                    state.grid_double_sided_pipeline,
+                    state.grid_transparent_pipeline,
+                    state.grid_transparent_double_sided_pipeline,
+                    &state.shader_pipelines,
+                    &state.shader_a2c_pipelines,
+                },
+                kind,
+                shader_variant,
+                "main dispatch");
+        };
+        // Which scene the pass being recorded belongs to. The base
+        // scene records first and a swapchain overlay layer repoints
+        // these before its own pass: the draw walk is the same one,
+        // and what changes is the scene it reads its light selection,
+        // its plan and its uploaded meshes from.
+        // Which scene the pass being recorded belongs to: the base
+        // scene, or the overlay layer whose own plan is being drawn.
+        // Every reader is a material-variant draw, so a build that
+        // composes no variants at all -- a splat-only scene, say --
+        // sets it and never reads it.
+        [[maybe_unused]] const Scene* pass_scene = &scene;
+        const std::vector<GpuMesh>* pass_meshes = &state.meshes;
+        const std::array<float, 16>* pass_matrix = &matrix;
+#if BBLITE_PINNED_MATERIALS
+        // The frame's scene and lights blocks, once per frame rather
+        // than per draw — the same hoist the Dawn backend's
+        // write_pinned_frame_blocks already makes.
+        upstream::SceneUniforms pass_scene_block =
+            pinned_scene_block(scene, engine, camera, matrix);
+        std::vector<std::uint8_t> pass_lights_block =
+            pinned_lights_block(scene, engine);
+#endif
+        const auto draw_render_list =
+            [&](const upstream::RenderDrawList& list) {
+            SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
+            for (
+                const upstream::RenderDrawCommand& draw :
+                list.commands) {
+                if (
+                    draw.item_index >=
+                    (*pass_meshes).size()) {
+                    continue;
+                }
+                const upstream::RenderItem& item = draw.item;
+                const GpuMesh& mesh =
+                    (*pass_meshes)[draw.item_index];
+                const MaterialRecord* material =
+                    item.material.value <
+                            engine.materials.size()
+                        ? &engine.materials[
+                              item.material.value]
+                        : nullptr;
+#if BBLITE_RENDERER_TRANSMISSION
+                if (
+                    transmission_enabled &&
+                    !transmission_copied &&
+                    transmissive_draw_material(material)) {
+                    // executePassWithTransmission: end the pass (which
+                    // resolves the multisampled colour), copy it into
+                    // the refraction texture with its mip chain, and
+                    // resume loading what was stored.
+                    pass.end();
+                    SDL_GPUBlitInfo transmission_blit{};
+                    transmission_blit.source = SDL_GPUBlitRegion{
+                        state.color,
+                        0,
+                        0,
+                        0,
+                        0,
+                        width,
+                        height,
+                    };
+                    transmission_blit.destination = SDL_GPUBlitRegion{
+                        state.transmission_color,
+                        0,
+                        0,
+                        0,
+                        0,
+                        state.transmission_width,
+                        state.transmission_height,
+                    };
+                    transmission_blit.load_op =
+                        SDL_GPU_LOADOP_DONT_CARE;
+                    transmission_blit.flip_mode = SDL_FLIP_NONE;
+                    transmission_blit.filter = SDL_GPU_FILTER_LINEAR;
+                    SDL_BlitGPUTexture(command, &transmission_blit);
+                    SDL_GenerateMipmapsForGPUTexture(
+                        command,
+                        state.transmission_color);
+                    color_info.load_op = SDL_GPU_LOADOP_LOAD;
+                    color_info.store_op =
+                        multisampled
+                            ? SDL_GPU_STOREOP_RESOLVE
+                            : SDL_GPU_STOREOP_STORE;
+                    depth_info.load_op = SDL_GPU_LOADOP_LOAD;
+                    pass = SDL_BeginGPURenderPass(
+                        command,
+                        &color_info,
+                        1,
+                        &depth_info);
+                    // A restarted pass starts at the whole target
+                    // again, so the camera's rectangle is set once
+                    // per PASS rather than once per frame.
+                    set_pass_camera_viewport(
+                        pass,
+                        scene,
+                        engine,
+                        camera,
+                        width,
+                        height);
+                    bound_pipeline = nullptr;
+                    transmission_copied = true;
+                }
+#endif
+#if BBLITE_PBR_VARIANTS > 0
+                // Babylon Lite's own composed stages own every PBR draw:
+                // the transcribed fragment is retired, so a draw the
+                // shared gate refuses is an error naming the mesh rather
+                // than a silent fallback.
+                pal::PinnedVariantKey pinned_key;
+                const std::size_t pinned_variant =
+                    item.material_kind ==
+                        upstream::RenderMaterialKind::pbr
+                        ? pinned_variant_for_draw(
+                              *pass_scene,
+                              engine,
+                              draw,
+                              npos,
+                              &pinned_key)
+                        : npos;
+                if (
+                    item.material_kind ==
+                        upstream::RenderMaterialKind::pbr &&
+                    pinned_variant == npos) {
+                    gpu_error(
+                        ("PBR draw for mesh " +
+                         std::to_string(item.mesh.value) +
+                         ", material " +
+                         std::to_string(item.material.value) +
+                         " resolves no pinned variant: " +
+                         pal::pinned_variant_request(pinned_key))
+                            .c_str());
+                }
+                if (pinned_variant != npos) {
+                    ensure_pinned_slots(state, pinned_variant);
+                }
+                if (pinned_variant != npos) {
+                    draw_pinned_variant(
+                        state,
+                        command,
+                        pass,
+                        *pass_scene,
+                        engine,
+                        pass_scene_block,
+                        pass_lights_block,
+                        draw,
+                        mesh,
+                        material,
+                        pinned_variant,
+                        bound_pipeline);
+                    continue;
+                }
+#else
+                if (
+                    item.material_kind ==
+                    upstream::RenderMaterialKind::pbr) {
+                    gpu_error(
+                        "PBR draw in a build with no composed variant "
+                        "table; the transcribed fragment is retired.");
+                }
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+                // Babylon Lite's own composed stages own every Standard
+                // draw too; a draw the gate refuses is an error naming
+                // the mesh rather than a silent fallback.
+                if (
+                    item.material_kind ==
+                    upstream::RenderMaterialKind::standard) {
+                    // The main pass carries no frame graph, so a
+                    // render-target texture on a material has nothing
+                    // to resolve against — refused by name rather
+                    // than trusted to never happen.
+                    if (
+                        material &&
+                        (material->has_emissive_render_texture ||
+                         material->has_diffuse_render_texture)) {
+                        gpu_error(
+                            "a Standard material samples a "
+                            "render-target texture in the main pass, "
+                            "which carries no frame graph to resolve "
+                            "it.");
+                    }
+                    StandardVariantKey standard_key;
+                    const std::size_t standard_variant =
+                        standard_variant_for_draw(
+                            *pass_scene,
+                            engine,
+                            draw,
+                            npos,
+                            &standard_key);
+                    if (standard_variant == npos) {
+                        gpu_error(
+                            ("Standard draw for mesh " +
+                             std::to_string(item.mesh.value) +
+                             ", material " +
+                             std::to_string(item.material.value) +
+                             " resolves no composed variant: " +
+                             standard_variant_request(engine, draw))
+                                .c_str());
+                    }
+                    draw_standard_variant(
+                        state,
+                        command,
+                        pass,
+                        *pass_scene,
+                        engine,
+                        pass_scene_block,
+                        pass_lights_block,
+                        draw,
+                        mesh,
+                        material,
+                        standard_variant,
+                        standard_key.features,
+                        bound_pipeline);
+                    continue;
+                }
+#else
+                if (
+                    item.material_kind ==
+                    upstream::RenderMaterialKind::standard) {
+                    gpu_error(
+                        "Standard draw in a build with no composed "
+                        "variant table; the transcribed fragment is "
+                        "retired.");
+                }
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+                // A node graph's own compiled stages, the third
+                // composed family. Its variant is the graph's index,
+                // which the plan carries on the item.
+                if (
+                    item.material_kind ==
+                    upstream::RenderMaterialKind::node) {
+                    draw_node_variant(
+                        state,
+                        command,
+                        pass,
+                        *pass_scene,
+                        engine,
+                        pass_scene_block,
+                        pass_lights_block,
+                        draw,
+                        mesh,
+                        item.shader_variant,
+                        bound_pipeline,
+                        false,
+                        material);
+                    continue;
+                }
+#else
+                if (
+                    item.material_kind ==
+                    upstream::RenderMaterialKind::node) {
+                    gpu_error(
+                        "a node material in a build with no composed "
+                        "graphs.");
+                }
+#endif
+                SDL_GPUGraphicsPipeline* pipeline =
+                    pipeline_for(draw.pipeline, draw.item.shader_variant);
+                if (!pipeline) {
+                    throw std::runtime_error(
+                        "Reached render pipeline was not created.");
+                }
+                if (pipeline != bound_pipeline) {
+                    SDL_BindGPUGraphicsPipeline(
+                        pass,
+                        pipeline);
+                    bound_pipeline = pipeline;
+                }
+                if (
+                    item.material_kind ==
+                    upstream::RenderMaterialKind::shader) {
+                    if (!material) {
+                        throw std::runtime_error(
+                            "Shader draw has an invalid material.");
+                    }
+                    const ShaderDrawMatrices shader_matrices(
+                        engine,
+                        handle_at(engine.meshes, item.mesh),
+                        frame_pass_matrices);
+                    const ShaderPassMatrices shader_pass_matrices =
+                        shader_matrices.apply(frame_pass_matrices);
+                    // Per-stage blocks from the generated variant
+                    // table: [optional scene worldViewProjection]
+                    // [custom floats gathered from the material's
+                    // flat value storage].
+                    const upstream::ShaderVariantInfo& shader_info =
+                        upstream::shader_variant_info(
+                            item.shader_variant);
+                    const auto push_stage_block =
+                        [&](
+                            const upstream::ShaderVariantStageBlock&
+                                block,
+                            bool fragment_stage) {
+                        if (!block.present) return;
+                        shader_stage_block_floats(
+                            block,
+                            shader_pass_matrices,
+                            *material,
+                            shader_block_scratch);
+                        if (fragment_stage) {
+                            SDL_PushGPUFragmentUniformData(
+                                command,
+                                0,
+                                shader_block_scratch.data(),
+                                static_cast<Uint32>(
+                                    shader_block_scratch.size() *
+                                    sizeof(float)));
+                        } else {
+                            SDL_PushGPUVertexUniformData(
+                                command,
+                                0,
+                                shader_block_scratch.data(),
+                                static_cast<Uint32>(
+                                    shader_block_scratch.size() *
+                                    sizeof(float)));
+                        }
+                    };
+                    push_stage_block(shader_info.vertex, false);
+                    push_stage_block(shader_info.fragment, true);
+                    bind_stage_storage(
+                        pass,
+                        state.shader_vertex_slots[item.shader_variant],
+                        false,
+                        "shader material vertex stage",
+                        state.storage_binding_scratch,
+                        [&](const std::string& name, std::size_t) {
+                            return shader_storage_buffer(
+                                state, *material, shader_info, name);
+                        });
+                    bind_stage_storage(
+                        pass,
+                        state.shader_fragment_slots[item.shader_variant],
+                        true,
+                        "shader material fragment stage",
+                        state.storage_binding_scratch,
+                        [&](const std::string& name, std::size_t) {
+                            return shader_storage_buffer(
+                                state, *material, shader_info, name);
+                        });
+                    bind_shader_material_textures(
+                        state,
+                        pass,
+                        *pass_scene,
+                        engine,
+                        *material,
+                        item.shader_variant,
+                        mesh);
+                    if (shader_info.vertex.present) {
+                        scene_matrix_bound =
+                            block_is_shared_scene_matrix(
+                                shader_info.vertex);
+                    }
+                } else {
+                    if (!scene_matrix_bound) {
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            0,
+                            pass_matrix->data(),
+                            sizeof(*pass_matrix));
+                        scene_matrix_bound = true;
+                    }
+#if BBLITE_GPU_DEFORMATION
+                    if (
+                        item.material_kind !=
+                        upstream::RenderMaterialKind::grid) {
+                        const DeformationUniforms deformation =
+                            build_deformation_uniforms(
+                                engine.meshes[
+                                    item.mesh.value],
+                                engine.geometries[
+                                    item.geometry].flat_normals);
+                        dump_deformation_uniforms(
+                            item.mesh.value,
+                            deformation);
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            1,
+                            &deformation,
+                            sizeof(deformation));
+                    }
+#endif
+#if BBLITE_GPU_INSTANCING
+                    if (
+                        item.material_kind !=
+                        upstream::RenderMaterialKind::grid) {
+                        const std::array<float, 16> parent_world =
+                            instance_parent_draw_world(
+                                engine.meshes[
+                                    item.mesh.value],
+                                *pass_scene,
+                                engine);
+                        SDL_PushGPUVertexUniformData(
+                            command,
+                            instance_uniform_slot,
+                            parent_world.data(),
+                            sizeof(parent_world));
+                    }
+#endif
+                    if (
+                        item.material_kind ==
+                        upstream::RenderMaterialKind::grid) {
+                        const upstream::GridUniforms fragment =
+                            upstream::build_grid_uniforms(
+                                engine,
+                                item);
+                        SDL_PushGPUFragmentUniformData(
+                            command,
+                            0,
+                            &fragment,
+                            sizeof(fragment));
+                    }
+                }
+                const SDL_GPUBufferBinding index_binding{
+                    mesh.indices,
+                    0,
+                };
+                bind_mesh_vertex_buffers(
+                    pass,
+                    mesh);
                 SDL_BindGPUIndexBuffer(
                     pass,
                     &index_binding,
                     SDL_GPU_INDEXELEMENTSIZE_32BIT);
-                SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 6, 1, 0, 0, 0);
-                scene_matrix_bound = true;
-            };
-#if BBLITE_HAS_BILLBOARDS
-            // A billboard system draws in the slot its depth mode gives it:
-            // 100 among the opaque meshes, because a cutout system writes
-            // depth and everything after has to see it, and 200 after the
-            // scene's own stages for the transparent modes.
-            const auto draw_billboards =
-                [&](BillboardDepthMode mode) {
-                for (const BillboardPass& billboard :
-                     state.billboard_passes) {
-                    if (engine.billboard_systems[billboard.system.value].depth_mode !=
-                        mode) {
-                        continue;
-                    }
-                    record_billboard_pass(
-                        command,
-                        pass,
-                        engine,
-                        billboard,
-                        matrix,
-                        frame_view);
-                }
-            };
-#endif
-            for (const upstream::RenderStage stage : render_plan.stages) {
-                switch (stage) {
-                    case upstream::RenderStage::skybox:
-                        // The sub-order comes from the shared
-                        // `skybox_stage_order`.
-                        for (const SkyboxLayer layer :
-                             skybox_stage_order) {
-                            switch (layer) {
-                                case SkyboxLayer::solid:
-#if BBLITE_SOLID_SKYBOX
-                                    draw_solid_skybox();
-#endif
-                                    break;
-                                case SkyboxLayer::environment:
-                                    draw_skybox();
-                                    break;
-                                case SkyboxLayer::image:
-#if BBLITE_IMAGE_SKYBOX
-                                    draw_image_skybox();
-#endif
-                                    break;
-                            }
-                        }
-                        break;
-                    case upstream::RenderStage::opaque:
-                        draw_render_list(render_plan.draw_lists.opaque);
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-                        if (has_scene_sprite_pass) {
-                            record_scene_sprite_pass(
-                                command,
-                                pass,
-                                engine,
-                                scene_sprite_pass,
-                                Sprite2DDepthMode::test_write,
-                                width,
-                                height);
-                        }
-#endif
-#if BBLITE_HAS_BILLBOARDS
-                        draw_billboards(BillboardDepthMode::cutout);
-#endif
-                        break;
-                    case upstream::RenderStage::transparent:
-                        draw_render_list(render_plan.draw_lists.transparent);
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-                        text_ops.command = command;
-                        text_ops.pass = pass;
-                        state.text->scene.draw(text_ops);
-#endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-                        if (has_scene_sprite_pass) {
-                            record_scene_sprite_pass(
-                                command,
-                                pass,
-                                engine,
-                                scene_sprite_pass,
-                                Sprite2DDepthMode::test,
-                                width,
-                                height);
-                        }
-#endif
-#if BBLITE_HAS_SPLATS
-                        // `isTransparent: true` on the pinned renderable, so
-                        // a cloud belongs to this bucket. The Dawn sibling
-                        // states the ordering caveat.
-                        for (const SplatPass& splat : state.splat_passes) {
-                            record_splat_pass(
-                                command,
-                                pass,
-                                engine,
-                                splat,
-                                frame_view,
-                                frame_projection,
-                                frame_camera_position,
-                                static_cast<double>(width),
-                                static_cast<double>(height));
-                        }
-#endif
-                        break;
-                    case upstream::RenderStage::ground:
-                        draw_ground();
-                        break;
-                }
-            }
-#if BBLITE_HAS_BILLBOARDS
-            // The transparent systems close the scene's pass: they blend
-            // over every stage above and test against the depth they wrote.
-            draw_billboards(BillboardDepthMode::transparent);
-#endif
-            SDL_EndGPURenderPass(pass);
-#if (defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT) || BBLITE_NODE_GEOMETRY_VARIANTS > 0
-            capture_render_state();
-#endif
-            // Held across the loop rather than declared inside it, so
-            // `pass_matrix` never names a local that has gone out of scope
-            // by the time the frame is done with it. Restoring the three
-            // pass pointers afterwards would be the other fix, but nothing
-            // reads them again, and the writes would be unused in every
-            // build whose material-variant blocks are compiled out.
-            std::array<float, 16> overlay_matrix{};
-            // The swapchain overlay layers. Each is its own render pass on
-            // the same colour attachment with a FRESH depth buffer, which is
-            // what `createUtilityLayer` documents: the overlay scene keeps
-            // normal depth testing among its own meshes and never tests
-            // against the base scene's, so a gizmo body occludes its own
-            // back faces while sitting in front of everything below it.
-            for (
-                std::size_t layer = 0;
-                layer < overlay_plans.size() &&
-                layer < state.overlay_meshes.size();
-                ++layer) {
-                Scene* overlay_scene =
-                    engine.registered_scenes[layer + 1u].get();
-                if (!overlay_scene) continue;
-                if (
-                    layer < overlay_topology_versions.size() &&
-                    overlay_scene->render_topology_version !=
-                        overlay_topology_versions[layer]) {
-                    gpu_error(
-                        "A swapchain overlay changed its renderables after resource synchronization.");
-                }
-                CameraRecord& overlay_camera =
-                    overlay_scene->camera.value < engine.cameras.size()
-                        ? engine.cameras[overlay_scene->camera.value]
-                        : camera;
-                // A layer's own camera answers `getEffectiveAspectRatio`
-                // for itself: upstream each scene's render task writes
-                // its OWN scene UBO from `cfg.cam ?? scene.camera`, so
-                // two scenes splitting one target by viewport project
-                // at two different ratios.
-                const PixelViewport overlay_surface_extent =
-                    scene_surface_extent(
-                        engine, *overlay_scene, width, height);
-                const double overlay_aspect =
-                    upstream::effective_aspect_ratio(
-                        overlay_camera,
-                        static_cast<double>(overlay_surface_extent.width),
-                        static_cast<double>(overlay_surface_extent.height));
-                overlay_matrix = upstream::build_view_projection(
-                    overlay_camera,
-                    overlay_aspect);
-                pass_scene = overlay_scene;
-                pass_meshes = &state.overlay_meshes[layer];
-                pass_matrix = &overlay_matrix;
-#if BBLITE_PINNED_MATERIALS
-                pass_scene_block = pinned_scene_block(
-                    *overlay_scene,
-                    engine,
-                    overlay_camera,
-                    overlay_matrix);
-                pass_lights_block =
-                    pinned_lights_block(*overlay_scene, engine);
-#endif
-                color_info.load_op = SDL_GPU_LOADOP_LOAD;
-                depth_info.load_op = SDL_GPU_LOADOP_CLEAR;
-                depth_info.clear_depth = upstream::pinned_depth_clear;
-                pass = SDL_BeginGPURenderPass(
-                    command,
-                    &color_info,
-                    1,
-                    &depth_info);
-                set_pass_camera_viewport(
+                count_gpu_draw(SDL_DrawGPUIndexedPrimitives,
                     pass,
-                    *overlay_scene,
-                    engine,
-                    overlay_camera,
-                    width,
-                    height);
+                    mesh.index_count,
+                    mesh.instance_count,
+                    0,
+                    0,
+                    0);
+            }
+        };
+        const auto draw_ground = [&] {
+            if (!state.background.enabled) return;
+            if (!scene_matrix_bound) {
                 SDL_PushGPUVertexUniformData(
                     command,
                     0,
-                    overlay_matrix.data(),
-                    sizeof(overlay_matrix));
-                scene_matrix_bound = true;
-                for (
-                    const upstream::RenderStage stage :
-                    overlay_plans[layer].stages) {
-                    switch (stage) {
-                        case upstream::RenderStage::opaque:
-                            draw_render_list(
-                                overlay_plans[layer].draw_lists.opaque);
-                            break;
-                        case upstream::RenderStage::transparent:
-                            draw_render_list(
-                                overlay_plans[layer]
-                                    .draw_lists.transparent);
-                            break;
-                        default:
-                            // A utility layer carries no environment, so
-                            // its plan reaches no background stage; a plan
-                            // that grew one would need its own resources
-                            // rather than the base scene's.
-                            break;
-                    }
-                }
-                SDL_EndGPURenderPass(pass);
+                    matrix.data(),
+                    sizeof(matrix));
             }
-            SDL_GPUTexture* visible_color =
-                capture_frame ? state.color : swapchain;
-#if BBLITE_RENDERER_TRANSMISSION
-            if (transmission_enabled) {
-                SDL_GPUColorTargetInfo image_processing_target{};
-                image_processing_target.texture =
-                    state.processed_color;
-                image_processing_target.load_op =
-                    SDL_GPU_LOADOP_DONT_CARE;
-                image_processing_target.store_op =
-                    SDL_GPU_STOREOP_STORE;
-                SDL_GPURenderPass* image_processing_pass =
-                    SDL_BeginGPURenderPass(
-                        command,
-                        &image_processing_target,
-                        1,
-                        nullptr);
-                SDL_BindGPUGraphicsPipeline(
-                    image_processing_pass,
-                    state.image_processing_pipeline);
-                const ImageProcessingUniforms image_processing{{
-                    scene.environment.exposure,
-                    scene.environment.contrast,
-                    scene.environment.tone_mapping_enabled
-                        ? 1.0f
-                        : 0.0f,
-                    0.0f,
-                }};
-                SDL_PushGPUFragmentUniformData(
+#if BBLITE_GPU_DEFORMATION
+            // Background geometry carries zeroed joint weights; without
+            // a fresh identity deformation block the previous mesh
+            // draw's skinning uniforms would collapse the quad.
+            const DeformationUniforms ground_deformation =
+                build_deformation_uniforms(MeshRecord{}, false);
+            SDL_PushGPUVertexUniformData(
+                command,
+                1,
+                &ground_deformation,
+                sizeof(ground_deformation));
+#endif
+            const upstream::BackgroundUniforms background =
+                upstream::build_background_uniforms(
+                    scene.environment,
+                    camera,
+                    transmission_enabled);
+            SDL_BindGPUGraphicsPipeline(pass, state.background_pipeline);
+            SDL_PushGPUFragmentUniformData(
+                command,
+                0,
+                &background,
+                sizeof(background));
+            const SDL_GPUBufferBinding index_binding{state.background.indices, 0};
+            const SDL_GPUTextureSamplerBinding texture_binding{
+                state.background.texture,
+                state.ground_sampler,
+            };
+#if BBLITE_GPU_INSTANCING
+            const std::array<SDL_GPUBufferBinding, 2>
+                ground_vertex_bindings{
+                    SDL_GPUBufferBinding{
+                        state.background.vertices,
+                        0,
+                    },
+                    SDL_GPUBufferBinding{
+                        state.background_instances,
+                        0,
+                    },
+                };
+            SDL_BindGPUVertexBuffers(
+                pass,
+                0,
+                ground_vertex_bindings.data(),
+                static_cast<Uint32>(
+                    ground_vertex_bindings.size()));
+            SDL_PushGPUVertexUniformData(
+                command,
+                instance_uniform_slot,
+                identity_parent_world.data(),
+                sizeof(identity_parent_world));
+#else
+            const SDL_GPUBufferBinding vertex_binding{state.background.vertices, 0};
+            SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+            const std::array<SDL_GPUBuffer*, 2> morph_storage{
+                state.empty_morph_deltas,
+                state.empty_morph_weights,
+            };
+            SDL_BindGPUVertexStorageBuffers(
+                pass,
+                0,
+                morph_storage.data(),
+                static_cast<Uint32>(morph_storage.size()));
+#endif
+            SDL_BindGPUIndexBuffer(
+                pass,
+                &index_binding,
+                SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
+            count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, 6, 1, 0, 0, 0);
+            scene_matrix_bound = true;
+        };
+#if BBLITE_HAS_BILLBOARDS
+        // A billboard system draws in the slot its depth mode gives it:
+        // 100 among the opaque meshes, because a cutout system writes
+        // depth and everything after has to see it, and 200 after the
+        // scene's own stages for the transparent modes.
+        const auto draw_billboards =
+            [&](BillboardDepthMode mode) {
+            for (const BillboardPass& billboard :
+                 state.billboard_passes) {
+                if (handle_at(engine.billboard_systems, billboard.system).depth_mode !=
+                    mode) {
+                    continue;
+                }
+                record_billboard_pass(
                     command,
-                    0,
-                    &image_processing,
-                    sizeof(image_processing));
-                if (state.per_sample_image_processing) {
-                    // A Texture2DMS is Load()-ed and carries no sampler,
-                    // so it binds as a storage texture rather than as a
-                    // sampler pair.
-                    SDL_BindGPUFragmentStorageTextures(
-                        image_processing_pass,
-                        0,
-                        &state.msaa_color,
-                        1);
-                } else {
-                    const SDL_GPUTextureSamplerBinding source_binding{
-                        state.color,
-                        state.background_sampler,
-                    };
-                    SDL_BindGPUFragmentSamplers(
-                        image_processing_pass,
-                        0,
-                        &source_binding,
-                        1);
-                }
-                count_gpu_draw(SDL_DrawGPUPrimitives,
-                    image_processing_pass,
-                    3,
-                    1,
-                    0,
-                    0);
-                SDL_EndGPURenderPass(image_processing_pass);
-                visible_color = state.processed_color;
+                    pass,
+                    engine,
+                    billboard,
+                    matrix,
+                    frame_view);
             }
+        };
+#endif
+        for (const upstream::RenderStage stage : render_plan.stages) {
+            switch (stage) {
+                case upstream::RenderStage::skybox:
+                    // The sub-order comes from the shared
+                    // `skybox_stage_order`.
+                    for (const SkyboxLayer layer :
+                         skybox_stage_order) {
+                        switch (layer) {
+                            case SkyboxLayer::solid:
+#if BBLITE_SOLID_SKYBOX
+                                draw_solid_skybox();
+#endif
+                                break;
+                            case SkyboxLayer::environment:
+                                draw_skybox();
+                                break;
+                            case SkyboxLayer::image:
+#if BBLITE_IMAGE_SKYBOX
+                                draw_image_skybox();
+#endif
+                                break;
+                        }
+                    }
+                    break;
+                case upstream::RenderStage::opaque:
+                    draw_render_list(render_plan.draw_lists.opaque);
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+                    if (has_scene_sprite_pass) {
+                        record_scene_sprite_pass(
+                            command,
+                            pass,
+                            engine,
+                            scene_sprite_pass,
+                            Sprite2DDepthMode::test_write,
+                            width,
+                            height);
+                    }
+#endif
+#if BBLITE_HAS_BILLBOARDS
+                    draw_billboards(BillboardDepthMode::cutout);
+#endif
+                    break;
+                case upstream::RenderStage::transparent:
+                    draw_render_list(render_plan.draw_lists.transparent);
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+                    text_ops.command = command;
+                    text_ops.pass = pass;
+                    state.text->scene.draw(text_ops);
 #endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-            // The scene is the first rendering context; registered sprite
-            // contexts then load and blend over its final single-sample
-            // colour, in registration order. Rendering before the blit keeps
-            // screenshots and presentation on the same composed image.
-            if (!engine.registered_sprite_renderers.empty()) {
-                for (const SpriteRendererHandle handle :
-                     engine.registered_sprite_renderers) {
-                    if (handle.value >= sprite_passes.size()) {
-                        throw std::runtime_error(
-                            "A SpriteRenderer created after the scene frame "
-                            "started has no GPU pass yet.");
-                    }
-                    const SpriteRendererRecord& renderer =
-                        engine.sprite_renderers[handle.value];
-                    SDL_GPUColorTargetInfo sprite_target{};
-                    sprite_target.texture = renderer.has_target
-                        ? sprite_render_textures[renderer.target.value]
-                        : visible_color;
-                    sprite_target.load_op = renderer.clear
-                        ? SDL_GPU_LOADOP_CLEAR
-                        : SDL_GPU_LOADOP_LOAD;
-                    sprite_target.store_op = SDL_GPU_STOREOP_STORE;
-                    sprite_target.clear_color = SDL_FColor{
-                        renderer.clear_value.r,
-                        renderer.clear_value.g,
-                        renderer.clear_value.b,
-                        renderer.clear_value.a};
-                    SDL_GPURenderPass* sprite_pass =
-                        SDL_BeginGPURenderPass(
+                    if (has_scene_sprite_pass) {
+                        record_scene_sprite_pass(
                             command,
-                            &sprite_target,
-                            1,
-                            nullptr);
-                    record_sprite_pass(
-                        command,
-                        sprite_pass,
-                        engine,
-                        sprite_passes[handle.value],
-                        width,
-                        height);
-                    SDL_EndGPURenderPass(sprite_pass);
+                            pass,
+                            engine,
+                            scene_sprite_pass,
+                            Sprite2DDepthMode::test,
+                            width,
+                            height);
+                    }
+#endif
+#if BBLITE_HAS_SPLATS
+                    // `isTransparent: true` on the pinned renderable, so
+                    // a cloud belongs to this bucket. The Dawn sibling
+                    // states the ordering caveat.
+                    for (const SplatPass& splat : state.splat_passes) {
+                        record_splat_pass(
+                            command,
+                            pass,
+                            engine,
+                            splat,
+                            frame_view,
+                            frame_projection,
+                            frame_camera_position,
+                            static_cast<double>(width),
+                            static_cast<double>(height));
+                    }
+#endif
+                    break;
+                case upstream::RenderStage::ground:
+                    draw_ground();
+                    break;
+            }
+        }
+#if BBLITE_HAS_BILLBOARDS
+        // The transparent systems close the scene's pass: they blend
+        // over every stage above and test against the depth they wrote.
+        draw_billboards(BillboardDepthMode::transparent);
+#endif
+        pass.end();
+#if (defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT) || BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        capture_render_state();
+#endif
+        // Held across the loop rather than declared inside it, so
+        // `pass_matrix` never names a local that has gone out of scope
+        // by the time the frame is done with it. Restoring the three
+        // pass pointers afterwards would be the other fix, but nothing
+        // reads them again, and the writes would be unused in every
+        // build whose material-variant blocks are compiled out.
+        std::array<float, 16> overlay_matrix{};
+        // The swapchain overlay layers. Each is its own render pass on
+        // the same colour attachment with a FRESH depth buffer, which is
+        // what `createUtilityLayer` documents: the overlay scene keeps
+        // normal depth testing among its own meshes and never tests
+        // against the base scene's, so a gizmo body occludes its own
+        // back faces while sitting in front of everything below it.
+        for (
+            std::size_t layer = 0;
+            layer < overlay_plans.size() &&
+            layer < state.overlay_meshes.size();
+            ++layer) {
+            Scene* overlay_scene =
+                engine.registered_scenes[layer + 1u].get();
+            if (!overlay_scene) continue;
+            if (
+                layer < overlay_topology_versions.size() &&
+                overlay_scene->render_topology_version !=
+                    overlay_topology_versions[layer]) {
+                gpu_error(
+                    "A swapchain overlay changed its renderables after resource synchronization.");
+            }
+            CameraRecord& overlay_camera =
+                overlay_scene->camera.value < engine.cameras.size()
+                    ? handle_at(engine.cameras, overlay_scene->camera)
+                    : camera;
+            // A layer's own camera answers `getEffectiveAspectRatio`
+            // for itself: upstream each scene's render task writes
+            // its OWN scene UBO from `cfg.cam ?? scene.camera`, so
+            // two scenes splitting one target by viewport project
+            // at two different ratios.
+            const PixelViewport overlay_surface_extent =
+                scene_surface_extent(
+                    engine, *overlay_scene, width, height);
+            const double overlay_aspect =
+                upstream::effective_aspect_ratio(
+                    overlay_camera,
+                    static_cast<double>(overlay_surface_extent.width),
+                    static_cast<double>(overlay_surface_extent.height));
+            overlay_matrix = upstream::build_view_projection(
+                overlay_camera,
+                overlay_aspect);
+            pass_scene = overlay_scene;
+            pass_meshes = &state.overlay_meshes[layer];
+            pass_matrix = &overlay_matrix;
+#if BBLITE_PINNED_MATERIALS
+            pass_scene_block = pinned_scene_block(
+                *overlay_scene,
+                engine,
+                overlay_camera,
+                overlay_matrix);
+            pass_lights_block =
+                pinned_lights_block(*overlay_scene, engine);
+#endif
+            color_info.load_op = SDL_GPU_LOADOP_LOAD;
+            depth_info.load_op = SDL_GPU_LOADOP_CLEAR;
+            depth_info.clear_depth = upstream::pinned_depth_clear;
+            pass = SDL_BeginGPURenderPass(
+                command,
+                &color_info,
+                1,
+                &depth_info);
+            set_pass_camera_viewport(
+                pass,
+                *overlay_scene,
+                engine,
+                overlay_camera,
+                width,
+                height);
+            SDL_PushGPUVertexUniformData(
+                command,
+                0,
+                overlay_matrix.data(),
+                sizeof(overlay_matrix));
+            scene_matrix_bound = true;
+            for (
+                const upstream::RenderStage stage :
+                overlay_plans[layer].stages) {
+                switch (stage) {
+                    case upstream::RenderStage::opaque:
+                        draw_render_list(
+                            overlay_plans[layer].draw_lists.opaque);
+                        break;
+                    case upstream::RenderStage::transparent:
+                        draw_render_list(
+                            overlay_plans[layer]
+                                .draw_lists.transparent);
+                        break;
+                    default:
+                        // A utility layer carries no environment, so
+                        // its plan reaches no background stage; a plan
+                        // that grew one would need its own resources
+                        // rather than the base scene's.
+                        break;
                 }
             }
-#endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-            if (capture_frame && capture_ui) {
-                // Render the UI into the readback texture, then present that
-                // exact result below.
-                render_ui_sdl_frame(
-                    state,
+            pass.end();
+        }
+        visible_color =
+            capture_frame ? state.color : swapchain;
+#if BBLITE_RENDERER_TRANSMISSION
+        if (transmission_enabled) {
+            SDL_GPUColorTargetInfo image_processing_target{};
+            image_processing_target.texture =
+                state.processed_color;
+            image_processing_target.load_op =
+                SDL_GPU_LOADOP_DONT_CARE;
+            image_processing_target.store_op =
+                SDL_GPU_STOREOP_STORE;
+            SdlRenderPass image_processing_pass{SDL_BeginGPURenderPass(
                     command,
-                    visible_color,
-                    swapchain_format,
-                    record_ui_rml_frame(*ui_runtime, width, height));
+                    &image_processing_target,
+                    1,
+                    nullptr)};
+            SDL_BindGPUGraphicsPipeline(
+                image_processing_pass,
+                state.image_processing_pipeline);
+            const ImageProcessingUniforms image_processing{{
+                scene.environment.exposure,
+                scene.environment.contrast,
+                scene.environment.tone_mapping_enabled
+                    ? 1.0f
+                    : 0.0f,
+                0.0f,
+            }};
+            SDL_PushGPUFragmentUniformData(
+                command,
+                0,
+                &image_processing,
+                sizeof(image_processing));
+            if (state.per_sample_image_processing) {
+                // A Texture2DMS is Load()-ed and carries no sampler,
+                // so it binds as a storage texture rather than as a
+                // sampler pair.
+                SDL_BindGPUFragmentStorageTextures(
+                    image_processing_pass,
+                    0,
+                    &state.msaa_color,
+                    1);
+            } else {
+                const SDL_GPUTextureSamplerBinding source_binding{
+                    state.color,
+                    state.background_sampler,
+                };
+                SDL_BindGPUFragmentSamplers(
+                    image_processing_pass,
+                    0,
+                    &source_binding,
+                    1);
             }
+            count_gpu_draw(SDL_DrawGPUPrimitives,
+                image_processing_pass,
+                3,
+                1,
+                0,
+                0);
+            image_processing_pass.end();
+            visible_color = state.processed_color;
+        }
 #endif
-            if (capture_frame || transmission_enabled) {
-                SDL_GPUBlitInfo blit{};
-                blit.source = SDL_GPUBlitRegion{
-                    visible_color,
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        // The scene is the first rendering context; registered sprite
+        // contexts then load and blend over its final single-sample
+        // colour, in registration order. Rendering before the blit keeps
+        // screenshots and presentation on the same composed image.
+        if (!engine.registered_sprite_renderers.empty()) {
+            for (const SpriteRendererHandle handle :
+                 engine.registered_sprite_renderers) {
+                if (handle.value >= sprite_passes.size()) {
+                    throw std::runtime_error(
+                        "A SpriteRenderer created after the scene frame "
+                        "started has no GPU pass yet.");
+                }
+                const SpriteRendererRecord& renderer =
+                    handle_at(engine.sprite_renderers, handle);
+                SDL_GPUColorTargetInfo sprite_target{};
+                sprite_target.texture = renderer.has_target
+                    ? handle_at(sprite_render_textures, renderer.target)
+                    : visible_color;
+                sprite_target.load_op = renderer.clear
+                    ? SDL_GPU_LOADOP_CLEAR
+                    : SDL_GPU_LOADOP_LOAD;
+                sprite_target.store_op = SDL_GPU_STOREOP_STORE;
+                sprite_target.clear_color = SDL_FColor{
+                    renderer.clear_value.r,
+                    renderer.clear_value.g,
+                    renderer.clear_value.b,
+                    renderer.clear_value.a};
+                SdlRenderPass sprite_pass{SDL_BeginGPURenderPass(
+                        command,
+                        &sprite_target,
+                        1,
+                        nullptr)};
+                record_sprite_pass(
+                    command,
+                    sprite_pass,
+                    engine,
+                    handle_at(sprite_passes, handle),
+                    width,
+                    height);
+                sprite_pass.end();
+            }
+        }
+#endif
+        }
+    }
+
+    void present() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& captures = data_.captures;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
+        [[maybe_unused]] auto& transmission_enabled = data_.transmission_enabled;
+        [[maybe_unused]] auto& state = data_.resources.state;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
+#endif
+        [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
+        [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
+        [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& capture_ui = data_.frame_options.capture_ui;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen = data_.offscreen;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen_target = *data_.offscreen_target;
+#endif
+        [[maybe_unused]] auto& width = frame_->width;
+        [[maybe_unused]] auto& height = frame_->height;
+        [[maybe_unused]] const auto& matrix = frame_->matrix;
+        [[maybe_unused]] const auto& capture_frame = frame_->capture_frame;
+        [[maybe_unused]] const auto& capture_ids = frame_->capture_ids;
+        [[maybe_unused]] const auto& capture_clusters = frame_->capture_clusters;
+        [[maybe_unused]] auto& swapchain = frame_->swapchain;
+        [[maybe_unused]] auto& command = frame_->command;
+        [[maybe_unused]] auto& capture_texture = frame_->capture_texture;
+        [[maybe_unused]] auto& visible_color = frame_->visible_color;
+        if (frame_->graph) {
+            if (capture_texture == state.color && capture_texture) {
+                SDL_GPUBlitInfo present{};
+                present.source = SDL_GPUBlitRegion{state.color, 0, 0, 0, 0, width, height};
+                present.destination = SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
+                present.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                present.filter = SDL_GPU_FILTER_NEAREST;
+                SDL_BlitGPUTexture(command, &present);
+            }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+            SDL_GPUTexture* ui_target =
+                capture_frame && capture_ui
+                    ? capture_texture
+                    : swapchain;
+            if (!ui_target) {
+                throw std::runtime_error(
+                    "Frame graph did not present a native UI target.");
+            }
+            render_ui_sdl_frame(
+                state,
+                command,
+                ui_target,
+                swapchain_format,
+                record_ui_rml_frame(*ui_runtime, width, height));
+            if (ui_target != swapchain) {
+                // The graph presented before the overlay was recorded.
+                // Present the same composite that the explicit UI
+                // screenshot mode reads back below.
+                SDL_GPUBlitInfo ui_blit{};
+                ui_blit.source = SDL_GPUBlitRegion{
+                    ui_target,
                     0,
                     0,
                     0,
                     0,
                     width,
                     height};
-                blit.destination = SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
-                blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                blit.flip_mode = SDL_FLIP_NONE;
-                blit.filter = SDL_GPU_FILTER_NEAREST;
-                SDL_BlitGPUTexture(command, &blit);
-            }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-            if (!(capture_frame && capture_ui)) {
-                // A canvas-only attribution capture omits the UI from
-                // `visible_color` but still draws it over the presented
-                // swapchain.
-                render_ui_sdl_frame(
-                    state,
-                    command,
+                ui_blit.destination = SDL_GPUBlitRegion{
                     swapchain,
-                    swapchain_format,
-                    record_ui_rml_frame(*ui_runtime, width, height));
+                    0,
+                    0,
+                    0,
+                    0,
+                    width,
+                    height};
+                ui_blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                ui_blit.flip_mode = SDL_FLIP_NONE;
+                ui_blit.filter = SDL_GPU_FILTER_NEAREST;
+                SDL_BlitGPUTexture(command, &ui_blit);
             }
 #endif
             if (capture_frame) {
+                if (!capture_texture) {
+                    throw std::runtime_error(
+                        "Frame graph did not present a capture source.");
+                }
                 save_texture_png(
                     state.device,
                     command,
-                    visible_color,
+                    capture_texture,
                     swapchain_format,
                     width,
                     height,
@@ -14012,88 +14060,172 @@ SceneRun run_gpu_engine(Engine& engine) {
                 offscreen_target.publish(command, *offscreen);
             }
 #endif
-            else if (!SDL_SubmitGPUCommandBuffer(command)) {
-                gpu_error("SDL_SubmitGPUCommandBuffer");
+            else if (!command.submit()) {
+                gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
             }
-            }
-            if (capture_ids) {
-                save_geometry_id_buffer_png(
-                    state,
-                    width,
-                    height,
-                    matrix,
-                    render_plan.items,
-                    engine,
-                    id_buffer_path,
-                    false);
-                captures.id_buffer_saved = true;
-            }
-            if (capture_clusters) {
-                save_geometry_id_buffer_png(
-                    state,
-                    width,
-                    height,
-                    matrix,
-                    render_plan.items,
-                    engine,
-                    cluster_buffer_path,
-                    true);
-                captures.cluster_buffer_saved = true;
-            }
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-            if (engine.device_recovery) {
-                auto& recovery = *engine.device_recovery;
-                recovery.environments[scene.state.get()] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment)};
-                recovery.renderable_counts[scene.state.get()] = state.meshes.size() + (state.skybox_pipeline != nullptr) + (state.background_pipeline != nullptr);
-#if BBLITE_SHADOW_RECEIVERS
-                recovery.shadows.resize(state.shadow_generators.size());
-                for (std::size_t i = 0; i < state.shadow_generators.size(); ++i) {
-                    recovery.shadows[i] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.shadow_generators[i].map)};
-                }
-#endif
-                recovery.resources_ready = true;
-            }
-#endif
-            finish_frame(engine);
-            ++frame;
-            const double end = monotonic_milliseconds();
-            const long completed_frame = frame - 1;
-            if (cpu_profile && completed_frame % 30 == 0) {
-                std::size_t draw_commands =
-                    render_plan.draw_lists.opaque.commands.size() +
-                    render_plan.draw_lists.transparent.commands.size();
-                for (const upstream::RenderDrawLists& lists : task_draw_lists) {
-                    draw_commands += lists.opaque.commands.size() +
-                        lists.transparent.commands.size();
-                }
-                // No `write_ms`: per-draw uniform writes are Dawn's own
-                // phase, so this line never carried the field.
-                print_cpu_frame_profile(
-                    completed_frame,
-                    end - start,
-                    acquired - start,
-                    updated - acquired,
-                    uploaded - updated,
-                    std::nullopt,
-                    end - uploaded,
-                    render_plan.items.size(),
-                    draw_commands,
-                    profile_transformed_meshes,
-                    profile_transformed_vertices);
-            }
-            if (mem_profile && completed_frame % memory_profile_frames == 0) {
-                print_memory_frame_profile(
-                    completed_frame,
-                    engine,
-                    scene,
-                    state.meshes,
-                    state.shared_shader_geometries);
-            }
-            if (benchmark && completed_frame >= warmup) {
-                samples.push_back(end - start);
-            }
-            BBLITE_FRAME_YIELD(true);
+        } else {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        if (capture_frame && capture_ui) {
+            // Render the UI into the readback texture, then present that
+            // exact result below.
+            render_ui_sdl_frame(
+                state,
+                command,
+                visible_color,
+                swapchain_format,
+                record_ui_rml_frame(*ui_runtime, width, height));
         }
+#endif
+        if (capture_frame || transmission_enabled) {
+            SDL_GPUBlitInfo blit{};
+            blit.source = SDL_GPUBlitRegion{
+                visible_color,
+                0,
+                0,
+                0,
+                0,
+                width,
+                height};
+            blit.destination = SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
+            blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+            blit.flip_mode = SDL_FLIP_NONE;
+            blit.filter = SDL_GPU_FILTER_NEAREST;
+            SDL_BlitGPUTexture(command, &blit);
+        }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        if (!(capture_frame && capture_ui)) {
+            // A canvas-only attribution capture omits the UI from
+            // `visible_color` but still draws it over the presented
+            // swapchain.
+            render_ui_sdl_frame(
+                state,
+                command,
+                swapchain,
+                swapchain_format,
+                record_ui_rml_frame(*ui_runtime, width, height));
+        }
+#endif
+        if (capture_frame) {
+            save_texture_png(
+                state.device,
+                command,
+                visible_color,
+                swapchain_format,
+                width,
+                height,
+                screenshot_path);
+            captures.screenshot_saved = true;
+        }
+#if BBLITE_OFFSCREEN_SURFACES
+        else if (offscreen) {
+            offscreen_target.publish(command, *offscreen);
+        }
+#endif
+        else if (!command.submit()) {
+            gpu_error("SDL_SubmitGPUCommandBuffer");
+        }
+        }
+        if (capture_ids) {
+            save_geometry_id_buffer_png(
+                state,
+                width,
+                height,
+                matrix,
+                render_plan.items,
+                engine,
+                id_buffer_path,
+                false);
+            captures.id_buffer_saved = true;
+        }
+        if (capture_clusters) {
+            save_geometry_id_buffer_png(
+                state,
+                width,
+                height,
+                matrix,
+                render_plan.items,
+                engine,
+                cluster_buffer_path,
+                true);
+            captures.cluster_buffer_saved = true;
+        }
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        if (engine.device_recovery) {
+            auto& recovery = *engine.device_recovery;
+            recovery.environments[scene.state.get()] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment)};
+            recovery.renderable_counts[scene.state.get()] = state.meshes.size() + (state.skybox_pipeline != nullptr) + (state.background_pipeline != nullptr);
+#if BBLITE_SHADOW_RECEIVERS
+            recovery.shadows.resize(state.shadow_generators.size());
+            for (std::size_t i = 0; i < state.shadow_generators.size(); ++i) {
+                recovery.shadows[i] = {engine.device_generation, reinterpret_cast<std::uintptr_t>(state.shadow_generators[i].map)};
+            }
+#endif
+            recovery.resources_ready = true;
+        }
+#endif
+    }
+
+    void complete() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
+        [[maybe_unused]] auto& mem_profile = data_.mem_profile;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& task_draw_lists = data_.task_draw_lists;
+        [[maybe_unused]] auto& state = data_.resources.state;
+        [[maybe_unused]] auto& samples = data_.samples_ms;
+        [[maybe_unused]] const auto benchmark = data_.frame_options.benchmarking();
+        [[maybe_unused]] const auto warmup = data_.frame_options.benchmark_warmup();
+        [[maybe_unused]] const auto& start = frame_->start;
+        [[maybe_unused]] const auto& updated = frame_->updated;
+        [[maybe_unused]] const auto& uploaded = frame_->uploaded;
+        [[maybe_unused]] const auto& acquired = frame_->acquired;
+        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
+        finish_frame(engine);
+        ++frame;
+        const double end = monotonic_milliseconds();
+        const long completed_frame = frame - 1;
+        if (cpu_profile && completed_frame % 30 == 0) {
+            std::size_t draw_commands =
+                render_plan.draw_lists.opaque.commands.size() +
+                render_plan.draw_lists.transparent.commands.size();
+            for (const upstream::RenderDrawLists& lists : task_draw_lists) {
+                draw_commands += lists.opaque.commands.size() +
+                    lists.transparent.commands.size();
+            }
+            // No `write_ms`: per-draw uniform writes are Dawn's own
+            // phase, so this line never carried the field.
+            print_cpu_frame_profile(
+                completed_frame,
+                end - start,
+                acquired - start,
+                updated - acquired,
+                uploaded - updated,
+                std::nullopt,
+                end - uploaded,
+                render_plan.items.size(),
+                draw_commands,
+                profile_transformed_meshes,
+                profile_transformed_vertices);
+        }
+        if (mem_profile && completed_frame % memory_profile_frames == 0) {
+            print_memory_frame_profile(
+                completed_frame,
+                engine,
+                scene,
+                state.meshes,
+                state.shared_shader_geometries);
+        }
+        if (benchmark && completed_frame >= warmup) {
+            samples.push_back(end - start);
+        }
+    }
+
+    void finish_run() {
+        [[maybe_unused]] auto& state = data_.resources.state;
+        [[maybe_unused]] auto& samples = data_.samples_ms;
         report_benchmark(
             samples,
             "SDL_GPU",
@@ -14102,8 +14234,33 @@ SceneRun run_gpu_engine(Engine& engine) {
             gpu_error("SDL_WaitForGPUIdle");
         }
     }
+
+};
+#endif
+
+SceneRun run_gpu_engine(Engine& engine) {
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+    if (engine.registered_scenes.empty() || !engine.registered_scenes.front())
+        throw std::runtime_error("GPU renderer requires a registered scene.");
+    SdlSceneRun renderer(engine);
+    renderer.setup();
+    for (;;) {
+        renderer.discard_frame();
+        const FrameOutcome outcome = conduct_frame(renderer);
+        if (outcome == FrameOutcome::stopped || outcome == FrameOutcome::restart) break;
+        if (outcome == FrameOutcome::rendered || renderer.yield_when_skipped())
+            BBLITE_FRAME_YIELD(outcome == FrameOutcome::rendered);
+    }
+    renderer.discard_frame();
+    renderer.finish_run();
     BBLITE_RUN_RETURN(true);
 #else
+    const FrameOptions frame_options = read_frame_options();
+    reject_unsupported_frame_options(
+        frame_options,
+        "SDL_GPU",
+        /*supports_single_sample=*/true,
+        /*supports_copy_task=*/true);
     (void)engine;
     BBLITE_RUN_RETURN(false);
 #endif

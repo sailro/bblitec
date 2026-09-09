@@ -303,7 +303,6 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Visible and Pickable |
 | physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options; 0.053 / 0.083 before the physics family gates: with the constraints family compiled out the cylinder's landing moves by a float ulp, deterministic on both backends |
 | physics-floating-origin | <img src="images/scenes/regression-physics-floating-origin.png" alt="Physics floating origin rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Floating Origin Regions |
-| physics-mesh-shape | <img src="images/scenes/regression-physics-mesh-shape.png" alt="Physics mesh shape rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Triangle-Soup Shape |
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Compiler State |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Track Clamp |
@@ -313,11 +312,7 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | sprite-layer-arms | <img src="images/scenes/regression-sprite-layer-arms.png" alt="Sprite layer arms rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Layer Arms |
 | glTF-sparse | <img src="images/scenes/regression-gltf-sparse.png" alt="glTF sparse accessors rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Sparse Accessors |
 | glTF-uv-sets | <img src="images/scenes/regression-gltf-uv-sets.png" alt="glTF UV sets rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF UV Sets |
-| imported-mesh-walk | <img src="images/scenes/regression-imported-mesh-walk.png" alt="Imported mesh walk rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Recursive Container Flatten |
 | glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Primitive Topology |
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF STEP Animation |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Morph Storage Ground |
-| shadow-pbr-only | <img src="images/scenes/regression-shadow-pbr-only.png" alt="PBR shadows without Standard rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Shadow Receiver Without Standard |
-| scene-skeleton | <img src="images/scenes/regression-scene-skeleton.png" alt="Scene-authored skeleton rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Scene-Authored Skeleton |
-| node-geometry-output | <img src="images/scenes/regression-node-geometry-output.png" alt="Node material geometry output rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node Material Geometry Output |
 | timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Timer Callback Cells |

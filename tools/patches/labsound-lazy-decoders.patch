@@ -1,0 +1,43 @@
+diff --git a/src/extended/AudioFileReader.cpp b/src/extended/AudioFileReader.cpp
+--- a/src/extended/AudioFileReader.cpp
++++ b/src/extended/AudioFileReader.cpp
+@@ -69,7 +69,11 @@
+ namespace lab
+ {
+ 
+-nqr::NyquistIO nyquist_io;
++static nqr::NyquistIO& nyquist_io()
++{
++    static nqr::NyquistIO registry;
++    return registry;
++}
+ std::mutex g_fileIOMutex;
+ 
+ std::shared_ptr<AudioBus> MakeBusFromFile(const char * filePath, bool mixToMono)
+@@ -81,7 +85,7 @@
+         FILE* test = fopen(filePath, "rb");
+         if (test) {
+             fclose(test);
+-            nyquist_io.Load(audioData, std::string(filePath));
++            nyquist_io().Load(audioData, std::string(filePath));
+             printf("Loaded %s\n", filePath);
+         }
+         else {
+@@ -125,7 +129,7 @@
+ {
+     std::lock_guard<std::mutex> lock(g_fileIOMutex);
+     nqr::AudioData * audioData = new nqr::AudioData();
+-    nyquist_io.Load(audioData, buffer);
++    nyquist_io().Load(audioData, buffer);
+     return detail::LoadInternal(audioData, mixToMono);
+ }
+ 
+@@ -133,7 +137,7 @@
+ {
+     std::lock_guard<std::mutex> lock(g_fileIOMutex);
+     nqr::AudioData * audioData = new nqr::AudioData();
+-    nyquist_io.Load(audioData, extension, buffer);
++    nyquist_io().Load(audioData, extension, buffer);
+     return detail::LoadInternal(audioData, mixToMono);
+ }
+ 

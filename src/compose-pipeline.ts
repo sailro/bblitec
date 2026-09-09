@@ -78,7 +78,6 @@ import {
 } from "./pinned-shadow-slots.js";
 import {
     babylonLights,
-    reachedDiffuseUv2,
 } from "./babylon-asset-features.js";
 import { refuseGeneration } from "./generation-refusal.js";
 
@@ -1017,10 +1016,8 @@ export async function composeScenePipeline({
         standardComposition = await composeSceneStandardVariants(
             {
                 babylonAssets,
-                diffuseUv2: reachedDiffuseUv2(
-                    outputPath,
-                    result.manifest.assets,
-                ),
+                babylonTextureModes: new Map(result.manifest.assets.filter(asset => asset.kind === "babylon")
+                    .map(asset => [resolve(outputPath, "assets", asset.output), asset.babylonTextureModes ?? [true]])),
                 fog: result.manifest.features.includes("renderer:fog"),
                 vertexColors: result.manifest.features.includes(
                     "material:standard-vertex-colors",

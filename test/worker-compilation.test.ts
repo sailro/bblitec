@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 test("module Worker compilation retains per-instance module state and cloned messages", (t) => {
@@ -19,8 +20,10 @@ export function increment(value: number): number { count += value; return count;
 function main() { throw new Error("Module helper named main must not run automatically"); }
 async function update(amount: number): Promise<number> {
     const value = increment(amount);
+    const settled = { value: 0 };
+    queueMicrotask(() => { settled.value = value; });
     await Promise.resolve(0);
-    return value;
+    return settled.value;
 }
 self.addEventListener("message", (event: MessageEvent<{ amount: number }>) => {
     void update(event.data.amount).then((value) => {
@@ -64,6 +67,16 @@ message.amount = 100;
     if (!tools) { t.skip("Requires the Windows native fixture compiler."); return; }
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
+        "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD", "/DBBLITE_WORKERS=1",
+        `/I${resolve("native/include")}`, cpp, `/Fo${directory}/`, `/Fe${executable}`,
+    ]);
+    assert.equal(execFileSync(executable, { encoding: "utf8", timeout: 10000, stdio: "pipe" }), "");
+    // Nested callbacks in a worker coroutine must emit complete virtual bodies
+    // under clang-cl as well as MSVC.
+    let clang;
+    try { clang = discoverWindowsBuildTools("clangcl"); }
+    catch { return; }
+    runNativeFixtureCompiler(clang, [
         "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD", "/DBBLITE_WORKERS=1",
         `/I${resolve("native/include")}`, cpp, `/Fo${directory}/`, `/Fe${executable}`,
     ]);

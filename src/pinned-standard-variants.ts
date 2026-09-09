@@ -1,3 +1,4 @@
+import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 /**
  * Composes Standard-material shader variants through Babylon Lite's own
  * pipeline — the Standard sibling of `pinned-pbr-variants.ts`.
@@ -19,8 +20,7 @@
  * `standard-renderable.ts` `rebuildSingle`):
  *
  * - `.babylon` material `diffuseTexture` → `HAS_DIFFUSE_TEXTURE` (and
- *   `NEEDS_UV`); `coordinatesIndex === 1` (cli `reachedDiffuseUv2` →
- *   `standardDiffuseUv2`) → `DIFFUSE_USES_UV2` (+`NEEDS_UV2`).
+ *   `NEEDS_UV`); `coordinatesIndex === 1` → `DIFFUSE_USES_UV2` (+`NEEDS_UV2`).
  * - `emissiveTexture` → `HAS_EMISSIVE_TEXTURE`; a render-texture source
  *   (`_sampleType === "depth"`) → `HAS_DEPTH_EMISSIVE_TEXTURE`.
  * - `bumpTexture` → `HAS_BUMP_TEXTURE` (the composed variant's `bT` binding
@@ -89,6 +89,7 @@ import {
 } from "./pinned-material-plugins.js";
 import { plainUboSpec } from "./pinned-material-arms.js";
 import { refuseGeneration } from "./generation-refusal.js";
+import { pinnedBabylonMaterials } from "./pinned-babylon-materials.js";
 
 /** The pinned modules the contracts below are keyed on when they refuse. */
 const STANDARD_MATERIAL_MODULE = "src/material/standard/standard-material.ts";
@@ -905,7 +906,7 @@ const standardFeatureRecordSources: Readonly<
     // TEX_SLOTS opacity extra: `if (t.getAlphaFromRGB) m.opacityFromRGB`).
     opacityFromRGB: "material.opacity_from_rgb",
     // babylon-loader-cpp.ts fills reflection_texture from the non-cube arm
-    // of reflectionTexture (texture_data() drops isCube entries), the same
+    // of reflectionTexture (the pinned slot skips cube entries), the same
     // split the pin's loader makes (TEX_SLOTS `skipIf: isCube` vs the
     // separate cube branch).
     _reflectionTexture: "material.reflection_texture.has_image()",
@@ -1399,12 +1400,7 @@ export interface StandardSceneCompositionInput {
     vertexAlpha?: boolean;
     /** Materialized `.babylon` asset paths, in load order. */
     babylonAssets: readonly string[];
-    /** The emit option that shapes the generated loader's material records:
-     *  the diffuse coordinate index is read only under `standardDiffuseUv2`.
-     *  The bump slot needs no option -- it exists exactly when a composed
-     *  variant binds the pin's bump pair, which is read off this
-     *  composition's output. */
-    diffuseUv2: boolean;
+    babylonTextureModes?: ReadonlyMap<string, readonly boolean[]>;
     fog: boolean;
     /** `material:standard-vertex-colors` reached (the pin's opt-in). */
     vertexColors: boolean;
@@ -1487,109 +1483,6 @@ export interface StandardSceneCompositionInput {
 export interface StandardSceneComposition {
     variants: PinnedStandardVariantManifestEntry[];
     selectors: PinnedStandardSelector[];
-}
-
-interface BabylonTextureJson {
-    name?: string;
-    isCube?: boolean;
-    coordinatesIndex?: number;
-    getAlphaFromRGB?: boolean;
-}
-
-interface BabylonMaterialJson {
-    diffuseTexture?: BabylonTextureJson | null;
-    specularTexture?: BabylonTextureJson | null;
-    opacityTexture?: BabylonTextureJson | null;
-    ambientTexture?: BabylonTextureJson | null;
-    bumpTexture?: BabylonTextureJson | null;
-    reflectionTexture?: BabylonTextureJson | null;
-    backFaceCulling?: boolean;
-    alpha?: number;
-}
-
-/**
- * A 2D slot the generated loader's `texture_data` would fill. A `.babylon`
- * export writes an unused slot as JSON null rather than omitting it — Sponza
- * does for every one — and the loader's `is_object()` reads null as absent.
- */
-function babylonTexture2d(
-    texture: BabylonTextureJson | null | undefined,
-): texture is BabylonTextureJson {
-    return texture !== undefined &&
-        texture !== null &&
-        typeof texture === "object" &&
-        texture.isCube !== true &&
-        typeof texture.name === "string" &&
-        texture.name !== "";
-}
-
-/**
- * A `.babylon` material as the pin's feature derivation must see it to match
- * the generated loader's record — every absence below mirrors a loader fact
- * (`babylon-loader-cpp.ts`): no emissive/lightmap slots, the diffuse
- * coordinate index only under its option, and `disableLighting` never read.
- * The bump, opacity `getAlphaFromRGB` and 2D reflection presences mirror the
- * loader's record fields the same way, which are themselves the pin's own
- * loader writes (`load-babylon.ts` TEX_SLOTS); the generated loader's bump
- * slot in turn follows the variants this input composes.
- */
-function babylonMaterialInput(
-    material: BabylonMaterialJson,
-    options: { diffuseUv2: boolean },
-): PinnedStandardMaterialInput {
-    const coord = (texture: BabylonTextureJson | undefined): number =>
-        texture?.coordinatesIndex === 1 ? 1 : 0;
-    return {
-        ...(babylonTexture2d(material.diffuseTexture)
-            ? {
-                diffuseTexture: {},
-                diffuseCoordIndex: options.diffuseUv2
-                    ? coord(material.diffuseTexture)
-                    : 0,
-            }
-            : {}),
-        ...(babylonTexture2d(material.specularTexture)
-            ? {
-                specularTexture: {},
-                specularCoordIndex: coord(material.specularTexture),
-            }
-            : {}),
-        ...(babylonTexture2d(material.opacityTexture)
-            ? {
-                opacityTexture: {},
-                // The pin's own conditional write (load-babylon.ts
-                // TEX_SLOTS opacity extra), mirrored by the generated
-                // loader's opacity_from_rgb read.
-                ...(material.opacityTexture.getAlphaFromRGB === true
-                    ? { opacityFromRGB: true }
-                    : {}),
-            }
-            : {}),
-        ...(babylonTexture2d(material.ambientTexture)
-            ? {
-                ambientTexture: {},
-                ambientCoordIndex: coord(material.ambientTexture),
-            }
-            : {}),
-        ...(babylonTexture2d(material.bumpTexture)
-            ? { bumpTexture: {} }
-            : {}),
-        ...(material.reflectionTexture?.isCube === true &&
-                typeof material.reflectionTexture.name === "string" &&
-                material.reflectionTexture.name !== ""
-            ? { reflectionCubeTexture: {} }
-            : {}),
-        // The non-cube arm of the same slot: the pin's TEX_SLOTS
-        // reflection entry (`skipIf: isCube`) fills mat.reflectionTexture,
-        // and the generated loader fills reflection_texture through the
-        // same texture_data() cube drop. Its level and coordinatesMode are
-        // writeStdMaterialData uniform lanes (rLvl, rCm), not feature bits.
-        ...(babylonTexture2d(material.reflectionTexture)
-            ? { reflectionTexture: {} }
-            : {}),
-        backFaceCulling: material.backFaceCulling ?? true,
-        alpha: material.alpha ?? 1,
-    };
 }
 
 /**
@@ -1753,17 +1646,11 @@ export async function composeSceneStandardVariants(
     }
     for (const asset of input.babylonAssets) {
         const document = JSON.parse(readAsset(asset)) as {
-            materials?: BabylonMaterialJson[];
+            materials?: unknown[];
         };
-        for (const material of document.materials ?? []) {
-            materialInputs.push(
-                babylonMaterialInput(material, {
-                    diffuseUv2: input.diffuseUv2,
-                }),
-            );
-        }
-        // The loader's lazily-created fallback material for a mesh with no
-        // resolvable id: the pin's plain defaults.
+        for (const loadTextures of input.babylonTextureModes?.get(asset) ?? [true])
+            materialInputs.push(...await pinnedBabylonMaterials(document.materials ?? [], loadTextures));
+        // A mesh with no resolvable material receives the factory defaults.
         materialInputs.push({});
     }
     // Keyed by the word a renderable derives rather than the material's own,
@@ -1981,7 +1868,7 @@ export async function composeSceneStandardVariants(
 
 /**
  * The `.babylon` renderable count, mirroring the generated loader's mesh
- * walk (`babylon-loader-cpp.ts`): visible, unparented meshes with positions,
+ * walk (`babylon-loader-cpp.ts`): visible meshes with positions,
  * normals and indices produce one record per valid submesh. The Standard
  * mesh-feature table needs one zero row per record so scene-code mesh
  * handles land at their correct indices behind them.
@@ -2003,9 +1890,6 @@ export function babylonRenderableCount(documentText: string): number {
     let count = 0;
     for (const mesh of document.meshes ?? []) {
         if (mesh.isVisible === false) continue;
-        if (typeof mesh.parentId === "string" && mesh.parentId !== "") {
-            continue;
-        }
         if (
             !Array.isArray(mesh.positions) ||
             !Array.isArray(mesh.normals) ||
@@ -2014,14 +1898,10 @@ export function babylonRenderableCount(documentText: string): number {
         ) {
             continue;
         }
-        const submeshes = Array.isArray(mesh.subMeshes) &&
-                mesh.subMeshes.length > 0
-            ? mesh.subMeshes
-            : [{ indexStart: 0, indexCount: mesh.indices.length }];
+        const submeshes = mesh.subMeshes ?? [{ indexStart: 0, indexCount: mesh.indices.length }];
         for (const submesh of submeshes) {
-            const start = submesh.indexStart ?? 0;
             const length = submesh.indexCount ?? 0;
-            if (length === 0 || start + length > mesh.indices.length) {
+            if (length === 0) {
                 continue;
             }
             count += 1;
@@ -2217,7 +2097,8 @@ export interface PinnedStandardSupportOptions {
 export function pinnedStandardSupportBlock(
     context: LoweringContext,
     options: PinnedStandardSupportOptions,
-): string {
+): CppModule {
+    const cpp = new CppDefinitions();
     const flag = (name: string): number =>
         pinnedNumericConstant(
             context,
@@ -2327,11 +2208,7 @@ struct StandardPluginBinding {
     std::size_t ordinal;
 };
 
-inline constexpr std::array<
-    StandardPluginBinding,
-    ${pluginBindingRows.length}> standard_plugin_bindings{{
-${pluginBindingRows.join("\n")}
-}};
+${cpp.table("StandardPluginBinding", "standard_plugin_bindings", pluginBindingRows.length, `${pluginBindingRows.join("\n")}`)}
 
 /** The row one composed binding name takes on one material, or nullptr. */
 inline const StandardPluginBinding* standard_plugin_binding_for(
@@ -2346,7 +2223,7 @@ inline const StandardPluginBinding* standard_plugin_binding_for(
     return nullptr;
 }
 `;
-    return `
+    return cpp.finish(`
 // ---------------------------------------------------------------------------
 // Native support for the pinned Standard variants, appended by
 // src/pinned-standard-variants.ts pinnedStandardSupportBlock: the selector,
@@ -2485,10 +2362,7 @@ struct StandardBindingResource {
     bool reflection_cube;
 };
 
-inline constexpr std::array<StandardBindingResource, ${builtinBindings.length}>
-    standard_binding_resources{{
-${standardBindingResourceRows(builtinBindings)}
-}};
+${cpp.table("StandardBindingResource", "standard_binding_resources", builtinBindings.length, `${standardBindingResourceRows(builtinBindings)}`)}
 ${pluginBindingBlock}${skeletonBlock}
 struct StandardVariantSelector {
     /** standard_material_features(record), plus the no-color pass bit for a
@@ -2501,10 +2375,7 @@ struct StandardVariantSelector {
     std::size_t variant;
 };
 
-inline constexpr std::array<StandardVariantSelector, ${selectorRows.length}>
-    standard_variant_selectors{{
-${selectorRows.join("\n")}
-}};
+${cpp.table("StandardVariantSelector", "standard_variant_selectors", selectorRows.length, `${selectorRows.join("\n")}`)}
 
 /**
  * The mesh-feature bits per runtime mesh handle, creation-ordered: each
@@ -2512,18 +2383,13 @@ ${selectorRows.join("\n")}
  * meshes. The pool and deformation bits are ORed on by the caller from the
  * record, because both attach after creation.
  */
-inline constexpr std::array<
-    std::size_t,
-    ${meshRows.length}> standard_renderable_mesh_features{{
-${meshRows.join("\n")}
-}};
+${cpp.table("std::size_t", "standard_renderable_mesh_features", meshRows.length, `${meshRows.join("\n")}`)}
 
 /** The bits for meshes created past the static table, npos to refuse. */
-inline constexpr std::size_t standard_runtime_mesh_features =
-    ${
+${cpp.constant("std::size_t", "standard_runtime_mesh_features",
         options.runtimeMeshFeatures ??
             "std::numeric_limits<std::size_t>::max()"
-    };
+    )}
 
 /** The variant a Standard draw composes, or npos when none was emitted. */
 inline std::size_t standard_variant_for(
@@ -2543,5 +2409,5 @@ inline std::size_t standard_variant_for(
 }
 
 } // namespace bbl::upstream
-`;
+`);
 }

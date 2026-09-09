@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -24,7 +25,7 @@ struct Closure {
     Environment environment;
     Invoke invoke;
     template <typename... Args>
-    decltype(auto) operator()(Args&&... args) {
+    std::invoke_result_t<Invoke&, Environment&, Args...> operator()(Args&&... args) {
         return invoke(environment, std::forward<Args>(args)...);
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(environment); }
@@ -34,6 +35,22 @@ template <typename Environment, typename Invoke>
 [[nodiscard]] auto make_closure(Environment environment, Invoke invoke) {
     static_assert(std::is_empty_v<Invoke>, "Closure invokers must not hide captures.");
     return Closure<Environment, Invoke>{std::move(environment), std::move(invoke)};
+}
+
+/** Direct recursive calls share automatic callable storage. */
+template <typename... Functions>
+struct RecursiveGroup {
+    std::tuple<Functions...> functions;
+    template <std::size_t Index, typename... Args>
+    std::invoke_result_t<std::tuple_element_t<Index, std::tuple<Functions...>>&, RecursiveGroup&, Args...>
+    call(Args&&... args) {
+        return std::get<Index>(functions)(*this, std::forward<Args>(args)...);
+    }
+};
+
+template <typename... Functions>
+[[nodiscard]] auto make_recursive_group(Functions... functions) {
+    return RecursiveGroup<Functions...>{std::tuple<Functions...>{std::move(functions)...}};
 }
 
 inline std::size_t next_callback_identity() {
@@ -78,9 +95,14 @@ class Callback<R(Args...)> {
               std::forward<F>(body))) {}
 
     R operator()(Args... args) const {
-        const Callback retained = *this;
-        if (!retained.body_) throw std::bad_function_call();
-        return retained.body_->call(std::forward<Args>(args)...);
+        const auto body = body_;
+        if (!body) throw std::bad_function_call();
+        if (recursive_owner_) {
+            // Recursive reads need their cell even if the call replaces itself.
+            const auto owner = recursive_owner_;
+            return body->call(std::forward<Args>(args)...);
+        }
+        return body->call(std::forward<Args>(args)...);
     }
     explicit operator bool() const { return body_ && body_->present(); }
     [[nodiscard]] std::size_t identity() const { return identity_; }

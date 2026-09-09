@@ -1,6 +1,8 @@
+import { EmissionSet } from "../emission-transaction.js";
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { handleCppType, type DataTypeRegistry } from "../data-types.js";
+import { handleCppType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -11,22 +13,21 @@ import {
 
 /** Readback and picker retirement change native state only; repeated calls do
  * not allocate a generation-owned composition row. */
-export const runtimeOnlyPickingIntrinsics: ReadonlySet<string> = new Set([
+export const runtimeOnlyPickingIntrinsics: ReadonlySet<string> = new EmissionSet([
     "pickAsync", "disposePicker", "getPickedNormal",
 ]);
 
 export interface PickingIntrinsicContext
-    extends IntrinsicCallContext, HitRecordContext {
-    readonly dataTypes: DataTypeRegistry;
-    readonly checker: ts.TypeChecker;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    requireEngine(value: Value, node: ts.Node): string;
-    compileCondition(expression: ts.Expression): string;
-    fail(node: ts.Node, message: string): never;
-}
+    extends IntrinsicCallContext,
+    HitRecordContext,
+    Pick<LoweringServices,
+        | "dataTypes"
+        | "checker"
+        | "compileNumber"
+        | "requireEngine"
+        | "compileCondition"
+        | "fail"
+    > {}
 
 /**
  * GPU picking, at the slice scene 129 reaches.

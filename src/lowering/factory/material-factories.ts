@@ -533,6 +533,7 @@ void set_shader_storage_buffer(
     record.shader_storage_buffers[slot] = buffer;
 }
 
+#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(
     Engine& engine,
     MaterialHandle material,
@@ -552,6 +553,7 @@ void set_shader_csm_texture(
     }
     record.shader_csm_textures[slot] = generator;
 }
+#endif
 
 void set_shadow_caster_material(
     Engine& engine,
@@ -768,7 +770,7 @@ PixelsTexture create_texture_2d_from_pixels(
 }
 
 void update_pixels_texture(
-    Engine& engine,
+    [[maybe_unused]] Engine& engine,
     PixelsTexture& texture,
     const js::U8Array& pixels) {
     const std::size_t expected =
@@ -780,6 +782,7 @@ void update_pixels_texture(
     }
     texture.rgba = pixels.to_vector();
     ++texture.version;
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
     for (Sprite2DLayerRecord& layer : engine.sprite_layers) {
         for (PixelsTexture& bound : layer.custom_textures) {
             if (bound.identity != texture.identity) continue;
@@ -787,6 +790,7 @@ void update_pixels_texture(
             bound.version = texture.version;
         }
     }
+#endif
 }
 
 } // namespace bbl
@@ -942,6 +946,10 @@ FileTexture load_file_texture(
     bool invert_y,
     bool srgb,
     bool premultiply_alpha) {
+    const auto key = file_texture_cache_key(path, sampler, invert_y, srgb, premultiply_alpha);
+    if (const auto found = engine.file_texture_cache.find(key); found != engine.file_texture_cache.end()) {
+        return found->second;
+    }
     FileTexture texture;
     texture.data.bytes = pal::read_binary_file(path);
     texture.data.sampler = sampler;
@@ -953,6 +961,7 @@ FileTexture load_file_texture(
         js::ArrayBuffer(texture.data.bytes));
     texture.width = static_cast<std::uint32_t>(decoded.width);
     texture.height = static_cast<std::uint32_t>(decoded.height);
+    engine.file_texture_cache.emplace(key, texture);
     return texture;
 }
 

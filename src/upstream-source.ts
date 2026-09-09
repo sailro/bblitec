@@ -8,6 +8,8 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { findRepositoryRoot } from "./repository-root.js";
+export { findRepositoryRoot } from "./repository-root.js";
 
 import {
     assertPinnedWgslTagIsIdentity,
@@ -43,33 +45,6 @@ export function repositoryRelativePath(
     path: string,
 ): string {
     return relative(repositoryRoot, resolve(path)).replaceAll("\\", "/");
-}
-
-export function findRepositoryRoot(
-    start = process.cwd(),
-): string {
-    let current = resolve(start);
-    while (true) {
-        if (
-            existsSync(
-                join(
-                    current,
-                    "upstream",
-                    "babylon-lite.json",
-                ),
-            ) &&
-            existsSync(join(current, "package.json"))
-        ) {
-            return current;
-        }
-        const parent = dirname(current);
-        if (parent === current) {
-            throw new Error(
-                `Unable to locate the bblitec repository from '${start}'.`,
-            );
-        }
-        current = parent;
-    }
 }
 
 export function readUpstreamPin(

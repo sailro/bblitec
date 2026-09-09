@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
+import { compressedTextureFormat } from "./compressed-texture-format.js";
+import { packageKtx1 } from "./compressed-texture-package.js";
 import { downloadCachedResource } from "./asset-download-cache.js";
 import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
-import { packageMaterialExtensions } from "./gltf-material-extension-payload.js";
 import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
 import { packageMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import {
@@ -25,7 +26,7 @@ const MESHOPT_EXTENSION = "EXT_meshopt_compression";
 const BASISU_EXTENSION = "KHR_texture_basisu";
 /** What a `.ktx2` image declares, and what its transcode packages as. */
 const KTX2_MIME = "image/ktx2";
-const KTX_MIME = "image/ktx";
+const KTX_MIME = compressedTextureFormat.mimeType;
 
 /**
  * Which material slots `gltf-ext-basisu.ts` redirects, and at which colour
@@ -184,10 +185,7 @@ function imageMimeType(uri: string, contentType?: string): string {
         case ".jpg":
         case ".jpeg":
             return "image/jpeg";
-        // A KTX2 image never reaches the runtime as one: the transcode
-        // below replaces its bytes with the KTX1 container the port's own
-        // compressed reader already parses. The type is carried this far so
-        // the resolution finds it by the same field the loader would.
+        // The pinned transcode resolves this source MIME before packaging.
         case ".ktx2":
             return KTX2_MIME;
         default:
@@ -694,13 +692,8 @@ export async function packageGltf(
         }
     }
 
-    // KHR_texture_basisu is resolved away here, the way the geometry
-    // extensions are resolved at materialization: each redirected image is
-    // transcoded by the pin's own KTX2 loader and written back as the KTX1
-    // container the port's compressed reader parses, so the loader that
-    // ships sees an ordinary asset whose images happen to carry blocks.
-    // Reading the colour spaces before the images are embedded is what lets
-    // the container replace the KTX2 bytes rather than land beside them.
+    // Resolve KHR_texture_basisu to the pinned transcode and mip list.
+    // Select colour spaces before replacing the embedded images.
     const basisuColorSpaces = basisuImageColorSpaces(source, document);
     const transcodedSamplers = new Map<number, number>();
     for (const [imageIndex, image] of asRecords(document.images).entries()) {
@@ -737,7 +730,7 @@ export async function packageGltf(
             );
             const lowerer = compressedTextureLowerer();
             const transcoded = await transcodeKtx2Texture(uri, bytes);
-            bytes = writeKtx1(
+            bytes = await packageKtx1(writeKtx1(
                 transcoded,
                 lowerer.magicBytes(),
                 lowerer.glInternalFormat(
@@ -747,7 +740,7 @@ export async function packageGltf(
                 ),
                 lowerer.headerLayout(),
                 lowerer.blockSize(transcoded.gpuFormat),
-            );
+            ));
             mimeType = KTX_MIME;
             transcodedSamplers.set(
                 imageIndex,
@@ -784,7 +777,6 @@ export async function packageGltf(
         dropExtension(document, BASISU_EXTENSION);
     }
 
-    await packageMaterialExtensions(document);
     const finalPadding = (4 - (binaryLength % 4)) % 4;
     if (finalPadding) {
         chunks.push(Buffer.alloc(finalPadding));

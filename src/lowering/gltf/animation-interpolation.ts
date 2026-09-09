@@ -1,6 +1,8 @@
 import ts from "typescript";
+import { PinnedNumericLowerer } from "../pinned-numeric-lowerer.js";
+import { cppPrecedence } from "../pinned-numeric-expression.js";
 import {
-    PINNED_BOOLEAN_OPERATORS,
+    pinnedNumericMathCalls,
     pinnedMathCall,
 } from "../pinned-operators.js";
 import {
@@ -18,101 +20,29 @@ import {
     unwrapExpression,
 } from "./shared.js";
 
-/** C++ precedence for the expression subset the pinned leaves use. */
-export const cppPrecedence = {
-    conditional: 0,
-    logicalOr: 1,
-    logicalAnd: 2,
-    equality: 3,
-    relational: 4,
-    additive: 5,
-    multiplicative: 6,
-    unary: 7,
-    primary: 8,
-} as const;
+export { cppPrecedence } from "../pinned-numeric-expression.js";
 
-/**
- * The binary operators this renderer emits. The spelling column is the
- * shared pinned table's — `pinned-operators.ts` owns what a pinned
- * operator lowers to, so a spelling it changes or loses moves or fails
- * here at load — while the precedence column is this renderer's own
- * minimal-parenthesization decision and stays local. One row has no
- * shared home and keeps a local spelling: `%`, which this renderer emits
- * as C++'s own infix over the integral lanes the pin applies it to, where
- * the shared table spells the floating-point remainder as a call.
- */
-const cppOperatorRows: ReadonlyArray<
-    readonly [kind: ts.SyntaxKind, level: number, localSpelling?: string]
-> = [
-    [ts.SyntaxKind.BarBarToken, cppPrecedence.logicalOr],
-    [ts.SyntaxKind.AmpersandAmpersandToken, cppPrecedence.logicalAnd],
-    [ts.SyntaxKind.EqualsEqualsEqualsToken, cppPrecedence.equality],
-    [ts.SyntaxKind.ExclamationEqualsEqualsToken, cppPrecedence.equality],
-    [ts.SyntaxKind.LessThanToken, cppPrecedence.relational],
-    [ts.SyntaxKind.GreaterThanToken, cppPrecedence.relational],
-    [ts.SyntaxKind.PlusToken, cppPrecedence.additive],
-    [ts.SyntaxKind.MinusToken, cppPrecedence.additive],
-    [ts.SyntaxKind.AsteriskToken, cppPrecedence.multiplicative],
-    [ts.SyntaxKind.SlashToken, cppPrecedence.multiplicative],
-    [ts.SyntaxKind.PercentToken, cppPrecedence.multiplicative, "%"],
-];
+const expressionLowerers = new WeakMap<CppExpressionScope, PinnedNumericLowerer>();
+const interpolationMathCalls = pinnedNumericMathCalls("deduced");
 
-const cppBinaryOperators: ReadonlyMap<
-    ts.SyntaxKind,
-    { text: string; level: number }
-> = new Map(
-    cppOperatorRows.map(([kind, level, localSpelling]) => {
-        const text = localSpelling ?? PINNED_BOOLEAN_OPERATORS.get(kind);
-        if (text === undefined) {
-            throw new Error(
-                "The shared pinned operator table lost a row the glTF " +
-                    `expression renderer emits (${ts.SyntaxKind[kind]}).`,
-            );
-        }
-        return [kind, { text, level }] as const;
-    }),
-);
-
-/**
- * Parenthesize a rendered operand exactly where C++ would re-associate
- * it. Right operands require strictly higher precedence because floating
- * point does not associate: the pin's `h10 * (tangent * dt)` must not
- * flatten into `(h10 * tangent) * dt`.
- */
-function renderCppOperand(rendered: RenderedCpp, minimum: number): string {
-    return rendered.precedence < minimum
-        ? `(${rendered.text})`
-        : rendered.text;
+export function renderCppExpression(scope: CppExpressionScope, expression: ts.Expression): RenderedCpp {
+    let lowerer = expressionLowerers.get(scope);
+    if (!lowerer) {
+        lowerer = new PinnedNumericLowerer(scope.file, {
+            bindings: new Map(), calls: interpolationMathCalls, booleanOr: true, booleanAnd: true,
+            foldConditions: false,
+            expressionSpelling: { parentheses: "minimal", numeric: scope.numeric, remainder: "integral" },
+            expression: node => renderCppLeaf(scope, node),
+        });
+        expressionLowerers.set(scope, lowerer);
+    }
+    return lowerer.renderExpression(expression);
 }
 
-export function renderCppExpression(
+function renderCppLeaf(
     scope: CppExpressionScope,
     expression: ts.Expression,
-): RenderedCpp {
-    if (
-        ts.isParenthesizedExpression(expression) ||
-        ts.isNonNullExpression(expression)
-    ) {
-        return renderCppExpression(scope, expression.expression);
-    }
-    if (ts.isNumericLiteral(expression)) {
-        return {
-            text: scope.numeric(expression),
-            precedence: cppPrecedence.primary,
-        };
-    }
-    if (expression.kind === ts.SyntaxKind.TrueKeyword || expression.kind === ts.SyntaxKind.FalseKeyword) {
-        return { text: expression.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false", precedence: cppPrecedence.primary };
-    }
-    if (ts.isConditionalExpression(expression)) {
-        const condition = renderCppExpression(scope, expression.condition);
-        const whenTrue = renderCppExpression(scope, expression.whenTrue);
-        const whenFalse = renderCppExpression(scope, expression.whenFalse);
-        return {
-            text: `${renderCppOperand(condition, cppPrecedence.logicalOr)} ? ${whenTrue.text} : ${whenFalse.text}`,
-            precedence: cppPrecedence.conditional,
-        };
-    }
+): RenderedCpp | undefined {
     if (ts.isIdentifier(expression)) {
         const substituted = scope.substitutions?.get(expression.text);
         if (substituted) return substituted;
@@ -126,28 +56,6 @@ export function renderCppExpression(
             expression,
             "reads an identifier with no C++ correspondence",
         );
-    }
-    if (ts.isPrefixUnaryExpression(expression)) {
-        const operator = expression.operator === ts.SyntaxKind.MinusToken
-            ? "-"
-            : expression.operator === ts.SyntaxKind.ExclamationToken
-            ? "!"
-            : undefined;
-        if (operator === undefined) {
-            refuseNode(
-                scope.symbol,
-                scope.file,
-                expression,
-                "uses a unary operator this lowering cannot carry",
-            );
-        }
-        const operand = renderCppExpression(scope, expression.operand);
-        return {
-            text: `${operator}${
-                renderCppOperand(operand, cppPrecedence.unary)
-            }`,
-            precedence: cppPrecedence.unary,
-        };
     }
     if (ts.isPropertyAccessChain(expression)) {
         if (!scope.chainRead) {
@@ -176,15 +84,7 @@ export function renderCppExpression(
     }
     if (ts.isCallExpression(expression)) {
         const math = pinnedMathCall(expression);
-        if (math) {
-            const argumentTexts = math.call.arguments.map(
-                (argument) => renderCppExpression(scope, argument).text,
-            );
-            return {
-                text: `${math.native}(${argumentTexts.join(", ")})`,
-                precedence: cppPrecedence.primary,
-            };
-        }
+        if (math) return undefined;
         const callee = expression.expression;
         if (scope.callRead) return scope.callRead(expression);
         refuseNode(
@@ -198,27 +98,9 @@ export function renderCppExpression(
                 : "calls a function this lowering cannot carry",
         );
     }
-    if (ts.isBinaryExpression(expression)) {
-        const operator = cppBinaryOperators.get(
-            expression.operatorToken.kind,
-        );
-        if (!operator) {
-            refuseNode(
-                scope.symbol,
-                scope.file,
-                expression,
-                "uses an operator this lowering cannot carry",
-            );
-        }
-        const left = renderCppExpression(scope, expression.left);
-        const right = renderCppExpression(scope, expression.right);
-        return {
-            text: `${renderCppOperand(left, operator.level)} ` +
-                `${operator.text} ` +
-                `${renderCppOperand(right, operator.level + 1)}`,
-            precedence: operator.level,
-        };
-    }
+    if (ts.isNumericLiteral(expression) || ts.isPrefixUnaryExpression(expression) ||
+        ts.isConditionalExpression(expression) || ts.isBinaryExpression(expression) ||
+        expression.kind === ts.SyntaxKind.TrueKeyword || expression.kind === ts.SyntaxKind.FalseKeyword) return undefined;
     refuseNode(
         scope.symbol,
         scope.file,

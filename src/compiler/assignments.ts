@@ -1,3 +1,5 @@
+import { EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 type AssignmentValueKind = "color3" | "number";
 
 interface DirectPropertyAssignment {
@@ -18,8 +20,12 @@ interface DirectPropertyAssignment {
  * `simpleOnly` marks the fields where `+=` has no meaning because the
  * value is a colour or a flag rather than an accumulating number.
  */
-interface RecordFieldAssignment {
-  kind: "material" | "camera-ortho" | "mesh";
+type RecordFieldAssignment = ({
+  kind: "material";
+  materialFamily: "standard" | "pbr" | "standard-or-pbr";
+} | {
+  kind: "camera-ortho" | "mesh";
+}) & {
   property: string;
   collection: "materials" | "cameras" | "meshes";
   /** The record field, or the pair a two-element source writes. */
@@ -30,7 +36,7 @@ interface RecordFieldAssignment {
   /** Stored as the logical inverse of what the source assigns. */
   invert?: boolean;
   feature?: Feature;
-}
+};
 
 /**
  * The `Texture2D` properties a scene writes on a texture it built.
@@ -57,6 +63,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "standard",
     property: "uvOffset",
     collection: "materials",
     field: ["standard_uv_offset_x", "standard_uv_offset_y"],
@@ -87,6 +94,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "standard",
     property: "diffuseColor",
     collection: "materials",
     field: "diffuse_color",
@@ -95,6 +103,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "standard",
     property: "specularColor",
     collection: "materials",
     field: "specular_color",
@@ -103,6 +112,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "standard",
     property: "emissiveColor",
     collection: "materials",
     field: "emissive_factor",
@@ -111,6 +121,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "standard-or-pbr",
     property: "alpha",
     collection: "materials",
     field: "alpha",
@@ -118,6 +129,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "pbr",
     property: "environmentIntensity",
     collection: "materials",
     field: "environment_intensity",
@@ -125,6 +137,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "pbr",
     property: "directIntensity",
     collection: "materials",
     field: "direct_intensity",
@@ -137,6 +150,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     // `standard_material_props` composes them back into the props
     // mirror the pinned writer reads.
     kind: "material",
+    materialFamily: "standard",
     property: "uvScale",
     collection: "materials",
     field: ["diffuse_u_scale", "diffuse_v_scale"],
@@ -145,6 +159,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "standard",
     property: "specularPower",
     collection: "materials",
     field: "specular_power",
@@ -154,7 +169,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     ["lightmapLevel", "lightmap_level", "number"],
     ["lightmapCoordIndex", "lightmap_coord_index", "number"],
     ["useLightmapAsShadowmap", "lightmap_shadowmap", "boolean"],
-  ] as const).map(([property, field, value]) => ({ kind: "material" as const, property, collection: "materials" as const, field, value })),
+  ] as const).map(([property, field, value]) => ({ kind: "material" as const, materialFamily: "standard" as const, property, collection: "materials" as const, field, value })),
   {
     // src/material/standard/standard-material.ts: "Fragments with
     // `alpha < alphaCutOff` are discarded." It is a plain number field,
@@ -163,6 +178,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     // composed Standard fragment already carries the unconditional
     // `if (_ds.a < mat.aCut) { discard; }`. So the write is one store.
     kind: "material",
+    materialFamily: "standard",
     property: "alphaCutOff",
     collection: "materials",
     field: "alpha_cutoff",
@@ -170,6 +186,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   },
   {
     kind: "material",
+    materialFamily: "standard",
     property: "disableLighting",
     collection: "materials",
     field: "disable_lighting",
@@ -182,6 +199,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     // `features & DOUBLE_SIDED ? "none" : "back"`, so the flag is the
     // native `double_sided` inverted.
     kind: "material",
+    materialFamily: "standard",
     property: "backFaceCulling",
     collection: "materials",
     field: "double_sided",
@@ -197,6 +215,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     // composes nothing and a write after creation is one store — the
     // same lane `createPbrMaterial`'s own option fills.
     kind: "material",
+    materialFamily: "pbr",
     property: "usePhysicalLightFalloff",
     collection: "materials",
     field: "use_physical_light_falloff",
@@ -449,159 +468,79 @@ export function lightSetter(
     : undefined;
 }
 
-export interface AssignmentContext extends DeterministicRandomContext {
-  isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-  noteNodeInputAdmissionFailure(node: ts.Node, message: string): void;
-  noteTextSceneCameraAssignment(node: ts.Node): void;
-  noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
-  isRuntimeResourceConstruction(): boolean;
-  readonly checker: ts.TypeChecker;
-  readonly dataTypes: import("./data-types.js").DataTypeRegistry;
-  /** Which material a scene-code mesh was assigned, by its mesh index. */
-  recordSceneMeshMaterial(
-    meshIndex: number,
-    material: {
-      pbrMaterial: number | null;
-      nodeMaterial: number | null;
-      standardMaterial: boolean;
-      standardMaterialPluginIndex?: number | undefined;
-      sceneShaderVariant?: string | undefined;
-      sceneShaderVariants?: readonly string[] | undefined;
-    },
-  ): void;
-  recordUnknownSceneMeshMaterial(materialIndex: number): void;
-  recordUnknownStandardMeshMaterial(): void;
-  recordUnknownSceneMaterialAssignment(): void;
-  recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
-  /** Marks a scene-code mesh as carrying a skeleton for its feature word. */
-  recordSceneMeshDeformation(meshIndex: number, property: "skinned" | "morphTargets", site: ts.Node): void;
-  engineHasStarted(): boolean;
-  hasRegisteredScene(): boolean;
-  recordToneMappingEnabledMutation(): void;
-  /** The scene's node-particle program; a texture write lands on it. */
-  readonly reachedNodeParticles: CompiledNodeParticles;
-  /** Pixels-texture locals already copied into a material slot. */
-  readonly boundPixelsTextures: Set<string>;
-  resolveStaticExpression(expression: ts.Expression): ts.Expression;
-  lookupOptional(identifier: ts.Identifier): Value | undefined;
-  resolveThisField(name: string): Value | undefined;
-  resolveRecordValue(expression: ts.Expression): Value | undefined;
-  compileRecordSetter(
-    owner: Value,
-    setter: ts.SetAccessorDeclaration,
-    value: ts.Expression,
-  ): void;
-  /**
-   * Records the tone-mapping curve the scene selected, refusing a second
-   * differing selection: the composed arms are closed at generation, so a
-   * scene reaching two curves would need a variant table this port does not
-   * key by them.
-   */
-  selectToneMapping(name: string, node: ts.Node): void;
-  lookup(identifier: ts.Identifier): Value;
-  compileValue(expression: ts.Expression): Value;
-  compileForDataSink(
-    expression: ts.Expression,
-    dataType: import("./data-types.js").DataType,
-  ): string;
-  /**
-   * Declares storage for a typed plain-data class field on its first
-   * constructor assignment. Returns undefined for resource/record fields,
-   * which remain compile-time bindings below.
-   */
-  bindClassDataField(
-    name: ts.Identifier,
-    initializer: ts.Expression,
-    declared?: import("./data-types.js").DataType,
-    knownValue?: Value,
-  ): Value | undefined;
-  bindClassField(name: ts.Identifier, initializer: ts.Expression): void;
-  emitOptionalResourceAssignment(
-    expression: ts.BinaryExpression,
-    target: Value,
-  ): boolean;
-  /** Scene-created DOM property writes owned by the retained UI IR. */
-  emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
-  compileNumber(
-    expression: ts.Expression,
-    precision?: "float" | "double",
-  ): string;
-  compileBoolean(expression: ts.Expression): string;
-  compileColor3(expression: ts.Expression): string;
-  compileColor4(expression: ts.Expression): string;
-  compileVec3(
-    expression: ts.Expression,
-    precision?: "float" | "double",
-  ): string;
-  objectProperty(
-    object: ts.ObjectLiteralExpression,
-    name: string,
-  ): ts.Expression | undefined;
-  unwrap(expression: ts.Expression): ts.Expression;
-  importedName(identifier: ts.Identifier): string | undefined;
-  expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
-  expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-  requireEngine(value: Value, node: ts.Node): string;
-  /** Whether generation has seen a thin-instance pool set on this mesh. */
-  meshHasThinInstancePool(owner: Value): boolean;
-  assertAssetRootWritable(root: Value, node: ts.Node): void;
-  eraseBrowserInstrumentation(position: number): void;
-  isBrowserOnlyExpression(expression: ts.Expression): boolean;
-  isNativeUiValueExpression(expression: ts.Expression): boolean;
-  isBrowserDomValue(expression: ts.Expression): boolean;
-  emit(line: string): void;
-  allocateTemporaryCppName(label: string): string;
-  /** The dirty entry appropriate to startup code or a live callback. */
-  meshTransformDirtyEntry():
-    | "mark_mesh_dirty"
-    | "mark_mesh_runtime_transform";
-  /**
-   * Records the feature and its first reaching scene-source call
-   * site (here the assignment expression), so the activation
-   * inventory can cite file:line.
-   */
-  reachFeature(feature: Feature, site: ts.Node): void;
-  reachJsData(): void;
-  noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void;
-  noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
-  noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always?: boolean): void;
-  /** `mesh.receiveShadows = true`, by scene-mesh index. */
-  recordShadowReceiver(sceneMeshIndex: number): void;
-  recordDynamicShadowReceivers(): void;
-  /** `mesh.id = "..."`, by the handle spelling the write named. */
-  recordSceneMeshId(meshCpp: string, id: string, node: ts.Node): void;
-  /** The meshes an `includedOnlyMeshIds` set names, as handle spellings. */
-  resolveSceneMeshIds(ids: readonly string[], node: ts.Node): string[];
-  propertyName(name: ts.PropertyName): string | undefined;
-  probeStaticArrayLiteral(
-    expression: ts.Expression,
-  ): ts.ArrayLiteralExpression | undefined;
-  /**
-   * The strings a generation-known array expression holds, spreads and a
-   * `const` binding nothing writes through included — a pure probe that
-   * emits nothing, so it is the first question to ask.
-   */
-  staticStringElements(
-    expression: ts.Expression,
-  ): readonly string[] | undefined;
-  compileStaticString(expression: ts.Expression): string;
-  /** Runs `work` with an inlined function's parameters bound in a scope. */
-  withBoundParameters<T>(
-    parameters: readonly { name: ts.Identifier; value: Value }[],
-    work: () => T,
-  ): T;
-  /** `material.plugins = [...]` on the scene PBR material the write names. */
-  recordScenePbrPlugins(
-    plugins: readonly MaterialPluginManifest[],
-    index: number | undefined,
-  ): void;
-  /** The same, on a Standard material: its signature index, from one. */
-  recordStandardMaterialPlugins(
-    plugins: readonly MaterialPluginManifest[],
-    material: NonNullable<Value["standardMaterialInput"]>,
-  ): number;
-  fail(node: ts.Node, message: string): never;
-}
+export interface AssignmentContext
+    extends DeterministicRandomContext,
+    Pick<LoweringServices,
+        | "isDefaultLibraryIdentifier"
+        | "noteNodeInputAdmissionFailure"
+        | "noteTextSceneCameraAssignment"
+        | "noteTemporalRecordBoundary"
+        | "isRuntimeResourceConstruction"
+        | "checker"
+        | "dataTypes"
+        | "recordSceneMeshMaterial"
+        | "recordUnknownSceneMeshMaterial"
+        | "recordUnknownStandardMeshMaterial"
+        | "recordUnknownSceneMaterialAssignment"
+        | "recordSceneMeshAssetPbrMaterial"
+        | "recordSceneMeshDeformation"
+        | "engineHasStarted"
+        | "hasRegisteredScene"
+        | "recordToneMappingEnabledMutation"
+        | "reachedNodeParticles"
+        | "boundPixelsTextures"
+        | "resolveStaticExpression"
+        | "lookupOptional"
+        | "resolveThisField"
+        | "resolveRecordValue"
+        | "compileRecordSetter"
+        | "selectToneMapping"
+        | "lookup"
+        | "compileValue"
+        | "compileForDataSink"
+        | "bindClassDataField"
+        | "bindClassField"
+        | "emitOptionalResourceAssignment"
+        | "emitUiPropertyAssignment"
+        | "compileNumber"
+        | "compileBoolean"
+        | "compileColor3"
+        | "captureNativeExpression"
+        | "compileColor4"
+        | "compileVec3"
+        | "objectProperty"
+        | "unwrap"
+        | "importedName"
+        | "expectKind"
+        | "expectSameEngine"
+        | "requireEngine"
+        | "meshHasThinInstancePool"
+        | "assertAssetRootWritable"
+        | "eraseBrowserInstrumentation"
+        | "isBrowserOnlyExpression"
+        | "isNativeUiValueExpression"
+        | "isBrowserDomValue"
+        | "emit"
+        | "allocateTemporaryCppName"
+        | "meshTransformDirtyEntry"
+        | "reachFeature"
+        | "reachJsData"
+        | "noteMaterialColorObjectWrite"
+        | "noteMaterialColorRead"
+        | "noteMaterialColorRenderBoundary"
+        | "recordShadowReceiver"
+        | "recordDynamicShadowReceivers"
+        | "recordSceneMeshId"
+        | "resolveSceneMeshIds"
+        | "propertyName"
+        | "probeStaticArrayLiteral"
+        | "staticStringElements"
+        | "compileStaticString"
+        | "withBoundParameters"
+        | "recordScenePbrPlugins"
+        | "recordStandardMaterialPlugins"
+        | "fail"
+    > {}
 
 /**
  * `scene.lights.length = 0` empties the scene's light list, which is how a
@@ -1621,965 +1560,7 @@ export function emitPropertyAssignment(
       !transformComponent) ||
     ts.isElementAccessExpression(targetExpression)
   ) {
-    // Resource identity can travel through compile-time records and tuples
-    // (`lighting.sun.shadowGenerator`, `track.ground.receiveShadows`) just as
-    // it can through a local. Compile the complete owner path so the same
-    // assignment table serves both spellings.
-    const target = ts.isIdentifier(targetExpression)
-      ? context.lookup(targetExpression)
-      : context.compileValue(targetExpression);
-    const property = left.name.text;
-
-    if (target.kind === "asset-root" && property === "_localMatrix") {
-      requireSimpleAssignment(context, expression, "imported root local matrix");
-      const value = context.unwrap(expression.right);
-      if (
-        !ts.isIdentifier(value) ||
-        value.text !== "undefined" ||
-        context.lookupOptional(value)
-      ) {
-        context.fail(
-          expression.right,
-          "An imported synthetic root only exposes clearing _localMatrix with undefined.",
-        );
-      }
-      context.assertAssetRootWritable(target, expression);
-      // loadGltf's public root is the synthetic TRS node. It never owns a
-      // raw glTF matrix in the flattened native representation, so clearing
-      // that optional override is observably a no-op here as it is upstream.
-      return;
-    }
-
-    if (target.kind === "node-particle-system" && property === "_spriteSheet") {
-      emitFrozenParticleSheetAssignment(context, expression, target);
-      return;
-    }
-    if (target.kind === "node-particle-system" && property === "buffer") {
-      context.fail(
-        left,
-        "A particle buffer is generation-time state; only one of " +
-          "its columns may be written, by index.",
-      );
-    }
-
-    if (
-      target.kind === "node-particle-system" &&
-      particleScalars.includes(property)
-    ) {
-      emitNodeParticleScalarAssignment(
-        context,
-        expression,
-        left,
-        target,
-        property,
-      );
-      return;
-    }
-
-    if (target.kind === "node-particle-system" && property === "texture") {
-      emitNodeParticleTextureAssignment(context, expression, left, target);
-      return;
-    }
-
-    if (target.kind === "scene" && property === "clearColor") {
-      requireSimpleAssignment(context, expression, "scene clearColor");
-      context.emit(
-        `${target.cpp}.clear_color = ${context.compileColor4(expression.right)};`,
-      );
-      return;
-    }
-
-    if (target.kind === "scene" && property === "camera") {
-      requireSimpleAssignment(context, expression, "scene camera");
-      const camera = context.compileValue(expression.right);
-      context.expectKind(camera, "camera", expression.right);
-      context.noteTextSceneCameraAssignment(left);
-      // The scene keeps the camera VALUE, not a copy: a property
-      // written after the assignment still reaches it, and one
-      // executed port -- the node-particle flow-map build -- reads
-      // the scene's camera rather than the scene's own records.
-      target.sceneCamera = camera;
-      context.emit(`${target.cpp}.camera = ${camera.cpp};`);
-      return;
-    }
-
-    if (target.kind === "scene" && property === "fixedDeltaMs") {
-      context.emit(
-        `${target.cpp}.fixed_delta_ms ${operator} ${context.compileNumber(expression.right, "double")};`,
-      );
-      return;
-    }
-
-    if (target.kind === "mesh" && property === "renderOrder") {
-      requireSimpleAssignment(context, expression, "mesh renderOrder");
-      const engine = context.requireEngine(target, expression);
-      context.emit(
-        `${engine}.meshes[${target.cpp}.value].render_order = ${context.compileNumber(expression.right, "double")};`,
-      );
-      context.emit(
-        `${engine}.meshes[${target.cpp}.value].has_render_order = true;`,
-      );
-      return;
-    }
-
-    // A cloud is a SceneNode upstream exactly as a mesh is, so the name
-    // write is the same statement over the other collection. A GPU pick
-    // reads it back, which is what gives a splat scene a reason to set it.
-    if (
-      (target.kind === "mesh" || target.kind === "splat-mesh") &&
-      property === "name"
-    ) {
-      const collection =
-        target.kind === "splat-mesh" ? "splat_meshes" : "meshes";
-      requireSimpleAssignment(
-        context,
-        expression,
-        target.kind === "splat-mesh" ? "splat cloud name" : "mesh name",
-      );
-      const name = context.compileValue(expression.right);
-      context.expectKind(name, "string", expression.right);
-      context.emit(
-        `${context.requireEngine(target, expression)}.${collection}[${target.cpp}.value].name = ${name.cpp};`,
-      );
-      return;
-    }
-
-    // `Mesh.id` is not `SceneNode.name`. The pin declares it separately --
-    // "Unique ID from source file (e.g. .babylon). Used for light
-    // include/exclude filtering" -- and `src/render/lights-ubo.ts`
-    // `affectsMesh` is its only reader, which is why an unset id is
-    // `undefined` where an unset name is the factory's own literal. That
-    // join folds here, so the write records which mesh the id names and
-    // emits nothing: `LightRecord` keys index vectors where the pin keys
-    // Sets of strings, exactly as the `.babylon` loader already resolves
-    // its own `mesh_records_by_id`, and no run-time reader is left to
-    // store the string for.
-    if (target.kind === "mesh" && property === "id") {
-      requireSimpleAssignment(context, expression, "mesh id");
-      context.recordSceneMeshId(
-        target.cpp,
-        context.compileStaticString(expression.right),
-        expression,
-      );
-      return;
-    }
-
-    // `mesh.receiveShadows` is a composition key and nothing else:
-    // `_computeMeshFeatures` turns it into `MSH_RECEIVE_SHADOWS`, which
-    // selects the fragment carrying the per-light sampling, and every
-    // consumer downstream — the variant selector, both backends' bind
-    // decision — reads that composed word rather than a record lane. So
-    // the assignment records the receiver for composition and emits
-    // nothing, exactly as the material-tracking installers do.
-    if (target.kind === "mesh" && property === "receiveShadows") {
-      requireSimpleAssignment(context, expression, "mesh receiveShadows");
-      const enabled = context.compileValue(expression.right);
-      context.expectKind(enabled, "boolean", expression.right);
-      const staticEnabled =
-        enabled.staticBoolean ??
-        (enabled.cpp === "true"
-          ? true
-          : enabled.cpp === "false"
-            ? false
-            : undefined);
-      if (staticEnabled === false) {
-        return;
-      }
-      if (staticEnabled !== true) {
-        context.fail(
-          expression.right,
-          "Only `receiveShadows = true` is lowered: the composed " +
-            "variant is selected at generation, so a value the " +
-            "scene computes would need both fragments.",
-        );
-      }
-      if (target.sceneMeshIndex === undefined) {
-        // A handle read from a runtime collection has no generation-known
-        // mesh row. Keep both composed states; the emitted record lane is
-        // the runtime half of the same key used by both material families.
-        context.recordDynamicShadowReceivers();
-      } else {
-        context.recordShadowReceiver(target.sceneMeshIndex);
-      }
-      // The record lane too, which the node family reads per draw:
-      // its receiver mixes each light's factor by `receivesShadow`
-      // rather than selecting a variant, so one composed module
-      // serves a receiving mesh and a non-receiving one. The two
-      // composed families never read the lane.
-      context.emit(
-        `${context.requireEngine(target, expression)}.meshes[` +
-          `${target.cpp}.value].receives_shadows = true;`,
-      );
-      return;
-    }
-
-    // `material.plugins = [plugin]` is the pin's per-instance attach, and
-    // the whole of it is composition input: both bridges read the list
-    // to build one `ShaderFragment` and to number a signature, and that
-    // number rides the host material's feature bits so every compose and
-    // pipeline cache rebuilds on a plugin change.
-    //
-    // Which half of that reaches the runtime differs by family, because
-    // the two variant selectors are keyed differently. A PBR draw
-    // resolves its variant by MATERIAL INDEX, so the composed row for
-    // this material already carries the plugin and nothing has to travel
-    // on the record. A Standard draw resolves by the feature word
-    // `standard_material_features` derives from the record, so the index
-    // has to be there -- which is exactly what `registerStdPlugins`
-    // pre-bakes into `_renderFeatures` upstream, for the same reason.
-    if (target.kind === "material" && property === "plugins") {
-      requireSimpleAssignment(context, expression, "material plugins");
-      if (
-        target.scenePbrMaterialIndex === undefined &&
-        !target.standardMaterial
-      ) {
-        context.fail(
-          left.expression,
-          "Material plugins attach to a PBR or a Standard " +
-            "material: the pin's two bridges are the only " +
-            "readers, and its Standard one filters on the " +
-            "material's own group builder, so a plugin on any " +
-            "other family composes nothing upstream either.",
-        );
-      }
-      // The family is the fold's input rather than a check after it: a PBR
-      // plugin's samplers refuse at their own declaration, before any
-      // texture value is lowered.
-      const family = target.scenePbrMaterialIndex !== undefined
-        ? "pbr"
-        : "standard";
-      const plugins = foldMaterialPluginList(
-        context,
-        expression.right,
-        family,
-      );
-      if (target.scenePbrMaterialIndex !== undefined) {
-        context.recordScenePbrPlugins(
-          plugins.manifests,
-          target.scenePbrMaterialIndex,
-        );
-        return;
-      }
-      // The record lane is its own reach, separate from the
-      // opt-in: upstream a `plugins` array on a material is always
-      // legal and is simply inert until `enableMaterialPlugins`
-      // registers the bridges, so the write has to compile either way
-      // -- gating the setter's definition on the opt-in instead would
-      // leave this call undefined for a scene that never made it.
-      context.reachFeature("material:plugin-index", expression);
-      const engineCpp = context.requireEngine(target, expression);
-      const pluginIndex =
-        context.recordStandardMaterialPlugins(
-          plugins.manifests,
-          target.standardMaterialInput ?? {},
-        );
-      target.standardMaterialPluginIndex = pluginIndex;
-      context.emit(
-        `bbl::set_material_plugins(` +
-          `${engineCpp}, ` +
-          `${target.cpp}, static_cast<std::uint8_t>(` +
-          `${pluginIndex}));`,
-      );
-      // The textures the list's `bindTextures` fills its declared
-      // bindings with, appended in that order -- which is the order
-      // `bindPluginTextures` pushes them upstream and the order the
-      // composed fragment declared them in. `set_material_plugins`
-      // above cleared the list, so a second `plugins` write replaces
-      // the textures the way reassigning the array replaces them.
-      for (const texture of plugins.textures) {
-        context.expectSameEngine(target, texture.value, texture.node);
-        const pixels = texture.value.textureStorage === "pixels";
-        if (pixels) {
-          context.boundPixelsTextures.add(texture.value.cpp);
-        }
-        context.reachFeature("material:plugin-textures", texture.node);
-        context.emit(
-          `bbl::${
-            pixels
-              ? "add_material_plugin_pixels_texture"
-              : "add_material_plugin_file_texture"
-          }(${engineCpp}, ${target.cpp}, ${texture.value.cpp});`,
-        );
-      }
-      return;
-    }
-
-    if (target.kind === "light" && property === "shadowGenerator") {
-      requireSimpleAssignment(context, expression, "light shadowGenerator");
-      const generator = context.compileValue(expression.right);
-      context.expectKind(generator, "shadow-generator", expression.right);
-      context.expectSameEngine(target, generator, expression);
-      context.emit(
-        `${context.requireEngine(target, expression)}.lights[${target.cpp}.value].shadow_generator = ${generator.cpp};`,
-      );
-      // The pin's `ShadowTask` walks `scene.lights` and its receiver
-      // slots come from the same walk, so the generator has to be
-      // reachable from the light -- and a later
-      // `setShadowTaskCasterMeshes(light.shadowGenerator, ...)` reads
-      // it back off the light, which is what this carries.
-      if (generator.shadowGeneratorIndex !== undefined) {
-        if (!target.lightIdentity) {
-          context.fail(
-            left.expression,
-            "A light shadow generator assignment is missing its compiler identity.",
-          );
-        }
-        target.lightIdentity.shadowGeneratorIndex =
-          generator.shadowGeneratorIndex;
-      }
-      return;
-    }
-
-    // `light.includedOnlyMeshIds = new Set(ids)`: the pin's per-mesh light
-    // set. `src/render/lights-ubo.ts` `writeMeshLightSelection` asks
-    // `affectsMesh` per light per mesh and packs the survivors' slots into
-    // the mesh block, so the selection is UBO data and nothing composes
-    // from it. What generation owns is the JOIN: the ids are static
-    // strings and the meshes are generation-known, so the id list folds to
-    // the index list `light_affects_mesh` already searches, and the record
-    // keeps exactly what the `.babylon` loader's own resolution keeps.
-    if (target.kind === "light" && property === "includedOnlyMeshIds") {
-      requireSimpleAssignment(context, expression, "light includedOnlyMeshIds");
-      const meshes = context.resolveSceneMeshIds(
-        staticMeshIdSet(context, expression.right),
-        expression.right,
-      );
-      context.reachFeature("light:included-meshes", expression);
-      context.emit(
-        `${context.requireEngine(target, expression)}.lights[` +
-          `${target.cpp}.value].included_meshes = {` +
-          `${meshes.map((mesh) => `${mesh}.value`).join(", ")}};`,
-      );
-      return;
-    }
-
-    if (target.kind === "mesh" && property === "material") {
-      context.noteTemporalRecordBoundary(expression, "mesh material replacement after scene registration");
-      context.noteMaterialColorRenderBoundary(expression, "mesh material replacement after registration");
-      requireSimpleAssignment(context, expression, "mesh material");
-      const material = context.compileValue(expression.right);
-      context.expectKind(material, "material", expression.right);
-      context.expectSameEngine(target, material, expression);
-      // A `createMeshFromData` mesh whose optional streams are a run-time
-      // answer has no generation-known attribute set, and the Standard and
-      // PBR variant keys are built from exactly that. The node family
-      // needs none -- `MeshAttributeExistsBlock` reads the per-mesh
-      // uniform lane the PALs fill from the geometry -- so what cannot be
-      // composed is this PAIRING, and it is named here rather than at the
-      // factory, where the material is not yet known.
-      if (
-        target.runtimeMeshStreams === true &&
-        material.nodeMaterialIndex === undefined
-      ) {
-        context.fail(
-          expression.right,
-          "This mesh's optional vertex streams are decided at run time, " +
-            "so its attribute set is not generation-known. Only a node " +
-            "material draws such a mesh: the Standard and PBR variant " +
-            "keys are built from the attribute set.",
-        );
-      }
-      context.emit(
-        `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].material = ${material.cpp};`,
-      );
-      // The pin's opt-in setters take the material back off the mesh
-      // (`setPbrSkybox(box.material)`) and mutate the same object, so
-      // the mesh carries which scene material it was given and a
-      // later read of `mesh.material` resolves that record.
-      if (material.scenePbrMaterialIndex !== undefined) {
-        target.scenePbrMaterialIndex = material.scenePbrMaterialIndex;
-      }
-      // The family travels the same way, and for the same reason: a
-      // write on `box.material` has to resolve which of the pin's two
-      // bridges would read it.
-      if (material.standardMaterial) {
-        target.standardMaterial = true;
-        if (material.standardMaterialPluginIndex !== undefined) {
-          target.standardMaterialPluginIndex =
-            material.standardMaterialPluginIndex;
-        }
-      }
-      // The pair the caster list resolves against. Upstream reads
-      // `mesh.material` when the shadow pass builds, so a scene may
-      // name its casters before assigning their materials -- which is
-      // why the mesh's own Value does not carry the graph: this map is
-      // the one producer of the pair.
-      const meshProfile = target.sceneMeshIndex ?? target.sceneMeshProfileIndex;
-      if (meshProfile === undefined && (material.possibleSceneShaderVariants?.length ?? 0) > 1) {
-        context.fail(expression, "A runtime ShaderMaterial choice requires a known mesh composition profile.");
-      }
-      if (meshProfile !== undefined) {
-        context.recordSceneMeshMaterial(meshProfile, {
-          pbrMaterial: material.scenePbrMaterialIndex ?? null,
-          nodeMaterial: material.nodeMaterialIndex ?? null,
-          standardMaterial: material.standardMaterial === true,
-          standardMaterialPluginIndex:
-            material.standardMaterialPluginIndex,
-          // Only a scene-local program: the other families that carry a
-          // variant settle their own instanced form from their options.
-          sceneShaderVariant: material.sceneShaderVariant,
-          sceneShaderVariants: material.possibleSceneShaderVariants,
-        });
-        if (material.assetPbrMaterial) {
-          context.recordSceneMeshAssetPbrMaterial(meshProfile);
-        }
-      }
-      if (target.sceneMeshIndex === undefined && material.scenePbrMaterialIndex !== undefined) {
-        context.recordUnknownSceneMeshMaterial(material.scenePbrMaterialIndex);
-      }
-      if (meshProfile === undefined && material.standardMaterial) {
-        context.recordUnknownStandardMeshMaterial();
-      }
-      if (material.scenePbrMaterialIndex === undefined && !material.standardMaterial &&
-          material.nodeMaterialIndex === undefined && material.shaderVariant === undefined) {
-        context.recordUnknownSceneMaterialAssignment();
-      }
-      return;
-    }
-
-    if (
-      target.kind === "mesh" &&
-      (property === "boundMin" || property === "boundMax")
-    ) {
-      requireSimpleAssignment(context, expression, `mesh ${property}`);
-      const engine = context.requireEngine(target, expression);
-      const nativeProperty =
-        property === "boundMin" ? "bounds_min" : "bounds_max";
-      const side = property === "boundMin" ? "min" : "max";
-      context.emit(
-        `${engine}.meshes[${target.cpp}.value].${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
-      );
-      context.emit(
-        `${engine}.meshes[${target.cpp}.value].has_bounds_${side}_override = true;`,
-      );
-      return;
-    }
-
-    if (target.kind === "mesh" && property === "skeleton") {
-      requireSimpleAssignment(context, expression, "mesh skeleton");
-      if (!target.directMorphCompatible) {
-        context.fail(
-          left.expression,
-          "A scene-authored skeleton requires a compiler-created mesh: " +
-            "the joint and weight streams are folded into that mesh's " +
-            "own vertices.",
-        );
-      }
-      if (target.sceneMeshIndex === undefined) {
-        context.fail(
-          left.expression,
-          "A scene-authored skeleton needs a mesh with a generation-known " +
-            "composition row: the pin composes its skinned vertex stage " +
-            "from MSH_HAS_SKELETON on that row, so a mesh created inside a " +
-            "runtime loop has no variant to select.",
-        );
-      }
-      if (context.isRuntimeResourceConstruction() || context.engineHasStarted()) {
-        context.fail(expression, "A scene-authored skeleton attachment must be definite and precede startEngine; runtime attachment variants are not lowered.");
-      }
-      const skeleton = context.compileValue(expression.right);
-      context.expectKind(skeleton, "scene-skeleton", expression.right);
-      context.expectSameEngine(target, skeleton, expression);
-      const engine = context.requireEngine(target, expression);
-      context.emit(
-        `bbl::attach_scene_skeleton(${engine}, ${target.cpp}, ` +
-          `${skeleton.cpp});`,
-      );
-      // The generation half of the same assignment: the pin's
-      // `_computeMeshFeatures` reads `mesh.skeleton` for MSH_HAS_SKELETON,
-      // and a scene-code mesh's feature word is derived from its recorded
-      // streams rather than from a glTF primitive.
-      context.recordSceneMeshDeformation(target.sceneMeshIndex, "skinned", expression);
-      context.reachFeature("mesh:skeleton", expression);
-      return;
-    }
-
-    if (target.kind === "mesh" && property === "morphTargets") {
-      requireSimpleAssignment(context, expression, "mesh morphTargets");
-      if (!target.directMorphCompatible) {
-        context.fail(
-          left.expression,
-          "Direct morph targets require a compiler-created mesh.",
-        );
-      }
-      if (target.sceneMeshIndex === undefined) {
-        context.fail(left.expression, "Direct morph targets need a mesh with a generation-known composition row.");
-      }
-      if (context.isRuntimeResourceConstruction() || context.engineHasStarted()) {
-        context.fail(expression, "A direct morph target attachment must be definite and precede startEngine; runtime attachment variants are not lowered.");
-      }
-      const morph = context.compileValue(expression.right);
-      context.expectKind(morph, "morph-targets", expression.right);
-      context.expectSameEngine(target, morph, expression);
-      if (!morph.morphTarget) {
-        context.fail(expression.right, "Morph target data is incomplete.");
-      }
-      if (morph.morphTarget.meshCpp) {
-        context.fail(
-          expression.right,
-          "Direct morph target data can be attached to one mesh.",
-        );
-      }
-      const engine = context.requireEngine(target, expression);
-      context.recordSceneMeshDeformation(target.sceneMeshIndex, "morphTargets", expression);
-      context.emit(
-        `bbl::attach_morph_target(${engine}, ${target.cpp}, ` +
-          `${morph.morphTarget.positionsCpp}, ` +
-          `${morph.morphTarget.normalsCpp}, ` +
-          `${morph.morphTarget.vertexCountCpp}, ` +
-          `${morph.morphTarget.weightCpp});`,
-      );
-      morph.morphTarget.meshCpp = target.cpp;
-      context.reachFeature("mesh:morph-targets", expression);
-      return;
-    }
-
-    if (target.kind === "texture" && property in textureRecordFields) {
-      context.noteNodeInputAdmissionFailure(expression, "Node input bindings do not represent texture producer metadata mutation; configure the texture at construction.");
-      const field = textureRecordFields[property]!;
-      requireSimpleAssignment(context, expression, `texture ${property}`);
-      // A `loadTexture2D` image takes these writes too: upstream one
-      // `Texture2D` carries them whatever built it, and the PBR lightmap
-      // extension reads `uAng` back off a loaded texture to pick its V-flip
-      // arm. The record member is one level down there (`FileTexture::data`
-      // is the `TextureData` a pixels texture IS), which is the only
-      // difference the write sees.
-      const owner = target.pixelsTexture
-        ? target.cpp
-        : target.textureStorage === "file"
-          ? `${target.cpp}.data`
-          : undefined;
-      if (owner === undefined) {
-        context.fail(
-          left,
-          `Reached '${property}' writes land on a ` +
-            "createTexture2DFromPixels or loadTexture2D texture; a solid " +
-            "colour and a render attachment carry no transform this port " +
-            "reads back.",
-        );
-      }
-      if (context.boundPixelsTextures.has(target.cpp)) {
-        context.fail(
-          left,
-          `'${property}' is written after this texture was bound ` +
-            "to a material, where the slot already took its " +
-            "copy. Upstream binds one object, so the write " +
-            "would reach the material there and not here.",
-        );
-      }
-      // Compiled once and reused by the record store below: asking a
-      // second time would emit the value's own lowering twice.
-      const rendered = field.value === "boolean"
-        ? context.compileBoolean(expression.right)
-        : context.compileNumber(expression.right, "double");
-      if (property === "invertY") {
-        // The one boolean in `TEXTURE_UV_PROPERTIES`, which is why the
-        // refusal below can name it.
-        if (rendered !== "true" && rendered !== "false") {
-          context.fail(
-            expression.right,
-            "A texture's `invertY` is composition input — the lightmap " +
-              "extension folds it against `uAng` — so it settles at " +
-              "generation.",
-          );
-        }
-        target.textureObjectInvertY = rendered === "true";
-      } else if (property === "uAng") {
-        // The value reaches composition as well as the record: the pinned
-        // lightmap `detect` compares it against `Math.PI`. A write that
-        // does not settle still emits, and the consumer that needs it
-        // refuses by name rather than reading a stale zero here.
-        const folded = staticNumberValue(context, expression.right);
-        if (folded !== undefined) target.textureUvAng = folded;
-      }
-      context.emit(`${owner}.${field.record} = ${rendered};`);
-      return;
-    }
-
-    if (target.kind === "material" && property === "ormTexture") {
-      requireSimpleAssignment(context, expression, "PBR ormTexture");
-      if (context.hasRegisteredScene() || context.engineHasStarted() || context.isRuntimeResourceConstruction()) {
-        context.fail(expression, "PBR ormTexture replacement requires static setup before scene registration; live texture rebinding is not represented.");
-      }
-      if (target.scenePbrMaterialIndex === undefined && !target.assetPbrMaterial) {
-        context.fail(left, "ormTexture requires a known PBR material.");
-      }
-      const texture = context.compileValue(expression.right);
-      context.expectKind(texture, "texture", expression.right);
-      context.expectSameEngine(target, texture, expression);
-      if (texture.textureStorage !== "solid") context.fail(expression.right, "PBR ormTexture replacement currently requires a solid texture.");
-      context.emit(`bbl::set_material_orm_file(${context.requireEngine(target, expression)}, ${target.cpp}, bbl::solid_texture_file(${texture.cpp}));`);
-      return;
-    }
-
-    if (target.kind === "material" && property === "occlusionTexture") {
-      requireSimpleAssignment(context, expression, "PBR occlusionTexture");
-      if (!target.assetPbrMaterial) {
-        context.fail(
-          left,
-          "Replacing occlusionTexture is lowered for a PBR material read from a loaded asset, whose composed variant already carries that slot.",
-        );
-      }
-      const texture = context.compileValue(expression.right);
-      context.expectKind(texture, "texture", expression.right);
-      if (texture.textureStorage !== "solid") {
-        context.fail(
-          expression.right,
-          "Reached PBR occlusionTexture replacement uses createSolidTexture2D.",
-        );
-      }
-      context.expectSameEngine(target, texture, expression);
-      context.emit(
-        `bbl::set_pbr_occlusion_solid_texture(` +
-          `${context.requireEngine(target, expression)}, ` +
-          `${target.cpp}, ${texture.cpp});`,
-      );
-      return;
-    }
-
-    if (target.kind === "material" && property === "diffuseTexture") {
-      requireSimpleAssignment(context, expression, "material diffuseTexture");
-      const texture = context.compileValue(expression.right);
-      // Standard composition reads texture PRESENCE from the material object
-      // at registration time. Keep that same fact on the compiler value so a
-      // plugin signature composes the material's actual feature word rather
-      // than the bare Standard defaults.
-      if (target.standardMaterialInput) {
-        target.standardMaterialInput.diffuseTexture = {};
-      }
-      if (texture.kind === "texture" && texture.textureStorage === "stored") {
-        context.expectSameEngine(target, texture, expression);
-        context.reachFeature("material:standard-diffuse-file-texture", expression);
-        context.reachFeature("material:standard-diffuse-pixels-texture", expression);
-        context.emit(
-          `bbl::set_standard_diffuse_texture(${context.requireEngine(target, expression)}, ${target.cpp}, ${texture.cpp});`,
-        );
-        return;
-      }
-      // A `createTexture2DFromPixels` texture is the second source
-      // this slot takes. It is a C++ value rather than a handle, so
-      // the record takes a copy and the local is recorded as spent:
-      // a transform write afterwards would move the local where the
-      // pin would have moved the material's own texture object.
-      if (texture.kind === "texture" && texture.textureStorage === "pixels") {
-        context.reachFeature(
-          "material:standard-diffuse-pixels-texture",
-          expression,
-        );
-        context.boundPixelsTextures.add(texture.cpp);
-        context.emit(
-          `bbl::set_standard_diffuse_pixels_texture(` +
-            `${context.requireEngine(target, expression)}, ` +
-            `${target.cpp}, ${texture.cpp});`,
-        );
-        return;
-      }
-      // A loaded image is the third source, and the one the
-      // `.babylon` loader already fills this slot with. The texture
-      // object travels whole rather than as bytes, because the
-      // sampler, the upload flip and the texture-object `invertY`
-      // the Standard UV block reads are all the texture's own.
-      if (texture.kind === "texture" && texture.textureFile) {
-        context.reachFeature(
-          "material:standard-diffuse-file-texture",
-          expression,
-        );
-        context.emit(
-          `bbl::set_standard_diffuse_file_texture(` +
-            `${context.requireEngine(target, expression)}, ` +
-            `${target.cpp}, ${texture.cpp});`,
-        );
-        return;
-      }
-      // A `createSolidTexture2D` texture is the fourth source. It is one
-      // rgba8unorm texel the pin writes into a 1x1 texture and samples
-      // through `getBilinearSampler`, so it asks none of the three
-      // questions the refusals below ask: it carries no aspect (there is
-      // no attachment and no `_sampleType`), no foreign owner (the scene
-      // made it from its own engine), and no encoding choice (the pin
-      // hard-codes `rgba8unorm` and the value carries no `srgb` field at
-      // all). It is a value rather than a handle like the pixels arm, but
-      // it needs no spent-local mark: a transform write on a solid texture
-      // already refuses by name above.
-      if (texture.kind === "texture" && texture.textureStorage === "solid") {
-        context.expectSameEngine(target, texture, expression);
-        context.reachFeature(
-          "material:standard-diffuse-solid-texture",
-          expression,
-        );
-        context.emit(
-          `bbl::set_standard_diffuse_solid_texture(` +
-            `${context.requireEngine(target, expression)}, ` +
-            `${target.cpp}, ${texture.cpp});`,
-        );
-        return;
-      }
-      // What this slot accepts, said the way every frame-graph slot
-      // says it. `sampling: "color"` is the aspect the setter folds
-      // -- `rtt.ts` gives a colour view `invertY: true` and the
-      // bilinear sampler, a depth one `invertY: false` and the
-      // nearest -- and `sources` is the ownership: only a target the
-      // scene made, never a geometry task's attachment.
-      const textureCpp = compileRenderTextureValue(
-        context,
-        expression.right,
-        texture,
-        "Reached Standard diffuseTexture",
-        { sampling: "color", sources: ["render-target"] },
-      );
-      context.expectSameEngine(target, texture, expression);
-      context.reachFeature(
-        "material:standard-diffuse-render-texture",
-        expression,
-      );
-      context.emit(
-        `bbl::set_standard_diffuse_render_texture(` +
-          `${context.requireEngine(target, expression)}, ` +
-          `${target.cpp}, ${textureCpp});`,
-      );
-      return;
-    }
-
-    if (
-      property === "parent" &&
-      (target.kind === "mesh" || target.kind === "transform-node")
-    ) {
-      // `IParentable.parent`: the write that drives the transform math.
-      // Upstream it leaves `children` alone -- the traversal list is
-      // `push`ed separately -- so this stores the link and nothing else,
-      // and the world composes through it lazily the way
-      // `createWorldMatrixState` composes it. The pin's node and mesh
-      // share the write, and so does the record: only which setter
-      // registers the child for invalidation differs.
-      const mesh = target.kind === "mesh";
-      requireSimpleAssignment(
-        context,
-        expression,
-        mesh ? "mesh parent" : "transform node parent",
-      );
-      const parent = context.compileValue(expression.right);
-      // Upstream `parent` is one nullable SceneNode field, so what may
-      // stand on its right is a question about the FIELD rather than about
-      // this call site: any node whose world matrix the child composes
-      // under. The two native handle tables are what split it into two
-      // lanes, and a MeshRecord keeps both -- so a mesh child accepts a
-      // mesh parent through the overload over the lane that holds it. A
-      // TransformNodeRecord keeps only the node lane, which is why a node
-      // hung under a mesh still refuses: it is a record the port does not
-      // have, not a call site it declines.
-      const meshParent = mesh && parent.kind === "mesh";
-      if (!meshParent) {
-        context.expectKind(parent, "transform-node", expression.right);
-      }
-      context.expectSameEngine(target, parent, expression);
-      if (meshParent) {
-        context.reachFeature("mesh:parenting", expression);
-      }
-      context.emit(
-        `bbl::${
-          mesh ? "set_mesh_transform_parent" : "set_transform_node_parent"
-        }(` +
-          `${context.requireEngine(target, expression)}, ` +
-          `${target.cpp}, ${parent.cpp});`,
-      );
-      return;
-    }
-
-    const recordField = recordFieldAssignments.find(
-      (candidate) =>
-        candidate.kind === target.kind && candidate.property === property,
-    );
-    if (recordField) {
-      if (recordField.feature) {
-        context.reachFeature(recordField.feature, expression);
-      }
-      if (recordField.simpleOnly) {
-        requireSimpleAssignment(
-          context,
-          expression,
-          `${recordField.kind} ${recordField.property}`,
-        );
-      }
-      const record =
-        `${context.requireEngine(target, expression)}` +
-        `.${recordField.collection}[${target.cpp}.value]`;
-      if (recordField.value === "number2") {
-        const elements = context.unwrap(context.resolveStaticExpression(expression.right));
-        const fields = recordField.field;
-        if (
-          !ts.isArrayLiteralExpression(elements) ||
-          elements.elements.length !== 2 ||
-          typeof fields === "string"
-        ) {
-          context.fail(
-            expression.right,
-            `Reached ${recordField.kind} ${recordField.property} ` +
-              "takes a two-element array literal.",
-          );
-        }
-        for (const [index, field] of fields.entries()) {
-          const value = context.compileNumber(elements.elements[index]!, recordField.scalarPrecision ?? "float");
-          context.emit(
-            `${record}.${field} = ` +
-              `${value};`,
-          );
-          if (recordField.kind === "material") {
-            const bindings =
-              target.materialUboArrayFields ??
-              (target.materialUboArrayFields = new Map());
-            bindings.set(field, value);
-          }
-        }
-        return;
-      }
-      if (typeof recordField.field !== "string") {
-        context.fail(
-          expression,
-          `Reached ${recordField.kind} ${recordField.property} ` +
-            "names a field pair with a scalar value.",
-        );
-      }
-      if (recordField.kind === "material" && recordField.property === "diffuseColor") {
-        context.noteMaterialColorRenderBoundary(expression, "whole color replacement after registration");
-        const shape = context.resolveStaticExpression(expression.right);
-        const legacyTuple = (!ts.isArrayLiteralExpression(context.unwrap(expression.right)) &&
-          context.checker.isTupleType(context.checker.getTypeAtLocation(expression.right))) ||
-          (ts.isIdentifier(expression.right) && context.lookupOptional(expression.right)?.kind === "tuple");
-        if (ts.isObjectLiteralExpression(shape) || legacyTuple) {
-          context.noteMaterialColorObjectWrite(expression.right, "diffuseColor");
-        } else {
-          // A named or returned array can also be mutated through its other
-          // owner. A fresh literal has no external alias until a getter is read.
-          if (!ts.isArrayLiteralExpression(context.unwrap(expression.right))) {
-            context.noteMaterialColorRead("diffuseColor");
-          }
-          if (ts.isArrayLiteralExpression(shape) && shape.elements.length !== 3) context.fail(expression.right,
-            "Material diffuseColor requires a three-channel numeric array.");
-          const owner = context.allocateTemporaryCppName("material_color_owner");
-          context.emit(`const auto ${owner} = ${target.cpp};`);
-          const values = context.compileForDataSink(expression.right, {kind: "vector", element: {kind: "number"}});
-          context.emit(`bbl::set_material_diffuse_color(${context.requireEngine(target, expression)}, ${owner}, ${values});`);
-          return;
-        }
-      }
-      const value =
-        recordField.value === "color3"
-          ? context.compileColor3(expression.right)
-          : recordField.value === "boolean"
-            ? context.compileBoolean(expression.right)
-            : context.compileNumber(
-                expression.right,
-                recordField.collection === "cameras" ? "double" : "float",
-              );
-      if (
-        target.standardMaterialInput &&
-        expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
-      ) {
-        if (recordField.property === "alpha") {
-          const alpha = staticNumberValue(context, expression.right);
-          if (alpha === undefined) delete target.standardMaterialInput.alpha;
-          else target.standardMaterialInput.alpha = alpha;
-        } else if (
-          recordField.property === "backFaceCulling" ||
-          recordField.property === "disableLighting"
-        ) {
-          if (value === "true" || value === "false") {
-            target.standardMaterialInput[recordField.property] =
-              value === "true";
-          } else {
-            delete target.standardMaterialInput[recordField.property];
-          }
-        }
-      }
-      const stored = recordField.invert ? `!(${value})` : value;
-      if (recordField.kind === "material" && recordField.value === "color3") {
-        const bindings =
-          target.materialUboArrayFields ??
-          (target.materialUboArrayFields = new Map());
-        bindings.set(recordField.field, stored);
-      }
-      context.emit(
-        `${record}.${recordField.field} ` +
-          `${recordField.simpleOnly ? "=" : operator} ${stored};`,
-      );
-      if (recordField.kind === "material" && recordField.property === "diffuseColor") {
-        // This legacy object adapter has no numeric-array identity. Its
-        // render field must not be replaced later by the factory's array.
-        context.emit(`${record}.source_diffuse_color.reset();`);
-      }
-      if (recordField.kind === "material" && recordField.property === "alpha") {
-        // The pin reads `mat.alpha < 1` live when it builds
-        // renderables, so a post-creation write moves the
-        // material between the opaque and blended families.
-        // One shared home for the rule (the factory calls the
-        // same helper), so the transmission arm and the family
-        // gates cannot drift from the creation-time derivation.
-        context.emit(`bbl::derive_material_alpha_mode(${record});`);
-      }
-      return;
-    }
-
-    if (target.kind === "camera" && property === "target") {
-      requireSimpleAssignment(context, expression, "camera target");
-      // The program records the target the constructor gave; a later
-      // write is not one of its scalar properties, so it invalidates.
-      noteCameraRecordWrite(context, target, "target", undefined, false);
-      context.emit(
-        `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].target = ${context.compileVec3(expression.right, "double")};`,
-      );
-      return;
-    }
-
-    if (target.kind === "camera") {
-      const nativeProperty = cameraRecordField(property);
-      if (nativeProperty) {
-        noteCameraRecordWrite(
-          context,
-          target,
-          property,
-          expression.right,
-          expression.operatorToken.kind === ts.SyntaxKind.EqualsToken,
-        );
-        context.emit(
-          `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
-        );
-        return;
-      }
-    }
-
-    const scalarSetter = lightSetter(target, property, "scalar");
-    if (scalarSetter) {
-      requireSimpleAssignment(context, expression, `light ${property}`);
-      // The pin recomputes the cone cosine from the JavaScript-number
-      // angle and rounds only at its own UBO store, so the value stays
-      // double across this boundary exactly as it does at creation.
-      context.emit(
-        `bbl::${scalarSetter}(` +
-          `${context.requireEngine(target, expression)}, ` +
-          `${target.cpp}, ` +
-          `${context.compileNumber(expression.right, "double")});`,
-      );
-      return;
-    }
-
-    const direct = directPropertyAssignment(target, property);
-    if (direct) {
-      if (!direct.supportsCompound) {
-        requireSimpleAssignment(
-          context,
-          expression,
-          `${target.kind} ${property}`,
-        );
-      }
-      const value =
-        direct.valueKind === "color3"
-          ? context.compileColor3(expression.right)
-          : context.compileNumber(expression.right);
-      context.emit(
-        `${context.requireEngine(target, expression)}.${direct.collection}[${target.cpp}.value].${direct.nativeProperty} ${operator} ${value};`,
-      );
-      return;
-    }
+    if (emitTargetPropertyAssignment(context, expression, left, targetExpression, operator)) return;
   }
 
   if (left.name.text === "loopAnimation") {
@@ -2752,7 +1733,7 @@ export function emitPropertyAssignment(
         const target = context.allocateTemporaryCppName(
           "scene_node_transform_target",
         );
-        context.emit(`const auto ${target} = ${mesh.cpp};`);
+        context.emit({ kind: "declaration", type: "const auto", name: target, initializer: mesh.cpp });
         let previous: string | undefined;
         if (operator !== "=") {
           previous = context.allocateTemporaryCppName(
@@ -3079,9 +2060,9 @@ function requireSimpleAssignment(
     );
   }
 }
+
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
-
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
@@ -3092,29 +2073,1094 @@ import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
 import {
-  emitDeterministicRandomInstall,
-  type DeterministicRandomContext,
+    emitDeterministicRandomInstall,
+    type DeterministicRandomContext,
 } from "./deterministic-random.js";
 import { noteCameraRecordWrite } from "./intrinsics/camera.js";
 import { cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import {
-  SCREEN_SPACE_SCALAR_SETTINGS,
-  nativeSettingName,
+    SCREEN_SPACE_SCALAR_SETTINGS,
+    nativeSettingName,
 } from "../pinned-screen-space.js";
 import { toneMappingExportNames } from "../pinned-tone-mapping.js";
 import { foldMaterialPluginList } from "./material-plugin.js";
-import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import {
-  isTrsVectorName,
-  sceneNodeTransformDescriptor,
+    isTrsVectorName,
+    sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
-export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
 import type {
-  CompiledNodeParticles,
-  Feature,
-  LightKind,
-  Value,
-  ValueKind,
+    Feature,
+    LightKind,
+    Value,
 } from "./types.js";
+export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
+
+interface TargetPropertyAssignment {
+    expression: ts.BinaryExpression;
+    left: ts.PropertyAccessExpression;
+    targetExpression: ts.Expression;
+    target: Value;
+    property: string;
+    operator: ReturnType<typeof assignmentOperator>;
+}
+
+function emitTargetPropertyAssignment(context: AssignmentContext, expression: ts.BinaryExpression, left: ts.PropertyAccessExpression, targetExpression: ts.Expression, operator: ReturnType<typeof assignmentOperator>): boolean {
+    // Resource identity can travel through compile-time records and tuples
+    // (`lighting.sun.shadowGenerator`, `track.ground.receiveShadows`) just as
+    // it can through a local. Compile the complete owner path so the same
+    // assignment table serves both spellings.
+    const target = ts.isIdentifier(targetExpression)
+      ? context.lookup(targetExpression)
+      : context.compileValue(targetExpression);
+    const property = left.name.text;
+  const handler0 = targetPropertyHandlers0.get(property);
+  if (handler0?.(context, { expression, left, targetExpression, target, property, operator })) return true;
+
+    if (
+      target.kind === "node-particle-system" &&
+      particleScalars.includes(property)
+    ) {
+      emitNodeParticleScalarAssignment(
+        context,
+        expression,
+        left,
+        target,
+        property,
+      );
+      return true;
+    }
+  const handler1 = targetPropertyHandlers1.get(property);
+  if (handler1?.(context, { expression, left, targetExpression, target, property, operator })) return true;
+
+    if (target.kind === "texture" && property in textureRecordFields) {
+      context.noteNodeInputAdmissionFailure(expression, "Node input bindings do not represent texture producer metadata mutation; configure the texture at construction.");
+      const field = textureRecordFields[property]!;
+      requireSimpleAssignment(context, expression, `texture ${property}`);
+      // A `loadTexture2D` image takes these writes too: upstream one
+      // `Texture2D` carries them whatever built it, and the PBR lightmap
+      // extension reads `uAng` back off a loaded texture to pick its V-flip
+      // arm. The record member is one level down there (`FileTexture::data`
+      // is the `TextureData` a pixels texture IS), which is the only
+      // difference the write sees.
+      const owner = target.pixelsTexture
+        ? target.cpp
+        : target.textureStorage === "file"
+          ? `${target.cpp}.data`
+          : undefined;
+      if (owner === undefined) {
+        context.fail(
+          left,
+          `Reached '${property}' writes land on a ` +
+            "createTexture2DFromPixels or loadTexture2D texture; a solid " +
+            "colour and a render attachment carry no transform this port " +
+            "reads back.",
+        );
+      }
+      if (context.boundPixelsTextures.has(target.cpp)) {
+        context.fail(
+          left,
+          `'${property}' is written after this texture was bound ` +
+            "to a material, where the slot already took its " +
+            "copy. Upstream binds one object, so the write " +
+            "would reach the material there and not here.",
+        );
+      }
+      // Compiled once and reused by the record store below: asking a
+      // second time would emit the value's own lowering twice.
+      const rendered = field.value === "boolean"
+        ? context.compileBoolean(expression.right)
+        : context.compileNumber(expression.right, "double");
+      if (property === "invertY") {
+        // The one boolean in `TEXTURE_UV_PROPERTIES`, which is why the
+        // refusal below can name it.
+        if (rendered !== "true" && rendered !== "false") {
+          context.fail(
+            expression.right,
+            "A texture's `invertY` is composition input — the lightmap " +
+              "extension folds it against `uAng` — so it settles at " +
+              "generation.",
+          );
+        }
+        target.textureObjectInvertY = rendered === "true";
+      } else if (property === "uAng") {
+        // The value reaches composition as well as the record: the pinned
+        // lightmap `detect` compares it against `Math.PI`. A write that
+        // does not settle still emits, and the consumer that needs it
+        // refuses by name rather than reading a stale zero here.
+        const folded = staticNumberValue(context, expression.right);
+        if (folded !== undefined) target.textureUvAng = folded;
+      }
+      context.emit(`${owner}.${field.record} = ${rendered};`);
+      return true;
+    }
+  const handler2 = targetPropertyHandlers2.get(property);
+  if (handler2?.(context, { expression, left, targetExpression, target, property, operator })) return true;
+
+    const recordField = recordFieldAssignments.find(
+      (candidate) =>
+        candidate.kind === target.kind && candidate.property === property,
+    );
+    if (recordField) {
+      if (recordField.kind === "material") {
+        const family = target.standardMaterial ? "standard" :
+          target.scenePbrMaterialIndex !== undefined || target.assetPbrMaterial ? "pbr" : undefined;
+        if (!family || (recordField.materialFamily !== "standard-or-pbr" && recordField.materialFamily !== family)) {
+          context.fail(left,
+            `Material ${property} requires a ${recordField.materialFamily} material; ` +
+            `received ${family ?? "a material without a known family"}.`);
+        }
+      }
+      if (recordField.feature) {
+        context.reachFeature(recordField.feature, expression);
+      }
+      if (recordField.simpleOnly) {
+        requireSimpleAssignment(
+          context,
+          expression,
+          `${recordField.kind} ${recordField.property}`,
+        );
+      }
+      const record =
+        `${context.requireEngine(target, expression)}` +
+        `.${recordField.collection}[${target.cpp}.value]`;
+      if (recordField.value === "number2") {
+        const elements = context.unwrap(context.resolveStaticExpression(expression.right));
+        const fields = recordField.field;
+        if (
+          !ts.isArrayLiteralExpression(elements) ||
+          elements.elements.length !== 2 ||
+          typeof fields === "string"
+        ) {
+          context.fail(
+            expression.right,
+            `Reached ${recordField.kind} ${recordField.property} ` +
+              "takes a two-element array literal.",
+          );
+        }
+        for (const [index, field] of fields.entries()) {
+          const value = context.captureNativeExpression(() =>
+            context.compileNumber(elements.elements[index]!, recordField.scalarPrecision ?? "float"));
+          context.emit(
+            `${record}.${field} = ` +
+              `${value.cpp};`,
+          );
+          if (recordField.kind === "material") {
+            const bindings =
+              target.materialUboArrayFields ??
+              (target.materialUboArrayFields = new EmissionMap());
+            bindings.set(field, value);
+          }
+        }
+        return true;
+      }
+      if (typeof recordField.field !== "string") {
+        context.fail(
+          expression,
+          `Reached ${recordField.kind} ${recordField.property} ` +
+            "names a field pair with a scalar value.",
+        );
+      }
+      if (recordField.kind === "material" && recordField.property === "diffuseColor") {
+        context.noteMaterialColorRenderBoundary(expression, "whole color replacement after registration");
+        const shape = context.resolveStaticExpression(expression.right);
+        const legacyTuple = (!ts.isArrayLiteralExpression(context.unwrap(expression.right)) &&
+          context.checker.isTupleType(context.checker.getTypeAtLocation(expression.right))) ||
+          (ts.isIdentifier(expression.right) && context.lookupOptional(expression.right)?.kind === "tuple");
+        if (ts.isObjectLiteralExpression(shape) || legacyTuple) {
+          context.noteMaterialColorObjectWrite(expression.right, "diffuseColor");
+        } else {
+          // A named or returned array can also be mutated through its other
+          // owner. A fresh literal has no external alias until a getter is read.
+          if (!ts.isArrayLiteralExpression(context.unwrap(expression.right))) {
+            context.noteMaterialColorRead("diffuseColor");
+          }
+          if (ts.isArrayLiteralExpression(shape) && shape.elements.length !== 3) context.fail(expression.right,
+            "Material diffuseColor requires a three-channel numeric array.");
+          const owner = context.allocateTemporaryCppName("material_color_owner");
+          context.emit({ kind: "declaration", type: "const auto", name: owner, initializer: target.cpp });
+          const values = context.compileForDataSink(expression.right, {kind: "vector", element: {kind: "number"}});
+          context.emit(`bbl::set_material_diffuse_color(${context.requireEngine(target, expression)}, ${owner}, ${values});`);
+          return true;
+        }
+      }
+      const compiled = context.captureNativeExpression(() =>
+        recordField.value === "color3"
+          ? context.compileColor3(expression.right)
+          : recordField.value === "boolean"
+            ? context.compileBoolean(expression.right)
+            : context.compileNumber(
+                expression.right,
+                recordField.collection === "cameras" ? "double" : "float",
+              ));
+      const value = compiled.cpp;
+      if (
+        target.standardMaterialInput &&
+        expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        if (recordField.property === "alpha") {
+          const alpha = staticNumberValue(context, expression.right);
+          if (alpha === undefined) delete target.standardMaterialInput.alpha;
+          else target.standardMaterialInput.alpha = alpha;
+        } else if (
+          recordField.property === "backFaceCulling" ||
+          recordField.property === "disableLighting"
+        ) {
+          if (value === "true" || value === "false") {
+            target.standardMaterialInput[recordField.property] =
+              value === "true";
+          } else {
+            delete target.standardMaterialInput[recordField.property];
+          }
+        }
+      }
+      const stored = recordField.invert ? `!(${value})` : value;
+      if (recordField.kind === "material" && recordField.value === "color3") {
+        const bindings =
+          target.materialUboArrayFields ??
+          (target.materialUboArrayFields = new EmissionMap());
+        bindings.set(recordField.field, { ...compiled, cpp: stored });
+      }
+      context.emit(
+        `${record}.${recordField.field} ` +
+          `${recordField.simpleOnly ? "=" : operator} ${stored};`,
+      );
+      if (recordField.kind === "material" && recordField.property === "diffuseColor") {
+        // This legacy object adapter has no numeric-array identity. Its
+        // render field must not be replaced later by the factory's array.
+        context.emit(`${record}.source_diffuse_color.reset();`);
+      }
+      if (recordField.kind === "material" && recordField.property === "alpha") {
+        // The pin reads `mat.alpha < 1` live when it builds
+        // renderables, so a post-creation write moves the
+        // material between the opaque and blended families.
+        // One shared home for the rule (the factory calls the
+        // same helper), so the transmission arm and the family
+        // gates cannot drift from the creation-time derivation.
+        context.emit(`bbl::derive_material_alpha_mode(${record});`);
+      }
+      return true;
+    }
+
+    if (target.kind === "camera" && property === "target") {
+      requireSimpleAssignment(context, expression, "camera target");
+      // The program records the target the constructor gave; a later
+      // write is not one of its scalar properties, so it invalidates.
+      noteCameraRecordWrite(context, target, "target", undefined, false);
+      context.emit(
+        `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].target = ${context.compileVec3(expression.right, "double")};`,
+      );
+      return true;
+    }
+
+    if (target.kind === "camera") {
+      const nativeProperty = cameraRecordField(property);
+      if (nativeProperty) {
+        noteCameraRecordWrite(
+          context,
+          target,
+          property,
+          expression.right,
+          expression.operatorToken.kind === ts.SyntaxKind.EqualsToken,
+        );
+        context.emit(
+          `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
+        );
+        return true;
+      }
+    }
+
+    const scalarSetter = lightSetter(target, property, "scalar");
+    if (scalarSetter) {
+      requireSimpleAssignment(context, expression, `light ${property}`);
+      // The pin recomputes the cone cosine from the JavaScript-number
+      // angle and rounds only at its own UBO store, so the value stays
+      // double across this boundary exactly as it does at creation.
+      context.emit(
+        `bbl::${scalarSetter}(` +
+          `${context.requireEngine(target, expression)}, ` +
+          `${target.cpp}, ` +
+          `${context.compileNumber(expression.right, "double")});`,
+      );
+      return true;
+    }
+
+    const direct = directPropertyAssignment(target, property);
+    if (direct) {
+      if (!direct.supportsCompound) {
+        requireSimpleAssignment(
+          context,
+          expression,
+          `${target.kind} ${property}`,
+        );
+      }
+      const value =
+        direct.valueKind === "color3"
+          ? context.compileColor3(expression.right)
+          : context.compileNumber(expression.right);
+      context.emit(
+        `${context.requireEngine(target, expression)}.${direct.collection}[${target.cpp}.value].${direct.nativeProperty} ${operator} ${value};`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitLocalMatrixAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "asset-root" && property === "_localMatrix") {
+      requireSimpleAssignment(context, expression, "imported root local matrix");
+      const value = context.unwrap(expression.right);
+      if (
+        !ts.isIdentifier(value) ||
+        value.text !== "undefined" ||
+        context.lookupOptional(value)
+      ) {
+        context.fail(
+          expression.right,
+          "An imported synthetic root only exposes clearing _localMatrix with undefined.",
+        );
+      }
+      context.assertAssetRootWritable(target, expression);
+      // loadGltf's public root is the synthetic TRS node. It never owns a
+      // raw glTF matrix in the flattened native representation, so clearing
+      // that optional override is observably a no-op here as it is upstream.
+      return true;
+    }
+    return false;
+}
+
+function emitSpriteSheetAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "node-particle-system" && property === "_spriteSheet") {
+      emitFrozenParticleSheetAssignment(context, expression, target);
+      return true;
+    }
+    return false;
+}
+
+function emitBufferAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { left, target, property } = state;
+    if (target.kind === "node-particle-system" && property === "buffer") {
+      context.fail(
+        left,
+        "A particle buffer is generation-time state; only one of " +
+          "its columns may be written, by index.",
+      );
+    }
+    return false;
+}
+
+function emitTextureAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind === "node-particle-system" && property === "texture") {
+      emitNodeParticleTextureAssignment(context, expression, left, target);
+      return true;
+    }
+    return false;
+}
+
+function emitClearColorAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "scene" && property === "clearColor") {
+      requireSimpleAssignment(context, expression, "scene clearColor");
+      context.emit(
+        `${target.cpp}.clear_color = ${context.compileColor4(expression.right)};`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitCameraAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind === "scene" && property === "camera") {
+      requireSimpleAssignment(context, expression, "scene camera");
+      const camera = context.compileValue(expression.right);
+      context.expectKind(camera, "camera", expression.right);
+      context.noteTextSceneCameraAssignment(left);
+      // The scene keeps the camera VALUE, not a copy: a property
+      // written after the assignment still reaches it, and one
+      // executed port -- the node-particle flow-map build -- reads
+      // the scene's camera rather than the scene's own records.
+      target.sceneCamera = camera;
+      context.emit(`${target.cpp}.camera = ${camera.cpp};`);
+      return true;
+    }
+    return false;
+}
+
+function emitFixedDeltaMsAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property, operator } = state;
+    if (target.kind === "scene" && property === "fixedDeltaMs") {
+      context.emit(
+        `${target.cpp}.fixed_delta_ms ${operator} ${context.compileNumber(expression.right, "double")};`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitRenderOrderAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "mesh" && property === "renderOrder") {
+      requireSimpleAssignment(context, expression, "mesh renderOrder");
+      const engine = context.requireEngine(target, expression);
+      context.emit(
+        `${engine}.meshes[${target.cpp}.value].render_order = ${context.compileNumber(expression.right, "double")};`,
+      );
+      context.emit(
+        `${engine}.meshes[${target.cpp}.value].has_render_order = true;`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitNameAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (
+      (target.kind === "mesh" || target.kind === "splat-mesh") &&
+      property === "name"
+    ) {
+      const collection =
+        target.kind === "splat-mesh" ? "splat_meshes" : "meshes";
+      requireSimpleAssignment(
+        context,
+        expression,
+        target.kind === "splat-mesh" ? "splat cloud name" : "mesh name",
+      );
+      const name = context.compileValue(expression.right);
+      context.expectKind(name, "string", expression.right);
+      context.emit(
+        `${context.requireEngine(target, expression)}.${collection}[${target.cpp}.value].name = ${name.cpp};`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitIdAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "mesh" && property === "id") {
+      requireSimpleAssignment(context, expression, "mesh id");
+      context.recordSceneMeshId(
+        target.cpp,
+        context.compileStaticString(expression.right),
+        expression,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitReceiveShadowsAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "mesh" && property === "receiveShadows") {
+      requireSimpleAssignment(context, expression, "mesh receiveShadows");
+      const enabled = context.compileValue(expression.right);
+      context.expectKind(enabled, "boolean", expression.right);
+      const staticEnabled =
+        enabled.staticBoolean ??
+        (enabled.cpp === "true"
+          ? true
+          : enabled.cpp === "false"
+            ? false
+            : undefined);
+      if (staticEnabled === false) {
+        return true;
+      }
+      if (staticEnabled !== true) {
+        context.fail(
+          expression.right,
+          "Only `receiveShadows = true` is lowered: the composed " +
+            "variant is selected at generation, so a value the " +
+            "scene computes would need both fragments.",
+        );
+      }
+      if (target.sceneMeshIndex === undefined) {
+        // A handle read from a runtime collection has no generation-known
+        // mesh row. Keep both composed states; the emitted record lane is
+        // the runtime half of the same key used by both material families.
+        context.recordDynamicShadowReceivers();
+      } else {
+        context.recordShadowReceiver(target.sceneMeshIndex);
+      }
+      // The record lane too, which the node family reads per draw:
+      // its receiver mixes each light's factor by `receivesShadow`
+      // rather than selecting a variant, so one composed module
+      // serves a receiving mesh and a non-receiving one. The two
+      // composed families never read the lane.
+      context.emit(
+        `${context.requireEngine(target, expression)}.meshes[` +
+          `${target.cpp}.value].receives_shadows = true;`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitPluginsAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind === "material" && property === "plugins") {
+      requireSimpleAssignment(context, expression, "material plugins");
+      if (
+        target.scenePbrMaterialIndex === undefined &&
+        !target.standardMaterial
+      ) {
+        context.fail(
+          left.expression,
+          "Material plugins attach to a PBR or a Standard " +
+            "material: the pin's two bridges are the only " +
+            "readers, and its Standard one filters on the " +
+            "material's own group builder, so a plugin on any " +
+            "other family composes nothing upstream either.",
+        );
+      }
+      // The family is the fold's input rather than a check after it: a PBR
+      // plugin's samplers refuse at their own declaration, before any
+      // texture value is lowered.
+      const family = target.scenePbrMaterialIndex !== undefined
+        ? "pbr"
+        : "standard";
+      const plugins = foldMaterialPluginList(
+        context,
+        expression.right,
+        family,
+      );
+      if (target.scenePbrMaterialIndex !== undefined) {
+        context.recordScenePbrPlugins(
+          plugins.manifests,
+          target.scenePbrMaterialIndex,
+        );
+        return true;
+      }
+      // The record lane is its own reach, separate from the
+      // opt-in: upstream a `plugins` array on a material is always
+      // legal and is simply inert until `enableMaterialPlugins`
+      // registers the bridges, so the write has to compile either way
+      // -- gating the setter's definition on the opt-in instead would
+      // leave this call undefined for a scene that never made it.
+      context.reachFeature("material:plugin-index", expression);
+      const engineCpp = context.requireEngine(target, expression);
+      const pluginIndex =
+        context.recordStandardMaterialPlugins(
+          plugins.manifests,
+          target.standardMaterialInput ?? {},
+        );
+      target.standardMaterialPluginIndex = pluginIndex;
+      context.emit(
+        `bbl::set_material_plugins(` +
+          `${engineCpp}, ` +
+          `${target.cpp}, static_cast<std::uint8_t>(` +
+          `${pluginIndex}));`,
+      );
+      // The textures the list's `bindTextures` fills its declared
+      // bindings with, appended in that order -- which is the order
+      // `bindPluginTextures` pushes them upstream and the order the
+      // composed fragment declared them in. `set_material_plugins`
+      // above cleared the list, so a second `plugins` write replaces
+      // the textures the way reassigning the array replaces them.
+      for (const texture of plugins.textures) {
+        context.expectSameEngine(target, texture.value, texture.node);
+        const pixels = texture.value.textureStorage === "pixels";
+        if (pixels) {
+          context.boundPixelsTextures.add(texture.value.cpp);
+        }
+        context.reachFeature("material:plugin-textures", texture.node);
+        context.emit(
+          `bbl::${
+            pixels
+              ? "add_material_plugin_pixels_texture"
+              : "add_material_plugin_file_texture"
+          }(${engineCpp}, ${target.cpp}, ${texture.value.cpp});`,
+        );
+      }
+      return true;
+    }
+    return false;
+}
+
+function emitShadowGeneratorAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind === "light" && property === "shadowGenerator") {
+      requireSimpleAssignment(context, expression, "light shadowGenerator");
+      const generator = context.compileValue(expression.right);
+      context.expectKind(generator, "shadow-generator", expression.right);
+      context.expectSameEngine(target, generator, expression);
+      context.emit(
+        `${context.requireEngine(target, expression)}.lights[${target.cpp}.value].shadow_generator = ${generator.cpp};`,
+      );
+      // The pin's `ShadowTask` walks `scene.lights` and its receiver
+      // slots come from the same walk, so the generator has to be
+      // reachable from the light -- and a later
+      // `setShadowTaskCasterMeshes(light.shadowGenerator, ...)` reads
+      // it back off the light, which is what this carries.
+      if (generator.shadowGeneratorIndex !== undefined) {
+        if (!target.lightIdentity) {
+          context.fail(
+            left.expression,
+            "A light shadow generator assignment is missing its compiler identity.",
+          );
+        }
+        target.lightIdentity.shadowGeneratorIndex =
+          generator.shadowGeneratorIndex;
+      }
+      return true;
+    }
+    return false;
+}
+
+function emitIncludedOnlyMeshIdsAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "light" && property === "includedOnlyMeshIds") {
+      requireSimpleAssignment(context, expression, "light includedOnlyMeshIds");
+      const meshes = context.resolveSceneMeshIds(
+        staticMeshIdSet(context, expression.right),
+        expression.right,
+      );
+      context.reachFeature("light:included-meshes", expression);
+      context.emit(
+        `${context.requireEngine(target, expression)}.lights[` +
+          `${target.cpp}.value].included_meshes = {` +
+          `${meshes.map((mesh) => `${mesh}.value`).join(", ")}};`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitMaterialAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "mesh" && property === "material") {
+      context.noteTemporalRecordBoundary(expression, "mesh material replacement after scene registration");
+      context.noteMaterialColorRenderBoundary(expression, "mesh material replacement after registration");
+      requireSimpleAssignment(context, expression, "mesh material");
+      const material = context.compileValue(expression.right);
+      context.expectKind(material, "material", expression.right);
+      context.expectSameEngine(target, material, expression);
+      // A `createMeshFromData` mesh whose optional streams are a run-time
+      // answer has no generation-known attribute set, and the Standard and
+      // PBR variant keys are built from exactly that. The node family
+      // needs none -- `MeshAttributeExistsBlock` reads the per-mesh
+      // uniform lane the PALs fill from the geometry -- so what cannot be
+      // composed is this PAIRING, and it is named here rather than at the
+      // factory, where the material is not yet known.
+      if (
+        target.runtimeMeshStreams === true &&
+        material.nodeMaterialIndex === undefined
+      ) {
+        context.fail(
+          expression.right,
+          "This mesh's optional vertex streams are decided at run time, " +
+            "so its attribute set is not generation-known. Only a node " +
+            "material draws such a mesh: the Standard and PBR variant " +
+            "keys are built from the attribute set.",
+        );
+      }
+      context.emit(
+        `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].material = ${material.cpp};`,
+      );
+      // The pin's opt-in setters take the material back off the mesh
+      // (`setPbrSkybox(box.material)`) and mutate the same object, so
+      // the mesh carries which scene material it was given and a
+      // later read of `mesh.material` resolves that record.
+      if (material.scenePbrMaterialIndex !== undefined) {
+        target.scenePbrMaterialIndex = material.scenePbrMaterialIndex;
+      }
+      // The family travels the same way, and for the same reason: a
+      // write on `box.material` has to resolve which of the pin's two
+      // bridges would read it.
+      if (material.standardMaterial) {
+        target.standardMaterial = true;
+        if (material.standardMaterialPluginIndex !== undefined) {
+          target.standardMaterialPluginIndex =
+            material.standardMaterialPluginIndex;
+        }
+      }
+      // The pair the caster list resolves against. Upstream reads
+      // `mesh.material` when the shadow pass builds, so a scene may
+      // name its casters before assigning their materials -- which is
+      // why the mesh's own Value does not carry the graph: this map is
+      // the one producer of the pair.
+      const meshProfile = target.sceneMeshIndex ?? target.sceneMeshProfileIndex;
+      if (meshProfile === undefined && (material.possibleSceneShaderVariants?.length ?? 0) > 1) {
+        context.fail(expression, "A runtime ShaderMaterial choice requires a known mesh composition profile.");
+      }
+      if (meshProfile !== undefined) {
+        context.recordSceneMeshMaterial(meshProfile, {
+          pbrMaterial: material.scenePbrMaterialIndex ?? null,
+          nodeMaterial: material.nodeMaterialIndex ?? null,
+          standardMaterial: material.standardMaterial === true,
+          standardMaterialPluginIndex:
+            material.standardMaterialPluginIndex,
+          // Only a scene-local program: the other families that carry a
+          // variant settle their own instanced form from their options.
+          sceneShaderVariant: material.sceneShaderVariant,
+          sceneShaderVariants: material.possibleSceneShaderVariants,
+        });
+        if (material.assetPbrMaterial) {
+          context.recordSceneMeshAssetPbrMaterial(meshProfile);
+        }
+      }
+      if (target.sceneMeshIndex === undefined && material.scenePbrMaterialIndex !== undefined) {
+        context.recordUnknownSceneMeshMaterial(material.scenePbrMaterialIndex);
+      }
+      if (meshProfile === undefined && material.standardMaterial) {
+        context.recordUnknownStandardMeshMaterial();
+      }
+      if (material.scenePbrMaterialIndex === undefined && !material.standardMaterial &&
+          material.nodeMaterialIndex === undefined && material.shaderVariant === undefined) {
+        context.recordUnknownSceneMaterialAssignment();
+      }
+      return true;
+    }
+    return false;
+}
+
+function emitBoundMinAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (
+      target.kind === "mesh" &&
+      (property === "boundMin" || property === "boundMax")
+    ) {
+      requireSimpleAssignment(context, expression, `mesh ${property}`);
+      const engine = context.requireEngine(target, expression);
+      const nativeProperty =
+        property === "boundMin" ? "bounds_min" : "bounds_max";
+      const side = property === "boundMin" ? "min" : "max";
+      context.emit(
+        `${engine}.meshes[${target.cpp}.value].${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
+      );
+      context.emit(
+        `${engine}.meshes[${target.cpp}.value].has_bounds_${side}_override = true;`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitSkeletonAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind === "mesh" && property === "skeleton") {
+      requireSimpleAssignment(context, expression, "mesh skeleton");
+      if (!target.directMorphCompatible) {
+        context.fail(
+          left.expression,
+          "A scene-authored skeleton requires a compiler-created mesh: " +
+            "the joint and weight streams are folded into that mesh's " +
+            "own vertices.",
+        );
+      }
+      if (target.sceneMeshIndex === undefined) {
+        context.fail(
+          left.expression,
+          "A scene-authored skeleton needs a mesh with a generation-known " +
+            "composition row: the pin composes its skinned vertex stage " +
+            "from MSH_HAS_SKELETON on that row, so a mesh created inside a " +
+            "runtime loop has no variant to select.",
+        );
+      }
+      if (context.isRuntimeResourceConstruction() || context.engineHasStarted()) {
+        context.fail(expression, "A scene-authored skeleton attachment must be definite and precede startEngine; runtime attachment variants are not lowered.");
+      }
+      const skeleton = context.compileValue(expression.right);
+      context.expectKind(skeleton, "scene-skeleton", expression.right);
+      context.expectSameEngine(target, skeleton, expression);
+      const engine = context.requireEngine(target, expression);
+      context.emit(
+        `bbl::attach_scene_skeleton(${engine}, ${target.cpp}, ` +
+          `${skeleton.cpp});`,
+      );
+      // The generation half of the same assignment: the pin's
+      // `_computeMeshFeatures` reads `mesh.skeleton` for MSH_HAS_SKELETON,
+      // and a scene-code mesh's feature word is derived from its recorded
+      // streams rather than from a glTF primitive.
+      context.recordSceneMeshDeformation(target.sceneMeshIndex, "skinned", expression);
+      context.reachFeature("mesh:skeleton", expression);
+      return true;
+    }
+    return false;
+}
+
+function emitMorphTargetsAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind === "mesh" && property === "morphTargets") {
+      requireSimpleAssignment(context, expression, "mesh morphTargets");
+      if (!target.directMorphCompatible) {
+        context.fail(
+          left.expression,
+          "Direct morph targets require a compiler-created mesh.",
+        );
+      }
+      if (target.sceneMeshIndex === undefined) {
+        context.fail(left.expression, "Direct morph targets need a mesh with a generation-known composition row.");
+      }
+      if (context.isRuntimeResourceConstruction() || context.engineHasStarted()) {
+        context.fail(expression, "A direct morph target attachment must be definite and precede startEngine; runtime attachment variants are not lowered.");
+      }
+      const morph = context.compileValue(expression.right);
+      context.expectKind(morph, "morph-targets", expression.right);
+      context.expectSameEngine(target, morph, expression);
+      if (!morph.morphTarget) {
+        context.fail(expression.right, "Morph target data is incomplete.");
+      }
+      if (morph.morphTarget.meshCpp) {
+        context.fail(
+          expression.right,
+          "Direct morph target data can be attached to one mesh.",
+        );
+      }
+      const engine = context.requireEngine(target, expression);
+      context.recordSceneMeshDeformation(target.sceneMeshIndex, "morphTargets", expression);
+      context.emit(
+        `bbl::attach_morph_target(${engine}, ${target.cpp}, ` +
+          `${morph.morphTarget.positionsCpp}, ` +
+          `${morph.morphTarget.normalsCpp}, ` +
+          `${morph.morphTarget.vertexCountCpp}, ` +
+          `${morph.morphTarget.weightCpp});`,
+      );
+      morph.morphTarget.meshCpp = target.cpp;
+      context.reachFeature("mesh:morph-targets", expression);
+      return true;
+    }
+    return false;
+}
+
+function emitOrmTextureAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind === "material" && property === "ormTexture") {
+      requireSimpleAssignment(context, expression, "PBR ormTexture");
+      if (context.hasRegisteredScene() || context.engineHasStarted() || context.isRuntimeResourceConstruction()) {
+        context.fail(expression, "PBR ormTexture replacement requires static setup before scene registration; live texture rebinding is not represented.");
+      }
+      if (target.scenePbrMaterialIndex === undefined && !target.assetPbrMaterial) {
+        context.fail(left, "ormTexture requires a known PBR material.");
+      }
+      const texture = context.compileValue(expression.right);
+      context.expectKind(texture, "texture", expression.right);
+      context.expectSameEngine(target, texture, expression);
+      if (texture.textureStorage !== "solid") context.fail(expression.right, "PBR ormTexture replacement currently requires a solid texture.");
+      context.emit(`bbl::set_material_orm_file(${context.requireEngine(target, expression)}, ${target.cpp}, bbl::solid_texture_file(${texture.cpp}));`);
+      return true;
+    }
+    return false;
+}
+
+function emitOcclusionTextureAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind === "material" && property === "occlusionTexture") {
+      requireSimpleAssignment(context, expression, "PBR occlusionTexture");
+      if (!target.assetPbrMaterial) {
+        context.fail(
+          left,
+          "Replacing occlusionTexture is lowered for a PBR material read from a loaded asset, whose composed variant already carries that slot.",
+        );
+      }
+      const texture = context.compileValue(expression.right);
+      context.expectKind(texture, "texture", expression.right);
+      if (texture.textureStorage !== "solid") {
+        context.fail(
+          expression.right,
+          "Reached PBR occlusionTexture replacement uses createSolidTexture2D.",
+        );
+      }
+      context.expectSameEngine(target, texture, expression);
+      context.emit(
+        `bbl::set_pbr_occlusion_solid_texture(` +
+          `${context.requireEngine(target, expression)}, ` +
+          `${target.cpp}, ${texture.cpp});`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitDiffuseTextureAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (target.kind === "material" && property === "diffuseTexture") {
+      requireSimpleAssignment(context, expression, "material diffuseTexture");
+      const texture = context.compileValue(expression.right);
+      // Standard composition reads texture PRESENCE from the material object
+      // at registration time. Keep that same fact on the compiler value so a
+      // plugin signature composes the material's actual feature word rather
+      // than the bare Standard defaults.
+      if (target.standardMaterialInput) {
+        target.standardMaterialInput.diffuseTexture = {};
+      }
+      if (texture.kind === "texture" && texture.textureStorage === "stored") {
+        context.expectSameEngine(target, texture, expression);
+        context.reachFeature("material:standard-diffuse-file-texture", expression);
+        context.reachFeature("material:standard-diffuse-pixels-texture", expression);
+        context.emit(
+          `bbl::set_standard_diffuse_texture(${context.requireEngine(target, expression)}, ${target.cpp}, ${texture.cpp});`,
+        );
+        return true;
+      }
+      // A `createTexture2DFromPixels` texture is the second source
+      // this slot takes. It is a C++ value rather than a handle, so
+      // the record takes a copy and the local is recorded as spent:
+      // a transform write afterwards would move the local where the
+      // pin would have moved the material's own texture object.
+      if (texture.kind === "texture" && texture.textureStorage === "pixels") {
+        context.reachFeature(
+          "material:standard-diffuse-pixels-texture",
+          expression,
+        );
+        context.boundPixelsTextures.add(texture.cpp);
+        context.emit(
+          `bbl::set_standard_diffuse_pixels_texture(` +
+            `${context.requireEngine(target, expression)}, ` +
+            `${target.cpp}, ${texture.cpp});`,
+        );
+        return true;
+      }
+      // A loaded image is the third source, and the one the
+      // `.babylon` loader already fills this slot with. The texture
+      // object travels whole rather than as bytes, because the
+      // sampler, the upload flip and the texture-object `invertY`
+      // the Standard UV block reads are all the texture's own.
+      if (texture.kind === "texture" && texture.textureFile) {
+        context.reachFeature(
+          "material:standard-diffuse-file-texture",
+          expression,
+        );
+        context.emit(
+          `bbl::set_standard_diffuse_file_texture(` +
+            `${context.requireEngine(target, expression)}, ` +
+            `${target.cpp}, ${texture.cpp});`,
+        );
+        return true;
+      }
+      // A `createSolidTexture2D` texture is the fourth source. It is one
+      // rgba8unorm texel the pin writes into a 1x1 texture and samples
+      // through `getBilinearSampler`, so it asks none of the three
+      // questions the refusals below ask: it carries no aspect (there is
+      // no attachment and no `_sampleType`), no foreign owner (the scene
+      // made it from its own engine), and no encoding choice (the pin
+      // hard-codes `rgba8unorm` and the value carries no `srgb` field at
+      // all). It is a value rather than a handle like the pixels arm, but
+      // it needs no spent-local mark: a transform write on a solid texture
+      // already refuses by name above.
+      if (texture.kind === "texture" && texture.textureStorage === "solid") {
+        context.expectSameEngine(target, texture, expression);
+        context.reachFeature(
+          "material:standard-diffuse-solid-texture",
+          expression,
+        );
+        context.emit(
+          `bbl::set_standard_diffuse_solid_texture(` +
+            `${context.requireEngine(target, expression)}, ` +
+            `${target.cpp}, ${texture.cpp});`,
+        );
+        return true;
+      }
+      // What this slot accepts, said the way every frame-graph slot
+      // says it. `sampling: "color"` is the aspect the setter folds
+      // -- `rtt.ts` gives a colour view `invertY: true` and the
+      // bilinear sampler, a depth one `invertY: false` and the
+      // nearest -- and `sources` is the ownership: only a target the
+      // scene made, never a geometry task's attachment.
+      const textureCpp = compileRenderTextureValue(
+        context,
+        expression.right,
+        texture,
+        "Reached Standard diffuseTexture",
+        { sampling: "color", sources: ["render-target"] },
+      );
+      context.expectSameEngine(target, texture, expression);
+      context.reachFeature(
+        "material:standard-diffuse-render-texture",
+        expression,
+      );
+      context.emit(
+        `bbl::set_standard_diffuse_render_texture(` +
+          `${context.requireEngine(target, expression)}, ` +
+          `${target.cpp}, ${textureCpp});`,
+      );
+      return true;
+    }
+    return false;
+}
+
+function emitParentAssignment(context: AssignmentContext, state: TargetPropertyAssignment): boolean {
+    const { expression, target, property } = state;
+    if (
+      property === "parent" &&
+      (target.kind === "mesh" || target.kind === "transform-node")
+    ) {
+      // `IParentable.parent`: the write that drives the transform math.
+      // Upstream it leaves `children` alone -- the traversal list is
+      // `push`ed separately -- so this stores the link and nothing else,
+      // and the world composes through it lazily the way
+      // `createWorldMatrixState` composes it. The pin's node and mesh
+      // share the write, and so does the record: only which setter
+      // registers the child for invalidation differs.
+      const mesh = target.kind === "mesh";
+      requireSimpleAssignment(
+        context,
+        expression,
+        mesh ? "mesh parent" : "transform node parent",
+      );
+      const parent = context.compileValue(expression.right);
+      // Upstream `parent` is one nullable SceneNode field, so what may
+      // stand on its right is a question about the FIELD rather than about
+      // this call site: any node whose world matrix the child composes
+      // under. The two native handle tables are what split it into two
+      // lanes, and a MeshRecord keeps both -- so a mesh child accepts a
+      // mesh parent through the overload over the lane that holds it. A
+      // TransformNodeRecord keeps only the node lane, which is why a node
+      // hung under a mesh still refuses: it is a record the port does not
+      // have, not a call site it declines.
+      const meshParent = mesh && parent.kind === "mesh";
+      if (!meshParent) {
+        context.expectKind(parent, "transform-node", expression.right);
+      }
+      context.expectSameEngine(target, parent, expression);
+      if (meshParent) {
+        context.reachFeature("mesh:parenting", expression);
+      }
+      context.emit(
+        `bbl::${
+          mesh ? "set_mesh_transform_parent" : "set_transform_node_parent"
+        }(` +
+          `${context.requireEngine(target, expression)}, ` +
+          `${target.cpp}, ${parent.cpp});`,
+      );
+      return true;
+    }
+    return false;
+}
+
+const targetPropertyHandlers0 = new EmissionMap<string, (context: AssignmentContext, state: TargetPropertyAssignment) => boolean>([
+    ["_localMatrix", emitLocalMatrixAssignment],
+    ["_spriteSheet", emitSpriteSheetAssignment],
+    ["buffer", emitBufferAssignment],
+]);
+
+const targetPropertyHandlers1 = new EmissionMap<string, (context: AssignmentContext, state: TargetPropertyAssignment) => boolean>([
+    ["texture", emitTextureAssignment],
+    ["clearColor", emitClearColorAssignment],
+    ["camera", emitCameraAssignment],
+    ["fixedDeltaMs", emitFixedDeltaMsAssignment],
+    ["renderOrder", emitRenderOrderAssignment],
+    ["name", emitNameAssignment],
+    ["id", emitIdAssignment],
+    ["receiveShadows", emitReceiveShadowsAssignment],
+    ["plugins", emitPluginsAssignment],
+    ["shadowGenerator", emitShadowGeneratorAssignment],
+    ["includedOnlyMeshIds", emitIncludedOnlyMeshIdsAssignment],
+    ["material", emitMaterialAssignment],
+    ["boundMin", emitBoundMinAssignment],
+    ["boundMax", emitBoundMinAssignment],
+    ["skeleton", emitSkeletonAssignment],
+    ["morphTargets", emitMorphTargetsAssignment],
+]);
+
+const targetPropertyHandlers2 = new EmissionMap<string, (context: AssignmentContext, state: TargetPropertyAssignment) => boolean>([
+    ["ormTexture", emitOrmTextureAssignment],
+    ["occlusionTexture", emitOcclusionTextureAssignment],
+    ["diffuseTexture", emitDiffuseTextureAssignment],
+    ["parent", emitParentAssignment],
+]);

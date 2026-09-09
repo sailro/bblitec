@@ -36,6 +36,7 @@ struct DocumentSnapshot {
     std::vector<ListenerNames> listeners;
     std::vector<UiElementHandle> roots;
     std::vector<UiStyleRule> styles;
+    std::uint64_t style_revision = 0;
 };
 struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
@@ -133,6 +134,7 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
     }
     snapshot->roots = engine.ui_root_children;
     snapshot->styles = engine.ui_host_style_rules;
+    snapshot->style_revision = engine.ui_style_revision;
     return snapshot;
 }
 
@@ -140,6 +142,7 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot, const std::shared
     engine.ui_elements = std::move(snapshot.elements);
     engine.ui_root_children = std::move(snapshot.roots);
     engine.ui_host_style_rules = std::move(snapshot.styles);
+    engine.ui_style_revision = snapshot.style_revision;
     for (std::size_t index = 0; index < snapshot.listeners.size(); ++index) {
         const UiElementHandle element{static_cast<std::uint32_t>(index)};
         auto& target = engine.ui_elements[index];
@@ -206,7 +209,7 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
 #if BBLITE_HAS_PBR_RENDERER
     if (engine->registered_scenes.empty() || !engine->registered_scenes.front()) return;
     const auto camera = engine->registered_scenes.front()->camera;
-    if (camera.value < engine->cameras.size()) handle_camera_pointer_event(event, engine->cameras[camera.value], target->second.camera);
+    if (camera.value < engine->cameras.size()) handle_camera_pointer_event(event, handle_at(engine->cameras, camera), target->second.camera);
 #endif
 }
 } // namespace
@@ -269,14 +272,14 @@ UiClientRect window_element_size(UiElementHandle element) {
     update_window_document();
     const auto& layout = current_document().layout;
     if (!layout || element.value >= layout->rectangles.size()) throw std::out_of_range("Window element has no layout box.");
-    auto box = layout->rectangles[element.value];
+    auto box = handle_at(layout->rectangles, element);
     box.left /= layout->pixel_ratio; box.top /= layout->pixel_ratio;
     box.width /= layout->pixel_ratio; box.height /= layout->pixel_ratio;
     return box;
 }
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {
     auto& doc = current_document();
-    if (element.value >= doc.engine.ui_elements.size() || doc.engine.ui_elements[element.value].tag != "canvas") {
+    if (element.value >= doc.engine.ui_elements.size() || handle_at(doc.engine.ui_elements, element).tag != "canvas") {
         throw InvalidCanvasState("Window element is not a canvas.");
     }
     const auto found = doc.canvases.find(element.value);
@@ -287,7 +290,7 @@ std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {
     auto endpoint = doc.host->create_endpoint(300, 150);
     auto canvas = js::make_gc_shared<CanvasElement>(endpoint);
     doc.canvases.emplace(element.value, canvas);
-    doc.engine.ui_elements[element.value].external_gpu_canvas = true;
+    handle_at(doc.engine.ui_elements, element).external_gpu_canvas = true;
     ++doc.engine.ui_revision;
     { std::lock_guard lock(doc.host->mutex); doc.host->canvases.emplace(element.value, std::move(endpoint)); }
     return canvas;
@@ -397,7 +400,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     if (!event) throw std::logic_error("Unknown Window event.");
                     auto& engine = window_document_engine();
                     if (event->element.value >= engine.ui_elements.size()) return;
-                    const auto& record = engine.ui_elements[event->element.value];
+                    const auto& record = handle_at(engine.ui_elements, event->element);
                     if (event->type == "click") {
                         const auto callbacks = record.click_callbacks;
                         for (const auto& callback : callbacks) EventLoop::current().dispatch_callback(callback);
@@ -455,7 +458,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 if (target.value == invalid_handle || target.value >= layout->rectangles.size()) continue;
                 if (down) { pointer_capture = target; pointer_buttons |= SDL_BUTTON_MASK(event.button.button); }
                 if (up) { pointer_buttons &= ~SDL_BUTTON_MASK(event.button.button); if (!pointer_buttons) pointer_capture = {}; }
-                const auto& box = layout->rectangles[target.value];
+                const auto& box = handle_at(layout->rectangles, target);
                 auto packet = std::make_unique<WindowPointerEvent>();
                 packet->element = target;
                 packet->pointer = event;

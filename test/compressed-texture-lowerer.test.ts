@@ -13,12 +13,27 @@ import {
 import { LoweringContext } from "../src/lowering/context.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { writeKtx1 } from "../src/basis-transcode.js";
+import { isKtx1, packageKtx1 } from "../src/compressed-texture-package.js";
 
 function lowerer(): CompressedTextureLowerer {
     return new CompressedTextureLowerer(
         new LoweringContext(new UpstreamSourceStore()),
     );
 }
+
+test("packaging preserves the pinned KTX header and truncation refusals", async () => {
+    assert.equal(isKtx1(new Uint8Array([1, 2, 3])), false);
+    const compressed = lowerer();
+    const bytes = writeKtx1({ gpuFormat: "bc7-rgba-unorm", width: 4, height: 4, mips: [
+        { width: 4, height: 4, bytes: new Uint8Array(16) },
+    ] }, compressed.magicBytes(), compressed.glInternalFormat("bc7-rgba-unorm"), compressed.headerLayout());
+    assert.equal(isKtx1(bytes), true);
+    await assert.rejects(packageKtx1(bytes.subarray(0, 20)));
+    await assert.rejects(packageKtx1(bytes.subarray(0, bytes.length - 1)));
+    const corrupt = bytes.slice();
+    corrupt[0] = 0;
+    await assert.rejects(packageKtx1(corrupt));
+});
 
 test("reads the KTX1 header layout off the pinned parser", () => {
     const header = lowerer().headerLayout();

@@ -7,19 +7,11 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 ## Compiler
 
 - [ ] Extend the remaining core-library forms in data-methods.ts/data-lowering.ts: reverse callbacks, array iterators, sparse `new Array(n)`, typed-array `subarray`, weak collections, Unicode normalization and locale collation. L; generic user TypeScript reaches these, beyond the supported forms in Features.
-- [ ] Nullable string/number truthiness emits bare `has_value()` (data-lowering.ts:8330): "" and 0 read truthy except through the localStorage flag (web-storage.ts:96). S, then sweep the 33 trees declaring `Nullable<std::string>`.
-- [ ] Each frame yield nests another `defer_start_continuation` lambda (compiler.ts:20591): scene261 nests 161, 20 trees nest 2 or more. Emit a counted requeue in the same order. M.
 - [ ] A finally spanning startEngine admits plain writes only (compiler.ts:20545-20567); lower exception completion so a cleanup exception replaces the active one instead of terminating. M; 8 trees reach finally.
-- [ ] Every handle-touching function or method call inlines its whole body (classes.ts:1138-1175, user-functions.ts:2357-2405): the demos are 89-98% repeated text and antigravity-racer's main.cpp compiles in 400-620 s. Emit each body once per specialization and call it. L.
-- [ ] Frame callbacks capture block-scoped and inlined-function locals by `std::ref` (compiler.ts:11736, closure-captures.ts:36-38): quake's `skyTime` and antigravity-racer's CSM receiver run on dead stack slots. Make the by-reference decision lexical. M.
-- [ ] `switch` on a generation-known string emits every arm (statements.ts:963-1000); recursive groups are re-declared per entering call site (user-functions.ts:1650, classes.ts:1292); returned record scalars are boxed per call (compiler.ts:18647); static index resource loops unroll flat (statements.ts:2051-2072, scene214 944 KB). Fold each. M each.
-- [ ] 27 `getText()` recognizers remain in src/compiler; the fetched-atlas bake is keyed on `voxelpack/`, `blocks.ts` and source substrings (fetched-canvas-atlas.ts:26-62) and 1,169 lines of hierarchy-walk provers are gated by the function name `findNode` (handle-collections.ts:2455-3813). Typed user-code IR with one symbol/alias resolver and an escape/retaining-sink model retires them. L.
-- [ ] `probeEmission` (compiler.ts:13857-13885) restores nine fields by hand; features, assets, temporaries, native bindings and type-registry marks mutated in a declined probe persist. Journal every mutable field. M.
+- [ ] Share generation-dependent PBR/glTF function bodies while preserving per-call material and asset metadata (compiler/function-specializations.ts). L; functions that construct PBR materials or load glTF assets.
 - [ ] Union discriminants accept string literals only (data-types.ts:1393); generic user functions refuse (user-functions.ts:691). S each; no corpus reach measured, drop if none.
 - [ ] Typed WGSL parsing falls back to `rawSource` (shader-ir.ts:982) behind three regex predicates (:1154-1194); 37 regex-over-WGSL sites remain across the shader pipeline. Extend the IR to helper functions, constants and loops (:1320) before removing any. L.
-- [ ] The UBO writer (pinned-ubo-writer-lowerer.ts:738-1451) and the glTF interpolation renderer (gltf/animation-interpolation.ts:91-231) are their own expression walkers; making them clients of the numeric lowerer needs two spelling knobs (float literals, minimal parenthesization) so the pinned bytes stay identical. M.
-- [ ] 115 hand-rolled `new PinnedNumericLowerer` skeletons beside 87 `lowerPinnedFunction` sites (pinned-function-lowerer.ts): add caller-allocated locals and guard-arm selection to the generic path and migrate. L, byte-neutral per file.
-- [ ] The glTF loader template is a 246 KB hand-written C++ program of which 14-17% is lowered (templates/gltf-loader-cpp.ts); the `.babylon` loader is hand-written entirely (templates/babylon-loader-cpp.ts). Continue the leaf-lowering rounds. L.
+- [ ] Lower remaining loader control flow from pinned ASTs: glTF caches, mesh construction and animation orchestration, and remaining .babylon paths (lowering/templates/). L; imported assets.
 
 ## Assets and composition
 
@@ -27,10 +19,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] js_voxel_file.hpp:65 hand-parses one save document; replace with typed JSON lowering. M; minecraft, sandblox.
 - [ ] Post-process option kinds are classified by a literal's field names (post-process-options.ts:385-407); derive them from the pinned option interface as screen-space-lowerer.ts:1086 does. S.
 - [ ] material-plugin.ts evaluates `getCustomCode` bodies (:499-604) apart from `PinnedShaderText`; share the evaluator. S/M.
-- [ ] Record-field assignments key on kind "material" plus property (assignments.ts:2391-2394): a PBR handle writing diffuseColor/specularColor emits the Standard field silently. Carry the family. S.
 - [ ] Two sources whose 32-bit FNV names collide would overwrite one packaged asset (compiler/assets.ts:550); refuse the collision in `registerAsset`. S.
-- [ ] Transcoded Basis/KTX2 chains are wrapped in a KTX1 container (basis-transcode.ts:248) that the generated parser copies mip by mip out of a whole-file read (compressed-texture-lowerer.ts:744, :776); ship the mip list and parse through spans (`CompressedMipLevel` in runtime.hpp, the glTF template, cli.ts). M; scenes 25/36/112.
-- [ ] The image-codec list is spelled seven times (image-codecs.ts:7, feature-activation.ts:2299, browser-texture-function.ts:664, native/CMakeLists.txt:36, native/vcpkg.json features, package-demo.ps1:94-117/258-269, sdl3-image portfile.cmake:22-39). One manifest. S/M.
 - [ ] `BBLITE_RENDERER_TRANSMISSION` is 1 in five trees whose composed set carries no refraction arm (littlest-tokyo, scene177, scene178, scene26, tetris); derive it from the composed arm like the other capability defines. S, changes five binaries.
 - [ ] `renderer-lowerer.ts:3277-3470 assertPinnedShaderFormulas` asserts fragment formulas of a transcription that no longer exists; the four `lowerShaders` arm booleans exist for it alone. Delete. S.
 
@@ -54,18 +43,16 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 | Navigation | Tiled builds without obstacles (navigation.ts:715); reachRadius (:561); no getRandomPointAround or dispose arm |
 | Physics | Constraint springs/motors/retained handles (physics.ts:228-264); groundMesh-only square heightfields (:217); inertia orientation (:1341); character/viewer observables (character-controller.ts:52, physics.ts:288-319); concave/compound proximity targets refuse in the PAL |
 | Audio | setMasterVolume ramps and eleven REFUSED_BY_NAME APIs (audio.ts:56-93); bus.ts is not lowered (output-projection.ts:446); no browser/native offline PCM gate |
-| UI | Tag allowlist (compiler.ts:8484); no retained UI under standalone frame-graph/effect drivers (:6130); Canvas2D partial clear, source-rect blits, transforms and clipping (ui.md#canvas2d) |
-| Text | Static font size/options; live color arguments and run edits refuse (text.ts:134, text-surface.ts:59-149); one text-only default scene (upstream-lower.ts:759-764) |
-| Post-process/TAA | TAA source preparation covers Standard colour tasks only (compiler.ts:1068, upstream-lower.ts:769); fog only for PBR/Standard surfaces (renderer-lowerer.ts:2991); scene-code transmissive materials have no composed arm (pinned-material-arms.ts:1311) |
+| UI | Tag allowlist (compiler/ui-projection.ts); no retained UI under standalone frame-graph/effect drivers; Canvas2D partial clear, source-rect blits, transforms and clipping (ui.md#canvas2d) |
+| Text | Static font size/options; live color arguments and run edits refuse; retained text requires one text-only default scene (pal_text_scene.hpp) |
+| Post-process/TAA | TAA preparation covers Standard colour tasks only (pal_temporal_shared.hpp); fog only for PBR/Standard surfaces; scene-code transmissive materials have no composed arm |
 | Flow graphs | 18 admitted block types; other blocks, accessors, context, BABYLON_flow_graph and data cycles refuse (features.md#flow-graphs) |
 | Assets | Parented/geometry-less .babylon nodes (features.md#asset-loading-and-upload); collector rest/optional parameters (gltf-mesh-walks.ts:28); material extensions/texture transforms/BasisU with public albedo reads (gltf-material-texture-identity.ts:18); animated/morphed GPU instances (gltf-loader-cpp.ts:2832); Standard VAT (pinned-standard-variants.ts:494) |
 
 - [ ] Bullet writes an ACTION target pose immediately (pal_physics_bullet.cpp:2763-2770); Havok integrates a deferred target and keeps the derived velocity. M; scene 106.
 - [ ] Solver residuals at the registered poses (status.md: 105 0.274, 41 0.215, 101 0.178, 48 0.060, 45 0.039). Trace per substep with BBLITE_PHYSICS_TRACE (pal_physics_bullet.cpp:1715) before touching authored scenes or thresholds.
 - [ ] One 0.28 foreground residual is shared by scenes 11/152/218/219 (status.md); unit-scale and browser/native palette controls untested. M.
-- [ ] Retire regression-node-geometry-output, -scene-skeleton, -imported-mesh-walk, -physics-mesh-shape and -shadow-pbr-only: their registry "Retires when" conditions (scene-registry.ts:767/805/983/4307) are met by scenes 149/231/104-105/215. S.
 - [ ] Editing gizmos are display-only (display-only-editing-gizmo adaptation; scenes 221/222/224): bounding-box and scale drags are not reached. M.
-- [ ] Six generation-time feature-pair refusals stand where the constraint is per object (upstream-lower.ts:758-771, 2666-2740: detailed picking with thin instances, billboard picking with floating origin or splats, TAA with imported PBR, the two text regexes); refuse where the pairing is known. M each.
 
 ## Worker and platform
 
@@ -83,13 +70,11 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 ## Backend and performance
 
 - [ ] No test compares .slots sidecars with PAL binding tables (test/ checks survival and bytes only); SDL keeps four PinnedStageSlots pairs (pal_sdl_gpu.cpp:941-1084) and Dawn its own node layout caches (pal_dawn.cpp:7158, :7307). M.
-- [ ] create_torus is emitted in 182 trees and reached in 12; morph-shadow 19/2; light/camera gizmos 7/1. Gate at reach. M, deletes generated code.
+- [ ] Morph-shadow is emitted in 19 trees and reached in 2; light/camera gizmos 7/1. Gate at reach. M, deletes generated code.
 - [ ] Shadow generator maps/buffers are released only at teardown (pal_sdl_gpu.cpp:3891, :6022) and handles index the vector; reclaim retired generators without compacting. M.
 - [ ] The two scene frame loops are single 6.7-6.9k-line functions (pal_sdl_gpu.cpp:7180-14035, pal_dawn.cpp:10143-16812) and the frame conductor is re-spelled in eight loops; the frame-graph target planning and the 2D/effect/frame-graph conductors are duplicated per backend (~500 lines). Share one conductor template and one `plan_render_targets`. L.
 - [ ] `pal_dawn.cpp` and `pal_sdl_gpu.cpp` are recompiled per scene because pal_gpu_shared.hpp includes six per-scene variant headers (35% of all native compile time); the ten scene-invariant PAL units compile in `bblite_pal_common` with no generated include, so a compiler cache keyed on that line and PCH bucketing come next, then the variant tables move out of the two backend units. L.
-- [ ] `sync_style_sheet` rebuilds and re-projects the whole sheet every frame before comparing (pal_ui_rml.cpp:3306, :5004); the crosshair is a private property (:1929), there is no bare tag selector kind (:1729-1749), line height is hardcoded 1.32 (:3155). M.
+- [ ] The crosshair is a private property (pal_ui_rml.cpp:1929), there is no bare tag selector kind (:1729-1749), line height is hardcoded 1.32 (:3155). M.
 - [ ] Dawn builds and deploys on Windows only (build-dawn.ps1:60-65, :105) and no SPIR-V ships. L; validate Linux/macOS against browser references before claiming either.
 - [ ] Drop sdl-multisample-read.patch (SDL#15838) and d3d12-multisample-lines.patch (SDL#16182) when an SDL release passes their controls; png-grey-ramp-last-index.patch self-retires. S per release.
-- [ ] Floating origin recomputes the eye offset per draw (pal_gpu_shared.hpp:626 via :347) although frame_floating_origin_offset exists (:596); a transform-only version bump rebakes and re-uploads whole vertex buffers, twice with pinned_vertices (pal_dawn.cpp:13137-13181). M; 9 trees.
-- [ ] `compile-shaders.ps1` re-implements target selection, tool discovery, stage identity and artifact lists that src owns and holds ~510 lines of SDL binding semantics as PowerShell regexes; one WGSL change re-runs the pass over all 307 directories. Port to TypeScript with a per-directory checkpoint; prove with `neutrality-generated`. L.
-- [ ] The memory verdict cannot see object-level growth and prints a negative retired count (parity-scene.ts:1190-1195; the `[mem]` line at pal_gpu_shared.hpp:6612 carries no node count). S.
+- [ ] A floating-origin transform-only version bump rebakes and re-uploads whole vertex buffers, twice with pinned_vertices (pal_dawn.cpp:13137-13181). M; 9 trees.

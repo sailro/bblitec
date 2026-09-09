@@ -53,6 +53,7 @@ import { reachedImageCodecs } from "./image-codecs.js";
 // modules (the HDR one transitively loads the browser harness), so a static
 // import makes every compile pay for asset kinds it never packages.
 import { compressedTextureLowerer } from "./compiler/compressed-texture.js";
+import { isKtx1, packageKtx1 } from "./compressed-texture-package.js";
 import { parseDataUrl } from "./data-url.js";
 import { localAssetPath } from "./asset-source.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
@@ -304,7 +305,9 @@ async function materializeAsset(
     }
 
     if (asset.kind === "babylon") {
-        await packageBabylon(source, dirname(inputPath), destination);
+        await packageBabylon(source, dirname(inputPath), destination,
+            meshWalks.map((walk, index) => asset.meshWalks?.includes(index) ? walk : undefined),
+            asset.babylonTextureModes?.includes(true) ?? true);
         return;
     }
 
@@ -374,12 +377,12 @@ async function materializeAsset(
         );
         writeFileSync(
             destination,
-            writeKtx1(
+            await packageKtx1(writeKtx1(
                 transcoded,
                 lowerer.magicBytes(),
                 lowerer.glInternalFormat(transcoded.gpuFormat),
                 lowerer.headerLayout(),
-            ),
+            )),
         );
         return;
     }
@@ -409,13 +412,10 @@ async function materializeAsset(
     // names" for all three kinds. Spelling the local case as the complement of
     // a scheme test is what made a data URL have to be taught to two
     // predicates in this file rather than one.
-    writeFileSync(
-        destination,
-        await resolveGeometryExtensions(
-            await assetBytes(source, inputPath),
-            source,
-        ),
-    );
+    const bytes = await assetBytes(source, inputPath);
+    writeFileSync(destination, asset.kind === "texture" && isKtx1(bytes)
+        ? await packageKtx1(bytes)
+        : await resolveGeometryExtensions(bytes, source));
 }
 
 function materializedAssetSource(
@@ -737,16 +737,7 @@ async function main(): Promise<void> {
             ],
         });
     }
-    if (specializationFeatures.materialExtensionPayload) {
-        result.manifest.adaptations.push({
-            id: "packaged-gltf-material-extension-initialization",
-            category: "rendering",
-            sourceSemantics: "The pinned loader executes material extension handlers after decoding textures.",
-            nativeSemantics: "Packaging executes those handlers with textureInfo carriers, preserving their predicates, numeric values and ordered merge. Native loading hydrates anisotropy and diffuse-transmission records; GPU uploads and animated UV transforms remain live.",
-            risk: "low",
-            validation: ["glTF material extension payload semantic tests", "scene241 both-backend animation and camera gates"],
-        });
-    }
+
     if (specializationFeatures.eightInfluenceSkinning) {
         // The pinned loader reads the second influence pair and skins eight
         // influences (MSH_HAS_SKELETON_8); the generated loader reads four.
@@ -785,9 +776,8 @@ async function main(): Promise<void> {
                 "chain it produced.",
             nativeSemantics:
                 "Packaging runs the pin's own loader in headless Chromium " +
-                "and writes what it uploaded back into the glTF as the KTX1 " +
-                "container the runtime's one compressed-texture reader " +
-                "parses, so the extension is resolved away like the " +
+                "and packages its GPU blocks with the pin's parsed mip list " +
+                "for native span-based upload, so the extension is resolved away like the " +
                 "geometry extensions and the loader that ships sees an " +
                 "ordinary asset. The decoder is a WebAssembly module the " +
                 "page injects with a script tag, and the target format is a " +
@@ -929,10 +919,7 @@ async function main(): Promise<void> {
         if (gltfHasGaussianSplats(assetPath)) {
             assetFeatures.push("loader:splat" as Feature);
         }
-        // KHR_texture_basisu resolves to a KTX1 container at packaging for
-        // the same reason, and the generated loader reads it through the
-        // pin's own `parseKtx1` -- which `texture:compressed` is what
-        // emits.
+        // Packaged KHR_texture_basisu mip payloads reach the compressed reader.
         if (gltfHasCompressedImages(assetPath)) {
             assetFeatures.push("texture:compressed" as Feature);
         }
@@ -1386,7 +1373,7 @@ async function main(): Promise<void> {
         // No scene API reaches KHR_gaussian_splatting, so the asset alone
         // decides -- the shape the spec-gloss workflow replacement takes.
         gaussianSplats: specializationFeatures.gaussianSplats,
-        // KHR_texture_basisu likewise: packaging leaves KTX1 containers on
+        // KHR_texture_basisu likewise: packaging leaves compressed mip payloads on
         // the document, and only the asset says whether the loader reads
         // one.
         compressedImages: specializationFeatures.compressedImages,
@@ -1421,7 +1408,6 @@ async function main(): Promise<void> {
             specializationFeatures.animationPointerMaterials,
         assetTransmission: specializationFeatures.assetTransmission,
         materialSpecular: specializationFeatures.materialSpecular,
-        materialExtensionPayload: specializationFeatures.materialExtensionPayload,
         // The one static `selectVariant` a scene reaches: the loader reads
         // the variant order and the per-primitive mappings out of the
         // document, so only the chosen name is compiled in.

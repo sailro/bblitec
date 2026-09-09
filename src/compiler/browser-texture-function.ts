@@ -1,45 +1,14 @@
-/**
- * Textures a scene function PRODUCES with a browser canvas, executed at
- * generation.
- *
- * The two shapes this owns are both "a function that owns a canvas and
- * ends at a pinned texture factory", and neither can be folded:
- *
- *   - A rasterized face (`sandblox/character.ts`) draws ellipses and a
- *     quadratic stroke into a 2D context and reads the pixels back. Those
- *     bytes are a browser rasterizer's — nothing outside a browser
- *     reproduces its antialiasing — so the shape is unlowerable in
- *     principle, exactly as the drawn sprite atlas is.
- *   - A procedural stud tile (`sandblox/stud-texture.ts`) is arithmetic,
- *     so in principle it could be lowered. It is not lowerable in THIS
- *     compiler: `Math.round` is not among the Math functions the data
- *     model compiles, and the value is fragile — a 64x64 float height
- *     field rounded into bytes, whose smoothstep rim lands values against
- *     rounding boundaries. It then crosses `OffscreenCanvas` →
- *     `convertToBlob` → `URL.createObjectURL` → `loadTexture2D`, which is
- *     a browser PNG encode this compiler has no representation for at
- *     all.
- *
- * So the module is executed in the engine the golden runs it in, and what
- * its texture factories were handed is baked. The tradeoff is the drawn
- * atlas's, and it is the same one: the baked bytes depend on the Chrome
- * that compiled them, recorded as a fidelity adaptation.
- *
- * What is executed is bounded by structure, never by a name: the target
- * is a one-parameter function whose same-file call closure owns a canvas
- * and reaches `createTexture2DFromPixels` and/or `loadTexture2D` and
- * nothing else from the pin. Every other pinned import throws if reached,
- * the engine argument is a proxy that throws on any property read, and a
- * `loadTexture2D` URL that is not an object URL refuses. The compiler
- * walk is synchronous, so the Chromium run crosses a `spawnSync`
- * subprocess boundary — the shape `fetched-canvas-atlas.ts` and
- * `browser-generated-string.ts` already take — and the result replays
- * from the content-addressed bake cache keyed on the closure's transitive
- * bytes, the pin, and the browser.
- */
-import { dirname, resolve } from "node:path";
+// Closed browser texture producers execute in Chromium; the bake records texture bytes and options.
+import { EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+import {
+    dirname,
+    resolve,
+} from "node:path";
+import { imageCodecs } from "../image-codec-manifest.js";
 
 import ts from "typescript";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 
 import {
     bakeReplayEnabled,
@@ -72,9 +41,6 @@ import {
 } from "./symbols.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import type {
-    CompileAsset,
-    Feature,
-    ResolvedCompileOptions,
     Value,
 } from "./types.js";
 import {
@@ -129,27 +95,9 @@ interface BrowserTextureBake {
 
 // ── Source shape ─────────────────────────────────────────────────────────────
 
-/**
- * A cheap text gate in front of the structural walk, so an ordinary local
- * call pays a substring scan rather than a closure walk.
- */
-function mayOwnBrowserTextures(source: ts.SourceFile): boolean {
-    const text = source.text;
-    return (
-        (text.includes("OffscreenCanvas") ||
-            text.includes('createElement("canvas")') ||
-            text.includes("createElement('canvas')")) &&
-        supportedFactories.some((factory) => text.includes(factory))
-    );
-}
-
 /** Walk `node`'s value positions; type annotations are not executed. */
 function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
-    ts.forEachChild(node, (child) => {
-        if (ts.isTypeNode(child) || ts.isTypeAliasDeclaration(child)) return;
-        visit(child);
-        forEachValueNode(child, visit);
-    });
+    forEachAnalysisNode(node, visit, { includeRoot: false, types: "skip", skip: ts.isTypeAliasDeclaration });
 }
 
 /** Whether a value position under `node` satisfies `predicate`. */
@@ -157,11 +105,7 @@ export function containsValueNode(
     node: ts.Node,
     predicate: (child: ts.Node) => boolean,
 ): boolean {
-    let found = false;
-    forEachValueNode(node, (child) => {
-        if (!found && predicate(child)) found = true;
-    });
-    return found;
+    return someAnalysisNode(node, predicate, { includeRoot: false, types: "skip", skip: ts.isTypeAliasDeclaration });
 }
 
 /**
@@ -169,22 +113,19 @@ export function containsValueNode(
  * through the DOM library's own `OffscreenCanvas` or `document`.
  */
 export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
-    let found = false;
-    forEachValueNode(node, (child) => {
-        if (found) return;
+    return containsValueNode(node, (child) => {
         if (
             ts.isNewExpression(child) &&
             ts.isIdentifier(child.expression) &&
             child.expression.text === "OffscreenCanvas" &&
             isDefaultLibraryIdentifier(checker, child.expression)
         ) {
-            found = true;
-            return;
+            return true;
         }
         const firstArgument = ts.isCallExpression(child)
             ? child.arguments[0]
             : undefined;
-        if (
+        return (
             ts.isCallExpression(child) &&
             ts.isPropertyAccessExpression(child.expression) &&
             child.expression.name.text === "createElement" &&
@@ -194,11 +135,8 @@ export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
             firstArgument !== undefined &&
             ts.isStringLiteral(firstArgument) &&
             firstArgument.text === "canvas"
-        ) {
-            found = true;
-        }
+        );
     });
-    return found;
 }
 
 /** The module-scope `VariableDeclaration` an identifier names, if any. */
@@ -235,7 +173,6 @@ export function browserTextureFunctionShape(
     if (!name || !ts.isSourceFile(declaration.parent)) return undefined;
     if (declaration.parameters.length !== 1) return undefined;
     const sourceFile = declaration.parent;
-    if (!mayOwnBrowserTextures(sourceFile)) return undefined;
     if (!importsAreExecutable(sourceFile)) return undefined;
 
     let factories = 0;
@@ -385,18 +322,9 @@ function returnShape(
     declaration: ts.FunctionDeclaration,
 ): "value" | "record" | undefined {
     const returns: ts.ReturnStatement[] = [];
-    const visit = (node: ts.Node): void => {
-        if (
-            ts.isFunctionDeclaration(node) ||
-            ts.isFunctionExpression(node) ||
-            ts.isArrowFunction(node)
-        ) {
-            return;
-        }
+    forEachAnalysisNode(declaration.body!, (node) => {
         if (ts.isReturnStatement(node)) returns.push(node);
-        ts.forEachChild(node, visit);
-    };
-    ts.forEachChild(declaration.body!, visit);
+    }, { includeRoot: false, skip: node => ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) });
     const returned = returns[0]?.expression;
     if (returns.length !== 1 || !returned) return undefined;
     if (!ts.isObjectLiteralExpression(returned)) return "value";
@@ -411,7 +339,7 @@ function returnShape(
 
 // ── Execution ────────────────────────────────────────────────────────────────
 
-interface ClosureModule {
+export interface ClosureModule {
     /** Repository-relative, forward-slashed: the module's identity. */
     key: string;
     javascript: string;
@@ -425,7 +353,7 @@ interface ClosureModule {
  * which is how a non-exported local function is reached without editing
  * what the module exports.
  */
-function closureModules(
+export function closureModules(
     entryPath: string,
     entryFunction: string,
     repositoryRoot: string,
@@ -490,9 +418,9 @@ interface CachedBrowserTextureBake {
 }
 
 const maximumBakeMemoBytes = 64 * 1024 * 1024;
-const bakes = new Map<string, CachedBrowserTextureBake>();
+const bakes = new EmissionMap<string, CachedBrowserTextureBake>();
 let bakeMemoBytes = 0;
-const producerBakes = new WeakMap<
+const producerBakes = new EmissionWeakMap<
     ts.SourceFile,
     Map<string, BrowserTextureBake>
 >();
@@ -608,7 +536,7 @@ export function bakeBrowserTextureFunction(
     if (memoEnabled) {
         const sourceMemo =
             producerMemo ??
-            new Map<string, BrowserTextureBake>();
+            new EmissionMap<string, BrowserTextureBake>();
         sourceMemo.set(producerKey, decoded);
         if (!producerMemo) {
             producerBakes.set(shape.sourceFile, sourceMemo);
@@ -670,7 +598,7 @@ export function decodeBrowserTextureBake(
                 refuse(`unexpected factory '${String(entry.factory)}'.`);
             }
             const mediaType = String(entry.mediaType);
-            if (!/^image\/(?:png|jpeg|webp)$/.test(mediaType)) {
+            if (!imageCodecs.some((codec) => codec.mimeType === mediaType)) {
                 refuse(
                     `loadTexture2D object URL carries '${mediaType}', which ` +
                         "is not one of the image types this port packages.",
@@ -951,21 +879,21 @@ export { pngDimensions } from "./asset-bytes-sync.js";
 // ── Lowering ─────────────────────────────────────────────────────────────────
 
 /** What the lowering reads off the compiler; the walk is a superset. */
-interface BrowserTextureCallContext {
-    readonly checker: ts.TypeChecker;
-    readonly options: ResolvedCompileOptions;
-    /** The names this compilation executed, for the fidelity adaptation. */
-    readonly browserTextureFunctions: Set<string>;
-    compileValue(expression: ts.Expression): Value;
-    registerAsset(source: string, kind: CompileAsset["kind"]): CompileAsset;
-    allocateTemporaryCppName(label: string): string;
-    cppString(value: string): string;
-    reachFeature(feature: Feature, site?: ts.Node): void;
-    emit(line: string): void;
-    fail(node: ts.Node, message: string): never;
-}
+interface BrowserTextureCallContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "options"
+        | "browserTextureFunctions"
+        | "compileValue"
+        | "registerAsset"
+        | "allocateTemporaryCppName"
+        | "cppString"
+        | "reachFeature"
+        | "emit"
+        | "fail"
+    > {}
 
-const producerShapes = new WeakMap<
+const producerShapes = new EmissionWeakMap<
     ts.Node,
     BrowserTextureFunctionShape | null
 >();

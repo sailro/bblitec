@@ -1,3 +1,21 @@
+import { EmissionMap, EmissionSet } from "../emission-transaction.js";
+import type { LoweringServices } from "../lowering-services.js";
+// The physics family: `createHavokWorld`, `createPhysicsAggregate`,
+// `onPhysicsAfterStep`.
+//
+// The pin's own boundary is the one this port keeps. `havok.ts` takes the
+// Havok WASM module as a *parameter* (`createHavokWorld(scene, hknp)`) and
+// only ever calls `HP_*` entry points on it, so the module is already a
+// replaceable back end rather than a dependency baked through the layer.
+// Everything above that line -- the world record, the body list, the shape
+// parameters derived from a mesh's bounds, the pre/post-step sync order,
+// the aggregate's own ordering -- is Babylon behaviour and is generated
+// from the pinned declarations. Everything below it is the PAL's.
+//
+// So the `hknp` a scene loads reaches nothing native: `createEngineModule`
+// values are accepted and dropped, the way the material-tracking installers
+// are. A native build links a solver through `pal_physics_*.cpp` and never
+// sees the WASM the browser loaded.
 // The physics family: `createHavokWorld`, `createPhysicsAggregate`,
 // `onPhysicsAfterStep`.
 //
@@ -17,54 +35,49 @@
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { characterVectorValue } from "./character-controller.js";
-import type { CompilerSymbols } from "../symbols.js";
-import { isDataTuple, tupleComponents, type DataTypeRegistry } from "../data-types.js";
+import { isDataTuple, tupleComponents } from "../data-types.js";
 import {
-  pinnedEnumMemberName,
-  validateObjectProperties,
-  staticJsonValue,
-  type ObjectValidationContext,
+    pinnedEnumMemberName,
+    validateObjectProperties,
+    staticJsonValue,
+    type ObjectValidationContext,
 } from "../option-helpers.js";
 import type { Value } from "../types.js";
-import type { AssignmentContext } from "../assignments.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
-  requiredObjectNumber,
-  type RequiredObjectNumberContext,
+    requiredObjectNumber,
+    type RequiredObjectNumberContext,
 } from "./engine-options.js";
 
 export interface PhysicsIntrinsicContext
-  extends
-    IntrinsicCallContext,
+    extends IntrinsicCallContext,
     ObjectValidationContext,
-    RequiredObjectNumberContext {
-  readonly symbols: CompilerSymbols;
-  readonly checker: ts.TypeChecker;
-  readonly dataTypes: DataTypeRegistry;
-  unwrap(expression: ts.Expression): ts.Expression;
-  compileVec3(
-    expression: ts.Expression,
-    precision?: "float" | "double",
-  ): string;
-  compileBoolean(expression: ts.Expression): string;
-  castNumber(value: Value, precision: "float" | "double"): string;
-  vec3FromRecord(value: Value, node: ts.Node, precision?: "float" | "double"): string;
-  materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
-  pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
-  readResolvedProperty(owner: Value, expression: ts.PropertyAccessExpression): Value | undefined;
-  bindDataTuple(value: Value, arity: number, label?: string): string;
-  expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-  expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression;
-  compileFrameCallback(expression: ts.Expression, signature?: import("../types.js").FrameCallbackSignature, retainCaptures?: boolean): string;
-  compilePhysicsCollisionCallback(expression: ts.Expression): string;
-  compilePhysicsTriggerCallback(expression: ts.Expression): string;
-  allocateTemporaryCppName(label: string): string;
-  emit(line: string): void;
-  resolveStaticExpression(expression: ts.Expression): ts.Expression;
-  reachPhysicsViewerMaterial(node: ts.Node, color: readonly [number, number, number, number]): { name: string; id: number };
-  recordRuntimeMeshProfile(index: number): void;
-  recordSceneMeshMaterial: AssignmentContext["recordSceneMeshMaterial"];
-}
+    RequiredObjectNumberContext,
+    Pick<LoweringServices,
+        | "symbols"
+        | "checker"
+        | "dataTypes"
+        | "unwrap"
+        | "compileVec3"
+        | "compileBoolean"
+        | "castNumber"
+        | "vec3FromRecord"
+        | "materializeEscapingValue"
+        | "pinValueToTemporary"
+        | "readResolvedProperty"
+        | "bindDataTuple"
+        | "expectSameEngine"
+        | "expectObjectLiteral"
+        | "compileFrameCallback"
+        | "compilePhysicsCollisionCallback"
+        | "compilePhysicsTriggerCallback"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "resolveStaticExpression"
+        | "reachPhysicsViewerMaterial"
+        | "recordRuntimeMeshProfile"
+        | "recordSceneMeshMaterial"
+    > {}
 
 /**
  * The `js::Nullable<double>` an optional numeric argument or option
@@ -209,826 +222,7 @@ export function compilePhysicsIntrinsic(
   importedName: string,
   call: ts.CallExpression,
 ): Value | undefined {
-  switch (importedName) {
-    case "createHeightFieldShape": {
-      context.expectArgumentCount(call, 2, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      const options = context.expectObjectLiteral(argumentAt(call, 1));
-      validateObjectProperties(context, options, ["groundMesh"], "Heightfields currently require a groundMesh square grid.");
-      const expression = context.objectProperty(options, "groundMesh");
-      if (!expression) context.fail(options, "Heightfields currently require a groundMesh square grid.");
-      const mesh = context.compileValue(expression);
-      context.expectKind(mesh, "mesh", expression);
-      context.expectSameEngine(world, mesh, call);
-      context.reachFeature("physics:heightfield", call);
-      return { kind: "physics-shape", cpp: `bbl::upstream::create_physics_heightfield_from_ground(${world.cpp}, ${mesh.cpp})`, ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}) };
-    }
-    case "createPhysicsConstraint": {
-      context.expectArgumentCount(call, 4, 6);
-      if (!ts.isExpressionStatement(call.parent)) context.fail(call, "The reached constraint requires a discarded factory result.");
-      const world = context.compileValue(argumentAt(call, 0));
-      const parent = context.compileValue(argumentAt(call, 1));
-      const child = context.compileValue(argumentAt(call, 2));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(parent, "physics-body", argumentAt(call, 1));
-      context.expectKind(child, "physics-body", argumentAt(call, 2));
-      context.expectSameEngine(world, parent, call);
-      context.expectSameEngine(world, child, call);
-      const compileType = (expression: ts.Expression): string => {
-        const node = context.resolveStaticExpression(expression);
-        if (ts.isConditionalExpression(node)) return `(${context.compileBoolean(node.condition)} ? ${compileType(node.whenTrue)} : ${compileType(node.whenFalse)})`;
-        pinnedEnumMemberName(context, node, "PhysicsConstraintType");
-        return context.compileNumber(node, "double");
-      };
-      const type = compileType(argumentAt(call, 3));
-      const vectors = [["pivotA", "pivot_a"], ["pivotB", "pivot_b"], ["axisA", "axis_a"], ["axisB", "axis_b"], ["perpAxisA", "perp_axis_a"], ["perpAxisB", "perp_axis_b"]] as const;
-      const fields: string[] = [];
-      if (call.arguments[4]) {
-        const options = context.expectObjectLiteral(call.arguments[4]);
-        validateObjectProperties(context, options, [...vectors.map(([name]) => name), "maxDistance", "collision"], "Constraint options support anchor vectors, maximum distance and collision.");
-        for (const [name, field] of vectors) {
-          const value = context.objectProperty(options, name);
-          if (value) fields.push(`.${field} = ${compileNullableVec3(context, value)}`);
-        }
-        const maximum = context.objectProperty(options, "maxDistance");
-        if (maximum) fields.push(`.max_distance = ${compileNullableNumber(context, maximum)}`);
-        const collision = context.objectProperty(options, "collision");
-        if (collision) fields.push(`.collision = ${context.compileBoolean(collision)}`);
-      }
-      const limits: string[] = [];
-      if (call.arguments[5]) {
-        const array = context.unwrap(call.arguments[5]);
-        if (!ts.isArrayLiteralExpression(array)) context.fail(array, "Constraint limits require an inline array.");
-        for (const element of array.elements) {
-          const limit = context.expectObjectLiteral(element);
-          validateObjectProperties(context, limit, ["axis", "minLimit", "maxLimit"], "Constraint limits require both bounds; stiffness and damping are not represented.");
-          const axis = context.objectProperty(limit, "axis"), minimum = context.objectProperty(limit, "minLimit"), maximum = context.objectProperty(limit, "maxLimit");
-          if (!axis || !minimum || !maximum) context.fail(limit, "Constraint limits require an axis, minLimit and maxLimit.");
-          pinnedEnumMemberName(context, context.resolveStaticExpression(axis), "PhysicsConstraintAxis");
-          limits.push(`{${context.compileNumber(axis, "double")}, ${context.compileNumber(minimum, "double")}, ${context.compileNumber(maximum, "double")}}`);
-        }
-      }
-      context.reachFeature("physics:constraints", call);
-      context.emit(`bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}});`);
-      return { kind: "void", cpp: "" };
-    }
-    case "createPhysicsViewer": {
-      context.expectArgumentCount(call, 2, 3);
-      const scene = context.compileValue(argumentAt(call, 0));
-      const world = context.compileValue(argumentAt(call, 1));
-      context.expectKind(scene, "scene", argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 1));
-      context.expectSameEngine(scene, world, call);
-      let color: readonly [number, number, number, number] = [1, 1, 1, 1];
-      if (call.arguments[2]) {
-        const options = context.expectObjectLiteral(call.arguments[2]);
-        validateObjectProperties(context, options, ["color"], "Physics viewer options support color only.");
-        const expression = context.objectProperty(options, "color");
-        if (expression) {
-          const values = staticJsonValue(context, expression);
-          if (!Array.isArray(values) || values.length !== 4 || !values.every(value => typeof value === "number" && Number.isFinite(value))) {
-            context.fail(expression, "Physics viewer color requires four construction-known finite numbers.");
-          }
-          color = values as [number, number, number, number];
-        }
-      }
-      context.reachFeature("physics:viewer", call);
-      const variant = context.reachPhysicsViewerMaterial(call, color);
-      return { kind: "physics-viewer", cpp: `bbl::upstream::create_physics_viewer(${scene.cpp}, ${world.cpp}, ${variant.id}u)`,
-        ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}), shaderVariant: variant.name };
-    }
-    case "showPhysicsBody": {
-      context.expectArgumentCount(call, 2, 2);
-      if (!ts.isExpressionStatement(call.parent)) {
-        context.fail(call, "Physics debug geometry materialization requires a discarded showPhysicsBody return; observing its debug mesh or nullable result is not yet supported.");
-      }
-      const viewer = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(viewer, "physics-viewer", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      if (!viewer.shaderVariant) context.fail(argumentAt(call, 0), "Physics viewer material must retain its construction-known variant.");
-      const profile = context.recordSceneMesh("from-data", { hasUv2: false, hasTangents: false, hasColors: false });
-      context.recordRuntimeMeshProfile(profile);
-      context.recordSceneMeshMaterial(profile, { pbrMaterial: null, nodeMaterial: null, standardMaterial: false, sceneShaderVariant: viewer.shaderVariant });
-      for (const feature of ["physics:viewer", "mesh:from-data", "material:shader", "renderer:scene", "scene:remove"] as const) context.reachFeature(feature, call);
-      return { kind: "void", cpp: `bbl::upstream::show_physics_body(${viewer.cpp}, ${body.cpp}, ${profile}u)` };
-    }
-    case "hidePhysicsBody":
-    case "disposePhysicsViewer": {
-      if (importedName === "hidePhysicsBody" && !ts.isExpressionStatement(call.parent)) {
-        context.fail(call, "Physics debug geometry materialization requires a discarded hidePhysicsBody result; observing debug membership is not yet supported.");
-      }
-      context.expectArgumentCount(call, importedName === "hidePhysicsBody" ? 2 : 1, importedName === "hidePhysicsBody" ? 2 : 1);
-      const viewer = context.compileValue(argumentAt(call, 0));
-      context.expectKind(viewer, "physics-viewer", argumentAt(call, 0));
-      if (importedName === "disposePhysicsViewer") return { kind: "void", cpp: `bbl::upstream::dispose_physics_viewer(${viewer.cpp})` };
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      return { kind: "boolean", cpp: `bbl::upstream::hide_physics_body(${viewer.cpp}, ${body.cpp})` };
-    }
-    case "createHavokWorld": {
-      // `(scene, hknp, gravity?)`. The module argument is required by
-      // the pin's signature and carries nothing here, so it is
-      // compiled (to reach its own diagnostics) and dropped.
-      context.expectArgumentCount(call, 2, 3);
-      const scene = context.compileValue(argumentAt(call, 0));
-      context.expectKind(scene, "scene", argumentAt(call, 0));
-      const engineModule = context.compileValue(argumentAt(call, 1));
-      if (engineModule.kind !== "physics-engine-module") {
-        context.fail(
-          argumentAt(call, 1),
-          "createHavokWorld's second argument must be the " +
-            "physics engine module a scene loads " +
-            "(`await HavokPhysics(...)`). A native build " +
-            "reaches its solver through the PAL, so the " +
-            "value is accepted and carries nothing.",
-        );
-      }
-      // `gravity ?? { x: 0, y: -9.81, z: 0 }` is the pin's own
-      // default and is resolved by the generated factory, not here.
-      const gravity = call.arguments[2]
-        ? context.compileVec3(call.arguments[2], "double")
-        : "bbl::upstream::pinned_default_gravity()";
-      context.reachFeature("physics:world", call);
-      return {
-        kind: "physics-world",
-        cpp: `bbl::upstream::create_havok_world(` + `${scene.cpp}, ${gravity})`,
-        ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}),
-      };
-    }
-
-    case "enableHavokFloatingOrigin": {
-      // `(world, floatingOriginWorldRadius = 100000)`. Upstream loads the
-      // floating-origin runtime with a dynamic `import()` from inside this
-      // function, so the CALL is the opt-in and nothing else has to be
-      // sniffed to know a world simulates in regions. The default radius
-      // is the pin's own parameter initializer, read by the lowerer from
-      // that declaration rather than restated here.
-      context.expectArgumentCount(call, 1, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      const radius = call.arguments[1]
-        ? context.compileNumber(call.arguments[1], "double")
-        : "bbl::upstream::pinned_floating_origin_radius";
-      context.reachFeature("physics:floating-origin", call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::enable_havok_floating_origin(` +
-          `${world.cpp}, ${radius})`,
-      };
-    }
-
-    case "setPhysicsGravity": {
-      context.expectArgumentCount(call, 2, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      return { kind: "void", cpp: `bbl::upstream::set_physics_gravity(${world.cpp}, ${context.compileVec3(argumentAt(call, 1), "double")}, ${compileNullableVec3(context, call.arguments[2])})` };
-    }
-
-    case "setPhysicsTimestepMs": {
-      context.expectArgumentCount(call, 2, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_timestep_ms(` +
-          `${world.cpp}, ${context.compileNumber(argumentAt(call, 1), "double")})`,
-      };
-    }
-
-    case "createPhysicsShape": {
-      context.expectArgumentCount(call, 2, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      const options = context.expectObjectLiteral(argumentAt(call, 1));
-      validateObjectProperties(
-        context,
-        options,
-        ["type", "parameters", "mesh", "includeChildMeshes"],
-        "A physics shape option outside the reached slice.",
-      );
-      const typeExpression = context.objectProperty(options, "type");
-      if (!typeExpression) {
-        context.fail(argumentAt(call, 1), "createPhysicsShape requires `type`.");
-      }
-      const shapeType = expectShapeType(context, typeExpression, true);
-      if (shapeType === "CONTAINER") {
-        validateObjectProperties(context, options, ["type"],
-          "Physics container shapes do not consume mesh or primitive parameters.");
-        context.reachFeature("physics:container", call);
-        return {
-          kind: "physics-shape",
-          cpp: `bbl::upstream::create_physics_container_shape(${world.cpp})`,
-          ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}),
-        };
-      }
-      const parametersExpression = context.objectProperty(
-        options,
-        "parameters",
-      );
-      // Only one direction refuses. The pin reads
-      // `options.parameters ?? {}` and every primitive arm defaults its own
-      // members, so `createPhysicsShape(world, { type: SPHERE })` is a unit
-      // sphere at the origin upstream and lowers to the same empty bag
-      // here; refusing it would be narrower than the pin for nothing.
-      const fromMesh = (MESH_SHAPE_TYPES as readonly string[]).includes(
-        shapeType,
-      );
-      if (fromMesh && parametersExpression !== undefined) {
-        context.fail(
-          argumentAt(call, 1),
-          "createPhysicsShape builds either a primitive from " +
-            "`parameters` or a collider from a `mesh`. " +
-            `PhysicsShapeType.${shapeType} takes its geometry from ` +
-            "`mesh`, and the parameters beside it would be read by " +
-            "neither side.",
-        );
-      }
-      if (parametersExpression) {
-        // The mesh half of the options bag reaches nothing on this arm --
-        // the pin's primitive factory never looks at it -- so a call that
-        // supplies one is asking for a shape it will not get.
-        for (const unread of ["mesh", "includeChildMeshes"] as const) {
-          const supplied = context.objectProperty(options, unread);
-          if (supplied) {
-            context.fail(
-              supplied,
-              `A primitive physics shape takes its geometry from ` +
-                "`parameters`; `" +
-                unread +
-                "` is read only by the mesh and convex-hull arms.",
-            );
-          }
-        }
-        // `createPrimitivePhysicsShapeHandle(hknp, options.type,
-        // options.parameters ?? {})`: each member the arm reads defaults
-        // inside the generated factory at the pin's own `??`, so an
-        // omitted one is absent here rather than substituted.
-        context.reachFeature("physics:aggregate", call);
-        return {
-          kind: "physics-shape",
-          cpp:
-            `bbl::upstream::create_physics_primitive_shape(` +
-            `${world.cpp}, ` +
-            `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
-            `${compileShapeParameters(context, parametersExpression)})`,
-          ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}),
-        };
-      }
-      const meshExpression = context.objectProperty(options, "mesh");
-      if (!meshExpression) {
-        context.fail(
-          argumentAt(call, 1),
-          "Physics mesh shapes require a mesh or transform hierarchy.",
-        );
-      }
-      const mesh = context.compileValue(meshExpression);
-      if (mesh.kind !== "mesh" && mesh.kind !== "transform-node") {
-        context.fail(meshExpression, "Physics geometry requires a mesh or transform node.");
-      }
-      context.expectSameEngine(world, mesh, call);
-      const includeChildren = context.objectProperty(
-        options,
-        "includeChildMeshes",
-      );
-      context.reachFeature("physics:aggregate", call);
-      return {
-        kind: "physics-shape",
-        cpp:
-          `bbl::upstream::create_physics_mesh_shape(` +
-          `${world.cpp}, ` +
-          `bbl::upstream::PhysicsShapeType::${shapeType}, bbl::upstream::physics_node(${mesh.cpp}), ` +
-          `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
-        ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
-      };
-    }
-
-    case "addPhysicsShapeChildFromParent": {
-      context.expectArgumentCount(call, 5, 5);
-      const values = call.arguments.map((argument) =>
-        context.pinValueToTemporary(context.compileValue(argument), "shape_child_arg", argument));
-      const [world, container, parent, child, node] = values;
-      context.expectKind(world!, "physics-world", argumentAt(call, 0));
-      context.expectKind(container!, "physics-shape", argumentAt(call, 1));
-      context.expectKind(child!, "physics-shape", argumentAt(call, 3));
-      for (const index of [2, 4]) {
-        if (values[index]!.kind !== "mesh" && values[index]!.kind !== "transform-node") {
-          context.fail(argumentAt(call, index), "Physics child placement requires a mesh or transform node.");
-        }
-      }
-      for (const value of values.slice(1)) context.expectSameEngine(world!, value, call);
-      context.reachFeature("physics:container", call);
-      return {
-        kind: "void",
-        cpp: `bbl::upstream::add_physics_shape_child_from_parent(${world!.cpp}, ${container!.cpp}, ` +
-          `bbl::upstream::physics_node(${parent!.cpp}), ${child!.cpp}, bbl::upstream::physics_node(${node!.cpp}))`,
-      };
-    }
-
-    case "setPhysicsShapeIsTrigger": {
-      // `havok-trigger.ts`: the flag is what makes bodies pass through the
-      // shape while their overlaps are reported, so it is the visible half
-      // of the pair even when the event handler erases.
-      context.expectArgumentCount(call, 3, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      const shape = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(shape, "physics-shape", argumentAt(call, 1));
-      context.expectSameEngine(world, shape, call);
-      context.reachFeature("physics:trigger", call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_shape_is_trigger(` +
-          `${world.cpp}, ${shape.cpp}, ` +
-          `${context.compileBoolean(argumentAt(call, 2))})`,
-      };
-    }
-
-    case "createPhysicsBody": {
-      // `(world, node, motionType, startsAsleep = false)`. The pin's node
-      // is a `SceneNode`, so a mesh and a bare transform node both reach
-      // it; the generated record carries which arena the handle addresses.
-      context.expectArgumentCount(call, 3, 4);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      const node = context.compileValue(argumentAt(call, 1));
-      if (node.kind !== "mesh" && node.kind !== "transform-node") {
-        context.fail(
-          argumentAt(call, 1),
-          "createPhysicsBody binds a body to a scene node: a mesh or a " +
-            `transform node, received ${node.kind}.`,
-        );
-      }
-      context.expectSameEngine(world, node, call);
-      const motion = compileBodyEnum(context, call, 2, "PhysicsMotionType");
-      const startsAsleep = call.arguments[3]
-        ? context.compileBoolean(call.arguments[3])
-        : "false";
-      context.reachFeature("physics:aggregate", call);
-      return {
-        kind: "physics-body",
-        cpp:
-          `bbl::upstream::create_physics_body(` +
-          `${world.cpp}, bbl::upstream::physics_node(${node.cpp}), ` +
-          `${motion}, ${startsAsleep})`,
-        ...(node.engineCpp ? { engineCpp: node.engineCpp } : {}),
-      };
-    }
-
-    case "setPhysicsBodyShape": {
-      context.expectArgumentCount(call, 3, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      const shape = context.compileValue(argumentAt(call, 2));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      context.expectKind(shape, "physics-shape", argumentAt(call, 2));
-      context.expectSameEngine(world, body, call);
-      context.expectSameEngine(world, shape, call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_body_shape(` +
-          `${world.cpp}, ${body.cpp}, ${shape.cpp})`,
-      };
-    }
-
-    case "onPhysicsTrigger": {
-      // The pin returns a disposer that splices the drain back out.
-      // Nothing reached calls it, so the registration is the value.
-      context.expectArgumentCount(call, 2, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.reachFeature("physics:trigger", call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::on_physics_trigger(` +
-          `${world.cpp}, ` +
-          `${context.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
-      };
-    }
-
-    case "onPhysicsAfterStep": {
-      context.expectArgumentCount(call, 2, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::on_physics_after_step(` +
-          `${world.cpp}, ` +
-          `${context.compileFrameCallback(argumentAt(call, 1))})`,
-      };
-    }
-
-    case "createPhysicsAggregate": {
-      context.expectArgumentCount(call, 4, 4);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      const mesh = context.compileValue(argumentAt(call, 1));
-      context.expectKind(mesh, "mesh", argumentAt(call, 1));
-      context.expectSameEngine(world, mesh, call);
-      const shapeType = expectShapeType(context, argumentAt(call, 2));
-      const options = compileAggregateOptions(context, argumentAt(call, 3));
-      context.reachFeature("physics:aggregate", call);
-      return {
-        kind: "physics-aggregate",
-        cpp:
-          `bbl::upstream::create_physics_aggregate(` +
-          `${world.cpp}, ${mesh.cpp}, ` +
-          `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
-          `${options})`,
-        ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
-      };
-    }
-
-    case "setPhysicsBodyMotionType": {
-      context.expectArgumentCount(call, 3, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      context.expectSameEngine(world, body, call);
-      const motion = compileBodyEnum(context, call, 2, "PhysicsMotionType");
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_body_motion_type(` +
-          `${world.cpp}, ${body.cpp}, ` +
-          `${motion})`,
-      };
-    }
-
-    case "setPhysicsBodyMass": {
-      context.expectArgumentCount(call, 3, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      context.expectSameEngine(world, body, call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_body_mass(` +
-          `${world.cpp}, ${body.cpp}, ` +
-          `${context.compileNumber(argumentAt(call, 2), "double")})`,
-      };
-    }
-
-    case "setPhysicsShapeMaterial": {
-      // `(world, shape, friction, restitution, staticFriction = friction)`.
-      // The fifth argument's default is the pin's own parameter
-      // initializer and is settled inside the generated setter, so an
-      // omitted one stays absent here rather than compiling the friction
-      // expression a second time under a different name.
-      context.expectArgumentCount(call, 4, 5);
-      const world = context.compileValue(argumentAt(call, 0));
-      const shape = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(shape, "physics-shape", argumentAt(call, 1));
-      context.expectSameEngine(world, shape, call);
-      const staticFriction =
-        compileNullableNumber(context, call.arguments[4]);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_shape_material(` +
-          `${world.cpp}, ${shape.cpp}, ` +
-          `${context.compileNumber(argumentAt(call, 2), "double")}, ` +
-          `${context.compileNumber(argumentAt(call, 3), "double")}, ` +
-          `${staticFriction})`,
-      };
-    }
-
-    case "setPhysicsBodyMassProperties": {
-      context.expectArgumentCount(call, 3, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      context.expectSameEngine(world, body, call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_body_mass_properties(` +
-          `${world.cpp}, ${body.cpp}, ` +
-          `${compileMassProperties(context, argumentAt(call, 2))})`,
-      };
-    }
-
-    case "setPhysicsShapeFilterMembershipMask": {
-      context.expectArgumentCount(call, 3, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      const shape = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(shape, "physics-shape", argumentAt(call, 1));
-      context.expectSameEngine(world, shape, call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_shape_filter_membership_mask(` +
-          `${world.cpp}, ${shape.cpp}, ` +
-          `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
-      };
-    }
-
-    case "setPhysicsBodyPreStep": {
-      // `(body, enabled)`: no world travels with the pin's call either,
-      // because a pinned body carries its own `_world`.
-      context.expectArgumentCount(call, 2, 2);
-      const body = context.compileValue(argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 0));
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_body_pre_step(` +
-          `${body.cpp}, ${context.compileBoolean(argumentAt(call, 1))})`,
-      };
-    }
-
-    case "setPhysicsBodyPrestepType": {
-      // `(body, type)`, and no world travels with it for the same reason
-      // `setPhysicsBodyPreStep` above takes none. The pin's own body also
-      // turns pre-step syncing ON for any type but DISABLED, which is why
-      // this is not a plain field write and why the generated setter
-      // restates that arm rather than the caller doing it here.
-      context.expectArgumentCount(call, 2, 2);
-      const body = context.compileValue(argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 0));
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_body_prestep_type(` +
-          `${body.cpp}, ${compileBodyEnum(context, call, 1, "PhysicsPrestepType")})`,
-      };
-    }
-
-    case "setPhysicsShapeFilterCollideMask": {
-      context.expectArgumentCount(call, 3, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      const shape = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(shape, "physics-shape", argumentAt(call, 1));
-      context.expectSameEngine(world, shape, call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_shape_filter_collide_mask(` +
-          `${world.cpp}, ${shape.cpp}, ` +
-          `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
-      };
-    }
-
-    case "getPhysicsBodyLinearVelocity": {
-      context.expectArgumentCount(call, 2, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      context.expectSameEngine(world, body, call);
-      const velocity = context.allocateTemporaryCppName("physics_velocity");
-      context.emit(
-        `const bbl::Vec3d ${velocity} = ` +
-          `bbl::upstream::get_physics_body_linear_velocity(${world.cpp}, ${body.cpp});`,
-      );
-      return vec3Record(velocity);
-    }
-
-    case "applyPhysicsBodyForce": {
-      context.expectArgumentCount(call, 4, 4);
-      const world = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      context.expectSameEngine(world, body, call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::apply_physics_body_force(` +
-          `${world.cpp}, ${body.cpp}, ` +
-          `${context.compileVec3(argumentAt(call, 2), "double")}, ` +
-          `${context.compileVec3(argumentAt(call, 3), "double")})`,
-      };
-    }
-
-    case "setPhysicsBodyCollisionEventsEnabled": {
-      context.expectArgumentCount(call, 3, 3);
-      const world = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      context.expectSameEngine(world, body, call);
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::set_physics_body_collision_events_enabled(` +
-          `${world.cpp}, ${body.cpp}, ${context.compileBoolean(argumentAt(call, 2))})`,
-      };
-    }
-
-    case "onPhysicsCollision": {
-      context.expectArgumentCount(call, 2, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::on_physics_collision(` +
-          `${world.cpp}, ${context.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
-      };
-    }
-
-    case "shapeProximity":
-    case "shapeCast": {
-      context.expectArgumentCount(call, 2, 2);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      const worldCpp = context.pinValueToTemporary(world, "query_world").cpp;
-      const argument = context.unwrap(argumentAt(call, 1));
-      if (!ts.isObjectLiteralExpression(argument)) {
-        context.fail(argument, "Physics shape queries require an inline query record.");
-      }
-      const proximity = importedName === "shapeProximity";
-      const required = proximity
-        ? ["shape", "position", "rotation", "maxDistance"]
-        : ["shape", "rotation", "startPosition", "endPosition"];
-      validateObjectProperties(context, argument,
-        [...required, "shouldHitTriggers", ...(proximity ? [] : ["ignoreBody"])],
-        "Unsupported physics shape query option.");
-      const fields = new Map<string, string>();
-      for (const property of argument.properties) {
-        const expression = ts.isPropertyAssignment(property)
-          ? property.initializer
-          : (property as ts.ShorthandPropertyAssignment).name;
-        const name = context.propertyName(property.name!)!;
-        if (name === "shape" || name === "ignoreBody") {
-          const value = context.compileValue(expression);
-          context.expectKind(value, name === "shape" ? "physics-shape" : "physics-body", expression);
-          context.expectSameEngine(world, value, expression);
-          fields.set(name, context.pinValueToTemporary(value, `query_${name}`).cpp);
-        } else if (name === "rotation") {
-          const rotation = context.unwrap(expression);
-          if (!ts.isObjectLiteralExpression(rotation)) {
-            context.fail(rotation, "Physics query rotations require an inline quaternion record.");
-          }
-          validateObjectProperties(context, rotation, ["x", "y", "z", "w"], "Physics query rotations require x, y, z and w.");
-          const lanes = new Map<string, string>();
-          for (const lane of rotation.properties) {
-            const value = ts.isPropertyAssignment(lane) ? lane.initializer : (lane as ts.ShorthandPropertyAssignment).name;
-            lanes.set(context.propertyName(lane.name!)!, pinRayNumber(context, value));
-          }
-          if (["x", "y", "z", "w"].some((axis) => !lanes.has(axis))) {
-            context.fail(rotation, "Physics query rotations require x, y, z and w.");
-          }
-          fields.set(name, `std::array<double, 4>{${["x", "y", "z", "w"].map((axis) => lanes.get(axis)).join(", ")}}`);
-        } else if (name === "shouldHitTriggers") {
-          fields.set(name, context.pinValueToTemporary({ kind: "boolean", cpp: context.compileBoolean(expression) }, "query_triggers").cpp);
-        } else if (name === "maxDistance") {
-          fields.set(name, pinRayNumber(context, expression));
-        } else {
-          fields.set(name, compileRayPointArgument(context, expression));
-        }
-      }
-      for (const name of required) {
-        if (!fields.has(name)) context.fail(argument, `${importedName} requires '${name}'.`);
-      }
-      const result = context.allocateTemporaryCppName("physics_shape_query");
-      const args = proximity
-        ? [fields.get("position"), fields.get("rotation"), fields.get("maxDistance")]
-        : [fields.get("rotation"), fields.get("startPosition"), fields.get("endPosition")];
-      args.push(fields.get("shouldHitTriggers") ?? "false");
-      if (!proximity) args.push(fields.has("ignoreBody") ? `${fields.get("ignoreBody")}.handle` : "bbl::pal::PhysicsBodyHandle{}");
-      context.reachFeature("physics:queries", call);
-      context.emit(`const auto ${result} = bbl::upstream::shape_${proximity ? "proximity" : "cast"}(${worldCpp}, ${fields.get("shape")}, ${args.join(", ")});`);
-      return {
-        kind: "record", cpp: "", recordProperties: {
-          hasHit: { kind: "boolean", cpp: `${result}.has_hit` },
-          [proximity ? "distance" : "fraction"]: { kind: "number", cpp: `${result}.distance_or_fraction` },
-          inputHitPoint: vec3Record(`${result}.input_point`),
-          hitPoint: vec3Record(`${result}.point`),
-          inputHitNormal: vec3Record(`${result}.input_normal`),
-          hitNormal: vec3Record(`${result}.normal`),
-        },
-      };
-    }
-
-    case "physicsRaycast": {
-      context.expectArgumentCount(call, 3, 4);
-      const world = context.compileValue(argumentAt(call, 0));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      const worldCpp = context.allocateTemporaryCppName("ray_world");
-      context.emit(`const auto ${worldCpp} = ${world.cpp};`);
-      const from = compileRayPointArgument(context, argumentAt(call, 1));
-      const to = compileRayPointArgument(context, argumentAt(call, 2));
-      let membership = "0xffffffffu";
-      let collideWith = "0xffffffffu";
-      let shouldHitTriggers = "false";
-      if (call.arguments[3]) {
-        const argument = context.unwrap(call.arguments[3]);
-        const options = context.expectObjectLiteral(argument);
-        validateObjectProperties(
-          context,
-          options,
-          ["membership", "collideWith", "shouldHitTriggers"],
-          "A physics raycast option outside the reached filter slice.",
-        );
-        // Resolution supplies the accepted shape, but an alias already ran
-        // its initializer. Read the captured object instead of running it again.
-        let captured = ts.isObjectLiteralExpression(argument)
-          ? undefined
-          : context.compileValue(argument);
-        if (captured?.kind === "data") {
-          // Native storage owns a snapshot even when initializer metadata
-          // still refers to another object's mutable property.
-          const { recordProperties: _initializerFields, ...stored } = captured;
-          captured = stored;
-        }
-        // Compile and pin each initializer before the next one can emit a
-        // mutation. Object property order is observable independently of the
-        // positional order of the generated native query's filter arguments.
-        for (const property of options.properties) {
-          const expression = ts.isPropertyAssignment(property)
-            ? property.initializer
-            : (property as ts.ShorthandPropertyAssignment).name;
-          const name = context.propertyName(property.name!);
-          const kind = name === "shouldHitTriggers" ? "boolean" : "number";
-          let cpp: string;
-          if (captured) {
-            const access = ts.factory.createPropertyAccessExpression(argument, name!);
-            const field = context.readResolvedProperty(captured, access);
-            if (!field) context.fail(argument, `Physics raycast option '${name}' is not a captured value.`);
-            context.expectKind(field, kind, argument);
-            if (captured.kind !== "data" &&
-                (kind === "boolean" ? field.staticBoolean : field.staticNumber) === undefined) {
-              context.fail(argument, "Physics raycast option aliases require stored scalar fields or generation-known values.");
-            }
-            cpp = field.cpp;
-          } else {
-            cpp = kind === "boolean"
-              ? context.compileBoolean(expression)
-              : context.compileNumber(expression, "double");
-          }
-          const snapshot = context.pinValueToTemporary({ kind, cpp }, `ray_${name}`).cpp;
-          if (name === "shouldHitTriggers") shouldHitTriggers = snapshot;
-          else if (name === "membership") membership = `static_cast<std::uint32_t>(${snapshot})`;
-          else collideWith = `static_cast<std::uint32_t>(${snapshot})`;
-        }
-      }
-      const result = context.allocateTemporaryCppName("physics_raycast");
-      context.emit(
-        `const bbl::upstream::PhysicsRaycastResult ${result} = ` +
-          `bbl::upstream::physics_raycast(${worldCpp}, ` +
-          `${from}, ${to}, ` +
-          `${membership}, ${collideWith}, ${shouldHitTriggers});`,
-      );
-      return {
-        kind: "record",
-        cpp: "",
-        recordProperties: {
-          hasHit: { kind: "boolean", cpp: `${result}.has_hit` },
-          hitPoint: vec3Record(`${result}.hit_point`),
-          hitNormal: vec3Record(`${result}.hit_normal`),
-          hitDistance: { kind: "number", cpp: `${result}.hit_distance` },
-          body: {
-            kind: "data",
-            cpp: `${result}.body`,
-            dataType: {
-              kind: "optional",
-              inner: { kind: "handle", handle: "physics-body" },
-            },
-            ...(world.engineCpp === undefined ? {} : { engineCpp: world.engineCpp }),
-          },
-        },
-      };
-    }
-
-    case "applyPhysicsImpulse": {
-      context.expectArgumentCount(call, 3, 4);
-      const world = context.compileValue(argumentAt(call, 0));
-      const body = context.compileValue(argumentAt(call, 1));
-      context.expectKind(world, "physics-world", argumentAt(call, 0));
-      context.expectKind(body, "physics-body", argumentAt(call, 1));
-      context.expectSameEngine(world, body, call);
-      const impulse = context.compileVec3(argumentAt(call, 2), "double");
-      const point = call.arguments[3]
-        ? compileImpulsePoint(context, call.arguments[3])
-        : "std::optional<bbl::Vec3d>{}";
-      return {
-        kind: "void",
-        cpp:
-          `bbl::upstream::apply_physics_impulse(` +
-          `${world.cpp}, ${body.cpp}, ${impulse}, ${point})`,
-      };
-    }
-
-    default:
-      return undefined;
-  }
+  return physicsIntrinsicHandlers.get(importedName)?.(context, call);
 }
 
 function pinRayNumber(context: PhysicsIntrinsicContext, expression: ts.Expression): string {
@@ -1048,7 +242,7 @@ function compileRayPointArgument(context: PhysicsIntrinsicContext, expression: t
       !(point.properties.length === 1 && ts.isSpreadAssignment(point.properties[0]!))) {
     validateObjectProperties(context, point, ["x", "y", "z"],
       "Physics ray point literals require numeric x, y and z properties.");
-    const lanes = new Map<string, string>();
+    const lanes = new EmissionMap<string, string>();
     for (const property of point.properties) {
       const value = ts.isPropertyAssignment(property)
         ? property.initializer
@@ -1066,7 +260,7 @@ function compileRayPointArgument(context: PhysicsIntrinsicContext, expression: t
   }
   if (ts.isObjectLiteralExpression(point) && ts.isSpreadAssignment(point.properties[0]!)) {
     const temporary = context.allocateTemporaryCppName("ray_point");
-    context.emit(`const bbl::Vec3d ${temporary} = ${context.compileVec3(point, "double")};`);
+    context.emit({ kind: "declaration", type: "const bbl::Vec3d", name: temporary, initializer: context.compileVec3(point, "double") });
     return temporary;
   }
   let value = context.materializeEscapingValue(context.compileValue(point), "ray_point", point);
@@ -1085,7 +279,7 @@ function compileRayPointArgument(context: PhysicsIntrinsicContext, expression: t
       context.fail(point, "Retained physics ray point objects require a native reference representation.");
     }
     const owner = context.allocateTemporaryCppName("ray_point_owner");
-    context.emit(`const auto ${owner} = ${value.cpp};`);
+    context.emit({ kind: "declaration", type: "const auto", name: owner, initializer: value.cpp });
     value = { ...value, cpp: owner };
   }
   return context.vec3FromRecord(value, point, "double");
@@ -1104,7 +298,7 @@ function compileShapeParameters(
   expression: ts.Expression,
 ): string {
   let record = context.compileValue(expression);
-  const allowed = new Set<string>(SHAPE_PARAMETERS.map(([pinned]) => pinned));
+  const allowed = new EmissionSet<string>(SHAPE_PARAMETERS.map(([pinned]) => pinned));
   if (record.kind === "data" && record.dataType?.kind === "struct") {
     const type = record.dataType;
     const owner = context.pinValueToTemporary(record, "physics_shape_parameters");
@@ -1409,3 +603,828 @@ function compileAggregateOptions(
     `${geometry.join(", ")}, ${startAsleep}}`
   );
 }
+
+function compileCreateHeightFieldShape(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    const options = context.expectObjectLiteral(argumentAt(call, 1));
+    validateObjectProperties(context, options, ["groundMesh"], "Heightfields currently require a groundMesh square grid.");
+    const expression = context.objectProperty(options, "groundMesh");
+    if (!expression)
+        context.fail(options, "Heightfields currently require a groundMesh square grid.");
+    const mesh = context.compileValue(expression);
+    context.expectKind(mesh, "mesh", expression);
+    context.expectSameEngine(world, mesh, call);
+    context.reachFeature("physics:heightfield", call);
+    return { kind: "physics-shape", cpp: `bbl::upstream::create_physics_heightfield_from_ground(${world.cpp}, ${mesh.cpp})`, ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}) };
+}
+
+function compileCreatePhysicsConstraint(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 4, 6);
+    if (!ts.isExpressionStatement(call.parent))
+        context.fail(call, "The reached constraint requires a discarded factory result.");
+    const world = context.compileValue(argumentAt(call, 0));
+    const parent = context.compileValue(argumentAt(call, 1));
+    const child = context.compileValue(argumentAt(call, 2));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(parent, "physics-body", argumentAt(call, 1));
+    context.expectKind(child, "physics-body", argumentAt(call, 2));
+    context.expectSameEngine(world, parent, call);
+    context.expectSameEngine(world, child, call);
+    const compileType = (expression: ts.Expression): string => {
+        const node = context.resolveStaticExpression(expression);
+        if (ts.isConditionalExpression(node))
+            return `(${context.compileBoolean(node.condition)} ? ${compileType(node.whenTrue)} : ${compileType(node.whenFalse)})`;
+        pinnedEnumMemberName(context, node, "PhysicsConstraintType");
+        return context.compileNumber(node, "double");
+    };
+    const type = compileType(argumentAt(call, 3));
+    const vectors = [["pivotA", "pivot_a"], ["pivotB", "pivot_b"], ["axisA", "axis_a"], ["axisB", "axis_b"], ["perpAxisA", "perp_axis_a"], ["perpAxisB", "perp_axis_b"]] as const;
+    const fields: string[] = [];
+    if (call.arguments[4]) {
+        const options = context.expectObjectLiteral(call.arguments[4]);
+        validateObjectProperties(context, options, [...vectors.map(([name]) => name), "maxDistance", "collision"], "Constraint options support anchor vectors, maximum distance and collision.");
+        for (const [name, field] of vectors) {
+            const value = context.objectProperty(options, name);
+            if (value)
+                fields.push(`.${field} = ${compileNullableVec3(context, value)}`);
+        }
+        const maximum = context.objectProperty(options, "maxDistance");
+        if (maximum)
+            fields.push(`.max_distance = ${compileNullableNumber(context, maximum)}`);
+        const collision = context.objectProperty(options, "collision");
+        if (collision)
+            fields.push(`.collision = ${context.compileBoolean(collision)}`);
+    }
+    const limits: string[] = [];
+    if (call.arguments[5]) {
+        const array = context.unwrap(call.arguments[5]);
+        if (!ts.isArrayLiteralExpression(array))
+            context.fail(array, "Constraint limits require an inline array.");
+        for (const element of array.elements) {
+            const limit = context.expectObjectLiteral(element);
+            validateObjectProperties(context, limit, ["axis", "minLimit", "maxLimit"], "Constraint limits require both bounds; stiffness and damping are not represented.");
+            const axis = context.objectProperty(limit, "axis"), minimum = context.objectProperty(limit, "minLimit"), maximum = context.objectProperty(limit, "maxLimit");
+            if (!axis || !minimum || !maximum)
+                context.fail(limit, "Constraint limits require an axis, minLimit and maxLimit.");
+            pinnedEnumMemberName(context, context.resolveStaticExpression(axis), "PhysicsConstraintAxis");
+            limits.push(`{${context.compileNumber(axis, "double")}, ${context.compileNumber(minimum, "double")}, ${context.compileNumber(maximum, "double")}}`);
+        }
+    }
+    context.reachFeature("physics:constraints", call);
+    context.emit(`bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}});`);
+    return { kind: "void", cpp: "" };
+}
+
+function compileCreatePhysicsViewer(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 3);
+    const scene = context.compileValue(argumentAt(call, 0));
+    const world = context.compileValue(argumentAt(call, 1));
+    context.expectKind(scene, "scene", argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 1));
+    context.expectSameEngine(scene, world, call);
+    let color: readonly [
+        number,
+        number,
+        number,
+        number
+    ] = [1, 1, 1, 1];
+    if (call.arguments[2]) {
+        const options = context.expectObjectLiteral(call.arguments[2]);
+        validateObjectProperties(context, options, ["color"], "Physics viewer options support color only.");
+        const expression = context.objectProperty(options, "color");
+        if (expression) {
+            const values = staticJsonValue(context, expression);
+            if (!Array.isArray(values) || values.length !== 4 || !values.every(value => typeof value === "number" && Number.isFinite(value))) {
+                context.fail(expression, "Physics viewer color requires four construction-known finite numbers.");
+            }
+            color = values as [
+                number,
+                number,
+                number,
+                number
+            ];
+        }
+    }
+    context.reachFeature("physics:viewer", call);
+    const variant = context.reachPhysicsViewerMaterial(call, color);
+    return { kind: "physics-viewer", cpp: `bbl::upstream::create_physics_viewer(${scene.cpp}, ${world.cpp}, ${variant.id}u)`,
+        ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}), shaderVariant: variant.name };
+}
+
+function compileShowPhysicsBody(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    if (!ts.isExpressionStatement(call.parent)) {
+        context.fail(call, "Physics debug geometry materialization requires a discarded showPhysicsBody return; observing its debug mesh or nullable result is not yet supported.");
+    }
+    const viewer = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(viewer, "physics-viewer", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    if (!viewer.shaderVariant)
+        context.fail(argumentAt(call, 0), "Physics viewer material must retain its construction-known variant.");
+    const profile = context.recordSceneMesh("from-data", { hasUv2: false, hasTangents: false, hasColors: false });
+    context.recordRuntimeMeshProfile(profile);
+    context.recordSceneMeshMaterial(profile, { pbrMaterial: null, nodeMaterial: null, standardMaterial: false, sceneShaderVariant: viewer.shaderVariant });
+    for (const feature of ["physics:viewer", "mesh:from-data", "material:shader", "renderer:scene", "scene:remove"] as const)
+        context.reachFeature(feature, call);
+    return { kind: "void", cpp: `bbl::upstream::show_physics_body(${viewer.cpp}, ${body.cpp}, ${profile}u)` };
+}
+
+function compileHidePhysicsBody(context: PhysicsIntrinsicContext, call: ts.CallExpression, importedName: "hidePhysicsBody" | "disposePhysicsViewer"): Value | undefined {
+    if (importedName === "hidePhysicsBody" && !ts.isExpressionStatement(call.parent)) {
+        context.fail(call, "Physics debug geometry materialization requires a discarded hidePhysicsBody result; observing debug membership is not yet supported.");
+    }
+    context.expectArgumentCount(call, importedName === "hidePhysicsBody" ? 2 : 1, importedName === "hidePhysicsBody" ? 2 : 1);
+    const viewer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(viewer, "physics-viewer", argumentAt(call, 0));
+    if (importedName === "disposePhysicsViewer")
+        return { kind: "void", cpp: `bbl::upstream::dispose_physics_viewer(${viewer.cpp})` };
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    return { kind: "boolean", cpp: `bbl::upstream::hide_physics_body(${viewer.cpp}, ${body.cpp})` };
+}
+
+function compileCreateHavokWorld(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // `(scene, hknp, gravity?)`. The module argument is required by
+    // the pin's signature and carries nothing here, so it is
+    // compiled (to reach its own diagnostics) and dropped.
+    context.expectArgumentCount(call, 2, 3);
+    const scene = context.compileValue(argumentAt(call, 0));
+    context.expectKind(scene, "scene", argumentAt(call, 0));
+    const engineModule = context.compileValue(argumentAt(call, 1));
+    if (engineModule.kind !== "physics-engine-module") {
+        context.fail(argumentAt(call, 1), "createHavokWorld's second argument must be the " +
+            "physics engine module a scene loads " +
+            "(`await HavokPhysics(...)`). A native build " +
+            "reaches its solver through the PAL, so the " +
+            "value is accepted and carries nothing.");
+    }
+    // `gravity ?? { x: 0, y: -9.81, z: 0 }` is the pin's own
+    // default and is resolved by the generated factory, not here.
+    const gravity = call.arguments[2]
+        ? context.compileVec3(call.arguments[2], "double")
+        : "bbl::upstream::pinned_default_gravity()";
+    context.reachFeature("physics:world", call);
+    return {
+        kind: "physics-world",
+        cpp: `bbl::upstream::create_havok_world(` + `${scene.cpp}, ${gravity})`,
+        ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}),
+    };
+}
+
+function compileEnableHavokFloatingOrigin(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // `(world, floatingOriginWorldRadius = 100000)`. Upstream loads the
+    // floating-origin runtime with a dynamic `import()` from inside this
+    // function, so the CALL is the opt-in and nothing else has to be
+    // sniffed to know a world simulates in regions. The default radius
+    // is the pin's own parameter initializer, read by the lowerer from
+    // that declaration rather than restated here.
+    context.expectArgumentCount(call, 1, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    const radius = call.arguments[1]
+        ? context.compileNumber(call.arguments[1], "double")
+        : "bbl::upstream::pinned_floating_origin_radius";
+    context.reachFeature("physics:floating-origin", call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::enable_havok_floating_origin(` +
+            `${world.cpp}, ${radius})`,
+    };
+}
+
+function compileSetPhysicsGravity(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    return { kind: "void", cpp: `bbl::upstream::set_physics_gravity(${world.cpp}, ${context.compileVec3(argumentAt(call, 1), "double")}, ${compileNullableVec3(context, call.arguments[2])})` };
+}
+
+function compileSetPhysicsTimestepMs(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_timestep_ms(` +
+            `${world.cpp}, ${context.compileNumber(argumentAt(call, 1), "double")})`,
+    };
+}
+
+function compileCreatePhysicsShape(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    const options = context.expectObjectLiteral(argumentAt(call, 1));
+    validateObjectProperties(context, options, ["type", "parameters", "mesh", "includeChildMeshes"], "A physics shape option outside the reached slice.");
+    const typeExpression = context.objectProperty(options, "type");
+    if (!typeExpression) {
+        context.fail(argumentAt(call, 1), "createPhysicsShape requires `type`.");
+    }
+    const shapeType = expectShapeType(context, typeExpression, true);
+    if (shapeType === "CONTAINER") {
+        validateObjectProperties(context, options, ["type"], "Physics container shapes do not consume mesh or primitive parameters.");
+        context.reachFeature("physics:container", call);
+        return {
+            kind: "physics-shape",
+            cpp: `bbl::upstream::create_physics_container_shape(${world.cpp})`,
+            ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}),
+        };
+    }
+    const parametersExpression = context.objectProperty(options, "parameters");
+    // Only one direction refuses. The pin reads
+    // `options.parameters ?? {}` and every primitive arm defaults its own
+    // members, so `createPhysicsShape(world, { type: SPHERE })` is a unit
+    // sphere at the origin upstream and lowers to the same empty bag
+    // here; refusing it would be narrower than the pin for nothing.
+    const fromMesh = (MESH_SHAPE_TYPES as readonly string[]).includes(shapeType);
+    if (fromMesh && parametersExpression !== undefined) {
+        context.fail(argumentAt(call, 1), "createPhysicsShape builds either a primitive from " +
+            "`parameters` or a collider from a `mesh`. " +
+            `PhysicsShapeType.${shapeType} takes its geometry from ` +
+            "`mesh`, and the parameters beside it would be read by " +
+            "neither side.");
+    }
+    if (parametersExpression) {
+        // The mesh half of the options bag reaches nothing on this arm --
+        // the pin's primitive factory never looks at it -- so a call that
+        // supplies one is asking for a shape it will not get.
+        for (const unread of ["mesh", "includeChildMeshes"] as const) {
+            const supplied = context.objectProperty(options, unread);
+            if (supplied) {
+                context.fail(supplied, `A primitive physics shape takes its geometry from ` +
+                    "`parameters`; `" +
+                    unread +
+                    "` is read only by the mesh and convex-hull arms.");
+            }
+        }
+        // `createPrimitivePhysicsShapeHandle(hknp, options.type,
+        // options.parameters ?? {})`: each member the arm reads defaults
+        // inside the generated factory at the pin's own `??`, so an
+        // omitted one is absent here rather than substituted.
+        context.reachFeature("physics:aggregate", call);
+        return {
+            kind: "physics-shape",
+            cpp: `bbl::upstream::create_physics_primitive_shape(` +
+                `${world.cpp}, ` +
+                `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
+                `${compileShapeParameters(context, parametersExpression)})`,
+            ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}),
+        };
+    }
+    const meshExpression = context.objectProperty(options, "mesh");
+    if (!meshExpression) {
+        context.fail(argumentAt(call, 1), "Physics mesh shapes require a mesh or transform hierarchy.");
+    }
+    const mesh = context.compileValue(meshExpression);
+    if (mesh.kind !== "mesh" && mesh.kind !== "transform-node") {
+        context.fail(meshExpression, "Physics geometry requires a mesh or transform node.");
+    }
+    context.expectSameEngine(world, mesh, call);
+    const includeChildren = context.objectProperty(options, "includeChildMeshes");
+    context.reachFeature("physics:aggregate", call);
+    return {
+        kind: "physics-shape",
+        cpp: `bbl::upstream::create_physics_mesh_shape(` +
+            `${world.cpp}, ` +
+            `bbl::upstream::PhysicsShapeType::${shapeType}, bbl::upstream::physics_node(${mesh.cpp}), ` +
+            `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
+        ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
+    };
+}
+
+function compileAddPhysicsShapeChildFromParent(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 5, 5);
+    const values = call.arguments.map((argument) => context.pinValueToTemporary(context.compileValue(argument), "shape_child_arg", argument));
+    const [world, container, parent, child, node] = values;
+    context.expectKind(world!, "physics-world", argumentAt(call, 0));
+    context.expectKind(container!, "physics-shape", argumentAt(call, 1));
+    context.expectKind(child!, "physics-shape", argumentAt(call, 3));
+    for (const index of [2, 4]) {
+        if (values[index]!.kind !== "mesh" && values[index]!.kind !== "transform-node") {
+            context.fail(argumentAt(call, index), "Physics child placement requires a mesh or transform node.");
+        }
+    }
+    for (const value of values.slice(1))
+        context.expectSameEngine(world!, value, call);
+    context.reachFeature("physics:container", call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::add_physics_shape_child_from_parent(${world!.cpp}, ${container!.cpp}, ` +
+            `bbl::upstream::physics_node(${parent!.cpp}), ${child!.cpp}, bbl::upstream::physics_node(${node!.cpp}))`,
+    };
+}
+
+function compileSetPhysicsShapeIsTrigger(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // `havok-trigger.ts`: the flag is what makes bodies pass through the
+    // shape while their overlaps are reported, so it is the visible half
+    // of the pair even when the event handler erases.
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    const shape = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(shape, "physics-shape", argumentAt(call, 1));
+    context.expectSameEngine(world, shape, call);
+    context.reachFeature("physics:trigger", call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_shape_is_trigger(` +
+            `${world.cpp}, ${shape.cpp}, ` +
+            `${context.compileBoolean(argumentAt(call, 2))})`,
+    };
+}
+
+function compileCreatePhysicsBody(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // `(world, node, motionType, startsAsleep = false)`. The pin's node
+    // is a `SceneNode`, so a mesh and a bare transform node both reach
+    // it; the generated record carries which arena the handle addresses.
+    context.expectArgumentCount(call, 3, 4);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    const node = context.compileValue(argumentAt(call, 1));
+    if (node.kind !== "mesh" && node.kind !== "transform-node") {
+        context.fail(argumentAt(call, 1), "createPhysicsBody binds a body to a scene node: a mesh or a " +
+            `transform node, received ${node.kind}.`);
+    }
+    context.expectSameEngine(world, node, call);
+    const motion = compileBodyEnum(context, call, 2, "PhysicsMotionType");
+    const startsAsleep = call.arguments[3]
+        ? context.compileBoolean(call.arguments[3])
+        : "false";
+    context.reachFeature("physics:aggregate", call);
+    return {
+        kind: "physics-body",
+        cpp: `bbl::upstream::create_physics_body(` +
+            `${world.cpp}, bbl::upstream::physics_node(${node.cpp}), ` +
+            `${motion}, ${startsAsleep})`,
+        ...(node.engineCpp ? { engineCpp: node.engineCpp } : {}),
+    };
+}
+
+function compileSetPhysicsBodyShape(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    const shape = context.compileValue(argumentAt(call, 2));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    context.expectKind(shape, "physics-shape", argumentAt(call, 2));
+    context.expectSameEngine(world, body, call);
+    context.expectSameEngine(world, shape, call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_shape(` +
+            `${world.cpp}, ${body.cpp}, ${shape.cpp})`,
+    };
+}
+
+function compileOnPhysicsTrigger(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // The pin returns a disposer that splices the drain back out.
+    // Nothing reached calls it, so the registration is the value.
+    context.expectArgumentCount(call, 2, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.reachFeature("physics:trigger", call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::on_physics_trigger(` +
+            `${world.cpp}, ` +
+            `${context.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
+    };
+}
+
+function compileOnPhysicsAfterStep(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::on_physics_after_step(` +
+            `${world.cpp}, ` +
+            `${context.compileFrameCallback(argumentAt(call, 1))})`,
+    };
+}
+
+function compileCreatePhysicsAggregate(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 4, 4);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    const mesh = context.compileValue(argumentAt(call, 1));
+    context.expectKind(mesh, "mesh", argumentAt(call, 1));
+    context.expectSameEngine(world, mesh, call);
+    const shapeType = expectShapeType(context, argumentAt(call, 2));
+    const options = compileAggregateOptions(context, argumentAt(call, 3));
+    context.reachFeature("physics:aggregate", call);
+    return {
+        kind: "physics-aggregate",
+        cpp: `bbl::upstream::create_physics_aggregate(` +
+            `${world.cpp}, ${mesh.cpp}, ` +
+            `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
+            `${options})`,
+        ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
+    };
+}
+
+function compileSetPhysicsBodyMotionType(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    context.expectSameEngine(world, body, call);
+    const motion = compileBodyEnum(context, call, 2, "PhysicsMotionType");
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_motion_type(` +
+            `${world.cpp}, ${body.cpp}, ` +
+            `${motion})`,
+    };
+}
+
+function compileSetPhysicsBodyMass(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    context.expectSameEngine(world, body, call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_mass(` +
+            `${world.cpp}, ${body.cpp}, ` +
+            `${context.compileNumber(argumentAt(call, 2), "double")})`,
+    };
+}
+
+function compileSetPhysicsShapeMaterial(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // `(world, shape, friction, restitution, staticFriction = friction)`.
+    // The fifth argument's default is the pin's own parameter
+    // initializer and is settled inside the generated setter, so an
+    // omitted one stays absent here rather than compiling the friction
+    // expression a second time under a different name.
+    context.expectArgumentCount(call, 4, 5);
+    const world = context.compileValue(argumentAt(call, 0));
+    const shape = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(shape, "physics-shape", argumentAt(call, 1));
+    context.expectSameEngine(world, shape, call);
+    const staticFriction = compileNullableNumber(context, call.arguments[4]);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_shape_material(` +
+            `${world.cpp}, ${shape.cpp}, ` +
+            `${context.compileNumber(argumentAt(call, 2), "double")}, ` +
+            `${context.compileNumber(argumentAt(call, 3), "double")}, ` +
+            `${staticFriction})`,
+    };
+}
+
+function compileSetPhysicsBodyMassProperties(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    context.expectSameEngine(world, body, call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_mass_properties(` +
+            `${world.cpp}, ${body.cpp}, ` +
+            `${compileMassProperties(context, argumentAt(call, 2))})`,
+    };
+}
+
+function compileSetPhysicsShapeFilterMembershipMask(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    const shape = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(shape, "physics-shape", argumentAt(call, 1));
+    context.expectSameEngine(world, shape, call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_shape_filter_membership_mask(` +
+            `${world.cpp}, ${shape.cpp}, ` +
+            `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
+    };
+}
+
+function compileSetPhysicsBodyPreStep(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // `(body, enabled)`: no world travels with the pin's call either,
+    // because a pinned body carries its own `_world`.
+    context.expectArgumentCount(call, 2, 2);
+    const body = context.compileValue(argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 0));
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_pre_step(` +
+            `${body.cpp}, ${context.compileBoolean(argumentAt(call, 1))})`,
+    };
+}
+
+function compileSetPhysicsBodyPrestepType(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // `(body, type)`, and no world travels with it for the same reason
+    // `setPhysicsBodyPreStep` above takes none. The pin's own body also
+    // turns pre-step syncing ON for any type but DISABLED, which is why
+    // this is not a plain field write and why the generated setter
+    // restates that arm rather than the caller doing it here.
+    context.expectArgumentCount(call, 2, 2);
+    const body = context.compileValue(argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 0));
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_prestep_type(` +
+            `${body.cpp}, ${compileBodyEnum(context, call, 1, "PhysicsPrestepType")})`,
+    };
+}
+
+function compileSetPhysicsShapeFilterCollideMask(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    const shape = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(shape, "physics-shape", argumentAt(call, 1));
+    context.expectSameEngine(world, shape, call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_shape_filter_collide_mask(` +
+            `${world.cpp}, ${shape.cpp}, ` +
+            `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
+    };
+}
+
+function compileGetPhysicsBodyLinearVelocity(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    context.expectSameEngine(world, body, call);
+    const velocity = context.allocateTemporaryCppName("physics_velocity");
+    context.emit(`const bbl::Vec3d ${velocity} = ` +
+        `bbl::upstream::get_physics_body_linear_velocity(${world.cpp}, ${body.cpp});`);
+    return vec3Record(velocity);
+}
+
+function compileApplyPhysicsBodyForce(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 4, 4);
+    const world = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    context.expectSameEngine(world, body, call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::apply_physics_body_force(` +
+            `${world.cpp}, ${body.cpp}, ` +
+            `${context.compileVec3(argumentAt(call, 2), "double")}, ` +
+            `${context.compileVec3(argumentAt(call, 3), "double")})`,
+    };
+}
+
+function compileSetPhysicsBodyCollisionEventsEnabled(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const world = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    context.expectSameEngine(world, body, call);
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_body_collision_events_enabled(` +
+            `${world.cpp}, ${body.cpp}, ${context.compileBoolean(argumentAt(call, 2))})`,
+    };
+}
+
+function compileOnPhysicsCollision(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::on_physics_collision(` +
+            `${world.cpp}, ${context.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
+    };
+}
+
+function compileShapeProximity(context: PhysicsIntrinsicContext, call: ts.CallExpression, importedName: "shapeProximity" | "shapeCast"): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    const worldCpp = context.pinValueToTemporary(world, "query_world").cpp;
+    const argument = context.unwrap(argumentAt(call, 1));
+    if (!ts.isObjectLiteralExpression(argument)) {
+        context.fail(argument, "Physics shape queries require an inline query record.");
+    }
+    const proximity = importedName === "shapeProximity";
+    const required = proximity
+        ? ["shape", "position", "rotation", "maxDistance"]
+        : ["shape", "rotation", "startPosition", "endPosition"];
+    validateObjectProperties(context, argument, [...required, "shouldHitTriggers", ...(proximity ? [] : ["ignoreBody"])], "Unsupported physics shape query option.");
+    const fields = new EmissionMap<string, string>();
+    for (const property of argument.properties) {
+        const expression = ts.isPropertyAssignment(property)
+            ? property.initializer
+            : (property as ts.ShorthandPropertyAssignment).name;
+        const name = context.propertyName(property.name!)!;
+        if (name === "shape" || name === "ignoreBody") {
+            const value = context.compileValue(expression);
+            context.expectKind(value, name === "shape" ? "physics-shape" : "physics-body", expression);
+            context.expectSameEngine(world, value, expression);
+            fields.set(name, context.pinValueToTemporary(value, `query_${name}`).cpp);
+        }
+        else if (name === "rotation") {
+            const rotation = context.unwrap(expression);
+            if (!ts.isObjectLiteralExpression(rotation)) {
+                context.fail(rotation, "Physics query rotations require an inline quaternion record.");
+            }
+            validateObjectProperties(context, rotation, ["x", "y", "z", "w"], "Physics query rotations require x, y, z and w.");
+            const lanes = new EmissionMap<string, string>();
+            for (const lane of rotation.properties) {
+                const value = ts.isPropertyAssignment(lane) ? lane.initializer : (lane as ts.ShorthandPropertyAssignment).name;
+                lanes.set(context.propertyName(lane.name!)!, pinRayNumber(context, value));
+            }
+            if (["x", "y", "z", "w"].some((axis) => !lanes.has(axis))) {
+                context.fail(rotation, "Physics query rotations require x, y, z and w.");
+            }
+            fields.set(name, `std::array<double, 4>{${["x", "y", "z", "w"].map((axis) => lanes.get(axis)).join(", ")}}`);
+        }
+        else if (name === "shouldHitTriggers") {
+            fields.set(name, context.pinValueToTemporary({ kind: "boolean", cpp: context.compileBoolean(expression) }, "query_triggers").cpp);
+        }
+        else if (name === "maxDistance") {
+            fields.set(name, pinRayNumber(context, expression));
+        }
+        else {
+            fields.set(name, compileRayPointArgument(context, expression));
+        }
+    }
+    for (const name of required) {
+        if (!fields.has(name))
+            context.fail(argument, `${importedName} requires '${name}'.`);
+    }
+    const result = context.allocateTemporaryCppName("physics_shape_query");
+    const args = proximity
+        ? [fields.get("position"), fields.get("rotation"), fields.get("maxDistance")]
+        : [fields.get("rotation"), fields.get("startPosition"), fields.get("endPosition")];
+    args.push(fields.get("shouldHitTriggers") ?? "false");
+    if (!proximity)
+        args.push(fields.has("ignoreBody") ? `${fields.get("ignoreBody")}.handle` : "bbl::pal::PhysicsBodyHandle{}");
+    context.reachFeature("physics:queries", call);
+    context.emit({ kind: "declaration", type: "const auto", name: result, initializer: `bbl::upstream::shape_${proximity ? "proximity" : "cast"}(${worldCpp}, ${fields.get("shape")}, ${args.join(", ")})` });
+    return {
+        kind: "record", cpp: "", recordProperties: {
+            hasHit: { kind: "boolean", cpp: `${result}.has_hit` },
+            [proximity ? "distance" : "fraction"]: { kind: "number", cpp: `${result}.distance_or_fraction` },
+            inputHitPoint: vec3Record(`${result}.input_point`),
+            hitPoint: vec3Record(`${result}.point`),
+            inputHitNormal: vec3Record(`${result}.input_normal`),
+            hitNormal: vec3Record(`${result}.normal`),
+        },
+    };
+}
+
+function compilePhysicsRaycast(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 4);
+    const world = context.compileValue(argumentAt(call, 0));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    const worldCpp = context.allocateTemporaryCppName("ray_world");
+    context.emit({ kind: "declaration", type: "const auto", name: worldCpp, initializer: world.cpp });
+    const from = compileRayPointArgument(context, argumentAt(call, 1));
+    const to = compileRayPointArgument(context, argumentAt(call, 2));
+    let membership = "0xffffffffu";
+    let collideWith = "0xffffffffu";
+    let shouldHitTriggers = "false";
+    if (call.arguments[3]) {
+        const argument = context.unwrap(call.arguments[3]);
+        const options = context.expectObjectLiteral(argument);
+        validateObjectProperties(context, options, ["membership", "collideWith", "shouldHitTriggers"], "A physics raycast option outside the reached filter slice.");
+        // Resolution supplies the accepted shape, but an alias already ran
+        // its initializer. Read the captured object instead of running it again.
+        let captured = ts.isObjectLiteralExpression(argument)
+            ? undefined
+            : context.compileValue(argument);
+        if (captured?.kind === "data") {
+            // Native storage owns a snapshot even when initializer metadata
+            // still refers to another object's mutable property.
+            const { recordProperties: _initializerFields, ...stored } = captured;
+            captured = stored;
+        }
+        // Compile and pin each initializer before the next one can emit a
+        // mutation. Object property order is observable independently of the
+        // positional order of the generated native query's filter arguments.
+        for (const property of options.properties) {
+            const expression = ts.isPropertyAssignment(property)
+                ? property.initializer
+                : (property as ts.ShorthandPropertyAssignment).name;
+            const name = context.propertyName(property.name!);
+            const kind = name === "shouldHitTriggers" ? "boolean" : "number";
+            let cpp: string;
+            if (captured) {
+                const access = ts.factory.createPropertyAccessExpression(argument, name!);
+                const field = context.readResolvedProperty(captured, access);
+                if (!field)
+                    context.fail(argument, `Physics raycast option '${name}' is not a captured value.`);
+                context.expectKind(field, kind, argument);
+                if (captured.kind !== "data" &&
+                    (kind === "boolean" ? field.staticBoolean : field.staticNumber) === undefined) {
+                    context.fail(argument, "Physics raycast option aliases require stored scalar fields or generation-known values.");
+                }
+                cpp = field.cpp;
+            }
+            else {
+                cpp = kind === "boolean"
+                    ? context.compileBoolean(expression)
+                    : context.compileNumber(expression, "double");
+            }
+            const snapshot = context.pinValueToTemporary({ kind, cpp }, `ray_${name}`).cpp;
+            if (name === "shouldHitTriggers")
+                shouldHitTriggers = snapshot;
+            else if (name === "membership")
+                membership = `static_cast<std::uint32_t>(${snapshot})`;
+            else
+                collideWith = `static_cast<std::uint32_t>(${snapshot})`;
+        }
+    }
+    const result = context.allocateTemporaryCppName("physics_raycast");
+    context.emit(`const bbl::upstream::PhysicsRaycastResult ${result} = ` +
+        `bbl::upstream::physics_raycast(${worldCpp}, ` +
+        `${from}, ${to}, ` +
+        `${membership}, ${collideWith}, ${shouldHitTriggers});`);
+    return {
+        kind: "record",
+        cpp: "",
+        recordProperties: {
+            hasHit: { kind: "boolean", cpp: `${result}.has_hit` },
+            hitPoint: vec3Record(`${result}.hit_point`),
+            hitNormal: vec3Record(`${result}.hit_normal`),
+            hitDistance: { kind: "number", cpp: `${result}.hit_distance` },
+            body: {
+                kind: "data",
+                cpp: `${result}.body`,
+                dataType: {
+                    kind: "optional",
+                    inner: { kind: "handle", handle: "physics-body" },
+                },
+                ...(world.engineCpp === undefined ? {} : { engineCpp: world.engineCpp }),
+            },
+        },
+    };
+}
+
+function compileApplyPhysicsImpulse(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 4);
+    const world = context.compileValue(argumentAt(call, 0));
+    const body = context.compileValue(argumentAt(call, 1));
+    context.expectKind(world, "physics-world", argumentAt(call, 0));
+    context.expectKind(body, "physics-body", argumentAt(call, 1));
+    context.expectSameEngine(world, body, call);
+    const impulse = context.compileVec3(argumentAt(call, 2), "double");
+    const point = call.arguments[3]
+        ? compileImpulsePoint(context, call.arguments[3])
+        : "std::optional<bbl::Vec3d>{}";
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::apply_physics_impulse(` +
+            `${world.cpp}, ${body.cpp}, ${impulse}, ${point})`,
+    };
+}
+
+const physicsIntrinsicHandlers = new EmissionMap<string, (context: PhysicsIntrinsicContext, call: ts.CallExpression) => Value | undefined>([
+    ["createHeightFieldShape", compileCreateHeightFieldShape],
+    ["createPhysicsConstraint", compileCreatePhysicsConstraint],
+    ["createPhysicsViewer", compileCreatePhysicsViewer],
+    ["showPhysicsBody", compileShowPhysicsBody],
+    ["hidePhysicsBody", (context, call) => compileHidePhysicsBody(context, call, "hidePhysicsBody")],
+    ["disposePhysicsViewer", (context, call) => compileHidePhysicsBody(context, call, "disposePhysicsViewer")],
+    ["createHavokWorld", compileCreateHavokWorld],
+    ["enableHavokFloatingOrigin", compileEnableHavokFloatingOrigin],
+    ["setPhysicsGravity", compileSetPhysicsGravity],
+    ["setPhysicsTimestepMs", compileSetPhysicsTimestepMs],
+    ["createPhysicsShape", compileCreatePhysicsShape],
+    ["addPhysicsShapeChildFromParent", compileAddPhysicsShapeChildFromParent],
+    ["setPhysicsShapeIsTrigger", compileSetPhysicsShapeIsTrigger],
+    ["createPhysicsBody", compileCreatePhysicsBody],
+    ["setPhysicsBodyShape", compileSetPhysicsBodyShape],
+    ["onPhysicsTrigger", compileOnPhysicsTrigger],
+    ["onPhysicsAfterStep", compileOnPhysicsAfterStep],
+    ["createPhysicsAggregate", compileCreatePhysicsAggregate],
+    ["setPhysicsBodyMotionType", compileSetPhysicsBodyMotionType],
+    ["setPhysicsBodyMass", compileSetPhysicsBodyMass],
+    ["setPhysicsShapeMaterial", compileSetPhysicsShapeMaterial],
+    ["setPhysicsBodyMassProperties", compileSetPhysicsBodyMassProperties],
+    ["setPhysicsShapeFilterMembershipMask", compileSetPhysicsShapeFilterMembershipMask],
+    ["setPhysicsBodyPreStep", compileSetPhysicsBodyPreStep],
+    ["setPhysicsBodyPrestepType", compileSetPhysicsBodyPrestepType],
+    ["setPhysicsShapeFilterCollideMask", compileSetPhysicsShapeFilterCollideMask],
+    ["getPhysicsBodyLinearVelocity", compileGetPhysicsBodyLinearVelocity],
+    ["applyPhysicsBodyForce", compileApplyPhysicsBodyForce],
+    ["setPhysicsBodyCollisionEventsEnabled", compileSetPhysicsBodyCollisionEventsEnabled],
+    ["onPhysicsCollision", compileOnPhysicsCollision],
+    ["shapeProximity", (context, call) => compileShapeProximity(context, call, "shapeProximity")],
+    ["shapeCast", (context, call) => compileShapeProximity(context, call, "shapeCast")],
+    ["physicsRaycast", compilePhysicsRaycast],
+    ["applyPhysicsImpulse", compileApplyPhysicsImpulse],
+]);

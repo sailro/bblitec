@@ -7,6 +7,7 @@ export function lowerLocalCubemap(context: LoweringContext): LoweredSource {
     return {modulePath, symbolName, header: "", source: `// ${context.provenance(modulePath, symbolName)}
 // Geometry, grid membership, uniform values and texture copies were executed at generation.
 #include <bblite/runtime.hpp>
+#include <bblite/pal.hpp>
 #include <nlohmann/json.hpp>
 
 namespace bbl {

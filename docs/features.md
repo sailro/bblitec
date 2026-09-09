@@ -35,7 +35,7 @@ Audio, physics, navigation, retained UI and codecs also select their native depe
 | --- | --- |
 | Entry/modules | Local or imported entry helpers, supported top-level statements, named local imports/re-exports and ordered reached initializers. |
 | Control flow | Blocks, conditionals, supported switches and loops, applicable break/continue, throw, bounded catch and finally. |
-| Functions/classes | Data-typed functions, supported recursion, defaults, handle-helper inlining, local fields/methods/accessors and demanded shared instances. Stored subclass dispatch refuses. |
+| Functions/classes | Data-typed functions, supported recursion, defaults, handle-helper inlining, local fields/methods/accessors and demanded shared instances. Stored subclass dispatch is unsupported. |
 | Closures | Supported retained API callbacks, timers/RAF, shared outer cells and represented function identity. |
 | Data | Typed/nullable records, arrays, insertion-ordered Map/Set, tuples, destructuring, spreads and bounded static records. |
 | Numeric/string | Reached Math, JavaScript rounding/coercions, deterministic random and supported string operations. |
@@ -58,8 +58,12 @@ and handle-dependent escapes are bounded; see [ownership](architecture.md#runtim
 
 AOT asset awaits differ from frame-yield continuations. Workers use owner-loop promises for reached
 async functions. Worker codecs support typed plain data, cycles, repeated references and copied
-buffers. Transfer lists admit OffscreenCanvas; ArrayBuffer transfer, MessagePort, shared memory,
-classic workers and runtime-selected scripts refuse. Graphics realms need identical rendering products.
+buffers. Transfer lists admit OffscreenCanvas only; MessagePort and shared memory are unsupported.
+Classic workers and runtime-selected scripts refuse. Worker options admit `name`, `type: "module"`
+and `credentials: "same-origin"` only. Graphics realms need identical rendering products.
+
+Native `for...of` accepts an identifier, plain tuple/map-entry bindings or plain struct field bindings.
+Nested patterns, defaults, rest bindings and renamed struct fields refuse.
 
 ### Core TypeScript library
 
@@ -97,7 +101,8 @@ Sparse, quantized and compressed inputs become ordinary native accessors. Other 
 
 ### Compressed textures
 
-KTX1 loads natively with its blocks/mips. Basis and glTF KTX2 use the pinned browser transcoder
+KTX1 is parsed at generation into a mip table and GPU blocks; native mip spans share that payload.
+Basis and glTF KTX2 use the pinned browser transcoder
 at generation. The compression target is fixed for the validated device family; native upload
 checks device support. Sampler, encoding and invertY behavior are producer-specific.
 
@@ -106,7 +111,7 @@ checks device support. Sampler, encoding and invertY behavior are producer-speci
 `splatsData` reads and `updateData(ArrayBuffer)` retain shared source rows. Numeric views can edit
 those bytes; buffer replacement preserves old aliases. Updates require equal row counts and owned
 or retained storage, publish a version to both PALs, and refresh same-turn picking. Borrowed native
-buffers refuse. `splatsData` is getter-only; replace rows through `updateData`.
+buffers [refuse at update](../src/lowering/splat-lowerer.ts). `splatsData` is getter-only; replace rows through `updateData`.
 
 ### Environment compilation
 
@@ -117,12 +122,16 @@ PBR local environments retain independent `.env` results. Static box/sphere proj
 blended probe sets execute the pinned validation, grid/UBO packing and texture-copy planning.
 Configuration, debug selection and solid ORM replacement must precede scene registration;
 live probe rebuilding and ORM rebinding refuse. Direct-intensity writes remain native.
+Single-environment options admit `shape`, `projectionPosition`, `projectionSize`, `projectionRadius`
+and `capturePosition`; probe-set options admit `probes`, `voxelGrid` and `parallaxCorrection` only.
 
 ### Drawn and computed assets
 
 Bounded module producers bake atlases/pixels in Chromium. CSG uses the pinned implementation;
-CSG2 uses pinned Manifold WASM and preserves material partitions. CSG2 requires unchanged,
-identity-transform box/sphere solids; preceding material assignments work. Runtime CSG2 control refuses.
+CSG2 uses pinned Manifold WASM and preserves material partitions. Both package baked geometry
+as binary streams. CSG2 requires unchanged,
+identity-transform box/sphere solids; preceding material assignments work.
+[Runtime CSG2 control](../src/compiler/intrinsics/mesh.ts) refuses.
 
 ### Browser-produced textures
 
@@ -134,7 +143,7 @@ pixels/blob and texture options; unrecognized calls or engine reads refuse. Live
 - Sets stepped or frozen before their first frame, without an emitter provider, are baked. Frozen
   buffer aliases expose capacity/count and full-capacity numeric reads. Later simulation/column writes,
   nonfinite values, negative zero and native buffer access with composed set membership refuse.
-- Frozen Sprite2D sheets retain shared Uint16 cells and observe cell writes each frame. Sheet replacement,
+- Frozen Sprite2D sheets retain shared Uint16 cells and observe cell writes each frame. [Sheet replacement](../src/compiler/particle-sheet.ts),
   effectful callbacks and broader binding/view options refuse; cell dimensions are captured at atlas creation.
 - Unstepped pure-2D bindings can simulate natively. Covered evaluators include static emit rate,
   CreateParticle, world Box/local Point shapes, position/color updates, textures, supported Input/Math/Lerp/
@@ -160,7 +169,7 @@ formats and binding authority belong in [backends](backends.md#compiled-binding-
 
 Registration, rendering contexts, fixed/live time, supported callbacks, timers and frame gates share
 one conductor. Scene, SpriteRenderer, EffectRenderer and scene-less FrameGraphContext drivers activate
-independently. Immutable engine aliases retain identity; rebinding them or creating multiple engines
+independently. Immutable engine aliases retain identity; rebinding them or [creating multiple engines](../src/compiler.ts)
 within one entry point refuses.
 
 Device-loss scene recovery retains CPU owners and rebuilds GPU resources on SDL_GPU and Dawn.
@@ -177,17 +186,19 @@ are unsupported.
 ## Cameras and input
 
 ArcRotate/Free cameras, framing, bounded orthographic projection, viewports and supported SDL controls
-are live. Geospatial cameras render their compiled pose; their input arms refuse.
+are live. Geospatial cameras render their compiled pose; geospatial input is unsupported.
 Canvas dimensions follow drawable extent. Off-center orthographic planes and wider combinations are unsupported.
 
 ## Asset loading and upload
 
-Generated glTF and `.babylon` loaders create supported meshes, materials, lights, cameras, skins and
-animation. glTF supports packaged external/compressed resources and reached material extensions;
-unsupported fields/branches refuse. Parented or geometry-less `.babylon` nodes are unsupported.
+Generated glTF loaders create supported meshes, materials, lights, cameras, skins and animation,
+including packaged external/compressed resources and reached material extensions. Unsupported branches refuse.
+`.babylon` loading supports parented meshes, container nodes, Standard materials, point lights and cameras.
+Mesh construction, hierarchy and material/scene control flow lower from the pin. `loadCamera` and
+`loadTextures` are honored; `maxMeshes` is unsupported.
 
-Recognized closed glTF collectors retain actual stack/preorder traversal independently of native flat
-mesh storage, including Map insertion order. Metadata is demanded per asset/collector pair. Rest/default/
+Recognized closed glTF and `.babylon` collectors retain source traversal independently of native flat
+mesh storage. glTF owner maps retain insertion order. Metadata is demanded per asset/collector pair. Rest/default/
 optional collector parameters, partial/repeated hierarchies, instanced/splat producers and early break refuse.
 
 ## Geometry and meshes
@@ -207,9 +218,12 @@ Scene-created transform nodes, supported parenting, local/world transforms, visi
 imported walks/cloning are represented. Position/rotation/scaling aliases retain their owner handle.
 Meshes can parent to meshes or transform nodes; transform nodes can parent only to transform nodes.
 Parent assignment and children-list insertion remain separate operations.
+TRS vectors accept x/y/z components; mesh rotation quaternions accept x/y/z/w only. Imported roots
+expose position and Y rotation; scaling and quaternion writes require retained outer transforms.
 
 Detached static imported leaves share geometry and restore local attributes. Babylon imports retain their
-initial source TRS; cloning one after transform mutation refuses. Clones can be transformed and cloned again.
+initial source TRS; [cloning one after transform mutation](../src/lowering/scene-lowerer.ts) refuses.
+Clones can be transformed and cloned again.
 
 Bare visibility writes are live for transparent/transmissive draws. Opaque cached lists require
 `setMeshVisible` invalidation. Full imported-root cloning/rotation/scaling and arbitrary visitor effects are unsupported.
@@ -217,7 +231,7 @@ Bare visibility writes are live for transparent/transmissive draws. Opaque cache
 ## Lights
 
 Directional, hemispheric, point and spot lights support reached setters and per-mesh selection.
-Asset discoveries activate needed features. The primary PBR analytic slot supports only a restricted spot shape.
+Asset discoveries activate needed features. PBR analytic lights use the reached composed variants.
 
 ### Clustered lights
 
@@ -237,18 +251,18 @@ channels and diffuse colors three. Standard whole-array replacement retains its 
 Use owning numeric arrays for factory inputs; static readonly tuples and legacy object-color adapters
 cannot co-reach numeric-array reads. glTF preserves absent versus explicitly supplied factors.
 
-Numeric color reads require one static scene registration. Later group construction, rebuilds and color
+[Numeric color reads](../src/compiler.ts) admit at most one registered scene. Later group construction, rebuilds and color
 replacement after binding refuse. Write-only replacements work before first binding, including new callback-created
 materials. Direct array changes affect source reads without implicitly bumping the pinned material UBO version.
 
 Public albedo reads retain source texture identity across sharing, replacement and equal-byte distinct
-factories. glTF requires packaged producer associations; missing identity fails. Core images/factors,
+factories. glTF requires [packaged producer associations](../src/gltf-material-texture-identity.ts); missing identity fails. Core images/factors,
 sampled wrappers and UV2 clones work; material extensions, texture transforms and BasisU refuse when
 public albedo reads are reached.
 
 Shader materials support bounded 2D/2D-array samplers, float/depth/comparison sampling, declared storage
 buffers and supported uniform/system matrices. Live material choices need compatible known instancing
-profiles. Wider descriptors, fixed-function options and system values refuse.
+profiles. Wider [descriptors, fixed-function options and system values](../src/compiler/shader-material.ts) refuse.
 
 ### Node materials
 
@@ -257,12 +271,14 @@ Repeated construction shares composition but retains distinct material/input own
 survive aliases/helpers/containers. Setup can fill textures after attachment and before registration;
 binding captures the original private slot and fails if required data is missing. Unused materials may stay unset.
 
-Numeric inputs, map/reflective mutation, later texture producers and post-registration topology/input
+[Numeric inputs, map/reflective mutation](../src/compiler/node-input-surface.ts), later texture producers and post-registration topology/input
 changes refuse, including `options.textures`-only materials. Public inputs require one registered scene.
 Geometry tasks compose per-task MRT views with raw POSITION/NORMAL/UV, source indices and per-view world
 matrices; LOCAL_POSITION reads raw positions. Morphs, environment/shadow lights and trailing colour attachments refuse.
+Geometry texture types admit IRRADIANCE, WORLD_POSITION, LOCAL_POSITION, REFLECTIVITY, VIEW_DEPTH,
+NORMALIZED_VIEW_DEPTH, SCREENSPACE_DEPTH, VIEW_NORMAL, WORLD_NORMAL, ALBEDO and LINEAR_VELOCITY only.
 
-Imported node geometry requires static tightly packed FLOAT positions/normals and FLOAT UVs when present.
+[Imported node geometry](../src/node-geometry-assets.ts) requires static tightly packed FLOAT positions/normals and FLOAT UVs when present.
 Missing normals, strided used attributes, deformation/instancing and imported transform mutation/cloning
 refuse. Tight accessor offsets and unused strided views are valid. Proven scene-authored transforms remain supported.
 See [node controls](debugging.md#before-calling-a-scene-done) for the browser resize limitation.
@@ -280,6 +296,7 @@ transforms retain load-time values because the pinned resolver ignores those ani
 
 Property groups bind mutable numeric data leaves to their owner at group creation; intermediate replacement
 does not retarget them. Owner/property identity governs mixing. Missing, readonly, nonnumeric and whole-vector/array targets refuse.
+Property tracks admit `linear` and `step` interpolation only.
 
 Managers support fixedDeltaMs, retained onUpdate and autonomous RAF start/stop. The first variable tick is
 zero; autonomous updates notify afterward, while manual updates/seeks do not. Engine-less Canvas2D uses
@@ -300,12 +317,15 @@ is an [adaptation](fidelity.md#semantic-contract).
 Supported paths include Sprite2D layers/renderers, offscreen/depth-hosted targets, billboards, atlases,
 animation, custom fragments and Y-sort. Options select pinned blend/shader arms and producer-specific mips.
 Handle-object APIs, mixed transparent ordering, coverage gamma and several picking combinations are unsupported.
+Pinned UV-scroll attributes must use `float32`, `float32x2`, `float32x3` or `float32x4`; other formats refuse.
 
 ## Picking
 
 Basic/detailed GPU picks support mesh/cloud identity and points, with per-mesh skeleton/morph/combined
 projection and pending-pose synchronization before submission. Billboard contributors are bounded.
 Filter/ignore/discard options, deformed thin instances, VAT IDs, viewport and wider contributor/result combinations refuse.
+Contributor checks use the picked scene and filter. Detailed picks refuse active thin instances, billboards
+and splats; billboard picks refuse cutout, eye-relative positions and simultaneous splat contributors.
 
 PickingInfo aliases share identity and reached hit/bu/bv writes through nullable helpers and containers.
 Name/normal queries retain the original engine association and throw after engine destruction/move;
@@ -335,12 +355,14 @@ registration; shape options and retargeting remain bounded. Nullable locals/clas
 on first use; reads before assignment refuse. Material producers retain their source RGB values and shared color arrays.
 Rotation widgets register host pointer input, retain enlarged ring colliders and apply the pinned angle/quaternion
 update in parent coordinates. Utility layers rematch GPU resources when lazy construction adds meshes.
+Camera deferral accepts zero-argument predicates for `shouldHandlePointerDown`, `isExternalDragActive`
+and `isExternalPickPending`; other options refuse.
 
 ## Physics
 
 Constraint factories support BALL_AND_SOCKET, DISTANCE, HINGE, PRISMATIC, LOCK, SLIDER and SIX_DOF
 with discarded results. Body-local anchors, collision opt-in and inline Cartesian/angular/radial limits
-are supported. Both limit bounds are required; springs, motors and retained constraint handles refuse.
+are supported. Both limit bounds are required; [springs, motor settings and retained constraint handles](../src/compiler/intrinsics/physics.ts) refuse.
 Joints retain their bodies, follow mass-frame changes and detach while either body is outside their world.
 
 Bullet implements the Havok-shaped PAL for reached bodies, primitive/convex/static-mesh shapes, forces,
@@ -372,12 +394,14 @@ made by later arguments. Dynamic option aliases without native field storage ref
 ## Audio
 
 Feature-selected LabSound/SDL3 supports reached Web Audio lifecycle, gain, oscillators, buffers, filters,
-panning and AudioParam scheduling. Clips are packaged for native decoding. Broader Babylon sound/bus/spatial APIs and master ramps are unsupported.
+panning and AudioParam scheduling. `decodeAudioData` consumes encoded ArrayBuffer bytes at the context's
+sample rate; fetched clips are packaged. Direct response-buffer reads select codecs by container signature.
+Stored or constructed buffers retain all supported codecs. Broader Babylon sound/bus/spatial APIs and master ramps are unsupported.
 
 ## Shadows
 
 Reached PCF spot/directional, ESM directional and CSM paths support receivers/casters, layers, blur and
-morph bounds. `receiveShadows` needs a static supported value; false is not a general live variant toggle.
+morph bounds. [`receiveShadows`](../src/compiler/assignments.ts) needs a static supported value; false is not a general live variant toggle.
 Wider thin-instance caster contracts and generator options are unsupported.
 
 ## Navigation
@@ -395,8 +419,9 @@ blits and MSAA resolve. Default tasks retain skybox/mesh/ground order; authored 
 Reached factories provide leaf/composite passes, live uniforms, output identity and resize-relative targets.
 TAA requires one scene, explicit Standard colour tasks, engine-format color, depth24plus-stencil8 and proven
 single-sample post-process inputs. Source tasks retain independent state and may select camera overrides.
-Implicit defaults, geometry/copy tasks, other material families, backgrounds/shadows, splats/sprites,
-clustered lights, transmission, retained UI and other unprepared drivers refuse with TAA.
+Native preparation checks each submitted task's draw list, camera and scene. Non-Standard draws,
+implicit defaults, geometry/copy/shadow tasks, clustered lights, transmission and registered unprepared
+renderer/UI contexts refuse. Unused materials and resources outside these passes do not reject TAA.
 
 TAA tasks must precede initial registration; rebuilds/topology changes refuse. Supported Arc-camera writes,
 target components/bulk setters, limits, inertia and animation use tracked versions. Untracked producers,
@@ -413,26 +438,29 @@ sampling. Supported settings, enablement and light direction are live; history/c
 
 EffectWrapper/EffectRenderer, UniformEffectWrapper and their tasks support bounded layouts/uniforms/textures.
 Custom vertex stages, arbitrary texture sources, wider descriptors and lifecycle/update APIs are unsupported.
-Retained UI with scene-less effect or frame-graph drivers refuses.
+[Retained UI with scene-less effect or frame-graph drivers](../src/compiler.ts) refuses.
 
 ### Image processing
 
 Exposure/contrast are live outside the TAA refusal above. Tone mapping affects composition; transmission
 uses the pinned linear-frame and trailing image-processing contract.
+Image-processing property writes admit `exposure`, `contrast`, `toneMapping` and `toneMappingEnabled` only.
 
 ## Text
 
 Static font loading/default layout run the pinned parser, shaper and packer at generation. Runtime strings
 and `updateDefaultTextData` retain the packaged font, layout options, single run, palette and live dimensions.
-Font size/options are static. A retained single-run spread can replace defaultColor; the opt-in
+Font size/options are static; alignment admits `left`, `center` and `right` only.
+A retained single-run spread can replace defaultColor; the opt-in
 `setFontWeightOffset` accepts a retained run or numeric index and preserves source clamping and group identity.
 Explicit live color arguments and arbitrary run edits refuse.
 Text data/renderables retain identity through aliases/helpers/containers. Transform setters and opacity are
 live; pipeline membership, depth and order settle before attachment. Late attachment/disposal, conditional
 transform copies, reflective/internal-buffer writes and high-precision matrices refuse.
 
-Text rendering supports one text-only default scene with a static FreeCamera or ArcRotate camera
-controls. Mixed ordering, custom tasks and other camera writes refuse. Both PALs use composed Slug shaders,
+Text rendering supports one text-only default scene with a static FreeCamera or supported ArcRotate
+controls. [Binding validates the scene's attachments, tasks and camera](../native/src/pal_text_scene.hpp); unrelated resources are permitted.
+Mixed ordering, custom tasks and other camera writes refuse. Both PALs use composed Slug shaders,
 packed resources and pinned alpha-to-coverage or premultiplied blending; shared data retains its group-cache behavior.
 
 Standalone TextRenderer layers support affine pixel placement, opacity, coverage gamma, visibility,

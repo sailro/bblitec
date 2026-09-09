@@ -58,11 +58,20 @@ export async function gltfMeshWalks(document: JsonObject, walks: readonly Compil
     const { buildNodeHierarchy } = await importPinnedModuleWithExports<{
         buildNodeHierarchy(document: JsonObject, meshes: Mesh[], data: Array<{_nodeIndex: number}>): {root: Node};
     }>("loader-gltf/load-gltf.js", ["buildNodeHierarchy"]);
+    const { root } = buildNodeHierarchy(document, meshes, meshDatas);
+    const owners = new Map(meshes.map((mesh, index) => [mesh,
+        asString(nodes[meshDatas[index]!._nodeIndex]!.name) || `gltf_node_${meshDatas[index]!._nodeIndex}`]));
+    return evaluateMeshWalks({entities: [root]}, meshes, walks, mesh => owners.get(mesh));
+}
+
+/** Execute proven collectors over a pinned hierarchy and retain their permutations. */
+export async function evaluateMeshWalks(
+    container: {entities: Node[]}, meshes: Mesh[], walks: readonly CompiledMeshWalk[],
+    ownerName?: (mesh: Mesh) => string | undefined,
+): Promise<number[][]> {
     const { getContainerMeshes } = await importPinnedModule<{
         getContainerMeshes(container: {entities: Node[]}): Mesh[];
     }>("asset-container.js");
-    const { root } = buildNodeHierarchy(document, meshes, meshDatas);
-    const container = {entities: [root]};
     const indexOf = new Map(meshes.map((mesh, index) => [mesh, index]));
     return walks.map(walk => {
         const collect = walk.kind === "preorder"
@@ -76,9 +85,7 @@ export async function gltfMeshWalks(document: JsonObject, walks: readonly Compil
             for (const [name, entries] of result) {
                 if (typeof name !== "string" || !Array.isArray(entries)) throw new Error("Source owner walk requires string keys and mesh arrays.");
                 for (const mesh of entries) {
-                    const index = indexOf.get(mesh);
-                    const nodeIndex = index === undefined ? undefined : meshDatas[index]!._nodeIndex;
-                    const nativeName = nodeIndex === undefined ? undefined : asString(nodes[nodeIndex]!.name) || `gltf_node_${nodeIndex}`;
+                    const nativeName = ownerName?.(mesh);
                     if (name !== nativeName) throw new Error("Source owner walk key differs from its native node-wrapper identity.");
                     collected.push(mesh);
                 }

@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -58,8 +59,8 @@ test("native Standard lightmap features, material uniforms and UV lanes match th
     mkdirSync(join(directory,"bblite/upstream"), { recursive: true });
     const variant = pinnedStandardVariantManifestEntry(await composePinnedStandardVariant({ lightmapTexture: {}, lightmapCoordIndex: 1 }));
     writeFileSync(join(directory,"bblite/upstream/pinned_variant_bindings.hpp"), pinnedSharedVariantDecls(context,"lightmap control"));
-    writeFileSync(join(directory,"bblite/upstream/material_texture_slots.hpp"), materialTextureSlotsHeader({ transmission:false,clearcoat:false,sheen:false,iridescence:false,lightmap:true,metallicReflectanceMap:false,reflectanceMap:false,specularGlossiness:false,occlusionUv2:false,standardBump:false,standardReflection:false,clusteredLights:false,vat:false,vatInstances:false }, [], "lightmap control"));
-    writeFileSync(join(directory,"standard.hpp"), pinnedStandardVariantsHeader(context,"lightmap control",[variant]) + pinnedStandardSupportBlock(context,{selectors:[],uvTransform:true,plugins:false,renderableMeshFeatures:[]}));
+    writeFileSync(join(directory,"bblite/upstream/material_texture_slots.hpp"), inlineCpp(materialTextureSlotsHeader({ transmission:false,clearcoat:false,sheen:false,iridescence:false,lightmap:true,metallicReflectanceMap:false,reflectanceMap:false,specularGlossiness:false,occlusionUv2:false,standardBump:false,standardReflection:false,clusteredLights:false,vat:false,vatInstances:false }, [], "lightmap control")));
+    writeFileSync(join(directory,"standard.hpp"), inlineCpp(pinnedStandardVariantsHeader(context,"lightmap control",[variant])) + inlineCpp(pinnedStandardSupportBlock(context,{selectors:[],uvTransform:true,plugins:false,renderableMeshFeatures:[]})));
     const { createStandardMaterial } = await importPinnedModule<{createStandardMaterial():LightmapMaterial}>("material/standard/create-standard-material.js");
     const { setStandardLightmapTexture } = await importPinnedModule<{setStandardLightmapTexture(material:LightmapMaterial,texture:LightmapTexture|null):void}>("material/standard/set-std-lightmap.js");
     const { writeStdMaterialData } = await importPinnedModule<{writeStdMaterialData(data:Float32Array,material:LightmapMaterial,level:number):void}>("material/standard/standard-pipeline.js");

@@ -3,6 +3,8 @@ import { downloadCached } from "./asset-download-cache.js";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
 import { asObject, asRecords } from "./gltf-document.js";
+import { packageBabylonMeshWalks } from "./babylon-mesh-walks.js";
+import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
 
 const textureFields = [
     "diffuseTexture",
@@ -45,11 +47,14 @@ export async function packageBabylon(
     source: string,
     baseDirectory: string,
     destination: string,
+    meshWalks: readonly (CompiledMeshWalk | undefined)[] = [],
+    loadTextures = true,
 ): Promise<void> {
     const rootBytes = await readResource(source, baseDirectory);
     const parsed: unknown = JSON.parse(new TextDecoder().decode(rootBytes));
     const document = asObject(parsed);
     if (!document) throw new Error(".babylon JSON root must be an object.");
+    await packageBabylonMeshWalks(document, meshWalks);
 
     const textureOutputs = new Map<string, string>();
     const resources: Array<{ source: string; output: string }> = [];
@@ -58,7 +63,7 @@ export async function packageBabylon(
         textureOutputs.set(resourceSource, output);
         resources.push({ source: resourceSource, output });
     };
-    for (const material of asRecords(document.materials)) {
+    for (const material of loadTextures ? asRecords(document.materials) : []) {
         for (const field of textureFields) {
             const texture = asObject(material[field]);
             if (!texture || typeof texture.name !== "string") {

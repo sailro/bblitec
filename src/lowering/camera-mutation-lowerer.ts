@@ -3,6 +3,7 @@ import { cameraRecordField } from "../compiler/properties.js";
 import { snakeCase } from "../cpp-literals.js";
 import { LoweringContext } from "./context.js";
 import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const ARC = "src/camera/arc-rotate.ts";
 const CONTROLS = "src/camera/arc-rotate-controls.ts";
@@ -17,8 +18,8 @@ export class CameraMutationLowerer {
 
     private lower(file: ts.SourceFile, body: ts.Block, bindings: Map<string, PinnedBinding>,
         calls: ReadonlyMap<string, (args: readonly string[]) => string> = new Map()): string {
-        const lowerer = new PinnedNumericLowerer(file, { bindings, calls, booleanAnd: true, booleanOr: true });
-        return body.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n");
+
+        return lowerPinnedBody(file, body.statements, { bindings, calls, booleanAnd: true, booleanOr: true });
     }
 
     private dirty(): string {

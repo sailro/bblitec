@@ -49,6 +49,8 @@ import {
     type SplatContainer,
     type SplatContainerKind,
 } from "../compiler/assets.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
@@ -240,10 +242,11 @@ export class SplatLowerer {
         const bindings = new Map<string, PinnedBinding>([
             [parameter.text, { cpp: parameter.text, type: "scalar" }],
         ]);
-        const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+
+        const body = lowerPinnedBody(file, found.body.statements, {
             bindings,
             calls: MATH_CALLS,
-            returnValue: (expression): string => {
+            returnValue: (expression, lowerer): string => {
                 if (
                     !expression ||
                     !ts.isObjectLiteralExpression(expression)
@@ -261,9 +264,6 @@ export class SplatLowerer {
                 ).join(", ")}}`;
             },
         });
-        const body = found.body.statements
-            .flatMap((statement) => lowerer.statement(statement, "    "))
-            .join("\n");
         return `SplatTextureSize choose_splat_texture_size(double ${parameter.text}) {
 ${body}
 }`;
@@ -562,7 +562,10 @@ ${payloads
                 { cpp: `static_cast<double>(splat_row_length)`, type: "scalar" },
             ],
         ]);
-        const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+
+
+        const body = lowerPinnedBody(file, declaration
+            .body!.statements, {
             bindings,
             calls: new Map([
                 ...MATH_CALLS,
@@ -574,7 +577,7 @@ ${payloads
             // The pin's returned literal, field by field onto the struct.
             // The four texture payloads are moved rather than copied; every
             // one is texelCount * 4 floats.
-            returnValue: (expression): string => {
+            returnValue: (expression, lowerer): string => {
                 if (
                     !expression ||
                     !ts.isObjectLiteralExpression(expression)
@@ -610,12 +613,6 @@ ${payloads
                 ].join(", ")}}`;
             },
         });
-
-        const body = declaration
-            .body!.statements.flatMap((statement) =>
-                lowerer.statement(statement, "    "),
-            )
-            .join("\n");
 
         return {
             modulePath: DATA_MODULE,
@@ -865,16 +862,14 @@ ${body}
             ["camPos.y", { cpp: "eye_position[1]", type: "scalar" }],
             ["camPos.z", { cpp: "eye_position[2]", type: "scalar" }],
         ]);
-        const lowerer = new PinnedNumericLowerer(file, {
+
+        return lowerPinnedBody(file, writes, {
             bindings,
             calls: MATH_CALLS,
             arrayCopy: (receiver, source, offset) =>
                 `std::copy(${source}.begin(), ${source}.end(), ` +
                 `${receiver}.begin() + static_cast<std::ptrdiff_t>(${offset}))`,
         });
-        return writes
-            .flatMap((statement) => lowerer.statement(statement, "    "))
-            .join("\n");
     }
 
     /**
@@ -1391,17 +1386,7 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
         return {
             modulePath: SH_PIPELINE_MODULE,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/runtime.hpp>
-#include <bblite/upstream/render_capabilities.hpp>
-
-#include <cstddef>
-#include <cstdint>
-#include <vector>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/runtime.hpp>","<bblite/upstream/render_capabilities.hpp>","","<cstddef>","<cstdint>","<vector>"], `
 /** The spherical-harmonic degree this scene's packaged cloud parsed to. */
 inline constexpr std::uint32_t splat_sh_degree = ${this.shDegree}u;
 
@@ -1426,9 +1411,7 @@ std::vector<std::vector<std::uint8_t>> build_splat_sh_textures(
     double texture_width,
     double texture_height,
     double splat_count);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(
                 SH_PIPELINE_MODULE,
                 symbolName,
@@ -1868,16 +1851,7 @@ ${writes.join("\n")}
         return {
             modulePath: BAKE_MODULE,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/runtime.hpp>
-
-#include <array>
-#include <cstdint>
-#include <vector>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>","<cstdint>","<vector>"], `
 /**
  * Rewrites every splat row so the cloud renders identically under an
  * identity transform.
@@ -1891,9 +1865,7 @@ void bake_splat_transform(
 
 /** The TRS \`bakeCurrentTransformIntoVertices\` leaves behind. */
 void reset_splat_transform(SplatMeshRecord& mesh);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(BAKE_MODULE, symbolName)}
 #include <bblite/js_data.hpp>
 #include <bblite/upstream/splat_bake.hpp>
@@ -1969,24 +1941,18 @@ void bake_current_transform_into_vertices(
         // world matrix through the same writer.
         const splatTrs = pinnedTrsComposition(this.context);
 
-        const bucketLowerer: PinnedNumericLowerer = new PinnedNumericLowerer(
-            bits.file,
-            {
+
+        const bucketBody = lowerPinnedBody(bits.file, bits.declaration
+            .body!.statements, {
                 bindings: new Map<string, PinnedBinding>([
                     ["vertexCount", { cpp: "vertex_count", type: "scalar" }],
                 ]),
                 calls: MATH_CALLS,
-                returnValue: (expression) =>
+                returnValue: (expression, bucketLowerer) =>
                     expression
                         ? bucketLowerer.expression(expression)
                         : "0.0",
-            },
-        );
-        const bucketBody = bits.declaration
-            .body!.statements.flatMap((statement) =>
-                bucketLowerer.statement(statement, "    "),
-            )
-            .join("\n");
+            });
 
         const bindings = new Map<string, PinnedBinding>([
             ["positions", { cpp: "positions", type: "f32" }],
@@ -2021,16 +1987,7 @@ void bake_current_transform_into_vertices(
         return {
             modulePath: SORT_MODULE,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/runtime.hpp>
-
-#include <array>
-#include <cstdint>
-#include <vector>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>","<cstdint>","<vector>"], `
 /** Per-cloud scratch reused across sorts, sized once per upload. */
 struct SplatSortScratch {
     std::vector<float> depths;
@@ -2094,9 +2051,7 @@ void sort_splats_back_to_front(
     const std::array<float, 4>& depth_transform,
     std::vector<std::uint32_t>& order,
     SplatSortScratch& scratch);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(SORT_MODULE, symbolName)}
 #include <bblite/js_data.hpp>
 #include <bblite/upstream/splat_sort.hpp>

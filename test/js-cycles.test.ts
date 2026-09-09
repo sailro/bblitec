@@ -269,6 +269,47 @@ test("generated timers retain recursive cells and observe later timer-ID assignm
     `);
 });
 
+test("reused escaping recursion retains one live callback and releases its captures", { skip: !tools }, () => {
+    checkGeneratedCycles("reused-recursive-timers", `
+        import { createEngine, startEngine } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            let polls = 0;
+            function poll(): void {
+                polls++;
+                if (polls > 5) throw new Error("separate recursive captures");
+                if (polls < 4) setTimeout(poll, 0);
+            }
+            poll();
+            poll();
+            await startEngine(engine);
+        }
+    `, 1, `
+        namespace bbl {
+            static std::deque<std::function<void()>> pending;
+            Engine create_engine(EngineOptions) { return {}; }
+            void defer_callback(Engine&, std::function<void()> callback) {
+                pending.push_back(std::move(callback));
+            }
+            double set_timeout(Engine&, std::function<void()> callback, double) {
+                pending.push_back(std::move(callback));
+                return 1;
+            }
+            void start_engine(Engine&) {
+                int calls = 0;
+                while (!pending.empty()) {
+                    if (++calls > 3) throw std::runtime_error("recursive callback count");
+                    auto callback = std::move(pending.front());
+                    pending.pop_front();
+                    js::collect_cycles();
+                    callback();
+                }
+                if (calls != 3) throw std::runtime_error("recursive callback was lost");
+            }
+        }
+    `);
+});
+
 test("cycle collection preserves live aliases and releases unreachable container graphs", { skip: !tools }, () => {
     const output = resolve("artifacts/js-cycles-check");
     mkdirSync(output, { recursive: true });

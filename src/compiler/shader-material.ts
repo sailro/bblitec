@@ -1,3 +1,5 @@
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 // Shader-material lowering: variant matching and uniform resolution.
 //
 // A createShaderMaterial call either matches a predeclared program --
@@ -7,7 +9,18 @@
 // reach order, which is the generated variant table's index order, and
 // the uniform setters resolve their offsets from the reflected layout
 // of the reached program.
-import { typeComponents } from "../shader-ir.js";
+// Shader-material lowering: variant matching and uniform resolution.
+//
+// A createShaderMaterial call either matches a predeclared program --
+// proven by lowering both sides through the typed WGSL IR and
+// comparing the IR, never the source text -- or registers the scene's
+// own WGSL as a scene-local variant. Reached programs are recorded in
+// reach order, which is the generated variant table's index order, and
+// the uniform setters resolve their offsets from the reflected layout
+// of the reached program.
+import {
+    typeComponents,
+} from "../shader-ir.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -65,39 +78,19 @@ const MAX_SHADER_STORAGE_BUFFERS = 8;
 
 export interface ShaderMaterialContext
     extends ObjectValidationContext,
-        StaticBooleanContext {
-    readonly reachedShaderPrograms: CompiledShaderProgram[];
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    expectStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileValue(expression: ts.Expression): Value;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileStaticString(
-        expression: ts.Expression,
-    ): string;
-    castNumber(value: Value, precision: "float" | "double"): string;
-    compileShaderSource(expression: ts.Expression): {
-        source: string;
-        dynamicUniforms: Array<{
-            name: string;
-            type: "f32";
-            components: string[];
-        }>;
-    };
-    compileStringLiteral(
-        expression: ts.Expression,
-    ): string;
-}
+    StaticBooleanContext,
+    Pick<LoweringServices,
+        | "reachedShaderPrograms"
+        | "expectObjectLiteral"
+        | "expectStaticArrayLiteral"
+        | "objectProperty"
+        | "compileValue"
+        | "compileNumber"
+        | "compileStaticString"
+        | "castNumber"
+        | "compileShaderSource"
+        | "compileStringLiteral"
+    > {}
 
 export function compileShaderMaterialOptions(
     context: ShaderMaterialContext,
@@ -173,7 +166,7 @@ export function compileShaderMaterialOptions(
     // `createShaderMaterial` asserts one namespace across the uniform,
     // sampler and define names it generates, so the set is built once here
     // and each normalizer adds its own to it.
-    const generatedNames = new Set(
+    const generatedNames = new EmissionSet(
         uniforms.map((signature) => {
             const separator = signature.indexOf(":");
             return separator < 1 ? signature : signature.slice(0, separator);
@@ -1069,11 +1062,11 @@ export function shaderThinInstanceLanes(
     meshes: readonly SceneMeshManifest[],
     fail: (message: string) => never,
 ): ReadonlyMap<string, boolean> {
-    const lanes = new Map<string, boolean>();
-    const seen = new Map<string, SceneMeshManifest>();
+    const lanes = new EmissionMap<string, boolean>();
+    const seen = new EmissionMap<string, SceneMeshManifest>();
     for (const mesh of meshes) {
         if (mesh.shaderVariant === undefined && !mesh.shaderVariants?.length) continue;
-        const variants = new Set([
+        const variants = new EmissionSet([
             ...(mesh.shaderVariant === undefined ? [] : [mesh.shaderVariant]),
             ...(mesh.shaderVariants ?? []),
         ]);

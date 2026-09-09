@@ -2,6 +2,12 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "../context.js";
 import { assertEnvironmentTextureIdentity } from "../scene-uniform-identity.js";
 import { gltfLoaderCpp } from "../templates/gltf-loader-cpp.js";
+import { lowerGltfAccessorShape } from "./accessor-shape.js";
+import { lowerGltfHierarchy } from "./hierarchy.js";
+import { lowerGltfParserJson } from "./parser-json.js";
+import { lowerGltfMaterialAssembly } from "./material-assembly.js";
+import { lowerGltfMaterialTextures } from "./material-textures.js";
+import { lowerGltfMaterialProperties } from "./material-properties.js";
 import {
     lowerAccessorNormalizationCpp,
     lowerVertexColorCpp,
@@ -9,9 +15,7 @@ import {
 import {
     lowerAnimationInterpolationCpp,
 } from "./animation-interpolation.js";
-import { lowerGltfExtensionDefaults } from "./extension-defaults.js";
 import { lowerGltfFactorBake } from "./factor-bake.js";
-import { lowerGltfMaterialColorPresence } from "./material-color-presence.js";
 import {
     lowerIblEnvironmentScalarsCpp,
     lowerIblPolynomialCpp,
@@ -19,16 +23,14 @@ import {
 import {
     lowerImageProcessingDefaultsCpp,
 } from "./image-processing-defaults.js";
-import { lowerGltfMaterialDefaults } from "./material-defaults.js";
 import {
-    lowerLocalMatrixCpp,
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
 } from "./matrix-leaves.js";
+import { lowerLocalMatrixCpp } from "./local-matrix.js";
 import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
 import { lowerPunctualLightsCpp } from "./punctual-lights.js";
-import { lowerSamplerMappingCpp } from "./sampler-mapping.js";
 import { lowerShPrescaleCpp } from "./sh-prescale.js";
 import {
     coalescedPropertyDefault,
@@ -38,6 +40,7 @@ import {
     topLevelFunction,
     unwrapExpression,
 } from "./shared.js";
+import { pinnedHeader } from "../pinned-header.js";
 
 /**
  * What a scene's assets and reached features decide about the emitted
@@ -114,7 +117,6 @@ export interface GltfLoaderOptions {
      */
     compressedImages?: boolean;
     materialSpecular?: boolean;
-    materialExtensionPayload?: boolean;
     /** The `KHR_materials_variants` name a scene selected, or "". */
     selectedMaterialVariant?: string;
     /** The scene reached `enableGltfCameras` (the `_camera` feature). */
@@ -176,14 +178,7 @@ export class GltfLowerer {
         return {
             modulePath,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/ts_runtime.hpp>
-
-#include <cstddef>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/ts_runtime.hpp>","","<cstddef>"], `
 struct ParsedGlbContainer {
     ts::JsonValue json;
     std::size_t json_offset = 0;
@@ -193,9 +188,7 @@ struct ParsedGlbContainer {
 };
 
 ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/upstream/gltf_glb_parser.hpp>
 
@@ -644,45 +637,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 );
             }
         }
-        const dielectricModule =
-            "src/loader-gltf/gltf-ext-dielectric.ts";
-        const dielectric =
-            this.context.sourceFile(dielectricModule);
-        for (const property of [
-            "KHR_materials_transmission",
-            "KHR_materials_ior",
-            "KHR_materials_volume",
-            "attenuationDistance",
-        ]) {
-            if (
-                !this.context.hasNode(
-                    dielectric,
-                    (node) =>
-                        (ts.isIdentifier(node) ||
-                            ts.isPropertyAccessExpression(node)) &&
-                        (ts.isIdentifier(node)
-                            ? node.text
-                            : node.name.text) === property,
-                )
-            ) {
-                this.context.contractError(
-                    dielectric,
-                    `Expected glTF dielectric property '${property}'.`,
-                );
-            }
-        }
-        // The sampler mapping and the keyframe interpolation used to pair
-        // hand-written template C++ with assertions that never fed it — a
-        // pin change failed the assertion while the stale text still
-        // emitted. Both segments are now produced from the pinned ASTs, so
-        // the assertion and the emission are the same walk: a changed
-        // formula changes the emitted bytes, and a construct the lowering
-        // cannot carry refuses generation.
-        const samplerMapping = lowerSamplerMappingCpp(
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-sampler-desc.ts",
-            ),
-        );
         const animationInterpolation =
             lowerAnimationInterpolationCpp(
                 this.context.sourceFile(
@@ -694,11 +648,11 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         );
         const accessorNormalization =
             lowerAccessorNormalizationCpp(quantization);
+        const accessorShape = lowerGltfAccessorShape(this.context);
         const vertexColor = lowerVertexColorCpp(
             this.context.sourceFile(
                 "src/loader-gltf/gltf-color-normalize.ts",
             ),
-            quantization,
         );
         const assemblyFile = this.context.sourceFile(
             "src/loader-gltf/ibl-env-assembly.ts",
@@ -714,51 +668,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         );
         const imageProcessingDefaults =
             lowerImageProcessingDefaultsCpp(imageBasedFile);
-        const extensionDefaults = lowerGltfExtensionDefaults(
-            dielectric,
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-iridescence.ts",
-            ),
-        );
-        const factorBake = lowerGltfFactorBake(
-            this.context.sourceFile("src/math/color.ts"),
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-pbr-builder.ts",
-            ),
-        );
-        const materialColorPresence = lowerGltfMaterialColorPresence(
-            this.context.sourceFile("src/loader-gltf/gltf-pbr-builder.ts"),
-        );
-        if (materialColorPresence !== lowerGltfMaterialColorPresence(
-            this.context.sourceFile("src/loader-gltf/gltf-pbr-builder-ext.ts"), "assemblePbrPropsExt",
-        )) {
-            throw new Error("Pinned glTF builders require distinct public material color presence adapters.");
-        }
-        factorBake.helpers += "\n" + materialColorPresence;
-        const materialDefaults = lowerGltfMaterialDefaults({
-            material: this.context.sourceFile(
-                "src/loader-gltf/gltf-material.ts",
-            ),
-            dielectric,
-            uvTransform: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-uv-transform.ts",
-            ),
-            uvTransformWriter: this.context.sourceFile(
-                "src/material/pbr/fragments/uv-transform-fragment.ts",
-            ),
-            clearcoat: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-clearcoat.ts",
-            ),
-            sheen: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-sheen.ts",
-            ),
-            emissiveStrength: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-emissive-strength.ts",
-            ),
-            specGloss: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-spec-gloss.ts",
-            ),
-        });
+        const factorBake = lowerGltfFactorBake(this.context.sourceFile("src/math/color.ts"));
         const parserFile = this.context.sourceFile(
             "src/loader-gltf/gltf-parser.ts",
         );
@@ -837,13 +747,16 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 ),
                 {
                     animationInterpolation,
-                    samplerMapping,
                     accessorNormalization,
+                    accessorShape,
+                    hierarchy: lowerGltfHierarchy(this.context),
+                    parserJson: lowerGltfParserJson(this.context),
+                    materialAssembly: lowerGltfMaterialAssembly(this.context),
+                    materialTextures: lowerGltfMaterialTextures(this.context),
+                    materialProperties: lowerGltfMaterialProperties(this.context).source,
                     vertexColor,
                     shPrescale,
                     imageProcessingDefaults,
-                    extensionDefaults,
-                    materialDefaults,
                     factorBake,
                     matrixLocal,
                     matrixCompose,

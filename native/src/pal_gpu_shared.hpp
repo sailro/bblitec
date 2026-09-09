@@ -2,11 +2,13 @@
 // Moved verbatim from pal_sdl_gpu.cpp so both backends upload
 // byte-identical vertex data.
 #pragma once
+#include "pal_record_sync.hpp"
 #if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
 #endif
 
 #include <span>
+#include "pal_device_options.hpp"
 
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
@@ -21,18 +23,14 @@
 // sample count (the effect drivers compile with no renderer_plan.hpp, so it
 // cannot ride that header).
 #include <bblite/upstream/pinned_surface.hpp>
-// The generated material texture-slot table both render backends execute:
-// which record field fills each slot, its sRGB rule, its fallback texel and
-// the pinned binding names it serves. Emitted for every scene beside the
-// capability defines, so the include is unconditional.
+// Material slots and mesh transforms belong to scene renderers.
+#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/material_texture_slots.hpp>
-// The float world-basis multiplies the CPU vertex bake applies, restated
-// once from the pinned WGSL vertex stages and shared with both geometry
-// loaders. Always emitted, so the include is unconditional too.
 #include <bblite/upstream/pinned_world_transform.hpp>
-#include <bblite/upstream/pinned_texture.hpp>
 #include <bblite/upstream/pinned_rgbd.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
+#endif
+#include <bblite/upstream/pinned_texture.hpp>
 #if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
 #include <bblite/upstream/frame_graph_screen_space.hpp>
 #include <bblite/upstream/screen_space_shaders.hpp>
@@ -174,7 +172,6 @@ inline bool request_renderer_restart_if_scene_set_changed(
     return true;
 }
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /**
  * Native presents every browser canvas through one operating-system window.
  * Retained layout supplies each canvas's actual rectangle when the page
@@ -189,7 +186,7 @@ inline bool request_renderer_restart_if_scene_set_changed(
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
 inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {
     if (canvas.value >= engine.ui_elements.size()) throw std::runtime_error("Invalid surface canvas.");
-    const auto& rect = engine.ui_elements[canvas.value].client_rect;
+    const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
     return rect.width > 0.0 && rect.height > 0.0;
 }
 
@@ -198,7 +195,7 @@ inline PixelViewport laid_out_canvas_pane(
     UiElementHandle canvas,
     std::uint32_t target_width,
     std::uint32_t target_height) {
-    const auto& rect = engine.ui_elements[canvas.value].client_rect;
+    const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
     const double scale_x = target_width / engine.canvas_client_width;
     const double scale_y = target_height / engine.canvas_client_height;
     return PixelViewport{
@@ -323,6 +320,7 @@ inline PixelViewport scene_surface_extent(
 }
 
 /** Final viewport/scissor after composing a camera viewport into its pane. */
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 inline std::optional<PixelViewport> scene_camera_viewport(
     const Engine& engine,
     const Scene& scene,
@@ -412,7 +410,7 @@ inline const CameraRecord& floating_origin_camera(
     const Engine& engine) {
     static const CameraRecord none{};
     return scene.camera.value < engine.cameras.size()
-        ? engine.cameras[scene.camera.value]
+        ? handle_at(engine.cameras, scene.camera)
         : none;
 }
 
@@ -450,7 +448,7 @@ inline void apply_light_floating_origin(
     for (const LightHandle handle : scene.lights) {
         if (written >= count) break;
         if (handle.value >= engine.lights.size()) continue;
-        const LightRecord& light = engine.lights[handle.value];
+        const LightRecord& light = handle_at(engine.lights, handle);
         // The pin's own test: the type tag in `vLightData.w`, 0 for a point
         // light and 2 for a spot. A direction-only entry is left alone.
         const float type = entries[written].vLightData[3];
@@ -477,6 +475,7 @@ inline void apply_light_floating_origin(
 }
 #endif
 
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
 inline bool sprite_blend_equal(
     const SpriteBlendDescriptor& left,
     const SpriteBlendDescriptor& right) {
@@ -527,6 +526,7 @@ inline bool sprite_scene_pipeline_compatible(
         left_plan.instance_stride_bytes ==
             right_plan.instance_stride_bytes;
 }
+#endif
 
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
@@ -646,6 +646,7 @@ inline std::uint32_t pass_depth_samples(
 namespace bbl::pal {
 
 /** Apply a cloned imported root after the mesh's own/deformation world. */
+#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
 inline std::array<float, 16> outer_draw_world(
     const std::array<float, 16>& world,
     const MeshRecord& record) {
@@ -813,6 +814,8 @@ inline std::array<float, 16> instance_parent_draw_world(
  * answer belongs to the frame graph, so it is settled once with the task's
  * textures rather than re-scanned per frame.
  */
+#endif
+
 inline bool geometry_depth_is_borrowed(
     const Engine& engine,
     std::size_t task) {
@@ -1004,6 +1007,7 @@ inline constexpr std::array<VertexInputStream, 3> vertex_streams{
 // enum→API residue.
 
 /** The record field one slot reads, or nullptr when the family has none. */
+#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
 inline const TextureData* material_slot_texture(
     const MaterialRecord& material,
     upstream::MaterialTextureSource source,
@@ -1216,6 +1220,8 @@ inline const upstream::MaterialTextureSlot* material_slot_for_source(
     return nullptr;
 }
 
+#endif
+
 #if BBLITE_GPU_DEFORMATION
 // Vertex deformation uniforms shared by both render backends (moved
 // verbatim from pal_sdl_gpu.cpp).
@@ -1404,6 +1410,7 @@ inline BillboardPickUniforms build_billboard_pick_uniforms(
 }
 
 /** The pin's contributor gate: a hidden or empty system draws nothing. */
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
 inline bool billboard_pick_draws(const BillboardSystemRecord& system) {
     return system.visible && system.count != 0;
 }
@@ -1490,7 +1497,7 @@ inline void collect_pick_billboard_candidates(
         const BillboardSystemHandle handle =
             scene.billboard_systems[index];
         const BillboardSystemRecord& system =
-            engine.billboard_systems[handle.value];
+            handle_at(engine.billboard_systems, handle);
         const std::uint32_t base_id = next_id;
         next_id += system.count;
         if (system.count == 0) continue;
@@ -1509,6 +1516,45 @@ inline void collect_pick_billboard_candidates(
              system.orientation,
              system.axis});
     }
+}
+
+#endif
+
+/** Refuse unsupported contributors only when this scene's pick pass draws them. */
+inline void validate_pick_contributors(
+    [[maybe_unused]] const Engine& engine,
+    [[maybe_unused]] const Scene& scene,
+    [[maybe_unused]] bool detailed,
+    bool pick_sources) {
+    if (!pick_sources) return;
+    bool has_splats = false;
+#if BBLITE_HAS_SPLATS
+    for (const auto handle : scene.splat_meshes) {
+        has_splats = has_splats || handle_at(engine.splat_meshes, handle).vertex_count != 0;
+    }
+#endif
+    if (detailed && has_splats) {
+        throw std::runtime_error("Detailed picking requires the splat contributor's third attachment.");
+    }
+#if BBLITE_HAS_BILLBOARDS
+    for (const auto handle : scene.billboard_systems) {
+        const auto& system = handle_at(engine.billboard_systems, handle);
+        if (!billboard_pick_draws(system)) continue;
+        if (system.depth_mode == BillboardDepthMode::cutout) {
+            throw std::runtime_error("Cutout billboard picking requires the atlas alpha-cutoff binding.");
+        }
+#if BBLITE_FLOATING_ORIGIN
+        throw std::runtime_error("Billboard picking requires instance positions in the scene's eye-relative frame.");
+#else
+        if (has_splats) {
+            throw std::runtime_error("Billboard and splat picking requires contributor registration order within the scene.");
+        }
+        if (detailed) {
+            throw std::runtime_error("Detailed picking requires the billboard contributor's third attachment.");
+        }
+#endif
+    }
+#endif
 }
 
 /** `encodeIdToColor`: the id's three bytes as unit floats. */
@@ -1588,7 +1634,7 @@ inline bool detailed_pick_armed(
     const Engine& engine,
     GpuPickerHandle picker) {
     return picker.value < engine.gpu_pickers.size() &&
-        engine.gpu_pickers[picker.value].detailed;
+        handle_at(engine.gpu_pickers, picker).detailed;
 }
 #endif
 
@@ -2094,7 +2140,7 @@ inline std::optional<std::size_t> picker_scene_index(
     const Engine& engine, GpuPickerHandle picker,
     const std::vector<std::shared_ptr<Scene>>& scenes) {
     if (picker.value >= engine.gpu_pickers.size()) return std::nullopt;
-    const auto picked_state = engine.gpu_pickers[picker.value].scene.lock();
+    const auto picked_state = handle_at(engine.gpu_pickers, picker).scene.lock();
     if (!picked_state || picked_state->disposed) return std::nullopt;
     for (std::size_t index = 0; index < scenes.size(); ++index) {
         if (scenes[index] && scenes[index]->state == picked_state) return index;
@@ -2111,7 +2157,8 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
     const HasGeometry& has_geometry,
     std::vector<PickRange>& ranges,
     std::uint32_t& next_id,
-    const Engine::PickFilter* filter = nullptr) {
+    const Engine::PickFilter* filter = nullptr,
+    [[maybe_unused]] bool detailed = false) {
     std::vector<PickMeshCandidate> candidates;
     for (std::size_t item_index = 0;
          item_index < render_plan.items.size() &&
@@ -2123,7 +2170,7 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
         // it can neither answer a pick nor occlude one behind it. The
         // predicate is generated, and it reads the live record rather than
         // the plan's snapshot of it.
-        if (!upstream::pick_candidate(engine.meshes[handle.value])) {
+        if (!upstream::pick_candidate(handle_at(engine.meshes, handle))) {
             continue;
         }
         // The pin's `pickFilter` arm: a mesh the supplied filter refuses
@@ -2133,13 +2180,14 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
         }
         PickMeshCandidate candidate;
         candidate.item_index = item_index;
-        const MeshRecord& pick_mesh = engine.meshes[handle.value];
+        const MeshRecord& pick_mesh = handle_at(engine.meshes, handle);
 #if BBLITE_GPU_INSTANCING
         candidate.thin = pick_mesh.thin_instanced;
         if (candidate.thin) {
             candidate.instance_count = static_cast<std::uint32_t>(
                 thin_instance_active_count(pick_mesh));
             if (candidate.instance_count == 0) continue;
+            if (detailed) throw std::runtime_error("Detailed picking requires the selected thin-instance world matrix.");
         }
 #endif
         constexpr std::array<float, 16> identity_world{
@@ -2241,6 +2289,7 @@ inline void finish_detailed_pick(
 #endif
 #endif
 
+#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
 inline std::optional<std::array<float, 16>> shader_world_view(
     const std::array<float, 16>* view,
     const std::array<float, 16>& world) {
@@ -2256,6 +2305,8 @@ inline std::optional<std::array<float, 16>> shader_world_view(
  * lane stays zero. Both backends upload the plan quads from this one
  * packing, so the vertex bytes cannot differ between them.
  */
+#endif
+
 inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
     return GpuVertex{
         {vertex.position.x, vertex.position.y, vertex.position.z},
@@ -2960,7 +3011,7 @@ inline void fitted_shadow_casters(
     casters.reserve(generator.caster_meshes.size());
     for (const MeshHandle handle : generator.caster_meshes) {
         if (handle.value >= engine.meshes.size()) continue;
-        const MeshRecord& record = engine.meshes[handle.value];
+        const MeshRecord& record = handle_at(engine.meshes, handle);
         upstream::ShadowCaster caster;
         caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
         caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
@@ -3031,7 +3082,7 @@ inline void fitted_shadow_casters(
         // rotated boxes to an intermediate AABB. The refresh gate already
         // keys on `instance_version`, so this work runs only when the pin's
         // own cache would be invalidated.
-#if BBLITE_GPU_INSTANCING
+#if BBLITE_GPU_INSTANCING && BBLITE_SHADOWS_CSM
         const std::size_t active_instances =
             thin_instance_active_count(record);
         if (
@@ -3083,7 +3134,7 @@ inline void for_each_shadow_generator(
         const LightHandle light = scene.lights[slot];
         if (light.value >= engine.lights.size()) continue;
         const ShadowGeneratorHandle handle =
-            engine.lights[light.value].shadow_generator;
+            handle_at(engine.lights, light).shadow_generator;
         if (handle.value >= engine.shadow_generators.size()) continue;
         visit(handle, light, slot);
     }
@@ -3107,7 +3158,8 @@ inline ShadowCasterMatrices shadow_caster_matrices(
     const Engine& engine,
     const FrameTaskRecord& task) {
     const ShadowGeneratorRecord& generator =
-        engine.shadow_generators[task.render.shadow_generator.value];
+        handle_at(engine.shadow_generators, task.render.shadow_generator);
+#if BBLITE_SHADOWS_CSM
     if (generator.filter == ShadowFilter::csm_directional) {
         // A cascade the fit has not filled yet cannot be drawn: the pinned
         // render gate refits before any caster pass runs, and a pass whose
@@ -3123,6 +3175,7 @@ inline ShadowCasterMatrices shadow_caster_matrices(
             generator.csm_cascades[task.render.depth_layer];
         return {cascade.caster_view_projection, cascade.view};
     }
+#endif
     return {generator.caster_view_projection, generator.caster_view};
 }
 
@@ -3204,6 +3257,7 @@ inline void refresh_shadow_generators(
     // the pin's own `foCam ? ... : 0`. A frame constant, so it is read once
     // here rather than per generator.
     const Vec3d eye = frame_floating_origin_offset(scene, engine);
+#if BBLITE_SHADOWS_CSM
     // `csmCameraAspect` is `getEffectiveAspectRatio(camera, rt._width,
     // rt._height)`, so a camera carrying a viewport fits its cascades to
     // the frustum it actually draws. A scene with no camera goes through
@@ -3216,10 +3270,11 @@ inline void refresh_shadow_generators(
         engine, scene, engine.options.width, engine.options.height);
     const double csm_camera_aspect = upstream::effective_aspect_ratio(
         scene.camera.value < engine.cameras.size()
-            ? engine.cameras[scene.camera.value]
+            ? handle_at(engine.cameras, scene.camera)
             : no_camera_record,
         static_cast<double>(surface_extent.width),
         static_cast<double>(surface_extent.height));
+#endif
     for_each_shadow_generator(
         scene,
         engine,
@@ -3228,9 +3283,11 @@ inline void refresh_shadow_generators(
             LightHandle light,
             std::size_t slot) {
             ShadowGeneratorRecord& generator =
-                engine.shadow_generators[handle.value];
-            const LightRecord& light_record = engine.lights[light.value];
-            upstream::ShadowRefreshGate& gate = refresh.gates[handle.value];
+                handle_at(engine.shadow_generators, handle);
+            const LightRecord& light_record = handle_at(engine.lights, light);
+            upstream::ShadowRefreshGate& gate = handle_at(refresh.gates, handle);
+            const upstream::CsmCameraKey* csm_camera = nullptr;
+#if BBLITE_SHADOWS_CSM
             const double aspect = csm_camera_aspect;
             // `renderCsmShadowMap` keys its gate on the camera the cascade
             // is fitted to — change key and aspect — in place of the
@@ -3243,14 +3300,16 @@ inline void refresh_shadow_generators(
                 generator.filter == ShadowFilter::csm_directional &&
                 scene.camera.value < engine.cameras.size();
             upstream::CsmCameraKey camera_key;
+            if (csm_fit) csm_camera = &camera_key;
             if (csm_fit && !generator.force_refresh_every_frame) {
                 const CameraRecord& camera =
-                    engine.cameras[scene.camera.value];
+                    handle_at(engine.cameras, scene.camera);
                 camera_key.view_projection =
                     upstream::build_view_projection(camera, aspect);
                 camera_key.near_plane = camera.near_plane;
                 camera_key.far_plane = camera.far_plane;
             }
+#endif
             // The pin's render gate, ahead of each family's fit exactly as
             // each `render*ShadowMap` hook tests it ahead of its own. On a
             // skipped frame the generator's matrices — and so the block
@@ -3262,7 +3321,7 @@ inline void refresh_shadow_generators(
                 generator,
                 light_record,
                 eye,
-                csm_fit ? &camera_key : nullptr,
+                csm_camera,
                 gate);
             gate.due = due;
             if (due) {
@@ -3289,14 +3348,17 @@ inline void refresh_shadow_generators(
                             eye);
                     } else
 #endif
+#if BBLITE_SHADOWS_CSM
                     if (csm_fit) {
                         upstream::update_csm_cascades(
                             generator,
                             light_record,
-                            engine.cameras[scene.camera.value],
+                            handle_at(engine.cameras, scene.camera),
                             aspect,
                             refresh.casters);
-                    } else {
+                    } else
+#endif
+                    {
                         upstream::update_pcf_directional_shadow(
                             generator,
                             light_record,
@@ -3304,7 +3366,7 @@ inline void refresh_shadow_generators(
                             eye);
                     }
                 }
-            } else if (refresh.uploaded[handle.value]) {
+            } else if (handle_at(refresh.uploaded, handle)) {
                 // A gated frame's fit did not run, so the block's bytes
                 // are provably the ones already uploaded: the pack, the
                 // compare and the visitor are skipped with the pass.
@@ -3312,6 +3374,7 @@ inline void refresh_shadow_generators(
             }
             const upstream::ShadowReceiverBlock block =
                 upstream::shadow_receiver_block(generator);
+#if BBLITE_SHADOWS_CSM
             const auto receiver_callbacks = generator.csm_receiver_callbacks;
             if (
                 generator.filter == ShadowFilter::csm_directional &&
@@ -3326,10 +3389,11 @@ inline void refresh_shadow_generators(
                 // backend consumes resources updated by their callbacks.
                 receiver_callbacks->dispatch(values);
             }
-            const bool moved = !refresh.uploaded[handle.value] ||
-                block != refresh.blocks[handle.value];
-            refresh.blocks[handle.value] = block;
-            refresh.uploaded[handle.value] = true;
+#endif
+            const bool moved = !handle_at(refresh.uploaded, handle) ||
+                block != handle_at(refresh.blocks, handle);
+            handle_at(refresh.blocks, handle) = block;
+            handle_at(refresh.uploaded, handle) = true;
             visit(generator, handle, slot, block, moved);
         });
 }
@@ -3464,7 +3528,7 @@ inline std::vector<std::uint8_t> pinned_lights_block(
     for (const LightHandle handle : scene.lights) {
         if (count >= upstream::pinned_max_lights) break;
         if (handle.value >= engine.lights.size()) continue;
-        const LightRecord& light = engine.lights[handle.value];
+        const LightRecord& light = handle_at(engine.lights, handle);
         // Which writer each kind takes is generated: the scene compiles arms
         // only for the kinds it reaches, so the mapping cannot be restated here.
         upstream::write_pinned_light(light, entries[count]);
@@ -3511,7 +3575,7 @@ inline void pinned_mesh_light_selection(
         if (handle.value >= engine.lights.size()) continue;
         if (
             upstream::light_affects_mesh(
-                engine.lights[handle.value],
+                handle_at(engine.lights, handle),
                 mesh_index)) {
             block.li[count / 4][count % 4] = light_index;
             ++count;
@@ -3731,7 +3795,7 @@ inline PinnedVariantKey pinned_variant_key(
         return key;
     }
     const MaterialRecord& draw_material =
-        engine.materials[draw.item.material.value];
+        handle_at(engine.materials, draw.item.material);
     key.material_view = draw_material.esm_shadow
         ? 2u
         : draw_material.no_color ? 1u : 0u;
@@ -3752,9 +3816,9 @@ inline PinnedVariantKey pinned_variant_key(
     std::uint32_t feature_mesh = draw.item.mesh.value;
     if (
         draw.item.mesh.value < engine.meshes.size() &&
-        engine.meshes[draw.item.mesh.value]
+        handle_at(engine.meshes, draw.item.mesh)
                 .composition_feature_row != invalid_handle) {
-        feature_mesh = engine.meshes[draw.item.mesh.value]
+        feature_mesh = handle_at(engine.meshes, draw.item.mesh)
             .composition_feature_row;
     }
     key.mesh_features =
@@ -3775,7 +3839,7 @@ inline PinnedVariantKey pinned_variant_key(
     // time; EXT_mesh_gpu_instancing already carries the bit in the table, so
     // this idempotent OR covers both origins with one rule.
     if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
         // `_computeMeshFeatures` writes MSH_VAT INSTEAD of
         // MSH_HAS_SKELETON for a baked mesh -- attachVat dropped the live
         // skeleton -- so this is a swap on the static row rather than an
@@ -3820,7 +3884,7 @@ inline PinnedVariantKey pinned_variant_key(
     std::uint32_t light_count = 0;
     for (const LightHandle handle : scene.lights) {
         if (handle.value >= engine.lights.size()) continue;
-        const LightRecord& light = engine.lights[handle.value];
+        const LightRecord& light = handle_at(engine.lights, handle);
         if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
             continue;
         }
@@ -3885,7 +3949,7 @@ inline std::size_t pinned_variant_for_draw(
     // record without it cannot resolve a variant and errors at the draw.
     bool has_bones = false;
     if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
         // An animated node needs no guard: the PAL re-transforms its vertices
         // on the CPU when `transform_version` moves, so the GPU always sees
         // world space and the pin's `finalWorld` stays the identity. An
@@ -4005,7 +4069,7 @@ inline upstream::MeshUniforms pinned_draw_mesh_block(
     const upstream::RenderDrawCommand& draw,
     std::size_t variant,
     const PinnedDrawConventions& conventions) {
-    const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+    const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
     return pinned_mesh_block(
         scene,
         engine,
@@ -4036,6 +4100,35 @@ inline VatTextureLayout vat_texture_layout(
     std::uint32_t frames) {
     const std::uint32_t width = bones * 4u;
     return VatTextureLayout{width, frames, width * 16u, width * 16u * frames};
+}
+
+template<class Mesh, class Bake, class Settings, class Instances, class UploadInstances>
+void sync_pinned_vat(Mesh& mesh, const MeshRecord& record, const Engine& engine,
+    Bake&& upload_bake, Settings&& upload_settings,
+    [[maybe_unused]] Instances&& recreate_instances, [[maybe_unused]] UploadInstances&& upload_instances) {
+    if (!record.has_vat || record.vat.bake >= engine.vat_bakes.size()) return;
+    const auto& bake = engine.vat_bakes[record.vat.bake];
+    if (bake.bone_count == 0 || bake.frame_count == 0) return;
+    if (mesh.pinned_vat_bones != bake.bone_count || mesh.pinned_vat_frames != bake.frame_count) {
+        upload_bake(bake, vat_texture_layout(bake.bone_count, bake.frame_count));
+        mesh.pinned_vat_bones = bake.bone_count;
+        mesh.pinned_vat_frames = bake.frame_count;
+    }
+    upload_settings(record.vat);
+#if BBLITE_VAT_INSTANCES
+    const auto& vat = record.vat;
+    if (vat.instance_texels == 0) return;
+    if (mesh.pinned_vat_instance_texels != vat.instance_texels) {
+        recreate_instances(vat);
+        mesh.pinned_vat_instance_texels = vat.instance_texels;
+        mesh.pinned_vat_instance_version = 0;
+    }
+    if (mesh.pinned_vat_instance_version != vat.instance_version) {
+        upload_instances(vat, VatTextureLayout{vat.instance_texels, 1u,
+            vat.instance_texels * 16u, vat.instance_texels * 16u});
+        mesh.pinned_vat_instance_version = vat.instance_version;
+    }
+#endif
 }
 #endif
 
@@ -4145,7 +4238,7 @@ inline StandardVariantKey standard_variant_key(
         return key;
     }
     const MaterialRecord& material =
-        engine.materials[draw.item.material.value];
+        handle_at(engine.materials, draw.item.material);
     key.features = upstream::standard_material_features(material);
     if (material.no_color) {
         key.features |= upstream::standard_no_color_output_flag;
@@ -4162,9 +4255,9 @@ inline StandardVariantKey standard_variant_key(
     std::uint32_t feature_mesh = draw.item.mesh.value;
     if (
         draw.item.mesh.value < engine.meshes.size() &&
-        engine.meshes[draw.item.mesh.value]
+        handle_at(engine.meshes, draw.item.mesh)
                 .composition_feature_row != invalid_handle) {
-        feature_mesh = engine.meshes[draw.item.mesh.value]
+        feature_mesh = handle_at(engine.meshes, draw.item.mesh)
             .composition_feature_row;
     }
     key.mesh_features =
@@ -4177,7 +4270,7 @@ inline StandardVariantKey standard_variant_key(
         return key;
     }
     if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
         if (pinned_record_instanced(record)) {
             key.mesh_features |= upstream::std_msh_has_thin_instances;
             // `_computeMeshFeatures` reads `mesh.thinInstances.colors`, so
@@ -4221,7 +4314,7 @@ inline StandardVariantKey standard_variant_key(
 #endif
 #if defined(BBLITE_STANDARD_VERTEX_ALPHA)
     if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
         key.features |= upstream::standard_color_alpha_features(
             material.no_color || material.esm_shadow,
             record.has_vertex_alpha,
@@ -4255,10 +4348,10 @@ inline std::string standard_variant_request(
         }
         return "no key: runtime material flags standard=" +
             std::to_string(
-                engine.materials[draw.item.material.value].standard_material) +
+                handle_at(engine.materials, draw.item.material).standard_material) +
             ", shader=" +
             std::to_string(
-                engine.materials[draw.item.material.value].shader_material) +
+                handle_at(engine.materials, draw.item.material).shader_material) +
             ", draw kind=" +
             std::to_string(static_cast<std::uint32_t>(
                 draw.item.material_kind));
@@ -4577,6 +4670,7 @@ inline std::vector<std::uint16_t> fallback_face_halves() {
 }
 
 // The RGBD decode both render backends upload through.
+#if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
 inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, int& width, int& height) {
     // src/loader-env/rgbd-decode.ts: the pin decodes into a
     // `texture_storage_2d<rgba16float, write>`, so a half is the decode's
@@ -4608,6 +4702,8 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
  * does WITHOUT one stays deliberately its own (SDL uploads fallback faces,
  * Dawn keeps its startup fallback cube).
  */
+#endif
+
 inline bool environment_cube_present(const EnvironmentState& environment) {
     return environment.specular_width != 0 &&
         environment.specular_mip_count != 0 &&
@@ -4781,6 +4877,10 @@ struct FrameOptions {
     }
 };
 
+inline DeviceOptions frame_device_options(const FrameOptions& frame) {
+    return {frame.test_pass, frame.benchmark_requested, frame.gpu_debug};
+}
+
 inline long frame_option_number(const char* name) {
     const std::string value = environment_variable(name);
     return value.empty()
@@ -4859,6 +4959,7 @@ inline void apply_animation_seek(
     }
 }
 
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
 inline std::vector<std::size_t> sprite_layer_draw_order(
     const Engine& engine,
     const SpriteRendererRecord& renderer) {
@@ -4898,11 +4999,11 @@ inline void refuse_disposed_sprite_render_texture_in_use(
     for (const SpriteRendererHandle& renderer_handle :
          engine.registered_sprite_renderers) {
         const SpriteRendererRecord& renderer =
-            engine.sprite_renderers[renderer_handle.value];
+            handle_at(engine.sprite_renderers, renderer_handle);
         for (const Sprite2DLayerHandle& layer_handle : renderer.layers) {
             const SpriteAtlasRecord& atlas =
                 engine.sprite_atlases[
-                    engine.sprite_layers[layer_handle.value].atlas.value];
+                    handle_at(engine.sprite_layers, layer_handle).atlas.value];
             if (atlas.has_render_texture &&
                 engine.sprite_render_textures[
                     atlas.render_texture.value].disposed) {
@@ -4913,6 +5014,20 @@ inline void refuse_disposed_sprite_render_texture_in_use(
             }
         }
     }
+}
+
+template<class Pass, class Create, class ReleaseLayer, class AtlasHandle, class ReleaseAtlas>
+void reconcile_sprite_membership(const Engine& engine, Pass& pass, Create&& create,
+    ReleaseLayer&& release_layer, AtlasHandle&& atlas_handle, ReleaseAtlas&& release_atlas) {
+    const auto& renderer = handle_at(engine.sprite_renderers, pass.renderer);
+    reconcile_ordered_records(renderer.layers, pass.layers,
+        [](const auto& layer) { return layer.layer; }, create, release_layer);
+    retire_unreferenced_records(pass.atlases, [&](const auto& atlas) {
+        return std::any_of(renderer.layers.begin(), renderer.layers.end(), [&](const auto handle) {
+            return handle_at(engine.sprite_layers, handle).atlas.value == atlas_handle(atlas).value;
+        });
+    }, release_atlas);
+    pass.layers_version = renderer.layers_version;
 }
 
 /**
@@ -4992,7 +5107,7 @@ inline void run_sprite_renderer_before_update(
     SpriteRendererHandle renderer,
     double delta_ms) {
     if (renderer.value >= engine.sprite_renderers.size()) return;
-    SpriteRendererRecord& record = engine.sprite_renderers[renderer.value];
+    SpriteRendererRecord& record = handle_at(engine.sprite_renderers, renderer);
     if (record.disposed || record.before_update.empty()) return;
     // Copied into the record's own scratch rather than a fresh vector: the
     // copy is what makes this iterate the list it entered with, the way
@@ -5207,6 +5322,8 @@ inline void stamp_billboard_upload(
  * first render, and a name the wrapper never stored fails by name rather
  * than binding a neighbour. Both backends resolve through this.
  */
+#endif
+
 inline const SolidTexture& effect_texture_for_binding(
     const EffectWrapperRecord& wrapper,
     std::string_view name) {
@@ -5404,9 +5521,11 @@ inline std::uint32_t full_mip_chain(std::uint32_t width, std::uint32_t height) {
  * backends ask this rather than each inferring the option back out of the
  * sampler.
  */
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
 inline std::uint32_t atlas_mip_levels(const SpriteAtlasRecord& atlas) {
     return atlas.mip_maps ? full_mip_chain(atlas.width, atlas.height) : 1u;
 }
+#endif
 
 using upstream::transmission_grab_size;
 using upstream::transmission_sampler_max_anisotropy;
@@ -5479,7 +5598,51 @@ inline ScaledExtents scaled_target_extents(
         scaled_target_extent(source_height, record.height_ratio)};
 }
 
+template<class Format>
+struct RenderTargetPlan {
+    std::uint32_t width, height;
+    Format color_format;
+};
+
+/** Resolve source-relative sizes and inherited formats before allocating GPU resources. */
+template<class Format, class Convert>
+std::vector<RenderTargetPlan<Format>> plan_render_targets(const Engine& engine,
+    std::uint32_t width, std::uint32_t height, Format surface_format, Convert&& convert) {
+    std::vector<RenderTargetPlan<Format>> plans;
+    plans.reserve(engine.render_targets.size());
+    for (const auto& record : engine.render_targets) {
+        auto [target_width, target_height] = surface_target_extent(engine, record, width, height);
+        Format format = surface_format;
+        if (record.scale_source.value != invalid_handle) {
+            if (record.scale_source.value >= plans.size()) {
+                throw std::runtime_error("A render target must scale from an earlier target.");
+            }
+            const auto& source = plans[record.scale_source.value];
+            const auto scaled = scaled_target_extents(record, source.width, source.height);
+            target_width = scaled.width;
+            target_height = scaled.height;
+            format = source.color_format;
+        }
+        if (record.swapchain) format = surface_format;
+        else if (record.has_format) format = convert(record.format);
+        plans.push_back({target_width, target_height, format});
+    }
+    return plans;
+}
+
 #if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+template<class Clear, class Stage, class PostProcess>
+void record_screen_space_decision(const ScreenSpaceFrameDecision& decision, bool composite,
+    Clear&& clear, Stage&& stage, PostProcess&& post_process) {
+    if (decision.clear_identity) { clear(false); clear(true); }
+    if (decision.run_effect) {
+        stage(true, decision.producer_uniforms.data());
+        stage(false, decision.temporal_uniforms.data());
+        post_process(0u);
+    }
+    if (composite) post_process(1u);
+}
+
 /**
  * What the generated screen-space frame function reads off a backend's
  * targets: the depth source's and the raw target's extents, and the
@@ -5537,19 +5700,19 @@ inline PostProcessExtent resolve_post_process_extent(
     PostProcessExtent extent;
     extent.output_width = output_record.swapchain
         ? frame_width
-        : render_targets[pass.output_target.value].width;
+        : handle_at(render_targets, pass.output_target).width;
     extent.output_height = output_record.swapchain
         ? frame_height
-        : render_targets[pass.output_target.value].height;
+        : handle_at(render_targets, pass.output_target).height;
     extent.source_width = extent.output_width;
     extent.source_height = extent.output_height;
     if (
         pass.source.source == RenderTextureSource::render_target &&
         pass.source.target.value < render_targets.size()) {
         extent.source_width =
-            render_targets[pass.source.target.value].width;
+            handle_at(render_targets, pass.source.target).width;
         extent.source_height =
-            render_targets[pass.source.target.value].height;
+            handle_at(render_targets, pass.source.target).height;
     }
     return extent;
 }
@@ -6745,6 +6908,8 @@ inline void print_memory_frame_profile(
          << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
          << " mesh_records=" << engine.meshes.size()
          << " scene_meshes=" << scene_meshes
+         << " gc_nodes=" << bbl::js::gc::registry.size
+         << " gc_allocations=" << bbl::js::gc::registry.total_allocations
          << " geometry_records=" << engine.geometries.size()
          << " live_geometries=" << live_geometries
          << " geometry_mb=" << geometry_bytes / mb

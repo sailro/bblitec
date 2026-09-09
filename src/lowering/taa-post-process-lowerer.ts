@@ -2,6 +2,7 @@ import ts from "typescript";
 import { passSuffix, type ComposedComposite } from "../pinned-post-process.js";
 import { LoweringContext } from "./context.js";
 import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const MODULE = "src/post-process/taa.ts";
 const FACTORY = "createTaaPostProcessTask";
@@ -82,9 +83,8 @@ export class TaaPostProcessLowerer {
         }`)) {
             this.context.contractError(declaration, "TAA record resource prefix changed; its PAL callback must be re-read.");
         }
-        const lowerer = new PinnedNumericLowerer(file, { bindings: this.bindings(), calls: new Map() });
-        const body = declaration.body.statements.slice(prefix.length)
-            .flatMap((statement) => lowerer.statement(statement, "    ")).join("\n");
+
+        const body = lowerPinnedBody(file, declaration.body.statements.slice(prefix.length), { bindings: this.bindings(), calls: new Map() });
         return `template<class RecordResources>
 void record_taa_post_process(TaaPostProcessState& state, RecordResources&& record_resources) {
     record_resources();

@@ -4,6 +4,7 @@
 
 #include <webgpu/webgpu.h>
 #include "pal_text_resources.hpp"
+#include "pal_dawn_resources.hpp"
 
 #include <memory>
 #include <span>
@@ -158,7 +159,7 @@ struct DawnTextResourceOps {
             wgpuDeviceCreateTexture(owner->device, &descriptor), kind == TextAtlasTextureKind::curves ? "curves" : "bands",
             width * rows * 4u * sizeof(float), width, rows);
         texture.view = retain_dawn_text_resource<DawnTextViewLease>(owner,
-            wgpuTextureCreateView(texture.texture->get(), nullptr), "texture-view");
+            create_dawn_texture_view(texture.texture->get(), nullptr), "texture-view");
         auto destroy = [lease = texture.texture] { lease->destroy(); };
         if (kind == TextAtlasTextureKind::curves) atlas.destroy_curves = destroy;
         else atlas.destroy_bands = destroy;

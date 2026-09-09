@@ -1,7 +1,8 @@
+import { EmissionMap } from "../emission-transaction.js";
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type {
-    SpriteCustomShaderManifest,
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -9,7 +10,6 @@ import { validateObjectProperties } from "../option-helpers.js";
 import {
     isDataTuple,
     tupleComponents,
-    type DataTypeRegistry,
 } from "../data-types.js";
 import {
     addressModeByPin,
@@ -30,57 +30,35 @@ import { stringLiteral } from "../../cpp-literals.js";
 
 export interface SpriteIntrinsicContext
     extends IntrinsicCallContext,
-        PositiveIntegerContext,
-        HitRecordContext {
-    readonly dataTypes: DataTypeRegistry;
-    readonly checker: ts.TypeChecker;
-    unwrap(expression: ts.Expression): ts.Expression;
-    requireDefaultEngine(node: ts.Node): string;
-    requireEngine(value: Value, node: ts.Node): string;
-    engineFor(value: Value, node: ts.Node): string;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileBoolean(expression: ts.Expression): string;
-    compileCondition(expression: ts.Expression): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileVec2(expression: ts.Expression): string;
-    compileVec4(expression: ts.Expression): string;
-    registerSpriteAtlasAsset(
-        expression: ts.Expression,
-    ): string;
-    probePixelsAsset(
-        expression: ts.Expression,
-    ): { cpp: string; source: string } | undefined;
-    allocateTemporaryCppName(label: string): string;
-    bindDataTuple(
-        value: Value,
-        arity: number,
-        label?: string,
-    ): string;
-    compileSpriteAtlas(expression: ts.Expression): Value;
-    /** One layer or system built without a custom shader, so with the stock program. */
-    recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
-    /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
-    recordPureSpriteVertex(): void;
-    /** The custom-shader descriptors built so far, in scene order. */
-    spriteCustomShaders(): readonly SpriteCustomShaderManifest[];
-    /**
-     * Records one custom-shader descriptor. Generation composes one program
-     * per entry, from the pin's builder around the caller's fragment body.
-     */
-    recordSpriteCustomShader(
-        shader: SpriteCustomShaderManifest,
-    ): void;
-    emit(line: string): void;
-    propertyName(name: ts.PropertyName): string | undefined;
-    fail(node: ts.Node, message: string): never;
-}
+    PositiveIntegerContext,
+    HitRecordContext,
+    Pick<LoweringServices,
+        | "dataTypes"
+        | "checker"
+        | "unwrap"
+        | "requireDefaultEngine"
+        | "requireEngine"
+        | "engineFor"
+        | "expectSameEngine"
+        | "compileVec3"
+        | "compileBoolean"
+        | "compileCondition"
+        | "compileNumber"
+        | "compileVec2"
+        | "compileVec4"
+        | "registerSpriteAtlasAsset"
+        | "probePixelsAsset"
+        | "allocateTemporaryCppName"
+        | "bindDataTuple"
+        | "compileSpriteAtlas"
+        | "recordPlainSpriteProgram"
+        | "recordPureSpriteVertex"
+        | "spriteCustomShaders"
+        | "recordSpriteCustomShader"
+        | "emit"
+        | "propertyName"
+        | "fail"
+    > {}
 
 /**
  * The pin's billboard blend descriptors are pure-data exports a scene
@@ -570,1654 +548,7 @@ export function compileSpriteIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
-    switch (importedName) {
-        case "pickSprite2D": {
-            context.expectArgumentCount(call, 3, 3);
-            const layers = context.compileValue(argumentAt(call, 0));
-            const tupleLayers =
-                layers.kind === "tuple"
-                    ? layers.tupleElements
-                    : undefined;
-            const dataLayers =
-                layers.kind === "data" &&
-                layers.dataType?.kind === "vector" &&
-                layers.dataType.element.kind === "handle" &&
-                layers.dataType.element.handle === "sprite-layer";
-            if (!tupleLayers && !dataLayers) {
-                context.fail(
-                    argumentAt(call, 0),
-                    "pickSprite2D requires an array of sprite layers.",
-                );
-            }
-            for (const layer of tupleLayers ?? []) {
-                context.expectKind(
-                    layer,
-                    "sprite-layer",
-                    argumentAt(call, 0),
-                );
-            }
-            const firstLayer = tupleLayers?.[0];
-            for (const layer of tupleLayers?.slice(1) ?? []) {
-                context.expectSameEngine(firstLayer!, layer, call);
-            }
-            const engineCpp = firstLayer
-                ? context.requireEngine(firstLayer, call)
-                : context.engineFor(layers, call);
-            const layerList = dataLayers
-                ? spriteLayerVectorCpp(layers)
-                : `std::vector<bbl::Sprite2DLayerHandle>{${(tupleLayers ?? [])
-                      .map((layer) => layer.cpp)
-                      .join(", ")}}`;
-            context.reachFeature("sprite:2d", call);
-            return compileNullableHitRecord(context, call, {
-                intrinsic: "pickSprite2D",
-                resultType: context.dataTypes.fromTsType(
-                    context.checker.getTypeAtLocation(call),
-                    call,
-                ),
-                fields: {
-                    layer: {
-                        cpp: "hit->layer",
-                        accepts: (type) =>
-                            type.kind === "handle" &&
-                            type.handle === "sprite-layer",
-                    },
-                    spriteIndex: {
-                        cpp: "static_cast<double>(hit->sprite_index)",
-                        accepts: numberField,
-                    },
-                    u: { cpp: "hit->u", accepts: numberField },
-                    v: { cpp: "hit->v", accepts: numberField },
-                },
-                probe:
-                    `const auto hit = bbl::pick_sprite_2d(${engineCpp}, ` +
-                    `${layerList}, ` +
-                    `${context.compileNumber(argumentAt(call, 1), "double")}, ` +
-                    `${context.compileNumber(argumentAt(call, 2), "double")});`,
-                miss: "!hit",
-            });
-        }
-
-        case "createRenderTexture2D": {
-            context.expectArgumentCount(call, 3, 4);
-            const engine = context.compileValue(argumentAt(call, 0));
-            context.expectKind(engine, "engine", argumentAt(call, 0));
-            if (call.arguments[3]) {
-                const options = optionsRecord(
-                    context,
-                    call.arguments[3],
-                    "createRenderTexture2D",
-                );
-                if (
-                    Object.keys(options?.recordProperties ?? {}).length > 0
-                ) {
-                    context.fail(
-                        call.arguments[3],
-                        "createRenderTexture2D options are not reached.",
-                    );
-                }
-            }
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "texture",
-                textureStorage: "render",
-                cpp:
-                    `bbl::create_sprite_render_texture(${engine.cpp}, ` +
-                    `${context.compileNumber(argumentAt(call, 1))}, ` +
-                    `${context.compileNumber(argumentAt(call, 2))})`,
-                engineCpp: engine.engineCpp ?? engine.cpp,
-            };
-        }
-
-        case "createSpriteAtlasFromFrames": {
-            context.expectArgumentCount(call, 2, 3);
-            const engine = context.compileValue(argumentAt(call, 0));
-            context.expectKind(engine, "engine", argumentAt(call, 0));
-            const sources = context.compileValue(argumentAt(call, 1));
-            if (
-                sources.kind !== "data" ||
-                sources.dataType?.kind !== "vector" ||
-                sources.dataType.element.kind !== "struct"
-            ) {
-                context.fail(
-                    argumentAt(call, 1),
-                    "createSpriteAtlasFromFrames expects an array of frame-source records.",
-                );
-            }
-            const sourceType = sources.dataType.element;
-            const arrow = context.dataTypes.isReferenceStruct(sourceType.name);
-            const source = context.allocateTemporaryCppName("atlas_source");
-            const sourceList = context.allocateTemporaryCppName("atlas_sources");
-            const normalized = context.allocateTemporaryCppName("atlas_frames");
-            const access = (name: string): string => {
-                const field = context.dataTypes.structField(
-                    sourceType.name,
-                    name,
-                    argumentAt(call, 1),
-                );
-                return `${source}${arrow ? "->" : "."}${field.name}`;
-            };
-            const optionalUnsigned = (name: string, fallback: string): string => {
-                const value = access(name);
-                return `(${value} ? bbl::js::to_uint32(*${value}) : ${fallback})`;
-            };
-            const pivot = access("pivot");
-            const options = optionsRecord(
-                context,
-                call.arguments[2],
-                "createSpriteAtlasFromFrames",
-            );
-            const numberOption = (name: string, fallback: string): string => {
-                const value = property(options, name);
-                if (!value) return fallback;
-                if (value.kind !== "number") {
-                    context.fail(argumentAt(call, 2), `${name} must be numeric.`);
-                }
-                return `bbl::js::to_uint32(${value.cpp})`;
-            };
-            const sampling = property(options, "sampling");
-            if (
-                sampling &&
-                sampling.staticString !== "nearest" &&
-                sampling.staticString !== "linear"
-            ) {
-                context.fail(
-                    argumentAt(call, 2),
-                    'sampling must be the literal "nearest" or "linear".',
-                );
-            }
-            const srgb = property(options, "srgb");
-            if (srgb && srgb.cpp !== "false") {
-                context.fail(
-                    argumentAt(call, 2),
-                    "sRGB in-memory sprite atlases are not lowered yet.",
-                );
-            }
-            const premultiplied = property(options, "premultipliedAlpha");
-            if (premultiplied && premultiplied.kind !== "boolean") {
-                context.fail(
-                    argumentAt(call, 2),
-                    "premultipliedAlpha must be boolean.",
-                );
-            }
-            const capacity = property(options, "capacityPx");
-            const capacityLanes = capacity
-                ? tupleOption(context, options, "capacityPx", call, 2)
-                : undefined;
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "sprite-atlas",
-                cpp:
-                    `([&]() { const auto& ${sourceList} = ${sources.cpp}; ` +
-                    `std::vector<bbl::SpriteAtlasFramePixelsView> ${normalized}; ` +
-                    `${normalized}.reserve(${sourceList}.size()); ` +
-                    `for (const auto& ${source} : ${sourceList}) { ` +
-                    `${normalized}.push_back(bbl::SpriteAtlasFramePixelsView{` +
-                    `${access("pixels")}.data(), ${access("pixels")}.size(), ` +
-                    `bbl::js::to_uint32(${access("width")}), ` +
-                    `bbl::js::to_uint32(${access("height")}), ` +
-                    `${optionalUnsigned("srcX", "0u")}, ` +
-                    `${optionalUnsigned("srcY", "0u")}, ` +
-                    `${optionalUnsigned("srcStrideBytes", "0u")}, ` +
-                    `(${pivot} ? bbl::Vec2{static_cast<float>((*${pivot})[0]), ` +
-                    `static_cast<float>((*${pivot})[1])} : bbl::Vec2{0.5f, 0.5f})}); } ` +
-                    `return bbl::create_sprite_atlas_from_frames(${engine.cpp}, ${normalized}, ` +
-                    `bbl::SpriteAtlasPackOptions{` +
-                    `${numberOption("paddingPx", "1u")}, ` +
-                    `${numberOption("maxWidthPx", "1024u")}, ` +
-                    `bbl::TextureFilter::${sampling?.staticString === "linear" ? "linear" : "nearest"}, ` +
-                    `${premultiplied?.cpp ?? "false"}, ` +
-                    `${capacityLanes ? "true" : "false"}, ` +
-                    `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[0]!})` : "0u"}, ` +
-                    `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[1]!})` : "0u"}}); }())`,
-                engineCpp: engine.engineCpp ?? engine.cpp,
-            };
-        }
-
-        case "createGridSpriteAtlas": {
-            context.expectArgumentCount(call, 2, 2);
-            const texture = context.compileValue(argumentAt(call, 0));
-            context.expectKind(texture, "texture", argumentAt(call, 0));
-            if (
-                texture.textureStorage !== "file" &&
-                texture.textureStorage !== "pixels" &&
-                texture.textureStorage !== "render"
-            ) {
-                context.fail(
-                    argumentAt(call, 0),
-                    "createGridSpriteAtlas currently requires a file, pixels, or render texture.",
-                );
-            }
-            const options = optionsRecord(
-                context,
-                call.arguments[1],
-                "createGridSpriteAtlas",
-            );
-            const cellWidth = property(options, "cellWidthPx");
-            const cellHeight = property(options, "cellHeightPx");
-            if (!cellWidth || !cellHeight) {
-                context.fail(
-                    argumentAt(call, 1),
-                    "createGridSpriteAtlas requires cellWidthPx and cellHeightPx.",
-                );
-            }
-            const columns = property(options, "columns");
-            const rows = property(options, "rows");
-            const margin = property(options, "marginPx");
-            const spacing = property(options, "spacingPx");
-            const pivot = tupleOption(
-                context,
-                options,
-                "pivot",
-                call,
-                2,
-            );
-            const premultiplied = property(
-                options,
-                "premultipliedAlpha",
-            );
-            const engine = context.engineFor(texture, call);
-            const numberValue = (
-                value: Value,
-                name: string,
-            ): string => {
-                if (
-                    value.kind !== "number" &&
-                    !(
-                        value.kind === "data" &&
-                        value.dataType?.kind === "number"
-                    )
-                ) {
-                    context.fail(
-                        argumentAt(call, 1),
-                        `createGridSpriteAtlas ${name} must be numeric.`,
-                    );
-                }
-                return value.cpp;
-            };
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "sprite-atlas",
-                cpp:
-                    `bbl::create_grid_sprite_atlas(${engine}, ${texture.cpp}, ` +
-                    `bbl::GridSpriteAtlasOptions{` +
-                    `${numberValue(cellWidth, "cellWidthPx")}, ` +
-                    `${numberValue(cellHeight, "cellHeightPx")}, ` +
-                    `${columns ? "true" : "false"}, ` +
-                    `${columns ? numberValue(columns, "columns") : "0.0"}, ` +
-                    `${rows ? "true" : "false"}, ` +
-                    `${rows ? numberValue(rows, "rows") : "0.0"}, ` +
-                    `${margin ? numberValue(margin, "marginPx") : "0.0"}, ` +
-                    `${spacing ? numberValue(spacing, "spacingPx") : "0.0"}, ` +
-                    `${pivot ? `bbl::Vec2{static_cast<float>(${pivot[0]}), static_cast<float>(${pivot[1]})}` : "bbl::Vec2{0.5f, 0.5f}"}, ` +
-                    `${premultiplied ? premultiplied.cpp : "false"}})`,
-                engineCpp: engine,
-            };
-        }
-
-        case "loadSpriteAtlas": {
-            context.expectArgumentCount(call, 3, 3);
-            const engine = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                engine,
-                "engine",
-                argumentAt(call, 0),
-            );
-            const assetPath =
-                context.registerSpriteAtlasAsset(
-                    argumentAt(call, 1),
-                );
-            const options = optionsRecord(
-                context,
-                call.arguments[2],
-                "loadSpriteAtlas",
-            );
-            const gridSize = tupleOption(
-                context,
-                options,
-                "gridSize",
-                call,
-                2,
-            );
-            if (!gridSize) {
-                context.fail(
-                    call,
-                    "loadSpriteAtlas: gridSize required.",
-                );
-            }
-            if (property(options, "metadataUrl")) {
-                context.fail(
-                    call,
-                    "loadSpriteAtlas: metadataUrl unsupported.",
-                );
-            }
-            // `...options.textureOptions` spreads over the loader's own
-            // defaults. Only the address modes are reached; anything else in
-            // that record would silently not survive the spread, so it
-            // refuses by name.
-            const textureOptions = property(options, "textureOptions");
-            if (textureOptions) {
-                if (textureOptions.kind !== "record") {
-                    context.fail(
-                        argumentAt(call, 2),
-                        "loadSpriteAtlas textureOptions must be written as an object literal.",
-                    );
-                }
-                for (const member of Object.keys(
-                    textureOptions.recordProperties ?? {},
-                )) {
-                    if (
-                        member !== "addressModeU" &&
-                        member !== "addressModeV"
-                    ) {
-                        context.fail(
-                            argumentAt(call, 2),
-                            `loadSpriteAtlas textureOptions '${member}' is not lowered.`,
-                        );
-                    }
-                }
-            }
-            // Each axis is read by name: the loader stamps clamp and the
-            // caller's spread replaces it, so an option naming only one axis
-            // must not land on the other.
-            const addressMode = (
-                name: "addressModeU" | "addressModeV",
-            ): string => {
-                const mode = property(textureOptions, name);
-                if (!mode?.staticString) {
-                    return "bbl::TextureAddressMode::clamp";
-                }
-                const mapped = addressModeByPin[mode.staticString];
-                if (!mapped) {
-                    context.fail(
-                        argumentAt(call, 2),
-                        `loadSpriteAtlas ${name} '${mode.staticString}' is not a pinned address mode.`,
-                    );
-                }
-                return `bbl::${mapped}`;
-            };
-            const sampling = property(options, "sampling");
-            if (
-                sampling &&
-                sampling.staticString !== "linear" &&
-                sampling.staticString !== "nearest"
-            ) {
-                context.fail(
-                    argumentAt(call, 2),
-                    "loadSpriteAtlas sampling must be the literal \"linear\" or \"nearest\".",
-                );
-            }
-            const premultipliedAlpha = property(
-                options,
-                "premultipliedAlpha",
-            );
-            const premultiplyOnLoad = property(
-                options,
-                "premultiplyOnLoad",
-            );
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "sprite-atlas",
-                cpp:
-                    `bbl::load_sprite_atlas(${engine.cpp}, ` +
-                    `bbl::asset_path(${assetPath}), ` +
-                    `bbl::LoadSpriteAtlasOptions{` +
-                    `${gridSize[0]!}, ` +
-                    `${gridSize[1]!}, ` +
-                    `bbl::TextureFilter::${
-                        sampling?.staticString === "nearest"
-                            ? "nearest"
-                            : "linear"
-                    }, ` +
-                    `${premultipliedAlpha?.cpp ?? "false"}, ` +
-                    `${premultiplyOnLoad?.cpp ?? "false"}, ` +
-                    `${addressMode("addressModeU")}, ` +
-                    `${addressMode("addressModeV")}})`,
-                engineCpp: engine.engineCpp ?? engine.cpp,
-            };
-        }
-
-        case "createSprite2DLayer": {
-            context.expectArgumentCount(call, 1, 2);
-            const atlas = context.compileSpriteAtlas(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                atlas,
-                "sprite-atlas",
-                argumentAt(call, 0),
-            );
-            const options = optionsRecord(
-                context,
-                call.arguments[1],
-                "createSprite2DLayer",
-            );
-            const depth = property(options, "depth");
-            if (
-                depth &&
-                !["none", "test", "test-write"].includes(
-                    depth.staticString ?? "",
-                )
-            ) {
-                context.fail(
-                    argumentAt(call, 1),
-                    'createSprite2DLayer depth must be "none", "test", or "test-write".',
-                );
-            }
-            for (const unreached of ["view"]) {
-                if (property(options, unreached)) {
-                    context.fail(
-                        argumentAt(call, 1),
-                        `createSprite2DLayer option '${unreached}' is not lowered.`,
-                    );
-                }
-            }
-            // One of the pin's own exported descriptors, resolved by the
-            // name the scene imported. `spriteBlendOpaque` names no colour
-            // blend at all, which the 2D pipeline expresses by disabling
-            // blending.
-            const blendCpp = blendOption(
-                context,
-                options,
-                "sprite",
-                call.arguments[1] ?? call,
-            );
-            const pivot = tupleOption(
-                context,
-                options,
-                "pivot",
-                call,
-                2,
-            );
-            const custom = customShaderOption(
-                context,
-                options,
-                "sprite",
-                call.arguments[1] ?? call,
-            );
-            const engineCpp = context.engineFor(atlas, call);
-            const depthMode = (depth?.staticString ?? "none") as NonNullable<
-                Value["spriteDepthMode"]
-            >;
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "sprite-layer",
-                cpp:
-                    `bbl::create_sprite_2d_layer(${engineCpp}, ` +
-                    `${atlas.cpp}, bbl::Sprite2DLayerOptions{` +
-                    `${numberOption(options, "capacity", "16.0f")}, ` +
-                    `${blendCpp}, ` +
-                    `${numberOption(options, "opacity", "1.0f")}, ` +
-                    `${property(options, "visible")?.cpp ?? "true"}, ` +
-                    `${numberOption(options, "order", "0.0f")}, ` +
-                    `bbl::Sprite2DDepthMode::${
-                        depthMode === "test-write"
-                            ? "test_write"
-                            : depthMode
-                    }, ` +
-                    `${numberOption(options, "layerZ", "0.5f")}, ` +
-                    `bbl::Vec2{${
-                        pivot
-                            ? `${pivot[0]!}, ${pivot[1]!}`
-                            : "0.5f, 0.5f"
-                    }}, ` +
-                    `${custom.program}, ${custom.textures}, ` +
-                    `${custom.textureNames}})`,
-                engineCpp,
-                spriteDepthMode: depthMode,
-            };
-        }
-
-        case "addSprite2DIndex": {
-            context.expectArgumentCount(call, 2, 2);
-            const layer = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                layer,
-                "sprite-layer",
-                argumentAt(call, 0),
-            );
-            const props = optionsRecord(
-                context,
-                call.arguments[1],
-                "addSprite2DIndex",
-            );
-            const engineCpp = context.engineFor(layer, call);
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "number",
-                cpp:
-                    `bbl::add_sprite_2d_index(${engineCpp}, ` +
-                    `${layer.cpp}, ${sprite2DPropsCpp(
-                        context,
-                        props,
-                        call,
-                        "addSprite2DIndex",
-                    )})`,
-                engineCpp,
-            };
-        }
-
-        case "addSprite2D": {
-            // The pin's handle is a stable id over a moving index, kept in
-            // step with the layer's own swap-remove. That indirection is
-            // load-bearing here too: an animation that outlives another
-            // sprite's removal would otherwise drive whichever sprite the
-            // swap moved into its slot.
-            context.expectArgumentCount(call, 2, 2);
-            const layer = context.compileValue(argumentAt(call, 0));
-            context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
-            const props = optionsRecord(
-                context,
-                call.arguments[1],
-                "addSprite2D",
-            );
-            const engineCpp = context.engineFor(layer, call);
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "sprite-2d-handle",
-                cpp:
-                    "bbl::add_sprite_2d(" +
-                    engineCpp +
-                    ", " +
-                    layer.cpp +
-                    ", " +
-                    sprite2DPropsCpp(
-                        context,
-                        props,
-                        call,
-                        "addSprite2D",
-                    ) +
-                    ")",
-                engineCpp,
-                spriteLayerCpp: layer.cpp,
-                nativeCompanionCaptures: { spriteLayerCpp: layer.nativeCaptures ?? [] },
-            };
-        }
-
-        case "getSprite2DHandleIndex": {
-            // sprite-2d-handle.ts: the slot a stable id names right now.
-            // A scene reads it to report the order the layer settled on,
-            // which is exactly why it cannot be folded to the slot the add
-            // returned -- a removal or a Y-sort moves it.
-            context.expectArgumentCount(call, 1, 1);
-            const handle = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                handle,
-                "sprite-2d-handle",
-                argumentAt(call, 0),
-            );
-            const layerCpp = spriteHandleLayerCpp(
-                context,
-                handle,
-                call,
-                "getSprite2DHandleIndex",
-            );
-            const engineCpp = context.engineFor(handle, call);
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "number",
-                cpp:
-                    `bbl::sprite_2d_handle_index(${engineCpp}, ` +
-                    `${layerCpp}, static_cast<std::uint32_t>(${handle.cpp}))`,
-                engineCpp,
-            };
-        }
-
-        case "updateSprite2D": {
-            // The handle form of the index update: same patch rules, over
-            // whichever slot the id names when the call runs.
-            context.expectArgumentCount(call, 2, 2);
-            const handle = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                handle,
-                "sprite-2d-handle",
-                argumentAt(call, 0),
-            );
-            const layerCpp = spriteHandleLayerCpp(
-                context,
-                handle,
-                call,
-                "updateSprite2D",
-            );
-            const props = optionsRecord(
-                context,
-                call.arguments[1],
-                "updateSprite2D",
-            );
-            const engineCpp = context.engineFor(handle, call);
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "void",
-                cpp:
-                    `bbl::update_sprite_2d_id(${engineCpp}, ${layerCpp}, ` +
-                    `static_cast<std::uint32_t>(${handle.cpp}), ` +
-                    `${sprite2DPropsCpp(
-                        context,
-                        props,
-                        call,
-                        "updateSprite2D",
-                    )})`,
-                engineCpp,
-            };
-        }
-
-        case "enableSprite2DYSort": {
-            // sprite-2d-y-sort.ts: the enabler IS the opt-in. Upstream
-            // registers the extension's one null hook from inside it, so
-            // reaching this call is what makes every other sprite path see
-            // the layer's GPU order at all.
-            context.expectArgumentCount(call, 1, 2);
-            const layer = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                layer,
-                "sprite-layer",
-                argumentAt(call, 0),
-            );
-            let defaultBias = "0.0";
-            if (call.arguments[1]) {
-                validateObjectProperties(
-                    context,
-                    optionsLiteral(context, call.arguments[1]),
-                    ["defaultBias"],
-                    "enableSprite2DYSort takes defaultBias.",
-                );
-                const bias = property(
-                    optionsRecord(
-                        context,
-                        call.arguments[1],
-                        "enableSprite2DYSort",
-                    ),
-                    "defaultBias",
-                );
-                if (bias) {
-                    defaultBias = `static_cast<double>(${bias.cpp})`;
-                }
-            }
-            const engineCpp = context.engineFor(layer, call);
-            context.reachFeature("sprite:2d", call);
-            context.reachFeature("sprite:2d-y-sort", call);
-            return {
-                kind: "sprite-2d-y-sort",
-                cpp:
-                    `bbl::enable_sprite_2d_y_sort(${engineCpp}, ` +
-                    `${layer.cpp}, ${defaultBias})`,
-                engineCpp,
-            };
-        }
-
-        case "setSprite2DYSortHandleBias": {
-            context.expectArgumentCount(call, 2, 2);
-            const handle = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                handle,
-                "sprite-2d-handle",
-                argumentAt(call, 0),
-            );
-            const layerCpp = spriteHandleLayerCpp(
-                context,
-                handle,
-                call,
-                "setSprite2DYSortHandleBias",
-            );
-            const bias = context.compileNumber(
-                argumentAt(call, 1),
-                "double",
-            );
-            const engineCpp = context.engineFor(handle, call);
-            context.reachFeature("sprite:2d", call);
-            context.reachFeature("sprite:2d-y-sort", call);
-            return {
-                kind: "void",
-                cpp:
-                    `bbl::set_sprite_2d_y_sort_bias_id(${engineCpp}, ` +
-                    `${layerCpp}, static_cast<std::uint32_t>(${handle.cpp}), ` +
-                    `${bias})`,
-                engineCpp,
-            };
-        }
-
-        case "updateSprite2DIndex": {
-            // The patch is a `Partial<Sprite2DProps>`: every field the
-            // caller omits keeps the value the slot already holds, which is
-            // why this arm records which fields were supplied rather than
-            // resolving defaults here.
-            context.expectArgumentCount(call, 3, 3);
-            const layer = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                layer,
-                "sprite-layer",
-                argumentAt(call, 0),
-            );
-            // `addSprite2DIndex` hands the index back as a JavaScript
-            // number and the pin's range check compares it as one, so it
-            // travels at that width rather than rounding at the call.
-            const index = context.compileNumber(
-                argumentAt(call, 1),
-                "double",
-            );
-            const engineCpp = context.engineFor(layer, call);
-            context.reachFeature("sprite:2d", call);
-            const options = argumentAt(call, 2);
-            const updateCpp = (expression: ts.Expression): string => {
-                const props = optionsRecord(
-                    context,
-                    expression,
-                    "updateSprite2DIndex",
-                );
-                return (
-                    `bbl::update_sprite_2d_index(${engineCpp}, ` +
-                    `${layer.cpp}, ${index}, ${sprite2DPropsCpp(
-                        context,
-                        props,
-                        call,
-                        "updateSprite2DIndex",
-                    )})`
-                );
-            };
-            const unwrappedOptions = context.unwrap(options);
-            if (ts.isConditionalExpression(unwrappedOptions)) {
-                const condition = context.compileCondition(
-                    unwrappedOptions.condition,
-                );
-                return {
-                    kind: "void",
-                    cpp:
-                        `(${condition} ? ` +
-                        `${updateCpp(unwrappedOptions.whenTrue)} : ` +
-                        `${updateCpp(unwrappedOptions.whenFalse)})`,
-                    engineCpp,
-                };
-            }
-            return {
-                kind: "void",
-                cpp: updateCpp(options),
-                engineCpp,
-            };
-        }
-
-        case "createSpriteAnimationManager": {
-            context.expectArgumentCount(call, 0, 1);
-            if (call.arguments[0]) {
-                // `{}` is legal upstream and means the defaults, so the
-                // refusal names the FIELDS rather than the argument.
-                validateObjectProperties(
-                    context,
-                    optionsLiteral(context, call.arguments[0]),
-                    [],
-                    "createSpriteAnimationManager's options are unreached: " +
-                        "fixedDeltaMs overrides the caller's own step, and " +
-                        "onUpdate is a per-tick callback of the autonomous " +
-                        "loop this port does not run.",
-                );
-            }
-            const engineCpp = context.requireDefaultEngine(call);
-            context.reachFeature("sprite:animation", call);
-            return {
-                kind: "sprite-animation-manager",
-                cpp:
-                    "bbl::upstream::create_sprite_animation_manager(" +
-                    engineCpp +
-                    ")",
-                engineCpp,
-            };
-        }
-
-        case "playSprite2DAnimation":
-        case "playBillboardSpriteAnimation": {
-            // The two adapters differ only in which family names the sprite:
-            // upstream builds a closure triple over the handle, and the
-            // target record here is that same decoupling as data.
-            const sprite2d = importedName === "playSprite2DAnimation";
-            context.expectArgumentCount(call, 6, 7);
-            const manager = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                manager,
-                "sprite-animation-manager",
-                argumentAt(call, 0),
-            );
-            const target = context.compileValue(argumentAt(call, 1));
-            context.expectKind(
-                target,
-                sprite2d ? "sprite-2d-handle" : "billboard-sprite",
-                argumentAt(call, 1),
-            );
-            const number = (index: number): string =>
-                context.compileNumber(argumentAt(call, index), "double");
-            const loop = context.compileCondition(argumentAt(call, 4));
-            const options = optionsRecord(
-                context,
-                call.arguments[6],
-                importedName,
-            );
-            if (property(options, "onEnd")) {
-                context.fail(
-                    argumentAt(call, 6),
-                    importedName +
-                        "'s onEnd callback is unreached: a native animation " +
-                        "has no place to run scene code as it finishes.",
-                );
-            }
-            const removeWhenFinishedValue = property(
-                options,
-                "removeWhenFinished",
-            );
-            const removeWhenFinished = removeWhenFinishedValue
-                ? removeWhenFinishedValue.cpp
-                : "false";
-            if (
-                removeWhenFinished !== "true" &&
-                removeWhenFinished !== "false"
-            ) {
-                context.fail(
-                    argumentAt(call, 6),
-                    importedName +
-                        "'s removeWhenFinished decides whether the sprite " +
-                        "survives its own animation, so it must settle at " +
-                        "generation rather than read as false.",
-                );
-            }
-            const engineCpp = context.engineFor(manager, call);
-            if (sprite2d && target.spriteLayerCpp === undefined) {
-                context.fail(
-                    argumentAt(call, 1),
-                    "A Sprite2D animation target carries the layer it lives " +
-                        "in; this handle reached here without one.",
-                );
-            }
-            const targetCpp = sprite2d
-                ? "bbl::SpriteAnimationTarget{" +
-                  "bbl::SpriteAnimationTargetKind::sprite_2d, " +
-                  target.spriteLayerCpp +
-                  ", static_cast<std::uint32_t>(" +
-                  target.cpp +
-                  "), {}}"
-                : "bbl::SpriteAnimationTarget{" +
-                  "bbl::SpriteAnimationTargetKind::billboard, {}, 0u, " +
-                  target.cpp +
-                  "}";
-            context.reachFeature("sprite:animation", call);
-            return {
-                kind: "void",
-                cpp:
-                    "bbl::upstream::play_sprite_frame_animation(" +
-                    engineCpp +
-                    ", " +
-                    manager.cpp +
-                    ", " +
-                    targetCpp +
-                    ", " +
-                    number(2) +
-                    ", " +
-                    number(3) +
-                    ", " +
-                    loop +
-                    ", " +
-                    number(5) +
-                    ", " +
-                    removeWhenFinished +
-                    ")",
-                engineCpp,
-            };
-        }
-
-        case "updateSpriteAnimationManager": {
-            context.expectArgumentCount(call, 2, 2);
-            const manager = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                manager,
-                "sprite-animation-manager",
-                argumentAt(call, 0),
-            );
-            const engineCpp = context.engineFor(manager, call);
-            context.reachFeature("sprite:animation", call);
-            return {
-                kind: "void",
-                cpp:
-                    "bbl::upstream::update_sprite_animation_manager(" +
-                    engineCpp +
-                    ", " +
-                    manager.cpp +
-                    ", " +
-                    context.compileNumber(argumentAt(call, 1), "double") +
-                    ")",
-                engineCpp,
-            };
-        }
-
-        case "attachSpriteAnimationsToRenderer":
-        case "attachSpriteAnimationsToScene": {
-            context.fail(
-                call,
-                importedName +
-                    " installs the stepper on a render loop and hands back " +
-                    "a binding that detaches it -- a disposable this port " +
-                    "has no owner for. Both corpus scenes write it, in the " +
-                    "arm their own `?seekTime=` pose folds away; the arm " +
-                    "that survives drives the same stepper from a counted " +
-                    "loop, so what is missing is the hook and its binding, " +
-                    "not the animation.",
-            );
-        }
-
-        case "clearSprite2DLayer": {
-            context.expectArgumentCount(call, 1, 1);
-            const layer = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                layer,
-                "sprite-layer",
-                argumentAt(call, 0),
-            );
-            const engineCpp = context.engineFor(layer, call);
-            context.reachFeature("sprite:2d", call);
-            return {
-                kind: "void",
-                cpp: `bbl::clear_sprite_2d_layer(${engineCpp}, ${layer.cpp})`,
-                engineCpp,
-            };
-        }
-
-        case "createFacingBillboardSystem":
-        case "createAxisLockedBillboardSystem": {
-            // The axis-locked factory takes the lock axis between the atlas
-            // and the options.
-            const locked =
-                importedName === "createAxisLockedBillboardSystem";
-            const optionsIndex = locked ? 2 : 1;
-            context.expectArgumentCount(
-                call,
-                optionsIndex,
-                optionsIndex + 1,
-            );
-            const atlas = context.compileSpriteAtlas(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                atlas,
-                "sprite-atlas",
-                argumentAt(call, 0),
-            );
-            const optionsArg = call.arguments[optionsIndex];
-            const options = optionsRecord(
-                context,
-                optionsArg,
-                importedName,
-            );
-            // Every arm the lowered permutation does not cover refuses
-            // here, so a scene reaching one gets a message naming it
-            // rather than a plausible wrong image.
-            // The blend is one of the pin's own exported descriptors,
-            // resolved by the name the scene imported: `billboardBlendAlpha`
-            // is `billboard_blend_alpha()`. `cutout` carries no colour blend
-            // and drives an alpha-test depth-write path this slice does not
-            // render, so it refuses rather than drawing the wrong one.
-            const blendCpp = blendOption(
-                context,
-                options,
-                "billboard",
-                optionsArg ?? call,
-            );
-            const custom = customShaderOption(
-                context,
-                options,
-                "billboard",
-                optionsArg ?? call,
-            );
-
-            // `order` sorts a system against the scene's other transparent
-            // renderables upstream. A system here draws in the slot its depth
-            // mode gives it, which is the same image only while nothing else
-            // is transparent, so an explicit order refuses rather than being
-            // silently dropped.
-            for (const unreached of ["order"]) {
-                if (property(options, unreached)) {
-                    context.fail(
-                        optionsArg ?? call,
-                        `${importedName} option '${unreached}' is not lowered.`,
-                    );
-                }
-            }
-            // The raw axis: the pin normalises it inside the factory and
-            // rejects a degenerate one there, so that stays lowered rather
-            // than recomputed at the call site.
-            const axisCpp = locked
-                ? context.compileVec3(argumentAt(call, 1))
-                : "bbl::Vec3{0.0f, 0.0f, 0.0f}";
-            const engineCpp = context.engineFor(atlas, call);
-            context.reachFeature("sprite:billboard", call);
-            if (locked) {
-                context.reachFeature(
-                    "sprite:billboard-axis-locked",
-                    call,
-                );
-            }
-            return {
-                kind: "billboard-system",
-                // The record is spelled as a full C++20 designated
-                // initializer: each value pairs to its field by name (a
-                // renamed or reordered header field fails the build
-                // instead of silently shifting a positional list), and
-                // every member is stated so none rides a header default
-                // this call site never wrote. The unnamed options carry
-                // the pinned factory defaults; the second-pass blend is
-                // the node-particle enabler's arm and stays empty here.
-                cpp:
-                    `bbl::create_billboard_system(${engineCpp}, ` +
-                    `${atlas.cpp}, bbl::BillboardOrientation::` +
-                    `${locked ? "axis_locked" : "facing"}, ${axisCpp}, ` +
-                    `bbl::BillboardSystemOptions{` +
-                    `.capacity = ${numberOption(options, "capacity", "16.0f")}, ` +
-                    `.blend = ${blendCpp}, ` +
-                    `.opacity = ${numberOption(options, "opacity", "1.0f")}, ` +
-                    `.visible = ${property(options, "visible")?.cpp ?? "true"}, ` +
-                    // resolveAlphaCutoff and the order default both follow
-                    // the descriptor's own depth mode, so they are resolved
-                    // beside it rather than from the name at this call site.
-                    `.alpha_cutoff = ${numberOption(options, "alphaCutoff", "0.0f")}, ` +
-                    `.has_alpha_cutoff = ${property(options, "alphaCutoff") ? "true" : "false"}, ` +
-                    `.custom_shader = ${custom.program}, ` +
-                    `.custom_textures = ${custom.textures}, ` +
-                    `.custom_texture_names = ${custom.textureNames}, ` +
-                    `.add_pass_blend = bbl::SpriteBlendDescriptor{}})`,
-                engineCpp,
-            };
-        }
-
-        case "addBillboardSpriteIndex": {
-            context.expectArgumentCount(call, 2, 2);
-            const system = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                system,
-                "billboard-system",
-                argumentAt(call, 0),
-            );
-            const props = optionsRecord(
-                context,
-                call.arguments[1],
-                "addBillboardSpriteIndex",
-            );
-            const engineCpp = context.engineFor(system, call);
-            context.reachFeature("sprite:billboard", call);
-            return {
-                kind: "number",
-                cpp:
-                    `bbl::add_billboard_sprite_index(${engineCpp}, ` +
-                    `${system.cpp}, ` +
-                    `${billboardPropsCpp(context, props, call, "addBillboardSpriteIndex")})`,
-                engineCpp,
-            };
-        }
-
-        case "addBillboardSprite": {
-            context.expectArgumentCount(call, 2, 2);
-            const system = context.compileValue(argumentAt(call, 0));
-            context.expectKind(system, "billboard-system", argumentAt(call, 0));
-            const props = optionsRecord(
-                context,
-                call.arguments[1],
-                "addBillboardSprite",
-            );
-            const engineCpp = context.engineFor(system, call);
-            context.reachFeature("sprite:billboard", call);
-            return {
-                kind: "billboard-sprite",
-                cpp:
-                    `bbl::add_billboard_sprite(${engineCpp}, ${system.cpp}, ` +
-                    `${billboardPropsCpp(context, props, call, "addBillboardSprite")})`,
-                engineCpp,
-            };
-        }
-
-        case "updateBillboardSprite": {
-            context.expectArgumentCount(call, 2, 2);
-            const handle = context.compileValue(argumentAt(call, 0));
-            context.expectKind(handle, "billboard-sprite", argumentAt(call, 0));
-            const props = optionsRecord(
-                context,
-                call.arguments[1],
-                "updateBillboardSprite",
-            );
-            const engineCpp = context.engineFor(handle, call);
-            context.reachFeature("sprite:billboard", call);
-            return {
-                kind: "void",
-                cpp:
-                    `bbl::update_billboard_sprite(${engineCpp}, ${handle.cpp}, ` +
-                    `${billboardPropsCpp(context, props, call, "updateBillboardSprite")})`,
-            };
-        }
-
-        case "removeBillboardSprite": {
-            context.expectArgumentCount(call, 1, 1);
-            const handle = context.compileValue(argumentAt(call, 0));
-            context.expectKind(handle, "billboard-sprite", argumentAt(call, 0));
-            const engineCpp = context.engineFor(handle, call);
-            context.reachFeature("sprite:billboard", call);
-            return {
-                kind: "void",
-                cpp: `bbl::remove_billboard_sprite(${engineCpp}, ${handle.cpp})`,
-            };
-        }
-
-        case "clearBillboardSprites": {
-            context.expectArgumentCount(call, 1, 1);
-            const system = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                system,
-                "billboard-system",
-                argumentAt(call, 0),
-            );
-            const engineCpp = context.engineFor(system, call);
-            context.reachFeature("sprite:billboard", call);
-            return {
-                kind: "void",
-                cpp: `bbl::clear_billboard_sprites(${engineCpp}, ${system.cpp})`,
-            };
-        }
-
-        case "createTexture2DFromPixels": {
-            context.expectArgumentCount(call, 4, 5);
-            const engine = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                engine,
-                "engine",
-                argumentAt(call, 0),
-            );
-            // A zero-argument module producer remains bakeable. A reached
-            // runtime Uint8Array instead travels directly to the native
-            // factory, preserving WAD/decoded/generated pixel workflows.
-            const bakedPixels = context.probePixelsAsset(
-                argumentAt(call, 1),
-            );
-            const runtimePixels = bakedPixels
-                ? undefined
-                : context.compileValue(argumentAt(call, 1));
-            if (
-                runtimePixels &&
-                !(
-                    runtimePixels.kind === "data" &&
-                    runtimePixels.dataType?.kind === "u8array"
-                )
-            ) {
-                context.fail(
-                    argumentAt(call, 1),
-                    "createTexture2DFromPixels pixels must run at generation through a bakeable module producer or evaluate to a native Uint8Array.",
-                );
-            }
-            const width = context.compileNumber(
-                argumentAt(call, 2),
-                "double",
-            );
-            const height = context.compileNumber(
-                argumentAt(call, 3),
-                "double",
-            );
-            // The pin's sampler and format overrides. Each travels as "named, and this
-            // value", because the factory resolves `?? default` where
-            // upstream resolves it. `srgb` travels as the raw-pixel texture's
-            // format bit and is preserved by every material/backend consumer.
-            const sampler = pixelsSamplerOptions(
-                context,
-                call.arguments[4],
-            );
-            const staticSize = [
-                staticNumberValue(context, argumentAt(call, 2)),
-                staticNumberValue(context, argumentAt(call, 3)),
-            ];
-            context.reachFeature("texture:pixels", call);
-            return {
-                kind: "texture",
-                textureStorage: "pixels",
-                cpp:
-                    `bbl::create_texture_2d_from_pixels(${engine.cpp}, ` +
-                    `${bakedPixels ? `bbl::asset_path(${bakedPixels.cpp})` : runtimePixels!.cpp}, ${width}, ${height}` +
-                    `${sampler.cpp})`,
-                engineCpp: engine.engineCpp ?? engine.cpp,
-                // A node-particle system's texture is assigned in scene
-                // code, and the bake driver has to build the same one to
-                // see the size the pin partitions its atlas by. A size the
-                // source does not settle carries no record at all, so the
-                // refusal lands at the assignment that needed one rather
-                // than at every pixels texture in the corpus.
-                ...(bakedPixels &&
-                staticSize[0] !== undefined &&
-                staticSize[1] !== undefined
-                    ? {
-                          pixelsTexture: {
-                               source: bakedPixels.source,
-                               asset: bakedPixels.cpp,
-                              width: staticSize[0],
-                              height: staticSize[1],
-                              options: sampler.named,
-                          },
-                      }
-                    : {}),
-            };
-        }
-
-        case "createSprite2DCustomShader":
-        case "createBillboardCustomShader": {
-            context.expectArgumentCount(call, 1, 1);
-            const options = optionsRecord(
-                context,
-                call.arguments[0],
-                importedName,
-            );
-            const fragment = property(options, "fragment");
-            // The pin takes the body as an opaque string it splices into
-            // its own composer, so it has to be settled here: a body built
-            // at run time would have no program to compile against.
-            if (
-                fragment?.kind !== "string" ||
-                fragment.staticString === undefined
-            ) {
-                context.fail(
-                    call.arguments[0] ?? call,
-                    `${importedName}: 'fragment' must be a WGSL string literal.`,
-                );
-            }
-            if (fragment.staticString.trim().length === 0) {
-                context.fail(
-                    call.arguments[0] ?? call,
-                    `${importedName}: 'fragment' must be a non-empty WGSL string.`,
-                );
-            }
-            // Each extra texture adds the binding pair the pin emits ahead
-            // of the fx block: `<name>Tex` and `<name>Samp`, in the order
-            // given. The name is compile-time (it is spliced into WGSL) and
-            // the texture is a runtime value the layer binds.
-            const extras = extraTextureOption(
-                context,
-                options,
-                importedName,
-                call.arguments[0] ?? call,
-            );
-            const family =
-                importedName === "createSprite2DCustomShader"
-                    ? "sprite"
-                    : "billboard";
-            const extraNames = extras.map(({ name }) => name);
-            const familyShaders = context
-                .spriteCustomShaders()
-                .filter((entry) => entry.family === family);
-            const existingIndex = familyShaders.findIndex(
-                (entry) =>
-                    entry.fragment === fragment.staticString &&
-                    entry.extraTextures.join("\0") === extraNames.join("\0"),
-            );
-            if (family === "billboard" && familyShaders.length > 0 && existingIndex < 0) {
-                context.fail(
-                    call,
-                    "A second distinct billboard custom shader is not lowered.",
-                );
-            }
-            // Building a descriptor is the pin's own opt-in trigger: the
-            // factory is what registers the fx hook the always-loaded path
-            // reaches the feature through, so reaching it here is what
-            // composes the program and binds the fx block.
-            context.reachFeature(
-                family === "sprite"
-                    ? "sprite:custom-shader"
-                    : "sprite:billboard-custom-shader",
-                call,
-            );
-            if (existingIndex < 0) {
-                context.recordSpriteCustomShader({
-                    family,
-                    fragment: fragment.staticString,
-                    extraTextures: extraNames,
-                });
-            }
-            return {
-                kind: `${family}-custom-shader`,
-                cpp: "",
-                spriteCustomShaderIndex:
-                    existingIndex >= 0
-                        ? existingIndex + 1
-                        : familyShaders.length + 1,
-                spriteCustomTextures: extras.map(
-                    ({ cpp }) => cpp,
-                ),
-                spriteCustomTextureNames: extraNames,
-            };
-        }
-
-        case "setSprite2DShaderParams":
-        case "setBillboardShaderParams": {
-            context.expectArgumentCount(call, 2, 2);
-            const target = context.compileValue(argumentAt(call, 0));
-            const sprite =
-                importedName === "setSprite2DShaderParams";
-            context.expectKind(
-                target,
-                sprite ? "sprite-layer" : "billboard-system",
-                argumentAt(call, 0),
-            );
-            const params = context.compileVec4(argumentAt(call, 1));
-            const engineCpp = context.engineFor(target, call);
-            context.emit(
-                `bbl::${
-                    sprite
-                        ? "set_sprite_2d_shader_params"
-                        : "set_billboard_shader_params"
-                }(${engineCpp}, ${target.cpp}, ${params});`,
-            );
-            return { kind: "void", cpp: "" };
-        }
-
-        case "setAlphaToCoverage": {
-            context.expectArgumentCount(call, 2, 2);
-            const target = context.compileValue(argumentAt(call, 0));
-            if (
-                target.kind !== "billboard-system" &&
-                target.kind !== "sprite-layer"
-            ) {
-                context.fail(
-                    argumentAt(call, 0),
-                    "setAlphaToCoverage supports billboard systems and Sprite2D layers.",
-                );
-            }
-            const enabled = context.compileBoolean(
-                argumentAt(call, 1),
-            );
-            const engineCpp = context.engineFor(target, call);
-            context.reachFeature(
-                target.kind === "sprite-layer"
-                    ? "sprite:2d"
-                    : "sprite:billboard",
-                call,
-            );
-            context.emit(
-                `bbl::${
-                    target.kind === "sprite-layer"
-                        ? "set_sprite_2d_alpha_to_coverage"
-                        : "set_billboard_alpha_to_coverage"
-                }(${engineCpp}, ${target.cpp}, ${enabled});`,
-            );
-            return { kind: "void", cpp: "" };
-        }
-
-        case "addDepthHostedSpriteLayer": {
-            context.expectArgumentCount(call, 2, 2);
-            const scene = context.compileValue(argumentAt(call, 0));
-            context.expectKind(scene, "scene", argumentAt(call, 0));
-            const layer = context.compileValue(argumentAt(call, 1));
-            context.expectKind(layer, "sprite-layer", argumentAt(call, 1));
-            if (layer.spriteDepthMode === "none") {
-                context.fail(
-                    argumentAt(call, 1),
-                    'Depth-hosted sprites require depth != "none".',
-                );
-            }
-            context.expectSameEngine(scene, layer, call);
-            context.reachFeature("sprite:2d", call);
-            context.reachFeature("sprite:2d-depth-host", call);
-            context.reachFeature("renderer:sprite", call);
-            context.reachFeature("renderer:scene", call);
-            context.emit(
-                `bbl::add_depth_hosted_sprite_layer(${scene.cpp}, ${layer.cpp});`,
-            );
-            return { kind: "void", cpp: "" };
-        }
-
-        case "addFacingBillboardSystem":
-        case "addAxisLockedBillboardSystem": {
-            context.expectArgumentCount(call, 2, 2);
-            const scene = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(scene, "scene", argumentAt(call, 0));
-            const system = context.compileValue(
-                argumentAt(call, 1),
-            );
-            context.expectKind(
-                system,
-                "billboard-system",
-                argumentAt(call, 1),
-            );
-            context.reachFeature("sprite:billboard", call);
-            // A billboard system is a scene renderable: it draws inside the
-            // scene renderer's own pass, against its camera and depth. A
-            // scene of nothing but billboards still needs that pass, the way
-            // a render target does.
-            context.reachFeature("renderer:scene", call);
-            context.emit(
-                `bbl::add_billboard_system(${scene.cpp}, ${system.cpp});`,
-            );
-            return { kind: "void", cpp: "" };
-        }
-
-        case "setSprite2DUvOffset": {
-            context.expectArgumentCount(call, 3, 3);
-            const layer = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                layer,
-                "sprite-layer",
-                argumentAt(call, 0),
-            );
-            const index = context.compileNumber(argumentAt(call, 1));
-            const offset = context.compileVec2(argumentAt(call, 2));
-            const engineCpp = context.engineFor(layer, call);
-            context.reachFeature("sprite:2d", call);
-            // Importing the setter is the pin's own opt-in trigger for the
-            // widened layout, so reaching it here is what selects the
-            // widened attribute row and the shader that reads it.
-            context.reachFeature("sprite:uv-scroll", call);
-            context.emit(
-                `bbl::set_sprite_2d_uv_offset(${engineCpp}, ${layer.cpp}, ${index}, ${offset});`,
-            );
-            return { kind: "void", cpp: "" };
-        }
-
-        case "createSpriteRenderer": {
-            context.expectArgumentCount(call, 2, 2);
-            const surface = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                surface,
-                "engine",
-                argumentAt(call, 0),
-            );
-            const options = optionsRecord(
-                context,
-                call.arguments[1],
-                "createSpriteRenderer",
-            );
-            const layers = property(options, "layers");
-            const tupleLayers =
-                layers?.kind === "tuple"
-                    ? layers.tupleElements
-                    : undefined;
-            const dataLayers =
-                layers?.kind === "data" &&
-                layers.dataType?.kind === "vector" &&
-                layers.dataType.element.kind === "handle" &&
-                layers.dataType.element.handle === "sprite-layer";
-            if (!tupleLayers && !dataLayers) {
-                context.fail(
-                    argumentAt(call, 1),
-                    "createSpriteRenderer requires an array of layers.",
-                );
-            }
-            // An empty list is the pin's own shape for a renderer whose
-            // layers arrive later: a node-particle bridge owns and attaches
-            // one per system, so the scene builds the renderer with none.
-            for (const layer of tupleLayers ?? []) {
-                context.expectKind(
-                    layer,
-                    "sprite-layer",
-                    argumentAt(call, 1),
-                );
-                rejectDepthHostedStandaloneLayer(
-                    context,
-                    layer,
-                    argumentAt(call, 1),
-                );
-            }
-            const clearValue = tupleClearValue(
-                context,
-                options,
-                call,
-            );
-            context.reachFeature("sprite:2d", call);
-            context.reachFeature("renderer:sprite", call);
-            context.recordPureSpriteVertex();
-            return {
-                kind: "sprite-renderer",
-                cpp:
-                    `bbl::create_sprite_renderer(${surface.cpp}, ` +
-                    `bbl::SpriteRendererOptions{${dataLayers ? spriteLayerVectorCpp(layers!) : `{${(tupleLayers ?? []).map((layer) => layer.cpp).join(", ")}}`}, ` +
-                    `${property(options, "clear")?.cpp ?? "true"}, ` +
-                    `${clearValue}})`,
-                engineCpp:
-                    surface.engineCpp ?? surface.cpp,
-            };
-        }
-
-        case "registerSpriteRenderer": {
-            context.expectArgumentCount(call, 1, 1);
-            const renderer = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                renderer,
-                "sprite-renderer",
-                argumentAt(call, 0),
-            );
-            context.reachFeature("renderer:sprite", call);
-            return {
-                kind: "void",
-                cpp: `bbl::register_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
-            };
-        }
-
-        case "unregisterSpriteRenderer": {
-            context.expectArgumentCount(call, 1, 1);
-            const renderer = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                renderer,
-                "sprite-renderer",
-                argumentAt(call, 0),
-            );
-            context.reachFeature("renderer:sprite", call);
-            return {
-                kind: "void",
-                cpp: `bbl::unregister_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
-            };
-        }
-
-        case "setSpriteRendererTarget": {
-            context.expectArgumentCount(call, 2, 2);
-            const renderer = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                renderer,
-                "sprite-renderer",
-                argumentAt(call, 0),
-            );
-            const target = context.compileValue(argumentAt(call, 1));
-            const absent = target.kind === "json-null";
-            if (!absent && target.textureStorage !== "render") {
-                context.fail(
-                    argumentAt(call, 1),
-                    "setSpriteRendererTarget requires a createRenderTexture2D texture or null.",
-                );
-            }
-            context.reachFeature("renderer:sprite", call);
-            return {
-                kind: "void",
-                cpp:
-                    `bbl::set_sprite_renderer_target(` +
-                    `${context.engineFor(renderer, call)}, ` +
-                    `${renderer.cpp}, ` +
-                    `${absent ? "bbl::SpriteRenderTextureHandle{}" : target.cpp}, ` +
-                    `${absent ? "false" : "true"})`,
-            };
-        }
-
-        case "addSpriteRendererLayer":
-        case "removeSpriteRendererLayer": {
-            // Both take (renderer, layer) and both move the renderer's layer
-            // list, which each backend rebuilds its pass from. `remove`
-            // returns whether the layer was a member; a scene that reads it
-            // gets that boolean, and one that ignores it emits a statement.
-            context.expectArgumentCount(call, 2, 2);
-            const renderer = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                renderer,
-                "sprite-renderer",
-                argumentAt(call, 0),
-            );
-            const layer = context.compileValue(
-                argumentAt(call, 1),
-            );
-            context.expectKind(
-                layer,
-                "sprite-layer",
-                argumentAt(call, 1),
-            );
-            const engineCpp = context.engineFor(
-                renderer.engineCpp ? renderer : layer,
-                call,
-            );
-            context.reachFeature("renderer:sprite", call);
-            const removes =
-                importedName === "removeSpriteRendererLayer";
-            if (!removes) {
-                rejectDepthHostedStandaloneLayer(
-                    context,
-                    layer,
-                    argumentAt(call, 1),
-                );
-            }
-            const cpp =
-                `bbl::${
-                    removes
-                        ? "remove_sprite_renderer_layer"
-                        : "add_sprite_renderer_layer"
-                }(${engineCpp}, ${renderer.cpp}, ${layer.cpp})`;
-            return {
-                kind: removes ? "boolean" : "void",
-                cpp,
-                engineCpp,
-            };
-        }
-
-        case "disposeSpriteRenderer": {
-            context.expectArgumentCount(call, 1, 1);
-            const renderer = context.compileValue(
-                argumentAt(call, 0),
-            );
-            context.expectKind(
-                renderer,
-                "sprite-renderer",
-                argumentAt(call, 0),
-            );
-            context.reachFeature("renderer:sprite", call);
-            return {
-                kind: "void",
-                cpp: `bbl::dispose_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
-            };
-        }
-
-        default:
-            return undefined;
-    }
+    return spriteIntrinsicHandlers.get(importedName)?.(context, call);
 }
 
 /**
@@ -2268,3 +599,1119 @@ function tupleClearValue(
         `${channel("a", "1.0f")}}`
     );
 }
+
+function compilePickSprite2D(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const layers = context.compileValue(argumentAt(call, 0));
+    const tupleLayers = layers.kind === "tuple"
+        ? layers.tupleElements
+        : undefined;
+    const dataLayers = layers.kind === "data" &&
+        layers.dataType?.kind === "vector" &&
+        layers.dataType.element.kind === "handle" &&
+        layers.dataType.element.handle === "sprite-layer";
+    if (!tupleLayers && !dataLayers) {
+        context.fail(argumentAt(call, 0), "pickSprite2D requires an array of sprite layers.");
+    }
+    for (const layer of tupleLayers ?? []) {
+        context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
+    }
+    const firstLayer = tupleLayers?.[0];
+    for (const layer of tupleLayers?.slice(1) ?? []) {
+        context.expectSameEngine(firstLayer!, layer, call);
+    }
+    const engineCpp = firstLayer
+        ? context.requireEngine(firstLayer, call)
+        : context.engineFor(layers, call);
+    const layerList = dataLayers
+        ? spriteLayerVectorCpp(layers)
+        : `std::vector<bbl::Sprite2DLayerHandle>{${(tupleLayers ?? [])
+            .map((layer) => layer.cpp)
+            .join(", ")}}`;
+    context.reachFeature("sprite:2d", call);
+    return compileNullableHitRecord(context, call, {
+        intrinsic: "pickSprite2D",
+        resultType: context.dataTypes.fromTsType(context.checker.getTypeAtLocation(call), call),
+        fields: {
+            layer: {
+                cpp: "hit->layer",
+                accepts: (type) => type.kind === "handle" &&
+                    type.handle === "sprite-layer",
+            },
+            spriteIndex: {
+                cpp: "static_cast<double>(hit->sprite_index)",
+                accepts: numberField,
+            },
+            u: { cpp: "hit->u", accepts: numberField },
+            v: { cpp: "hit->v", accepts: numberField },
+        },
+        probe: `const auto hit = bbl::pick_sprite_2d(${engineCpp}, ` +
+            `${layerList}, ` +
+            `${context.compileNumber(argumentAt(call, 1), "double")}, ` +
+            `${context.compileNumber(argumentAt(call, 2), "double")});`,
+        miss: "!hit",
+    });
+}
+
+function compileCreateRenderTexture2D(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 4);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    if (call.arguments[3]) {
+        const options = optionsRecord(context, call.arguments[3], "createRenderTexture2D");
+        if (Object.keys(options?.recordProperties ?? {}).length > 0) {
+            context.fail(call.arguments[3], "createRenderTexture2D options are not reached.");
+        }
+    }
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "texture",
+        textureStorage: "render",
+        cpp: `bbl::create_sprite_render_texture(${engine.cpp}, ` +
+            `${context.compileNumber(argumentAt(call, 1))}, ` +
+            `${context.compileNumber(argumentAt(call, 2))})`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
+    };
+}
+
+function compileCreateSpriteAtlasFromFrames(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 3);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const sources = context.compileValue(argumentAt(call, 1));
+    if (sources.kind !== "data" ||
+        sources.dataType?.kind !== "vector" ||
+        sources.dataType.element.kind !== "struct") {
+        context.fail(argumentAt(call, 1), "createSpriteAtlasFromFrames expects an array of frame-source records.");
+    }
+    const sourceType = sources.dataType.element;
+    const arrow = context.dataTypes.isReferenceStruct(sourceType.name);
+    const source = context.allocateTemporaryCppName("atlas_source");
+    const sourceList = context.allocateTemporaryCppName("atlas_sources");
+    const normalized = context.allocateTemporaryCppName("atlas_frames");
+    const access = (name: string): string => {
+        const field = context.dataTypes.structField(sourceType.name, name, argumentAt(call, 1));
+        return `${source}${arrow ? "->" : "."}${field.name}`;
+    };
+    const optionalUnsigned = (name: string, fallback: string): string => {
+        const value = access(name);
+        return `(${value} ? bbl::js::to_uint32(*${value}) : ${fallback})`;
+    };
+    const pivot = access("pivot");
+    const options = optionsRecord(context, call.arguments[2], "createSpriteAtlasFromFrames");
+    const numberOption = (name: string, fallback: string): string => {
+        const value = property(options, name);
+        if (!value)
+            return fallback;
+        if (value.kind !== "number") {
+            context.fail(argumentAt(call, 2), `${name} must be numeric.`);
+        }
+        return `bbl::js::to_uint32(${value.cpp})`;
+    };
+    const sampling = property(options, "sampling");
+    if (sampling &&
+        sampling.staticString !== "nearest" &&
+        sampling.staticString !== "linear") {
+        context.fail(argumentAt(call, 2), 'sampling must be the literal "nearest" or "linear".');
+    }
+    const srgb = property(options, "srgb");
+    if (srgb && srgb.cpp !== "false") {
+        context.fail(argumentAt(call, 2), "sRGB in-memory sprite atlases are not lowered yet.");
+    }
+    const premultiplied = property(options, "premultipliedAlpha");
+    if (premultiplied && premultiplied.kind !== "boolean") {
+        context.fail(argumentAt(call, 2), "premultipliedAlpha must be boolean.");
+    }
+    const capacity = property(options, "capacityPx");
+    const capacityLanes = capacity
+        ? tupleOption(context, options, "capacityPx", call, 2)
+        : undefined;
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "sprite-atlas",
+        cpp: `([&]() { const auto& ${sourceList} = ${sources.cpp}; ` +
+            `std::vector<bbl::SpriteAtlasFramePixelsView> ${normalized}; ` +
+            `${normalized}.reserve(${sourceList}.size()); ` +
+            `for (const auto& ${source} : ${sourceList}) { ` +
+            `${normalized}.push_back(bbl::SpriteAtlasFramePixelsView{` +
+            `${access("pixels")}.data(), ${access("pixels")}.size(), ` +
+            `bbl::js::to_uint32(${access("width")}), ` +
+            `bbl::js::to_uint32(${access("height")}), ` +
+            `${optionalUnsigned("srcX", "0u")}, ` +
+            `${optionalUnsigned("srcY", "0u")}, ` +
+            `${optionalUnsigned("srcStrideBytes", "0u")}, ` +
+            `(${pivot} ? bbl::Vec2{static_cast<float>((*${pivot})[0]), ` +
+            `static_cast<float>((*${pivot})[1])} : bbl::Vec2{0.5f, 0.5f})}); } ` +
+            `return bbl::create_sprite_atlas_from_frames(${engine.cpp}, ${normalized}, ` +
+            `bbl::SpriteAtlasPackOptions{` +
+            `${numberOption("paddingPx", "1u")}, ` +
+            `${numberOption("maxWidthPx", "1024u")}, ` +
+            `bbl::TextureFilter::${sampling?.staticString === "linear" ? "linear" : "nearest"}, ` +
+            `${premultiplied?.cpp ?? "false"}, ` +
+            `${capacityLanes ? "true" : "false"}, ` +
+            `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[0]!})` : "0u"}, ` +
+            `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[1]!})` : "0u"}}); }())`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
+    };
+}
+
+function compileCreateGridSpriteAtlas(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const texture = context.compileValue(argumentAt(call, 0));
+    context.expectKind(texture, "texture", argumentAt(call, 0));
+    if (texture.textureStorage !== "file" &&
+        texture.textureStorage !== "pixels" &&
+        texture.textureStorage !== "render") {
+        context.fail(argumentAt(call, 0), "createGridSpriteAtlas currently requires a file, pixels, or render texture.");
+    }
+    const options = optionsRecord(context, call.arguments[1], "createGridSpriteAtlas");
+    const cellWidth = property(options, "cellWidthPx");
+    const cellHeight = property(options, "cellHeightPx");
+    if (!cellWidth || !cellHeight) {
+        context.fail(argumentAt(call, 1), "createGridSpriteAtlas requires cellWidthPx and cellHeightPx.");
+    }
+    const columns = property(options, "columns");
+    const rows = property(options, "rows");
+    const margin = property(options, "marginPx");
+    const spacing = property(options, "spacingPx");
+    const pivot = tupleOption(context, options, "pivot", call, 2);
+    const premultiplied = property(options, "premultipliedAlpha");
+    const engine = context.engineFor(texture, call);
+    const numberValue = (value: Value, name: string): string => {
+        if (value.kind !== "number" &&
+            !(value.kind === "data" &&
+                value.dataType?.kind === "number")) {
+            context.fail(argumentAt(call, 1), `createGridSpriteAtlas ${name} must be numeric.`);
+        }
+        return value.cpp;
+    };
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "sprite-atlas",
+        cpp: `bbl::create_grid_sprite_atlas(${engine}, ${texture.cpp}, ` +
+            `bbl::GridSpriteAtlasOptions{` +
+            `${numberValue(cellWidth, "cellWidthPx")}, ` +
+            `${numberValue(cellHeight, "cellHeightPx")}, ` +
+            `${columns ? "true" : "false"}, ` +
+            `${columns ? numberValue(columns, "columns") : "0.0"}, ` +
+            `${rows ? "true" : "false"}, ` +
+            `${rows ? numberValue(rows, "rows") : "0.0"}, ` +
+            `${margin ? numberValue(margin, "marginPx") : "0.0"}, ` +
+            `${spacing ? numberValue(spacing, "spacingPx") : "0.0"}, ` +
+            `${pivot ? `bbl::Vec2{static_cast<float>(${pivot[0]}), static_cast<float>(${pivot[1]})}` : "bbl::Vec2{0.5f, 0.5f}"}, ` +
+            `${premultiplied ? premultiplied.cpp : "false"}})`,
+        engineCpp: engine,
+    };
+}
+
+function compileLoadSpriteAtlas(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const assetPath = context.registerSpriteAtlasAsset(argumentAt(call, 1));
+    const options = optionsRecord(context, call.arguments[2], "loadSpriteAtlas");
+    const gridSize = tupleOption(context, options, "gridSize", call, 2);
+    if (!gridSize) {
+        context.fail(call, "loadSpriteAtlas: gridSize required.");
+    }
+    if (property(options, "metadataUrl")) {
+        context.fail(call, "loadSpriteAtlas: metadataUrl unsupported.");
+    }
+    // `...options.textureOptions` spreads over the loader's own
+    // defaults. Only the address modes are reached; anything else in
+    // that record would silently not survive the spread, so it
+    // refuses by name.
+    const textureOptions = property(options, "textureOptions");
+    if (textureOptions) {
+        if (textureOptions.kind !== "record") {
+            context.fail(argumentAt(call, 2), "loadSpriteAtlas textureOptions must be written as an object literal.");
+        }
+        for (const member of Object.keys(textureOptions.recordProperties ?? {})) {
+            if (member !== "addressModeU" &&
+                member !== "addressModeV") {
+                context.fail(argumentAt(call, 2), `loadSpriteAtlas textureOptions '${member}' is not lowered.`);
+            }
+        }
+    }
+    // Each axis is read by name: the loader stamps clamp and the
+    // caller's spread replaces it, so an option naming only one axis
+    // must not land on the other.
+    const addressMode = (name: "addressModeU" | "addressModeV"): string => {
+        const mode = property(textureOptions, name);
+        if (!mode?.staticString) {
+            return "bbl::TextureAddressMode::clamp";
+        }
+        const mapped = addressModeByPin[mode.staticString];
+        if (!mapped) {
+            context.fail(argumentAt(call, 2), `loadSpriteAtlas ${name} '${mode.staticString}' is not a pinned address mode.`);
+        }
+        return `bbl::${mapped}`;
+    };
+    const sampling = property(options, "sampling");
+    if (sampling &&
+        sampling.staticString !== "linear" &&
+        sampling.staticString !== "nearest") {
+        context.fail(argumentAt(call, 2), "loadSpriteAtlas sampling must be the literal \"linear\" or \"nearest\".");
+    }
+    const premultipliedAlpha = property(options, "premultipliedAlpha");
+    const premultiplyOnLoad = property(options, "premultiplyOnLoad");
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "sprite-atlas",
+        cpp: `bbl::load_sprite_atlas(${engine.cpp}, ` +
+            `bbl::asset_path(${assetPath}), ` +
+            `bbl::LoadSpriteAtlasOptions{` +
+            `${gridSize[0]!}, ` +
+            `${gridSize[1]!}, ` +
+            `bbl::TextureFilter::${sampling?.staticString === "nearest"
+                ? "nearest"
+                : "linear"}, ` +
+            `${premultipliedAlpha?.cpp ?? "false"}, ` +
+            `${premultiplyOnLoad?.cpp ?? "false"}, ` +
+            `${addressMode("addressModeU")}, ` +
+            `${addressMode("addressModeV")}})`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
+    };
+}
+
+function compileCreateSprite2DLayer(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 1, 2);
+    const atlas = context.compileSpriteAtlas(argumentAt(call, 0));
+    context.expectKind(atlas, "sprite-atlas", argumentAt(call, 0));
+    const options = optionsRecord(context, call.arguments[1], "createSprite2DLayer");
+    const depth = property(options, "depth");
+    if (depth &&
+        !["none", "test", "test-write"].includes(depth.staticString ?? "")) {
+        context.fail(argumentAt(call, 1), 'createSprite2DLayer depth must be "none", "test", or "test-write".');
+    }
+    for (const unreached of ["view"]) {
+        if (property(options, unreached)) {
+            context.fail(argumentAt(call, 1), `createSprite2DLayer option '${unreached}' is not lowered.`);
+        }
+    }
+    // One of the pin's own exported descriptors, resolved by the
+    // name the scene imported. `spriteBlendOpaque` names no colour
+    // blend at all, which the 2D pipeline expresses by disabling
+    // blending.
+    const blendCpp = blendOption(context, options, "sprite", call.arguments[1] ?? call);
+    const pivot = tupleOption(context, options, "pivot", call, 2);
+    const custom = customShaderOption(context, options, "sprite", call.arguments[1] ?? call);
+    const engineCpp = context.engineFor(atlas, call);
+    const depthMode = (depth?.staticString ?? "none") as NonNullable<Value["spriteDepthMode"]>;
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "sprite-layer",
+        cpp: `bbl::create_sprite_2d_layer(${engineCpp}, ` +
+            `${atlas.cpp}, bbl::Sprite2DLayerOptions{` +
+            `${numberOption(options, "capacity", "16.0f")}, ` +
+            `${blendCpp}, ` +
+            `${numberOption(options, "opacity", "1.0f")}, ` +
+            `${property(options, "visible")?.cpp ?? "true"}, ` +
+            `${numberOption(options, "order", "0.0f")}, ` +
+            `bbl::Sprite2DDepthMode::${depthMode === "test-write"
+                ? "test_write"
+                : depthMode}, ` +
+            `${numberOption(options, "layerZ", "0.5f")}, ` +
+            `bbl::Vec2{${pivot
+                ? `${pivot[0]!}, ${pivot[1]!}`
+                : "0.5f, 0.5f"}}, ` +
+            `${custom.program}, ${custom.textures}, ` +
+            `${custom.textureNames}})`,
+        engineCpp,
+        spriteDepthMode: depthMode,
+    };
+}
+
+function compileAddSprite2DIndex(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const layer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
+    const props = optionsRecord(context, call.arguments[1], "addSprite2DIndex");
+    const engineCpp = context.engineFor(layer, call);
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "number",
+        cpp: `bbl::add_sprite_2d_index(${engineCpp}, ` +
+            `${layer.cpp}, ${sprite2DPropsCpp(context, props, call, "addSprite2DIndex")})`,
+        engineCpp,
+    };
+}
+
+function compileAddSprite2D(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // The pin's handle is a stable id over a moving index, kept in
+    // step with the layer's own swap-remove. That indirection is
+    // load-bearing here too: an animation that outlives another
+    // sprite's removal would otherwise drive whichever sprite the
+    // swap moved into its slot.
+    context.expectArgumentCount(call, 2, 2);
+    const layer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
+    const props = optionsRecord(context, call.arguments[1], "addSprite2D");
+    const engineCpp = context.engineFor(layer, call);
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "sprite-2d-handle",
+        cpp: "bbl::add_sprite_2d(" +
+            engineCpp +
+            ", " +
+            layer.cpp +
+            ", " +
+            sprite2DPropsCpp(context, props, call, "addSprite2D") +
+            ")",
+        engineCpp,
+        spriteLayerCpp: layer.cpp,
+        nativeCompanionCaptures: { spriteLayerCpp: layer.nativeCaptures ?? [] },
+    };
+}
+
+function compileGetSprite2DHandleIndex(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // sprite-2d-handle.ts: the slot a stable id names right now.
+    // A scene reads it to report the order the layer settled on,
+    // which is exactly why it cannot be folded to the slot the add
+    // returned -- a removal or a Y-sort moves it.
+    context.expectArgumentCount(call, 1, 1);
+    const handle = context.compileValue(argumentAt(call, 0));
+    context.expectKind(handle, "sprite-2d-handle", argumentAt(call, 0));
+    const layerCpp = spriteHandleLayerCpp(context, handle, call, "getSprite2DHandleIndex");
+    const engineCpp = context.engineFor(handle, call);
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "number",
+        cpp: `bbl::sprite_2d_handle_index(${engineCpp}, ` +
+            `${layerCpp}, static_cast<std::uint32_t>(${handle.cpp}))`,
+        engineCpp,
+    };
+}
+
+function compileUpdateSprite2D(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // The handle form of the index update: same patch rules, over
+    // whichever slot the id names when the call runs.
+    context.expectArgumentCount(call, 2, 2);
+    const handle = context.compileValue(argumentAt(call, 0));
+    context.expectKind(handle, "sprite-2d-handle", argumentAt(call, 0));
+    const layerCpp = spriteHandleLayerCpp(context, handle, call, "updateSprite2D");
+    const props = optionsRecord(context, call.arguments[1], "updateSprite2D");
+    const engineCpp = context.engineFor(handle, call);
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "void",
+        cpp: `bbl::update_sprite_2d_id(${engineCpp}, ${layerCpp}, ` +
+            `static_cast<std::uint32_t>(${handle.cpp}), ` +
+            `${sprite2DPropsCpp(context, props, call, "updateSprite2D")})`,
+        engineCpp,
+    };
+}
+
+function compileEnableSprite2DYSort(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // sprite-2d-y-sort.ts: the enabler IS the opt-in. Upstream
+    // registers the extension's one null hook from inside it, so
+    // reaching this call is what makes every other sprite path see
+    // the layer's GPU order at all.
+    context.expectArgumentCount(call, 1, 2);
+    const layer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
+    let defaultBias = "0.0";
+    if (call.arguments[1]) {
+        validateObjectProperties(context, optionsLiteral(context, call.arguments[1]), ["defaultBias"], "enableSprite2DYSort takes defaultBias.");
+        const bias = property(optionsRecord(context, call.arguments[1], "enableSprite2DYSort"), "defaultBias");
+        if (bias) {
+            defaultBias = `static_cast<double>(${bias.cpp})`;
+        }
+    }
+    const engineCpp = context.engineFor(layer, call);
+    context.reachFeature("sprite:2d", call);
+    context.reachFeature("sprite:2d-y-sort", call);
+    return {
+        kind: "sprite-2d-y-sort",
+        cpp: `bbl::enable_sprite_2d_y_sort(${engineCpp}, ` +
+            `${layer.cpp}, ${defaultBias})`,
+        engineCpp,
+    };
+}
+
+function compileSetSprite2DYSortHandleBias(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const handle = context.compileValue(argumentAt(call, 0));
+    context.expectKind(handle, "sprite-2d-handle", argumentAt(call, 0));
+    const layerCpp = spriteHandleLayerCpp(context, handle, call, "setSprite2DYSortHandleBias");
+    const bias = context.compileNumber(argumentAt(call, 1), "double");
+    const engineCpp = context.engineFor(handle, call);
+    context.reachFeature("sprite:2d", call);
+    context.reachFeature("sprite:2d-y-sort", call);
+    return {
+        kind: "void",
+        cpp: `bbl::set_sprite_2d_y_sort_bias_id(${engineCpp}, ` +
+            `${layerCpp}, static_cast<std::uint32_t>(${handle.cpp}), ` +
+            `${bias})`,
+        engineCpp,
+    };
+}
+
+function compileUpdateSprite2DIndex(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    // The patch is a `Partial<Sprite2DProps>`: every field the
+    // caller omits keeps the value the slot already holds, which is
+    // why this arm records which fields were supplied rather than
+    // resolving defaults here.
+    context.expectArgumentCount(call, 3, 3);
+    const layer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
+    // `addSprite2DIndex` hands the index back as a JavaScript
+    // number and the pin's range check compares it as one, so it
+    // travels at that width rather than rounding at the call.
+    const index = context.compileNumber(argumentAt(call, 1), "double");
+    const engineCpp = context.engineFor(layer, call);
+    context.reachFeature("sprite:2d", call);
+    const options = argumentAt(call, 2);
+    const updateCpp = (expression: ts.Expression): string => {
+        const props = optionsRecord(context, expression, "updateSprite2DIndex");
+        return (`bbl::update_sprite_2d_index(${engineCpp}, ` +
+            `${layer.cpp}, ${index}, ${sprite2DPropsCpp(context, props, call, "updateSprite2DIndex")})`);
+    };
+    const unwrappedOptions = context.unwrap(options);
+    if (ts.isConditionalExpression(unwrappedOptions)) {
+        const condition = context.compileCondition(unwrappedOptions.condition);
+        return {
+            kind: "void",
+            cpp: `(${condition} ? ` +
+                `${updateCpp(unwrappedOptions.whenTrue)} : ` +
+                `${updateCpp(unwrappedOptions.whenFalse)})`,
+            engineCpp,
+        };
+    }
+    return {
+        kind: "void",
+        cpp: updateCpp(options),
+        engineCpp,
+    };
+}
+
+function compileCreateSpriteAnimationManager(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 0, 1);
+    if (call.arguments[0]) {
+        // `{}` is legal upstream and means the defaults, so the
+        // refusal names the FIELDS rather than the argument.
+        validateObjectProperties(context, optionsLiteral(context, call.arguments[0]), [], "createSpriteAnimationManager's options are unreached: " +
+            "fixedDeltaMs overrides the caller's own step, and " +
+            "onUpdate is a per-tick callback of the autonomous " +
+            "loop this port does not run.");
+    }
+    const engineCpp = context.requireDefaultEngine(call);
+    context.reachFeature("sprite:animation", call);
+    return {
+        kind: "sprite-animation-manager",
+        cpp: "bbl::upstream::create_sprite_animation_manager(" +
+            engineCpp +
+            ")",
+        engineCpp,
+    };
+}
+
+function compilePlaySprite2DAnimation(context: SpriteIntrinsicContext, call: ts.CallExpression, importedName: "playSprite2DAnimation" | "playBillboardSpriteAnimation"): Value | undefined {
+    // The two adapters differ only in which family names the sprite:
+    // upstream builds a closure triple over the handle, and the
+    // target record here is that same decoupling as data.
+    const sprite2d = importedName === "playSprite2DAnimation";
+    context.expectArgumentCount(call, 6, 7);
+    const manager = context.compileValue(argumentAt(call, 0));
+    context.expectKind(manager, "sprite-animation-manager", argumentAt(call, 0));
+    const target = context.compileValue(argumentAt(call, 1));
+    context.expectKind(target, sprite2d ? "sprite-2d-handle" : "billboard-sprite", argumentAt(call, 1));
+    const number = (index: number): string => context.compileNumber(argumentAt(call, index), "double");
+    const loop = context.compileCondition(argumentAt(call, 4));
+    const options = optionsRecord(context, call.arguments[6], importedName);
+    if (property(options, "onEnd")) {
+        context.fail(argumentAt(call, 6), importedName +
+            "'s onEnd callback is unreached: a native animation " +
+            "has no place to run scene code as it finishes.");
+    }
+    const removeWhenFinishedValue = property(options, "removeWhenFinished");
+    const removeWhenFinished = removeWhenFinishedValue
+        ? removeWhenFinishedValue.cpp
+        : "false";
+    if (removeWhenFinished !== "true" &&
+        removeWhenFinished !== "false") {
+        context.fail(argumentAt(call, 6), importedName +
+            "'s removeWhenFinished decides whether the sprite " +
+            "survives its own animation, so it must settle at " +
+            "generation rather than read as false.");
+    }
+    const engineCpp = context.engineFor(manager, call);
+    if (sprite2d && target.spriteLayerCpp === undefined) {
+        context.fail(argumentAt(call, 1), "A Sprite2D animation target carries the layer it lives " +
+            "in; this handle reached here without one.");
+    }
+    const targetCpp = sprite2d
+        ? "bbl::SpriteAnimationTarget{" +
+            "bbl::SpriteAnimationTargetKind::sprite_2d, " +
+            target.spriteLayerCpp +
+            ", static_cast<std::uint32_t>(" +
+            target.cpp +
+            "), {}}"
+        : "bbl::SpriteAnimationTarget{" +
+            "bbl::SpriteAnimationTargetKind::billboard, {}, 0u, " +
+            target.cpp +
+            "}";
+    context.reachFeature("sprite:animation", call);
+    return {
+        kind: "void",
+        cpp: "bbl::upstream::play_sprite_frame_animation(" +
+            engineCpp +
+            ", " +
+            manager.cpp +
+            ", " +
+            targetCpp +
+            ", " +
+            number(2) +
+            ", " +
+            number(3) +
+            ", " +
+            loop +
+            ", " +
+            number(5) +
+            ", " +
+            removeWhenFinished +
+            ")",
+        engineCpp,
+    };
+}
+
+function compileUpdateSpriteAnimationManager(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const manager = context.compileValue(argumentAt(call, 0));
+    context.expectKind(manager, "sprite-animation-manager", argumentAt(call, 0));
+    const engineCpp = context.engineFor(manager, call);
+    context.reachFeature("sprite:animation", call);
+    return {
+        kind: "void",
+        cpp: "bbl::upstream::update_sprite_animation_manager(" +
+            engineCpp +
+            ", " +
+            manager.cpp +
+            ", " +
+            context.compileNumber(argumentAt(call, 1), "double") +
+            ")",
+        engineCpp,
+    };
+}
+
+function compileAttachSpriteAnimationsToRenderer(context: SpriteIntrinsicContext, call: ts.CallExpression, importedName: "attachSpriteAnimationsToRenderer" | "attachSpriteAnimationsToScene"): Value | undefined {
+    context.fail(call, importedName +
+        " installs the stepper on a render loop and hands back " +
+        "a binding that detaches it -- a disposable this port " +
+        "has no owner for. Both corpus scenes write it, in the " +
+        "arm their own `?seekTime=` pose folds away; the arm " +
+        "that survives drives the same stepper from a counted " +
+        "loop, so what is missing is the hook and its binding, " +
+        "not the animation.");
+}
+
+function compileClearSprite2DLayer(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const layer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
+    const engineCpp = context.engineFor(layer, call);
+    context.reachFeature("sprite:2d", call);
+    return {
+        kind: "void",
+        cpp: `bbl::clear_sprite_2d_layer(${engineCpp}, ${layer.cpp})`,
+        engineCpp,
+    };
+}
+
+function compileCreateFacingBillboardSystem(context: SpriteIntrinsicContext, call: ts.CallExpression, importedName: "createFacingBillboardSystem" | "createAxisLockedBillboardSystem"): Value | undefined {
+    // The axis-locked factory takes the lock axis between the atlas
+    // and the options.
+    const locked = importedName === "createAxisLockedBillboardSystem";
+    const optionsIndex = locked ? 2 : 1;
+    context.expectArgumentCount(call, optionsIndex, optionsIndex + 1);
+    const atlas = context.compileSpriteAtlas(argumentAt(call, 0));
+    context.expectKind(atlas, "sprite-atlas", argumentAt(call, 0));
+    const optionsArg = call.arguments[optionsIndex];
+    const options = optionsRecord(context, optionsArg, importedName);
+    // Every arm the lowered permutation does not cover refuses
+    // here, so a scene reaching one gets a message naming it
+    // rather than a plausible wrong image.
+    // The blend is one of the pin's own exported descriptors,
+    // resolved by the name the scene imported: `billboardBlendAlpha`
+    // is `billboard_blend_alpha()`. `cutout` carries no colour blend
+    // and drives an alpha-test depth-write path this slice does not
+    // render, so it refuses rather than drawing the wrong one.
+    const blendCpp = blendOption(context, options, "billboard", optionsArg ?? call);
+    const custom = customShaderOption(context, options, "billboard", optionsArg ?? call);
+    // `order` sorts a system against the scene's other transparent
+    // renderables upstream. A system here draws in the slot its depth
+    // mode gives it, which is the same image only while nothing else
+    // is transparent, so an explicit order refuses rather than being
+    // silently dropped.
+    for (const unreached of ["order"]) {
+        if (property(options, unreached)) {
+            context.fail(optionsArg ?? call, `${importedName} option '${unreached}' is not lowered.`);
+        }
+    }
+    // The raw axis: the pin normalises it inside the factory and
+    // rejects a degenerate one there, so that stays lowered rather
+    // than recomputed at the call site.
+    const axisCpp = locked
+        ? context.compileVec3(argumentAt(call, 1))
+        : "bbl::Vec3{0.0f, 0.0f, 0.0f}";
+    const engineCpp = context.engineFor(atlas, call);
+    context.reachFeature("sprite:billboard", call);
+    if (locked) {
+        context.reachFeature("sprite:billboard-axis-locked", call);
+    }
+    return {
+        kind: "billboard-system",
+        // The record is spelled as a full C++20 designated
+        // initializer: each value pairs to its field by name (a
+        // renamed or reordered header field fails the build
+        // instead of silently shifting a positional list), and
+        // every member is stated so none rides a header default
+        // this call site never wrote. The unnamed options carry
+        // the pinned factory defaults; the second-pass blend is
+        // the node-particle enabler's arm and stays empty here.
+        cpp: `bbl::create_billboard_system(${engineCpp}, ` +
+            `${atlas.cpp}, bbl::BillboardOrientation::` +
+            `${locked ? "axis_locked" : "facing"}, ${axisCpp}, ` +
+            `bbl::BillboardSystemOptions{` +
+            `.capacity = ${numberOption(options, "capacity", "16.0f")}, ` +
+            `.blend = ${blendCpp}, ` +
+            `.opacity = ${numberOption(options, "opacity", "1.0f")}, ` +
+            `.visible = ${property(options, "visible")?.cpp ?? "true"}, ` +
+            // resolveAlphaCutoff and the order default both follow
+            // the descriptor's own depth mode, so they are resolved
+            // beside it rather than from the name at this call site.
+            `.alpha_cutoff = ${numberOption(options, "alphaCutoff", "0.0f")}, ` +
+            `.has_alpha_cutoff = ${property(options, "alphaCutoff") ? "true" : "false"}, ` +
+            `.custom_shader = ${custom.program}, ` +
+            `.custom_textures = ${custom.textures}, ` +
+            `.custom_texture_names = ${custom.textureNames}, ` +
+            `.add_pass_blend = bbl::SpriteBlendDescriptor{}})`,
+        engineCpp,
+    };
+}
+
+function compileAddBillboardSpriteIndex(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const system = context.compileValue(argumentAt(call, 0));
+    context.expectKind(system, "billboard-system", argumentAt(call, 0));
+    const props = optionsRecord(context, call.arguments[1], "addBillboardSpriteIndex");
+    const engineCpp = context.engineFor(system, call);
+    context.reachFeature("sprite:billboard", call);
+    return {
+        kind: "number",
+        cpp: `bbl::add_billboard_sprite_index(${engineCpp}, ` +
+            `${system.cpp}, ` +
+            `${billboardPropsCpp(context, props, call, "addBillboardSpriteIndex")})`,
+        engineCpp,
+    };
+}
+
+function compileAddBillboardSprite(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const system = context.compileValue(argumentAt(call, 0));
+    context.expectKind(system, "billboard-system", argumentAt(call, 0));
+    const props = optionsRecord(context, call.arguments[1], "addBillboardSprite");
+    const engineCpp = context.engineFor(system, call);
+    context.reachFeature("sprite:billboard", call);
+    return {
+        kind: "billboard-sprite",
+        cpp: `bbl::add_billboard_sprite(${engineCpp}, ${system.cpp}, ` +
+            `${billboardPropsCpp(context, props, call, "addBillboardSprite")})`,
+        engineCpp,
+    };
+}
+
+function compileUpdateBillboardSprite(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const handle = context.compileValue(argumentAt(call, 0));
+    context.expectKind(handle, "billboard-sprite", argumentAt(call, 0));
+    const props = optionsRecord(context, call.arguments[1], "updateBillboardSprite");
+    const engineCpp = context.engineFor(handle, call);
+    context.reachFeature("sprite:billboard", call);
+    return {
+        kind: "void",
+        cpp: `bbl::update_billboard_sprite(${engineCpp}, ${handle.cpp}, ` +
+            `${billboardPropsCpp(context, props, call, "updateBillboardSprite")})`,
+    };
+}
+
+function compileRemoveBillboardSprite(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const handle = context.compileValue(argumentAt(call, 0));
+    context.expectKind(handle, "billboard-sprite", argumentAt(call, 0));
+    const engineCpp = context.engineFor(handle, call);
+    context.reachFeature("sprite:billboard", call);
+    return {
+        kind: "void",
+        cpp: `bbl::remove_billboard_sprite(${engineCpp}, ${handle.cpp})`,
+    };
+}
+
+function compileClearBillboardSprites(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const system = context.compileValue(argumentAt(call, 0));
+    context.expectKind(system, "billboard-system", argumentAt(call, 0));
+    const engineCpp = context.engineFor(system, call);
+    context.reachFeature("sprite:billboard", call);
+    return {
+        kind: "void",
+        cpp: `bbl::clear_billboard_sprites(${engineCpp}, ${system.cpp})`,
+    };
+}
+
+function compileCreateTexture2DFromPixels(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 4, 5);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    // A zero-argument module producer remains bakeable. A reached
+    // runtime Uint8Array instead travels directly to the native
+    // factory, preserving WAD/decoded/generated pixel workflows.
+    const bakedPixels = context.probePixelsAsset(argumentAt(call, 1));
+    const runtimePixels = bakedPixels
+        ? undefined
+        : context.compileValue(argumentAt(call, 1));
+    if (runtimePixels &&
+        !(runtimePixels.kind === "data" &&
+            runtimePixels.dataType?.kind === "u8array")) {
+        context.fail(argumentAt(call, 1), "createTexture2DFromPixels pixels must run at generation through a bakeable module producer or evaluate to a native Uint8Array.");
+    }
+    const width = context.compileNumber(argumentAt(call, 2), "double");
+    const height = context.compileNumber(argumentAt(call, 3), "double");
+    // The pin's sampler and format overrides. Each travels as "named, and this
+    // value", because the factory resolves `?? default` where
+    // upstream resolves it. `srgb` travels as the raw-pixel texture's
+    // format bit and is preserved by every material/backend consumer.
+    const sampler = pixelsSamplerOptions(context, call.arguments[4]);
+    const staticSize = [
+        staticNumberValue(context, argumentAt(call, 2)),
+        staticNumberValue(context, argumentAt(call, 3)),
+    ];
+    context.reachFeature("texture:pixels", call);
+    return {
+        kind: "texture",
+        textureStorage: "pixels",
+        cpp: `bbl::create_texture_2d_from_pixels(${engine.cpp}, ` +
+            `${bakedPixels ? `bbl::asset_path(${bakedPixels.cpp})` : runtimePixels!.cpp}, ${width}, ${height}` +
+            `${sampler.cpp})`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
+        // A node-particle system's texture is assigned in scene
+        // code, and the bake driver has to build the same one to
+        // see the size the pin partitions its atlas by. A size the
+        // source does not settle carries no record at all, so the
+        // refusal lands at the assignment that needed one rather
+        // than at every pixels texture in the corpus.
+        ...(bakedPixels &&
+            staticSize[0] !== undefined &&
+            staticSize[1] !== undefined
+            ? {
+                pixelsTexture: {
+                    source: bakedPixels.source,
+                    asset: bakedPixels.cpp,
+                    width: staticSize[0],
+                    height: staticSize[1],
+                    options: sampler.named,
+                },
+            }
+            : {}),
+    };
+}
+
+function compileCreateSprite2DCustomShader(context: SpriteIntrinsicContext, call: ts.CallExpression, importedName: "createSprite2DCustomShader" | "createBillboardCustomShader"): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const options = optionsRecord(context, call.arguments[0], importedName);
+    const fragment = property(options, "fragment");
+    // The pin takes the body as an opaque string it splices into
+    // its own composer, so it has to be settled here: a body built
+    // at run time would have no program to compile against.
+    if (fragment?.kind !== "string" ||
+        fragment.staticString === undefined) {
+        context.fail(call.arguments[0] ?? call, `${importedName}: 'fragment' must be a WGSL string literal.`);
+    }
+    if (fragment.staticString.trim().length === 0) {
+        context.fail(call.arguments[0] ?? call, `${importedName}: 'fragment' must be a non-empty WGSL string.`);
+    }
+    // Each extra texture adds the binding pair the pin emits ahead
+    // of the fx block: `<name>Tex` and `<name>Samp`, in the order
+    // given. The name is compile-time (it is spliced into WGSL) and
+    // the texture is a runtime value the layer binds.
+    const extras = extraTextureOption(context, options, importedName, call.arguments[0] ?? call);
+    const family = importedName === "createSprite2DCustomShader"
+        ? "sprite"
+        : "billboard";
+    const extraNames = extras.map(({ name }) => name);
+    const familyShaders = context
+        .spriteCustomShaders()
+        .filter((entry) => entry.family === family);
+    const existingIndex = familyShaders.findIndex((entry) => entry.fragment === fragment.staticString &&
+        entry.extraTextures.join("\0") === extraNames.join("\0"));
+    if (family === "billboard" && familyShaders.length > 0 && existingIndex < 0) {
+        context.fail(call, "A second distinct billboard custom shader is not lowered.");
+    }
+    // Building a descriptor is the pin's own opt-in trigger: the
+    // factory is what registers the fx hook the always-loaded path
+    // reaches the feature through, so reaching it here is what
+    // composes the program and binds the fx block.
+    context.reachFeature(family === "sprite"
+        ? "sprite:custom-shader"
+        : "sprite:billboard-custom-shader", call);
+    if (existingIndex < 0) {
+        context.recordSpriteCustomShader({
+            family,
+            fragment: fragment.staticString,
+            extraTextures: extraNames,
+        });
+    }
+    return {
+        kind: `${family}-custom-shader`,
+        cpp: "",
+        spriteCustomShaderIndex: existingIndex >= 0
+            ? existingIndex + 1
+            : familyShaders.length + 1,
+        spriteCustomTextures: extras.map(({ cpp }) => cpp),
+        spriteCustomTextureNames: extraNames,
+    };
+}
+
+function compileSetSprite2DShaderParams(context: SpriteIntrinsicContext, call: ts.CallExpression, importedName: "setSprite2DShaderParams" | "setBillboardShaderParams"): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const target = context.compileValue(argumentAt(call, 0));
+    const sprite = importedName === "setSprite2DShaderParams";
+    context.expectKind(target, sprite ? "sprite-layer" : "billboard-system", argumentAt(call, 0));
+    const params = context.compileVec4(argumentAt(call, 1));
+    const engineCpp = context.engineFor(target, call);
+    context.emit(`bbl::${sprite
+        ? "set_sprite_2d_shader_params"
+        : "set_billboard_shader_params"}(${engineCpp}, ${target.cpp}, ${params});`);
+    return { kind: "void", cpp: "" };
+}
+
+function compileSetAlphaToCoverage(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const target = context.compileValue(argumentAt(call, 0));
+    if (target.kind !== "billboard-system" &&
+        target.kind !== "sprite-layer") {
+        context.fail(argumentAt(call, 0), "setAlphaToCoverage supports billboard systems and Sprite2D layers.");
+    }
+    const enabled = context.compileBoolean(argumentAt(call, 1));
+    const engineCpp = context.engineFor(target, call);
+    context.reachFeature(target.kind === "sprite-layer"
+        ? "sprite:2d"
+        : "sprite:billboard", call);
+    context.emit(`bbl::${target.kind === "sprite-layer"
+        ? "set_sprite_2d_alpha_to_coverage"
+        : "set_billboard_alpha_to_coverage"}(${engineCpp}, ${target.cpp}, ${enabled});`);
+    return { kind: "void", cpp: "" };
+}
+
+function compileAddDepthHostedSpriteLayer(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const scene = context.compileValue(argumentAt(call, 0));
+    context.expectKind(scene, "scene", argumentAt(call, 0));
+    const layer = context.compileValue(argumentAt(call, 1));
+    context.expectKind(layer, "sprite-layer", argumentAt(call, 1));
+    if (layer.spriteDepthMode === "none") {
+        context.fail(argumentAt(call, 1), 'Depth-hosted sprites require depth != "none".');
+    }
+    context.expectSameEngine(scene, layer, call);
+    context.reachFeature("sprite:2d", call);
+    context.reachFeature("sprite:2d-depth-host", call);
+    context.reachFeature("renderer:sprite", call);
+    context.reachFeature("renderer:scene", call);
+    context.emit(`bbl::add_depth_hosted_sprite_layer(${scene.cpp}, ${layer.cpp});`);
+    return { kind: "void", cpp: "" };
+}
+
+function compileAddFacingBillboardSystem(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const scene = context.compileValue(argumentAt(call, 0));
+    context.expectKind(scene, "scene", argumentAt(call, 0));
+    const system = context.compileValue(argumentAt(call, 1));
+    context.expectKind(system, "billboard-system", argumentAt(call, 1));
+    context.reachFeature("sprite:billboard", call);
+    // A billboard system is a scene renderable: it draws inside the
+    // scene renderer's own pass, against its camera and depth. A
+    // scene of nothing but billboards still needs that pass, the way
+    // a render target does.
+    context.reachFeature("renderer:scene", call);
+    context.emit(`bbl::add_billboard_system(${scene.cpp}, ${system.cpp});`);
+    return { kind: "void", cpp: "" };
+}
+
+function compileSetSprite2DUvOffset(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 3, 3);
+    const layer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
+    const index = context.compileNumber(argumentAt(call, 1));
+    const offset = context.compileVec2(argumentAt(call, 2));
+    const engineCpp = context.engineFor(layer, call);
+    context.reachFeature("sprite:2d", call);
+    // Importing the setter is the pin's own opt-in trigger for the
+    // widened layout, so reaching it here is what selects the
+    // widened attribute row and the shader that reads it.
+    context.reachFeature("sprite:uv-scroll", call);
+    context.emit(`bbl::set_sprite_2d_uv_offset(${engineCpp}, ${layer.cpp}, ${index}, ${offset});`);
+    return { kind: "void", cpp: "" };
+}
+
+function compileCreateSpriteRenderer(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const surface = context.compileValue(argumentAt(call, 0));
+    context.expectKind(surface, "engine", argumentAt(call, 0));
+    const options = optionsRecord(context, call.arguments[1], "createSpriteRenderer");
+    const layers = property(options, "layers");
+    const tupleLayers = layers?.kind === "tuple"
+        ? layers.tupleElements
+        : undefined;
+    const dataLayers = layers?.kind === "data" &&
+        layers.dataType?.kind === "vector" &&
+        layers.dataType.element.kind === "handle" &&
+        layers.dataType.element.handle === "sprite-layer";
+    if (!tupleLayers && !dataLayers) {
+        context.fail(argumentAt(call, 1), "createSpriteRenderer requires an array of layers.");
+    }
+    // An empty list is the pin's own shape for a renderer whose
+    // layers arrive later: a node-particle bridge owns and attaches
+    // one per system, so the scene builds the renderer with none.
+    for (const layer of tupleLayers ?? []) {
+        context.expectKind(layer, "sprite-layer", argumentAt(call, 1));
+        rejectDepthHostedStandaloneLayer(context, layer, argumentAt(call, 1));
+    }
+    const clearValue = tupleClearValue(context, options, call);
+    context.reachFeature("sprite:2d", call);
+    context.reachFeature("renderer:sprite", call);
+    context.recordPureSpriteVertex();
+    return {
+        kind: "sprite-renderer",
+        cpp: `bbl::create_sprite_renderer(${surface.cpp}, ` +
+            `bbl::SpriteRendererOptions{${dataLayers ? spriteLayerVectorCpp(layers!) : `{${(tupleLayers ?? []).map((layer) => layer.cpp).join(", ")}}`}, ` +
+            `${property(options, "clear")?.cpp ?? "true"}, ` +
+            `${clearValue}})`,
+        engineCpp: surface.engineCpp ?? surface.cpp,
+    };
+}
+
+function compileRegisterSpriteRenderer(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const renderer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(renderer, "sprite-renderer", argumentAt(call, 0));
+    context.reachFeature("renderer:sprite", call);
+    return {
+        kind: "void",
+        cpp: `bbl::register_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
+    };
+}
+
+function compileUnregisterSpriteRenderer(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const renderer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(renderer, "sprite-renderer", argumentAt(call, 0));
+    context.reachFeature("renderer:sprite", call);
+    return {
+        kind: "void",
+        cpp: `bbl::unregister_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
+    };
+}
+
+function compileSetSpriteRendererTarget(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const renderer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(renderer, "sprite-renderer", argumentAt(call, 0));
+    const target = context.compileValue(argumentAt(call, 1));
+    const absent = target.kind === "json-null";
+    if (!absent && target.textureStorage !== "render") {
+        context.fail(argumentAt(call, 1), "setSpriteRendererTarget requires a createRenderTexture2D texture or null.");
+    }
+    context.reachFeature("renderer:sprite", call);
+    return {
+        kind: "void",
+        cpp: `bbl::set_sprite_renderer_target(` +
+            `${context.engineFor(renderer, call)}, ` +
+            `${renderer.cpp}, ` +
+            `${absent ? "bbl::SpriteRenderTextureHandle{}" : target.cpp}, ` +
+            `${absent ? "false" : "true"})`,
+    };
+}
+
+function compileAddSpriteRendererLayer(context: SpriteIntrinsicContext, call: ts.CallExpression, importedName: "addSpriteRendererLayer" | "removeSpriteRendererLayer"): Value | undefined {
+    // Both take (renderer, layer) and both move the renderer's layer
+    // list, which each backend rebuilds its pass from. `remove`
+    // returns whether the layer was a member; a scene that reads it
+    // gets that boolean, and one that ignores it emits a statement.
+    context.expectArgumentCount(call, 2, 2);
+    const renderer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(renderer, "sprite-renderer", argumentAt(call, 0));
+    const layer = context.compileValue(argumentAt(call, 1));
+    context.expectKind(layer, "sprite-layer", argumentAt(call, 1));
+    const engineCpp = context.engineFor(renderer.engineCpp ? renderer : layer, call);
+    context.reachFeature("renderer:sprite", call);
+    const removes = importedName === "removeSpriteRendererLayer";
+    if (!removes) {
+        rejectDepthHostedStandaloneLayer(context, layer, argumentAt(call, 1));
+    }
+    const cpp = `bbl::${removes
+        ? "remove_sprite_renderer_layer"
+        : "add_sprite_renderer_layer"}(${engineCpp}, ${renderer.cpp}, ${layer.cpp})`;
+    return {
+        kind: removes ? "boolean" : "void",
+        cpp,
+        engineCpp,
+    };
+}
+
+function compileDisposeSpriteRenderer(context: SpriteIntrinsicContext, call: ts.CallExpression): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const renderer = context.compileValue(argumentAt(call, 0));
+    context.expectKind(renderer, "sprite-renderer", argumentAt(call, 0));
+    context.reachFeature("renderer:sprite", call);
+    return {
+        kind: "void",
+        cpp: `bbl::dispose_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
+    };
+}
+
+const spriteIntrinsicHandlers = new EmissionMap<string, (context: SpriteIntrinsicContext, call: ts.CallExpression) => Value | undefined>([
+    ["pickSprite2D", compilePickSprite2D],
+    ["createRenderTexture2D", compileCreateRenderTexture2D],
+    ["createSpriteAtlasFromFrames", compileCreateSpriteAtlasFromFrames],
+    ["createGridSpriteAtlas", compileCreateGridSpriteAtlas],
+    ["loadSpriteAtlas", compileLoadSpriteAtlas],
+    ["createSprite2DLayer", compileCreateSprite2DLayer],
+    ["addSprite2DIndex", compileAddSprite2DIndex],
+    ["addSprite2D", compileAddSprite2D],
+    ["getSprite2DHandleIndex", compileGetSprite2DHandleIndex],
+    ["updateSprite2D", compileUpdateSprite2D],
+    ["enableSprite2DYSort", compileEnableSprite2DYSort],
+    ["setSprite2DYSortHandleBias", compileSetSprite2DYSortHandleBias],
+    ["updateSprite2DIndex", compileUpdateSprite2DIndex],
+    ["createSpriteAnimationManager", compileCreateSpriteAnimationManager],
+    ["playSprite2DAnimation", (context, call) => compilePlaySprite2DAnimation(context, call, "playSprite2DAnimation")],
+    ["playBillboardSpriteAnimation", (context, call) => compilePlaySprite2DAnimation(context, call, "playBillboardSpriteAnimation")],
+    ["updateSpriteAnimationManager", compileUpdateSpriteAnimationManager],
+    ["attachSpriteAnimationsToRenderer", (context, call) => compileAttachSpriteAnimationsToRenderer(context, call, "attachSpriteAnimationsToRenderer")],
+    ["attachSpriteAnimationsToScene", (context, call) => compileAttachSpriteAnimationsToRenderer(context, call, "attachSpriteAnimationsToScene")],
+    ["clearSprite2DLayer", compileClearSprite2DLayer],
+    ["createFacingBillboardSystem", (context, call) => compileCreateFacingBillboardSystem(context, call, "createFacingBillboardSystem")],
+    ["createAxisLockedBillboardSystem", (context, call) => compileCreateFacingBillboardSystem(context, call, "createAxisLockedBillboardSystem")],
+    ["addBillboardSpriteIndex", compileAddBillboardSpriteIndex],
+    ["addBillboardSprite", compileAddBillboardSprite],
+    ["updateBillboardSprite", compileUpdateBillboardSprite],
+    ["removeBillboardSprite", compileRemoveBillboardSprite],
+    ["clearBillboardSprites", compileClearBillboardSprites],
+    ["createTexture2DFromPixels", compileCreateTexture2DFromPixels],
+    ["createSprite2DCustomShader", (context, call) => compileCreateSprite2DCustomShader(context, call, "createSprite2DCustomShader")],
+    ["createBillboardCustomShader", (context, call) => compileCreateSprite2DCustomShader(context, call, "createBillboardCustomShader")],
+    ["setSprite2DShaderParams", (context, call) => compileSetSprite2DShaderParams(context, call, "setSprite2DShaderParams")],
+    ["setBillboardShaderParams", (context, call) => compileSetSprite2DShaderParams(context, call, "setBillboardShaderParams")],
+    ["setAlphaToCoverage", compileSetAlphaToCoverage],
+    ["addDepthHostedSpriteLayer", compileAddDepthHostedSpriteLayer],
+    ["addFacingBillboardSystem", compileAddFacingBillboardSystem],
+    ["addAxisLockedBillboardSystem", compileAddFacingBillboardSystem],
+    ["setSprite2DUvOffset", compileSetSprite2DUvOffset],
+    ["createSpriteRenderer", compileCreateSpriteRenderer],
+    ["registerSpriteRenderer", compileRegisterSpriteRenderer],
+    ["unregisterSpriteRenderer", compileUnregisterSpriteRenderer],
+    ["setSpriteRendererTarget", compileSetSpriteRendererTarget],
+    ["addSpriteRendererLayer", (context, call) => compileAddSpriteRendererLayer(context, call, "addSpriteRendererLayer")],
+    ["removeSpriteRendererLayer", (context, call) => compileAddSpriteRendererLayer(context, call, "removeSpriteRendererLayer")],
+    ["disposeSpriteRenderer", compileDisposeSpriteRenderer],
+]);

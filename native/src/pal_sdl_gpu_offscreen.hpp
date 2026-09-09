@@ -33,8 +33,8 @@ class SdlOffscreenTarget {
         return image ? image->texture : nullptr;
     }
 
-    void publish(SDL_GPUCommandBuffer* command, OffscreenRun& run) {
-        if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer offscreen");
+    void publish(SdlGpuCommand& command, OffscreenRun& run) {
+        if (!command.submit()) gpu_error("SDL_SubmitGPUCommandBuffer offscreen");
         // The presenter's submit follows this one on the same device queue.
         images_.publish(run);
     }

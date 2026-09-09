@@ -1,3 +1,4 @@
+import { emissionArray } from "./emission-transaction.js";
 import type ts from "typescript";
 
 const MAX_STATIC_ITERATIONS = 4096;
@@ -11,7 +12,7 @@ const MAX_COMPOSITION_RECORDS = 65536;
 export class StaticExpansionBudget {
     private iterations = 0;
     private bytes = 0;
-    private readonly sites: ts.IterationStatement[] = [];
+    private readonly sites: ts.IterationStatement[] = emissionArray([]);
     private exceeded: { site: ts.IterationStatement; message: string } | undefined;
 
     public constructor(

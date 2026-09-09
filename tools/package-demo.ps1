@@ -16,6 +16,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "image-codecs.psm1") -Force
 $root = Get-RepositoryRoot
 if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
     throw (
@@ -79,40 +80,21 @@ if (-not [string]::Equals(
 )) {
     throw "Build directory $BuildDirectory was configured against $generatedDirectory, not $expectedGenerated. Reconfigure the mini tree for the packaged scene."
 }
-# Image codecs the generation reached (BBLITE_IMAGE_CODECS in the
-# scene's features.cmake). Generated directories predating codec
-# tree-shaking carry no list and keep the historical png+jpeg set.
-# The physics/navigation/ui flags mirror the runtime-feature tokens
-# native/CMakeLists.txt keys its vcpkg manifest features on, so the
-# notice set below follows exactly what the build linked.
-$jpegReached = $true
-$pngReached = $true
-$webpReached = $false
-$audioReached = $false
-$audioDecoded = $false
-$physicsReached = $false
-$navigationReached = $false
-$uiReached = $false
-$uiSvgReached = $false
-$textLayoutReached = $false
+# Package notices follow the generated features and optional capture capabilities.
 $audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
 $visualCapture = $cache["BBLITE_VISUAL_CAPTURE"] -ne "OFF"
 $featuresPath = Join-Path $generatedDirectory "features.cmake"
-if (Test-Path $featuresPath) {
-    $featuresText = Get-Content $featuresPath -Raw
-    $audioReached = $featuresText -match '"audio:engine"'
-    $audioDecoded = $featuresText -match '"audio:decoded-buffer"'
-    $physicsReached = $featuresText -match '"physics:world"'
-    $navigationReached = $featuresText -match '"navigation:recast"'
-    $uiReached = $featuresText -match '"ui:rml"'
-    $uiSvgReached = $featuresText -match '"ui:inline-svg"'
-    $textLayoutReached = $featuresText -match '"text:layout"'
-    if ($featuresText -match "BBLITE_IMAGE_CODECS") {
-        $pngReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"png"'
-        $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
-        $webpReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"webp"'
-    }
-}
+$featuresText = Get-Content -LiteralPath $featuresPath -Raw
+$imageCodecLicenses = Get-ImageCodecLicenses `
+    -ManifestPath (Join-Path $root "native\vcpkg.json") `
+    -FeaturesText $featuresText -VisualCapture $visualCapture
+$audioReached = $featuresText -match '"audio:engine"'
+$audioDecoded = $featuresText -match '"audio:decoded-buffer"'
+$physicsReached = $featuresText -match '"physics:world"'
+$navigationReached = $featuresText -match '"navigation:recast"'
+$uiReached = $featuresText -match '"ui:rml"'
+$uiSvgReached = $featuresText -match '"ui:inline-svg"'
+$textLayoutReached = $featuresText -match '"text:layout"'
 
 $executable = @(
     (Join-Path $buildPath "bblite_native.exe"),
@@ -251,18 +233,8 @@ $licensePackages = @{
     "SDL3.txt" = "sdl3"
     "nlohmann-json.txt" = "nlohmann-json"
 }
-if ($pngReached -or $jpegReached -or $webpReached -or $visualCapture) {
-    $licensePackages["SDL3_image.txt"] = "sdl3-image"
-}
-if ($pngReached -or $visualCapture) {
-    $licensePackages["libpng.txt"] = "libpng"
-    $licensePackages["zlib.txt"] = "zlib"
-}
-if ($jpegReached) {
-    $licensePackages["libjpeg-turbo.txt"] = "libjpeg-turbo"
-}
-if ($webpReached) {
-    $licensePackages["libwebp.txt"] = "libwebp"
+foreach ($license in $imageCodecLicenses.GetEnumerator()) {
+    $licensePackages[$license.Key] = $license.Value
 }
 if ($physicsReached) {
     $licensePackages["bullet3.txt"] = "bullet3"

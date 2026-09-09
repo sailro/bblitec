@@ -201,9 +201,10 @@ test("the lowerer translates the temporal state machine and both uniform blocks 
 
 test("the stage table carries each deployed stage's entry points, block and bindings", async () => {
     const { contact } = await composeBoth();
-    const header = screenSpaceShadersHeader("test", [
+    const module = screenSpaceShadersHeader("test", [
         { stem: "screenspace-0", ...contact.producer },
     ]);
+    const header = module.header + module.definitions;
     assert.ok(header.includes('ScreenSpaceShaderInfo{"screenspace-0", "ssContactVertex", "ssContactFragment", 192u, TextureFormatClass::r8_unorm, screen_space_bindings_0.data(), screen_space_bindings_0.size()}'));
     assert.ok(header.includes('ScreenSpaceStageBinding{0u, "ssDepth", ScreenSpaceBindingKind::depth_texture, ScreenSpaceTextureRole::depth}'));
 });

@@ -1,13 +1,16 @@
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
 
-interface CanvasContext extends WorkerLoweringContext {
-    checker: ts.TypeChecker;
-    isCanvasElement(expression: ts.Expression): boolean;
-}
+interface CanvasContext
+    extends WorkerLoweringContext,
+    Pick<LoweringServices,
+        | "checker"
+        | "isCanvasElement"
+    > {}
 
 function hasDomInterface(context: CanvasContext, expression: ts.Expression, name: string): boolean {
     const symbol = context.checker.getTypeAtLocation(expression).getSymbol();
@@ -51,7 +54,7 @@ export function compileCanvasValue(context: CanvasContext, expression: ts.Expres
         if (node.arguments?.length !== 2) return context.fail(node, "OffscreenCanvas requires width and height.");
         const argumentsCpp = node.arguments.map(argument => {
             const temporary = context.allocateTemporaryCppName("canvas_dimension");
-            context.emit(`const double ${temporary} = ${context.compileNumber(argument, "double")};`);
+            context.emit({ kind: "declaration", type: "const double", name: temporary, initializer: context.compileNumber(argument, "double") });
             return temporary;
         });
         return { kind: "offscreen-canvas", dataType: { kind: "handle", handle: "offscreen-canvas" },
@@ -121,7 +124,7 @@ export function emitCanvasAssignment(context: CanvasContext, expression: ts.Bina
     if (!owner) return false;
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return context.fail(expression, "Canvas dimensions currently support direct assignment.");
     const temporary = context.allocateTemporaryCppName("canvas_receiver");
-    context.emit(`auto ${temporary} = ${owner.cpp};`);
+    context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: owner.cpp });
     const value = context.compileNumber(expression.right, "double");
     context.emit(`${temporary}->set_${target.name.text}(${value});`);
     return true;

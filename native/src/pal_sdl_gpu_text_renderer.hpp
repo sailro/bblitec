@@ -7,6 +7,7 @@ struct SdlStandaloneTextOps : SdlTextResourceOps {
     SdlTextRenderer& renderer;
     SDL_GPUTextureFormat format;
     SDL_GPUTexture* target = nullptr;
+    SdlRenderPass owned_pass;
     SdlStandaloneTextOps(SdlTextRenderer& renderer,SDL_GPUTextureFormat format)
         : SdlTextResourceOps(renderer.owner),renderer(renderer),format(format) {
         renderer.ensure_quad();sampler=renderer.sampler;
@@ -23,9 +24,10 @@ struct SdlStandaloneTextOps : SdlTextResourceOps {
         attachment.clear_color={renderer.clear_value.r,renderer.clear_value.g,renderer.clear_value.b,renderer.clear_value.a};
         attachment.load_op=renderer.clear?SDL_GPU_LOADOP_CLEAR:SDL_GPU_LOADOP_LOAD;
         attachment.store_op=SDL_GPU_STOREOP_STORE;
-        pass=SDL_BeginGPURenderPass(command,&attachment,1,nullptr);
+        owned_pass=SDL_BeginGPURenderPass(command,&attachment,1,nullptr);
+        pass=owned_pass.get();
         if(!pass)gpu_error("SDL_BeginGPURenderPass text");
     }
-    void end_text_renderer_pass() { SDL_EndGPURenderPass(pass);pass=nullptr; }
+    void end_text_renderer_pass() { owned_pass.end();pass=nullptr; }
 };
 } // namespace bbl::pal

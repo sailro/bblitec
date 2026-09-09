@@ -1,3 +1,35 @@
+import type { LoweringServices } from "../lowering-services.js";
+// The audio family.
+//
+// **Where the seam is, and why it is here.** Babylon Lite's audio module
+// (`packages/babylon-lite/src/audio/`) is a behavioural port of AudioV2
+// that touches exactly one platform surface -- the Web Audio API -- and
+// nothing else. So the boundary the pin itself draws is `AudioContext` /
+// `GainNode` / `AudioParam`, the same shape `createHavokWorld(scene, hknp)`
+// draws around `HP_*`, and that is what `bblite/pal_audio.hpp` mirrors.
+//
+// **What the corpus reaches.** Interactive applications use the Lite engine
+// for lifecycle only (`createAudioEngineAsync`, `engine.audioContext`,
+// `createSoundSourceAsync`, `unlockAudioEngineAsync`) and then synthesise
+// their own graph directly on the context. The audio module also has
+// `audio-demo.ts`, the audio module's own Tier-4 showcase, and it is the
+// one place `createSoundAsync`/`playSound`, the microphone, the
+// visualizer and the unmute UI are reached at all -- upstream marks it
+// manual and non-deterministic, never a gate. So this file lowers the raw
+// Web Audio calls beside the engine functions, and refuses the
+// sound/bus/spatial half by name: nothing gated reaches it.
+//
+// **What is still owed.** `createAudioEngineAsync` builds the two-gain
+// output graph (`mainBus -> mainOut -> destination`) that the pinned
+// `bus.ts` declares. That is Babylon behaviour and belongs in generated
+// code lowered from those declarations, exactly as `havok.ts` is; this
+// module folds the shape instead, and `src/lowering/audio-lowerer.ts`
+// asserts every rule of the fold against the pinned declaration that
+// states it, so a moved contract fails generation rather than drifting.
+// Everything the fold cannot state faithfully refuses by name --
+// `setMasterVolume` above all, because the pin has no un-ramped form of
+// it and emitting one would be a substitution wearing a subset's
+// clothes.
 // The audio family.
 //
 // **Where the seam is, and why it is here.** Babylon Lite's audio module
@@ -32,20 +64,19 @@
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
-import type { NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { refuseAudioName } from "../audio-surface.js";
 
-export interface AudioIntrinsicContext extends IntrinsicCallContext {
-    fail(node: ts.Node, message: string): never;
-    allocateTemporaryCppName(label: string): string;
-    emit(line: string): void;
-    registerNativeBinding(name: string, borrowed?: boolean): NativeCaptureBinding;
-    audioSessionCpp(): string;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-}
+export interface AudioIntrinsicContext
+    extends IntrinsicCallContext,
+    Pick<LoweringServices,
+        | "fail"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "registerNativeBinding"
+        | "audioSessionCpp"
+        | "expectObjectLiteral"
+    > {}
 
 /**
  * The Lite engine functions a reached scene calls. Everything else the

@@ -1,6 +1,7 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type { DefaultRenderTaskEmission, LightKind, Value } from "../types.js";
+import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     type CameraDeferralContext,
@@ -9,53 +10,33 @@ import {
 
 export interface SceneIntrinsicContext
     extends IntrinsicCallContext,
-        CameraDeferralContext {
-    compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined;
-    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
-    noteTemporalCameraControl(node: ts.Node): void;
-    noteTextCameraControl(node: ts.Node, camera: Value, arcRotate: boolean): void;
-    noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always?: boolean): void;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileColor3(expression: ts.Expression): string;
-    compileVec4(expression: ts.Expression): string;
-    unwrap(expression: ts.Expression): ts.Expression;
-    noteTemporalAdmissionFailure(node: ts.Node, message: string): void;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    expectSameEngine(
-        left: Value,
-        right: Value,
-        node: ts.Node,
-    ): void;
-    compileFrameCallback(expression: ts.Expression, signature?: import("../types.js").FrameCallbackSignature, retainCaptures?: boolean): string;
-    compileVoidCallback(expression: ts.Expression): string;
-    emit(line: string): void;
-    /**
-     * Records where the render loop starts, so the statements after it --
-     * the browser's own continuation -- are hoisted into the conductor's
-     * deferred queue rather than emitted after a call that never returns.
-     */
-    markEngineStart(engineCpp: string, node: ts.Node): void;
-    compileAsyncEngineStart(engine: Value, node: ts.Node): Value | undefined;
-    /** Add/remove a light in the compiler's current scene-topology model. */
-    addSceneLight(scene: Value, light: Value, kind: LightKind): void;
-    addDynamicSceneLight(): void;
-    removeSceneLight(scene: Value, light: Value): void;
-    requireEngine(value: Value, node: ts.Node): string;
-    ensureDefaultRenderTask(
-        scene: Value,
-        node: ts.Node,
-    ): DefaultRenderTaskEmission;
-    fail(node: ts.Node, message: string): never;
-}
+    CameraDeferralContext,
+    Pick<LoweringServices,
+        | "compileDeviceRecoveryIntrinsic"
+        | "noteTemporalRecordBoundary"
+        | "noteTemporalCameraControl"
+        | "noteTextCameraControl"
+        | "noteMaterialColorRenderBoundary"
+        | "compileNumber"
+        | "compileColor3"
+        | "compileVec4"
+        | "unwrap"
+        | "noteTemporalAdmissionFailure"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "expectSameEngine"
+        | "compileFrameCallback"
+        | "compileVoidCallback"
+        | "emit"
+        | "markEngineStart"
+        | "compileAsyncEngineStart"
+        | "addSceneLight"
+        | "addDynamicSceneLight"
+        | "removeSceneLight"
+        | "requireEngine"
+        | "ensureDefaultRenderTask"
+        | "fail"
+    > {}
 
 export function compileSceneIntrinsic(
     context: SceneIntrinsicContext,

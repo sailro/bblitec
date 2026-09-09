@@ -161,7 +161,7 @@ test("lowers one-file input, change dispatch, files[0], and File.text", () => {
     );
     assert.match(
         result.cpp,
-        /make_closure\(std::tuple\{v_input, std::ref\(v_engine\), v_imports\}, \[\]\(\[\[maybe_unused\]\] auto& \w+\) \{[\s\S]*bbl::js::file_text[\s\S]*\(\*v_imports\)/,
+        /make_closure\(std::tuple\{v_input, std::ref\(v_engine\), v_imports\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) \{[\s\S]*bbl::js::file_text[\s\S]*\(\*v_imports\)/,
         "owned callback-local handles are copied while shared state stays live",
     );
     assert.ok(

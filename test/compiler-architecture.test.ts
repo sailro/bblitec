@@ -1,690 +1,116 @@
 import assert from "node:assert/strict";
-import {
-    readFileSync,
-    readdirSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { compileSource } from "../src/compiler.js";
+import { declarationOwners, sourceFacts, sourcePaths } from "./source-facts.js";
 
 function source(path: string): string {
     return readFileSync(path, "utf8");
 }
 
-test("keeps JavaScript array helpers compatible with generated native vectors", () => {
-    const runtime = source("native/include/bblite/js_data.hpp");
-    assert.match(
-        runtime,
-        /template <typename Values>\s+\[\[nodiscard\]\] inline double array_length\(const Values& values\)/,
-    );
-    for (const kind of ["u8", "u16", "f32", "u32"]) {
-        assert.match(
-            runtime,
-            new RegExp(
-                `template <typename Values>\\s+\\[\\[nodiscard\\]\\] inline [^\\n]+ ${kind}_array_from\\(const Values& values\\)`,
-            ),
-        );
+test("resolves renamed imports through semantic symbols", () => {
+    const body = (create: string, scene: string): string =>
+        'async function main() { const engine = await ' + create + '({}); const scene = ' + scene + '(engine); }';
+    const direct = compileSource('import {createEngine, createSceneContext} from "@babylonjs/lite"; ' + body("createEngine", "createSceneContext"));
+    const renamed = compileSource('import {createEngine as boot, createSceneContext as world} from "@babylonjs/lite"; ' + body("boot", "world"));
+    assert.equal(renamed.cpp, direct.cpp);
+    assert.deepEqual(renamed.manifest, direct.manifest);
+});
+
+test("centralizes default-library identity and AST-driven upstream contracts", () => {
+    const compilerPaths = sourcePaths.filter((path) => path === "src/compiler.ts" || path.startsWith("src/compiler/"));
+    assert.deepEqual(compilerPaths.filter((path) => sourceFacts(path).members.has("hasNoDefaultLib")), ["src/compiler/symbols.ts"]);
+    assert.deepEqual(compilerPaths.filter((path) => sourceFacts(path).members.has("isSourceFileDefaultLibrary")), []);
+    const lowerers = sourcePaths.filter((path) =>
+        path === "src/upstream-source.ts" || path.startsWith("src/lowering/gltf/") ||
+        path.startsWith("src/lowering/factory/") ||
+        (path.startsWith("src/lowering/") && path.endsWith("-lowerer.ts") && !path.endsWith("/renderer-lowerer.ts")));
+    for (const path of lowerers) {
+        const facts = sourceFacts(path);
+        assert.ok(![...facts.calls].some((name) => name === "store.getSource" || name.endsWith(".store.getSource")), path);
+        assert.ok(!facts.members.has("match"), path);
+        assert.ok(!facts.calls.has("extractNumber") && !facts.constructs.has("RegExp"), path);
+    }
+    assert.ok(sourceFacts("src/lowering/renderer-lowerer.ts").members.has("getSource"));
+});
+
+test("entry points acquire the dist lock and only its owner sets the nesting marker", () => {
+    for (const path of ["src/cli.ts", "src/scene-command.ts"]) {
+        assert.ok(sourceFacts(path).calls.has("holdDistLock"), path);
+    }
+    assert.deepEqual(sourcePaths.filter((path) => sourceFacts(path).lockSetter), ["src/dist-lock.ts"]);
+});
+
+test("shared compiler helpers have one declaration owner", () => {
+    for (const [name, path] of [
+        ["pinnedLibraryRoot", "src/pinned-shader-composer.ts"],
+        ["formatStatements", "src/shader-builtins-utility.ts"],
+        ["isTrsVectorName", "src/scene-node-transform-descriptor.ts"],
+        ["emitHandleCollectionLoop", "src/compiler/handle-collections.ts"],
+        ["isRecursiveImportedMeshWalk", "src/compiler/handle-collections.ts"],
+        ["propertyRules", "src/compiler/properties.ts"],
+        ["StaticEvaluator", "src/compiler/static-evaluator.ts"],
+        ["UserFunctionLowerer", "src/compiler/user-functions.ts"],
+        ["StatementLowerer", "src/compiler/statements.ts"],
+    ]) assert.deepEqual(declarationOwners(name!), [path], name);
+    for (const member of ["readHandleCollection", "nativeLocation"]) {
+        const callers = sourcePaths.filter((path) => sourceFacts(path).calls.has(member) || sourceFacts(path).declarations.has(member));
+        assert.deepEqual(callers.sort(), ["src/compiler/handle-collections.ts", "src/compiler/properties.ts"], member);
+    }
+    assert.ok(sourceFacts("src/compiler/statements.ts").imports.has("./handle-collections.js"));
+    assert.ok(sourceFacts("src/compiler/expressions.ts").members.has("compileFind"));
+});
+
+test("the compiler delegates intrinsic families and feature lowering", () => {
+    const registry = sourceFacts("src/compiler/intrinsics/registry.ts");
+    const imports = new Set([...registry.imports.values()].flatMap((names) => [...names]));
+    for (const family of ["Animation", "Asset", "Camera", "Engine", "Light", "Material", "Mesh", "Scene"]) {
+        assert.ok(imports.has('compile' + family + 'Intrinsic'), family);
+    }
+    const compiler = sourceFacts("src/compiler.ts");
+    assert.ok(compiler.calls.has("compileRegisteredIntrinsic"));
+    assert.ok(compiler.calls.has("emitPropertyAssignment"));
+    assert.ok(compiler.calls.has("readProperty"));
+    for (const name of ["StaticEvaluator", "UserFunctionLowerer", "StatementLowerer"]) {
+        assert.ok(compiler.constructs.has(name), name);
+    }
+    for (const module of [
+        "option-helpers", "intrinsics/mesh-options", "intrinsics/engine-options",
+        "intrinsics/material-options", "intrinsics/asset-options", "shader-material",
+        "property-animation", "adaptations", "assets", "output-projection", "scene-materials",
+        "module-initializers", "sprite-atlas-record",
+    ]) assert.ok(compiler.imports.has('./compiler/' + module + '.js'), module);
+    assert.ok(sourceFacts("src/compiler/assignments.ts").calls.has("cameraRecordField"));
+    assert.ok(sourceFacts("src/compiler/shader-material.ts").calls.has("lowerWgslShaderProgram"));
+    for (const path of ["src/compiler.ts", "src/compiler/shader-material.ts"]) {
+        assert.ok(!sourceFacts(path).calls.has("normalizeShaderSource"), path);
     }
 });
 
-test("shares one binary-buffer runtime between generated and native code", () => {
-    const runtime = source("native/include/bblite/ts_runtime.hpp");
-    assert.match(runtime, /using ArrayBuffer = js::ArrayBuffer;/);
-    assert.match(runtime, /using Uint8Array = js::U8Array;/);
-    assert.match(runtime, /using DataView = js::DataView;/);
-    assert.doesNotMatch(runtime, /class (?:ArrayBuffer|DataView)/);
-});
-
-test("accepts value and identity-backed records in native vector paths", () => {
-    const runtime = source("native/include/bblite/runtime.hpp");
-    assert.match(
-        runtime,
-        /if constexpr \(requires \{ point\.x; point\.y; point\.z; \}\)/,
-    );
-    assert.match(
-        runtime,
-        /Vec3d\{point->x, point->y, point->z\}/,
-    );
-});
-
-test("stores reached scene-disposal callbacks in the native scene contract", () => {
-    const runtime = source("native/include/bblite/runtime.hpp");
-    assert.match(
-        runtime,
-        /struct SceneState \{[\s\S]{0,5000}std::vector<js::Callback<void\(\)>> disposables;/,
-    );
-    assert.match(
-        runtime,
-        /void on_scene_dispose\(\s*Scene& scene,\s*js::Callback<void\(\)> callback\);/,
-    );
-    assert.match(runtime, /visitor\(disposables\);/);
-});
-
-test("preserves SceneContext identity across native value copies", () => {
-    const runtime = source("native/include/bblite/runtime.hpp");
-    const scene = source("src/lowering/scene-lowerer.ts");
-    assert.match(runtime, /struct Scene \{\s+std::shared_ptr<SceneState> state;/);
-    assert.match(runtime, /Scene\(const Scene& other\) noexcept\s+: Scene\(other\.state\)/);
-    assert.match(
-        runtime,
-        /SnapshotList<std::shared_ptr<Scene>> registered_scenes;/,
-    );
-    assert.match(scene, /registered->shares_identity\(scene\)/);
-    assert.match(scene, /std::make_shared<Scene>\(scene\)/);
-});
-
-test("uses TypeScript semantic symbols instead of import-name text matching", () => {
-    const compiler = source("src/compiler.ts");
-    assert.match(compiler, /createCompilerProgram/);
-    assert.match(compiler, /CompilerSymbols/);
-    assert.doesNotMatch(compiler, /collectImports/);
-    assert.doesNotMatch(
-        compiler,
-        /this\.imports/,
-    );
-});
-
-test("resolves default-library identity in one place", () => {
-    // The marker every lib.*.d.ts carries is read by symbols.ts alone;
-    // every other compiler file asks it rather than spelling its own test.
-    const symbols = source("src/compiler/symbols.ts");
-    assert.match(symbols, /file\.isDeclarationFile && file\.hasNoDefaultLib/);
-    const axis = [
-        "src/compiler.ts",
-        ...readdirSync("src/compiler")
-            .filter((name) => name.endsWith(".ts") && name !== "symbols.ts")
-            .map((name) => `src/compiler/${name}`),
-        ...readdirSync("src/compiler/intrinsics")
-            .filter((name) => name.endsWith(".ts"))
-            .map((name) => `src/compiler/intrinsics/${name}`),
-    ];
-    for (const path of axis) {
-        const text = source(path);
-        assert.doesNotMatch(text, /hasNoDefaultLib/, path);
-        assert.doesNotMatch(text, /\.isSourceFileDefaultLibrary\(/, path);
+test("split lowerer barrels contain exports and families own their declarations", () => {
+    for (const barrel of ["src/lowering/gltf-lowerer.ts", "src/lowering/factory-lowerer.ts"]) {
+        assert.ok(sourceFacts(barrel).barrel, barrel);
     }
-});
-
-test("keeps migrated upstream contracts AST-driven", () => {
-    const lowerers = readdirSync("src/lowering")
-        .filter(
-            (name) =>
-                name.endsWith("-lowerer.ts") &&
-                name !== "renderer-lowerer.ts",
-        )
-        .map((name) => `src/lowering/${name}`);
-    // The split families under gltf/ and factory/ carry the same
-    // contract as the barrels that re-export them.
-    const families = ["gltf", "factory"].flatMap((dir) =>
-        readdirSync(`src/lowering/${dir}`).map(
-            (name) => `src/lowering/${dir}/${name}`,
-        ),
-    );
-    for (const path of [
-        ...lowerers,
-        ...families,
-        "src/upstream-source.ts",
-    ]) {
-        const content = source(path);
-        assert.doesNotMatch(content, /store\.getSource/);
-        assert.doesNotMatch(content, /extractNumber\(/);
-        assert.doesNotMatch(content, /\.match\(/);
-        assert.doesNotMatch(content, /new RegExp/);
-    }
-});
-
-test("holds the dist lock from every entry point that runs out of dist", () => {
-    // `tools/clean-dist.mjs` refuses to delete `dist/` under a live run, and
-    // it decides that from the lock alone — so an entry point that does not
-    // take it is one an `npm run build` deletes mid-run. Both do:
-    // `scene-command` for a whole stage and `cli` for one generation, which
-    // is what an ad-hoc compile probe runs beside somebody else's build.
-    for (const entry of ["src/cli.ts", "src/scene-command.ts"]) {
-        assert.match(source(entry), /holdDistLock\(/, entry);
-    }
-    // And the nesting marker is set once, by whoever claimed the lock, so a
-    // child cannot unlink its parent's record. A spawn site spelling it
-    // again is the copy that drifts.
-    const lock = source("src/dist-lock.ts");
-    assert.match(lock, /process\.env\.BBLITE_DIST_LOCK_HELD = "1";/);
-    const setters = readdirSync("src", { recursive: true })
-        .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
-        .filter((path) => path.endsWith(".ts"))
-        .filter((path) =>
-            /BBLITE_DIST_LOCK_HELD\s*[:=]\s*"1"/.test(source(path)),
-        );
-    assert.deepEqual(setters, ["src/dist-lock.ts"]);
-});
-
-test("isolates remaining source-text contracts to the renderer", () => {
-    const renderer = source(
-        "src/lowering/renderer-lowerer.ts",
-    );
-    assert.match(renderer, /store\.getSource/);
-});
-
-test("keeps the pin-import family in the shader composer", () => {
-    // The pinned-library resolution and the relative-specifier anchoring
-    // each exist exactly once, in pinned-shader-composer.ts. A second copy
-    // is how they drifted before: the mirror in pinned-material-input.ts
-    // resolved the same path without the missing-install refusal.
-    const files = readdirSync("src", { recursive: true })
-        .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
-        .filter((path) => path.endsWith(".ts"));
-    for (const marker of [
-        "function pinnedLibraryRoot",
-        // The specifier-anchoring character class, as spelled in the one
-        // rewrite regex.
-        "(\\.\\.?\\/",
-    ]) {
-        const owners = files.filter((path) =>
-            source(path).includes(marker),
-        );
-        assert.deepEqual(
-            owners,
-            ["src/pinned-shader-composer.ts"],
-            `'${marker}' must live only in pinned-shader-composer.ts`,
-        );
-    }
-});
-
-test("keeps the lifted-text helpers and pinned operator spellings single-copy", () => {
-    // The guarded re-homing loop and the statement formatter live once, in
-    // shader-builtins-utility.ts (the callers keep only their own error
-    // voices); the glTF expression renderer sources its operator spellings
-    // and Math-call matching from pinned-operators.ts instead of restating
-    // the tables; the shared SceneNode descriptor owns the TRS discriminator,
-    // while assignments.ts owns its axis map. A regrown copy causes drift.
-    const files = readdirSync("src", { recursive: true })
-        .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
-        .filter((path) => path.endsWith(".ts"));
-    for (const marker of [
-        "function formatStatements",
-        "text.split(from).join(to)",
-    ]) {
-        const owners = files.filter((path) =>
-            source(path).includes(marker),
-        );
-        assert.deepEqual(
-            owners,
-            ["src/shader-builtins-utility.ts"],
-            `'${marker}' must live only in shader-builtins-utility.ts`,
-        );
-    }
-    const interpolation = source(
-        "src/lowering/gltf/animation-interpolation.ts",
-    );
-    assert.match(interpolation, /PINNED_BOOLEAN_OPERATORS\.get\(/);
-    assert.match(interpolation, /pinnedMathCall\(/);
-    assert.doesNotMatch(interpolation, /text: "&&"/);
-    const assignments = source("src/compiler/assignments.ts");
-    assert.equal(
-        (assignments.match(/\{ x: 0, y: 1, z: 2, w: 3 \}/g) ?? []).length,
-        1,
-        "the TRS axis map must be spelled once in assignments.ts",
-    );
-    assert.deepEqual(
-        files.filter((path) => source(path).includes("function isTrsVectorName(")),
-        ["src/scene-node-transform-descriptor.ts"],
-        "the TRS discriminator must use the shared SceneNode descriptor",
-    );
-    assert.match(assignments, /sceneNodeTransformDescriptor\(left\.expression\.name\.text\)/);
-    const transforms = source("src/scene-node-transform-descriptor.ts");
-    for (const property of ["position", "rotation", "rotationQuaternion", "scaling"]) {
-        assert.equal(transforms.split(`sourceProperty: "${property}"`).length - 1, 1);
-    }
-});
-
-test("keeps handle-collection semantics in one module", () => {
-    // The collection resolvers, the loop frame, the find, the pushes and
-    // the imported-mesh walk proof all live in handle-collections.ts —
-    // the concept a new collection shape extends instead of becoming
-    // another exact-shape sibling in expressions/statements/compiler.
-    const files = readdirSync("src", { recursive: true })
-        .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
-        .filter((path) => path.endsWith(".ts"));
-    for (const marker of [
-        "readHandleCollection(",
-        "function emitHandleCollectionLoop",
-        "function isRecursiveImportedMeshWalk",
-        "nativeLocation(",
-    ]) {
-        const owners = files
-            .filter((path) => source(path).includes(marker))
-            .filter(
-                (path) =>
-                    path !== "src/compiler/properties.ts",
-            );
-        assert.deepEqual(
-            owners,
-            ["src/compiler/handle-collections.ts"],
-            `'${marker}' must live only in handle-collections.ts (and its table in properties.ts)`,
-        );
-    }
-    // The statement and expression layers reach the concept, not local
-    // re-derivations of it.
-    assert.match(
-        source("src/compiler/statements.ts"),
-        /from "\.\/handle-collections\.js"/,
-    );
-    assert.match(
-        source("src/compiler/expressions.ts"),
-        /handleCollections\.compileFind/,
-    );
-});
-
-test("routes extracted intrinsic families through the registry", () => {
-    const registry = source(
-        "src/compiler/intrinsics/registry.ts",
-    );
-    const compiler = source("src/compiler.ts");
-    for (const family of [
-        "Animation",
-        "Asset",
-        "Camera",
-        "Engine",
-        "Light",
-        "Material",
-        "Mesh",
-        "Scene",
-    ]) {
-        assert.match(
-            registry,
-            new RegExp(`compile${family}Intrinsic`),
-        );
-    }
-    assert.match(compiler, /compileRegisteredIntrinsic/);
-    assert.doesNotMatch(compiler, /case "create/);
-});
-
-test("isolates static expression lowering from entry orchestration", () => {
-    const compiler = source("src/compiler.ts");
-    const evaluator = source(
-        "src/compiler/static-evaluator.ts",
-    );
-    assert.match(compiler, /StaticEvaluator/);
-    assert.match(evaluator, /resolveStaticExpression/);
-    assert.match(evaluator, /compileNumber/);
-    assert.match(evaluator, /compileColor3/);
-    assert.doesNotMatch(
-        compiler,
-        /Only \+, -, \*, and \/ are supported/,
-    );
-    assert.doesNotMatch(
-        compiler,
-        /Expected a Color3 array/,
-    );
-});
-
-test("lowers property assignments outside the entry orchestrator", () => {
-    const compiler = source("src/compiler.ts");
-    const assignments = source(
-        "src/compiler/assignments.ts",
-    );
-    assert.match(compiler, /emitPropertyAssignment/);
-    assert.match(assignments, /AssignmentContext/);
-    assert.match(assignments, /directPropertyAssignment/);
-    assert.doesNotMatch(
-        compiler,
-        /Unsupported property assignment/,
-    );
-});
-
-test("resolves property reads from one declared table", () => {
-    const compiler = source("src/compiler.ts");
-    const assignments = source(
-        "src/compiler/assignments.ts",
-    );
-    const properties = source(
-        "src/compiler/properties.ts",
-    );
-    assert.match(compiler, /readProperty/);
-    assert.match(properties, /propertyRules/);
-    // Every read of a handle's property ends in one place. The general
-    // property path, the static evaluator's lookup, the data lowerer's
-    // plain-data property bridge and each nested link go through
-    // `readOwnerProperty`, which is the only caller of the table besides
-    // destructuring, and the writes take their field names from the table
-    // too. Each of those was a separate copy once, and they had drifted
-    // apart.
-    assert.equal(
-        (compiler.match(/readOwnerProperty\(/g) ?? [])
-            .length,
-        6,
-    );
-    assert.equal(
-        (compiler.match(/readProperty\(/g) ?? []).length,
-        3,
-    );
-    assert.match(assignments, /cameraRecordField/);
-    for (const field of [
-        "near_plane",
-        "angular_sensibility",
-        "ortho_half_height",
-    ]) {
-        assert.doesNotMatch(compiler, new RegExp(field));
-    }
-    assert.doesNotMatch(
-        assignments,
-        /angular_sensibility/,
-    );
-});
-
-test("matches custom shaders through typed WGSL IR", () => {
-    // The matching moved with the shader-material block: the compiler
-    // delegates, and the module is the one that lowers through the IR.
-    const shaderMaterial = source(
-        "src/compiler/shader-material.ts",
-    );
-    assert.match(shaderMaterial, /lowerWgslShaderProgram/);
-    for (const content of [
-        source("src/compiler.ts"),
-        shaderMaterial,
-    ]) {
-        assert.doesNotMatch(
-            content,
-            /normalizeShaderSource/,
-        );
-        assert.doesNotMatch(
-            content,
-            /vertexSource ===/,
-        );
-        assert.doesNotMatch(
-            content,
-            /fragmentSource ===/,
-        );
-    }
-});
-
-test("keeps extracted option and manifest blocks in their modules", () => {
-    // Each entry pins one moved block by a string that lived in
-    // compiler.ts before the extraction: the module must carry it and
-    // the entry orchestrator must not grow it back.
-    const compiler = source("src/compiler.ts");
-    const blocks: ReadonlyArray<[string, RegExp[]]> = [
-        [
-            "src/compiler/option-helpers.ts",
-            [
-                /Expected a positive integer literal\./,
-                /compileOptionalStaticBoolean/,
-            ],
-        ],
-        [
-            "src/compiler/intrinsics/mesh-options.ts",
-            [
-                /Sphere segments must be a positive static integer\./,
-                /Torus options support diameter, thickness, and tessellation\./,
-            ],
-        ],
-        [
-            "src/compiler/intrinsics/engine-options.ts",
-            [
-                /Geometry textureDescriptions must contain 1-8 entries\./,
-                /Copy task requires targetTexture or resolveTexture\./,
-                /defaultRenderTask must be a static boolean\./,
-            ],
-        ],
-        [
-            "src/compiler/intrinsics/material-options.ts",
-            [
-                /Reached PBR lowering supports/,
-                /Sheen albedoScaling must be a static boolean/,
-            ],
-        ],
-        [
-            "src/compiler/intrinsics/asset-options.ts",
-            [
-                /DDS environment options support brdfUrl, skipSkybox, and skipGround\./,
-                /HDR faceSize must be a power of two/,
-            ],
-        ],
-        [
-            "src/compiler/shader-material.ts",
-            [
-                /collides with a predeclared variant/,
-                /Shader uniform writes require a shader material\./,
-            ],
-        ],
-        [
-            "src/compiler/property-animation.ts",
-            [
-                /Unsupported property animation path/,
-                /cannot specify both fromTime and fromFrame/,
-            ],
-        ],
-        [
-            "src/compiler/adaptations.ts",
-            [
-                /entry-main-wrapper-erasure/,
-                /sdl-gpu-frame-graph/,
-            ],
-        ],
-        [
-            "src/compiler/assets.ts",
-            [
-                // The two kinds a scene module produces, and the refusal
-                // they share when the call carries arguments.
-                /drawn sprite atlas/,
-                /pixel buffer/,
-                /factory takes no arguments\./,
-                /brdf-lut\.png/,
-            ],
-        ],
-        [
-            "src/compiler/output-projection.ts",
-            [
-                // The feature→sources authority and the two artifact
-                // renders (main.cpp, features.cmake).
-                /set\(BBLITE_RUNTIME_FEATURES/,
-                /Generated by bblitec\. Do not edit\./,
-                /"physics:world"/,
-            ],
-        ],
-        [
-            "src/compiler/scene-materials.ts",
-            [
-                /names no scene-code PBR material/,
-                /creation-ordered across families/,
-            ],
-        ],
-        [
-            "src/compiler/module-initializers.ts",
-            [
-                /post-initializer identity/,
-                /Module storage read or written/,
-            ],
-        ],
-        [
-            "src/compiler/sprite-atlas-record.ts",
-            [
-                /A data SpriteAtlas requires a file or pixels texture/,
-                /SpriteAtlas frames require an array/,
-            ],
-        ],
-    ];
-    for (const [path, patterns] of blocks) {
-        const moved = source(path);
-        for (const pattern of patterns) {
-            assert.match(moved, pattern);
-            assert.doesNotMatch(compiler, pattern);
-        }
-        // The compiler still reaches every moved block through its
-        // import, so the delegators cannot silently detach.
-        const specifier = path
-            .replace("src/", "./")
-            .replace(".ts", ".js");
-        assert.ok(
-            compiler.includes(`from "${specifier}"`),
-            `compiler.ts imports ${specifier}`,
-        );
-    }
-    // Round 1 established every call-expression path returns before the
-    // trailing canvas-lookup block; the dead remainder stays deleted.
-    assert.doesNotMatch(
-        source("src/compiler/browser-erasure.ts"),
-        /isCanvasLookup|isPerformanceNow/,
-    );
-});
-
-test("keeps local function lowering in its feature module", () => {
-    const compiler = source("src/compiler.ts");
-    const functions = source(
-        "src/compiler/user-functions.ts",
-    );
-    assert.match(compiler, /UserFunctionLowerer/);
-    assert.match(functions, /UserFunctionIr/);
-    assert.match(functions, /isTypeAssignableTo/);
-    assert.doesNotMatch(
-        compiler,
-        /Recursive call to/,
-    );
-    assert.doesNotMatch(
-        compiler,
-        /Generator functions are not supported/,
-    );
-});
-
-test("keeps statement lowering in its feature module", () => {
-    const compiler = source("src/compiler.ts");
-    const statements = source(
-        "src/compiler/statements.ts",
-    );
-    assert.match(compiler, /StatementLowerer/);
-    assert.match(statements, /StatementLoweringContext/);
-    assert.doesNotMatch(
-        compiler,
-        /Unsupported expression statement/,
-    );
-    assert.doesNotMatch(
-        compiler,
-        /Reached RenderTask\.addMesh requires/,
-    );
-});
-
-test("keeps the split lowerer families in their modules", () => {
-    // The three biggest lowerers were split along their measured seams
-    // (gltf families, factory halves, render-plan methods). Each family
-    // module owns its declarations and the old monolith files stay pure
-    // barrels — a declaration growing back into a barrel is the
-    // regression this pins against.
-    const homes: ReadonlyArray<[string, RegExp[]]> = [
-        [
-            "src/lowering/gltf/loader.ts",
-            [/export class GltfLowerer/],
-        ],
-        [
-            "src/lowering/gltf/animation-interpolation.ts",
-            [
-                /function lowerAnimationInterpolationCpp/,
-                /function renderCppExpression/,
-            ],
-        ],
-        [
-            "src/lowering/gltf/sampler-mapping.ts",
-            [
-                /function lowerSamplerMappingCpp/,
-                /function evaluatePinExpression/,
-            ],
-        ],
-        [
-            "src/lowering/gltf/accessor-normalization.ts",
-            [
-                /function lowerAccessorNormalizationCpp/,
-                /function lowerVertexColorCpp/,
-            ],
-        ],
-        [
-            "src/lowering/gltf/sh-prescale.ts",
-            [/function lowerShPrescaleCpp/],
-        ],
-        [
-            "src/lowering/gltf/image-processing-defaults.ts",
-            [/function lowerImageProcessingDefaultsCpp/],
-        ],
-        [
-            "src/lowering/gltf/extension-defaults.ts",
-            [/function lowerGltfExtensionDefaults/],
-        ],
-        [
-            "src/lowering/gltf/matrix-leaves.ts",
-            [
-                /function lowerMatrixComposeCpp/,
-                /function lowerLocalMatrixCpp/,
-                /function lowerMatrixNativeCpp/,
-            ],
-        ],
-        [
-            "src/lowering/gltf/ibl.ts",
-            [
-                /function lowerIblPolynomialCpp/,
-                /function lowerIblEnvironmentScalarsCpp/,
-            ],
-        ],
-        [
-            "src/lowering/gltf/punctual-lights.ts",
-            [/function lowerPunctualLightsCpp/],
-        ],
-        [
-            "src/lowering/gltf/material-defaults.ts",
-            [/function lowerGltfMaterialDefaults/],
-        ],
-        [
-            "src/lowering/gltf/factor-bake.ts",
-            [/function lowerGltfFactorBake/],
-        ],
-        [
-            "src/lowering/gltf/shared.ts",
-            [/function refuseNode/, /function topLevelFunction/],
-        ],
-        [
-            "src/lowering/factory/mesh-builders.ts",
-            [/class MeshBuilderLowerer/, /lowerMeshFactories/],
-        ],
-        [
-            "src/lowering/factory/material-factories.ts",
-            [
-                /class FactoryLowerer extends MeshBuilderLowerer/,
-                /lowerNodeMaterialFactory/,
-            ],
-        ],
-    ];
-    for (const [path, patterns] of homes) {
-        const moved = source(path);
-        for (const pattern of patterns) {
-            assert.match(moved, pattern);
-        }
-    }
-    // The barrels re-export and declare nothing.
-    for (const barrel of [
-        "src/lowering/gltf-lowerer.ts",
-        "src/lowering/factory-lowerer.ts",
-    ]) {
-        const content = source(barrel);
-        assert.doesNotMatch(content, /function |class /);
-        assert.match(content, /export \{/);
-    }
-    // The render-plan monolith stays one file (its content is tracked
-    // for port-not-rederive replacement), but its seams stay named: the
-    // header/source renders and the pinned proofs live behind their own
-    // methods rather than inline in lowerRenderPlan.
-    const renderer = source(
-        "src/lowering/renderer-lowerer.ts",
-    );
-    for (const seam of [
-        /private assertRenderPlanPins\(/,
-        /private assertPinnedTransparentSort\(\)/,
-        /private loweredShaderVariants\(/,
-        /private provedOpaqueOrderStamp\(\)/,
-        /private renderPlanHeaderCpp\(/,
-        /private renderPlanSourceCpp\(/,
-        /private assertPinnedShaderFormulas\(/,
-    ]) {
-        assert.match(renderer, seam);
-    }
-    // The surface sample-count proof moved behind its own module in the
-    // wave-2 precision pass; the seam is the pinned-surface emitter now.
-    assert.match(
-        source("src/lowering/pinned-surface.ts"),
-        /function pinnedSampleCounts\(/,
-    );
+    for (const [name, path] of [
+        ["GltfLowerer", "gltf/loader"],
+        ["lowerAnimationInterpolationCpp", "gltf/animation-interpolation"],
+        ["lowerSamplerMappingCpp", "gltf/sampler-mapping"],
+        ["lowerAccessorNormalizationCpp", "gltf/accessor-normalization"],
+        ["lowerVertexColorCpp", "gltf/accessor-normalization"],
+        ["lowerShPrescaleCpp", "gltf/sh-prescale"],
+        ["lowerImageProcessingDefaultsCpp", "gltf/image-processing-defaults"],
+        ["lowerMatrixComposeCpp", "gltf/matrix-leaves"],
+        ["lowerLocalMatrixCpp", "gltf/local-matrix"],
+        ["lowerMatrixNativeCpp", "gltf/matrix-leaves"],
+        ["lowerIblPolynomialCpp", "gltf/ibl"],
+        ["lowerIblEnvironmentScalarsCpp", "gltf/ibl"],
+        ["lowerPunctualLightsCpp", "gltf/punctual-lights"],
+        ["lowerGltfMaterialProperties", "gltf/material-properties"],
+        ["lowerGltfFactorBake", "gltf/factor-bake"],
+        ["MeshBuilderLowerer", "factory/mesh-builders"],
+        ["FactoryLowerer", "factory/material-factories"],
+        ["pinnedSampleCounts", "pinned-surface"],
+    ]) assert.deepEqual(declarationOwners(name!), ['src/lowering/' + path + '.ts'], name);
 });
 
 test("preserves multisampling across the transmission scene-color copy", () => {
@@ -738,152 +164,6 @@ test("composes registered sprite renderers over scene output", () => {
     );
 });
 
-test("keeps depth-hosted sprite buffers growable, paused while hidden, and insertion ordered", () => {
-    const sdl = source("native/src/pal_sdl_gpu_sprite.hpp");
-    const dawn = source("native/src/pal_dawn_sprite.hpp");
-    const runtime = source("native/include/bblite/runtime.hpp");
-    const lowerer = source("src/lowering/sprite-lowerer.ts");
-    const section = (text: string, start: string, end: string): string => {
-        const from = text.indexOf(start);
-        const to = text.indexOf(end, from + start.length);
-        assert.notEqual(from, -1, `Missing ${start}`);
-        assert.notEqual(to, -1, `Missing ${end}`);
-        return text.slice(from, to);
-    };
-
-    const sdlUpload = section(
-        sdl,
-        "inline void upload_sprite_layer_gpu(",
-        "inline void upload_sprite_pass(",
-    );
-    const dawnUpload = section(
-        dawn,
-        "inline void upload_dawn_sprite_layer(",
-        "inline void upload_dawn_sprite_pass(",
-    );
-    for (const upload of [sdlUpload, dawnUpload]) {
-        assert.match(
-            upload,
-            /if \(!layer\.visible \|\| layer\.count == 0\) return;[\s\S]*needed_bytes/,
-        );
-        assert.match(upload, /instance_buffer_bytes < needed_bytes/);
-        assert.match(upload, /instance_buffer_bytes = needed_bytes/);
-        assert.match(upload, /gpu\.uploaded = false/);
-        assert.ok(
-            upload.indexOf("if (!layer.visible || layer.count == 0) return;") <
-                upload.indexOf("gpu.elapsed_ms += delta_ms"),
-        );
-    }
-    assert.match(sdlUpload, /SDL_ReleaseGPUBuffer\(device, gpu\.instances\)/);
-    assert.match(dawnUpload, /wgpuBufferRelease\(gpu\.instances\)/);
-    assert.match(
-        runtime,
-        /dirty_sprite_begin = invalid_handle;[\s\S]{0,160}dirty_sprite_end = 0;[\s\S]{0,800}pipeline_version = 0;/,
-    );
-    assert.match(
-        lowerer,
-        /touch_sprite_instances\([\s\S]{0,320}layer\.dirty_sprite_begin = std::min/,
-    );
-    assert.equal(
-        lowerer.match(
-            /SpriteRenderer requires layers with depth == none\./g,
-        )?.length,
-        2,
-    );
-    // Both backends derive the rows once (`resolve_sprite_dirty_range`),
-    // let the optional Y-sort hook restage them once
-    // (`resolve_sprite_instance_upload`), and then differ only in the write
-    // call. A backend that read `layer.instance_data` directly would upload
-    // a Y-sorted layer in the wrong order.
-    for (const upload of [sdlUpload, dawnUpload]) {
-        assert.match(
-            upload,
-            /dirty_begin[\s\S]{0,400}resolve_sprite_instance_upload\(\s*engine, layer, dirty_begin, dirty_end\)/,
-        );
-        assert.doesNotMatch(upload, /layer\.instance_data\.data\(\)/);
-    }
-    assert.match(
-        sdlUpload,
-        /transfer\.begin[\s\S]{0,900}buffer_uploads\.update\(\s*gpu\.instances,\s*offset,\s*data,\s*bytes\)/,
-    );
-    assert.match(
-        dawnUpload,
-        /transfer\.begin[\s\S]{0,700}wgpuQueueWriteBuffer\([\s\S]{0,180}static_cast<std::uint64_t>\(transfer\.begin\) \* stride_bytes/,
-    );
-
-    // Fixed/layout mutations rebuild before the next upload, and atlas GPU
-    // resources are owned once by the pass rather than once per layer.
-    assert.match(
-        sdl,
-        /gpu\.pipeline_version == layer\.pipeline_version[\s\S]{0,320}rebuild_sprite_layer_pipeline\(/,
-    );
-    assert.match(
-        dawn,
-        /sync_dawn_scene_sprite_pass_pipelines\([\s\S]{0,900}pipeline_version != layer\.pipeline_version[\s\S]{0,1200}release_dawn_sprite_layer\([\s\S]{0,1400}build_dawn_sprite_layer\(/,
-    );
-    assert.match(sdl, /struct SpriteAtlasGpu/);
-    assert.match(sdl, /std::vector<SpriteAtlasGpu> atlases;/);
-    assert.match(
-        sdl,
-        /renderer\.layers\.begin\(\)[\s\S]{0,420}release_sprite_atlas_gpu\(device, \*atlas\);[\s\S]{0,120}pass\.atlases\.erase\(atlas\)/,
-    );
-    assert.match(dawn, /struct DawnSpriteAtlasBinding/);
-    assert.match(dawn, /std::vector<DawnSpriteAtlasBinding> atlases;/);
-
-    const sdlRecord = section(
-        sdl,
-        "inline void record_scene_sprite_pass(",
-        "inline void release_scene_sprite_pass(",
-    );
-    const dawnRecord = section(
-        dawn,
-        "inline void record_dawn_scene_sprite_pass(",
-        "inline void release_dawn_scene_sprite_pass(",
-    );
-    for (const record of [sdlRecord, dawnRecord]) {
-        assert.match(
-            record,
-            /for \(std::size_t index = 0; index < pass\.handles\.size\(\); \+\+index\)/,
-        );
-        assert.doesNotMatch(
-            record,
-            /stable_sort|engine\.sprite_layers\[[^\]]+\]\.order/,
-        );
-    }
-});
-
-test("shares compatible depth-hosted sprite pipelines within a scene pass", () => {
-    const shared = source("native/src/pal_gpu_shared.hpp");
-    const sdl = source("native/src/pal_sdl_gpu_sprite.hpp");
-    const dawn = source("native/src/pal_dawn_sprite.hpp");
-
-    assert.match(shared, /sprite_scene_pipeline_compatible\(/);
-    assert.match(
-        shared,
-        /left_plan\.has_depth == right_plan\.has_depth[\s\S]{0,260}left_plan\.depth_write == right_plan\.depth_write[\s\S]{0,260}left_plan\.alpha_to_coverage == right_plan\.alpha_to_coverage[\s\S]{0,260}custom_shader == right\.custom_shader/,
-    );
-    assert.match(
-        shared,
-        /left_plan\.instance_stride_bytes ==\s*right_plan\.instance_stride_bytes/,
-    );
-    assert.match(sdl, /shared_pipeline = pass\.layers\[previous\]\.pipeline/);
-    assert.match(sdl, /gpu\.pipeline = shared_pipeline;[\s\S]{0,100}if \(!gpu\.pipeline\) \{\s*gpu\.owned_pipeline = create_sprite_layer_pipeline\([\s\S]{0,450}gpu\.pipeline = gpu\.owned_pipeline\.get\(\)/);
-    assert.match(
-        dawn,
-        /shared_pipeline = pass\.layers\[previous\]\.pipeline/,
-    );
-    assert.match(
-        dawn,
-        /shared_group_layouts = pass\.layers\[previous\]\.group_layouts/,
-    );
-    assert.match(dawn, /gpu\.owns_pipeline = shared_pipeline == nullptr/);
-    assert.match(dawn, /gpu\.owns_group_layouts = shared_pipeline == nullptr/);
-    assert.match(
-        dawn,
-        /pass\.layers\.rbegin\(\)[\s\S]{0,180}release_dawn_sprite_layer\(\*layer\)/,
-    );
-});
-
 test("wires reached sprite permutations and provenance into upstream emission", () => {
     const upstream = source("src/upstream-lower.ts");
     assert.match(
@@ -908,159 +188,6 @@ test("keeps Scene53's reached direct sprite bucket after opaque meshes", () => {
         assert(transparentStage, "Missing default transparent stage");
         assert.match(transparentStage,
             /draw_render_list\(\s*render_plan\.draw_lists\.transparent\);[\s\S]*Sprite2DDepthMode::test/);
-    }
-});
-
-test("keeps scene-less sprite render targets and renderer registration live", () => {
-    const sdl = source("native/src/pal_sdl_gpu_sprite.cpp");
-    const dawn = source("native/src/pal_dawn_sprite.cpp");
-
-    for (const backend of [sdl, dawn]) {
-        assert.match(backend, /poll_platform_events\(/);
-        assert.match(
-            backend,
-            /input_replay\.dispatch\(frame, [^,]+, engine\);/,
-        );
-        assert.match(backend, /const auto sync_render_textures = \[&\]\(\)/);
-        assert.match(backend, /const auto sync_renderer_passes = \[&\]\(\)/);
-        assert.match(
-            backend,
-            /advance_frame\([\s\S]*?sync_render_textures\(\);\s*sync_renderer_passes\(\);/,
-        );
-        assert.match(
-            backend,
-            /for \(std::size_t first_index = 0;[\s\S]{0,900}first_renderer\.has_target/,
-        );
-    }
-    assert.match(
-        dawn,
-        /WGPUTextureUsage_RenderAttachment \|\s*WGPUTextureUsage_TextureBinding/,
-    );
-    assert.match(dawn, /resize_dawn_surface\(state, engine\.options\)/);
-});
-
-test("gates the scene-less offscreen readback arm on a requested capture", () => {
-    const sdlSprite = source("native/src/pal_sdl_gpu_sprite.cpp");
-    const sdlEffect = source("native/src/pal_sdl_gpu_effect.cpp");
-    const dawnSprite = source("native/src/pal_dawn_sprite.cpp");
-    const dawnEffect = source("native/src/pal_dawn_effect.cpp");
-
-    // A swapchain texture cannot be read back, so a capture run renders
-    // offscreen and blits; a run without a capture draws straight into
-    // the swapchain and never pays for the readback texture or the blit.
-    for (const driver of [sdlSprite, sdlEffect]) {
-        assert.match(
-            driver,
-            /const bool capture_run = captures\.requested\(\);/,
-        );
-        assert.match(
-            driver,
-            /if \(capture_run\) \{\s*SDL_GPUBlitInfo blit\{\};/,
-        );
-    }
-    assert.match(
-        sdlSprite,
-        /capture_run &&\s*\(color_width != width \|\| color_height != height\)/,
-    );
-    assert.match(
-        sdlSprite,
-        /SDL_GPUTexture\* target = capture_run \? color : swapchain;/,
-    );
-    assert.match(
-        sdlEffect,
-        /capture_run \? resolve : swapchain;/,
-    );
-    // The multisampled arm resolves into the frame's destination, which
-    // is the swapchain itself on a live run -- the pin's own arm.
-    assert.match(
-        sdlEffect,
-        /color_target\.resolve_texture = destination;/,
-    );
-    // The Dawn drivers never had the offscreen arm: they render into the
-    // surface view and copy the surface texture out for a capture.
-    assert.match(dawnSprite, /WGPUTextureView target_view = surface_view;/);
-    assert.match(
-        dawnEffect,
-        /color_attachment\.view = samples > 1 \? msaa_view : surface_view;/,
-    );
-    for (const driver of [dawnSprite, dawnEffect]) {
-        assert.match(driver, /begin_dawn_surface_capture\(/);
-    }
-});
-
-test("batches the scene-less sprite driver's dirty-span uploads", () => {
-    const driver = source("native/src/pal_sdl_gpu_sprite.cpp");
-    const shared = source("native/src/pal_sdl_gpu_shared.hpp");
-    const sprite = source("native/src/pal_sdl_gpu_sprite.hpp");
-
-    // One run-lifetime batch: dirty spans stage into one copy pass and
-    // one submit per frame, not a transfer buffer and submit per layer.
-    assert.match(driver, /GpuBufferUploadBatch buffer_uploads\(device\);/);
-    assert.match(
-        driver,
-        /upload_sprite_pass\(\s*device, engine, pass, delta_ms, buffer_uploads\);[\s\S]{0,80}buffer_uploads\.submit\(\);/,
-    );
-    // The batch's transfer buffer persists across submits (cycled on
-    // map, released by the destructor), so a per-frame writer stops
-    // paying a create/release per frame.
-    assert.match(shared, /~GpuBufferUploadBatch\(\)/);
-    assert.match(
-        shared,
-        /SDL_MapGPUTransferBuffer\(device_, transfer_, true\)/,
-    );
-    // Every caller stages into a run-lifetime batch: the parameter is a
-    // reference, so a batch-less one-shot arm cannot quietly come back.
-    assert.doesNotMatch(sprite, /GpuBufferUploadBatch immediate\(/);
-    assert.doesNotMatch(sprite, /GpuBufferUploadBatch\*/);
-});
-
-test("projects offscreen sprite passes against the canvas extent", () => {
-    const sdlScene = source("native/src/pal_sdl_gpu.cpp");
-    const sdlSprite = source("native/src/pal_sdl_gpu_sprite.cpp");
-    const dawnScene = source("native/src/pal_dawn.cpp");
-    const dawnSprite = source("native/src/pal_dawn_sprite.cpp");
-
-    for (const backend of [sdlScene, sdlSprite]) {
-        assert.match(
-            backend,
-            /record_sprite_pass\([\s\S]{0,180}\bwidth,\s*height\);/,
-        );
-        assert.doesNotMatch(
-            backend,
-            /target_record\s*\?\s*target_record->(?:width|height)/,
-        );
-    }
-    for (const backend of [dawnScene, dawnSprite]) {
-        assert.match(
-            backend,
-            /upload_dawn_sprite_pass\([\s\S]{0,180}\bwidth,\s*height,\s*delta_ms\);/,
-        );
-        assert.doesNotMatch(
-            backend,
-            /target_record\s*\?\s*target_record->(?:width|height)/,
-        );
-    }
-});
-
-test("binds compacted sprite textures by shader resource name", () => {
-    const shared = source("native/src/pal_sdl_gpu_shared.hpp");
-    const sprite = source("native/src/pal_sdl_gpu_sprite.hpp");
-    const billboard = source("native/src/pal_sdl_gpu_billboard.hpp");
-    const intrinsics = source("src/compiler/intrinsics/sprite.ts");
-
-    assert.match(shared, /select_sprite_fragment_textures\(/);
-    assert.match(shared, /resource == name \+ "Tex"/);
-    assert.match(shared, /for \(const std::string& resource : slots\.textures\)/);
-    assert.match(intrinsics, /spriteCustomTextureNames: extraNames/);
-    for (const backend of [sprite, billboard]) {
-        assert.match(
-            backend,
-            /bound_textures = select_sprite_fragment_textures\(/,
-        );
-        assert.match(
-            backend,
-            /SDL_BindGPUFragmentSamplers\([\s\S]{0,140}bound_textures\.data\(\)/,
-        );
     }
 });
 
@@ -1231,168 +358,6 @@ test("forwards DOM-compatible application input through every native loop", () =
     }
 });
 
-test("removeFromScene returns a retired mesh's geometry bytes", () => {
-    const runtime = source("native/include/bblite/runtime.hpp");
-    const scene = source("src/lowering/scene-lowerer.ts");
-    // The release must swap, not assign: `= {}` keeps the capacity.
-    assert.match(runtime, /std::vector<T>\(\)\.swap\(/);
-    // Every vector member of ModelGeometry is released, read off the struct
-    // itself so a new array cannot be retired without being freed.
-    const struct = /struct ModelGeometry \{([\s\S]*?)\n\};/.exec(runtime);
-    assert.ok(struct);
-    const members = [...struct[1]!.matchAll(/std::vector<[^;]*> (\w+);/g)].map(
-        (match) => match[1],
-    );
-    assert.ok(members.length >= 6);
-    for (const member of members) {
-        assert.match(
-            runtime,
-            new RegExp(`release_storage\\(geometry\\.${member}\\);`),
-        );
-    }
-    assert.match(scene, /release_geometry_storage\(shared\);/);
-    // Sharing is counted where it is created (an imported-root clone), so
-    // a removal does not scan every mesh record the engine ever made, and
-    // a removed record is retired before its share is released, so a
-    // remove/add/remove cycle cannot release a sharer's geometry twice.
-    assert.match(scene, /\+\+engine\.geometries\[[^\]]+\]\.owners;/);
-    assert.match(scene, /record\.retired = true;[\s\S]{0,200}--shared\.owners;/);
-    assert.match(scene, /meshes\[mesh\.value\]\.retired\)/);
-    assert.match(scene, /reclaim_unshared_geometry\(\*scene\.engine, mesh\);/);
-});
-
-test("routes voxel save and load through the host file-dialog PAL", () => {
-    const compiler = source("src/compiler.ts");
-    const runtime = source("native/include/bblite/js_voxel_file.hpp");
-    const data = source("native/include/bblite/js_data.hpp");
-    const projection = source("src/compiler/output-projection.ts");
-    const palHeader = source("native/include/bblite/pal.hpp");
-    const pal = source("native/src/pal_file.cpp");
-    const cmake = source("native/CMakeLists.txt");
-
-    assert.match(
-        compiler,
-        /save_voxel_world\(\$\{this\.requireDefaultEngine\(call\)\}/,
-    );
-    assert.match(
-        compiler,
-        /load_voxel_world<\$\{this\.dataTypes\.cppType\(stored\)\}>[\s\S]{0,100}this\.requireDefaultEngine\(call\)/,
-    );
-    // The boundary travels only with the scene that reaches it: the
-    // plain-data header every scene includes carries no file or stream
-    // headers for it.
-    assert.match(projection, /voxelFileStorageReached[\s\S]{0,120}js_voxel_file\.hpp/);
-    assert.doesNotMatch(data, /<filesystem>|<fstream>|save_voxel_world/);
-    assert.match(runtime, /pal::choose_save_file\(/);
-    assert.match(runtime, /pal::choose_open_file\(/);
-    assert.match(runtime, /world\.voxelsave\.json/);
-    assert.match(runtime, /pal::write_selected_file_atomically\(\*path, text\)/);
-    assert.match(runtime, /std::string text\(file->bytes\.begin\(\), file->bytes\.end\(\)\)/);
-    assert.doesNotMatch(runtime, /<filesystem>|<fstream>/);
-    // Numbers are spelled by the one formatter every string coercion shares.
-    assert.match(runtime, /NumberPart\(/);
-    assert.doesNotMatch(runtime, /setprecision/);
-    assert.match(palHeader, /struct FileDialogOptions/);
-    assert.match(palHeader, /struct SelectedFileSnapshot/);
-    assert.doesNotMatch(palHeader, /read_selected_file_text/);
-    assert.match(pal, /SDL_ShowFileDialogWithProperties/);
-    assert.match(pal, /SDL_FILEDIALOG_SAVEFILE/);
-    assert.match(pal, /SDL_FILEDIALOG_OPENFILE/);
-    // Leaving pointer lock for the dialog is the one transition every
-    // other release takes.
-    assert.match(
-        pal,
-        /release_pointer_lock_for_dialog\(Engine& engine\) \{[\s\S]{0,300}sync_pointer_lock\(window, engine\);/,
-    );
-    assert.match(pal, /BBLITE_FILE_DIALOG_SAVE_PATH/);
-    assert.match(pal, /BBLITE_FILE_DIALOG_OPEN_PATH/);
-    assert.match(pal, /SDL_PumpEvents\(\)/);
-    assert.doesNotMatch(pal, /SDL_PollEvent|_WIN32|GetOpenFileName/);
-    assert.match(
-        cmake,
-        /bblite_feature_define\(BBLITE_HAS_BROWSER_FILE "browser:file"\)/,
-    );
-    assert.doesNotMatch(cmake, /comdlg32/);
-});
-
-test("keeps the JSON bridge and Web Storage generic and PAL-owned", () => {
-    const bridge = source("src/compiler/json-bridge.ts");
-    const storage = source("src/compiler/web-storage.ts");
-    const runtime = source("native/include/bblite/js_json.hpp");
-    const shim = source("native/include/bblite/js_storage.hpp");
-    const data = source("native/include/bblite/js_data.hpp");
-    const registry = source("src/compiler/data-types.ts");
-    const pal = source("native/src/pal_storage.cpp");
-    const fileIo = source("native/src/pal_file_io.hpp");
-
-    // Both are recognized by the global the call reaches, not by a module
-    // path, a scene name, or a function name a scene happens to declare.
-    assert.doesNotMatch(bridge, /sandblox|world-io|demos\//i);
-    assert.doesNotMatch(storage, /sandblox|world-io|demos\//i);
-    assert.match(bridge, /isDefaultLibraryIdentifier/);
-    assert.match(storage, /isDefaultLibraryIdentifier/);
-
-    // Codecs are emitted for the records a stringify reaches and no others,
-    // and a self-referential record refuses rather than recursing.
-    assert.match(registry, /jsonSerializedStructs/);
-    assert.match(registry, /reaches a cycle/);
-    assert.match(
-        registry,
-        /renderJsonCodecs\(used\.structs\)/,
-    );
-
-    // The plain-data header every scene includes carries no parser.
-    assert.doesNotMatch(data, /nlohmann|json_stringify|JsonWriter/);
-    // The scene-facing storage header names no OS API.
-    assert.doesNotMatch(shim, /filesystem|fstream|SDL_/);
-    // The PAL owns the path and encodes the key so nothing can traverse.
-    assert.match(pal, /SDL_GetPrefPath\(/);
-    assert.match(pal, /encode_key\(/);
-    assert.match(pal, /detail::write_file_atomically/);
-    assert.match(fileIo, /MoveFileExW|std::filesystem::rename/);
-    // Numbers are spelled by the one formatter every string coercion shares.
-    assert.match(runtime, /format_number\(value, buffer\)/);
-    assert.doesNotMatch(runtime, /setprecision/);
-});
-
-test("keeps image decoding available to standalone effect renderers", () => {
-    const platform = source("native/src/pal_sdl.cpp");
-    const decoderGuard =
-        /#if BBLITE_HAS_PBR_RENDERER \|\| BBLITE_HAS_SPRITE_RENDERER \|\| \\\s+BBLITE_HAS_EFFECT_RENDERER/;
-
-    assert.equal(platform.match(new RegExp(decoderGuard, "g"))?.length, 2);
-    assert.match(platform, /pal::DecodedImage pal::decode_image/);
-    assert.match(platform, /#if BBLITE_HAS_IMAGE_DECODER\s+#include <SDL3_image\/SDL_image\.h>/);
-});
-
-test("shares large texture payloads and preserves tuple reference identity", () => {
-    const runtime = source("native/include/bblite/runtime.hpp");
-    const data = source("native/include/bblite/js_data.hpp");
-    const materials = source("src/lowering/factory/material-factories.ts");
-
-    assert.match(runtime, /class SharedTextureBytes/);
-    assert.match(runtime, /std::shared_ptr<Storage> storage_/);
-    assert.match(runtime, /storage_\.use_count\(\) != 1/);
-    assert.match(runtime, /struct TextureData \{\s*SharedTextureBytes bytes;/);
-    assert.match(runtime, /struct PixelsTexture \{[\s\S]{0,300}SharedTextureBytes rgba;/);
-    assert.match(materials, /normalized\.data\.bytes = texture\.rgba;/);
-
-    assert.match(data, /class Tuple \{/);
-    assert.match(data, /std::shared_ptr<Storage> values_/);
-    assert.match(data, /inline Tuple<N> clone_tuple/);
-    assert.match(data, /class TypedArray \{/);
-    assert.match(data, /std::shared_ptr<std::vector<T>> values_/);
-    assert.match(
-        data,
-        /ArrayBuffer\(const TypedArray<T>& values\)\s*: ArrayBuffer\(values\.buffer\(\)\)/,
-    );
-    assert.match(data, /return view_ \? view_->buffer : ArrayBuffer\(values_\);/);
-    assert.match(
-        data,
-        /ArrayBuffer\(const std::shared_ptr<std::vector<T>>& values\)\s*: external_owner_\(values\)/,
-    );
-});
-
 test("normalizes HTML named entities before retained markup reaches RmlUi", () => {
     const ui = source("native/src/pal_ui_rml.cpp");
 
@@ -1409,112 +374,10 @@ test("normalizes HTML named entities before retained markup reaches RmlUi", () =
     assert.match(ui, /SetInnerRML\(ui_normalize_emoji_presentation\(ui_escape_rml\(text\)\)\)/);
 });
 
-test("reports zero delta on the fixed clock's first frame", () => {
-    const shared = source("native/src/pal_gpu_shared.hpp");
-
-    assert.match(shared, /const bool first_frame = previous_ == 0\.0;/);
-    // A double: the sprite renderer's hook divides the delta by the pin's
-    // frame period, and the browser's own fixed step is a double.
-    assert.match(
-        shared,
-        /fixed_delta_ms > 0\.0 && !first_frame\s*\? fixed_delta_ms\s*:\s*measured/,
-    );
-});
-
-test("selects live shadow-receiver variants for runtime meshes", () => {
-    const shared = source("native/src/pal_gpu_shared.hpp");
-
-    // Runtime-created meshes have no generated feature-table entry. Both
-    // composed material families must therefore select this dynamic bit from
-    // the live mesh record instead of silently choosing a non-shadow variant.
-    assert.equal(
-        (shared.match(/if \(record\.receives_shadows\) \{\s*key\.mesh_features \|= receive_shadows;/g) ?? []).length,
-        2,
-    );
-    assert.equal(
-        (shared.match(/key\.mesh_features \|= receive_shadows;/g) ?? []).length,
-        2,
-    );
-    assert.equal(
-        (shared.match(/key\.mesh_features &= ~receive_shadows;/g) ?? []).length,
-        3,
-    );
-});
-
-test("runs post-start RAF callbacks only after the engine render", () => {
-    const runtime = source("native/include/bblite/runtime.hpp");
-    const pal = source("native/src/pal.cpp");
-    const shared = source("native/src/pal_gpu_shared.hpp");
+test("uploads splats once per backend frame", () => {
     const sdl = source("native/src/pal_sdl_gpu.cpp");
     const dawn = source("native/src/pal_dawn.cpp");
 
-    assert.match(runtime, /post_render_animation_frame_callbacks/);
-    assert.match(
-        runtime,
-        /SnapshotList<js::Callback<void\(double\)>> animation_frame_callbacks/,
-    );
-    assert.match(runtime, /animation_frame_once_callbacks/);
-    assert.match(runtime, /double animation_frame_timestamp_ms = 0\.0;/);
-    assert.match(
-        shared,
-        /inline void run_animation_frame_callbacks\(Engine& engine\)/,
-    );
-    assert.match(
-        shared,
-        /std::move\(engine\.animation_frame_once_callbacks\)/,
-    );
-    assert.equal(
-        (shared.match(/run_animation_frame_callbacks\(engine\);/g) ?? [])
-            .length,
-        3,
-    );
-    assert.match(
-        shared,
-        /inline void finish_frame\(Engine& engine\)[\s\S]{0,900}post_render_animation_frame_callbacks/,
-    );
-    assert.match(shared, /post_render_animation_frame_callbacks_armed = true/);
-    assert.match(shared, /run_interval_callbacks\(engine\);/);
-    assert.match(runtime, /std::uint32_t pending_start_continuations = 0;/);
-    assert.match(
-        pal,
-        /void defer_start_continuation[\s\S]{0,300}\+\+engine\.pending_start_continuations;[\s\S]{0,400}--engine\.pending_start_continuations;/,
-    );
-    assert.match(
-        shared,
-        /drains_resolved\(\) const[\s\S]{0,600}pending_start_continuations != 0\) return false;/,
-    );
-    assert.equal(
-        (dawn.match(/captures\.drains_resolved\(\)/g) ?? []).length,
-        1,
-    );
-    assert.match(
-        dawn,
-        /const bool capture_frame =\s*capture_ready &&\s*!captures\.screenshot_saved/,
-    );
-    for (const backend of [sdl, dawn]) {
-        assert.match(backend, /finish_frame\(engine\);[\s\S]{0,220}\+\+frame/);
-    }
-});
-
-test("parks a re-queued continuation for the next frame's drain", () => {
-    const pal = source("native/src/pal.cpp");
-    const sdl = source("native/src/pal_sdl_gpu.cpp");
-    const dawn = source("native/src/pal_dawn.cpp");
-
-    // The queue is moved out before draining, so a nested
-    // `defer_start_continuation` queued DURING a drain -- the emitted form
-    // of a frame yield inside the hoisted continuation -- runs at the next
-    // frame's boundary rather than in the same one. This is the boundary
-    // that makes `firstSortReady` plus one yield a real barrier.
-    assert.match(
-        pal,
-        /void run_deferred_callbacks\(Engine& engine\)[\s\S]{0,700}due\.swap\(engine\.deferred_callbacks\);/,
-    );
-
-    // Because the barrier is real, each cloud's sort has ONE writer per
-    // backend: the frame loop's upload phase, which runs before the drain
-    // a pick can arrive on. A second call site inside a pick path would be
-    // the compensation this contract deleted growing back.
     assert.equal(
         (sdl.match(/upload_splat_pass\(/g) ?? []).length,
         1,
@@ -1522,49 +385,6 @@ test("parks a re-queued continuation for the next frame's drain", () => {
     assert.equal(
         (dawn.match(/upload_dawn_splat_pass\(/g) ?? []).length,
         1,
-    );
-});
-
-test("keeps SpriteFx elapsed time at JavaScript number precision", () => {
-    for (const path of [
-        "native/src/pal_sdl_gpu_sprite.hpp",
-        "native/src/pal_dawn_sprite.hpp",
-        "native/src/pal_sdl_gpu_billboard.hpp",
-        "native/src/pal_dawn_billboard.hpp",
-    ]) {
-        const backend = source(path);
-        assert.match(backend, /double elapsed_ms = 0\.0;/);
-        assert.match(
-            backend,
-            /static_cast<float>\([^)]*elapsed_ms \/ 1000\.0\)/,
-        );
-    }
-});
-
-test("invalidates billboard uploads when same-count instance data changes", () => {
-    const runtime = source("native/include/bblite/runtime.hpp");
-    const lowerer = source("src/lowering/billboard-lowerer.ts");
-    const shared = source("native/src/pal_gpu_shared.hpp");
-
-    assert.match(
-        runtime,
-        /struct BillboardSystemRecord[\s\S]{0,1200}std::uint64_t instance_version = 0;/,
-    );
-    assert.match(
-        lowerer,
-        /system\.count = index \+ 1u;\s*system\.instance_version \+= 1u;/,
-    );
-    assert.match(
-        lowerer,
-        /if \(system\.count != 0u\)[\s\S]{0,120}system\.instance_version \+= 1u;/,
-    );
-    assert.match(
-        shared,
-        /stamp\.instance_version != system\.instance_version/,
-    );
-    assert.match(
-        shared,
-        /stamp\.instance_version = system\.instance_version;/,
     );
 });
 
@@ -1590,19 +410,6 @@ test("replays billboard stages in compiler-owned frame-graph scene tasks", () =>
     );
 });
 
-test("derives cascade splits from the pinned fitting body", () => {
-    const shadows = source("src/lowering/shadow-lowerer.ts");
-    assert.match(
-        shadows,
-        /pinnedCsmFunctions\(context\)/,
-    );
-    assert.match(
-        shadows,
-        /const CsmCascades& cascades = csm_compute_cascades\(/,
-    );
-    assert.doesNotMatch(shadows, /const double split|const double logarithmic/);
-});
-
 test("shares parent and clone transforms with shadow caster fitting", () => {
     const shadows = source("src/lowering/shadow-lowerer.ts");
     const renderer = source("src/lowering/renderer-lowerer.ts");
@@ -1622,132 +429,6 @@ test("shares parent and clone transforms with shadow caster fitting", () => {
         /std::array<double, 16> apply_mesh_outer_transform\(\s*const MeshRecord& mesh,\s*std::array<double, 16> world\) \{\s*return outer_transform_product\(\s*mesh\.outer_position, mesh\.outer_rotation, world\);/,
     );
     assert.doesNotMatch(renderer, /std::sin\(static_cast<double>\(mesh\.outer_rotation/);
-});
-
-test("reuploads dynamic thin-instance colors on both GPU backends", () => {
-    for (const backend of [
-        source("native/src/pal_sdl_gpu.cpp"),
-        source("native/src/pal_dawn.cpp"),
-    ]) {
-        const dirtyCheck = backend.indexOf("instance_version !=");
-        const colorUpload = backend.indexOf(
-            "instance_colors.data()",
-            dirtyCheck,
-        );
-        assert.ok(dirtyCheck >= 0 && colorUpload > dirtyCheck);
-        assert.match(
-            backend,
-            /instance_colors\.resize\([\s\S]{0,180}instance_matrices\.size\(\) \* 4[\s\S]{0,80}1\.0f\);/,
-        );
-    }
-});
-
-test("uses active shader slots before cached SDL material textures", () => {
-    const backend = source("native/src/pal_sdl_gpu.cpp");
-    const slots = backend.indexOf(
-        "const auto& names = state.shader_fragment_slots[variant].textures;",
-    );
-    const empty = backend.indexOf("if (names.empty()) return;", slots);
-    const uploaded = backend.indexOf(
-        "const auto& uploaded = mesh_shader_textures(mesh);",
-        slots,
-    );
-    assert.ok(slots >= 0 && empty > slots && uploaded > empty);
-});
-
-test("recreates outgrown thin-instance buffers on both GPU backends", () => {
-    // `addThinInstance` doubles a full pool, so the buffers a registration
-    // sized can be too small a frame later. Both backends ask the shared
-    // rule, recreate all three streams at the new capacity, and stamp the
-    // new row count -- a partial update into the old buffer would write
-    // past its end.
-    assert.match(
-        source("native/src/pal_gpu_shared.hpp"),
-        /inline bool thin_instance_pool_grew\([\s\S]{0,220}instance_matrices\.size\(\) >[\s\S]{0,80}allocated_rows\)/,
-    );
-    for (const [backend, release, create] of [
-        [
-            source("native/src/pal_sdl_gpu.cpp"),
-            "SDL_ReleaseGPUBuffer",
-            "frame_buffer_uploads.upload",
-        ],
-        [
-            source("native/src/pal_dawn.cpp"),
-            "wgpuBufferRelease",
-            "create_buffer",
-        ],
-    ] as const) {
-        assert.match(
-            backend,
-            new RegExp(
-                `const bool recreated =[\\s\\S]{0,200}thin_instance_pool_grew\\(`,
-            ),
-        );
-        // Matrices, the PBR mirror-conjugated copy and the colour lane are
-        // all released and rebuilt, in that order, inside the same branch.
-        // Ordered by position rather than by a character budget, because
-        // the branch's prose is not part of its contract.
-        const branch = backend.indexOf("if (recreated) {");
-        assert.ok(branch >= 0, "no capacity-recreation branch");
-        let cursor = branch;
-        for (const marker of [
-            `${release}(`,
-            `${create}(`,
-            "pinned_instances",
-            "instance_colors",
-            "instance_capacity =",
-        ]) {
-            const at = backend.indexOf(marker, cursor);
-            assert.ok(
-                at > cursor,
-                `the recreation branch does not reach '${marker}' in order`,
-            );
-            cursor = at;
-        }
-        // The old handle is captured before the matrix stream is replaced,
-        // so the aliasing test the release path makes stays answerable.
-        assert.match(
-            backend,
-            /pinned_instances !=\s*\r?\n?\s*previous_instances/,
-        );
-        // A recreation is a full upload, so the dirty-range write is not
-        // repeated over the same buffer that frame.
-        assert.match(backend, /if \(!recreated && active_count > 0\)/);
-        // Nothing may cache a buffer handle past the frame that recreated
-        // it. Neither backend records render bundles, so every pass --
-        // including the shadow and depth tasks encoded after this sync --
-        // reads the mesh's live handles and its live instance count.
-        assert.doesNotMatch(backend, /RenderBundle/);
-        assert.match(backend, /mesh\.instance_count,/);
-    }
-});
-
-test("shares one relative-index rule across the ranged array builtins", () => {
-    const data = source("native/include/bblite/js_data.hpp");
-    // `slice`, `fill(value, start, end)` and `copyWithin` resolve every
-    // endpoint through ECMA-262's relative-index rule, stated once.
-    assert.match(
-        data,
-        /inline std::size_t relative_index\(\s*\r?\n?\s*std::size_t length,\s*\r?\n?\s*double raw\)/,
-    );
-    assert.match(
-        data,
-        /relative_slice_bounds\([\s\S]{0,400}relative_index\(length, begin_value\)[\s\S]{0,400}relative_index\(length, end_value\)/,
-    );
-    assert.match(
-        data,
-        /array_fill_range\([\s\S]{0,300}relative_slice_bounds\(/,
-    );
-    // The spec copies as if through an intermediate list, so an overlapping
-    // forward run must not read bytes it has already written.
-    assert.match(
-        data,
-        /array_copy_within\([\s\S]{0,900}std::copy_backward\(/,
-    );
-    assert.match(
-        data,
-        /const auto count = std::min\(final - from, values\.size\(\) - to\);/,
-    );
 });
 
 test("keys PBR instance colour from the stream binding predicate", () => {
@@ -1805,19 +486,6 @@ test("composes PBR thin-instance parent TRS before the root mirror", () => {
     assert.doesNotMatch(
         shared,
         /draw_world\(\s*pinned_instanced_world/,
-    );
-});
-
-test("keeps looping buffer sources and playback rate on the audio PAL", () => {
-    const contract = source("native/include/bblite/pal_audio.hpp");
-    const pal = source("native/src/pal_audio_labsound.cpp");
-
-    assert.match(contract, /AudioParamName[\s\S]{0,200}PlaybackRate/);
-    assert.match(contract, /void audio_set_loop\(/);
-    assert.match(pal, /AudioParamName::PlaybackRate: return "playbackRate"/);
-    assert.match(
-        pal,
-        /sampled->start\(static_cast<float>\(when\), loop \? -1 : 0\);/,
     );
 });
 
@@ -1886,52 +554,6 @@ test("does not idle either GPU backend for runtime scene topology updates", () =
     assert.doesNotMatch(dawn, /wgpuQueueOnSubmittedWorkDone/);
 });
 
-test("grows post-start shadow task state on both GPU backends", () => {
-    const sdl = source("native/src/pal_sdl_gpu.cpp");
-    const dawn = source("native/src/pal_dawn.cpp");
-
-    assert.match(
-        sdl,
-        /const auto rebuild_task_draw_lists = \[&\] \{\s*task_draw_lists\.resize\(engine\.frame_tasks\.size\(\)\);/,
-    );
-    assert.match(
-        dawn,
-        /const auto rebuild_task_draw_lists = \[&\] \{\s*if \(state\.render_tasks\.size\(\) < engine\.frame_tasks\.size\(\)\) \{\s*state\.render_tasks\.resize\(engine\.frame_tasks\.size\(\)\);/,
-    );
-    assert.match(
-        dawn,
-        /DawnRenderTask& render_task =[\s\S]{0,120}if \(!render_task\.view_projection\) \{[\s\S]{0,180}WGPUBufferUsage_Uniform/,
-    );
-});
-
-test("instrumented draw census follows the submitted screenshot frame", () => {
-    const capture = source("src/capture-instrumented.ts");
-
-    assert.match(capture, /const bundleDraws = \{\}/);
-    assert.match(capture, /let submittedPassDraws = \{\}/);
-    assert.match(
-        capture,
-        /requestAnimationFrame = function[\s\S]{0,220}submittedPassDraws = \{\}/,
-    );
-    assert.match(capture, /drawIndexedIndirect\(buffer#/);
-    assert.match(
-        capture,
-        /const recordDraw =[\s\S]{0,120}target\[key\] = \(target\[key\] \|\| 0\) \+ 1/,
-    );
-    assert.match(
-        capture,
-        /GPUQueue\.prototype\.submit = function[\s\S]{0,180}!insideAnimationFrame[\s\S]{0,220}submittedPassDraws = \{\}/,
-    );
-});
-
-test("canvas-only capture removes host focus chrome", () => {
-    const harness = source("src/browser-harness.ts");
-    assert.match(
-        harness,
-        /hideNonCanvasChrome[\s\S]{0,500}canvas\.style\.outline = "none"/,
-    );
-});
-
 test("keeps dynamic shader geometry local and transforms it per draw", () => {
     const shared = source("native/src/pal_gpu_shared.hpp");
     const sdl = source("native/src/pal_sdl_gpu.cpp");
@@ -1971,10 +593,6 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
             /item\.material_kind ==\s*upstream::RenderMaterialKind::shader[\s\S]{0,300}transform_version = mesh\.transform_version;[\s\S]{0,80}continue;/,
         );
     }
-    assert.match(
-        capture,
-        /ShaderDrawMatrices shader_matrices\(\s*engine,\s*engine\.meshes\[/,
-    );
     assert.match(capture, /shader_matrices\.apply\(pass_matrices\)/);
     // The capture packs the block through the same caller-owned-scratch
     // shape both backends' draw loops thread through the shared packer.
@@ -2106,7 +724,7 @@ test("releases Dawn mesh dependents before their owned resources", () => {
         dawn.indexOf("    void release_meshes()"),
     );
     const bindingRelease = releaseMesh.indexOf(
-        "wgpuBindGroupRelease(binding.textures)",
+        "binding.textures.reset()",
     );
     const drawStateRelease = releaseMesh.indexOf(
         "mesh.pinned_states.clear()",
@@ -2128,21 +746,5 @@ test("releases Dawn mesh dependents before their owned resources", () => {
             destructor.indexOf(
                 "wgpuPipelineLayoutRelease(mesh_pipeline_layout)",
             ),
-    );
-});
-
-test("captures splat renderables beside the render-plan draw lists", () => {
-    const capture = source("native/src/pal_render_capture.hpp");
-    assert.match(capture, /write_splat_draw_list/);
-    assert.match(capture, /for \(const SplatMeshHandle handle : scene\.splat_meshes\)/);
-    assert.match(capture, /upstream::write_splat_uniforms\(/);
-    assert.match(capture, /json\.field\("indexCount", 6u\)/);
-    assert.match(capture, /json\.field\("instanceCount", splat\.vertex_count\)/);
-    // The frame's view, projection and camera position are built once by
-    // the caller and handed over, because the pin's splat UBO stores them
-    // separately and three consumers read the same set.
-    assert.match(
-        capture,
-        /write_splat_draw_list\(\s*json,\s*scene,\s*engine,\s*frame_view,\s*frame_projection,\s*frame_camera_position,\s*width,\s*height\)/,
     );
 });

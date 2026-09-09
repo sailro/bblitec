@@ -72,7 +72,7 @@ inline constexpr std::size_t splat_texture_count =
     splat_float_payload_count +
     static_cast<std::size_t>(BBLITE_SPLAT_SH_TEXTURES);
 
-struct SplatPass {
+struct SplatPassResources {
     SplatMeshHandle mesh{};
     std::uint32_t vertex_count = 0;
     std::uint64_t data_version = 0;
@@ -111,6 +111,9 @@ struct SplatPass {
      */
     std::array<float, 16> world{};
 };
+inline void release_splat_pass_resources(SDL_GPUDevice*, SplatPassResources&) noexcept;
+using SplatPass = OwnedGpuRecord<SplatPassResources, std::remove_pointer_t<SDL_GPUDevice*>, release_splat_pass_resources>;
+
 
 inline SplatPass create_splat_pass(
     SDL_GPUDevice* device,
@@ -122,8 +125,8 @@ inline SplatPass create_splat_pass(
     SDL_GPUTextureFormat target_format,
     SDL_GPUTextureFormat depth_format,
     SDL_GPUSampleCount sample_count) {
-    SplatMeshRecord& record = engine.splat_meshes[handle.value];
-    SplatPass pass;
+    SplatMeshRecord& record = handle_at(engine.splat_meshes, handle);
+    SplatPass pass{device};
     pass.mesh = handle;
     pass.vertex_count = record.vertex_count;
 
@@ -322,7 +325,7 @@ inline void upload_splat_pass(
     const Engine& engine,
     SplatPass& pass,
     const std::array<float, 16>& view) {
-    const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
+    const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     sync_splat_data(device, record, pass);
 
     // Composed once here for both the sort gate and the draw's uniforms,
@@ -367,7 +370,7 @@ inline void record_splat_pass(
     double width,
     double height) {
     if (pass.vertex_count == 0) return;
-    const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
+    const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
 
     upstream::SplatUniforms uniforms;
@@ -421,7 +424,7 @@ inline void record_splat_pass(
         0);
 }
 
-inline void release_splat_pass(SDL_GPUDevice* device, SplatPass& pass) {
+inline void release_splat_pass_resources([[maybe_unused]] SDL_GPUDevice* device, SplatPassResources& pass) noexcept {
     for (SDL_GPUTextureSamplerBinding& binding : pass.textures) {
         if (binding.texture) SDL_ReleaseGPUTexture(device, binding.texture);
         binding.texture = nullptr;
@@ -436,6 +439,9 @@ inline void release_splat_pass(SDL_GPUDevice* device, SplatPass& pass) {
     pass.order = nullptr;
     pass.indices = nullptr;
     pass.quad = nullptr;
+    pass = SplatPassResources{};
 }
+
+inline void release_splat_pass(SDL_GPUDevice*, SplatPass& pass) { pass.reset(); }
 
 } // namespace bbl::pal

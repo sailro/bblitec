@@ -1,3 +1,13 @@
+import { EmissionSet } from "../emission-transaction.js";
+import type { LoweringServices } from "../lowering-services.js";
+// Frame-graph option lowering: render targets, render/geometry/copy
+// tasks, and the scene's default-render-task flag.
+//
+// Each function turns a task factory's options argument into the
+// C++ options struct literal the PAL executes, and the geometry task
+// also returns the manifest entry the generated shader table indexes
+// by reach order. The intrinsic lowerer in engine.ts calls these
+// through its context.
 // Frame-graph option lowering: render targets, render/geometry/copy
 // tasks, and the scene's default-render-task flag.
 //
@@ -8,12 +18,10 @@
 // through its context.
 import ts from "typescript";
 import { handleCppType } from "../data-types.js";
-import type { CompilerSymbols } from "../symbols.js";
 import type {
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
     Value,
-    ValueKind,
 } from "../types.js";
 import {
     compileOptionalStaticBoolean,
@@ -26,41 +34,24 @@ import {
 } from "../option-helpers.js";
 
 export interface EngineOptionContext
-    extends PositiveIntegerContext {
-    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
-    readonly symbols: CompilerSymbols;
-    readonly geometryOutputTasks: readonly GeometryOutputTaskManifest[];
-    unwrap(expression: ts.Expression): ts.Expression;
-    propertyName(name: ts.PropertyName): string | undefined;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
-    expectSameEngine(
-        left: Value,
-        right: Value,
-        node: ts.Node,
-    ): void;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileBoolean(expression: ts.Expression): string;
-    compileColor4(expression: ts.Expression): string;
-    compileStringLiteral(
-        expression: ts.Expression,
-    ): string;
-    cppString(value: string): string;
-}
+    extends PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "noteTemporalRecordBoundary"
+        | "symbols"
+        | "geometryOutputTasks"
+        | "unwrap"
+        | "propertyName"
+        | "compileValue"
+        | "expectKind"
+        | "expectSameEngine"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "compileNumber"
+        | "compileBoolean"
+        | "compileColor4"
+        | "compileStringLiteral"
+        | "cppString"
+    > {}
 
 /**
  * A compiled render-target descriptor, and the one fact about it a caller
@@ -389,7 +380,7 @@ function compileGeometryTextureType(
         unwrapped,
         "GeometryTextureType",
     ) as GeometryTextureTypeName;
-    const supported = new Set<GeometryTextureTypeName>([
+    const supported = new EmissionSet<GeometryTextureTypeName>([
         "IRRADIANCE",
         "WORLD_POSITION",
         "LOCAL_POSITION",
@@ -420,17 +411,12 @@ export function geometryEnumMember(type: GeometryTextureTypeName): string {
  * engine should not have to be handed one to read a number off an object.
  * `EngineOptionContext` satisfies it, so every existing caller is unchanged.
  */
-export interface RequiredObjectNumberContext {
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    fail(node: ts.Node, message: string): never;
-}
+export interface RequiredObjectNumberContext
+    extends Pick<LoweringServices,
+        | "objectProperty"
+        | "compileNumber"
+        | "fail"
+    > {}
 
 export function requiredObjectNumber(
     context: RequiredObjectNumberContext,
@@ -504,9 +490,10 @@ export function compileTextureReference(
 }
 
 /** All `compileRenderTextureValue` needs: somewhere to refuse. */
-interface RenderTextureSlotContext {
-    fail(expression: ts.Node, message: string): never;
-}
+interface RenderTextureSlotContext
+    extends Pick<LoweringServices,
+        | "fail"
+    > {}
 
 /**
  * The one place a slot says which render textures may fill it.

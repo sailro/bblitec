@@ -39,7 +39,7 @@
 namespace bbl::pal {
 
 /** One billboard system, as GPU resources. */
-struct BillboardPass {
+struct BillboardResources {
     OwnedSdlPipeline pipeline;
     // The mode-4 wrapper's second pipeline: a stock Add pass over the same
     // instances, built only when the descriptor carries two passes. Its
@@ -69,6 +69,9 @@ struct BillboardPass {
     // Mirrors the JavaScript `number` accumulator until the f32 UBO write.
     double elapsed_ms = 0.0;
 };
+
+inline void release_billboard_resources(SDL_GPUDevice*, BillboardResources&) noexcept;
+using BillboardPass = OwnedGpuRecord<BillboardResources, std::remove_pointer_t<SDL_GPUDevice*>, release_billboard_resources>;
 
 /** The vertex block the reconstructed billboard stage declares. */
 struct BillboardSceneUniforms {
@@ -102,10 +105,10 @@ inline BillboardPass create_billboard_pass(
     SDL_GPUTextureFormat depth_format,
     SDL_GPUSampleCount sample_count) {
     const BillboardSystemRecord& system =
-        engine.billboard_systems[system_handle.value];
+        handle_at(engine.billboard_systems, system_handle);
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[system.atlas.value];
-    BillboardPass pass;
+        handle_at(engine.sprite_atlases, system.atlas);
+    BillboardPass pass{device};
     pass.system = system_handle;
 
     pass.index_buffer = upload_buffer(
@@ -275,9 +278,8 @@ inline BillboardPass create_billboard_pass(
 
     // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas texels
     // reach the blend stage as the bytes on disk.
-    pass.textures = sprite_fragment_textures(
-        device,
-        upload_2d_texture(
+    pass.textures.resize(1);
+    pass.textures[0].texture = upload_2d_texture(
             device,
             atlas.rgba.data(),
             atlas.rgba.size(),
@@ -285,8 +287,11 @@ inline BillboardPass create_billboard_pass(
             atlas.height,
             SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
             "billboard atlas",
-            atlas_mip_levels(atlas)),
-        create_texture_sampler(device, atlas.sampler),
+            atlas_mip_levels(atlas));
+    pass.textures[0].sampler = create_texture_sampler(device, atlas.sampler);
+    append_sprite_fragment_textures(
+        device,
+        pass.textures,
         system.custom_textures,
         "billboard custom texture");
     pass.bound_textures = select_sprite_fragment_textures(
@@ -311,7 +316,7 @@ inline void upload_billboard_pass(
     const std::array<float, 16>& view,
     double delta_ms) {
     const BillboardSystemRecord& system =
-        engine.billboard_systems[pass.system.value];
+        handle_at(engine.billboard_systems, pass.system);
     // The pin advances the clock in `_update`, before and regardless of
     // whether the sorted instance data moved.
     if (system.custom_shader) {
@@ -354,7 +359,7 @@ inline void record_billboard_pass(
     const std::array<float, 16>& view_projection,
     const std::array<float, 16>& view) {
     const BillboardSystemRecord& system =
-        engine.billboard_systems[pass.system.value];
+        handle_at(engine.billboard_systems, pass.system);
     if (!system.visible || system.count == 0) {
         return;
     }
@@ -462,15 +467,15 @@ inline void record_billboard_pass(
     }
 }
 
-inline void release_billboard_pass(
-    SDL_GPUDevice* device,
-    BillboardPass& pass) {
+inline void release_billboard_resources([[maybe_unused]] SDL_GPUDevice* device, BillboardResources& pass) noexcept {
     release_sprite_fragment_textures(device, pass.textures);
     if (pass.instances) SDL_ReleaseGPUBuffer(device, pass.instances);
     if (pass.index_buffer) {
         SDL_ReleaseGPUBuffer(device, pass.index_buffer);
     }
-    pass = BillboardPass{};
+    pass = BillboardResources{};
 }
+
+inline void release_billboard_pass(SDL_GPUDevice*, BillboardPass& pass) { pass.reset(); }
 
 }  // namespace bbl::pal

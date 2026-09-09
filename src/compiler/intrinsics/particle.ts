@@ -1,3 +1,4 @@
+import type { LoweringServices } from "../lowering-services.js";
 // The node-particle family records graph builds and source lifecycle calls.
 // Frozen systems execute the pin during generation, preserving V8-dependent
 // random sequences. Live pure-2D bindings and provider-backed systems lower
@@ -5,7 +6,16 @@
 // retain source callbacks and execute authored setup/step calls natively.
 // Both paths share the pinned atlas, blend and particle-to-sprite bridges;
 // unsupported combinations refuse where their source operation is reached.
-import { createHash } from "node:crypto";
+// The node-particle family records graph builds and source lifecycle calls.
+// Frozen systems execute the pin during generation, preserving V8-dependent
+// random sequences. Live pure-2D bindings and provider-backed systems lower
+// supported pinned evaluators into native simulation state. Providers also
+// retain source callbacks and execute authored setup/step calls natively.
+// Both paths share the pinned atlas, blend and particle-to-sprite bridges;
+// unsupported combinations refuse where their source operation is reached.
+import {
+    createHash,
+} from "node:crypto";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { requireParticleBakeWritable } from "../particle-buffer.js";
@@ -37,44 +47,35 @@ import type {
 // The pin's own bridge defaults, read from the one table
 // `node-particle-lowerer.ts` asserts against the pinned declarations —
 // so the values resolved here cannot drift from the pin unseen.
+// The pin's own bridge defaults, read from the one table
+// `node-particle-lowerer.ts` asserts against the pinned declarations —
+// so the values resolved here cannot drift from the pin unseen.
 import {
     pinnedDefaultFlag,
     pinnedDefaultNumber,
     pinnedDefaultVec2,
 } from "../../lowering/pinned-material-defaults.js";
 import type { IntrinsicCallContext } from "./context.js";
-import type { DataType } from "../data-types.js";
 
 export interface ParticleIntrinsicContext
-    extends
-        IntrinsicCallContext,
-        ExecutedModuleReferenceContext,
-        ObjectValidationContext,
-        PositiveIntegerContext,
-        StaticBooleanContext {
-    /** The scene's node-particle program; this module appends to it. */
-    readonly reachedNodeParticles: CompiledNodeParticles;
-    requireDefaultEngine(node: ts.Node): string;
-    compileStaticString(expression: ts.Expression): string;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    /**
-     * A live system draws the pin's own `Math.random` per particle in
-     * native code, so the browser reference must draw the same pinned
-     * sequence; this is the same reach lowered scene code records.
-     */
-    reachJsRandom(): void;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    emit(line: string): void;
-    allocateTemporaryCppName(label: string): string;
-    compileForDataSink(expression: ts.Expression, type: DataType): string;
-    compileNumber(expression: ts.Expression, precision?: "float" | "double"): string;
-}
+    extends IntrinsicCallContext,
+    ExecutedModuleReferenceContext,
+    ObjectValidationContext,
+    PositiveIntegerContext,
+    StaticBooleanContext,
+    Pick<LoweringServices,
+        | "reachedNodeParticles"
+        | "requireDefaultEngine"
+        | "compileStaticString"
+        | "lookupOptional"
+        | "reachJsRandom"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "emit"
+        | "allocateTemporaryCppName"
+        | "compileForDataSink"
+        | "compileNumber"
+    > {}
 
 /** The four builders the corpus reaches, by their own export names. */
 const builders: Readonly<Record<string, NodeParticleBuilder>> = {
@@ -451,9 +452,9 @@ export function compileParticleIntrinsic(
                 kind: "function", parameters: [], result: { kind: "f32array" },
             });
             const callbackCpp = context.allocateTemporaryCppName("particle_provider");
-            context.emit(`auto ${callbackCpp} = ${callback};`);
+            context.emit({ kind: "declaration", type: "auto", name: callbackCpp, initializer: callback });
             const initialMatrixCpp = context.allocateTemporaryCppName("particle_emitter_initial");
-            context.emit(`const auto ${initialMatrixCpp} = bbl::upstream::sample_node_particle_emitter(${callbackCpp});`);
+            context.emit({ kind: "declaration", type: "const auto", name: initialMatrixCpp, initializer: `bbl::upstream::sample_node_particle_emitter(${callbackCpp})` });
             context.reachFeature("particle:node", call);
             const options = buildOptions(context, call.arguments[1]);
             return { kind: "record", cpp: "", recordProperties: {},

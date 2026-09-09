@@ -26,6 +26,7 @@ function gltfDataUrl(document: Record<string, unknown>): string {
 function compileFindNode(
     document: Record<string, unknown>,
     helper = exactFindNode,
+    target = "findNode",
 ) {
     const source = gltfDataUrl(document);
     return compileSource(`
@@ -44,7 +45,7 @@ function compileFindNode(
             const container = await loadGltf(engine, ${JSON.stringify(source)});
             const parent = createTransformNode("parent");
             const root = container.entities[0] as SceneNode;
-            setParent(findNode(root, "Target")!, parent);
+            setParent(${target}(root, "Target")!, parent);
         }
         void main();
     `);
@@ -90,6 +91,15 @@ function findNode(root: SceneNode, name: string): SceneNode | null {
     assert.match(result.cpp, /asset_descendant_found/);
 });
 
+test("resolves renamed descendant searches and their recursive references", () => {
+    const result = compileFindNode({
+        asset: { version: "2.0" },
+        nodes: [{ name: "Target", mesh: 0 }],
+        meshes: [{ primitives: [{}] }],
+    }, exactFindNode.replaceAll("findNode", "lookupDescendant"), "lookupDescendant");
+    assert.match(result.cpp, /asset_descendant_found/);
+});
+
 test("Scene 269 findNode refuses a helper with behavior beyond the exact DFS", () => {
     const changedHelper = `
 function findNode(root: SceneNode, name: string): SceneNode | undefined {
@@ -120,7 +130,7 @@ function findNode(root: SceneNode, name: string): SceneNode | undefined {
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
-            assert.match(error.message, /only for the exact depth-first helper/);
+            assert.match(error.message, /Unsupported property value 'root.name'/);
             return true;
         },
     );

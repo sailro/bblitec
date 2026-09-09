@@ -1,18 +1,20 @@
+import { EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind } from "./data-types.js";
 import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
-import type { Value } from "./types.js";
 
-interface Context {
-    readonly checker: ts.TypeChecker;
-    readonly symbols: { importedName(identifier: ts.Identifier): string | undefined };
-    unwrap(expression: ts.Expression): ts.Expression;
-    knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    noteNodeGeometryMutation(node: ts.Node): void;
-}
+interface Context
+    extends Pick<LoweringServices,
+        | "checker"
+        | "symbols"
+        | "unwrap"
+        | "knownValueWithoutEvaluation"
+        | "isDefaultLibraryIdentifier"
+        | "noteNodeGeometryMutation"
+    > {}
 
-const transforms = new Set(["position", "rotation", "rotationQuaternion", "scaling", "parent", "_localMatrix"]);
+const transforms = new EmissionSet(["position", "rotation", "rotationQuaternion", "scaling", "parent", "_localMatrix"]);
 
 /** Observe writer ownership without compiling or evaluating a speculative receiver. */
 export function checkNodeGeometryMutation(context: Context, expression: ts.Expression): void {

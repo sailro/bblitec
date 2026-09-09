@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_ui_backdrop.hpp"
 
 #include <bblite/pal_ui.hpp>
 #include <array>
@@ -51,7 +52,7 @@ inline UiDawnTexture create_ui_backdrop_dawn_texture(
     descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopyDst;
     UiDawnTexture result;
     result.texture = wgpuDeviceCreateTexture(device, &descriptor);
-    result.view = wgpuTextureCreateView(result.texture, nullptr);
+    result.view = create_dawn_texture_view(result.texture, nullptr);
     std::array<WGPUBindGroupEntry, 2> entries{};
     entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
     entries[0].binding = 0;
@@ -80,22 +81,15 @@ inline void render_ui_backdrop_dawn(
     };
     if (resources.pairs.size() <= backdrop_index) resources.pairs.resize(backdrop_index + 1);
     auto& pair = resources.pairs[backdrop_index];
-    if (!pair.snapshot.texture || pair.source_width != backdrop.width ||
-        pair.source_height != backdrop.height) {
-        pair.snapshot.release();
-        pair.source_width = backdrop.width;
-        pair.source_height = backdrop.height;
-        pair.snapshot = create(pair.source_width, pair.source_height, target_format);
-    }
-    if (!pair.first.texture || pair.blur_width != backdrop.blur_width ||
-        pair.blur_height != backdrop.blur_height) {
-        pair.first.release();
-        pair.second.release();
-        pair.blur_width = backdrop.blur_width;
-        pair.blur_height = backdrop.blur_height;
-        pair.first = create(pair.blur_width, pair.blur_height, WGPUTextureFormat_RGBA16Float);
-        pair.second = create(pair.blur_width, pair.blur_height, WGPUTextureFormat_RGBA16Float);
-    }
+    sync_ui_backdrop_targets(pair, backdrop, pair.snapshot.texture != nullptr, pair.first.texture != nullptr,
+        [&](std::uint32_t width, std::uint32_t height) {
+            pair.snapshot.release(); pair.snapshot = create(width, height, target_format);
+        },
+        [&](std::uint32_t width, std::uint32_t height) {
+            pair.first.release(); pair.second.release();
+            pair.first = create(width, height, WGPUTextureFormat_RGBA16Float);
+            pair.second = create(width, height, WGPUTextureFormat_RGBA16Float);
+        });
     WGPUTexelCopyTextureInfo source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
     source.texture = target;
     source.origin = {
@@ -116,7 +110,7 @@ inline void render_ui_backdrop_dawn(
         WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
         descriptor.colorAttachmentCount = 1;
         descriptor.colorAttachments = &attachment;
-        auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+        DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
         wgpuRenderPassEncoderSetPipeline(pass, composite ? composite_pipeline : resources.pipeline);
         wgpuRenderPassEncoderSetBindGroup(pass, 0, screen_group, 0, nullptr);
         wgpuRenderPassEncoderSetBindGroup(pass, 1, input, 0, nullptr);
@@ -124,17 +118,14 @@ inline void render_ui_backdrop_dawn(
         wgpuRenderPassEncoderSetIndexBuffer(pass, indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
         wgpuRenderPassEncoderDrawIndexed(pass, count, 1, first, 0, 0);
         wgpuRenderPassEncoderEnd(pass);
-        wgpuRenderPassEncoderRelease(pass);
+        pass.reset();
     };
-    draw(
-        pair.first.view,
-        pair.snapshot.group,
-        backdrop.sample_index,
-        UiBackdrop::sample_index_count,
-        false);
-    draw(pair.second.view, pair.first.group, backdrop.horizontal_index(), backdrop.kernel_index_count, false);
-    draw(pair.first.view, pair.second.group, backdrop.vertical_index(), backdrop.kernel_index_count, false);
-    draw(target_view, pair.first.group, backdrop.composite_index(), backdrop.composite_index_count, true);
+    const std::array<WGPUTextureView, 4> views{target_view, pair.snapshot.view, pair.first.view, pair.second.view};
+    const std::array<WGPUBindGroup, 4> groups{nullptr, pair.snapshot.group, pair.first.group, pair.second.group};
+    for (const auto& pass : ui_backdrop_draw_plan(backdrop)) {
+        draw(views[static_cast<std::size_t>(pass.output)], groups[static_cast<std::size_t>(pass.input)],
+            pass.first, pass.count, pass.output == UiBackdropSurface::target);
+    }
 }
 
 } // namespace bbl::pal

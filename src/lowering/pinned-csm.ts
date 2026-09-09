@@ -9,6 +9,7 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import type { RenderedCpp } from "./pinned-numeric-expression.js";
 
 const modulePath = "src/shadow/csm-shadow-task-hooks.ts";
 
@@ -210,7 +211,7 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
         return undefined;
     }
 
-    public override expression(expression: ts.Expression): string {
+    protected override expressionDomain(expression: ts.Expression): string | RenderedCpp | undefined {
         const node = this.context.unwrapExpression(expression);
         if (node.kind === ts.SyntaxKind.NullKeyword) return "std::nullopt";
         if (ts.isBinaryExpression(node)) {
@@ -250,7 +251,7 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
             return value.cpp;
         }
         try {
-            return super.expression(node);
+            return super.expressionDomain(node);
         } catch (error) {
             if (!(error instanceof Error)) throw error;
             return this.context.contractError(node, error.message);

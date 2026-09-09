@@ -1,11 +1,4 @@
-// Dawn (WebGPU) render backend. Renders through the same pinned Dawn
-// commit as the Tint shader compiler so native output shares the
-// browser reference's compiler and rasterization stack. Generated
-// native WGSL is fed to Dawn directly; there is no offline shader
-// compilation in this backend.
-//
-// Current slice: Standard-material opaque scenes without environment
-// features. Unreached paths fail explicitly instead of approximating.
+// Dawn renders generated WGSL directly through the Tint-pinned WebGPU runtime.
 
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
@@ -63,6 +56,7 @@
 #include "pal_dawn_effect.hpp"
 #endif
 #include "pal_gpu_shared.hpp"
+#include "pal_frame_session.hpp"
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
 #include "pal_dawn_text.hpp"
 #endif
@@ -96,20 +90,20 @@ namespace bbl::pal {
 namespace {
 
 struct DawnMeshBindings {
-    WGPUBindGroup scene = nullptr;
-    WGPUBindGroup textures = nullptr;
-    WGPUBindGroup material = nullptr;
+    DawnBindGroup scene{};
+    DawnBindGroup textures{};
+    DawnBindGroup material{};
 #if BBLITE_GPU_MORPH_STORAGE
-    WGPUBindGroup morph = nullptr;
+    DawnBindGroup morph{};
 #endif
 };
 
 /** Bind groups whose shapes come from one generated ShaderMaterial variant. */
 struct DawnShaderBindings {
-    WGPUBindGroup storage = nullptr;
-    WGPUBindGroup scene = nullptr;
-    WGPUBindGroup resources = nullptr;
-    WGPUBindGroup material = nullptr;
+    DawnBindGroup storage{};
+    DawnBindGroup scene{};
+    DawnBindGroup resources{};
+    DawnBindGroup material{};
 };
 
 struct DawnShaderBindingKey {
@@ -125,10 +119,10 @@ struct DawnShaderBindingKey {
 };
 
 void release_dawn_shader_bindings(DawnShaderBindings& bindings) {
-    if (bindings.material) wgpuBindGroupRelease(bindings.material);
-    if (bindings.resources) wgpuBindGroupRelease(bindings.resources);
-    if (bindings.scene) wgpuBindGroupRelease(bindings.scene);
-    if (bindings.storage) wgpuBindGroupRelease(bindings.storage);
+    if (bindings.material) bindings.material.reset();
+    if (bindings.resources) bindings.resources.reset();
+    if (bindings.scene) bindings.scene.reset();
+    if (bindings.storage) bindings.storage.reset();
     bindings = {};
 }
 
@@ -458,8 +452,8 @@ struct DawnSharedShaderGeometry {
     // Kept only below `shared_geometry_bytes_kept_below` vertices.
     std::vector<GpuVertex> vertices;
     std::vector<std::uint32_t> indices;
-    WGPUBuffer vertex_buffer = nullptr;
-    WGPUBuffer index_buffer = nullptr;
+    DawnBuffer vertex_buffer{};
+    DawnBuffer index_buffer{};
     std::size_t users = 0;
 };
 
@@ -474,9 +468,9 @@ struct DawnSharedMaterialTextures {
 struct DawnSharedComposedMaterialTextures {
     MaterialHandle material{};
     bool standard_material = false;
-    std::array<WGPUTexture, mesh_texture_slots> textures{};
-    std::array<WGPUTextureView, mesh_texture_slots> views{};
-    std::array<WGPUSampler, mesh_texture_slots> samplers{};
+    std::array<DawnTexture, mesh_texture_slots> textures{};
+    std::array<DawnTextureView, mesh_texture_slots> views{};
+    std::array<DawnSampler, mesh_texture_slots> samplers{};
     std::size_t users = 0;
 };
 
@@ -484,13 +478,13 @@ void release_dawn_composed_material_textures(
     DawnSharedComposedMaterialTextures& textures) {
     for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
         if (textures.views[slot]) {
-            wgpuTextureViewRelease(textures.views[slot]);
+            textures.views[slot].reset();
         }
         if (textures.textures[slot]) {
-            wgpuTextureRelease(textures.textures[slot]);
+            textures.textures[slot].reset();
         }
         if (textures.samplers[slot]) {
-            wgpuSamplerRelease(textures.samplers[slot]);
+            textures.samplers[slot].reset();
         }
     }
 }
@@ -510,22 +504,22 @@ struct DawnPipeline {
 // single-sample sampled alias (the same texture when not
 // multisampled), mirroring the SDL backend's GpuRenderTarget.
 struct DawnRenderTarget {
-    WGPUTexture color = nullptr;
-    WGPUTextureView color_view = nullptr;
-    WGPUTexture sampled_color = nullptr;
-    WGPUTextureView sampled_color_view = nullptr;
-    WGPUTexture depth = nullptr;
+    DawnTexture color;
+    DawnTextureView color_view;
+    DawnTexture sampled_color;
+    DawnTextureView sampled_color_view;
+    DawnTexture depth;
     // A layered depth attachment (the cascaded shadow map) is written one
     // layer per pass, so each pass needs its own single-layer view; the
     // receiver reads the whole array through `depth_sampled_view`, which is
     // then a `2d-array` view rather than a `2d` one.
-    std::vector<WGPUTextureView> depth_layer_views;
+    std::vector<DawnTextureView> depth_layer_views;
     // Sampled-depth targets copy the depth aspect into an r32float
     // color texture after their task so material slots can filter it
     // like the SDL backend's direct depth SRV reads.
-    WGPUTextureView depth_sampled_view = nullptr;
-    WGPUTexture depth_copy = nullptr;
-    WGPUTextureView depth_copy_view = nullptr;
+    DawnTextureView depth_sampled_view;
+    DawnTexture depth_copy;
+    DawnTextureView depth_copy_view;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     /** What its colour attachment resolved to, for a target that follows it. */
@@ -539,30 +533,30 @@ struct DawnRenderTarget {
 };
 
 struct DawnRenderTask {
-    WGPUBuffer skybox_matrix = nullptr;
-    WGPUBindGroup skybox_scene_group = nullptr;
+    DawnBuffer skybox_matrix{};
+    DawnBindGroup skybox_scene_group{};
     upstream::RenderDrawLists draw_lists;
-    WGPUBuffer view_projection = nullptr;
+    DawnBuffer view_projection{};
     // Lazily created group-1 bind group for depth-only passes.
-    WGPUBindGroup scene_group = nullptr;
+    DawnBindGroup scene_group{};
     // A task the scene gave its own camera composes its own view-projection
     // and eye position, so it needs its own copy of the pin's per-pass scene
     // block; the lights beside it are the scene's and stay shared. Null for
     // a task that draws through the scene camera, which binds the frame's.
-    WGPUBuffer pinned_scene_uniforms = nullptr;
-    WGPUBindGroup pinned_frame_group = nullptr;
+    DawnBuffer pinned_scene_uniforms{};
+    DawnBindGroup pinned_frame_group{};
 };
 
 struct DawnGeometryTask {
-    std::vector<WGPUTexture> colors;
-    std::vector<WGPUTextureView> color_views;
-    std::vector<WGPUTexture> sampled_colors;
-    std::vector<WGPUTextureView> sampled_views;
-    WGPUTexture depth = nullptr;
-    WGPUTextureView depth_view = nullptr;
+    std::vector<DawnTexture> colors;
+    std::vector<DawnTextureView> color_views;
+    std::vector<DawnTexture> sampled_colors;
+    std::vector<DawnTextureView> sampled_views;
+    DawnTexture depth;
+    DawnTextureView depth_view;
     // The pin's gpUniforms for the task's MRT arms: previous-frame
     // view-projection and the camera near/far.
-    WGPUBuffer pinned_geometry_params = nullptr;
+    DawnBuffer pinned_geometry_params;
     std::array<float, 16> previous_view_projection{};
     bool has_previous_view_projection = false;
     /** Set with the textures: another task binds this task's depth. */
@@ -596,10 +590,10 @@ struct DawnPostProcessProgram {
     std::size_t extra_textures = 0;
     std::uint32_t uniform_binding = 0;
     std::uint32_t uniform_size = 0;
-    WGPUShaderModule module = nullptr;
-    WGPUBindGroupLayout group_layout = nullptr;
-    WGPUPipelineLayout pipeline_layout = nullptr;
-    WGPURenderPipeline pipeline = nullptr;
+    DawnShaderModule module{};
+    DawnBindGroupLayout group_layout{};
+    DawnPipelineLayout pipeline_layout{};
+    DawnRenderPipeline pipeline{};
 };
 
 struct DawnPostProcessTask {
@@ -615,8 +609,8 @@ struct DawnPostProcessTask {
      * distinct programs.
      */
     std::size_t program = npos;
-    WGPUBindGroup group = nullptr;
-    WGPUBuffer uniforms = nullptr;
+    DawnBindGroup group{};
+    DawnBuffer uniforms{};
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
     bool temporal_recorded = false;
 #endif
@@ -639,10 +633,10 @@ struct PreparedDawnPostProcessPass {
  */
 struct DawnScreenSpaceProgram {
     std::uint32_t stage = 0;
-    WGPUShaderModule module = nullptr;
-    WGPUBindGroupLayout group_layout = nullptr;
-    WGPUPipelineLayout pipeline_layout = nullptr;
-    WGPURenderPipeline pipeline = nullptr;
+    DawnShaderModule module{};
+    DawnBindGroupLayout group_layout{};
+    DawnPipelineLayout pipeline_layout{};
+    DawnRenderPipeline pipeline{};
 };
 
 /**
@@ -654,8 +648,8 @@ struct DawnScreenSpaceProgram {
  */
 struct DawnScreenSpaceStage {
     std::size_t program = npos;
-    WGPUBuffer uniforms = nullptr;
-    WGPUBindGroup group = nullptr;
+    DawnBuffer uniforms{};
+    DawnBindGroup group{};
 };
 
 struct DawnScreenSpaceTask {
@@ -885,11 +879,7 @@ struct DawnState : DawnDevice {
     // buffers in group 2.
     std::vector<std::array<WGPUBindGroupLayout, 4>> shader_group_layouts;
     std::vector<WGPUPipelineLayout> shader_pipeline_layouts;
-    struct ShaderStorageBuffer {
-        WGPUBuffer buffer = nullptr;
-        std::size_t size = 0;
-        std::uint64_t version = 0;
-    };
+    using ShaderStorageBuffer = VersionedGpuBuffer<WGPUBuffer>;
     std::vector<ShaderStorageBuffer> shader_storage_buffers;
     WGPUBuffer view_projection = nullptr;
     WGPUTexture white_texture = nullptr;
@@ -1260,19 +1250,19 @@ struct DawnState : DawnDevice {
     // and rebuild together with the meshes.
     void release_render_tasks() {
         for (DawnRenderTask& task : render_tasks) {
-            if (task.skybox_scene_group) wgpuBindGroupRelease(task.skybox_scene_group);
-            if (task.skybox_matrix) wgpuBufferRelease(task.skybox_matrix);
+            if (task.skybox_scene_group) task.skybox_scene_group.reset();
+            if (task.skybox_matrix) task.skybox_matrix.reset();
             if (task.scene_group) {
-                wgpuBindGroupRelease(task.scene_group);
+                task.scene_group.reset();
             }
             if (task.pinned_frame_group) {
-                wgpuBindGroupRelease(task.pinned_frame_group);
+                task.pinned_frame_group.reset();
             }
             if (task.pinned_scene_uniforms) {
-                wgpuBufferRelease(task.pinned_scene_uniforms);
+                task.pinned_scene_uniforms.reset();
             }
             if (task.view_projection) {
-                wgpuBufferRelease(task.view_projection);
+                task.view_projection.reset();
             }
         }
         render_tasks.clear();
@@ -1301,14 +1291,14 @@ struct DawnState : DawnDevice {
      */
     void release_screen_space_programs() {
         for (DawnScreenSpaceProgram& program : screen_space_programs) {
-            if (program.pipeline) wgpuRenderPipelineRelease(program.pipeline);
+            if (program.pipeline) program.pipeline.reset();
             if (program.pipeline_layout) {
-                wgpuPipelineLayoutRelease(program.pipeline_layout);
+                program.pipeline_layout.reset();
             }
             if (program.group_layout) {
-                wgpuBindGroupLayoutRelease(program.group_layout);
+                program.group_layout.reset();
             }
-            if (program.module) wgpuShaderModuleRelease(program.module);
+            if (program.module) program.module.reset();
             program = {};
         }
         screen_space_programs.clear();
@@ -1335,76 +1325,8 @@ struct DawnState : DawnDevice {
         }
         pbr_shadow_groups.clear();
 #endif
-        for (DawnRenderTarget& target : render_targets) {
-            if (
-                target.sampled_color_view &&
-                target.sampled_color_view != target.color_view) {
-                wgpuTextureViewRelease(target.sampled_color_view);
-            }
-            if (
-                target.sampled_color &&
-                target.sampled_color != target.color) {
-                wgpuTextureRelease(target.sampled_color);
-            }
-            if (target.color_view) {
-                wgpuTextureViewRelease(target.color_view);
-            }
-            if (target.color) wgpuTextureRelease(target.color);
-            if (target.depth_copy_view) {
-                wgpuTextureViewRelease(target.depth_copy_view);
-            }
-            if (target.depth_copy) {
-                wgpuTextureRelease(target.depth_copy);
-            }
-            if (target.depth_sampled_view) {
-                wgpuTextureViewRelease(target.depth_sampled_view);
-            }
-            for (WGPUTextureView layer : target.depth_layer_views) {
-                if (layer) wgpuTextureViewRelease(layer);
-            }
-            if (target.depth) wgpuTextureRelease(target.depth);
-            target = {};
-        }
-        for (DawnGeometryTask& task : geometry_tasks) {
-            for (std::size_t index = 0;
-                 index < task.colors.size();
-                 ++index) {
-                if (
-                    index < task.sampled_views.size() &&
-                    task.sampled_views[index] &&
-                    task.sampled_views[index] !=
-                        task.color_views[index]) {
-                    wgpuTextureViewRelease(task.sampled_views[index]);
-                }
-                if (
-                    index < task.sampled_colors.size() &&
-                    task.sampled_colors[index] &&
-                    task.sampled_colors[index] != task.colors[index]) {
-                    wgpuTextureRelease(task.sampled_colors[index]);
-                }
-                if (task.color_views[index]) {
-                    wgpuTextureViewRelease(task.color_views[index]);
-                }
-                if (task.colors[index]) {
-                    wgpuTextureRelease(task.colors[index]);
-                }
-            }
-            task.colors.clear();
-            task.color_views.clear();
-            task.sampled_colors.clear();
-            task.sampled_views.clear();
-            if (task.depth_view) {
-                wgpuTextureViewRelease(task.depth_view);
-            }
-            if (task.depth) wgpuTextureRelease(task.depth);
-            task.depth = nullptr;
-            task.depth_view = nullptr;
-            if (task.pinned_geometry_params) {
-                wgpuBufferRelease(task.pinned_geometry_params);
-                task.pinned_geometry_params = nullptr;
-            }
-            task.has_previous_view_projection = false;
-        }
+        for (DawnRenderTarget& target : render_targets) target = {};
+        for (DawnGeometryTask& task : geometry_tasks) task = {};
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
         // The pass's pipeline and bind group name the attachments the graph
         // just released, so they are rebuilt with them; the pin discards the
@@ -1412,8 +1334,8 @@ struct DawnState : DawnDevice {
         for (std::vector<DawnPostProcessTask>& passes :
              post_process_tasks) {
             for (DawnPostProcessTask& task : passes) {
-                if (task.group) wgpuBindGroupRelease(task.group);
-                if (task.uniforms) wgpuBufferRelease(task.uniforms);
+                if (task.group) task.group.reset();
+                if (task.uniforms) task.uniforms.reset();
                 task = {};
             }
         }
@@ -1422,15 +1344,15 @@ struct DawnState : DawnDevice {
         // formats, and every pass that borrowed one was just reset.
         for (DawnPostProcessProgram& program : post_process_programs) {
             if (program.pipeline) {
-                wgpuRenderPipelineRelease(program.pipeline);
+                program.pipeline.reset();
             }
             if (program.pipeline_layout) {
-                wgpuPipelineLayoutRelease(program.pipeline_layout);
+                program.pipeline_layout.reset();
             }
             if (program.group_layout) {
-                wgpuBindGroupLayoutRelease(program.group_layout);
+                program.group_layout.reset();
             }
-            if (program.module) wgpuShaderModuleRelease(program.module);
+            if (program.module) program.module.reset();
             program = {};
         }
         post_process_programs.clear();
@@ -1449,8 +1371,8 @@ struct DawnState : DawnDevice {
         // generated stage table's formats and outlives every rebuild.
         for (DawnScreenSpaceTask& task : screen_space_tasks) {
             for (DawnScreenSpaceStage* stage : {&task.producer, &task.resolve}) {
-                if (stage->group) wgpuBindGroupRelease(stage->group);
-                if (stage->uniforms) wgpuBufferRelease(stage->uniforms);
+                if (stage->group) stage->group.reset();
+                if (stage->uniforms) stage->uniforms.reset();
                 *stage = {};
             }
         }
@@ -1486,15 +1408,15 @@ struct DawnState : DawnDevice {
             // while destroying a group, so the inverse order is not merely
             // a leak/lifetime nicety -- it can dereference freed metadata.
             for (auto& [kind, binding] : mesh.bindings) {
-                if (binding.scene) wgpuBindGroupRelease(binding.scene);
+                if (binding.scene) binding.scene.reset();
                 if (binding.textures) {
-                    wgpuBindGroupRelease(binding.textures);
+                    binding.textures.reset();
                 }
                 if (binding.material) {
-                    wgpuBindGroupRelease(binding.material);
+                    binding.material.reset();
                 }
 #if BBLITE_GPU_MORPH_STORAGE
-                if (binding.morph) wgpuBindGroupRelease(binding.morph);
+                if (binding.morph) binding.morph.reset();
 #endif
             }
             for (auto& [key, binding] : mesh.shader_bindings) {
@@ -1653,10 +1575,10 @@ struct DawnState : DawnDevice {
             shared_shader_geometries,
             [](DawnSharedShaderGeometry& geometry) {
                 if (geometry.vertex_buffer) {
-                    wgpuBufferRelease(geometry.vertex_buffer);
+                    geometry.vertex_buffer.reset();
                 }
                 if (geometry.index_buffer) {
-                    wgpuBufferRelease(geometry.index_buffer);
+                    geometry.index_buffer.reset();
                 }
             });
     }
@@ -1891,10 +1813,10 @@ struct DawnState : DawnDevice {
             shared_shader_geometries,
             [](DawnSharedShaderGeometry& geometry) {
                 if (geometry.vertex_buffer) {
-                    wgpuBufferRelease(geometry.vertex_buffer);
+                    geometry.vertex_buffer.reset();
                 }
                 if (geometry.index_buffer) {
-                    wgpuBufferRelease(geometry.index_buffer);
+                    geometry.index_buffer.reset();
                 }
             });
         release_all_shared(
@@ -2194,15 +2116,9 @@ struct DawnState : DawnDevice {
         if (depth) wgpuTextureRelease(depth);
         if (msaa_color_view) wgpuTextureViewRelease(msaa_color_view);
         if (msaa_color) wgpuTextureRelease(msaa_color);
-        if (surface) wgpuSurfaceRelease(surface);
-        if (queue) wgpuQueueRelease(queue);
 #if BBLITE_LOCAL_CUBEMAP
         local_cubemaps.clear();
 #endif
-        if (device) wgpuDeviceRelease(device);
-        if (adapter) wgpuAdapterRelease(adapter);
-        if (instance) wgpuInstanceRelease(instance);
-        if (window) release_run_window(window);
     }
 };
 
@@ -2223,7 +2139,7 @@ WGPUBuffer esm_caster_params_buffer(
         material->esm_shadow_generator.value >= state.shadow_params.size()) {
         return nullptr;
     }
-    return state.shadow_params[material->esm_shadow_generator.value];
+    return handle_at(state.shadow_params, material->esm_shadow_generator);
 }
 #endif
 
@@ -2242,65 +2158,21 @@ WGPUBuffer create_buffer(
     WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     descriptor.usage = usage | WGPUBufferUsage_CopyDst;
     descriptor.size = (size + 3) & ~3ull;
-    WGPUBuffer buffer =
-        wgpuDeviceCreateBuffer(state.device, &descriptor);
+    DawnBuffer buffer{wgpuDeviceCreateBuffer(state.device, &descriptor)};
     if (!buffer) dawn_error("wgpuDeviceCreateBuffer");
     if (data) {
         wgpuQueueWriteBuffer(state.queue, buffer, 0, data, size);
     }
-    return buffer;
+    return buffer.release();
 }
 
 /** Mirror Engine storage records into Dawn read-only storage buffers. */
 void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
-    bool invalidates_groups =
-        state.shader_storage_buffers.size() < engine.storage_buffers.size();
-    state.shader_storage_buffers.resize(engine.storage_buffers.size());
-    for (std::size_t index = 0; index < engine.storage_buffers.size(); ++index) {
-        const Engine::StorageBufferRecord& source =
-            engine.storage_buffers[index];
-        const DawnState::ShaderStorageBuffer& target =
-            state.shader_storage_buffers[index];
-        if (
-            source.disposed || !target.buffer ||
-            target.size != source.bytes.size()) {
-            invalidates_groups = invalidates_groups || target.buffer;
-        }
-    }
-    if (invalidates_groups) state.release_shader_bindings();
-
-    for (std::size_t index = 0; index < engine.storage_buffers.size(); ++index) {
-        const Engine::StorageBufferRecord& source =
-            engine.storage_buffers[index];
-        DawnState::ShaderStorageBuffer& target =
-            state.shader_storage_buffers[index];
-        if (source.disposed) {
-            if (target.buffer) wgpuBufferRelease(target.buffer);
-            target = {};
-            continue;
-        }
-        if (source.bytes.empty()) {
-            dawn_error("A shader storage buffer cannot be empty.");
-        }
-        if (!target.buffer || target.size != source.bytes.size()) {
-            if (target.buffer) wgpuBufferRelease(target.buffer);
-            target.buffer = create_buffer(
-                state,
-                WGPUBufferUsage_Storage,
-                source.bytes.data(),
-                source.bytes.size());
-            target.size = source.bytes.size();
-            target.version = source.version;
-        } else if (target.version != source.version) {
-            wgpuQueueWriteBuffer(
-                state.queue,
-                target.buffer,
-                0,
-                source.bytes.data(),
-                source.bytes.size());
-            target.version = source.version;
-        }
-    }
+    sync_storage_records(engine.storage_buffers, state.shader_storage_buffers,
+        [&] { state.release_shader_bindings(); },
+        [](WGPUBuffer buffer) { wgpuBufferRelease(buffer); },
+        [&](const void* bytes, std::size_t size) { return create_buffer(state, WGPUBufferUsage_Storage, bytes, size); },
+        [&](WGPUBuffer buffer, const void* bytes, std::size_t size) { wgpuQueueWriteBuffer(state.queue, buffer, 0, bytes, size); });
 }
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
@@ -2355,10 +2227,9 @@ fn fs_texture(input: VertexOutput) -> @location(0) vec4<f32> {
     WGPUShaderModuleDescriptor descriptor{};
     descriptor.nextInChain = &wgsl.chain;
     descriptor.label = string_view("bblite-ui");
-    WGPUShaderModule module =
-        wgpuDeviceCreateShaderModule(state.device, &descriptor);
+    DawnShaderModule module{wgpuDeviceCreateShaderModule(state.device, &descriptor)};
     if (!module) dawn_error("wgpuDeviceCreateShaderModule UI");
-    return module;
+    return module.release();
 }
 
 WGPURenderPipeline create_ui_dawn_pipeline(
@@ -2415,10 +2286,9 @@ WGPURenderPipeline create_ui_dawn_pipeline(
     descriptor.primitive.cullMode = WGPUCullMode_None;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline) dawn_error("wgpuDeviceCreateRenderPipeline UI");
-    return pipeline;
+    return pipeline.release();
 }
 
 WGPUBindGroup create_ui_dawn_texture_group(
@@ -2436,10 +2306,9 @@ WGPUBindGroup create_ui_dawn_texture_group(
     descriptor.layout = state.ui.texture_layout;
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    WGPUBindGroup group =
-        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    DawnBindGroup group{wgpuDeviceCreateBindGroup(state.device, &descriptor)};
     if (!group) dawn_error("wgpuDeviceCreateBindGroup UI texture");
-    return group;
+    return group.release();
 }
 
 void create_ui_dawn_resources(DawnState& state) {
@@ -2494,8 +2363,7 @@ void create_ui_dawn_resources(DawnState& state) {
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     color_layout_descriptor.bindGroupLayoutCount = 1;
     color_layout_descriptor.bindGroupLayouts = &ui.screen_layout;
-    WGPUPipelineLayout color_layout =
-        wgpuDeviceCreatePipelineLayout(state.device, &color_layout_descriptor);
+    DawnPipelineLayout color_layout{wgpuDeviceCreatePipelineLayout(state.device, &color_layout_descriptor)};
     if (!color_layout) dawn_error("UI color pipeline layout");
     ui.color_pipeline = create_ui_dawn_pipeline(
         state,
@@ -2504,7 +2372,7 @@ void create_ui_dawn_resources(DawnState& state) {
         WGPUTextureFormat_RGBA8Unorm,
         state.sample_count,
         color_layout);
-    wgpuPipelineLayoutRelease(color_layout);
+    color_layout.reset();
     ui.texture_pipeline = create_ui_dawn_pipeline(
         state,
         module,
@@ -2594,7 +2462,7 @@ void ensure_ui_dawn_layers(
     layer.sampleCount = 1;
     ui.layer = wgpuDeviceCreateTexture(state.device, &layer);
     if (!ui.layer) dawn_error("wgpuDeviceCreateTexture UI layer");
-    ui.layer_view = wgpuTextureCreateView(ui.layer, nullptr);
+    ui.layer_view = create_dawn_texture_view(ui.layer, nullptr);
     if (!ui.layer_view) dawn_error("wgpuTextureCreateView UI layer");
     if (state.multisampled()) {
         layer.usage = WGPUTextureUsage_RenderAttachment;
@@ -2605,7 +2473,7 @@ void ensure_ui_dawn_layers(
             dawn_error("wgpuDeviceCreateTexture UI multisample layer");
         }
         ui.multisample_layer_view =
-            wgpuTextureCreateView(ui.multisample_layer, nullptr);
+            create_dawn_texture_view(ui.multisample_layer, nullptr);
         if (!ui.multisample_layer_view) {
             dawn_error("wgpuTextureCreateView UI multisample layer");
         }
@@ -2696,7 +2564,7 @@ void render_ui_dawn_frame(
             source.rgba->size(),
             source.width,
             source.height);
-        texture.view = wgpuTextureCreateView(texture.texture, nullptr);
+        texture.view = create_dawn_texture_view(texture.texture, nullptr);
         if (!texture.view) dawn_error("wgpuTextureCreateView UI source");
         texture.group = create_ui_dawn_texture_group(
             state,
@@ -2730,8 +2598,7 @@ void render_ui_dawn_frame(
         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     layer_descriptor.colorAttachmentCount = 1;
     layer_descriptor.colorAttachments = &layer_attachment;
-    WGPURenderPassEncoder layer_pass =
-        wgpuCommandEncoderBeginRenderPass(encoder, &layer_descriptor);
+    DawnRenderPass layer_pass{wgpuCommandEncoderBeginRenderPass(encoder, &layer_descriptor)};
     wgpuRenderPassEncoderSetBindGroup(
         layer_pass, 0, ui.screen_group, 0, nullptr);
     wgpuRenderPassEncoderSetVertexBuffer(
@@ -2778,7 +2645,7 @@ void render_ui_dawn_frame(
             0);
     }
     wgpuRenderPassEncoderEnd(layer_pass);
-    wgpuRenderPassEncoderRelease(layer_pass);
+    layer_pass.reset();
 
     WGPURenderPassColorAttachment composite_attachment =
         WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -2789,8 +2656,7 @@ void render_ui_dawn_frame(
         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     composite_descriptor.colorAttachmentCount = 1;
     composite_descriptor.colorAttachments = &composite_attachment;
-    WGPURenderPassEncoder composite_pass =
-        wgpuCommandEncoderBeginRenderPass(encoder, &composite_descriptor);
+    DawnRenderPass composite_pass{wgpuCommandEncoderBeginRenderPass(encoder, &composite_descriptor)};
     wgpuRenderPassEncoderSetPipeline(
         composite_pass, ui.composite_pipeline);
     wgpuRenderPassEncoderSetBindGroup(
@@ -2815,7 +2681,7 @@ void render_ui_dawn_frame(
         0,
         0);
     wgpuRenderPassEncoderEnd(composite_pass);
-    wgpuRenderPassEncoderRelease(composite_pass);
+    composite_pass.reset();
     if (segment < frame.backdrops.size()) {
         render_ui_backdrop_dawn(state.device, encoder, target_texture, target,
             state.surface_format, ui.vertices, ui.indices, ui.sampler,
@@ -2871,8 +2737,7 @@ WGPUTexture create_solid_texture(
         WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     descriptor.size = {1, 1, layers};
     descriptor.format = format;
-    WGPUTexture texture =
-        wgpuDeviceCreateTexture(state.device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
     if (!texture) dawn_error("wgpuDeviceCreateTexture solid");
     for (std::uint32_t layer = 0; layer < layers; ++layer) {
         WGPUTexelCopyTextureInfo destination =
@@ -2894,7 +2759,7 @@ WGPUTexture create_solid_texture(
             &layout,
             &size);
     }
-    return texture;
+    return texture.release();
 }
 
 // The pinned mip generator's fullscreen-triangle bilinear blit
@@ -3063,8 +2928,7 @@ WGPUTexture upload_compressed_texture(
     descriptor.format = compressed_texture_format(compressed.format);
     descriptor.mipLevelCount =
         static_cast<std::uint32_t>(compressed.mips.size());
-    WGPUTexture texture =
-        wgpuDeviceCreateTexture(state.device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
     if (!texture) dawn_error("wgpuDeviceCreateTexture compressed");
     for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
         const CompressedMipLevel& mip = compressed.mips[level];
@@ -3087,7 +2951,7 @@ WGPUTexture upload_compressed_texture(
             &layout,
             &size);
     }
-    return texture;
+    return texture.release();
 }
 
 WGPUTexture upload_material_texture(
@@ -3125,8 +2989,7 @@ WGPUTexture upload_material_texture(
     };
     descriptor.format = format;
     descriptor.mipLevelCount = mip_count;
-    WGPUTexture texture =
-        wgpuDeviceCreateTexture(state.device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
     if (!texture) dawn_error("wgpuDeviceCreateTexture material");
     WGPUTexelCopyTextureInfo destination =
         WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -3148,7 +3011,7 @@ WGPUTexture upload_material_texture(
         &layout,
         &size);
     generate_mipmaps(state, texture, format, mip_count);
-    return texture;
+    return texture.release();
 }
 
 // `.babylon` reflection cube, matching the pinned loadCubeTexture:
@@ -3193,8 +3056,7 @@ WGPUTexture upload_reflection_cube(
     };
     descriptor.format = WGPUTextureFormat_RGBA8Unorm;
     descriptor.mipLevelCount = mip_count;
-    WGPUTexture texture =
-        wgpuDeviceCreateTexture(state.device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
     if (!texture) dawn_error("wgpuDeviceCreateTexture reflection cube");
     for (std::uint32_t face = 0; face < 6; ++face) {
         const DecodedImage& image = images[face];
@@ -3224,7 +3086,7 @@ WGPUTexture upload_reflection_cube(
             mip_count,
             static_cast<std::int32_t>(face));
     }
-    return texture;
+    return texture.release();
 }
 
 // create_texture_sampler moved to pal_dawn_shared.hpp so the sprite pass
@@ -3245,8 +3107,7 @@ WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState&
     descriptor.size = {width, width, layers};
     descriptor.format = WGPUTextureFormat_RGBA16Float;
     descriptor.mipLevelCount = mip_count;
-    WGPUTexture texture =
-        wgpuDeviceCreateTexture(state.device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
     if (!texture) dawn_error("wgpuDeviceCreateTexture environment");
     for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
         const std::uint32_t mip_width = std::max(width >> mip, 1u);
@@ -3311,7 +3172,7 @@ WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState&
                 &size);
         }
     }
-    return texture;
+    return texture.release();
 }
 
 void upload_environment(DawnState& state, const EnvironmentState& environment) {
@@ -3329,7 +3190,7 @@ void upload_environment(DawnState& state, const EnvironmentState& environment) {
     view_descriptor.dimension = WGPUTextureViewDimension_Cube;
     view_descriptor.arrayLayerCount = 6;
     state.environment_cube_view =
-        wgpuTextureCreateView(texture, &view_descriptor);
+        create_dawn_texture_view(texture, &view_descriptor);
 }
 
 #if BBLITE_LOCAL_CUBEMAP
@@ -3344,11 +3205,11 @@ DawnState::LocalCubemap* ensure_local_cubemap(DawnState& state, const MaterialRe
     WGPUTextureViewDescriptor view = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
     view.dimension = WGPUTextureViewDimension_CubeArray;
     view.arrayLayerCount = source->layers;
-    gpu->array_view = wgpuTextureCreateView(gpu->texture, &view);
+    gpu->array_view = create_dawn_texture_view(gpu->texture, &view);
     if (source->overrides_environment) {
         view.dimension = WGPUTextureViewDimension_Cube;
         view.arrayLayerCount = 6;
-        gpu->cube_view = wgpuTextureCreateView(gpu->texture, &view);
+        gpu->cube_view = create_dawn_texture_view(gpu->texture, &view);
     }
     gpu->uniform = create_buffer(state, WGPUBufferUsage_Uniform, source->uniform_data.data(), source->uniform_data.size() * sizeof(std::uint32_t));
     gpu->grid = create_buffer(state, WGPUBufferUsage_Storage, source->grid_data.data(), source->grid_data.size() * sizeof(std::uint32_t));
@@ -3415,7 +3276,7 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
     if (state.brdf_view) wgpuTextureViewRelease(state.brdf_view);
     if (state.brdf_texture) wgpuTextureRelease(state.brdf_texture);
     state.brdf_texture = texture;
-    state.brdf_view = wgpuTextureCreateView(texture, nullptr);
+    state.brdf_view = create_dawn_texture_view(texture, nullptr);
 }
 
 [[noreturn]] void fragment_module_for(
@@ -3480,20 +3341,9 @@ WGPUTexture create_frame_texture(
     descriptor.size = {width, height, layers};
     descriptor.format = format;
     descriptor.sampleCount = samples;
-    WGPUTexture texture =
-        wgpuDeviceCreateTexture(state.device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
     if (!texture) dawn_error("wgpuDeviceCreateTexture frame graph");
-    return texture;
-}
-
-/** A view over a frame-graph texture, refused rather than stored null. */
-WGPUTextureView create_frame_view(
-    WGPUTexture texture,
-    const WGPUTextureViewDescriptor* descriptor,
-    const char* label) {
-    WGPUTextureView view = wgpuTextureCreateView(texture, descriptor);
-    if (!view) dawn_error(label);
-    return view;
+    return texture.release();
 }
 
 // Mirrors the SDL backend's create_frame_graph_textures: render
@@ -3511,6 +3361,8 @@ void create_frame_graph_textures(
         !surface_targets_changed(engine, state.render_targets, width, height)) {
         return;
     }
+    const auto target_plans = plan_render_targets(engine, width, height, state.surface_format,
+        [](TextureFormatClass format) { return texture_format(format); });
     state.release_frame_graph_textures();
 #if BBLITE_SHADOW_RECEIVERS
     // Every shadow map was just released with the other targets, so the
@@ -3527,39 +3379,14 @@ void create_frame_graph_textures(
         ++index) {
         const RenderTargetRecord& record = engine.render_targets[index];
         DawnRenderTarget& target = state.render_targets[index];
-        std::tie(target.width, target.height) = surface_target_extent(engine, record, width, height);
-        // A composite's intermediate takes a fraction of whatever its
-        // source resolved to. Creation order guarantees that source is
-        // already sized: `create_render_target` refuses a forward reference.
-        if (record.scale_source.value != invalid_handle) {
-            const DawnRenderTarget& scale_source =
-                state.render_targets[record.scale_source.value];
-            const ScaledExtents scaled = scaled_target_extents(
-                record,
-                scale_source.width,
-                scale_source.height);
-            target.width = scaled.width;
-            target.height = scaled.height;
-        }
-        // The swapchain owns no texture here -- its view is acquired per
-        // frame -- but a target that follows it still needs its format.
-        if (record.swapchain) {
-            target.color_format = state.surface_format;
-            continue;
-        }
+        const auto& planned = target_plans[index];
+        target.width = planned.width;
+        target.height = planned.height;
+        target.color_format = planned.color_format;
+        if (record.swapchain) continue;
         target.allocation = ++state.render_target_allocations;
-        const std::uint32_t samples = task_sample_count(state, record.samples);
-        // "The source's format" is what a composite's intermediate asks for
-        // when it names none, so it resolves through the target it scales
-        // from rather than falling back to the surface.
-        const WGPUTextureFormat color_format =
-            record.has_format
-                ? texture_format(record.format)
-                : record.scale_source.value != invalid_handle
-                      ? state.render_targets[record.scale_source.value]
-                            .color_format
-                      : state.surface_format;
-        target.color_format = color_format;
+        const auto samples = task_sample_count(state, record.samples);
+        const auto color_format = planned.color_format;
         if (record.has_color) {
             target.color = create_frame_texture(
                 state,
@@ -3577,11 +3404,11 @@ void create_frame_graph_textures(
                         WGPUTextureUsage_CopySrc |
                         WGPUTextureUsage_CopyDst
                     : WGPUTextureUsage_RenderAttachment);
-            target.color_view = create_frame_view(
+            target.color_view = create_dawn_texture_view(
                 target.color, nullptr, "wgpuTextureCreateView frame graph color");
             if (samples == 1) {
-                target.sampled_color = target.color;
-                target.sampled_color_view = target.color_view;
+                target.sampled_color = target.color.retain();
+                target.sampled_color_view = target.color_view.retain();
             } else {
                 target.sampled_color = create_frame_texture(
                     state,
@@ -3592,7 +3419,7 @@ void create_frame_graph_textures(
                     WGPUTextureUsage_RenderAttachment |
                         WGPUTextureUsage_TextureBinding |
                         WGPUTextureUsage_CopySrc);
-                target.sampled_color_view = create_frame_view(
+                target.sampled_color_view = create_dawn_texture_view(
                     target.sampled_color,
                     nullptr,
                     "wgpuTextureCreateView frame graph sampled color");
@@ -3629,7 +3456,7 @@ void create_frame_graph_textures(
                 layer_descriptor.dimension = WGPUTextureViewDimension_2D;
                 layer_descriptor.baseArrayLayer = layer;
                 layer_descriptor.arrayLayerCount = 1;
-                target.depth_layer_views[layer] = create_frame_view(
+                target.depth_layer_views[layer] = create_dawn_texture_view(
                     target.depth, &layer_descriptor, "wgpuTextureCreateView frame graph depth layer");
             }
             if (record.sampled_depth) {
@@ -3645,7 +3472,7 @@ void create_frame_graph_textures(
                         WGPUTextureViewDimension_2DArray;
                     depth_view_descriptor.arrayLayerCount = depth_layers;
                 }
-                target.depth_sampled_view = create_frame_view(
+                target.depth_sampled_view = create_dawn_texture_view(
                     target.depth,
                     &depth_view_descriptor,
                     "wgpuTextureCreateView frame graph sampled depth");
@@ -3665,7 +3492,7 @@ void create_frame_graph_textures(
                         target.height,
                         WGPUTextureUsage_RenderAttachment |
                             WGPUTextureUsage_TextureBinding);
-                    target.depth_copy_view = create_frame_view(
+                    target.depth_copy_view = create_dawn_texture_view(
                         target.depth_copy, nullptr, "wgpuTextureCreateView frame graph depth copy");
                 }
             }
@@ -3719,7 +3546,7 @@ void create_frame_graph_textures(
              record.geometry.attachments) {
             const WGPUTextureFormat format =
                 geometry_texture_format(description);
-            WGPUTexture color = create_frame_texture(
+            DawnTexture color{create_frame_texture(
                 state,
                 format,
                 samples,
@@ -3728,25 +3555,25 @@ void create_frame_graph_textures(
                 samples == 1
                     ? WGPUTextureUsage_RenderAttachment |
                         WGPUTextureUsage_TextureBinding
-                    : WGPUTextureUsage_RenderAttachment);
-            task.colors.push_back(color);
-            task.color_views.push_back(create_frame_view(
-                color, nullptr, "wgpuTextureCreateView geometry task color"));
+                    : WGPUTextureUsage_RenderAttachment)};
+            task.colors.push_back(std::move(color));
+            task.color_views.push_back(DawnTextureView{create_dawn_texture_view(
+                task.colors.back(), nullptr, "wgpuTextureCreateView geometry task color")});
             if (samples == 1) {
-                task.sampled_colors.push_back(color);
-                task.sampled_views.push_back(task.color_views.back());
+                task.sampled_colors.push_back(task.colors.back().retain());
+                task.sampled_views.push_back(task.color_views.back().retain());
             } else {
-                WGPUTexture sampled = create_frame_texture(
+                DawnTexture sampled{create_frame_texture(
                     state,
                     format,
                     1,
                     width,
                     height,
                     WGPUTextureUsage_RenderAttachment |
-                        WGPUTextureUsage_TextureBinding);
-                task.sampled_colors.push_back(sampled);
-                task.sampled_views.push_back(create_frame_view(
-                    sampled, nullptr, "wgpuTextureCreateView geometry task sampled color"));
+                        WGPUTextureUsage_TextureBinding)};
+                task.sampled_colors.push_back(std::move(sampled));
+                task.sampled_views.push_back(DawnTextureView{create_dawn_texture_view(
+                    task.sampled_colors.back(), nullptr, "wgpuTextureCreateView geometry task sampled color")});
             }
         }
         task.depth = create_frame_texture(
@@ -3756,7 +3583,7 @@ void create_frame_graph_textures(
             width,
             height,
             WGPUTextureUsage_RenderAttachment);
-        task.depth_view = create_frame_view(
+        task.depth_view = create_dawn_texture_view(
             task.depth, nullptr, "wgpuTextureCreateView geometry task depth");
     }
 }
@@ -3989,9 +3816,9 @@ void ensure_pinned_frame_buffers(DawnState& state) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = static_cast<std::uint64_t>(size);
         descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        DawnBuffer buffer{wgpuDeviceCreateBuffer(state.device, &descriptor)};
         if (!buffer) dawn_error("pinned uniform buffer creation failed.");
-        return buffer;
+        return buffer.release();
     };
     state.pinned_scene_uniforms =
         uniform_buffer(sizeof(upstream::SceneUniforms));
@@ -4009,10 +3836,11 @@ void ensure_pinned_frame_buffers(DawnState& state) {
  * read: the frame's own, a geometry task's, and a render task
  * drawing through its own camera. The lights are the scene's in all three.
  */
+template <typename Buffer, typename Group>
 WGPUBindGroup pinned_frame_group_over(
     DawnState& state,
-    WGPUBuffer& scene_uniforms,
-    WGPUBindGroup& group,
+    Buffer& scene_uniforms,
+    Group& group,
     const char* what,
     // A swapchain overlay layer is the one caller whose LIGHTS are not
     // the frame's: it is a second scene with its own light list, and a
@@ -4330,9 +4158,9 @@ WGPUTexture create_pinned_float_texture(
         WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     descriptor.mipLevelCount = 1;
     descriptor.sampleCount = 1;
-    WGPUTexture texture = wgpuDeviceCreateTexture(state.device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
     if (!texture) dawn_error(failure);
-    return texture;
+    return texture.release();
 }
 
 /**
@@ -4364,7 +4192,7 @@ void write_pinned_bone_texture(
                 palette.height,
                 "pinned bone texture creation failed.");
             mesh.pinned_bone_view =
-                wgpuTextureCreateView(mesh.pinned_bone_texture, nullptr);
+                create_dawn_texture_view(mesh.pinned_bone_texture, nullptr);
         },
         [&](const float* floats, const BonePaletteLayout& palette) {
             WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -4412,96 +4240,47 @@ void write_pinned_float_texture(
  * settings and per-instance versions the handle's writers bump.
  */
 void write_pinned_vat_texture(
-    DawnState& state,
-    DawnMesh& mesh,
-    const MeshRecord& record,
-    const Engine& engine) {
-    if (!record.has_vat) return;
-    if (record.vat.bake >= engine.vat_bakes.size()) return;
-    const VatBakeRecord& bake = engine.vat_bakes[record.vat.bake];
-    if (bake.bone_count == 0 || bake.frame_count == 0) return;
-    const VatTextureLayout layout =
-        vat_texture_layout(bake.bone_count, bake.frame_count);
-    if (
-        mesh.pinned_vat_bones != bake.bone_count ||
-        mesh.pinned_vat_frames != bake.frame_count) {
-        if (mesh.pinned_vat_view) {
-            wgpuTextureViewRelease(mesh.pinned_vat_view);
-        }
-        if (mesh.pinned_vat_texture) {
-            wgpuTextureRelease(mesh.pinned_vat_texture);
-        }
-        mesh.pinned_vat_texture = create_pinned_float_texture(
-            state,
-            layout.width,
-            layout.height,
-            "pinned VAT texture creation failed.");
-        mesh.pinned_vat_view =
-            wgpuTextureCreateView(mesh.pinned_vat_texture, nullptr);
-        mesh.pinned_vat_bones = bake.bone_count;
-        mesh.pinned_vat_frames = bake.frame_count;
-        write_pinned_float_texture(
-            state,
-            mesh.pinned_vat_texture,
-            bake.data.data(),
-            layout);
-    }
-    if (!mesh.pinned_vat_settings) {
-        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-        descriptor.size = sizeof(float) * 8;
-        descriptor.usage =
-            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        mesh.pinned_vat_settings =
-            wgpuDeviceCreateBuffer(state.device, &descriptor);
-        if (!mesh.pinned_vat_settings) {
-            dawn_error("pinned VAT settings buffer creation failed.");
-        }
-        mesh.pinned_vat_settings_version = 0;
-    }
-    if (mesh.pinned_vat_settings_version != record.vat.settings_version) {
-        wgpuQueueWriteBuffer(
-            state.queue,
-            mesh.pinned_vat_settings,
-            0,
-            record.vat.settings.data(),
-            sizeof(float) * 8);
-        mesh.pinned_vat_settings_version = record.vat.settings_version;
-    }
+    DawnState& state, DawnMesh& mesh, const MeshRecord& record, const Engine& engine) {
+    sync_pinned_vat(mesh, record, engine,
+        [&](const VatBakeRecord& bake, const VatTextureLayout& layout) {
+            if (mesh.pinned_vat_view) wgpuTextureViewRelease(mesh.pinned_vat_view);
+            if (mesh.pinned_vat_texture) wgpuTextureRelease(mesh.pinned_vat_texture);
+            mesh.pinned_vat_texture = create_pinned_float_texture(state, layout.width, layout.height,
+                "pinned VAT texture creation failed.");
+            mesh.pinned_vat_view = create_dawn_texture_view(mesh.pinned_vat_texture, nullptr);
+            if (!mesh.pinned_vat_view) dawn_error("pinned VAT texture view creation failed.");
+            write_pinned_float_texture(state, mesh.pinned_vat_texture, bake.data.data(), layout);
+        },
+        [&](const VatData& vat) {
+            if (!mesh.pinned_vat_settings) {
+                WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+                descriptor.size = sizeof(float) * 8;
+                descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+                mesh.pinned_vat_settings = wgpuDeviceCreateBuffer(state.device, &descriptor);
+                if (!mesh.pinned_vat_settings) dawn_error("pinned VAT settings buffer creation failed.");
+                mesh.pinned_vat_settings_version = 0;
+            }
+            if (mesh.pinned_vat_settings_version != vat.settings_version) {
+                wgpuQueueWriteBuffer(state.queue, mesh.pinned_vat_settings, 0, vat.settings.data(), sizeof(float) * 8);
+                mesh.pinned_vat_settings_version = vat.settings_version;
+            }
+        },
 #if BBLITE_VAT_INSTANCES
-    const VatData& vat = record.vat;
-    if (vat.instance_texels == 0) return;
-    if (mesh.pinned_vat_instance_texels != vat.instance_texels) {
-        if (mesh.pinned_vat_instance_view) {
-            wgpuTextureViewRelease(mesh.pinned_vat_instance_view);
+        [&](const VatData& vat) {
+            if (mesh.pinned_vat_instance_view) wgpuTextureViewRelease(mesh.pinned_vat_instance_view);
+            if (mesh.pinned_vat_instance_texture) wgpuTextureRelease(mesh.pinned_vat_instance_texture);
+            mesh.pinned_vat_instance_texture = create_pinned_float_texture(state, vat.instance_texels, 1u,
+                "pinned VAT instance texture creation failed.");
+            mesh.pinned_vat_instance_view = create_dawn_texture_view(mesh.pinned_vat_instance_texture, nullptr);
+            if (!mesh.pinned_vat_instance_view) dawn_error("pinned VAT instance view creation failed.");
+        },
+        [&](const VatData& vat, const VatTextureLayout& layout) {
+            write_pinned_float_texture(state, mesh.pinned_vat_instance_texture, vat.instance_params.data(), layout);
         }
-        if (mesh.pinned_vat_instance_texture) {
-            wgpuTextureRelease(mesh.pinned_vat_instance_texture);
-        }
-        mesh.pinned_vat_instance_texture = create_pinned_float_texture(
-            state,
-            vat.instance_texels,
-            1u,
-            "pinned VAT instance texture creation failed.");
-        mesh.pinned_vat_instance_view = wgpuTextureCreateView(
-            mesh.pinned_vat_instance_texture,
-            nullptr);
-        mesh.pinned_vat_instance_texels = vat.instance_texels;
-        mesh.pinned_vat_instance_version = 0;
-    }
-    if (mesh.pinned_vat_instance_version != vat.instance_version) {
-        write_pinned_float_texture(
-            state,
-            mesh.pinned_vat_instance_texture,
-            vat.instance_params.data(),
-            // One row of `texels` rgba32float texels, two per instance.
-            VatTextureLayout{
-                vat.instance_texels,
-                1u,
-                vat.instance_texels * 16u,
-                vat.instance_texels * 16u});
-        mesh.pinned_vat_instance_version = vat.instance_version;
-    }
+#else
+        [](const VatData&) {}, [](const VatData&, const VatTextureLayout&) {}
 #endif
+    );
 }
 #endif
 
@@ -4646,12 +4425,11 @@ WGPUBindGroup build_pinned_draw_group(
     descriptor.layout = pinned_draw_layout_for(state, variant);
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    WGPUBindGroup group =
-        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    DawnBindGroup group{wgpuDeviceCreateBindGroup(state.device, &descriptor)};
     if (!group) {
         dawn_error("pinned variant draw bind group creation failed.");
     }
-    return group;
+    return group.release();
 }
 
 /** The per-draw buffers and group-1 bind group for one material's variant. */
@@ -4672,9 +4450,9 @@ DawnDrawState& ensure_pinned_draw_bindings(
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = static_cast<std::uint64_t>(size);
         descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        DawnBuffer buffer{wgpuDeviceCreateBuffer(state.device, &descriptor)};
         if (!buffer) dawn_error("pinned draw buffer creation failed.");
-        return buffer;
+        return buffer.release();
     };
     if (!draw_state.mesh_uniforms) {
         draw_state.mesh_uniforms =
@@ -4718,9 +4496,9 @@ DawnDrawState& ensure_pinned_geometry_bindings(
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = static_cast<std::uint64_t>(size);
         descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        DawnBuffer buffer{wgpuDeviceCreateBuffer(state.device, &descriptor)};
         if (!buffer) dawn_error("pinned geometry buffer creation failed.");
-        return buffer;
+        return buffer.release();
     };
     draw_state.mesh_uniforms =
         uniform_buffer(sizeof(upstream::MeshUniforms));
@@ -4753,7 +4531,7 @@ void write_pinned_draw_blocks(
     const PinnedDrawConventions& conventions,
     WGPUBuffer mesh_uniforms,
     WGPUBuffer material_uniforms) {
-    const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+    const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
     const upstream::PbrVariantEntry& entry =
         upstream::pbr_variants[variant];
     const upstream::MeshUniforms mesh_block =
@@ -4769,7 +4547,7 @@ void write_pinned_draw_blocks(
         0);
     upstream::write_pbr_variant_material(
         variant,
-        engine.materials[draw.item.material.value],
+        handle_at(engine.materials, draw.item.material),
         material_block.data(),
         entry.material_ubo_bytes,
         // The refraction thickness scale the pin's fragment reads off its
@@ -4839,7 +4617,7 @@ void write_pinned_geometry_task(
                 engine,
                 draw,
                 variant,
-                pinned_draw_conventions(variant, engine.meshes[draw.item.mesh.value]),
+                pinned_draw_conventions(variant, handle_at(engine.meshes, draw.item.mesh)),
                 draw_state.mesh_uniforms,
                 draw_state.material_uniforms);
         }
@@ -5029,8 +4807,8 @@ std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(
         dawn_error("Frame graph render target handle is invalid.");
     }
     const RenderTargetRecord& record =
-        engine.render_targets[target_handle.value];
-    DawnRenderTarget& target = state.render_targets[target_handle.value];
+        handle_at(engine.render_targets, target_handle);
+    DawnRenderTarget& target = handle_at(state.render_targets, target_handle);
     if (pal::render_target_samples_depth(record)) {
         if (record.has_depth && target.depth_copy) {
             return {target.depth_copy, target.depth_copy_view};
@@ -5123,14 +4901,14 @@ DawnState::EsmBlur& ensure_esm_blur(
             half.height,
             WGPUTextureUsage_RenderAttachment |
                 WGPUTextureUsage_TextureBinding);
-        view = wgpuTextureCreateView(texture, nullptr);
+        view = create_dawn_texture_view(texture, nullptr);
     };
     create_half(blur.blur_h, blur.blur_h_view);
     create_half(blur.blur_v, blur.blur_v_view);
 
     const std::string stem = "shadow-blur-" + std::to_string(esm_index);
-    WGPUShaderModule vertex_module = load_wgsl_module(state, stem + ".vert");
-    WGPUShaderModule fragment_module = load_wgsl_module(state, stem + ".frag");
+    DawnShaderModule vertex_module{load_wgsl_module(state, stem + ".vert")};
+    DawnShaderModule fragment_module{load_wgsl_module(state, stem + ".frag")};
     WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
     // The one target `blurPipeline` declares, as the factory declared it.
     target.format = esm_texture_format(resources.blur_target_format);
@@ -5152,8 +4930,8 @@ DawnState::EsmBlur& ensure_esm_blur(
     blur.pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
     if (!blur.pipeline) dawn_error("ESM blur pipeline creation failed.");
     blur.layout = wgpuRenderPipelineGetBindGroupLayout(blur.pipeline, 0);
-    wgpuShaderModuleRelease(vertex_module);
-    wgpuShaderModuleRelease(fragment_module);
+    vertex_module.reset();
+    fragment_module.reset();
 
     ensure_shadow_samplers(state);
     const auto bind = [&](
@@ -5214,13 +4992,12 @@ void run_esm_blur(
         WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
         descriptor.colorAttachmentCount = 1;
         descriptor.colorAttachments = &attachment;
-        WGPURenderPassEncoder render =
-            wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+        DawnRenderPass render{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
         wgpuRenderPassEncoderSetPipeline(render, blur.pipeline);
         wgpuRenderPassEncoderSetBindGroup(render, 0, group, 0, nullptr);
         count_gpu_draw(wgpuRenderPassEncoderDraw, render, 3, 1, 0, 0);
         wgpuRenderPassEncoderEnd(render);
-        wgpuRenderPassEncoderRelease(render);
+        render.reset();
     };
     pass(blur.blur_h_view, blur.horizontal);
     pass(blur.blur_v_view, blur.vertical);
@@ -5233,12 +5010,12 @@ WGPUTextureView shadow_map_view(
     const Engine& engine,
     ShadowGeneratorHandle handle) {
     const ShadowGeneratorRecord& generator =
-        engine.shadow_generators[handle.value];
+        handle_at(engine.shadow_generators, handle);
     if (generator.map_target.value >= state.render_targets.size()) {
         dawn_error("a shadow generator has no rendered map.");
     }
     const DawnRenderTarget& map =
-        state.render_targets[generator.map_target.value];
+        handle_at(state.render_targets, generator.map_target);
 #if BBLITE_SHADOWS_ESM
     // The ESM receiver samples `sg._depthTexture`, which the pinned factory
     // set to the SECOND blur half -- not the depth buffer the caster pass
@@ -5364,8 +5141,8 @@ WGPUBindGroupEntry shadow_group_entry(
             // receiver binds 96 and a cascaded one 320. The refresh already
             // holds the block this buffer was created from, so its size is
             // read there rather than mirrored into a second vector.
-            entry.buffer = state.shadow_uniforms[handle.value];
-            entry.size = state.shadow_refresh.blocks[handle.value].size;
+            entry.buffer = handle_at(state.shadow_uniforms, handle);
+            entry.size = handle_at(state.shadow_refresh.blocks, handle).size;
             break;
     }
     return entry;
@@ -5570,18 +5347,18 @@ void write_shadow_generators(
             // depth scale, texel size -- so it is built once and outlives
             // every refresh.
             if (generator.filter == ShadowFilter::esm_directional &&
-                !state.shadow_params[handle.value]) {
+                !handle_at(state.shadow_params, handle)) {
                 const std::array<float, 8> params =
                     upstream::shadow_params_block(generator);
-                state.shadow_params[handle.value] = create_buffer(
+                handle_at(state.shadow_params, handle) = create_buffer(
                     state,
                     WGPUBufferUsage_Uniform,
                     params.data(),
                     params.size() * sizeof(float));
             }
 #endif
-            if (!state.shadow_uniforms[handle.value]) {
-                state.shadow_uniforms[handle.value] = create_buffer(
+            if (!handle_at(state.shadow_uniforms, handle)) {
+                handle_at(state.shadow_uniforms, handle) = create_buffer(
                     state,
                     WGPUBufferUsage_Uniform,
                     block.bytes.data(),
@@ -5589,7 +5366,7 @@ void write_shadow_generators(
             } else if (moved) {
                 wgpuQueueWriteBuffer(
                     state.queue,
-                    state.shadow_uniforms[handle.value],
+                    handle_at(state.shadow_uniforms, handle),
                     0,
                     block.bytes.data(),
                     block.size);
@@ -5960,12 +5737,11 @@ WGPUBindGroup build_standard_draw_group(
         unfilterable_emissive);
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    WGPUBindGroup group =
-        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    DawnBindGroup group{wgpuDeviceCreateBindGroup(state.device, &descriptor)};
     if (!group) {
         dawn_error("standard variant draw bind group creation failed.");
     }
-    return group;
+    return group.release();
 }
 
 /** The per-draw uniform buffers for a mesh's Standard draws. */
@@ -5979,9 +5755,9 @@ DawnDrawState& ensure_standard_draw_buffers(
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = static_cast<std::uint64_t>(size);
         descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        DawnBuffer buffer{wgpuDeviceCreateBuffer(state.device, &descriptor)};
         if (!buffer) dawn_error("standard draw buffer creation failed.");
-        return buffer;
+        return buffer.release();
     };
     if (!draw_state.mesh_uniforms) {
         draw_state.mesh_uniforms =
@@ -6048,10 +5824,10 @@ void write_standard_draw_blocks(
     WGPUBuffer material_uniforms,
     WGPUBuffer uv_uniforms,
     [[maybe_unused]] WGPUBuffer uv_transform_uniforms) {
-    const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+    const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
     const MaterialRecord* material =
         draw.item.material.value < engine.materials.size()
-            ? &engine.materials[draw.item.material.value]
+            ? &handle_at(engine.materials, draw.item.material)
             : nullptr;
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
@@ -6146,12 +5922,12 @@ void write_standard_draw_blocks(
             DawnMesh& mesh = state.meshes[draw.item_index];
 #if defined(BBLITE_STANDARD_SKELETON)
             if (upstream::standard_variant_skeleton(upstream::standard_variants[variant])) {
-                write_pinned_bone_texture(state, mesh, engine.meshes[draw.item.mesh.value]);
+                write_pinned_bone_texture(state, mesh, handle_at(engine.meshes, draw.item.mesh));
             }
 #endif
             const MaterialRecord* material =
                 draw.item.material.value < engine.materials.size()
-                    ? &engine.materials[draw.item.material.value]
+                    ? &handle_at(engine.materials, draw.item.material)
                     : nullptr;
             DawnDrawState& colour_state =
                 ensure_standard_draw_buffers(
@@ -6676,11 +6452,10 @@ DawnPipeline& pipeline_for(
         ? nullptr
         : &fragment;
 
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline) dawn_error("wgpuDeviceCreateRenderPipeline");
     DawnPipeline& slot = pipeline_map[pipeline_key];
-    slot.pipeline = pipeline;
+    slot.pipeline = pipeline.release();
     return slot;
 }
 
@@ -7005,10 +6780,11 @@ WGPURenderPipeline pinned_variant_pipeline(
             traits.transparent ? &blend : nullptr);
     }
     descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline) dawn_error("pinned variant pipeline creation failed.");
-    return map.emplace(key, pipeline).first->second;
+    const auto result = map.emplace(key, pipeline.get());
+    if (result.second) (void)pipeline.release();
+    return result.first->second;
 }
 #endif
 
@@ -7156,10 +6932,11 @@ WGPURenderPipeline standard_variant_pipeline(
             traits.transparent ? &blend : nullptr);
     }
     descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline) dawn_error("standard variant pipeline creation failed.");
-    return map.emplace(key, pipeline).first->second;
+    const auto result = map.emplace(key, pipeline.get());
+    if (result.second) (void)pipeline.release();
+    return result.first->second;
 }
 #endif
 
@@ -7569,13 +7346,12 @@ void fill_node_draw_buffers(
         descriptor.size = size;
         descriptor.usage =
             WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        WGPUBuffer buffer =
-            wgpuDeviceCreateBuffer(state.device, &descriptor);
+        DawnBuffer buffer{wgpuDeviceCreateBuffer(state.device, &descriptor)};
         if (!buffer) dawn_error("node uniform buffer creation failed.");
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
         state.node_capture.allocate(buffer, "node-uniform", static_cast<std::size_t>(descriptor.size));
 #endif
-        return buffer;
+        return buffer.release();
     };
     if (!draw_state.mesh_uniforms) {
         draw_state.mesh_uniforms =
@@ -7804,8 +7580,7 @@ WGPUBindGroup build_node_draw_group(
         node_draw_layout_for(state, variant, caster, geometry_variant);
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    WGPUBindGroup group =
-        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    DawnBindGroup group{wgpuDeviceCreateBindGroup(state.device, &descriptor)};
     if (!group) dawn_error("node variant bind group creation failed.");
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     if (state.node_capture.capture.enabled()) {
@@ -7835,7 +7610,7 @@ WGPUBindGroup build_node_draw_group(
         }
     }
 #endif
-    return group;
+    return group.release();
 }
 
 // The draw wrapper observes the same arguments passed to the shared encoder.
@@ -8107,9 +7882,9 @@ void encode_transmission_grab(
             dawn_error("transmission grab pipeline creation failed.");
         }
     }
-    WGPUBindGroupLayout layout = wgpuRenderPipelineGetBindGroupLayout(
+    DawnBindGroupLayout layout{wgpuRenderPipelineGetBindGroupLayout(
         state.transmission_grab_pipeline,
-        0);
+        0)};
     WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
     entry.binding = 0;
     entry.textureView = state.msaa_color_view;
@@ -8118,16 +7893,15 @@ void encode_transmission_grab(
     bind_descriptor.layout = layout;
     bind_descriptor.entryCount = 1;
     bind_descriptor.entries = &entry;
-    WGPUBindGroup bind_group =
-        wgpuDeviceCreateBindGroup(state.device, &bind_descriptor);
-    wgpuBindGroupLayoutRelease(layout);
+    DawnBindGroup bind_group{wgpuDeviceCreateBindGroup(state.device, &bind_descriptor)};
+    layout.reset();
     WGPUTextureViewDescriptor level_descriptor =
         WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
     level_descriptor.baseMipLevel = 0;
     level_descriptor.mipLevelCount = 1;
-    WGPUTextureView level_view = wgpuTextureCreateView(
+    DawnTextureView level_view{create_dawn_texture_view(
         state.transmission_color,
-        &level_descriptor);
+        &level_descriptor)};
     WGPURenderPassColorAttachment color_attachment =
         WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     color_attachment.view = level_view;
@@ -8137,17 +7911,16 @@ void encode_transmission_grab(
         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     pass_descriptor.colorAttachmentCount = 1;
     pass_descriptor.colorAttachments = &color_attachment;
-    WGPURenderPassEncoder pass =
-        wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
     wgpuRenderPassEncoderSetPipeline(
         pass,
         state.transmission_grab_pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
     count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
-    wgpuBindGroupRelease(bind_group);
-    wgpuTextureViewRelease(level_view);
+    pass.reset();
+    bind_group.reset();
+    level_view.reset();
     record_mipmaps(
         state,
         encoder,
@@ -8199,10 +7972,9 @@ void encode_image_processing(
             16);
     }
     if (!state.image_processing_group) {
-        WGPUBindGroupLayout layout =
-            wgpuRenderPipelineGetBindGroupLayout(
+        DawnBindGroupLayout layout{wgpuRenderPipelineGetBindGroupLayout(
                 state.image_processing_pipeline,
-                0);
+                0)};
         std::array<WGPUBindGroupEntry, 2> entries{};
         entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         entries[0].binding = 0;
@@ -8218,7 +7990,7 @@ void encode_image_processing(
         bind_descriptor.entries = entries.data();
         state.image_processing_group =
             wgpuDeviceCreateBindGroup(state.device, &bind_descriptor);
-        wgpuBindGroupLayoutRelease(layout);
+        layout.reset();
     }
     const std::array<float, 4> params{
         scene.environment.exposure,
@@ -8247,8 +8019,7 @@ void encode_image_processing(
         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     pass_descriptor.colorAttachmentCount = 1;
     pass_descriptor.colorAttachments = &color_attachment;
-    WGPURenderPassEncoder pass =
-        wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
     wgpuRenderPassEncoderSetPipeline(
         pass,
         state.image_processing_pipeline);
@@ -8260,7 +8031,7 @@ void encode_image_processing(
         nullptr);
     count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
+    pass.reset();
 }
 
 // Copies a sampled depth attachment into an r32float color texture so
@@ -8312,9 +8083,9 @@ void encode_depth_copy(
             dawn_error("depth copy pipeline creation failed.");
         }
     }
-    WGPUBindGroupLayout layout = wgpuRenderPipelineGetBindGroupLayout(
+    DawnBindGroupLayout layout{wgpuRenderPipelineGetBindGroupLayout(
         state.depth_copy_pipeline,
-        0);
+        0)};
     WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
     entry.binding = 0;
     entry.textureView = target.depth_sampled_view;
@@ -8323,9 +8094,8 @@ void encode_depth_copy(
     bind_descriptor.layout = layout;
     bind_descriptor.entryCount = 1;
     bind_descriptor.entries = &entry;
-    WGPUBindGroup bind_group =
-        wgpuDeviceCreateBindGroup(state.device, &bind_descriptor);
-    wgpuBindGroupLayoutRelease(layout);
+    DawnBindGroup bind_group{wgpuDeviceCreateBindGroup(state.device, &bind_descriptor)};
+    layout.reset();
     WGPURenderPassColorAttachment color_attachment =
         WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     color_attachment.view = target.depth_copy_view;
@@ -8335,14 +8105,13 @@ void encode_depth_copy(
         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     pass_descriptor.colorAttachmentCount = 1;
     pass_descriptor.colorAttachments = &color_attachment;
-    WGPURenderPassEncoder pass =
-        wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
     wgpuRenderPassEncoderSetPipeline(pass, state.depth_copy_pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
     count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
-    wgpuBindGroupRelease(bind_group);
+    pass.reset();
+    bind_group.reset();
 }
 
 // Fullscreen-triangle copy used by frame-graph copy tasks.
@@ -8376,11 +8145,11 @@ WGPURenderPipeline blit_pipeline_for(
     fragment.targetCount = 1;
     fragment.targets = &color_target;
     descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline) dawn_error("blit pipeline creation failed.");
-    state.blit_pipelines[key] = pipeline;
-    return pipeline;
+    auto& slot = state.blit_pipelines[key];
+    slot = pipeline.release();
+    return slot;
 }
 
 WGPUBindGroup blit_group_for(DawnState& state, WGPURenderPipeline pipeline, WGPUTextureView source) {
@@ -8407,7 +8176,7 @@ void retain_temporal_presentation(DawnState& state, WGPUCommandEncoder encoder,
     if (!state.temporal_presented) {
         state.temporal_presented = create_frame_texture(state, state.surface_format, 1u, width, height,
             WGPUTextureUsage_CopyDst | WGPUTextureUsage_TextureBinding);
-        state.temporal_presented_view = wgpuTextureCreateView(state.temporal_presented, nullptr);
+        state.temporal_presented_view = create_dawn_texture_view(state.temporal_presented, nullptr);
         state.temporal_presented_group = blit_group_for(state,
             blit_pipeline_for(state, state.surface_format, 1u), state.temporal_presented_view);
     }
@@ -8427,12 +8196,12 @@ void present_stopped_temporal_frame(DawnState& state, WGPUCommandEncoder encoder
     WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     descriptor.colorAttachmentCount = 1;
     descriptor.colorAttachments = &attachment;
-    const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
     wgpuRenderPassEncoderSetPipeline(pass, blit_pipeline_for(state, state.surface_format, 1u));
     wgpuRenderPassEncoderSetBindGroup(pass, 2u, state.temporal_presented_group, 0u, nullptr);
     count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3u, 1u, 0u, 0u);
     wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
+    pass.reset();
 }
 #endif
 
@@ -8500,7 +8269,7 @@ DawnMeshBindings& bindings_for(
     scene_descriptor.entryCount = scene_entry_count;
     scene_descriptor.entries = scene_entries.data();
     bindings.scene =
-        wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
+        require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &scene_descriptor), "mesh bind group");
 
 #if BBLITE_GPU_MORPH_STORAGE
     {
@@ -8519,7 +8288,7 @@ DawnMeshBindings& bindings_for(
         morph_descriptor.entryCount = morph_entries.size();
         morph_descriptor.entries = morph_entries.data();
         bindings.morph =
-            wgpuDeviceCreateBindGroup(state.device, &morph_descriptor);
+            require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &morph_descriptor), "mesh bind group");
     }
 #endif
 
@@ -8638,7 +8407,7 @@ DawnMeshBindings& bindings_for(
     texture_descriptor.entryCount = pair_count * 2;
     texture_descriptor.entries = texture_entries.data();
     bindings.textures =
-        wgpuDeviceCreateBindGroup(state.device, &texture_descriptor);
+        require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &texture_descriptor), "mesh bind group");
 
     WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
     material_entry.binding = 0;
@@ -8650,9 +8419,9 @@ DawnMeshBindings& bindings_for(
     material_descriptor.entryCount = 1;
     material_descriptor.entries = &material_entry;
     bindings.material =
-        wgpuDeviceCreateBindGroup(state.device, &material_descriptor);
+        require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &material_descriptor), "mesh bind group");
 
-    return mesh.bindings.emplace(kind, bindings).first->second;
+    return mesh.bindings.emplace(kind, std::move(bindings)).first->second;
 }
 
 /** Build the four reflected groups for an active ShaderMaterial draw. */
@@ -8667,7 +8436,7 @@ DawnShaderBindings& shader_bindings_for(
     if (material_handle.value >= engine.materials.size()) {
         dawn_error("Shader draw has an invalid material.");
     }
-    const MaterialRecord& material = engine.materials[material_handle.value];
+    const MaterialRecord& material = handle_at(engine.materials, material_handle);
     const upstream::ShaderVariantInfo& info =
         upstream::shader_variant_info(variant);
     const WGPUBuffer vertex_uniforms =
@@ -8697,14 +8466,14 @@ DawnShaderBindings& shader_bindings_for(
             material.shader_storage_buffers[declared_slot];
         if (
             handle.value >= state.shader_storage_buffers.size() ||
-            !state.shader_storage_buffers[handle.value].buffer) {
+            !handle_at(state.shader_storage_buffers, handle).buffer) {
             dawn_error(
                 (std::string("Shader material storage buffer '") +
                  info.storage_buffers[declared_slot].name +
                  "' is not ready.")
                     .c_str());
         }
-        return state.shader_storage_buffers[handle.value].buffer;
+        return handle_at(state.shader_storage_buffers, handle).buffer;
     };
 
     std::vector<WGPUBindGroupEntry> storage_entries;
@@ -8723,7 +8492,7 @@ DawnShaderBindings& shader_bindings_for(
         descriptor.entryCount = storage_entries.size();
         descriptor.entries = storage_entries.data();
         bindings.storage =
-            wgpuDeviceCreateBindGroup(state.device, &descriptor);
+            require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &descriptor), "mesh bind group");
         if (!bindings.storage) {
             dawn_error("Shader storage bind group creation failed.");
         }
@@ -8743,7 +8512,7 @@ DawnShaderBindings& shader_bindings_for(
         descriptor.entryCount = 1;
         descriptor.entries = &entry;
         bindings.scene =
-            wgpuDeviceCreateBindGroup(state.device, &descriptor);
+            require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &descriptor), "mesh bind group");
         if (!bindings.scene) {
             dawn_error("Shader vertex bind group creation failed.");
         }
@@ -8754,6 +8523,7 @@ DawnShaderBindings& shader_bindings_for(
     for (std::size_t slot = 0; slot < info.samplers.size(); ++slot) {
         WGPUTextureView view = nullptr;
         WGPUSampler sampler = nullptr;
+#if BBLITE_SHADOWS_CSM
         const bool csm =
             slot < material.shader_csm_textures.size() &&
             material.shader_csm_textures[slot].value != invalid_handle;
@@ -8770,7 +8540,9 @@ DawnShaderBindings& shader_bindings_for(
 #else
             dawn_error("Shader CSM texture in a build with no receiver.");
 #endif
-        } else {
+        } else
+#endif
+        {
             if (slot >= textures.size()) {
                 dawn_error(shader_sampler_shortfall(info, textures.size()));
             }
@@ -8809,7 +8581,7 @@ DawnShaderBindings& shader_bindings_for(
         descriptor.entryCount = resource_entries.size();
         descriptor.entries = resource_entries.data();
         bindings.resources =
-            wgpuDeviceCreateBindGroup(state.device, &descriptor);
+            require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &descriptor), "mesh bind group");
         if (!bindings.resources) {
             dawn_error("Shader resource bind group creation failed.");
         }
@@ -8826,12 +8598,12 @@ DawnShaderBindings& shader_bindings_for(
         descriptor.entryCount = 1;
         descriptor.entries = &entry;
         bindings.material =
-            wgpuDeviceCreateBindGroup(state.device, &descriptor);
+            require_dawn_resource(wgpuDeviceCreateBindGroup(state.device, &descriptor), "mesh bind group");
         if (!bindings.material) {
             dawn_error("Shader fragment bind group creation failed.");
         }
     }
-    return mesh.shader_bindings.emplace(key, bindings).first->second;
+    return mesh.shader_bindings.emplace(key, std::move(bindings)).first->second;
 }
 
 // ---------------------------------------------------------------------------
@@ -8906,12 +8678,11 @@ WGPURenderPipeline create_diagnostic_pipeline(
     fragment.targetCount = color_count;
     fragment.targets = color_targets.data();
     descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
     if (!pipeline) {
         dawn_error("diagnostic render pipeline creation failed.");
     }
-    return pipeline;
+    return pipeline.release();
 }
 
 // Downloads a diagnostic render target and stores it with the SDL
@@ -8940,10 +8711,8 @@ void save_dawn_texture_file(
         WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
     readback_descriptor.size =
         static_cast<std::uint64_t>(aligned_row_bytes) * height;
-    WGPUBuffer readback =
-        wgpuDeviceCreateBuffer(state.device, &readback_descriptor);
-    WGPUCommandEncoder encoder =
-        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+    DawnBuffer readback{wgpuDeviceCreateBuffer(state.device, &readback_descriptor)};
+    DawnCommandEncoder encoder{wgpuDeviceCreateCommandEncoder(state.device, nullptr)};
     WGPUTexelCopyTextureInfo copy_source =
         WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
     copy_source.texture = texture;
@@ -8958,11 +8727,10 @@ void save_dawn_texture_file(
         &copy_source,
         &copy_destination,
         &copy_size);
-    WGPUCommandBuffer command =
-        wgpuCommandEncoderFinish(encoder, nullptr);
-    wgpuQueueSubmit(state.queue, 1, &command);
-    wgpuCommandBufferRelease(command);
-    wgpuCommandEncoderRelease(encoder);
+    DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
+    submit_dawn_command(state.queue, command);
+    command.reset();
+    encoder.reset();
     WGPUBufferMapCallbackInfo map_callback =
         WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
     map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
@@ -8991,7 +8759,7 @@ void save_dawn_texture_file(
             0,
             static_cast<std::size_t>(aligned_row_bytes) * height));
     if (!mapped) {
-        wgpuBufferRelease(readback);
+        readback.reset();
         dawn_error("diagnostic readback map returned no data.");
     }
     if (
@@ -9000,7 +8768,7 @@ void save_dawn_texture_file(
         std::ofstream raw(raw_path, std::ios::binary);
         if (!raw) {
             wgpuBufferUnmap(readback);
-            wgpuBufferRelease(readback);
+            readback.reset();
             throw std::runtime_error(
                 "Unable to open HDR diagnostic output '" + raw_path +
                 "'.");
@@ -9028,7 +8796,7 @@ void save_dawn_texture_file(
         aligned_row_bytes,
         format_class);
     wgpuBufferUnmap(readback);
-    wgpuBufferRelease(readback);
+    readback.reset();
     save_capture_png(rgba, width, height, output_row_bytes, false, path);
 }
 
@@ -9070,23 +8838,20 @@ void save_dawn_geometry_id_buffer(
         WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
     color_info.size = {width, height, 1};
     color_info.format = color_format;
-    WGPUTexture color =
-        wgpuDeviceCreateTexture(state.device, &color_info);
+    DawnTexture color{wgpuDeviceCreateTexture(state.device, &color_info)};
     if (!color) dawn_error("wgpuDeviceCreateTexture ID buffer");
-    WGPUTextureView color_view = wgpuTextureCreateView(color, nullptr);
+    DawnTextureView color_view{create_dawn_texture_view(color, nullptr)};
     WGPUTextureDescriptor depth_info = WGPU_TEXTURE_DESCRIPTOR_INIT;
     depth_info.usage = WGPUTextureUsage_RenderAttachment;
     depth_info.size = {width, height, 1};
     depth_info.format = WGPUTextureFormat_Depth24PlusStencil8;
-    WGPUTexture depth =
-        wgpuDeviceCreateTexture(state.device, &depth_info);
+    DawnTexture depth{wgpuDeviceCreateTexture(state.device, &depth_info)};
     if (!depth) dawn_error("wgpuDeviceCreateTexture ID depth");
-    WGPUTextureView depth_view = wgpuTextureCreateView(depth, nullptr);
+    DawnTextureView depth_view{create_dawn_texture_view(depth, nullptr)};
 
-    std::vector<WGPUBuffer> transient_buffers;
-    std::vector<WGPUBindGroup> transient_groups;
-    WGPUCommandEncoder encoder =
-        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+    std::vector<DawnBuffer> transient_buffers;
+    std::vector<DawnBindGroup> transient_groups;
+    DawnCommandEncoder encoder{wgpuDeviceCreateCommandEncoder(state.device, nullptr)};
     WGPURenderPassColorAttachment color_attachment =
         WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     color_attachment.view = color_view;
@@ -9105,8 +8870,7 @@ void save_dawn_geometry_id_buffer(
     pass_descriptor.colorAttachmentCount = 1;
     pass_descriptor.colorAttachments = &color_attachment;
     pass_descriptor.depthStencilAttachment = &depth_attachment;
-    WGPURenderPassEncoder pass =
-        wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
     for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
         wgpuRenderPassEncoderSetPipeline(pass, pipelines[sided_mode]);
         std::uint32_t cluster_id_base = 1;
@@ -9123,7 +8887,7 @@ void save_dawn_geometry_id_buffer(
             const upstream::RenderItem& item = render_plan[mesh_index];
             const MaterialRecord* material =
                 item.material.value < engine.materials.size()
-                    ? &engine.materials[item.material.value]
+                    ? &handle_at(engine.materials, item.material)
                     : nullptr;
             const bool double_sided =
                 item.cull_mode == upstream::RenderCullMode::none;
@@ -9136,9 +8900,9 @@ void save_dawn_geometry_id_buffer(
             uniform_descriptor.usage =
                 WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
             uniform_descriptor.size = 32;
-            WGPUBuffer uniform_buffer = wgpuDeviceCreateBuffer(
+            DawnBuffer uniform_buffer{wgpuDeviceCreateBuffer(
                 state.device,
-                &uniform_descriptor);
+                &uniform_descriptor)};
             if (cluster_ids) {
                 const DiagnosticClusterUniforms uniforms =
                     diagnostic_cluster_uniforms(
@@ -9171,11 +8935,9 @@ void save_dawn_geometry_id_buffer(
             group_descriptor.layout = state.mesh_group_layouts[3];
             group_descriptor.entryCount = 1;
             group_descriptor.entries = &uniform_entry;
-            WGPUBindGroup uniform_group = wgpuDeviceCreateBindGroup(
+            DawnBindGroup uniform_group{wgpuDeviceCreateBindGroup(
                 state.device,
-                &group_descriptor);
-            transient_buffers.push_back(uniform_buffer);
-            transient_groups.push_back(uniform_group);
+                &group_descriptor)};
 
             DawnMeshBindings& bindings = bindings_for(
                 state,
@@ -9187,6 +8949,8 @@ void save_dawn_geometry_id_buffer(
                 pass, 2, bindings.textures, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(
                 pass, 3, uniform_group, 0, nullptr);
+            transient_buffers.push_back(std::move(uniform_buffer));
+            transient_groups.push_back(std::move(uniform_group));
 #if BBLITE_GPU_MORPH_STORAGE
             wgpuRenderPassEncoderSetBindGroup(
                 pass, 0, bindings.morph, 0, nullptr);
@@ -9221,12 +8985,11 @@ void save_dawn_geometry_id_buffer(
         }
     }
     wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
-    WGPUCommandBuffer command =
-        wgpuCommandEncoderFinish(encoder, nullptr);
-    wgpuQueueSubmit(state.queue, 1, &command);
-    wgpuCommandBufferRelease(command);
-    wgpuCommandEncoderRelease(encoder);
+    pass.reset();
+    DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
+    submit_dawn_command(state.queue, command);
+    command.reset();
+    encoder.reset();
     save_dawn_texture_file(
         state,
         color,
@@ -9234,16 +8997,12 @@ void save_dawn_geometry_id_buffer(
         width,
         height,
         path);
-    for (WGPUBindGroup group : transient_groups) {
-        wgpuBindGroupRelease(group);
-    }
-    for (WGPUBuffer buffer : transient_buffers) {
-        wgpuBufferRelease(buffer);
-    }
-    wgpuTextureViewRelease(depth_view);
-    wgpuTextureRelease(depth);
-    wgpuTextureViewRelease(color_view);
-    wgpuTextureRelease(color);
+    transient_groups.clear();
+    transient_buffers.clear();
+    depth_view.reset();
+    depth.reset();
+    color_view.reset();
+    color.reset();
 }
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -9302,13 +9061,14 @@ DawnPostProcessProgram build_post_process_program(
     layout_descriptor.entryCount = layout_entries.size();
     layout_descriptor.entries = layout_entries.data();
     program.group_layout =
-        wgpuDeviceCreateBindGroupLayout(state.device, &layout_descriptor);
+        require_dawn_resource(wgpuDeviceCreateBindGroupLayout(state.device, &layout_descriptor), "pass pipeline layout");
     WGPUPipelineLayoutDescriptor pipeline_layout =
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     pipeline_layout.bindGroupLayoutCount = 1;
-    pipeline_layout.bindGroupLayouts = &program.group_layout;
+    const auto group_layout = program.group_layout.get();
+    pipeline_layout.bindGroupLayouts = &group_layout;
     program.pipeline_layout =
-        wgpuDeviceCreatePipelineLayout(state.device, &pipeline_layout);
+        require_dawn_resource(wgpuDeviceCreatePipelineLayout(state.device, &pipeline_layout), "pass pipeline layout");
     // The generated table names the pin's factors; turning them into this
     // API's enums is the backend's own `blend_state_from`.
     const upstream::PostProcessBlend blend =
@@ -9401,11 +9161,11 @@ std::size_t post_process_program(
  */
 void write_dawn_post_process_uniforms(DawnState& state, Engine& engine, TaskHandle handle,
     std::size_t index, std::uint32_t width, std::uint32_t height, bool force = false) {
-    auto& pass = engine.frame_tasks[handle.value].post_process.passes[index];
-    auto& gpu = state.post_process_tasks[handle.value][index];
+    auto& pass = handle_at(engine.frame_tasks, handle).post_process.passes[index];
+    auto& gpu = handle_at(state.post_process_tasks, handle)[index];
     if (!gpu.uniforms || (!force && !pass.uniforms_dirty)) return;
     const auto& program = state.post_process_programs[gpu.program];
-    const auto extent = resolve_post_process_extent(engine.render_targets[pass.output_target.value],
+    const auto extent = resolve_post_process_extent(handle_at(engine.render_targets, pass.output_target),
         state.render_targets, pass, width, height);
     std::vector<float> data(program.uniform_size / sizeof(float), 0.0f);
     upstream::write_post_process_uniforms(engine, pass, extent.output_width, extent.output_height,
@@ -9425,16 +9185,16 @@ PreparedDawnPostProcessPass prepare_dawn_post_process_pass(
     SourceTextureView source_texture_view,
     bool write_uniforms = true) {
     PostProcessPassOptions& pass =
-        engine.frame_tasks[handle.value].post_process.passes[index];
+        handle_at(engine.frame_tasks, handle).post_process.passes[index];
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos[
             pass.shader_index];
     DawnPostProcessTask& gpu =
-        state.post_process_tasks[handle.value][index];
+        handle_at(state.post_process_tasks, handle)[index];
     const RenderTargetRecord& output_record =
-        engine.render_targets[pass.output_target.value];
+        handle_at(engine.render_targets, pass.output_target);
     DawnRenderTarget& output =
-        state.render_targets[pass.output_target.value];
+        handle_at(state.render_targets, pass.output_target);
     const PostProcessExtent extent = resolve_post_process_extent(
         output_record,
         state.render_targets,
@@ -9447,7 +9207,7 @@ PreparedDawnPostProcessPass prepare_dawn_post_process_pass(
         gpu.program = post_process_program(
             state,
             info,
-            state.render_targets[pass.output_target.value].color_format,
+            handle_at(state.render_targets, pass.output_target).color_format,
             output_record.swapchain
                 ? 1u
                 : task_sample_count(state, output_record.samples),
@@ -9540,10 +9300,9 @@ void encode_dawn_post_process_pass(WGPUCommandEncoder encoder, WGPUTextureView s
         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     pass_descriptor.colorAttachmentCount = 1;
     pass_descriptor.colorAttachments = &attachment;
-    WGPURenderPassEncoder post_pass =
-        wgpuCommandEncoderBeginRenderPass(
+    DawnRenderPass post_pass{wgpuCommandEncoderBeginRenderPass(
             encoder,
-            &pass_descriptor);
+            &pass_descriptor)};
     if (prepared.viewport) {
         const PixelViewport& rectangle = *prepared.viewport;
         wgpuRenderPassEncoderSetViewport(
@@ -9570,7 +9329,7 @@ void encode_dawn_post_process_pass(WGPUCommandEncoder encoder, WGPUTextureView s
         nullptr);
     count_gpu_draw(wgpuRenderPassEncoderDraw, post_pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(post_pass);
-    wgpuRenderPassEncoderRelease(post_pass);
+    post_pass.reset();
 }
 
 template <typename SourceTextureView>
@@ -9625,13 +9384,14 @@ DawnScreenSpaceProgram build_screen_space_program(
     layout_descriptor.entryCount = layout_entries.size();
     layout_descriptor.entries = layout_entries.data();
     program.group_layout =
-        wgpuDeviceCreateBindGroupLayout(state.device, &layout_descriptor);
+        require_dawn_resource(wgpuDeviceCreateBindGroupLayout(state.device, &layout_descriptor), "pass pipeline layout");
     WGPUPipelineLayoutDescriptor pipeline_layout =
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     pipeline_layout.bindGroupLayoutCount = 1;
-    pipeline_layout.bindGroupLayouts = &program.group_layout;
+    const auto group_layout = program.group_layout.get();
+    pipeline_layout.bindGroupLayouts = &group_layout;
     program.pipeline_layout =
-        wgpuDeviceCreatePipelineLayout(state.device, &pipeline_layout);
+        require_dawn_resource(wgpuDeviceCreatePipelineLayout(state.device, &pipeline_layout), "pass pipeline layout");
     // Single-sample, unblended, a triangle list: `ensureProducerPipeline`.
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = texture_format(info.target_format);
@@ -9780,21 +9540,21 @@ void record_screen_space_stage(
         stage.group =
             wgpuDeviceCreateBindGroup(state.device, &group_descriptor);
     }
-    WGPURenderPassEncoder pass = begin_screen_space_pass(encoder, target);
+    DawnRenderPass pass{begin_screen_space_pass(encoder, target)};
     wgpuRenderPassEncoderSetPipeline(pass, program.pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, stage.group, 0, nullptr);
     count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
+    pass.reset();
 }
 
 /** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
 void clear_screen_space_target(
     WGPUCommandEncoder encoder,
     WGPUTextureView view) {
-    WGPURenderPassEncoder pass = begin_screen_space_pass(encoder, view);
+    DawnRenderPass pass{begin_screen_space_pass(encoder, view)};
     wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
+    pass.reset();
 }
 
 /**
@@ -9816,9 +9576,9 @@ void record_screen_space_task(
     std::uint32_t height,
     SourceTextureView source_texture_view,
     bool& frame_graph_presented) {
-    FrameTaskRecord& record = engine.frame_tasks[handle.value];
+    FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
-    DawnScreenSpaceTask& gpu = state.screen_space_tasks[handle.value];
+    DawnScreenSpaceTask& gpu = handle_at(state.screen_space_tasks, handle);
     const DawnRenderTarget& raw = state.render_targets.at(task.raw.value);
     const DawnRenderTarget& stable =
         state.render_targets.at(task.stable.value);
@@ -9828,56 +9588,19 @@ void record_screen_space_task(
         engine,
         handle,
         screen_space_frame_inputs(state.render_targets, task));
-    if (decision.clear_identity) {
-        clear_screen_space_target(encoder, stable.color_view);
-        clear_screen_space_target(encoder, history.color_view);
-    }
-    if (decision.run_effect) {
-        record_screen_space_stage(
-            state,
-            task,
-            gpu.producer,
-            task.producer_shader,
-            encoder,
-            raw.color_view,
-            decision.producer_uniforms.data());
-        record_screen_space_stage(
-            state,
-            task,
-            gpu.resolve,
-            task.resolve_shader,
-            encoder,
-            stable.color_view,
-            decision.temporal_uniforms.data());
-        record_post_process_pass(
-            state,
-            engine,
-            handle,
-            encoder,
-            surface_view,
-            width,
-            height,
-            0,
-            source_texture_view);
-    }
-    if (record.post_process.passes.size() > 1) {
-        record_post_process_pass(
-            state,
-            engine,
-            handle,
-            encoder,
-            surface_view,
-            width,
-            height,
-            1,
-            source_texture_view);
-        const RenderTargetRecord& output_record =
-            engine.render_targets[
-                record.post_process.passes[1].output_target.value];
-        if (output_record.swapchain) {
-            frame_graph_presented = true;
-        }
-    }
+    record_screen_space_decision(decision, record.post_process.passes.size() > 1,
+        [&](bool previous) { clear_screen_space_target(encoder, previous ? history.color_view : stable.color_view); },
+        [&](bool producer, const float* uniforms) {
+            record_screen_space_stage(state, task, producer ? gpu.producer : gpu.resolve,
+                producer ? task.producer_shader : task.resolve_shader, encoder,
+                producer ? raw.color_view : stable.color_view, uniforms);
+        },
+        [&](std::size_t child) {
+            record_post_process_pass(state, engine, handle, encoder, surface_view, width, height, child, source_texture_view);
+            if (child == 1u && engine.render_targets.at(record.post_process.passes[1].output_target.value).swapchain) {
+                frame_graph_presented = true;
+            }
+        });
 }
 #endif
 
@@ -9901,8 +9624,8 @@ inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
     WGPUBindGroupLayout empty_layout = nullptr,
     WGPUBindGroupLayout deform_layout = nullptr,
     [[maybe_unused]] bool skeleton = false) {
-    WGPUShaderModule vertex = load_wgsl_module(device, stem_vertex);
-    WGPUShaderModule fragment = load_wgsl_module(device, stem_fragment);
+    DawnShaderModule vertex{load_wgsl_module(device, stem_vertex)};
+    DawnShaderModule fragment{load_wgsl_module(device, stem_fragment)};
 
     const std::array<WGPUBindGroupLayout, 4> groups{
         scene_layout, mesh_layout, empty_layout, deform_layout};
@@ -9910,8 +9633,7 @@ inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout_descriptor.bindGroupLayoutCount = deform_layout ? 4u : 2u;
     layout_descriptor.bindGroupLayouts = groups.data();
-    WGPUPipelineLayout pipeline_layout =
-        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+    DawnPipelineLayout pipeline_layout{wgpuDeviceCreatePipelineLayout(device, &layout_descriptor)};
     if (!pipeline_layout) dawn_error("pick pipeline layout");
 
     // The renderer's interleaved stream read at its own pitch: the pin
@@ -9961,13 +9683,12 @@ inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
     descriptor.depthStencil = &depth;
     descriptor.multisample.count = 1;
 
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(device, &descriptor);
-    wgpuPipelineLayoutRelease(pipeline_layout);
-    wgpuShaderModuleRelease(vertex);
-    wgpuShaderModuleRelease(fragment);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(device, &descriptor)};
+    pipeline_layout.reset();
+    vertex.reset();
+    fragment.reset();
     if (!pipeline) dawn_error("pick mesh render pipeline");
-    return pipeline;
+    return pipeline.release();
 }
 
 #if BBLITE_DEFORM_PICKING
@@ -9987,10 +9708,9 @@ inline WGPUBindGroupLayout create_dawn_pick_empty_layout(
     WGPUBindGroupLayoutDescriptor descriptor =
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = 0;
-    WGPUBindGroupLayout layout =
-        wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
     if (!layout) dawn_error("pick deform empty bind group layout");
-    return layout;
+    return layout.release();
 }
 
 /** The projection's own group: the bone palette, then the morph pair. */
@@ -10019,10 +9739,9 @@ inline WGPUBindGroupLayout create_dawn_pick_deform_layout(
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = static_cast<std::uint32_t>(entry_count);
     descriptor.entries = entries.data();
-    WGPUBindGroupLayout layout =
-        wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
     if (!layout) dawn_error("pick deform bind group layout");
-    return layout;
+    return layout.release();
 }
 
 
@@ -10034,10 +9753,8 @@ inline WGPURenderPipeline create_dawn_pick_cloud_pipeline(
     WGPUBindGroupLayout scene_layout,
     WGPUBindGroupLayout cloud_layout,
     WGPUBindGroupLayout color_layout) {
-    WGPUShaderModule vertex =
-        load_wgsl_module(device, "picking-splat.vert");
-    WGPUShaderModule fragment =
-        load_wgsl_module(device, "picking-splat.frag");
+    DawnShaderModule vertex{load_wgsl_module(device, "picking-splat.vert")};
+    DawnShaderModule fragment{load_wgsl_module(device, "picking-splat.frag")};
 
     const std::array<WGPUBindGroupLayout, 3> groups{
         scene_layout, cloud_layout, color_layout};
@@ -10045,8 +9762,7 @@ inline WGPURenderPipeline create_dawn_pick_cloud_pipeline(
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout_descriptor.bindGroupLayoutCount = groups.size();
     layout_descriptor.bindGroupLayouts = groups.data();
-    WGPUPipelineLayout pipeline_layout =
-        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+    DawnPipelineLayout pipeline_layout{wgpuDeviceCreatePipelineLayout(device, &layout_descriptor)};
     if (!pipeline_layout) dawn_error("cloud pick pipeline layout");
 
     WGPUVertexAttribute corner{};
@@ -10100,22 +9816,20 @@ inline WGPURenderPipeline create_dawn_pick_cloud_pipeline(
     descriptor.depthStencil = &depth;
     descriptor.multisample.count = 1;
 
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(device, &descriptor);
-    wgpuPipelineLayoutRelease(pipeline_layout);
-    wgpuShaderModuleRelease(vertex);
-    wgpuShaderModuleRelease(fragment);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(device, &descriptor)};
+    pipeline_layout.reset();
+    vertex.reset();
+    fragment.reset();
     if (!pipeline) dawn_error("cloud pick render pipeline");
-    return pipeline;
+    return pipeline.release();
 }
 #endif
 #endif
 
 WGPUBindGroup skybox_scene_group_over(
     DawnState& state, WGPUBuffer matrix, bool pinned_dds_skybox) {
-        WGPUBindGroupLayout scene_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.skybox_pipeline, 1);
+        DawnBindGroupLayout scene_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.skybox_pipeline, 1)};
         std::array<WGPUBindGroupEntry, 3> scene_entries{};
         scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         scene_entries[0].binding = 0;
@@ -10155,997 +9869,99 @@ WGPUBindGroup skybox_scene_group_over(
         scene_descriptor.layout = scene_layout;
         scene_descriptor.entryCount = scene_entry_count;
         scene_descriptor.entries = scene_entries.data();
-        WGPUBindGroup group =
-            wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
-        wgpuBindGroupLayoutRelease(scene_layout);
-    return group;
+        DawnBindGroup group{wgpuDeviceCreateBindGroup(state.device, &scene_descriptor)};
+        scene_layout.reset();
+    return group.release();
 }
 
-SceneRun run_dawn_engine(Engine& engine) {
-    if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
-        throw std::runtime_error("Dawn renderer requires a registered scene.");
-    }
-    const FrameOptions frame_options = read_frame_options();
-    const bool cpu_profile =
-        environment_variable("BBLITE_CPU_PROFILE") == "1";
-    const bool mem_profile =
-        environment_variable("BBLITE_MEM_PROFILE") == "1";
-    CpuStartupMark cpu_startup_mark(cpu_profile, "dawn");
-    reject_unsupported_frame_options(
-        frame_options,
-        "Dawn",
-        /*supports_single_sample=*/true,
-        /*supports_copy_task=*/true);
-    // Keep every planned wrapper alive through event dispatch. A UI callback
-    // may replace the root or finish registering an awaited auxiliary scene;
-    // either change rebuilds the backend before stale plans are used again.
-    const std::vector<std::shared_ptr<Scene>> active_registered_scenes =
-        engine.registered_scenes;
-    const std::shared_ptr<Scene> active_scene =
-        active_registered_scenes.front();
-    Scene& scene = *active_scene;
-    if (scene.transmission_enabled && !scene.tasks.empty()) {
-        dawn_error(
-            "transmission combined with frame-graph tasks is not "
-            "implemented yet.");
-    }
-    apply_animation_seek(frame_options, scene);
-    // Read by the image-skybox and ground arms, which not every feature set
-    // compiles.
-    [[maybe_unused]] const bool background_enabled =
-        frame_options.background_enabled(scene.environment);
-    const bool use_skybox =
-        frame_options.skybox_enabled(scene.environment);
-    const bool use_ground =
-        frame_options.ground_enabled(scene.environment);
-    DawnState state;
-    // Every attachment and pipeline reads this, so it is settled before
-    // any of them is created. The count is the generated read of the
-    // pin's own surface declaration, not a re-typed 4; there is no
-    // capability probe here because WebGPU guarantees 4x support on the
-    // surface formats this backend renders to, where SDL_GPU must ask.
-    state.sample_count = frame_options.single_sample
-        ? 1u
-        : upstream::preferred_sample_count();
-    const bool hidden_test_pass = frame_options.test_pass;
-
-    DawnDeviceOptions device_options;
-    device_options.hidden_test_pass = hidden_test_pass;
-    device_options.immediate_present =
-        frame_options.benchmark_requested;
-#if BBLITE_GPU_INSTANCE_COLORS
-    // With the per-instance RGBA lane the pin's own thin-instance module
-    // appends, the specialized WGSL reaches the lane after the matrix
-    // columns, and the limit has to cover that location.
-    device_options.max_vertex_attributes = instance_color_location + 1;
-#elif BBLITE_GPU_INSTANCING
-    // The SDL-specialized WGSL feeds per-instance matrix columns at
-    // locations 16-19; the WebGPU default caps attribute locations
-    // below 16, so raise the device limit to cover location 19.
-    device_options.max_vertex_attributes = 20;
-#endif
-    // Geometry MRT chains can exceed the default 32-byte color budget;
-    // the entry's erased requiredLimits option is derived here from
-    // the task records with the WebGPU render-target byte costs
-    // (rgba8/bgra8/rgba16f cost 8, r32f 4, r16f 2).
-    {
-        std::uint32_t color_bytes_per_sample = 0;
-        for (const FrameTaskRecord& task : engine.frame_tasks) {
-            if (task.kind != FrameTaskKind::geometry) continue;
-            std::uint32_t total = 0;
-            for (const GeometryTextureDescription& description :
-                 task.geometry.attachments) {
-                switch (geometry_texture_format(description)) {
-                    case WGPUTextureFormat_R16Float:
-                        total += 2;
-                        break;
-                    case WGPUTextureFormat_R32Float:
-                        total += 4;
-                        break;
-                    default:
-                        total += 8;
-                        break;
-                }
-            }
-            if (task.geometry.target.value != invalid_handle) {
-                total += 8;
-            }
-            color_bytes_per_sample =
-                std::max(color_bytes_per_sample, total);
-        }
-        if (color_bytes_per_sample > 32) {
-            device_options.max_color_attachment_bytes_per_sample =
-                color_bytes_per_sample;
-        }
-    }
-    create_dawn_device(engine.options, device_options, state);
-    sync_engine_canvas_size(state.window, engine);
-    resize_dawn_surface(state, engine.options);
-    cpu_startup_mark("window-device");
-
-    std::uint32_t width = state.surface_width;
-    std::uint32_t height = state.surface_height;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-    std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)>
-        ui_runtime(
-            create_ui_rml_runtime(engine, state.window, width, height),
-            &destroy_ui_rml_runtime);
-#endif
-
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-    // Sprite rendering contexts and their render targets may be created by a
-    // before-render callback. Mirror all newly appended CPU records in handle
-    // order both here and immediately after each callback run.
-    const auto sync_sprite_gpu_contexts = [&]() {
-        state.sprite_render_textures.resize(
-            engine.sprite_render_textures.size(), nullptr);
-        state.sprite_render_texture_views.resize(
-            engine.sprite_render_textures.size(), nullptr);
-        // The one refusal walk covers every disposed record, so it runs
-        // once per sync -- at the first disposed record, before any
-        // release -- rather than once per record per frame.
-        bool disposed_refused = false;
-        for (std::size_t index = 0;
-             index < engine.sprite_render_textures.size();
-             ++index) {
-            const SpriteRenderTextureRecord& texture =
-                engine.sprite_render_textures[index];
-            WGPUTexture& gpu_texture =
-                state.sprite_render_textures[index];
-            WGPUTextureView& gpu_view =
-                state.sprite_render_texture_views[index];
-            if (texture.disposed) {
-                if (!disposed_refused) {
-                    refuse_disposed_sprite_render_texture_in_use(engine);
-                    disposed_refused = true;
-                }
-                if (gpu_view) wgpuTextureViewRelease(gpu_view);
-                if (gpu_texture) wgpuTextureRelease(gpu_texture);
-                gpu_view = nullptr;
-                gpu_texture = nullptr;
-                continue;
-            }
-            if (gpu_texture) continue;
-            WGPUTextureDescriptor descriptor =
-                WGPU_TEXTURE_DESCRIPTOR_INIT;
-            descriptor.usage = WGPUTextureUsage_RenderAttachment |
-                WGPUTextureUsage_TextureBinding |
-                WGPUTextureUsage_CopySrc;
+void sync_dawn_scene_sprites(DawnState& state, Engine& engine) {
+    state.sprite_render_textures.resize(engine.sprite_render_textures.size(), nullptr);
+    state.sprite_render_texture_views.resize(engine.sprite_render_textures.size(), nullptr);
+    sync_retained_textures(engine.sprite_render_textures,
+        [&](std::size_t index) { return state.sprite_render_textures[index] != nullptr; },
+        [&] { refuse_disposed_sprite_render_texture_in_use(engine); },
+        [&](std::size_t index) {
+            auto& view = state.sprite_render_texture_views[index];
+            auto& texture = state.sprite_render_textures[index];
+            if (view) wgpuTextureViewRelease(view);
+            if (texture) wgpuTextureRelease(texture);
+            view = nullptr; texture = nullptr;
+        },
+        [&](std::size_t index, const SpriteRenderTextureRecord& texture) {
+            WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+            descriptor.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopySrc;
             descriptor.dimension = WGPUTextureDimension_2D;
-            descriptor.size = WGPUExtent3D{
-                texture.width, texture.height, 1u};
+            descriptor.size = WGPUExtent3D{texture.width, texture.height, 1u};
             descriptor.format = state.surface_format;
             descriptor.mipLevelCount = 1;
             descriptor.sampleCount = 1;
-            gpu_texture = wgpuDeviceCreateTexture(
-                state.device, &descriptor);
+            auto& gpu_texture = state.sprite_render_textures[index];
+            auto& gpu_view = state.sprite_render_texture_views[index];
+            gpu_texture = wgpuDeviceCreateTexture(state.device, &descriptor);
             if (!gpu_texture) dawn_error("sprite render texture");
-            gpu_view = wgpuTextureCreateView(gpu_texture, nullptr);
+            gpu_view = create_dawn_texture_view(gpu_texture, nullptr);
             if (!gpu_view) dawn_error("sprite render texture view");
-        }
-        while (
-            state.sprite_passes.size() <
-            engine.sprite_renderers.size()) {
-            state.sprite_passes.push_back(create_dawn_sprite_pass(
-                state.device,
-                state.queue,
-                state.mips,
-                engine,
-                SpriteRendererHandle{static_cast<std::uint32_t>(
-                    state.sprite_passes.size())},
-                state.sprite_render_textures,
-                state.sprite_render_texture_views,
-                state.surface_format));
-        }
-    };
-    sync_sprite_gpu_contexts();
-#endif
-
-    // Shared frame targets: 4x MSAA color (surface format, or linear
-    // rgba16float for transmission frames whose multisampled texture
-    // feeds the grab and the per-sample image processing) and the
-    // browser's depth24plus-stencil8 depth buffer.
-    state.frame_color_format = scene.transmission_enabled
-        ? WGPUTextureFormat_RGBA16Float
-        : state.surface_format;
-    const auto recreate_frame_targets = [&]() {
-        if (state.image_processing_group) {
-            wgpuBindGroupRelease(state.image_processing_group);
-            state.image_processing_group = nullptr;
-        }
-        if (state.depth_view) wgpuTextureViewRelease(state.depth_view);
-        if (state.depth) wgpuTextureRelease(state.depth);
-        if (state.msaa_color_view) {
-            wgpuTextureViewRelease(state.msaa_color_view);
-        }
-        if (state.msaa_color) wgpuTextureRelease(state.msaa_color);
-        state.depth_view = nullptr;
-        state.depth = nullptr;
-        state.msaa_color_view = nullptr;
-        state.msaa_color = nullptr;
-
-        WGPUTextureDescriptor color_descriptor =
-            WGPU_TEXTURE_DESCRIPTOR_INIT;
-        color_descriptor.usage = scene.transmission_enabled
-            ? WGPUTextureUsage_RenderAttachment |
-                WGPUTextureUsage_TextureBinding
-            : WGPUTextureUsage_RenderAttachment;
-        color_descriptor.size = {width, height, 1};
-        color_descriptor.format = state.frame_color_format;
-        color_descriptor.sampleCount = state.sample_count;
-        state.msaa_color =
-            wgpuDeviceCreateTexture(state.device, &color_descriptor);
-        state.msaa_color_view =
-            wgpuTextureCreateView(state.msaa_color, nullptr);
-        WGPUTextureDescriptor depth_descriptor =
-            WGPU_TEXTURE_DESCRIPTOR_INIT;
-        depth_descriptor.usage = WGPUTextureUsage_RenderAttachment;
-        depth_descriptor.size = {width, height, 1};
-        depth_descriptor.format =
-            WGPUTextureFormat_Depth24PlusStencil8;
-        depth_descriptor.sampleCount = state.sample_count;
-        state.depth =
-            wgpuDeviceCreateTexture(state.device, &depth_descriptor);
-        state.depth_view = wgpuTextureCreateView(state.depth, nullptr);
-        if (
-            !state.msaa_color ||
-            !state.msaa_color_view ||
-            !state.depth ||
-            !state.depth_view) {
-            dawn_error("resizable frame target creation failed.");
-        }
-    };
-    recreate_frame_targets();
-    if (scene.transmission_enabled) {
-        // The pinned refraction target: the shared fixed-extent,
-        // shortened-chain contract (pal_gpu_shared.hpp), rgba16float.
-        state.transmission_mip_count = transmission_grab_mip_count();
-        WGPUTextureDescriptor transmission_descriptor =
-            WGPU_TEXTURE_DESCRIPTOR_INIT;
-        transmission_descriptor.usage =
-            WGPUTextureUsage_RenderAttachment |
-            WGPUTextureUsage_TextureBinding;
-        transmission_descriptor.size = {
-            transmission_grab_size,
-            transmission_grab_size,
-            1,
-        };
-        transmission_descriptor.format =
-            WGPUTextureFormat_RGBA16Float;
-        transmission_descriptor.mipLevelCount =
-            state.transmission_mip_count;
-        state.transmission_color = wgpuDeviceCreateTexture(
-            state.device,
-            &transmission_descriptor);
-        if (!state.transmission_color) {
-            dawn_error(
-                "wgpuDeviceCreateTexture transmission color");
-        }
-        state.transmission_color_view = wgpuTextureCreateView(
-            state.transmission_color,
-            nullptr);
+        });
+    while (state.sprite_passes.size() < engine.sprite_renderers.size()) {
+        state.sprite_passes.push_back(create_dawn_sprite_pass(state.device, state.queue, state.mips, engine,
+            SpriteRendererHandle{static_cast<std::uint32_t>(state.sprite_passes.size())},
+            state.sprite_render_textures, state.sprite_render_texture_views, state.surface_format));
     }
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-    if (!scene.depth_hosted_sprite_layers.empty()) {
-        state.scene_sprite_pass = create_dawn_scene_sprite_pass(
-            state.device,
-            state.queue,
-            state.mips,
-            engine,
-            scene.depth_hosted_sprite_layers,
-            state.sprite_render_textures,
-            state.sprite_render_texture_views,
-            state.frame_color_format,
-            WGPUTextureFormat_Depth24PlusStencil8,
-            state.sample_count);
-        state.has_scene_sprite_pass = true;
-    }
+}
 #endif
 
-    state.vertex_module = load_wgsl_module(state, "pbr.vert");
-
-    state.view_projection = create_buffer(
-        state,
-        WGPUBufferUsage_Uniform,
-        nullptr,
-        64);
-    state.white_texture = create_solid_texture(
-        state,
-        {255, 255, 255, 255},
-        WGPUTextureFormat_RGBA8Unorm,
-        1);
-    state.white_view =
-        wgpuTextureCreateView(state.white_texture, nullptr);
-    state.black_texture = create_solid_texture(
-        state,
-        {0, 0, 0, 255},
-        WGPUTextureFormat_RGBA8Unorm,
-        1);
-    state.black_view =
-        wgpuTextureCreateView(state.black_texture, nullptr);
-    state.normal_flat_texture = create_solid_texture(
-        state,
-        {128, 128, 255, 255},
-        WGPUTextureFormat_RGBA8Unorm,
-        1);
-    state.normal_flat_view =
-        wgpuTextureCreateView(state.normal_flat_texture, nullptr);
-    const auto cube_view = [&](WGPUTexture texture) {
-        WGPUTextureViewDescriptor cube_descriptor =
-            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-        cube_descriptor.dimension = WGPUTextureViewDimension_Cube;
-        cube_descriptor.arrayLayerCount = 6;
-        return wgpuTextureCreateView(texture, &cube_descriptor);
-    };
-    state.black_cube = create_solid_texture(
-        state,
-        {0, 0, 0, 255},
-        WGPUTextureFormat_RGBA8Unorm,
-        6);
-    state.black_cube_view = cube_view(state.black_cube);
-    const std::vector<std::uint8_t> zero_rgba16f(8, 0);
-    // The startup value IS the no-environment value: `upload_environment`
-    // replaces this cube only when the scene carries one, so an
-    // environment-less PBR scene shades ambient reflections from this face.
-    // SDL_GPU uploads the same `environment_fallback_face`; zeros here were
-    // a silent backend delta.
-    const std::vector<std::uint16_t> fallback_halves = fallback_face_halves();
-    std::vector<std::uint8_t> fallback_rgba16f(8);
-    for (std::size_t channel = 0; channel < fallback_halves.size(); ++channel) {
-        fallback_rgba16f[channel * 2] =
-            static_cast<std::uint8_t>(fallback_halves[channel] & 0xff);
-        fallback_rgba16f[channel * 2 + 1] =
-            static_cast<std::uint8_t>(fallback_halves[channel] >> 8);
+void recreate_dawn_scene_targets(DawnState& state, const Scene& scene, std::uint32_t width, std::uint32_t height) {
+    if (state.image_processing_group) {
+        wgpuBindGroupRelease(state.image_processing_group);
+        state.image_processing_group = nullptr;
     }
-    state.environment_cube = create_solid_texture(
-        state,
-        fallback_rgba16f,
-        WGPUTextureFormat_RGBA16Float,
-        6);
-    state.environment_cube_view = cube_view(state.environment_cube);
-    state.brdf_texture = create_solid_texture(
-        state,
-        zero_rgba16f,
-        WGPUTextureFormat_RGBA16Float,
-        1);
-    state.brdf_view =
-        wgpuTextureCreateView(state.brdf_texture, nullptr);
-    {
-        WGPUSamplerDescriptor sampler_descriptor =
-            WGPU_SAMPLER_DESCRIPTOR_INIT;
-        sampler_descriptor.addressModeU = WGPUAddressMode_Repeat;
-        sampler_descriptor.addressModeV = WGPUAddressMode_Repeat;
-        sampler_descriptor.addressModeW = WGPUAddressMode_Repeat;
-        sampler_descriptor.magFilter = WGPUFilterMode_Linear;
-        sampler_descriptor.minFilter = WGPUFilterMode_Linear;
-        sampler_descriptor.mipmapFilter = WGPUMipmapFilterMode_Linear;
-        state.default_sampler =
-            wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
-        sampler_descriptor.addressModeU = WGPUAddressMode_ClampToEdge;
-        sampler_descriptor.addressModeV = WGPUAddressMode_ClampToEdge;
-        sampler_descriptor.addressModeW = WGPUAddressMode_ClampToEdge;
-        state.clamp_sampler =
-            wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
-        sampler_descriptor.lodMaxClamp = 0.0f;
-        state.ground_sampler =
-            wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
-        WGPUSamplerDescriptor nearest_descriptor =
-            WGPU_SAMPLER_DESCRIPTOR_INIT;
-        state.nearest_sampler =
-            wgpuDeviceCreateSampler(state.device, &nearest_descriptor);
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-        WGPUSamplerDescriptor post_process_descriptor =
-            WGPU_SAMPLER_DESCRIPTOR_INIT;
-        post_process_descriptor.magFilter = WGPUFilterMode_Linear;
-        post_process_descriptor.minFilter = WGPUFilterMode_Linear;
-        state.post_process_bilinear_sampler =
-            wgpuDeviceCreateSampler(state.device, &post_process_descriptor);
-#endif
-        // The pinned scene-color sampler: repeat trilinear with the
-        // shared anisotropy (getTrilinearAnisotropicSampler).
-        WGPUSamplerDescriptor transmission_descriptor =
-            WGPU_SAMPLER_DESCRIPTOR_INIT;
-        transmission_descriptor.addressModeU = WGPUAddressMode_Repeat;
-        transmission_descriptor.addressModeV = WGPUAddressMode_Repeat;
-        transmission_descriptor.addressModeW = WGPUAddressMode_Repeat;
-        transmission_descriptor.magFilter = WGPUFilterMode_Linear;
-        transmission_descriptor.minFilter = WGPUFilterMode_Linear;
-        transmission_descriptor.mipmapFilter =
-            WGPUMipmapFilterMode_Linear;
-        transmission_descriptor.maxAnisotropy =
-            static_cast<std::uint16_t>(
-                transmission_sampler_max_anisotropy);
-        state.transmission_sampler =
-            wgpuDeviceCreateSampler(state.device, &transmission_descriptor);
+    if (state.depth_view) wgpuTextureViewRelease(state.depth_view);
+    if (state.depth) wgpuTextureRelease(state.depth);
+    if (state.msaa_color_view) {
+        wgpuTextureViewRelease(state.msaa_color_view);
     }
-#if BBLITE_GPU_MORPH_STORAGE
-    {
-        const std::array<float, 1> zero_delta{0.0f};
-        state.empty_morph_deltas = create_buffer(
-            state,
-            WGPUBufferUsage_Storage,
-            zero_delta.data(),
-            sizeof(zero_delta));
-        // Sixteen-byte {count, vertexCount} header plus one zero
-        // weight: derived background pipeline layouts require the
-        // shader's 20-byte minimum binding size for the runtime
-        // weights array.
-        const std::array<std::uint32_t, 5> zero_header{};
-        state.empty_morph_weights = create_buffer(
-            state,
-            WGPUBufferUsage_Storage,
-            zero_header.data(),
-            sizeof(zero_header));
+    if (state.msaa_color) wgpuTextureRelease(state.msaa_color);
+    state.depth_view = nullptr;
+    state.depth = nullptr;
+    state.msaa_color_view = nullptr;
+    state.msaa_color = nullptr;
+
+    WGPUTextureDescriptor color_descriptor =
+        WGPU_TEXTURE_DESCRIPTOR_INIT;
+    color_descriptor.usage = scene.transmission_enabled
+        ? WGPUTextureUsage_RenderAttachment |
+            WGPUTextureUsage_TextureBinding
+        : WGPUTextureUsage_RenderAttachment;
+    color_descriptor.size = {width, height, 1};
+    color_descriptor.format = state.frame_color_format;
+    color_descriptor.sampleCount = state.sample_count;
+    state.msaa_color =
+        wgpuDeviceCreateTexture(state.device, &color_descriptor);
+    state.msaa_color_view =
+        create_dawn_texture_view(state.msaa_color, nullptr);
+    WGPUTextureDescriptor depth_descriptor =
+        WGPU_TEXTURE_DESCRIPTOR_INIT;
+    depth_descriptor.usage = WGPUTextureUsage_RenderAttachment;
+    depth_descriptor.size = {width, height, 1};
+    depth_descriptor.format =
+        WGPUTextureFormat_Depth24PlusStencil8;
+    depth_descriptor.sampleCount = state.sample_count;
+    state.depth =
+        wgpuDeviceCreateTexture(state.device, &depth_descriptor);
+    state.depth_view = create_dawn_texture_view(state.depth, nullptr);
+    if (
+        !state.msaa_color ||
+        !state.msaa_color_view ||
+        !state.depth ||
+        !state.depth_view) {
+        dawn_error("resizable frame target creation failed.");
     }
-#endif
-    upload_environment(state, scene.environment);
-    upload_brdf(state, scene.environment);
-    state.reflection_cubes.reserve(engine.reflection_cubes.size());
-    state.reflection_cube_views.reserve(engine.reflection_cubes.size());
-    for (const auto& cube : engine.reflection_cubes) {
-        WGPUTexture texture = upload_reflection_cube(state, cube);
-        state.reflection_cubes.push_back(texture);
-        state.reflection_cube_views.push_back(cube_view(texture));
-    }
-    cpu_startup_mark("environment-background");
+}
 
-    upstream::RenderPlan render_plan;
-    // Every scene registered after the first is a swapchain overlay layer,
-    // which is the pin's own trigger (scene/swapchain-overlay.ts): a later
-    // scene on the same surface keeps the base scene's colour and clears
-    // only its own depth. Each layer owns a plan because a draw command
-    // indexes one.
-    std::vector<upstream::RenderPlan> overlay_plans;
-    // What each layer's plan was built against; a layer that changes its
-    // renderables afterwards is refused rather than drawn stale.
-    std::vector<std::uint64_t> overlay_topology_versions;
-    std::uint64_t synced_render_topology_version =
-        scene.render_topology_version;
-    std::uint64_t synced_draw_list_epoch =
-        engine.draw_list_epoch;
-    // For the post-registration family guard the topology update runs,
-    // exactly as the SDL backend tracks it.
-    std::uint32_t synced_material_family_mask =
-        scene.material_family_mask;
-    const auto upload_render_item =
-        [&](const upstream::RenderItem& item) {
-        const ModelGeometry& geometry = engine.geometries[item.geometry];
-        const MeshRecord& mesh_record = engine.meshes[item.mesh.value];
-        const bool use_source_indices = mesh_record.detached_imported_mesh
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-            || item.material_kind == upstream::RenderMaterialKind::node
-#endif
-            ;
-        std::vector<std::uint32_t> source_indices;
-        if (use_source_indices && geometry.source_indices_reversed) {
-            node_source_indices(geometry, source_indices);
-        }
-        const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
-        const bool shader_material =
-            item.material_kind ==
-            upstream::RenderMaterialKind::shader;
-        const std::vector<GpuVertex> vertices =
-            shader_material
-                ? local_vertices(engine, geometry, &mesh_record)
-                : transformed_vertices(engine, geometry, mesh_record);
-        DawnMesh mesh(state);
-        if (shader_material) {
-#if BBLITE_MESH_POSITION_UPDATE
-            // Mutable procedural geometry must own its upload instead of
-            // borrowing the immutable shader-geometry cache.
-            mesh.vertices = create_buffer(
-                state,
-                WGPUBufferUsage_Vertex,
-                vertices.data(),
-                vertices.size() * sizeof(GpuVertex));
-            mesh.indices = create_buffer(
-                state,
-                WGPUBufferUsage_Index,
-                upload_indices.data(),
-                upload_indices.size() * sizeof(std::uint32_t));
-#else
-            const SharedGeometryIdentity identity =
-                shared_geometry_identity(vertices, upload_indices);
-            mesh.shared_geometry = find_shared_shader_geometry(
-                state.shared_shader_geometries,
-                identity,
-                vertices,
-                upload_indices);
-            if (!mesh.shared_geometry) {
-                const bool keep_bytes = shared_geometry_keeps_bytes(vertices);
-                auto created = std::make_unique<DawnSharedShaderGeometry>(
-                    DawnSharedShaderGeometry{
-                        .identity = identity,
-                        .vertices = keep_bytes
-                            ? vertices
-                            : std::vector<GpuVertex>{},
-                        .indices = keep_bytes
-                            ? upload_indices
-                            : std::vector<std::uint32_t>{},
-                    });
-                state.shared_shader_geometries.push_back(std::move(created));
-                mesh.shared_geometry = state.shared_shader_geometries.back().get();
-            }
-            ++mesh.shared_geometry->users;
-            mesh.owns_geometry_buffers = false;
-            if (!mesh.shared_geometry->vertex_buffer) {
-                mesh.shared_geometry->vertex_buffer = create_buffer(
-                    state,
-                    WGPUBufferUsage_Vertex,
-                    vertices.data(),
-                    vertices.size() * sizeof(GpuVertex));
-                mesh.shared_geometry->index_buffer = create_buffer(
-                    state,
-                    WGPUBufferUsage_Index,
-                    upload_indices.data(),
-                    upload_indices.size() * sizeof(std::uint32_t));
-            }
-            mesh.vertices = mesh.shared_geometry->vertex_buffer;
-            mesh.indices = mesh.shared_geometry->index_buffer;
-#endif
-        } else {
-            mesh.vertices = create_buffer(
-                state,
-                WGPUBufferUsage_Vertex,
-                vertices.data(),
-                vertices.size() * sizeof(GpuVertex));
-            mesh.indices = create_buffer(
-                state,
-                WGPUBufferUsage_Index,
-                upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-            if (item.material_kind == upstream::RenderMaterialKind::node) {
-                state.node_capture.upload(mesh.vertices, "node-vertices", vertices.data(), vertices.size() * sizeof(GpuVertex));
-                state.node_capture.upload(mesh.indices, "node-indices", upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
-            }
-#endif
-        }
-#if BBLITE_PBR_VARIANTS > 0
-        if (
-            item.material_kind ==
-            upstream::RenderMaterialKind::pbr) {
-            const std::vector<GpuVertex> pinned =
-                pinned_convention_vertices(vertices, mesh_record.mirrored_x);
-            mesh.pinned_vertices = create_buffer(
-                state,
-                WGPUBufferUsage_Vertex,
-                pinned.data(),
-                pinned.size() * sizeof(GpuVertex));
-        }
-#endif
-        mesh.index_count =
-            static_cast<std::uint32_t>(geometry.indices.size());
-#if BBLITE_GPU_DEFORMATION
-        mesh.deformation_uniforms = create_buffer(
-            state,
-            WGPUBufferUsage_Uniform,
-            nullptr,
-            sizeof(DeformationUniforms));
-#endif
-#if BBLITE_GPU_MORPH_STORAGE
-        mesh.morph_deltas = state.empty_morph_deltas;
-        mesh.morph_weights = state.empty_morph_weights;
-        if (
-            mesh_record.gpu_deformation &&
-            !geometry.morph_positions.empty()) {
-            mesh.morph_deltas = nullptr;
-            mesh.morph_weights = nullptr;
-            mesh.owns_morph_buffers = true;
-            const std::vector<float> deltas =
-                pack_morph_deltas(geometry);
-            mesh.morph_deltas = create_buffer(
-                state,
-                WGPUBufferUsage_Storage,
-                deltas.data(),
-                deltas.size() * sizeof(float));
-            const std::vector<std::uint8_t> weights_blob =
-                pack_morph_weights(geometry, mesh_record);
-            mesh.morph_weights = create_buffer(
-                state,
-                WGPUBufferUsage_Storage,
-                weights_blob.data(),
-                weights_blob.size());
-            mesh.morph_weights_version =
-                mesh_record.morph_weights_version;
-        }
-#endif
-#if BBLITE_GPU_INSTANCING
-        {
-            std::vector<std::array<float, 16>> instance_matrices =
-                mesh_record.instance_matrices;
-            if (instance_matrices.empty()) {
-                std::array<float, 16> identity{};
-                identity[0] = 1.0f;
-                identity[5] = 1.0f;
-                identity[10] = 1.0f;
-                identity[15] = 1.0f;
-                instance_matrices.push_back(identity);
-            }
-            // The buffer holds the full capacity pool; dynamic pools
-            // draw the record count and re-upload through the frame
-            // loop's version-gated mesh-sync pass.
-            mesh.instances = create_buffer(
-                state,
-                WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage,
-                instance_matrices.data(),
-                instance_matrices.size() *
-                    sizeof(instance_matrices.front()));
-            mesh.instance_count =
-                mesh_record.thin_instanced
-                    ? mesh_record.instance_count
-                    : static_cast<std::uint32_t>(
-                          instance_matrices.size());
-            mesh.instance_version =
-                mesh_record.instance_version;
-            mesh.instance_capacity =
-                static_cast<std::uint32_t>(instance_matrices.size());
-            mesh.instance_uniform = create_buffer(
-                state,
-                WGPUBufferUsage_Uniform,
-                nullptr,
-                64);
-#if BBLITE_GPU_INSTANCE_COLORS
-            {
-                // One tightly-packed RGBA row per matrix-pool slot. A
-                // colour setter may first run after registration, so the
-                // fallback must reserve the established capacity, not one
-                // row, before the versioned upload fills it.
-                std::vector<float> instance_colors =
-                    mesh_record.instance_colors;
-                instance_colors.resize(
-                    std::max(
-                        instance_colors.size(),
-                        instance_matrices.size() * 4),
-                    1.0f);
-                mesh.instance_colors = create_buffer(
-                    state,
-                    WGPUBufferUsage_Vertex,
-                    instance_colors.data(),
-                    instance_colors.size() * sizeof(float));
-            }
-#endif
-#if BBLITE_PBR_VARIANTS > 0
-            if (!mesh_record.instance_matrices.empty()) {
-                // PBR's pinned vertex stream needs the mirror-conjugated
-                // matrix stream for both glTF and scene-code pools. The
-                // ordinary/Standard stream above keeps the record bytes.
-                const std::vector<std::array<float, 16>>
-                    pinned_matrices =
-                        pinned_instance_matrices(mesh_record);
-                mesh.pinned_instances = create_buffer(
-                    state,
-                    WGPUBufferUsage_Vertex,
-                    pinned_matrices.data(),
-                    pinned_matrices.size() *
-                        sizeof(pinned_matrices.front()));
-            }
-#endif
-        }
-#endif
-        const upstream::ShaderVariantInfo* mesh_shader_info =
-            item.material_kind ==
-                upstream::RenderMaterialKind::shader
-                ? &upstream::shader_variant_info(
-                      item.shader_variant)
-                : nullptr;
-        // A Standard item's blocks live in the pinned standard buffers,
-        // so the transcribed material buffer is a 16-byte stub for it.
-        mesh.material_uniform_size =
-            ((item.material_kind ==
-                      upstream::RenderMaterialKind::standard
-                  ? 16ull
-                  : item.material_kind ==
-                          upstream::RenderMaterialKind::grid
-                      ? sizeof(upstream::GridUniforms)
-                      : mesh_shader_info
-                          ? std::max<std::uint64_t>(
-                                mesh_shader_info->fragment
-                                        .float_size *
-                                    4ull,
-                                16ull)
-                          // The pinned material blocks own every PBR
-                          // draw; like the Standard arm this buffer is
-                          // never written for them, so it stays a stub.
-                          : 16ull) +
-             15) &
-            ~15ull;
-        mesh.material_uniforms = create_buffer(
-            state,
-            WGPUBufferUsage_Uniform,
-            nullptr,
-            mesh.material_uniform_size);
-        if (mesh_shader_info) {
-            mesh.shader_vertex_uniforms = create_buffer(
-                state,
-                WGPUBufferUsage_Uniform,
-                nullptr,
-                std::max<std::uint64_t>(
-                    mesh_shader_info->vertex.float_size * 4ull,
-                    16ull));
-        }
-        mesh.transform_version =
-            mesh_record.transform_version;
-        mesh.position_version = geometry.position_version;
-        mesh.gpu_world_transform =
-            mesh_record.gpu_world_transform;
-
-        // Per-slot texture selection reads the generated
-        // `material_texture_slots` table -- the same rows the SDL_GPU
-        // backend executes -- so which record field a slot takes, its
-        // sRGB view and its fallback texel are decided once, at
-        // generation; this backend keeps only the upload mechanics.
-        const bool standard_material =
-            item.material_kind == upstream::RenderMaterialKind::standard;
-        const bool composed_material =
-            item.material_kind == upstream::RenderMaterialKind::pbr ||
-            standard_material;
-        const MaterialRecord* material = nullptr;
-        if (item.material.value < engine.materials.size()) {
-            material = &engine.materials[item.material.value];
-            if (
-                standard_material &&
-                material->reflection_cube <
-                    state.reflection_cube_views.size()) {
-                mesh.reflection =
-                    state.reflection_cube_views[
-                        material->reflection_cube];
-            }
-        }
-        // The explicit superset bind-group layout still needs inert values
-        // for families that do not read generated PBR/Standard slots.
-        mesh.views.fill(state.white_view);
-        mesh.samplers.fill(state.default_sampler);
-        if (composed_material) {
-            const auto shared_it = std::find_if(
-                state.shared_composed_material_textures.begin(),
-                state.shared_composed_material_textures.end(),
-                [&](const auto& candidate) {
-                    return candidate->material.value == item.material.value &&
-                        candidate->standard_material == standard_material;
-                });
-            if (
-                shared_it ==
-                state.shared_composed_material_textures.end()) {
-                auto created =
-                    std::make_unique<DawnSharedComposedMaterialTextures>();
-                created->material = item.material;
-                created->standard_material = standard_material;
-                state.shared_composed_material_textures.push_back(std::move(created));
-                mesh.shared_composed_textures = state.shared_composed_material_textures.back().get();
-                ++mesh.shared_composed_textures->users;
-                for (
-                    const upstream::MaterialTextureSlot& slot_row :
-                    upstream::material_texture_slots) {
-                    if (
-                        slot_row.slot ==
-                        upstream::material_texture_no_slot) {
-                        continue;
-                    }
-                    const TextureData* slot_data = material
-                        ? material_slot_texture(
-                              *material,
-                              slot_row.source,
-                              standard_material)
-                        : nullptr;
-                    const TextureData empty{};
-                    const TextureData& data =
-                        slot_data ? *slot_data : empty;
-                    std::uint32_t mip_count = 1;
-                    mesh.shared_composed_textures->textures[slot_row.slot] =
-                        upload_material_texture(
-                            state,
-                            data,
-                            material_slot_srgb(
-                                slot_row.srgb,
-                                material,
-                                standard_material),
-                            material_slot_fallback(
-                                slot_row.fallback,
-                                material,
-                                standard_material),
-                            mip_count);
-                    mesh.shared_composed_textures->views[slot_row.slot] =
-                        wgpuTextureCreateView(
-                            mesh.shared_composed_textures->textures[slot_row.slot],
-                            nullptr);
-                    mesh.shared_composed_textures->samplers[slot_row.slot] =
-                        create_texture_sampler(
-                            state.device,
-                            slot_data
-                                ? slot_data->sampler
-                                : TextureSamplerState{});
-                }
-            } else {
-                mesh.shared_composed_textures = shared_it->get();
-                ++mesh.shared_composed_textures->users;
-            }
-            for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
-                if (mesh.shared_composed_textures->views[slot]) {
-                    mesh.views[slot] =
-                        mesh.shared_composed_textures->views[slot];
-                }
-                if (mesh.shared_composed_textures->samplers[slot]) {
-                    mesh.samplers[slot] =
-                        mesh.shared_composed_textures->samplers[slot];
-                }
-            }
-        }
-        const auto upload_shader_textures = [&](std::vector<DawnSampledTexture>& textures) {
-            for (const FileTexture& texture : material->shader_textures) {
-                std::uint32_t shader_mip_count = 1;
-                DawnSampledTexture& sampled = textures.emplace_back();
-                sampled.texture = upload_material_texture(
-                    state,
-                    texture.data,
-                    texture.srgb,
-                    {255, 255, 255, 255},
-                    shader_mip_count);
-                sampled.view =
-                    wgpuTextureCreateView(sampled.texture, nullptr);
-                sampled.sampler = create_texture_sampler(
-                    state.device,
-                    texture.data.sampler);
-            }
-        };
-        // A node graph's declared images take the same per-MATERIAL cache
-        // the shader family uses -- keyed by handle, and a material is
-        // exactly one family -- so two meshes sharing one graph decode and
-        // upload its images once, as the SDL backend does. Every other
-        // family's `shader_textures` list is empty, so its per-mesh upload
-        // stays the no-op it always was.
-        if (
-            material &&
-            (material->shader_material || material->node_material)) {
-            mesh.shared_shader_textures =
-                find_shared_shader_material_textures(
-                    state.shared_shader_material_textures,
-                    item.material);
-            if (!mesh.shared_shader_textures) {
-                auto created = std::make_unique<DawnSharedShaderMaterialTextures>();
-                created->material = item.material;
-                state.shared_shader_material_textures.push_back(std::move(created));
-                mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
-                ++mesh.shared_shader_textures->users;
-                upload_shader_textures(mesh.shared_shader_textures->textures);
-            } else {
-                ++mesh.shared_shader_textures->users;
-            }
-        } else if (material) {
-            upload_shader_textures(mesh.shader_textures);
-        }
-#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
-        // The textures this material's plugins bound, uploaded once per
-        // material like every other caller-owned family: the payload, its
-        // own encoding and its own sampler, with the white fallback an
-        // empty slot takes. The generated `standard_plugin_bindings` table
-        // resolves a composed binding name to a position in this list.
-        if (material && !material->plugin_textures.empty()) {
-            mesh.shared_plugin_textures =
-                find_shared_shader_material_textures(
-                    state.shared_plugin_material_textures,
-                    item.material);
-            if (!mesh.shared_plugin_textures) {
-                auto created =
-                    std::make_unique<DawnSharedPluginMaterialTextures>();
-                created->material = item.material;
-                state.shared_plugin_material_textures.push_back(std::move(created));
-                mesh.shared_plugin_textures = state.shared_plugin_material_textures.back().get();
-                ++mesh.shared_plugin_textures->users;
-                for (
-                    const MaterialPluginTexture& texture :
-                    material->plugin_textures) {
-                    std::uint32_t plugin_mip_count = 1;
-                    DawnSampledTexture& sampled = mesh.shared_plugin_textures->textures.emplace_back();
-                    sampled.texture = upload_material_texture(
-                        state,
-                        texture.data,
-                        texture.srgb,
-                        {255, 255, 255, 255},
-                        plugin_mip_count);
-                    sampled.view =
-                        wgpuTextureCreateView(sampled.texture, nullptr);
-                    sampled.sampler = create_texture_sampler(
-                        state.device,
-                        texture.data.sampler);
-                }
-            } else {
-                ++mesh.shared_plugin_textures->users;
-            }
-        }
-#endif
-        return mesh;
-    };
-    const auto rebuild_task_draw_lists = [&] {
-        if (state.render_tasks.size() < engine.frame_tasks.size()) {
-            state.render_tasks.resize(engine.frame_tasks.size());
-        }
-        for (std::size_t layer = 0; layer < engine.registered_scenes.size(); ++layer) {
-            const Scene& task_scene = *engine.registered_scenes[layer];
-            const auto& task_plan = layer == 0 ? render_plan : overlay_plans[layer - 1];
-        for (const TaskHandle handle : task_scene.tasks) {
-            if (handle.value >= engine.frame_tasks.size()) {
-                throw std::runtime_error(
-                    "Scene frame task handle is invalid.");
-            }
-            const FrameTaskRecord& task = engine.frame_tasks[handle.value];
-            if (
-                task.kind != FrameTaskKind::render &&
-                task.kind != FrameTaskKind::geometry) {
-                continue;
-            }
-            DawnRenderTask& render_task =
-                state.render_tasks[handle.value];
-            if (!render_task.view_projection) {
-                render_task.view_projection = create_buffer(
-                    state,
-                    WGPUBufferUsage_Uniform,
-                    nullptr,
-                    64);
-            }
-            render_task.draw_lists =
-                upstream::build_render_task_draw_lists(
-                    task_plan.items,
-                    engine,
-                    task);
-        }
-        }
-    };
-    const auto initialize_render_tasks = [&] {
-        state.release_render_tasks();
-        state.render_tasks.resize(engine.frame_tasks.size());
-        for (const TaskHandle handle : scene.tasks) {
-            const FrameTaskRecord& task = engine.frame_tasks[handle.value];
-            if (task.kind == FrameTaskKind::render) {
-                DawnRenderTask& render_task =
-                    state.render_tasks[handle.value];
-                render_task.view_projection = create_buffer(
-                    state,
-                    WGPUBufferUsage_Uniform,
-                    nullptr,
-                    64);
-            }
-        }
-        rebuild_task_draw_lists();
-    };
-    const auto rebuild_meshes = [&] {
-        render_plan = upstream::build_render_plan(scene, engine);
-        // Validate every item's kind and variant before uploading anything.
-        validate_render_plan_items(render_plan);
-        cpu_startup_mark("render-plan");
-        state.meshes.reserve(render_plan.items.size());
-        for (const upstream::RenderItem& item : render_plan.items) {
-            state.meshes.push_back(upload_render_item(item));
-        }
-        for (
-            std::size_t layer = 1;
-            layer < engine.registered_scenes.size();
-            ++layer) {
-            Scene* overlay_scene = engine.registered_scenes[layer].get();
-            if (!overlay_scene) continue;
-            upstream::RenderPlan overlay_plan =
-                upstream::build_render_plan(*overlay_scene, engine);
-            validate_render_plan_items(overlay_plan);
-            std::vector<DawnMesh> overlay_layer_meshes;
-            overlay_layer_meshes.reserve(overlay_plan.items.size());
-            for (const upstream::RenderItem& item : overlay_plan.items) {
-                overlay_layer_meshes.push_back(upload_render_item(item));
-            }
-            overlay_plans.push_back(std::move(overlay_plan));
-            state.overlay_meshes.push_back(
-                std::move(overlay_layer_meshes));
-            overlay_topology_versions.push_back(
-                overlay_scene->render_topology_version);
-        }
-#if BBLITE_PINNED_MATERIALS
-        state.overlay_frames.resize(overlay_plans.size());
-#endif
-        cpu_startup_mark("mesh-uploads");
-        initialize_render_tasks();
-        cpu_startup_mark("draw-lists-ready");
-    };
-    upstream::initialize_composition_feature_rows(engine);
-    rebuild_meshes();
-
+void initialize_dawn_environment(
+    DawnState& state, const Scene& scene, bool use_skybox, bool use_ground,
+    [[maybe_unused]] bool background_enabled) {
     if (use_skybox) {
         const bool pinned_dds_skybox =
             !scene.environment.skybox_uses_environment;
@@ -11246,7 +10062,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
             view_descriptor.dimension = WGPUTextureViewDimension_Cube;
             view_descriptor.arrayLayerCount = 6;
-            state.skybox_texture_view = wgpuTextureCreateView(
+            state.skybox_texture_view = create_dawn_texture_view(
                 state.skybox_texture,
                 &view_descriptor);
             skybox_view = state.skybox_texture_view;
@@ -11344,9 +10160,8 @@ SceneRun run_dawn_engine(Engine& engine) {
         state.skybox_scene_group = skybox_scene_group_over(state, state.skybox_matrix, pinned_dds_skybox);
 #if BBLITE_GPU_MORPH_STORAGE
         if (!pinned_dds_skybox) {
-            WGPUBindGroupLayout morph_layout =
-                wgpuRenderPipelineGetBindGroupLayout(
-                    state.skybox_pipeline, 0);
+            DawnBindGroupLayout morph_layout{wgpuRenderPipelineGetBindGroupLayout(
+                    state.skybox_pipeline, 0)};
             std::array<WGPUBindGroupEntry, 2> morph_entries{};
             morph_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
             morph_entries[0].binding = 0;
@@ -11364,12 +10179,11 @@ SceneRun run_dawn_engine(Engine& engine) {
             state.skybox_morph_group = wgpuDeviceCreateBindGroup(
                 state.device,
                 &morph_descriptor);
-            wgpuBindGroupLayoutRelease(morph_layout);
+            morph_layout.reset();
         }
 #endif
-        WGPUBindGroupLayout texture_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.skybox_pipeline, 2);
+        DawnBindGroupLayout texture_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.skybox_pipeline, 2)};
         std::array<WGPUBindGroupEntry, 2> texture_entries{};
         texture_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         texture_entries[0].binding = 0;
@@ -11384,10 +10198,9 @@ SceneRun run_dawn_engine(Engine& engine) {
         texture_descriptor.entries = texture_entries.data();
         state.skybox_texture_group =
             wgpuDeviceCreateBindGroup(state.device, &texture_descriptor);
-        wgpuBindGroupLayoutRelease(texture_layout);
-        WGPUBindGroupLayout material_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.skybox_pipeline, 3);
+        texture_layout.reset();
+        DawnBindGroupLayout material_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.skybox_pipeline, 3)};
         WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         material_entry.binding = 0;
         material_entry.buffer = state.skybox_uniforms;
@@ -11400,7 +10213,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         material_descriptor.entries = &material_entry;
         state.skybox_material_group =
             wgpuDeviceCreateBindGroup(state.device, &material_descriptor);
-        wgpuBindGroupLayoutRelease(material_layout);
+        material_layout.reset();
         state.skybox_enabled = true;
     }
 
@@ -11484,9 +10297,8 @@ SceneRun run_dawn_engine(Engine& engine) {
             dawn_error("solid skybox pipeline creation failed.");
         }
 
-        WGPUBindGroupLayout scene_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.solid_skybox_pipeline, 1);
+        DawnBindGroupLayout scene_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.solid_skybox_pipeline, 1)};
         std::array<WGPUBindGroupEntry, 2> scene_entries{};
         scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         scene_entries[0].binding = 0;
@@ -11504,11 +10316,10 @@ SceneRun run_dawn_engine(Engine& engine) {
         scene_descriptor.entries = scene_entries.data();
         state.solid_skybox_scene_group =
             wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
-        wgpuBindGroupLayoutRelease(scene_layout);
+        scene_layout.reset();
 
-        WGPUBindGroupLayout material_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.solid_skybox_pipeline, 3);
+        DawnBindGroupLayout material_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.solid_skybox_pipeline, 3)};
         WGPUBindGroupEntry material_entry =
             WGPU_BIND_GROUP_ENTRY_INIT;
         material_entry.binding = 0;
@@ -11523,7 +10334,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             wgpuDeviceCreateBindGroup(
                 state.device,
                 &material_descriptor);
-        wgpuBindGroupLayoutRelease(material_layout);
+        material_layout.reset();
         state.solid_skybox_enabled = true;
     }
 #endif
@@ -11559,7 +10370,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
         view_descriptor.dimension = WGPUTextureViewDimension_Cube;
         view_descriptor.arrayLayerCount = 6;
-        state.image_skybox_texture_view = wgpuTextureCreateView(
+        state.image_skybox_texture_view = create_dawn_texture_view(
             state.image_skybox_texture,
             &view_descriptor);
 
@@ -11611,9 +10422,8 @@ SceneRun run_dawn_engine(Engine& engine) {
             dawn_error("image skybox pipeline creation failed.");
         }
 
-        WGPUBindGroupLayout scene_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.image_skybox_pipeline, 1);
+        DawnBindGroupLayout scene_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.image_skybox_pipeline, 1)};
         WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         scene_entry.binding = 0;
         scene_entry.buffer = state.view_projection;
@@ -11625,11 +10435,10 @@ SceneRun run_dawn_engine(Engine& engine) {
         scene_descriptor.entries = &scene_entry;
         state.image_skybox_scene_group =
             wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
-        wgpuBindGroupLayoutRelease(scene_layout);
+        scene_layout.reset();
 
-        WGPUBindGroupLayout texture_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.image_skybox_pipeline, 2);
+        DawnBindGroupLayout texture_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.image_skybox_pipeline, 2)};
         std::array<WGPUBindGroupEntry, 2> texture_entries{};
         texture_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         texture_entries[0].binding = 0;
@@ -11647,11 +10456,10 @@ SceneRun run_dawn_engine(Engine& engine) {
             wgpuDeviceCreateBindGroup(
                 state.device,
                 &texture_descriptor);
-        wgpuBindGroupLayoutRelease(texture_layout);
+        texture_layout.reset();
 
-        WGPUBindGroupLayout material_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.image_skybox_pipeline, 3);
+        DawnBindGroupLayout material_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.image_skybox_pipeline, 3)};
         WGPUBindGroupEntry material_entry =
             WGPU_BIND_GROUP_ENTRY_INIT;
         material_entry.binding = 0;
@@ -11667,7 +10475,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             wgpuDeviceCreateBindGroup(
                 state.device,
                 &material_descriptor);
-        wgpuBindGroupLayoutRelease(material_layout);
+        material_layout.reset();
         state.image_skybox_enabled = true;
     }
 #endif
@@ -11701,7 +10509,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             {255, 255, 255, 255},
             ground_mips);
         state.ground_texture_view =
-            wgpuTextureCreateView(state.ground_texture, nullptr);
+            create_dawn_texture_view(state.ground_texture, nullptr);
 
         std::array<WGPUVertexAttribute, base_vertex_attribute_count>
             attributes{};
@@ -11768,9 +10576,8 @@ SceneRun run_dawn_engine(Engine& engine) {
             WGPUBufferUsage_Uniform,
             nullptr,
             (sizeof(upstream::BackgroundUniforms) + 15) & ~15ull);
-        WGPUBindGroupLayout scene_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.ground_pipeline, 1);
+        DawnBindGroupLayout scene_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.ground_pipeline, 1)};
         std::array<WGPUBindGroupEntry, 3> scene_entries{};
         scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         scene_entries[0].binding = 0;
@@ -11806,12 +10613,11 @@ SceneRun run_dawn_engine(Engine& engine) {
         scene_descriptor.entries = scene_entries.data();
         state.ground_scene_group =
             wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
-        wgpuBindGroupLayoutRelease(scene_layout);
+        scene_layout.reset();
 #if BBLITE_GPU_MORPH_STORAGE
         {
-            WGPUBindGroupLayout morph_layout =
-                wgpuRenderPipelineGetBindGroupLayout(
-                    state.ground_pipeline, 0);
+            DawnBindGroupLayout morph_layout{wgpuRenderPipelineGetBindGroupLayout(
+                    state.ground_pipeline, 0)};
             std::array<WGPUBindGroupEntry, 2> morph_entries{};
             morph_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
             morph_entries[0].binding = 0;
@@ -11829,12 +10635,11 @@ SceneRun run_dawn_engine(Engine& engine) {
             state.ground_morph_group = wgpuDeviceCreateBindGroup(
                 state.device,
                 &morph_descriptor);
-            wgpuBindGroupLayoutRelease(morph_layout);
+            morph_layout.reset();
         }
 #endif
-        WGPUBindGroupLayout texture_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.ground_pipeline, 2);
+        DawnBindGroupLayout texture_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.ground_pipeline, 2)};
         std::array<WGPUBindGroupEntry, 2> texture_entries{};
         texture_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         texture_entries[0].binding = 0;
@@ -11849,10 +10654,9 @@ SceneRun run_dawn_engine(Engine& engine) {
         texture_descriptor.entries = texture_entries.data();
         state.ground_texture_group =
             wgpuDeviceCreateBindGroup(state.device, &texture_descriptor);
-        wgpuBindGroupLayoutRelease(texture_layout);
-        WGPUBindGroupLayout material_layout =
-            wgpuRenderPipelineGetBindGroupLayout(
-                state.ground_pipeline, 3);
+        texture_layout.reset();
+        DawnBindGroupLayout material_layout{wgpuRenderPipelineGetBindGroupLayout(
+                state.ground_pipeline, 3)};
         WGPUBindGroupEntry material_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         material_entry.binding = 0;
         material_entry.buffer = state.ground_uniforms;
@@ -11865,638 +10669,934 @@ SceneRun run_dawn_engine(Engine& engine) {
         material_descriptor.entries = &material_entry;
         state.ground_material_group =
             wgpuDeviceCreateBindGroup(state.device, &material_descriptor);
-        wgpuBindGroupLayoutRelease(material_layout);
+        material_layout.reset();
         state.ground_enabled = true;
     }
-    // The composed variant modules load lazily in the loop, so this phase
-    // covers only the background/skybox/ground half SDL_GPU builds here too.
-    cpu_startup_mark("shaders-pipelines");
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-    state.text = std::make_unique<DawnTextRenderer>(state.device, state.queue,
-        !environment_variable("BBLITE_RENDER_CAPTURE").empty());
-    DawnTextResourceOps text_ops{state.text->owner};
-    const std::string text_color_format = state.frame_color_format == WGPUTextureFormat_BGRA8Unorm
-        ? "bgra8unorm" : state.frame_color_format == WGPUTextureFormat_RGBA8Unorm ? "rgba8unorm"
-        : throw std::runtime_error("Unrepresented default text color target.");
-    state.text->scene.bind(scene, state.text->owner.get(),
-        TextTargetSignature{text_color_format, state.sample_count, "depth24plus-stencil8"},
-        [&](const upstream::TextPipelineInfo& info) {
-            return state.text->pipeline(info, state.frame_color_format, WGPUTextureFormat_Depth24PlusStencil8);
-        }, text_ops);
+}
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+DawnMesh upload_dawn_scene_mesh(
+    DawnState& state, Engine& engine, const upstream::RenderItem& item) {
+    const ModelGeometry& geometry = engine.geometries[item.geometry];
+    const MeshRecord& mesh_record = handle_at(engine.meshes, item.mesh);
+    const bool use_source_indices = mesh_record.detached_imported_mesh
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        || item.material_kind == upstream::RenderMaterialKind::node
+#endif
+        ;
+    std::vector<std::uint32_t> source_indices;
+    if (use_source_indices && geometry.source_indices_reversed) {
+        node_source_indices(geometry, source_indices);
+    }
+    const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
+    const bool shader_material =
+        item.material_kind ==
+        upstream::RenderMaterialKind::shader;
+    const std::vector<GpuVertex> vertices =
+        shader_material
+            ? local_vertices(engine, geometry, &mesh_record)
+            : transformed_vertices(engine, geometry, mesh_record);
+    DawnMesh mesh(state);
+    if (shader_material) {
+#if BBLITE_MESH_POSITION_UPDATE
+        // Mutable procedural geometry must own its upload instead of
+        // borrowing the immutable shader-geometry cache.
+        mesh.vertices = create_buffer(
+            state,
+            WGPUBufferUsage_Vertex,
+            vertices.data(),
+            vertices.size() * sizeof(GpuVertex));
+        mesh.indices = create_buffer(
+            state,
+            WGPUBufferUsage_Index,
+            upload_indices.data(),
+            upload_indices.size() * sizeof(std::uint32_t));
+#else
+        const SharedGeometryIdentity identity =
+            shared_geometry_identity(vertices, upload_indices);
+        mesh.shared_geometry = find_shared_shader_geometry(
+            state.shared_shader_geometries,
+            identity,
+            vertices,
+            upload_indices);
+        if (!mesh.shared_geometry) {
+            const bool keep_bytes = shared_geometry_keeps_bytes(vertices);
+            auto created = std::make_unique<DawnSharedShaderGeometry>(
+                DawnSharedShaderGeometry{
+                    .identity = identity,
+                    .vertices = keep_bytes
+                        ? vertices
+                        : std::vector<GpuVertex>{},
+                    .indices = keep_bytes
+                        ? upload_indices
+                        : std::vector<std::uint32_t>{},
+                });
+            state.shared_shader_geometries.push_back(std::move(created));
+            mesh.shared_geometry = state.shared_shader_geometries.back().get();
+        }
+        ++mesh.shared_geometry->users;
+        mesh.owns_geometry_buffers = false;
+        if (!mesh.shared_geometry->vertex_buffer) {
+            mesh.shared_geometry->vertex_buffer = create_buffer(
+                state,
+                WGPUBufferUsage_Vertex,
+                vertices.data(),
+                vertices.size() * sizeof(GpuVertex));
+            mesh.shared_geometry->index_buffer = create_buffer(
+                state,
+                WGPUBufferUsage_Index,
+                upload_indices.data(),
+                upload_indices.size() * sizeof(std::uint32_t));
+        }
+        mesh.vertices = mesh.shared_geometry->vertex_buffer;
+        mesh.indices = mesh.shared_geometry->index_buffer;
+#endif
+    } else {
+        mesh.vertices = create_buffer(
+            state,
+            WGPUBufferUsage_Vertex,
+            vertices.data(),
+            vertices.size() * sizeof(GpuVertex));
+        mesh.indices = create_buffer(
+            state,
+            WGPUBufferUsage_Index,
+            upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        if (item.material_kind == upstream::RenderMaterialKind::node) {
+            state.node_capture.upload(mesh.vertices, "node-vertices", vertices.data(), vertices.size() * sizeof(GpuVertex));
+            state.node_capture.upload(mesh.indices, "node-indices", upload_indices.data(), upload_indices.size() * sizeof(std::uint32_t));
+        }
+#endif
+    }
+#if BBLITE_PBR_VARIANTS > 0
+    if (
+        item.material_kind ==
+        upstream::RenderMaterialKind::pbr) {
+        const std::vector<GpuVertex> pinned =
+            pinned_convention_vertices(vertices, mesh_record.mirrored_x);
+        mesh.pinned_vertices = create_buffer(
+            state,
+            WGPUBufferUsage_Vertex,
+            pinned.data(),
+            pinned.size() * sizeof(GpuVertex));
+    }
+#endif
+    mesh.index_count =
+        static_cast<std::uint32_t>(geometry.indices.size());
+#if BBLITE_GPU_DEFORMATION
+    mesh.deformation_uniforms = create_buffer(
+        state,
+        WGPUBufferUsage_Uniform,
+        nullptr,
+        sizeof(DeformationUniforms));
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+    mesh.morph_deltas = state.empty_morph_deltas;
+    mesh.morph_weights = state.empty_morph_weights;
+    if (
+        mesh_record.gpu_deformation &&
+        !geometry.morph_positions.empty()) {
+        mesh.morph_deltas = nullptr;
+        mesh.morph_weights = nullptr;
+        mesh.owns_morph_buffers = true;
+        const std::vector<float> deltas =
+            pack_morph_deltas(geometry);
+        mesh.morph_deltas = create_buffer(
+            state,
+            WGPUBufferUsage_Storage,
+            deltas.data(),
+            deltas.size() * sizeof(float));
+        const std::vector<std::uint8_t> weights_blob =
+            pack_morph_weights(geometry, mesh_record);
+        mesh.morph_weights = create_buffer(
+            state,
+            WGPUBufferUsage_Storage,
+            weights_blob.data(),
+            weights_blob.size());
+        mesh.morph_weights_version =
+            mesh_record.morph_weights_version;
+    }
+#endif
+#if BBLITE_GPU_INSTANCING
+    {
+        std::vector<std::array<float, 16>> instance_matrices =
+            mesh_record.instance_matrices;
+        if (instance_matrices.empty()) {
+            std::array<float, 16> identity{};
+            identity[0] = 1.0f;
+            identity[5] = 1.0f;
+            identity[10] = 1.0f;
+            identity[15] = 1.0f;
+            instance_matrices.push_back(identity);
+        }
+        // The buffer holds the full capacity pool; dynamic pools
+        // draw the record count and re-upload through the frame
+        // loop's version-gated mesh-sync pass.
+        mesh.instances = create_buffer(
+            state,
+            WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage,
+            instance_matrices.data(),
+            instance_matrices.size() *
+                sizeof(instance_matrices.front()));
+        mesh.instance_count =
+            mesh_record.thin_instanced
+                ? mesh_record.instance_count
+                : static_cast<std::uint32_t>(
+                      instance_matrices.size());
+        mesh.instance_version =
+            mesh_record.instance_version;
+        mesh.instance_capacity =
+            static_cast<std::uint32_t>(instance_matrices.size());
+        mesh.instance_uniform = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            64);
+#if BBLITE_GPU_INSTANCE_COLORS
+        {
+            // One tightly-packed RGBA row per matrix-pool slot. A
+            // colour setter may first run after registration, so the
+            // fallback must reserve the established capacity, not one
+            // row, before the versioned upload fills it.
+            std::vector<float> instance_colors =
+                mesh_record.instance_colors;
+            instance_colors.resize(
+                std::max(
+                    instance_colors.size(),
+                    instance_matrices.size() * 4),
+                1.0f);
+            mesh.instance_colors = create_buffer(
+                state,
+                WGPUBufferUsage_Vertex,
+                instance_colors.data(),
+                instance_colors.size() * sizeof(float));
+        }
+#endif
+#if BBLITE_PBR_VARIANTS > 0
+        if (!mesh_record.instance_matrices.empty()) {
+            // PBR's pinned vertex stream needs the mirror-conjugated
+            // matrix stream for both glTF and scene-code pools. The
+            // ordinary/Standard stream above keeps the record bytes.
+            const std::vector<std::array<float, 16>>
+                pinned_matrices =
+                    pinned_instance_matrices(mesh_record);
+            mesh.pinned_instances = create_buffer(
+                state,
+                WGPUBufferUsage_Vertex,
+                pinned_matrices.data(),
+                pinned_matrices.size() *
+                    sizeof(pinned_matrices.front()));
+        }
+#endif
+    }
+#endif
+    const upstream::ShaderVariantInfo* mesh_shader_info =
+        item.material_kind ==
+            upstream::RenderMaterialKind::shader
+            ? &upstream::shader_variant_info(
+                  item.shader_variant)
+            : nullptr;
+    // A Standard item's blocks live in the pinned standard buffers,
+    // so the transcribed material buffer is a 16-byte stub for it.
+    mesh.material_uniform_size =
+        ((item.material_kind ==
+                  upstream::RenderMaterialKind::standard
+              ? 16ull
+              : item.material_kind ==
+                      upstream::RenderMaterialKind::grid
+                  ? sizeof(upstream::GridUniforms)
+                  : mesh_shader_info
+                      ? std::max<std::uint64_t>(
+                            mesh_shader_info->fragment
+                                    .float_size *
+                                4ull,
+                            16ull)
+                      // The pinned material blocks own every PBR
+                      // draw; like the Standard arm this buffer is
+                      // never written for them, so it stays a stub.
+                      : 16ull) +
+         15) &
+        ~15ull;
+    mesh.material_uniforms = create_buffer(
+        state,
+        WGPUBufferUsage_Uniform,
+        nullptr,
+        mesh.material_uniform_size);
+    if (mesh_shader_info) {
+        mesh.shader_vertex_uniforms = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            std::max<std::uint64_t>(
+                mesh_shader_info->vertex.float_size * 4ull,
+                16ull));
+    }
+    mesh.transform_version =
+        mesh_record.transform_version;
+    mesh.position_version = geometry.position_version;
+    mesh.gpu_world_transform =
+        mesh_record.gpu_world_transform;
+
+    // Per-slot texture selection reads the generated
+    // `material_texture_slots` table -- the same rows the SDL_GPU
+    // backend executes -- so which record field a slot takes, its
+    // sRGB view and its fallback texel are decided once, at
+    // generation; this backend keeps only the upload mechanics.
+    const bool standard_material =
+        item.material_kind == upstream::RenderMaterialKind::standard;
+    const bool composed_material =
+        item.material_kind == upstream::RenderMaterialKind::pbr ||
+        standard_material;
+    const MaterialRecord* material = nullptr;
+    if (item.material.value < engine.materials.size()) {
+        material = &handle_at(engine.materials, item.material);
+        if (
+            standard_material &&
+            material->reflection_cube <
+                state.reflection_cube_views.size()) {
+            mesh.reflection =
+                state.reflection_cube_views[
+                    material->reflection_cube];
+        }
+    }
+    // The explicit superset bind-group layout still needs inert values
+    // for families that do not read generated PBR/Standard slots.
+    mesh.views.fill(state.white_view);
+    mesh.samplers.fill(state.default_sampler);
+    if (composed_material) {
+        const auto shared_it = std::find_if(
+            state.shared_composed_material_textures.begin(),
+            state.shared_composed_material_textures.end(),
+            [&](const auto& candidate) {
+                return candidate->material.value == item.material.value &&
+                    candidate->standard_material == standard_material;
+            });
+        if (
+            shared_it ==
+            state.shared_composed_material_textures.end()) {
+            auto created =
+                std::make_unique<DawnSharedComposedMaterialTextures>();
+            created->material = item.material;
+            created->standard_material = standard_material;
+            state.shared_composed_material_textures.push_back(std::move(created));
+            mesh.shared_composed_textures = state.shared_composed_material_textures.back().get();
+            ++mesh.shared_composed_textures->users;
+            for (
+                const upstream::MaterialTextureSlot& slot_row :
+                upstream::material_texture_slots) {
+                if (
+                    slot_row.slot ==
+                    upstream::material_texture_no_slot) {
+                    continue;
+                }
+                const TextureData* slot_data = material
+                    ? material_slot_texture(
+                          *material,
+                          slot_row.source,
+                          standard_material)
+                    : nullptr;
+                const TextureData empty{};
+                const TextureData& data =
+                    slot_data ? *slot_data : empty;
+                std::uint32_t mip_count = 1;
+                mesh.shared_composed_textures->textures[slot_row.slot] =
+                    upload_material_texture(
+                        state,
+                        data,
+                        material_slot_srgb(
+                            slot_row.srgb,
+                            material,
+                            standard_material),
+                        material_slot_fallback(
+                            slot_row.fallback,
+                            material,
+                            standard_material),
+                        mip_count);
+                mesh.shared_composed_textures->views[slot_row.slot] =
+                    create_dawn_texture_view(
+                        mesh.shared_composed_textures->textures[slot_row.slot],
+                        nullptr);
+                mesh.shared_composed_textures->samplers[slot_row.slot] =
+                    create_texture_sampler(
+                        state.device,
+                        slot_data
+                            ? slot_data->sampler
+                            : TextureSamplerState{});
+            }
+        } else {
+            mesh.shared_composed_textures = shared_it->get();
+            ++mesh.shared_composed_textures->users;
+        }
+        for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
+            if (mesh.shared_composed_textures->views[slot]) {
+                mesh.views[slot] =
+                    mesh.shared_composed_textures->views[slot];
+            }
+            if (mesh.shared_composed_textures->samplers[slot]) {
+                mesh.samplers[slot] =
+                    mesh.shared_composed_textures->samplers[slot];
+            }
+        }
+    }
+    const auto upload_shader_textures = [&](std::vector<DawnSampledTexture>& textures) {
+        for (const FileTexture& texture : material->shader_textures) {
+            std::uint32_t shader_mip_count = 1;
+            DawnSampledTexture& sampled = textures.emplace_back();
+            sampled.texture = upload_material_texture(
+                state,
+                texture.data,
+                texture.srgb,
+                {255, 255, 255, 255},
+                shader_mip_count);
+            sampled.view =
+                create_dawn_texture_view(sampled.texture, nullptr);
+            sampled.sampler = create_texture_sampler(
+                state.device,
+                texture.data.sampler);
+        }
+    };
+    // A node graph's declared images take the same per-MATERIAL cache
+    // the shader family uses -- keyed by handle, and a material is
+    // exactly one family -- so two meshes sharing one graph decode and
+    // upload its images once, as the SDL backend does. Every other
+    // family's `shader_textures` list is empty, so its per-mesh upload
+    // stays the no-op it always was.
+    if (
+        material &&
+        (material->shader_material || material->node_material)) {
+        mesh.shared_shader_textures =
+            find_shared_shader_material_textures(
+                state.shared_shader_material_textures,
+                item.material);
+        if (!mesh.shared_shader_textures) {
+            auto created = std::make_unique<DawnSharedShaderMaterialTextures>();
+            created->material = item.material;
+            state.shared_shader_material_textures.push_back(std::move(created));
+            mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
+            ++mesh.shared_shader_textures->users;
+            upload_shader_textures(mesh.shared_shader_textures->textures);
+        } else {
+            ++mesh.shared_shader_textures->users;
+        }
+    } else if (material) {
+        upload_shader_textures(mesh.shader_textures);
+    }
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    // The textures this material's plugins bound, uploaded once per
+    // material like every other caller-owned family: the payload, its
+    // own encoding and its own sampler, with the white fallback an
+    // empty slot takes. The generated `standard_plugin_bindings` table
+    // resolves a composed binding name to a position in this list.
+    if (material && !material->plugin_textures.empty()) {
+        mesh.shared_plugin_textures =
+            find_shared_shader_material_textures(
+                state.shared_plugin_material_textures,
+                item.material);
+        if (!mesh.shared_plugin_textures) {
+            auto created =
+                std::make_unique<DawnSharedPluginMaterialTextures>();
+            created->material = item.material;
+            state.shared_plugin_material_textures.push_back(std::move(created));
+            mesh.shared_plugin_textures = state.shared_plugin_material_textures.back().get();
+            ++mesh.shared_plugin_textures->users;
+            for (
+                const MaterialPluginTexture& texture :
+                material->plugin_textures) {
+                std::uint32_t plugin_mip_count = 1;
+                DawnSampledTexture& sampled = mesh.shared_plugin_textures->textures.emplace_back();
+                sampled.texture = upload_material_texture(
+                    state,
+                    texture.data,
+                    texture.srgb,
+                    {255, 255, 255, 255},
+                    plugin_mip_count);
+                sampled.view =
+                    create_dawn_texture_view(sampled.texture, nullptr);
+                sampled.sampler = create_texture_sampler(
+                    state.device,
+                    texture.data.sampler);
+            }
+        } else {
+            ++mesh.shared_plugin_textures->users;
+        }
+    }
+#endif
+    return mesh;
+}
 #endif
 
-    CameraRecord fallback_camera;
-    CameraRecord& camera =
-        scene.camera.value < engine.cameras.size()
-            ? engine.cameras[scene.camera.value]
-            : fallback_camera;
-
-    const std::string screenshot_path =
-        frame_options.screenshot_path;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-    const bool capture_ui = frame_options.capture_ui;
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
+PickingInfo pick_dawn_scene(
+    DawnState& state, Engine& engine, const upstream::RenderPlan& root_plan,
+    const std::vector<upstream::RenderPlan>& overlay_plans,
+    const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
+    [[maybe_unused]] GpuPickerHandle picker, double x, double y, const Engine::PickFilter* filter
+#if BBLITE_HAS_BILLBOARDS
+    , DawnBillboardPickContributor& billboard_pick
 #endif
-    const std::string id_buffer_path =
-        frame_options.id_buffer_path;
-    const std::string cluster_buffer_path =
-        frame_options.cluster_buffer_path;
-    const long screenshot_frame = frame_options.screenshot_frame;
-    const long benchmark_frames = frame_options.benchmark_frames;
-    const bool benchmark = frame_options.benchmarking();
-    const long benchmark_warmup = frame_options.benchmark_warmup();
-    const long limit = frame_options.frame_budget();
-    std::vector<double> benchmark_samples;
-    if (benchmark) {
-        benchmark_samples.reserve(
-            static_cast<std::size_t>(benchmark_frames));
+) {
+        const auto layer = picker_scene_index(engine, picker, active_registered_scenes);
+        if (!layer) return PickingInfo{};
+        const Scene& scene = *active_registered_scenes[*layer];
+        const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
+        auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
+#if BBLITE_HAS_DETAILED_PICKING
+    // `picker._detailedPicking`, armed by `enableDetailedPicking`.
+    const bool detailed = detailed_pick_armed(engine, picker);
+#else
+    constexpr bool detailed = false;
+#endif
+    if (scene.camera.value >= engine.cameras.size()) {
+        return PickingInfo{};
+    }
+    const CameraRecord& camera = handle_at(engine.cameras, scene.camera);
+    // Native has no CSS box, so the pin's backing/client scale is 1.
+    const double width = static_cast<double>(engine.options.width);
+    const double height = static_cast<double>(engine.options.height);
+    if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
+        return PickingInfo{};
+    }
+    if (camera.viewport.has_value()) {
+        // `pickAsync` maps the pointer through
+        // `resolveCameraViewport` before it renders the candidates
+        // (src/picking/gpu-picker.ts), which this port has not
+        // ported: no scene reaches both. Refusing by name beats
+        // picking against a frustum the pass never drew.
+        dawn_error(
+            "A GPU pick through a camera viewport needs the pin's "
+            "resolveCameraViewport pointer mapping, which is not "
+            "ported: no reached scene both picks and splits.");
+    }
+    const double aspect = upstream::effective_aspect_ratio(
+        camera,
+        width,
+        height);
+    const std::array<float, 16> view_projection =
+        upstream::build_view_projection(camera, aspect);
+    ensure_dawn_pick_targets(state.device, state.pick_targets);
+    if (!state.pick_mesh_pipeline) {
+        state.pick_scene_layout =
+            create_dawn_pick_scene_layout(state.device);
+        state.pick_mesh_layout =
+            create_dawn_pick_mesh_layout(state.device);
+        state.pick_mesh_pipeline = create_dawn_pick_mesh_pipeline(
+            state.device,
+            state.pick_scene_layout,
+            state.pick_mesh_layout,
+            "picking.vert",
+            "picking.frag",
+            2);
+#if BBLITE_GPU_INSTANCING
+        state.pick_thin_layout =
+            create_dawn_pick_thin_layout(state.device);
+        state.pick_thin_pipeline = create_dawn_pick_mesh_pipeline(
+            state.device,
+            state.pick_scene_layout,
+            state.pick_thin_layout,
+            "picking-thin.vert",
+            "picking-thin.frag",
+            2);
+#endif
+#if BBLITE_HAS_DETAILED_PICKING
+        // The pin's second module, built beside the first: the picker
+        // dynamic-imports whichever `_detailedPicking` selected, and
+        // a picker can be armed after another has already picked.
+        state.pick_detailed_pipeline = create_dawn_pick_mesh_pipeline(
+            state.device,
+            state.pick_scene_layout,
+            state.pick_mesh_layout,
+            "picking-detailed.vert",
+            "picking-detailed.frag",
+            pick_color_targets);
+#endif
+#if BBLITE_DEFORM_PICKING
+        state.pick_deform_empty_layout =
+            create_dawn_pick_empty_layout(state.device);
+        WGPUBindGroupDescriptor empty_group =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        empty_group.layout = state.pick_deform_empty_layout;
+        empty_group.entryCount = 0;
+        state.pick_deform_empty_group =
+            wgpuDeviceCreateBindGroup(state.device, &empty_group);
+        if (!state.pick_deform_empty_group) {
+            dawn_error("pick deform empty bind group");
+        }
+        for (std::size_t index = 0; index < upstream::pick_deform_variants.size(); ++index) {
+            const auto& variant = upstream::pick_deform_variants[index];
+            auto& program = state.pick_deform_programs[index];
+            program.layout = create_dawn_pick_deform_layout(state.device, variant);
+            for (std::size_t mode = 0; mode < 2; ++mode) {
+                const char* stem = mode == 0 ? variant.vertex : variant.detailed_vertex;
+                if (!stem) continue;
+                program.pipelines[mode] = create_dawn_pick_mesh_pipeline(
+                    state.device, state.pick_scene_layout, state.pick_mesh_layout,
+                    stem, mode == 0 ? "picking.frag" : "picking-detailed.frag",
+                    mode == 0 ? 2u : 3u, state.pick_deform_empty_layout,
+                    program.layout, variant.skeleton);
+            }
+        }
+#endif
+        WGPUBufferDescriptor scene_buffer =
+            WGPU_BUFFER_DESCRIPTOR_INIT;
+        scene_buffer.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        scene_buffer.size = sizeof(PickSceneUniforms);
+        state.pick_scene_buffer =
+            wgpuDeviceCreateBuffer(state.device, &scene_buffer);
+        WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        scene_entry.binding = 0;
+        scene_entry.buffer = state.pick_scene_buffer;
+        scene_entry.size = sizeof(PickSceneUniforms);
+        WGPUBindGroupDescriptor scene_group =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        scene_group.layout = state.pick_scene_layout;
+        scene_group.entryCount = 1;
+        scene_group.entries = &scene_entry;
+        state.pick_scene_group =
+            wgpuDeviceCreateBindGroup(state.device, &scene_group);
     }
 
+    const PickSceneUniforms scene_uniforms =
+        build_pick_scene_uniforms(
+            view_projection, x, y, width, height);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        state.pick_scene_buffer,
+        0,
+        &scene_uniforms,
+        sizeof(scene_uniforms));
 
-#if BBLITE_HAS_PICKING
-    // The pick pass. Installed before the loop, because the continuation
-    // that calls it arrives on the deferred queue at the first frame
-    // boundary; a pick taken before this point reports a miss, exactly as
-    // the pin's `pickAsync` does for a scene with no camera. The guard
-    // clears the hook when this scope ends, however it ends: the hook
-    // holds `state`, the scene and the render plan by reference, all of
-    // which die with the scope.
-    PickHookGuard pick_hook_guard(engine);
-#if BBLITE_HAS_BILLBOARDS
-    // The contributor's own GPU state, scoped to the hook it serves:
-    // upstream it lives in the closure the picker cached and frees in
-    // `disposePicker`, which is this scope.
-    DawnBillboardPickContributor billboard_pick;
-#endif
-    engine.pick_hook =
-        [&state, &engine, &root_plan = render_plan, &overlay_plans, &active_registered_scenes
-#if BBLITE_HAS_BILLBOARDS
-         ,
-         &billboard_pick
-#endif
-    ]([[maybe_unused]] GpuPickerHandle picker, double x, double y, const Engine::PickFilter* filter) -> PickingInfo {
-            const auto layer = picker_scene_index(engine, picker, active_registered_scenes);
-            if (!layer) return PickingInfo{};
-            const Scene& scene = *active_registered_scenes[*layer];
-            const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
-            auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
-#if BBLITE_HAS_DETAILED_PICKING
-        // `picker._detailedPicking`, armed by `enableDetailedPicking`.
-        const bool detailed = detailed_pick_armed(engine, picker);
-#endif
-        if (scene.camera.value >= engine.cameras.size()) {
-            return PickingInfo{};
-        }
-        const CameraRecord& camera = engine.cameras[scene.camera.value];
-        // Native has no CSS box, so the pin's backing/client scale is 1.
-        const double width = static_cast<double>(engine.options.width);
-        const double height = static_cast<double>(engine.options.height);
-        if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
-            return PickingInfo{};
-        }
-        if (camera.viewport.has_value()) {
-            // `pickAsync` maps the pointer through
-            // `resolveCameraViewport` before it renders the candidates
-            // (src/picking/gpu-picker.ts), which this port has not
-            // ported: no scene reaches both. Refusing by name beats
-            // picking against a frustum the pass never drew.
-            dawn_error(
-                "A GPU pick through a camera viewport needs the pin's "
-                "resolveCameraViewport pointer mapping, which is not "
-                "ported: no reached scene both picks and splits.");
-        }
-        const double aspect = upstream::effective_aspect_ratio(
-            camera,
-            width,
-            height);
-        const std::array<float, 16> view_projection =
-            upstream::build_view_projection(camera, aspect);
-        ensure_dawn_pick_targets(state.device, state.pick_targets);
-        if (!state.pick_mesh_pipeline) {
-            state.pick_scene_layout =
-                create_dawn_pick_scene_layout(state.device);
-            state.pick_mesh_layout =
-                create_dawn_pick_mesh_layout(state.device);
-            state.pick_mesh_pipeline = create_dawn_pick_mesh_pipeline(
-                state.device,
-                state.pick_scene_layout,
-                state.pick_mesh_layout,
-                "picking.vert",
-                "picking.frag",
-                2);
-#if BBLITE_GPU_INSTANCING
-            state.pick_thin_layout =
-                create_dawn_pick_thin_layout(state.device);
-            state.pick_thin_pipeline = create_dawn_pick_mesh_pipeline(
-                state.device,
-                state.pick_scene_layout,
-                state.pick_thin_layout,
-                "picking-thin.vert",
-                "picking-thin.frag",
-                2);
-#endif
-#if BBLITE_HAS_DETAILED_PICKING
-            // The pin's second module, built beside the first: the picker
-            // dynamic-imports whichever `_detailedPicking` selected, and
-            // a picker can be armed after another has already picked.
-            state.pick_detailed_pipeline = create_dawn_pick_mesh_pipeline(
-                state.device,
-                state.pick_scene_layout,
-                state.pick_mesh_layout,
-                "picking-detailed.vert",
-                "picking-detailed.frag",
-                pick_color_targets);
-#endif
+    // Every candidate's block is written before the pass opens,
+    // because WebGPU forbids a queue write between draws inside one.
+    std::vector<PickRange> ranges;
+    std::vector<DawnPickMeshUniforms> blocks;
+    std::uint32_t next_id = 1;
+    // The shared collector owns the plan walk, the generated pick
+    // predicate and the id/range assignment; only "does this row have
+    // GPU buffers" is answered here. Candidate rows carry plan-item
+    // indices rather than pointers: the same function pushes into
+    // `state.splat_passes` below, and a raw pointer into a growing
+    // vector is the shape of the bloom-composite crash.
+    const std::vector<PickMeshCandidate> candidates =
+        collect_pick_mesh_candidates(
+            engine,
+            scene,
+            render_plan,
+            pick_meshes.size(),
+            [&](std::size_t item_index) {
+                const DawnMesh& mesh = pick_meshes[item_index];
+                return mesh.vertices && mesh.indices;
+            },
+            ranges,
+            next_id,
+            filter, detailed);
+    // `pickAsyncImpl` takes no pick source under a supplied filter.
+    [[maybe_unused]] const bool pick_sources = filter == nullptr;
+    validate_pick_contributors(engine, scene, detailed, pick_sources);
 #if BBLITE_DEFORM_PICKING
-            state.pick_deform_empty_layout =
-                create_dawn_pick_empty_layout(state.device);
-            WGPUBindGroupDescriptor empty_group =
-                WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-            empty_group.layout = state.pick_deform_empty_layout;
-            empty_group.entryCount = 0;
-            state.pick_deform_empty_group =
-                wgpuDeviceCreateBindGroup(state.device, &empty_group);
-            if (!state.pick_deform_empty_group) {
-                dawn_error("pick deform empty bind group");
-            }
-            for (std::size_t index = 0; index < upstream::pick_deform_variants.size(); ++index) {
-                const auto& variant = upstream::pick_deform_variants[index];
-                auto& program = state.pick_deform_programs[index];
-                program.layout = create_dawn_pick_deform_layout(state.device, variant);
-                for (std::size_t mode = 0; mode < 2; ++mode) {
-                    const char* stem = mode == 0 ? variant.vertex : variant.detailed_vertex;
-                    if (!stem) continue;
-                    program.pipelines[mode] = create_dawn_pick_mesh_pipeline(
-                        state.device, state.pick_scene_layout, state.pick_mesh_layout,
-                        stem, mode == 0 ? "picking.frag" : "picking-detailed.frag",
-                        mode == 0 ? 2u : 3u, state.pick_deform_empty_layout,
-                        program.layout, variant.skeleton);
-                }
-            }
-#endif
-            WGPUBufferDescriptor scene_buffer =
-                WGPU_BUFFER_DESCRIPTOR_INIT;
-            scene_buffer.usage =
-                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-            scene_buffer.size = sizeof(PickSceneUniforms);
-            state.pick_scene_buffer =
-                wgpuDeviceCreateBuffer(state.device, &scene_buffer);
-            WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-            scene_entry.binding = 0;
-            scene_entry.buffer = state.pick_scene_buffer;
-            scene_entry.size = sizeof(PickSceneUniforms);
-            WGPUBindGroupDescriptor scene_group =
-                WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-            scene_group.layout = state.pick_scene_layout;
-            scene_group.entryCount = 1;
-            scene_group.entries = &scene_entry;
-            state.pick_scene_group =
-                wgpuDeviceCreateBindGroup(state.device, &scene_group);
-        }
-
-        const PickSceneUniforms scene_uniforms =
-            build_pick_scene_uniforms(
-                view_projection, x, y, width, height);
-        wgpuQueueWriteBuffer(
-            state.queue,
-            state.pick_scene_buffer,
-            0,
-            &scene_uniforms,
-            sizeof(scene_uniforms));
-
-        // Every candidate's block is written before the pass opens,
-        // because WebGPU forbids a queue write between draws inside one.
-        std::vector<PickRange> ranges;
-        std::vector<DawnPickMeshUniforms> blocks;
-        std::uint32_t next_id = 1;
-        // The shared collector owns the plan walk, the generated pick
-        // predicate and the id/range assignment; only "does this row have
-        // GPU buffers" is answered here. Candidate rows carry plan-item
-        // indices rather than pointers: the same function pushes into
-        // `state.splat_passes` below, and a raw pointer into a growing
-        // vector is the shape of the bloom-composite crash.
-        const std::vector<PickMeshCandidate> candidates =
-            collect_pick_mesh_candidates(
-                engine,
-                scene,
-                render_plan,
-                pick_meshes.size(),
-                [&](std::size_t item_index) {
-                    const DawnMesh& mesh = pick_meshes[item_index];
-                    return mesh.vertices && mesh.indices;
-                },
-                ranges,
-                next_id,
-                filter);
-        // `pickAsyncImpl` takes no pick source under a supplied filter.
-        [[maybe_unused]] const bool pick_sources = filter == nullptr;
-#if BBLITE_DEFORM_PICKING
-        for (const auto& candidate : candidates) {
-            if (candidate.deform < 0) continue;
-            const auto& item = render_plan.items[candidate.item_index];
-            const auto& record = engine.meshes[item.mesh.value];
-            auto& gpu = pick_meshes[candidate.item_index];
+    for (const auto& candidate : candidates) {
+        if (candidate.deform < 0) continue;
+        const auto& item = render_plan.items[candidate.item_index];
+        const auto& record = handle_at(engine.meshes, item.mesh);
+        auto& gpu = pick_meshes[candidate.item_index];
 #if BBLITE_GPU_MORPH_STORAGE
-            sync_morph_weights(state, gpu, engine.geometries[item.geometry], record);
+        sync_morph_weights(state, gpu, engine.geometries[item.geometry], record);
 #endif
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
-            if (record.skinned) write_pinned_bone_texture(state, gpu, record);
+        if (record.skinned) write_pinned_bone_texture(state, gpu, record);
 #endif
-        }
+    }
 #endif
-        blocks.reserve(candidates.size());
-        for (const PickMeshCandidate& candidate : candidates) {
-            // The shared block at this backend's 256-byte dynamic-offset
-            // stride.
-            DawnPickMeshUniforms block{};
-            block.world = candidate.uniforms.world;
-            block.pick_id = candidate.uniforms.pick_id;
-            block.excluded_thin_instance_start =
-                candidate.uniforms.excluded_thin_instance_start;
-            block.excluded_thin_instance_count =
-                candidate.uniforms.excluded_thin_instance_count;
-            blocks.push_back(block);
-        }
-        if (blocks.size() > state.pick_mesh_capacity) {
+    blocks.reserve(candidates.size());
+    for (const PickMeshCandidate& candidate : candidates) {
+        // The shared block at this backend's 256-byte dynamic-offset
+        // stride.
+        DawnPickMeshUniforms block{};
+        block.world = candidate.uniforms.world;
+        block.pick_id = candidate.uniforms.pick_id;
+        block.excluded_thin_instance_start =
+            candidate.uniforms.excluded_thin_instance_start;
+        block.excluded_thin_instance_count =
+            candidate.uniforms.excluded_thin_instance_count;
+        blocks.push_back(block);
+    }
+    if (blocks.size() > state.pick_mesh_capacity) {
 #if BBLITE_GPU_INSTANCING
-            state.release_thin_pick_groups();
+        state.release_thin_pick_groups();
 #endif
-            if (state.pick_mesh_group) {
-                wgpuBindGroupRelease(state.pick_mesh_group);
-                state.pick_mesh_group = nullptr;
-            }
-            if (state.pick_mesh_buffer) {
-                wgpuBufferRelease(state.pick_mesh_buffer);
-                state.pick_mesh_buffer = nullptr;
-            }
-            state.pick_mesh_capacity = blocks.size();
-            WGPUBufferDescriptor mesh_buffer = WGPU_BUFFER_DESCRIPTOR_INIT;
-            mesh_buffer.usage =
-                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-            mesh_buffer.size = static_cast<std::uint64_t>(
-                state.pick_mesh_capacity * sizeof(DawnPickMeshUniforms));
-            state.pick_mesh_buffer =
-                wgpuDeviceCreateBuffer(state.device, &mesh_buffer);
-            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-            entry.binding = 0;
-            entry.buffer = state.pick_mesh_buffer;
-            entry.size = sizeof(DawnPickMeshUniforms);
-            WGPUBindGroupDescriptor group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-            group.layout = state.pick_mesh_layout;
-            group.entryCount = 1;
-            group.entries = &entry;
-            state.pick_mesh_group =
-                wgpuDeviceCreateBindGroup(state.device, &group);
+        if (state.pick_mesh_group) {
+            wgpuBindGroupRelease(state.pick_mesh_group);
+            state.pick_mesh_group = nullptr;
         }
-        if (!blocks.empty()) {
-            wgpuQueueWriteBuffer(
-                state.queue,
-                state.pick_mesh_buffer,
-                0,
-                blocks.data(),
-                blocks.size() * sizeof(DawnPickMeshUniforms));
+        if (state.pick_mesh_buffer) {
+            wgpuBufferRelease(state.pick_mesh_buffer);
+            state.pick_mesh_buffer = nullptr;
         }
+        state.pick_mesh_capacity = blocks.size();
+        WGPUBufferDescriptor mesh_buffer = WGPU_BUFFER_DESCRIPTOR_INIT;
+        mesh_buffer.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        mesh_buffer.size = static_cast<std::uint64_t>(
+            state.pick_mesh_capacity * sizeof(DawnPickMeshUniforms));
+        state.pick_mesh_buffer =
+            wgpuDeviceCreateBuffer(state.device, &mesh_buffer);
+        WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        entry.binding = 0;
+        entry.buffer = state.pick_mesh_buffer;
+        entry.size = sizeof(DawnPickMeshUniforms);
+        WGPUBindGroupDescriptor group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        group.layout = state.pick_mesh_layout;
+        group.entryCount = 1;
+        group.entries = &entry;
+        state.pick_mesh_group =
+            wgpuDeviceCreateBindGroup(state.device, &group);
+    }
+    if (!blocks.empty()) {
+        wgpuQueueWriteBuffer(
+            state.queue,
+            state.pick_mesh_buffer,
+            0,
+            blocks.data(),
+            blocks.size() * sizeof(DawnPickMeshUniforms));
+    }
 #if BBLITE_GPU_INSTANCING
-        // Membership is stable across picks. Uniform contents are dynamic,
-        // but only replacing a bound resource or its range needs a new group.
-        for (std::size_t index = 0; index < candidates.size(); ++index) {
-            if (!candidates[index].thin) continue;
+    // Membership is stable across picks. Uniform contents are dynamic,
+    // but only replacing a bound resource or its range needs a new group.
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        if (!candidates[index].thin) continue;
 #if BBLITE_HAS_DETAILED_PICKING
-            if (detailed) {
-                dawn_error("detailed thin-instance picking was not composed");
-            }
-#endif
-            DawnMesh& mesh =
-                pick_meshes[candidates[index].item_index];
-            if (!mesh.instances) {
-                dawn_error(
-                    "a thin-instance pick candidate has no instance buffer");
-            }
-            const std::uint64_t bound_size = static_cast<std::uint64_t>(
-                candidates[index].instance_count) * sizeof(std::array<float, 16>);
-            if (mesh.thin_pick_group &&
-                mesh.thin_pick_uniform_buffer == state.pick_mesh_buffer &&
-                mesh.thin_pick_instances == mesh.instances &&
-                mesh.thin_pick_bound_size == bound_size) continue;
-            mesh.release_thin_pick_group();
-            std::array<WGPUBindGroupEntry, 2> entries{};
-            for (WGPUBindGroupEntry& entry : entries) {
-                entry = WGPU_BIND_GROUP_ENTRY_INIT;
-            }
-            entries[0].binding = 0;
-            entries[0].buffer = state.pick_mesh_buffer;
-            entries[0].size = sizeof(DawnPickMeshUniforms);
-            entries[1].binding = 1;
-            entries[1].buffer = mesh.instances;
-            entries[1].size = bound_size;
-            WGPUBindGroupDescriptor group =
-                WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-            group.layout = state.pick_thin_layout;
-            group.entryCount = entries.size();
-            group.entries = entries.data();
-            mesh.thin_pick_group =
-                wgpuDeviceCreateBindGroup(state.device, &group);
-            if (!mesh.thin_pick_group) {
-                dawn_error("pick thin bind group");
-            }
-            mesh.thin_pick_uniform_buffer = state.pick_mesh_buffer;
-            mesh.thin_pick_instances = mesh.instances;
-            mesh.thin_pick_bound_size = bound_size;
+        if (detailed) {
+            dawn_error("detailed thin-instance picking was not composed");
         }
+#endif
+        DawnMesh& mesh =
+            pick_meshes[candidates[index].item_index];
+        if (!mesh.instances) {
+            dawn_error(
+                "a thin-instance pick candidate has no instance buffer");
+        }
+        const std::uint64_t bound_size = static_cast<std::uint64_t>(
+            candidates[index].instance_count) * sizeof(std::array<float, 16>);
+        if (mesh.thin_pick_group &&
+            mesh.thin_pick_uniform_buffer == state.pick_mesh_buffer &&
+            mesh.thin_pick_instances == mesh.instances &&
+            mesh.thin_pick_bound_size == bound_size) continue;
+        mesh.release_thin_pick_group();
+        std::array<WGPUBindGroupEntry, 2> entries{};
+        for (WGPUBindGroupEntry& entry : entries) {
+            entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        }
+        entries[0].binding = 0;
+        entries[0].buffer = state.pick_mesh_buffer;
+        entries[0].size = sizeof(DawnPickMeshUniforms);
+        entries[1].binding = 1;
+        entries[1].buffer = mesh.instances;
+        entries[1].size = bound_size;
+        WGPUBindGroupDescriptor group =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        group.layout = state.pick_thin_layout;
+        group.entryCount = entries.size();
+        group.entries = entries.data();
+        mesh.thin_pick_group =
+            wgpuDeviceCreateBindGroup(state.device, &group);
+        if (!mesh.thin_pick_group) {
+            dawn_error("pick thin bind group");
+        }
+        mesh.thin_pick_uniform_buffer = state.pick_mesh_buffer;
+        mesh.thin_pick_instances = mesh.instances;
+        mesh.thin_pick_bound_size = bound_size;
+    }
 #endif
 
 #if BBLITE_HAS_SPLATS
-        // The clouds and their sorted order buffers are the frame loop's:
-        // its upload phase creates each pass and brings the sort current
-        // before the drain a pick can arrive on, and a scene that picks
-        // sooner than one elapsed frame yields sooner than the pin's own
-        // `firstSortReady` scene does. The pick only reads.
-        if (!state.splat_passes.empty() && !state.pick_cloud_pipeline) {
-            state.pick_cloud_color_layout =
-                create_dawn_pick_scene_layout(state.device);
-            state.pick_cloud_pipeline = create_dawn_pick_cloud_pipeline(
-                state.device,
-                state.pick_scene_layout,
-                state.splat_passes[0].layout,
-                state.pick_cloud_color_layout);
-            const auto uniform_pair =
-                [&](std::uint64_t size,
-                    WGPUBindGroupLayout layout,
-                    WGPUBuffer& buffer,
-                    WGPUBindGroup& group) {
-                    WGPUBufferDescriptor descriptor =
-                        WGPU_BUFFER_DESCRIPTOR_INIT;
-                    descriptor.usage = WGPUBufferUsage_Uniform |
-                                       WGPUBufferUsage_CopyDst;
-                    descriptor.size = size;
-                    buffer =
-                        wgpuDeviceCreateBuffer(state.device, &descriptor);
-                    WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-                    entry.binding = 0;
-                    entry.buffer = buffer;
-                    entry.size = size;
-                    WGPUBindGroupDescriptor descriptor_group =
-                        WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-                    descriptor_group.layout = layout;
-                    descriptor_group.entryCount = 1;
-                    descriptor_group.entries = &entry;
-                    group = wgpuDeviceCreateBindGroup(
-                        state.device, &descriptor_group);
-                };
-            uniform_pair(
-                64,
-                state.pick_scene_layout,
-                state.pick_cloud_shear,
-                state.pick_cloud_shear_group);
-            uniform_pair(
-                16,
-                state.pick_cloud_color_layout,
-                state.pick_cloud_color,
-                state.pick_cloud_color_group);
-        }
-        // One cloud per pick: the shear and the id colour are single
-        // buffers, so a second cloud would need the same dynamic-offset
-        // treatment the mesh blocks get. No reached scene loads two.
-        if (pick_sources && state.splat_passes.size() > 1) {
-            throw std::runtime_error(
-                "Picking more than one Gaussian cloud needs a per-cloud "
-                "id buffer; the reached slice loads one.");
-        }
-        for (DawnSplatPass& splat : state.splat_passes) {
-            if (!pick_sources) break;
-            // Refresh data before encoding, retaining the last frame's order.
-            sync_dawn_splat_data(state.queue,
-                engine.splat_meshes[splat.mesh.value], splat);
-            std::array<float, 16> shear{};
-            compute_cloud_pick_matrix(shear, x, y, width, height);
-            wgpuQueueWriteBuffer(
-                state.queue,
-                state.pick_cloud_shear,
-                0,
-                shear.data(),
-                shear.size() * sizeof(float));
-            const std::array<float, 3> color =
-                encode_pick_id_to_color(next_id);
-            const std::array<float, 4> picking_block{
-                color[0], color[1], color[2], 0.0f};
-            wgpuQueueWriteBuffer(
-                state.queue,
-                state.pick_cloud_color,
-                0,
-                picking_block.data(),
-                picking_block.size() * sizeof(float));
-            ranges.push_back(
-                {next_id,
-                 PickedNodeKind::splat_mesh,
-                 splat.mesh.value});
-            ++next_id;
-        }
+    // The clouds and their sorted order buffers are the frame loop's:
+    // its upload phase creates each pass and brings the sort current
+    // before the drain a pick can arrive on, and a scene that picks
+    // sooner than one elapsed frame yields sooner than the pin's own
+    // `firstSortReady` scene does. The pick only reads.
+    if (!state.splat_passes.empty() && !state.pick_cloud_pipeline) {
+        state.pick_cloud_color_layout =
+            create_dawn_pick_scene_layout(state.device);
+        state.pick_cloud_pipeline = create_dawn_pick_cloud_pipeline(
+            state.device,
+            state.pick_scene_layout,
+            state.splat_passes[0].layout,
+            state.pick_cloud_color_layout);
+        const auto uniform_pair =
+            [&](std::uint64_t size,
+                WGPUBindGroupLayout layout,
+                WGPUBuffer& buffer,
+                WGPUBindGroup& group) {
+                WGPUBufferDescriptor descriptor =
+                    WGPU_BUFFER_DESCRIPTOR_INIT;
+                descriptor.usage = WGPUBufferUsage_Uniform |
+                                   WGPUBufferUsage_CopyDst;
+                descriptor.size = size;
+                buffer =
+                    wgpuDeviceCreateBuffer(state.device, &descriptor);
+                WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+                entry.binding = 0;
+                entry.buffer = buffer;
+                entry.size = size;
+                WGPUBindGroupDescriptor descriptor_group =
+                    WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+                descriptor_group.layout = layout;
+                descriptor_group.entryCount = 1;
+                descriptor_group.entries = &entry;
+                group = wgpuDeviceCreateBindGroup(
+                    state.device, &descriptor_group);
+            };
+        uniform_pair(
+            64,
+            state.pick_scene_layout,
+            state.pick_cloud_shear,
+            state.pick_cloud_shear_group);
+        uniform_pair(
+            16,
+            state.pick_cloud_color_layout,
+            state.pick_cloud_color,
+            state.pick_cloud_color_group);
+    }
+    // One cloud per pick: the shear and the id colour are single
+    // buffers, so a second cloud would need the same dynamic-offset
+    // treatment the mesh blocks get. No reached scene loads two.
+    if (pick_sources && state.splat_passes.size() > 1) {
+        throw std::runtime_error(
+            "Picking more than one Gaussian cloud needs a per-cloud "
+            "id buffer; the reached slice loads one.");
+    }
+    for (DawnSplatPass& splat : state.splat_passes) {
+        if (!pick_sources) break;
+        // Refresh data before encoding, retaining the last frame's order.
+        sync_dawn_splat_data(state.queue,
+            handle_at(engine.splat_meshes, splat.mesh), splat);
+        std::array<float, 16> shear{};
+        compute_cloud_pick_matrix(shear, x, y, width, height);
+        wgpuQueueWriteBuffer(
+            state.queue,
+            state.pick_cloud_shear,
+            0,
+            shear.data(),
+            shear.size() * sizeof(float));
+        const std::array<float, 3> color =
+            encode_pick_id_to_color(next_id);
+        const std::array<float, 4> picking_block{
+            color[0], color[1], color[2], 0.0f};
+        wgpuQueueWriteBuffer(
+            state.queue,
+            state.pick_cloud_color,
+            0,
+            picking_block.data(),
+            picking_block.size() * sizeof(float));
+        ranges.push_back(
+            {next_id,
+             PickedNodeKind::splat_mesh,
+             splat.mesh.value});
+        ++next_id;
+    }
 #endif
 #if BBLITE_HAS_BILLBOARDS
-        // The last contributor in the pin's own order: meshes own 1..M,
-        // then each registered pick source's contiguous range. Its blocks
-        // are written here for the same reason the mesh blocks above are
-        // -- WebGPU forbids a queue write between draws inside a pass.
-        if (pick_sources) {
-            billboard_pick.prepare(
-                state.device,
-                state.queue,
-                state.pick_scene_layout,
-                engine,
-                scene,
-                upstream::build_view_matrix(
-                    upstream::camera_world_matrix(camera)),
-                ranges,
-                next_id);
-        }
+    // The last contributor in the pin's own order: meshes own 1..M,
+    // then each registered pick source's contiguous range. Its blocks
+    // are written here for the same reason the mesh blocks above are
+    // -- WebGPU forbids a queue write between draws inside a pass.
+    if (pick_sources) {
+        billboard_pick.prepare(
+            state.device,
+            state.queue,
+            state.pick_scene_layout,
+            engine,
+            scene,
+            upstream::build_view_matrix(
+                upstream::camera_world_matrix(camera)),
+            ranges,
+            next_id);
+    }
 #endif
 
-        WGPUCommandEncoderDescriptor encoder_descriptor =
-            WGPU_COMMAND_ENCODER_DESCRIPTOR_INIT;
-        WGPUCommandEncoder encoder =
-            wgpuDeviceCreateCommandEncoder(state.device, &encoder_descriptor);
+    WGPUCommandEncoderDescriptor encoder_descriptor =
+        WGPU_COMMAND_ENCODER_DESCRIPTOR_INIT;
+    DawnCommandEncoder encoder{wgpuDeviceCreateCommandEncoder(state.device, &encoder_descriptor)};
 
-        std::array<WGPURenderPassColorAttachment, pick_color_targets>
-            attachments{};
-        for (WGPURenderPassColorAttachment& attachment : attachments) {
-            attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-            attachment.loadOp = WGPULoadOp_Clear;
-            attachment.storeOp = WGPUStoreOp_Store;
-        }
-        attachments[0].view = state.pick_targets.color_view;
-        attachments[0].clearValue = WGPUColor{0.0, 0.0, 0.0, 0.0};
-        attachments[1].view = state.pick_targets.depth_color_view;
-        // 1 is "nothing here" under reverse-Z, which is the pin's clear.
-        attachments[1].clearValue = WGPUColor{1.0, 0.0, 0.0, 0.0};
-        std::size_t attachment_count = 2;
+    std::array<WGPURenderPassColorAttachment, pick_color_targets>
+        attachments{};
+    for (WGPURenderPassColorAttachment& attachment : attachments) {
+        attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        attachment.loadOp = WGPULoadOp_Clear;
+        attachment.storeOp = WGPUStoreOp_Store;
+    }
+    attachments[0].view = state.pick_targets.color_view;
+    attachments[0].clearValue = WGPUColor{0.0, 0.0, 0.0, 0.0};
+    attachments[1].view = state.pick_targets.depth_color_view;
+    // 1 is "nothing here" under reverse-Z, which is the pin's clear.
+    attachments[1].clearValue = WGPUColor{1.0, 0.0, 0.0, 0.0};
+    std::size_t attachment_count = 2;
 #if BBLITE_HAS_DETAILED_PICKING
-        if (detailed) {
-            attachments[2].view = state.pick_targets.detail_view;
-            // The pin's own 0xffffffff, which `readDetailTarget` reads
-            // back as "no primitive".
-            attachments[2].clearValue =
-                WGPUColor{pick_detail_clear_red, 0.0, 0.0, 0.0};
-            attachment_count = 3;
-        }
+    if (detailed) {
+        attachments[2].view = state.pick_targets.detail_view;
+        // The pin's own 0xffffffff, which `readDetailTarget` reads
+        // back as "no primitive".
+        attachments[2].clearValue =
+            WGPUColor{pick_detail_clear_red, 0.0, 0.0, 0.0};
+        attachment_count = 3;
+    }
 #endif
 
-        WGPURenderPassDepthStencilAttachment depth_attachment =
-            WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
-        depth_attachment.view = state.pick_targets.depth_view;
-        depth_attachment.depthLoadOp = WGPULoadOp_Clear;
-        depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
-        depth_attachment.depthClearValue = 0.0f;
+    WGPURenderPassDepthStencilAttachment depth_attachment =
+        WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
+    depth_attachment.view = state.pick_targets.depth_view;
+    depth_attachment.depthLoadOp = WGPULoadOp_Clear;
+    depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
+    depth_attachment.depthClearValue = 0.0f;
 
-        WGPURenderPassDescriptor pass_descriptor =
-            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-        pass_descriptor.colorAttachmentCount = attachment_count;
-        pass_descriptor.colorAttachments = attachments.data();
-        pass_descriptor.depthStencilAttachment = &depth_attachment;
-        WGPURenderPassEncoder pass =
-            wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    WGPURenderPassDescriptor pass_descriptor =
+        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    pass_descriptor.colorAttachmentCount = attachment_count;
+    pass_descriptor.colorAttachments = attachments.data();
+    pass_descriptor.depthStencilAttachment = &depth_attachment;
+    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
 
-        wgpuRenderPassEncoderSetPipeline(
-            pass,
+    wgpuRenderPassEncoderSetPipeline(
+        pass,
 #if BBLITE_HAS_DETAILED_PICKING
-            detailed ? state.pick_detailed_pipeline :
+        detailed ? state.pick_detailed_pipeline :
 #endif
-                     state.pick_mesh_pipeline);
-        wgpuRenderPassEncoderSetBindGroup(
-            pass, 0, state.pick_scene_group, 0, nullptr);
+                 state.pick_mesh_pipeline);
+    wgpuRenderPassEncoderSetBindGroup(
+        pass, 0, state.pick_scene_group, 0, nullptr);
 #if BBLITE_GPU_INSTANCING
-        bool regular_pick_pipeline_bound = true;
+    bool regular_pick_pipeline_bound = true;
 #endif
 #if BBLITE_DEFORM_PICKING
-        // The projection's per-mesh group. Built here rather than inside
-        // the loop only so every one of them is released together; the
-        // pin builds its own the same way, from the pose the frame has
-        // already uploaded.
-        std::vector<WGPUBindGroup> deform_groups(blocks.size(), nullptr);
-        int deform_bound = -1;
-        const std::size_t deform_mode =
+    // The projection's per-mesh group. Built here rather than inside
+    // the loop only so every one of them is released together; the
+    // pin builds its own the same way, from the pose the frame has
+    // already uploaded.
+    std::vector<WGPUBindGroup> deform_groups(blocks.size(), nullptr);
+    int deform_bound = -1;
+    const std::size_t deform_mode =
 #if BBLITE_HAS_DETAILED_PICKING
-            detailed ? 1u :
+        detailed ? 1u :
 #endif
-            0u;
+        0u;
 #endif
-        for (std::size_t index = 0; index < blocks.size(); ++index) {
-            const DawnMesh& mesh =
-                pick_meshes[candidates[index].item_index];
-            const std::uint32_t offset = static_cast<std::uint32_t>(
-                index * sizeof(DawnPickMeshUniforms));
+    for (std::size_t index = 0; index < blocks.size(); ++index) {
+        const DawnMesh& mesh =
+            pick_meshes[candidates[index].item_index];
+        const std::uint32_t offset = static_cast<std::uint32_t>(
+            index * sizeof(DawnPickMeshUniforms));
 #if BBLITE_GPU_INSTANCING
-            if (candidates[index].thin) {
-                wgpuRenderPassEncoderSetPipeline(
-                    pass, state.pick_thin_pipeline);
-                wgpuRenderPassEncoderSetBindGroup(
-                    pass, 0, state.pick_scene_group, 0, nullptr);
-                wgpuRenderPassEncoderSetBindGroup(
-                    pass,
-                    1,
-                    mesh.thin_pick_group,
-                    1,
-                    &offset);
-                wgpuRenderPassEncoderSetVertexBuffer(
-                    pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-                wgpuRenderPassEncoderSetIndexBuffer(
-                    pass,
-                    mesh.indices,
-                    WGPUIndexFormat_Uint32,
-                    0,
-                    WGPU_WHOLE_SIZE);
-                count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
-                    pass,
-                    mesh.index_count,
-                    candidates[index].instance_count,
-                    0,
-                    0,
-                    0);
-                regular_pick_pipeline_bound = false;
-                continue;
-            }
-            if (!regular_pick_pipeline_bound) {
-                wgpuRenderPassEncoderSetPipeline(
-                    pass,
-#if BBLITE_HAS_DETAILED_PICKING
-                    detailed ? state.pick_detailed_pipeline :
-#endif
-                               state.pick_mesh_pipeline);
-                wgpuRenderPassEncoderSetBindGroup(
-                    pass, 0, state.pick_scene_group, 0, nullptr);
-                regular_pick_pipeline_bound = true;
-#if BBLITE_DEFORM_PICKING
-                deform_bound = -1;
-#endif
-            }
-#endif
-#if BBLITE_DEFORM_PICKING
-            const int deform_draw = candidates[index].deform;
-            const auto* deform_program = deform_draw >= 0
-                ? &state.pick_deform_programs[static_cast<std::size_t>(deform_draw)] : nullptr;
-            if (deform_draw != deform_bound) {
-                deform_bound = deform_draw;
-                wgpuRenderPassEncoderSetPipeline(pass,
-                    deform_program ? deform_program->pipelines[deform_mode] :
-#if BBLITE_HAS_DETAILED_PICKING
-                    detailed ? state.pick_detailed_pipeline :
-#endif
-                    state.pick_mesh_pipeline);
-                wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
-            }
-            if (deform_program) {
-                const auto& variant = upstream::pick_deform_variants[static_cast<std::size_t>(deform_draw)];
-                std::array<WGPUBindGroupEntry, 3> entries{};
-                std::size_t entry_count = 0;
-                bool pose_bound = true;
-                const auto append = [&]() -> WGPUBindGroupEntry& {
-                    auto& entry = entries[entry_count];
-                    entry = WGPU_BIND_GROUP_ENTRY_INIT;
-                    entry.binding = static_cast<std::uint32_t>(entry_count++);
-                    return entry;
-                };
-                if (variant.skeleton) {
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
-                    auto& entry = append();
-                    entry.textureView = mesh.pinned_bone_view;
-                    pose_bound = entry.textureView != nullptr;
-#else
-                    dawn_error("deformation pick has no bone palette transport");
-#endif
-                }
-#if BBLITE_DEFORM_PICKING_MORPH
-                if (variant.morph) {
-                    auto& deltas = append();
-                    deltas.buffer = mesh.morph_deltas;
-                    deltas.size = WGPU_WHOLE_SIZE;
-                    auto& weights = append();
-                    weights.buffer = mesh.morph_weights;
-                    weights.size = WGPU_WHOLE_SIZE;
-                    pose_bound = pose_bound && deltas.buffer != nullptr && weights.buffer != nullptr;
-                }
-#endif
-                if (!pose_bound) {
-                    dawn_error(
-                        "a deforming pick candidate reached the pass "
-                        "without the pose the projection samples");
-                }
-                WGPUBindGroupDescriptor group =
-                    WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-                group.layout = deform_program->layout;
-                group.entryCount =
-                    static_cast<std::uint32_t>(entry_count);
-                group.entries = entries.data();
-                deform_groups[index] =
-                    wgpuDeviceCreateBindGroup(state.device, &group);
-                if (!deform_groups[index]) {
-                    dawn_error("pick deform bind group");
-                }
-                wgpuRenderPassEncoderSetBindGroup(
-                    pass, 2, state.pick_deform_empty_group, 0, nullptr);
-                wgpuRenderPassEncoderSetBindGroup(
-                    pass, 3, deform_groups[index], 0, nullptr);
-            }
-#endif
+        if (candidates[index].thin) {
+            wgpuRenderPassEncoderSetPipeline(
+                pass, state.pick_thin_pipeline);
             wgpuRenderPassEncoderSetBindGroup(
-                pass, 1, state.pick_mesh_group, 1, &offset);
+                pass, 0, state.pick_scene_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass,
+                1,
+                mesh.thin_pick_group,
+                1,
+                &offset);
             wgpuRenderPassEncoderSetVertexBuffer(
                 pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderSetIndexBuffer(
@@ -12506,193 +11606,1241 @@ SceneRun run_dawn_engine(Engine& engine) {
                 0,
                 WGPU_WHOLE_SIZE);
             count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
-                pass, mesh.index_count, 1, 0, 0, 0);
-        }
-#if BBLITE_HAS_SPLATS
-        for (const DawnSplatPass& splat : state.splat_passes) {
-            if (!pick_sources) break;
-            if (splat.vertex_count == 0) continue;
-            wgpuRenderPassEncoderSetPipeline(
-                pass, state.pick_cloud_pipeline);
-            wgpuRenderPassEncoderSetBindGroup(
-                pass, 0, state.pick_cloud_shear_group, 0, nullptr);
-            wgpuRenderPassEncoderSetBindGroup(
-                pass, 1, splat.group, 0, nullptr);
-            wgpuRenderPassEncoderSetBindGroup(
-                pass, 2, state.pick_cloud_color_group, 0, nullptr);
-            wgpuRenderPassEncoderSetVertexBuffer(
-                pass, 0, splat.quad, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetVertexBuffer(
-                pass, 1, splat.order, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(
                 pass,
-                splat.indices,
-                WGPUIndexFormat_Uint16,
-                0,
-                WGPU_WHOLE_SIZE);
-            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
-                pass,
-                static_cast<std::uint32_t>(
-                    upstream::splat_quad_indices.size()),
-                splat.vertex_count,
+                mesh.index_count,
+                candidates[index].instance_count,
                 0,
                 0,
                 0);
+            regular_pick_pipeline_bound = false;
+            continue;
         }
+        if (!regular_pick_pipeline_bound) {
+            wgpuRenderPassEncoderSetPipeline(
+                pass,
+#if BBLITE_HAS_DETAILED_PICKING
+                detailed ? state.pick_detailed_pipeline :
+#endif
+                           state.pick_mesh_pipeline);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 0, state.pick_scene_group, 0, nullptr);
+            regular_pick_pipeline_bound = true;
+#if BBLITE_DEFORM_PICKING
+            deform_bound = -1;
+#endif
+        }
+#endif
+#if BBLITE_DEFORM_PICKING
+        const int deform_draw = candidates[index].deform;
+        const auto* deform_program = deform_draw >= 0
+            ? &state.pick_deform_programs[static_cast<std::size_t>(deform_draw)] : nullptr;
+        if (deform_draw != deform_bound) {
+            deform_bound = deform_draw;
+            wgpuRenderPassEncoderSetPipeline(pass,
+                deform_program ? deform_program->pipelines[deform_mode] :
+#if BBLITE_HAS_DETAILED_PICKING
+                detailed ? state.pick_detailed_pipeline :
+#endif
+                state.pick_mesh_pipeline);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
+        }
+        if (deform_program) {
+            const auto& variant = upstream::pick_deform_variants[static_cast<std::size_t>(deform_draw)];
+            std::array<WGPUBindGroupEntry, 3> entries{};
+            std::size_t entry_count = 0;
+            bool pose_bound = true;
+            const auto append = [&]() -> WGPUBindGroupEntry& {
+                auto& entry = entries[entry_count];
+                entry = WGPU_BIND_GROUP_ENTRY_INIT;
+                entry.binding = static_cast<std::uint32_t>(entry_count++);
+                return entry;
+            };
+            if (variant.skeleton) {
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+                auto& entry = append();
+                entry.textureView = mesh.pinned_bone_view;
+                pose_bound = entry.textureView != nullptr;
+#else
+                dawn_error("deformation pick has no bone palette transport");
+#endif
+            }
+#if BBLITE_DEFORM_PICKING_MORPH
+            if (variant.morph) {
+                auto& deltas = append();
+                deltas.buffer = mesh.morph_deltas;
+                deltas.size = WGPU_WHOLE_SIZE;
+                auto& weights = append();
+                weights.buffer = mesh.morph_weights;
+                weights.size = WGPU_WHOLE_SIZE;
+                pose_bound = pose_bound && deltas.buffer != nullptr && weights.buffer != nullptr;
+            }
+#endif
+            if (!pose_bound) {
+                dawn_error(
+                    "a deforming pick candidate reached the pass "
+                    "without the pose the projection samples");
+            }
+            WGPUBindGroupDescriptor group =
+                WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            group.layout = deform_program->layout;
+            group.entryCount =
+                static_cast<std::uint32_t>(entry_count);
+            group.entries = entries.data();
+            deform_groups[index] =
+                wgpuDeviceCreateBindGroup(state.device, &group);
+            if (!deform_groups[index]) {
+                dawn_error("pick deform bind group");
+            }
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 2, state.pick_deform_empty_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 3, deform_groups[index], 0, nullptr);
+        }
+#endif
+        wgpuRenderPassEncoderSetBindGroup(
+            pass, 1, state.pick_mesh_group, 1, &offset);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(
+            pass,
+            mesh.indices,
+            WGPUIndexFormat_Uint32,
+            0,
+            WGPU_WHOLE_SIZE);
+        count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
+            pass, mesh.index_count, 1, 0, 0, 0);
+    }
+#if BBLITE_HAS_SPLATS
+    for (const DawnSplatPass& splat : state.splat_passes) {
+        if (!pick_sources) break;
+        if (splat.vertex_count == 0) continue;
+        wgpuRenderPassEncoderSetPipeline(
+            pass, state.pick_cloud_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(
+            pass, 0, state.pick_cloud_shear_group, 0, nullptr);
+        wgpuRenderPassEncoderSetBindGroup(
+            pass, 1, splat.group, 0, nullptr);
+        wgpuRenderPassEncoderSetBindGroup(
+            pass, 2, state.pick_cloud_color_group, 0, nullptr);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            pass, 0, splat.quad, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            pass, 1, splat.order, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(
+            pass,
+            splat.indices,
+            WGPUIndexFormat_Uint16,
+            0,
+            WGPU_WHOLE_SIZE);
+        count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
+            pass,
+            static_cast<std::uint32_t>(
+                upstream::splat_quad_indices.size()),
+            splat.vertex_count,
+            0,
+            0,
+            0);
+    }
 #endif
 #if BBLITE_HAS_BILLBOARDS
-        if (pick_sources) {
-            billboard_pick.record(pass, state.pick_scene_group);
-        }
+    if (pick_sources) {
+        billboard_pick.record(pass, state.pick_scene_group);
+    }
 #endif
-        wgpuRenderPassEncoderEnd(pass);
-        wgpuRenderPassEncoderRelease(pass);
+    wgpuRenderPassEncoderEnd(pass);
+    pass.reset();
 #if BBLITE_DEFORM_PICKING
-        for (WGPUBindGroup group : deform_groups) {
-            if (group) wgpuBindGroupRelease(group);
-        }
+    for (WGPUBindGroup group : deform_groups) {
+        if (group) wgpuBindGroupRelease(group);
+    }
 #endif
 
-        WGPUTexelCopyTextureInfo source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-        source.texture = state.pick_targets.color;
-        WGPUTexelCopyBufferInfo destination =
-            WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
-        destination.buffer = state.pick_targets.staging;
-        destination.layout.bytesPerRow = pick_readback_row;
-        destination.layout.rowsPerImage = 1;
-        const WGPUExtent3D one{1, 1, 1};
+    WGPUTexelCopyTextureInfo source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    source.texture = state.pick_targets.color;
+    WGPUTexelCopyBufferInfo destination =
+        WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
+    destination.buffer = state.pick_targets.staging;
+    destination.layout.bytesPerRow = pick_readback_row;
+    destination.layout.rowsPerImage = 1;
+    const WGPUExtent3D one{1, 1, 1};
+    wgpuCommandEncoderCopyTextureToBuffer(
+        encoder, &source, &destination, &one);
+    source.texture = state.pick_targets.depth_color;
+    destination.layout.offset = pick_depth_offset;
+    wgpuCommandEncoderCopyTextureToBuffer(
+        encoder, &source, &destination, &one);
+#if BBLITE_HAS_DETAILED_PICKING
+    if (detailed) {
+        source.texture = state.pick_targets.detail;
+        destination.layout.offset = pick_detail_offset;
         wgpuCommandEncoderCopyTextureToBuffer(
             encoder, &source, &destination, &one);
-        source.texture = state.pick_targets.depth_color;
-        destination.layout.offset = pick_depth_offset;
-        wgpuCommandEncoderCopyTextureToBuffer(
-            encoder, &source, &destination, &one);
-#if BBLITE_HAS_DETAILED_PICKING
-        if (detailed) {
-            source.texture = state.pick_targets.detail;
-            destination.layout.offset = pick_detail_offset;
-            wgpuCommandEncoderCopyTextureToBuffer(
-                encoder, &source, &destination, &one);
-        }
+    }
 #endif
 
-        WGPUCommandBufferDescriptor finish =
-            WGPU_COMMAND_BUFFER_DESCRIPTOR_INIT;
-        WGPUCommandBuffer commands =
-            wgpuCommandEncoderFinish(encoder, &finish);
-        wgpuQueueSubmit(state.queue, 1, &commands);
-        wgpuCommandBufferRelease(commands);
-        wgpuCommandEncoderRelease(encoder);
+    WGPUCommandBufferDescriptor finish =
+        WGPU_COMMAND_BUFFER_DESCRIPTOR_INIT;
+    DawnCommandBuffer commands{wgpuCommandEncoderFinish(encoder, &finish)};
+    submit_dawn_command(state.queue, commands);
+    commands.reset();
+    encoder.reset();
 
-        WGPUBufferMapCallbackInfo map_callback =
-            WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-        map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-        // Recorded rather than thrown: the callback runs inside
-        // `wgpuInstanceWaitAny`, so an exception would unwind through
-        // Dawn's own C frame. Every other wait in this backend reports a
-        // map failure the same way.
-        map_callback.callback =
-            [](WGPUMapAsyncStatus status,
-               WGPUStringView message,
-               void* userdata1,
-               void*) {
-                if (status != WGPUMapAsyncStatus_Success) {
-                    auto* error = static_cast<std::string*>(userdata1);
-                    if (error->empty()) *error = view_text(message);
-                }
-            };
-        map_callback.userdata1 = &state.uncaptured_error;
-        wait_for(
-            state.instance,
-            wgpuBufferMapAsync(
-                state.pick_targets.staging,
-                WGPUMapMode_Read,
-                0,
-                pick_staging_bytes,
-                map_callback));
-        if (!state.uncaptured_error.empty()) {
-            dawn_error("pick buffer map failed: " + state.uncaptured_error);
-        }
-        const void* mapped = wgpuBufferGetConstMappedRange(
-            state.pick_targets.staging, 0, pick_staging_bytes);
-        if (!mapped) dawn_error("pick map returned no data.");
-        const auto* bytes = static_cast<const std::uint8_t*>(mapped);
-        const std::uint32_t pick_id =
-            decode_pick_id(bytes);
-        float pick_depth = 1.0f;
-        std::memcpy(
-            &pick_depth, bytes + pick_depth_offset, sizeof(pick_depth));
+    WGPUBufferMapCallbackInfo map_callback =
+        WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+    map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
+    // Recorded rather than thrown: the callback runs inside
+    // `wgpuInstanceWaitAny`, so an exception would unwind through
+    // Dawn's own C frame. Every other wait in this backend reports a
+    // map failure the same way.
+    map_callback.callback =
+        [](WGPUMapAsyncStatus status,
+           WGPUStringView message,
+           void* userdata1,
+           void*) {
+            if (status != WGPUMapAsyncStatus_Success) {
+                auto* error = static_cast<std::string*>(userdata1);
+                if (error->empty()) *error = view_text(message);
+            }
+        };
+    map_callback.userdata1 = &state.uncaptured_error;
+    wait_for(
+        state.instance,
+        wgpuBufferMapAsync(
+            state.pick_targets.staging,
+            WGPUMapMode_Read,
+            0,
+            pick_staging_bytes,
+            map_callback));
+    if (!state.uncaptured_error.empty()) {
+        dawn_error("pick buffer map failed: " + state.uncaptured_error);
+    }
+    const void* mapped = wgpuBufferGetConstMappedRange(
+        state.pick_targets.staging, 0, pick_staging_bytes);
+    if (!mapped) dawn_error("pick map returned no data.");
+    const auto* bytes = static_cast<const std::uint8_t*>(mapped);
+    const std::uint32_t pick_id =
+        decode_pick_id(bytes);
+    float pick_depth = 1.0f;
+    std::memcpy(
+        &pick_depth, bytes + pick_depth_offset, sizeof(pick_depth));
 #if BBLITE_HAS_DETAILED_PICKING
-        const PickDetailReadback pick_detail =
-            detailed ? decode_pick_detail(bytes + pick_detail_offset)
-                     : PickDetailReadback{};
+    const PickDetailReadback pick_detail =
+        detailed ? decode_pick_detail(bytes + pick_detail_offset)
+                 : PickDetailReadback{};
 #endif
-        wgpuBufferUnmap(state.pick_targets.staging);
+    wgpuBufferUnmap(state.pick_targets.staging);
 
-        PickingInfo info = resolve_pick_result(ranges, pick_id);
-        populate_picked_point(
+    PickingInfo info = resolve_pick_result(ranges, pick_id);
+    populate_picked_point(
+        info,
+        view_projection,
+        x,
+        y,
+        width,
+        height,
+        pick_depth);
+#if BBLITE_HAS_DETAILED_PICKING
+    if (detailed) {
+        finish_detailed_pick(
+            engine,
             info,
+            pick_detail,
             view_projection,
             x,
             y,
             width,
-            height,
-            pick_depth);
-#if BBLITE_HAS_DETAILED_PICKING
-        if (detailed) {
-            finish_detailed_pick(
-                engine,
-                info,
-                pick_detail,
-                view_projection,
-                x,
-                y,
-                width,
-                height);
-        }
-#endif
-        return info;
-    };
-#endif
-
-    CaptureGate captures(frame_options, limit, &engine);
-    FrameClock frame_clock;
-    bool running = true;
-    long frame = 0;
-    CameraPointerState pointer_state;
-    SurfaceCameraPointerState surface_pointer_state;
-    CameraTraceState camera_trace_state;
-    PlatformInputReplay input_replay;
-    // Caller-owned scratch for the custom-shader stage blocks: the packer
-    // fills it in place, so the per-draw buffer writes reuse one
-    // allocation across draws and frames.
-    std::vector<float> shader_block_scratch;
-#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
-    std::vector<std::array<float, 16>> pinned_instance_scratch;
-#endif
-    // The shared drain owns the per-event contract; the scene loop only
-    // adds its camera-controls dispatch, which rides the hook so every
-    // event the scene receives also reaches the camera -- and none does
-    // in a deterministic test pass.
-    const auto camera_pointer_hook = [&](const SDL_Event& event) {
-        if (hidden_test_pass && !is_replayed_ui_event(event)) return;
-        dispatch_surface_camera_pointer(engine, event, camera, pointer_state, surface_pointer_state);
-    };
-#if BBLITE_OFFSCREEN_SURFACES
-    auto* offscreen = OffscreenRun::current();
-    OffscreenImagePool<DawnOffscreenImage> offscreen_images;
-    if (offscreen && !screenshot_path.empty()) {
-        throw std::runtime_error("Capture offscreen output from its presentation host.");
+            height);
     }
 #endif
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-    DrawCountScope draw_count_scope(engine);
+    return info;
+}
 #endif
-    while (captures.keep_running(running, frame)) {
+
+class DawnSceneRun {
+
+    struct State : FrameSession {
+        const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
+        const bool mem_profile = environment_variable("BBLITE_MEM_PROFILE") == "1";
+        CpuStartupMark cpu_startup_mark{cpu_profile, "dawn"};
+        const std::vector<std::shared_ptr<Scene>> active_registered_scenes = engine.registered_scenes;
+        const std::shared_ptr<Scene> active_scene = active_registered_scenes.front();
+        Scene& scene = *active_scene;
+        DawnState state;
+        std::uint32_t width = 0, height = 0;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)> ui_runtime{nullptr, &destroy_ui_rml_runtime};
+#endif
+        upstream::RenderPlan render_plan;
+        std::vector<upstream::RenderPlan> overlay_plans;
+        std::vector<std::uint64_t> overlay_topology_versions;
+        std::uint64_t synced_render_topology_version = 0, synced_draw_list_epoch = 0;
+        std::uint32_t synced_material_family_mask = 0;
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        std::optional<DawnTextResourceOps> text_ops;
+#endif
+        CameraRecord fallback_camera;
+        CameraRecord* camera = nullptr;
+        CameraPointerState pointer_state;
+        SurfaceCameraPointerState surface_pointer_state;
+        CameraTraceState camera_trace_state;
+        std::vector<float> shader_block_scratch;
+#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
+        std::vector<std::array<float, 16>> pinned_instance_scratch;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        OffscreenRun* offscreen = nullptr;
+        OffscreenImagePool<DawnOffscreenImage> offscreen_images;
+#endif
+#if BBLITE_HAS_PICKING
+#if BBLITE_HAS_BILLBOARDS
+        DawnBillboardPickContributor billboard_pick;
+#endif
+        std::optional<PickHookGuard> pick_hook_guard;
+#endif
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        std::optional<DrawCountScope> draw_count_scope;
+#endif
+        explicit State(Engine& target) : FrameSession(target) {}
+    } data_;
+
+    struct Frame {
+        bool yield_when_skipped = false;
+#if BBLITE_OFFSCREEN_SURFACES
+        DawnOffscreenImage* offscreen_image = nullptr;
+#endif
+        double benchmark_start = 0, delta_ms = 0, updated = 0, uploaded = 0, written = 0, acquired = 0;
+        std::size_t profile_transformed_meshes = 0, profile_transformed_vertices = 0;
+        bool topology_updated = false, capture_ready = false, frame_graph_presented = false;
+        PixelViewport surface_extent{};
+        double aspect = 0;
+        std::array<float, 16> matrix{}, frame_view{}, frame_projection{};
+        std::array<float, 4> frame_camera_position{};
+        ShaderPassMatrices frame_pass_matrices{};
+        const Scene* pass_scene = nullptr;
+        std::vector<DawnMesh>* pass_meshes = nullptr;
+#if BBLITE_NODE_VARIANTS > 0
+        NodeMeshBlockCache node_mesh_blocks;
+#endif
+        WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
+        DawnTexture surface;
+        DawnTextureView surface_view;
+        DawnCommandEncoder encoder;
+        WGPUTexture capture_source = nullptr;
+    };
+    std::optional<Frame> frame_;
+
+    void rebuild_task_draw_lists() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+
+        if (state.render_tasks.size() < engine.frame_tasks.size()) {
+            state.render_tasks.resize(engine.frame_tasks.size());
+        }
+        for (std::size_t layer = 0; layer < engine.registered_scenes.size(); ++layer) {
+            const Scene& task_scene = *engine.registered_scenes[layer];
+            const auto& task_plan = layer == 0 ? render_plan : overlay_plans[layer - 1];
+        for (const TaskHandle handle : task_scene.tasks) {
+            if (handle.value >= engine.frame_tasks.size()) {
+                throw std::runtime_error(
+                    "Scene frame task handle is invalid.");
+            }
+            const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+            if (
+                task.kind != FrameTaskKind::render &&
+                task.kind != FrameTaskKind::geometry) {
+                continue;
+            }
+            DawnRenderTask& render_task =
+                handle_at(state.render_tasks, handle);
+            if (!render_task.view_projection) {
+                render_task.view_projection = create_buffer(
+                    state,
+                    WGPUBufferUsage_Uniform,
+                    nullptr,
+                    64);
+            }
+            render_task.draw_lists =
+                upstream::build_render_task_draw_lists(
+                    task_plan.items,
+                    engine,
+                    task);
+        }
+        }
+    }
+
+    void capture_render_state() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame_options = data_.frame_options;
+        [[maybe_unused]] auto& captures = data_.captures;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& width = data_.width;
+        [[maybe_unused]] auto& height = data_.height;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& camera = *data_.camera;
+        [[maybe_unused]] const auto& matrix = frame_->matrix;
+        [[maybe_unused]] const auto& capture_ready = frame_->capture_ready;
+
+        if (
+            capture_ready &&
+            !captures.render_capture_saved &&
+            !frame_options.render_capture_path.empty()) {
+            write_render_capture(
+                frame_options.render_capture_path,
+                "dawn",
+                scene,
+                engine,
+                camera,
+                render_plan,
+                matrix,
+                static_cast<int>(width),
+                static_cast<int>(height),
+                frame
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+                , &state.text->owner->capture
+#elif BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                , nullptr
+#endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                , &state.node_capture.capture
+#endif
+                );
+            captures.render_capture_saved = true;
+        }
+    }
+
+    void write_material_uniforms(
+        const upstream::RenderDrawList& list, const ShaderPassMatrices& pass_matrices,
+        bool pass_dependent_only = false) {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& shader_block_scratch = data_.shader_block_scratch;
+        [[maybe_unused]] auto& pass_scene = frame_->pass_scene;
+        [[maybe_unused]] auto& pass_meshes = frame_->pass_meshes;
+#if BBLITE_NODE_VARIANTS > 0
+        [[maybe_unused]] auto& node_mesh_blocks = frame_->node_mesh_blocks;
+#endif
+
+        for (const upstream::RenderDrawCommand& draw :
+             list.commands) {
+            DawnMesh& draw_mesh = (*pass_meshes)[draw.item_index];
+            const bool grid_draw =
+                draw.item.material_kind ==
+                upstream::RenderMaterialKind::grid;
+            const bool shader_draw =
+                draw.item.material_kind ==
+                upstream::RenderMaterialKind::shader;
+            if (pass_dependent_only && !grid_draw && !shader_draw) {
+                continue;
+            }
+            // The per-mesh vertex, deformation, instancing and
+            // morph state is synced once per frame by the item
+            // pass above; a draw writes only the blocks its
+            // material kind owns.
+            if (
+                draw.item.material_kind ==
+                upstream::RenderMaterialKind::standard) {
+#if BBLITE_STANDARD_VARIANTS > 0
+                // The pin's own per-draw blocks; the transcribed
+                // block is retired, so an unresolved draw errors
+                // naming the mesh, matching the SDL_GPU backend.
+                const std::size_t variant =
+                    standard_variant_for_draw(*pass_scene, engine, draw);
+                if (variant == npos) {
+                    dawn_error(
+                        ("Standard draw for mesh " +
+                         std::to_string(draw.item.mesh.value) +
+                         ", material " +
+                         std::to_string(draw.item.material.value) +
+                         " resolves no composed variant: " +
+                         standard_variant_request(engine, draw))
+                            .c_str());
+                }
+                const MaterialRecord* standard_material =
+                    draw.item.material.value <
+                            engine.materials.size()
+                        ? &engine.materials[
+                              draw.item.material.value]
+                        : nullptr;
+#if defined(BBLITE_STANDARD_SKELETON)
+                if (upstream::standard_variant_skeleton(
+                        upstream::standard_variants[variant])) {
+                    write_pinned_bone_texture(
+                        state, draw_mesh, handle_at(engine.meshes, draw.item.mesh));
+                }
+#endif
+                DawnDrawState& standard_state =
+                    ensure_standard_draw_buffers(
+                        state,
+                        draw_mesh,
+                        draw.item.material.value);
+                // The bind group builds at encode: a depth-sampled
+                // emissive render texture's view resolves only
+                // after the frame-graph textures exist.
+                standard_state.group_key = variant * 2 +
+                    ((standard_material &&
+                      standard_material
+                          ->has_emissive_render_texture)
+                         ? 1
+                         : 0);
+                write_standard_draw_blocks(
+                    state,
+                    *pass_scene,
+                    engine,
+                    draw,
+                    variant,
+                    standard_state.mesh_uniforms,
+                    standard_state.material_uniforms,
+                    standard_state.uv_uniforms,
+                    standard_state.uv_transform_uniforms);
+#else
+                dawn_error(
+                    "Standard draw in a build with no composed "
+                    "variant table; the transcribed fragment is "
+                    "retired.");
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+            } else if (
+                draw.item.material_kind ==
+                upstream::RenderMaterialKind::node) {
+                const std::size_t variant =
+                    draw.item.shader_variant;
+                DawnDrawState& node_state =
+                    ensure_node_draw_buffers(
+                        state,
+                        draw_mesh,
+                        draw.item.material.value,
+                        upstream::node_variants.at(variant));
+                write_node_mesh_block(
+                    state,
+                    node_mesh_block_for(
+                        node_mesh_blocks,
+                        *pass_scene,
+                        engine,
+                        draw.item.mesh.value),
+                    node_state);
+                // The group itself is built at encode: a receiving
+                // graph binds the generators' maps, which the frame
+                // graph has not created yet at this point.
+#endif
+            } else if (grid_draw) {
+                const upstream::GridUniforms fragment =
+                    upstream::build_grid_uniforms(
+                        engine,
+                        draw.item);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    (*pass_meshes)[draw.item_index]
+                        .material_uniforms,
+                    0,
+                    &fragment,
+                    sizeof(fragment));
+            } else if (shader_draw) {
+                if (
+                    draw.item.material.value <
+                    engine.materials.size()) {
+                    const MaterialRecord& material =
+                        engine.materials[
+                            draw.item.material.value];
+                    const upstream::ShaderVariantInfo&
+                        shader_info =
+                            upstream::shader_variant_info(
+                                draw.item.shader_variant);
+                    const ShaderDrawMatrices shader_matrices(
+                        engine,
+                        engine.meshes[
+                            draw.item.mesh.value],
+                        pass_matrices);
+                    const ShaderPassMatrices
+                        shader_pass_matrices =
+                            shader_matrices.apply(
+                                pass_matrices);
+                    // A block that is exactly the shared scene
+                    // matrix binds the frame's own buffer and
+                    // needs no write; everything else -- custom
+                    // gathers, or several system matrices --
+                    // owns the material's buffer and is filled
+                    // here.
+                    const auto write_stage_block =
+                        [&](
+                            const upstream::
+                                ShaderVariantStageBlock&
+                                    block,
+                            WGPUBuffer buffer) {
+                        if (
+                            !block.present ||
+                            block_is_shared_scene_matrix(block)) {
+                            return;
+                        }
+                        shader_stage_block_floats(
+                            block,
+                            shader_pass_matrices,
+                            material,
+                            shader_block_scratch);
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            buffer,
+                            0,
+                            shader_block_scratch.data(),
+                            shader_block_scratch.size() *
+                                sizeof(float));
+                    };
+                    write_stage_block(
+                        shader_info.vertex,
+                        draw_mesh.shader_vertex_uniforms);
+                    write_stage_block(
+                        shader_info.fragment,
+                        draw_mesh.material_uniforms);
+                } else {
+                    // The SDL backend's named refusal: encoding
+                    // the draw with stale or zero uniforms is
+                    // the silent alternative.
+                    dawn_error(
+                        "Shader draw has an invalid material.");
+                }
+            } else {
+#if BBLITE_PBR_VARIANTS > 0
+                // The pin's own per-draw blocks. The transcribed
+                // block is retired: a PBR draw that resolves no
+                // variant is an error naming the mesh, matching the
+                // SDL_GPU backend.
+                pal::PinnedVariantKey pinned_key;
+                const std::size_t variant =
+                    pinned_variant_for_draw(
+                        *pass_scene,
+                        engine,
+                        draw,
+                        npos,
+                        &pinned_key);
+                if (variant == npos) {
+                    dawn_error(
+                        ("PBR draw for mesh " +
+                         std::to_string(draw.item.mesh.value) +
+                         ", material " +
+                         std::to_string(draw.item.material.value) +
+                         " resolves no pinned variant: " +
+                         pal::pinned_variant_request(pinned_key))
+                            .c_str());
+                }
+                {
+                    const MeshRecord& variant_record =
+                        handle_at(engine.meshes, draw.item.mesh);
+                    // `pinned_draw_conventions` states the
+                    // skinned and palette-world contract these
+                    // three booleans carry.
+                    const PinnedDrawConventions conventions =
+                        pinned_draw_conventions(
+                            variant,
+                            variant_record);
+                    if (conventions.skeleton_draw) {
+                        write_pinned_bone_texture(
+                            state,
+                            draw_mesh,
+                            variant_record);
+                    }
+#if BBLITE_VAT
+                    // Before the bind group is built: the settings
+                    // buffer it names has to exist by then, and a
+                    // cached group keeps the same buffer while the
+                    // clock is rewritten in place.
+                    if (conventions.vat_draw) {
+                        write_pinned_vat_texture(
+                            state,
+                            draw_mesh,
+                            variant_record,
+                            engine);
+                    }
+#endif
+                    DawnDrawState& pinned_state =
+                        ensure_pinned_draw_bindings(
+                            state,
+                            draw_mesh,
+                            draw.item.material.value,
+                            variant,
+                            draw.item.material.value <
+                                    engine.materials.size()
+                                ? &engine.materials[
+                                    draw.item.material.value]
+                                : nullptr);
+                    pinned_state.mirrored_vertices =
+                        conventions.mirrored_vertices;
+                    write_pinned_draw_blocks(
+                        state,
+                        *pass_scene,
+                        engine,
+                        draw,
+                        variant,
+                        conventions,
+                        pinned_state.mesh_uniforms,
+                        pinned_state.material_uniforms);
+                }
+#else
+                dawn_error(
+                    "PBR draw in a build with no composed variant "
+                    "table; the transcribed fragment is retired.");
+#endif
+            }
+        }
+    }
+
+public:
+    static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_encoding;
+    explicit DawnSceneRun(Engine& engine) : data_(engine) {}
+    bool keep_running() const { return data_.keep_running(); }
+    void discard_frame() { frame_.reset(); }
+    bool yield_when_skipped() const { return frame_ && frame_->yield_when_skipped; }
+
+    void setup() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame_options = data_.frame_options;
+        [[maybe_unused]] auto& cpu_startup_mark = data_.cpu_startup_mark;
+        [[maybe_unused]] auto& active_registered_scenes = data_.active_registered_scenes;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& width = data_.width;
+        [[maybe_unused]] auto& height = data_.height;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+        [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
+        [[maybe_unused]] auto& synced_render_topology_version = data_.synced_render_topology_version;
+        [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
+        [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
+        [[maybe_unused]] auto& fallback_camera = data_.fallback_camera;
+        [[maybe_unused]] auto& benchmark_samples = data_.samples_ms;
+        [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
+        [[maybe_unused]] const auto benchmark = data_.frame_options.benchmarking();
+        [[maybe_unused]] auto& benchmark_frames = data_.frame_options.benchmark_frames;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
+#endif
+#if BBLITE_HAS_PICKING && BBLITE_HAS_BILLBOARDS
+        [[maybe_unused]] auto& billboard_pick = data_.billboard_pick;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen = data_.offscreen;
+#endif
+
+
+
+
+        reject_unsupported_frame_options(
+            frame_options,
+            "Dawn",
+            /*supports_single_sample=*/true,
+            /*supports_copy_task=*/true);
+        // Keep every planned wrapper alive through event dispatch. A UI callback
+        // may replace the root or finish registering an awaited auxiliary scene;
+        // either change rebuilds the backend before stale plans are used again.
+
+
+
+        if (scene.transmission_enabled && !scene.tasks.empty()) {
+            dawn_error(
+                "transmission combined with frame-graph tasks is not "
+                "implemented yet.");
+        }
+        apply_animation_seek(frame_options, scene);
+        // Read by the image-skybox and ground arms, which not every feature set
+        // compiles.
+        [[maybe_unused]] const bool background_enabled =
+            frame_options.background_enabled(scene.environment);
+        const bool use_skybox =
+            frame_options.skybox_enabled(scene.environment);
+        const bool use_ground =
+            frame_options.ground_enabled(scene.environment);
+
+        // Every attachment and pipeline reads this, so it is settled before
+        // any of them is created. The count is the generated read of the
+        // pin's own surface declaration, not a re-typed 4; there is no
+        // capability probe here because WebGPU guarantees 4x support on the
+        // surface formats this backend renders to, where SDL_GPU must ask.
+        state.sample_count = frame_options.single_sample
+            ? 1u
+            : upstream::preferred_sample_count();
+
+
+        DeviceOptions device_options = frame_device_options(frame_options);
+#if BBLITE_GPU_INSTANCE_COLORS
+        // With the per-instance RGBA lane the pin's own thin-instance module
+        // appends, the specialized WGSL reaches the lane after the matrix
+        // columns, and the limit has to cover that location.
+        device_options.max_vertex_attributes = instance_color_location + 1;
+#elif BBLITE_GPU_INSTANCING
+        // The SDL-specialized WGSL feeds per-instance matrix columns at
+        // locations 16-19; the WebGPU default caps attribute locations
+        // below 16, so raise the device limit to cover location 19.
+        device_options.max_vertex_attributes = 20;
+#endif
+        // Geometry MRT chains can exceed the default 32-byte color budget;
+        // the entry's erased requiredLimits option is derived here from
+        // the task records with the WebGPU render-target byte costs
+        // (rgba8/bgra8/rgba16f cost 8, r32f 4, r16f 2).
+        {
+            std::uint32_t color_bytes_per_sample = 0;
+            for (const FrameTaskRecord& task : engine.frame_tasks) {
+                if (task.kind != FrameTaskKind::geometry) continue;
+                std::uint32_t total = 0;
+                for (const GeometryTextureDescription& description :
+                     task.geometry.attachments) {
+                    switch (geometry_texture_format(description)) {
+                        case WGPUTextureFormat_R16Float:
+                            total += 2;
+                            break;
+                        case WGPUTextureFormat_R32Float:
+                            total += 4;
+                            break;
+                        default:
+                            total += 8;
+                            break;
+                    }
+                }
+                if (task.geometry.target.value != invalid_handle) {
+                    total += 8;
+                }
+                color_bytes_per_sample =
+                    std::max(color_bytes_per_sample, total);
+            }
+            if (color_bytes_per_sample > 32) {
+                device_options.max_color_attachment_bytes_per_sample =
+                    color_bytes_per_sample;
+            }
+        }
+        create_dawn_device(engine.options, device_options, state);
+        sync_engine_canvas_size(state.window, engine);
+        resize_dawn_surface(state, engine.options);
+        cpu_startup_mark("window-device");
+
+        width = state.surface_width;
+        height = state.surface_height;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        ui_runtime.reset(create_ui_rml_runtime(engine, state.window, width, height));
+#endif
+
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        // Sprite rendering contexts and their render targets may be created by a
+        // before-render callback. Mirror all newly appended CPU records in handle
+        // order both here and immediately after each callback run.
+        sync_dawn_scene_sprites(state, engine);
+#endif
+
+        // Shared frame targets: 4x MSAA color (surface format, or linear
+        // rgba16float for transmission frames whose multisampled texture
+        // feeds the grab and the per-sample image processing) and the
+        // browser's depth24plus-stencil8 depth buffer.
+        state.frame_color_format = scene.transmission_enabled
+            ? WGPUTextureFormat_RGBA16Float
+            : state.surface_format;
+        recreate_dawn_scene_targets(state, scene, width, height);
+        if (scene.transmission_enabled) {
+            // The pinned refraction target: the shared fixed-extent,
+            // shortened-chain contract (pal_gpu_shared.hpp), rgba16float.
+            state.transmission_mip_count = transmission_grab_mip_count();
+            WGPUTextureDescriptor transmission_descriptor =
+                WGPU_TEXTURE_DESCRIPTOR_INIT;
+            transmission_descriptor.usage =
+                WGPUTextureUsage_RenderAttachment |
+                WGPUTextureUsage_TextureBinding;
+            transmission_descriptor.size = {
+                transmission_grab_size,
+                transmission_grab_size,
+                1,
+            };
+            transmission_descriptor.format =
+                WGPUTextureFormat_RGBA16Float;
+            transmission_descriptor.mipLevelCount =
+                state.transmission_mip_count;
+            state.transmission_color = wgpuDeviceCreateTexture(
+                state.device,
+                &transmission_descriptor);
+            if (!state.transmission_color) {
+                dawn_error(
+                    "wgpuDeviceCreateTexture transmission color");
+            }
+            state.transmission_color_view = create_dawn_texture_view(
+                state.transmission_color,
+                nullptr);
+        }
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        if (!scene.depth_hosted_sprite_layers.empty()) {
+            state.scene_sprite_pass = create_dawn_scene_sprite_pass(
+                state.device,
+                state.queue,
+                state.mips,
+                engine,
+                scene.depth_hosted_sprite_layers,
+                state.sprite_render_textures,
+                state.sprite_render_texture_views,
+                state.frame_color_format,
+                WGPUTextureFormat_Depth24PlusStencil8,
+                state.sample_count);
+            state.has_scene_sprite_pass = true;
+        }
+#endif
+
+        state.vertex_module = load_wgsl_module(state, "pbr.vert");
+
+        state.view_projection = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            nullptr,
+            64);
+        state.white_texture = create_solid_texture(
+            state,
+            {255, 255, 255, 255},
+            WGPUTextureFormat_RGBA8Unorm,
+            1);
+        state.white_view =
+            create_dawn_texture_view(state.white_texture, nullptr);
+        state.black_texture = create_solid_texture(
+            state,
+            {0, 0, 0, 255},
+            WGPUTextureFormat_RGBA8Unorm,
+            1);
+        state.black_view =
+            create_dawn_texture_view(state.black_texture, nullptr);
+        state.normal_flat_texture = create_solid_texture(
+            state,
+            {128, 128, 255, 255},
+            WGPUTextureFormat_RGBA8Unorm,
+            1);
+        state.normal_flat_view =
+            create_dawn_texture_view(state.normal_flat_texture, nullptr);
+        const auto cube_view = [&](WGPUTexture texture) {
+            WGPUTextureViewDescriptor cube_descriptor =
+                WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+            cube_descriptor.dimension = WGPUTextureViewDimension_Cube;
+            cube_descriptor.arrayLayerCount = 6;
+            return create_dawn_texture_view(texture, &cube_descriptor);
+        };
+        state.black_cube = create_solid_texture(
+            state,
+            {0, 0, 0, 255},
+            WGPUTextureFormat_RGBA8Unorm,
+            6);
+        state.black_cube_view = cube_view(state.black_cube);
+        const std::vector<std::uint8_t> zero_rgba16f(8, 0);
+        // The startup value IS the no-environment value: `upload_environment`
+        // replaces this cube only when the scene carries one, so an
+        // environment-less PBR scene shades ambient reflections from this face.
+        // SDL_GPU uploads the same `environment_fallback_face`; zeros here were
+        // a silent backend delta.
+        const std::vector<std::uint16_t> fallback_halves = fallback_face_halves();
+        std::vector<std::uint8_t> fallback_rgba16f(8);
+        for (std::size_t channel = 0; channel < fallback_halves.size(); ++channel) {
+            fallback_rgba16f[channel * 2] =
+                static_cast<std::uint8_t>(fallback_halves[channel] & 0xff);
+            fallback_rgba16f[channel * 2 + 1] =
+                static_cast<std::uint8_t>(fallback_halves[channel] >> 8);
+        }
+        state.environment_cube = create_solid_texture(
+            state,
+            fallback_rgba16f,
+            WGPUTextureFormat_RGBA16Float,
+            6);
+        state.environment_cube_view = cube_view(state.environment_cube);
+        state.brdf_texture = create_solid_texture(
+            state,
+            zero_rgba16f,
+            WGPUTextureFormat_RGBA16Float,
+            1);
+        state.brdf_view =
+            create_dawn_texture_view(state.brdf_texture, nullptr);
+        {
+            WGPUSamplerDescriptor sampler_descriptor =
+                WGPU_SAMPLER_DESCRIPTOR_INIT;
+            sampler_descriptor.addressModeU = WGPUAddressMode_Repeat;
+            sampler_descriptor.addressModeV = WGPUAddressMode_Repeat;
+            sampler_descriptor.addressModeW = WGPUAddressMode_Repeat;
+            sampler_descriptor.magFilter = WGPUFilterMode_Linear;
+            sampler_descriptor.minFilter = WGPUFilterMode_Linear;
+            sampler_descriptor.mipmapFilter = WGPUMipmapFilterMode_Linear;
+            state.default_sampler =
+                wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
+            sampler_descriptor.addressModeU = WGPUAddressMode_ClampToEdge;
+            sampler_descriptor.addressModeV = WGPUAddressMode_ClampToEdge;
+            sampler_descriptor.addressModeW = WGPUAddressMode_ClampToEdge;
+            state.clamp_sampler =
+                wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
+            sampler_descriptor.lodMaxClamp = 0.0f;
+            state.ground_sampler =
+                wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
+            WGPUSamplerDescriptor nearest_descriptor =
+                WGPU_SAMPLER_DESCRIPTOR_INIT;
+            state.nearest_sampler =
+                wgpuDeviceCreateSampler(state.device, &nearest_descriptor);
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+            WGPUSamplerDescriptor post_process_descriptor =
+                WGPU_SAMPLER_DESCRIPTOR_INIT;
+            post_process_descriptor.magFilter = WGPUFilterMode_Linear;
+            post_process_descriptor.minFilter = WGPUFilterMode_Linear;
+            state.post_process_bilinear_sampler =
+                wgpuDeviceCreateSampler(state.device, &post_process_descriptor);
+#endif
+            // The pinned scene-color sampler: repeat trilinear with the
+            // shared anisotropy (getTrilinearAnisotropicSampler).
+            WGPUSamplerDescriptor transmission_descriptor =
+                WGPU_SAMPLER_DESCRIPTOR_INIT;
+            transmission_descriptor.addressModeU = WGPUAddressMode_Repeat;
+            transmission_descriptor.addressModeV = WGPUAddressMode_Repeat;
+            transmission_descriptor.addressModeW = WGPUAddressMode_Repeat;
+            transmission_descriptor.magFilter = WGPUFilterMode_Linear;
+            transmission_descriptor.minFilter = WGPUFilterMode_Linear;
+            transmission_descriptor.mipmapFilter =
+                WGPUMipmapFilterMode_Linear;
+            transmission_descriptor.maxAnisotropy =
+                static_cast<std::uint16_t>(
+                    transmission_sampler_max_anisotropy);
+            state.transmission_sampler =
+                wgpuDeviceCreateSampler(state.device, &transmission_descriptor);
+        }
+#if BBLITE_GPU_MORPH_STORAGE
+        {
+            const std::array<float, 1> zero_delta{0.0f};
+            state.empty_morph_deltas = create_buffer(
+                state,
+                WGPUBufferUsage_Storage,
+                zero_delta.data(),
+                sizeof(zero_delta));
+            // Sixteen-byte {count, vertexCount} header plus one zero
+            // weight: derived background pipeline layouts require the
+            // shader's 20-byte minimum binding size for the runtime
+            // weights array.
+            const std::array<std::uint32_t, 5> zero_header{};
+            state.empty_morph_weights = create_buffer(
+                state,
+                WGPUBufferUsage_Storage,
+                zero_header.data(),
+                sizeof(zero_header));
+        }
+#endif
+        upload_environment(state, scene.environment);
+        upload_brdf(state, scene.environment);
+        state.reflection_cubes.reserve(engine.reflection_cubes.size());
+        state.reflection_cube_views.reserve(engine.reflection_cubes.size());
+        for (const auto& cube : engine.reflection_cubes) {
+            WGPUTexture texture = upload_reflection_cube(state, cube);
+            state.reflection_cubes.push_back(texture);
+            state.reflection_cube_views.push_back(cube_view(texture));
+        }
+        cpu_startup_mark("environment-background");
+
+
+        // Every scene registered after the first is a swapchain overlay layer,
+        // which is the pin's own trigger (scene/swapchain-overlay.ts): a later
+        // scene on the same surface keeps the base scene's colour and clears
+        // only its own depth. Each layer owns a plan because a draw command
+        // indexes one.
+
+        // What each layer's plan was built against; a layer that changes its
+        // renderables afterwards is refused rather than drawn stale.
+
+        synced_render_topology_version =
+            scene.render_topology_version;
+        synced_draw_list_epoch =
+            engine.draw_list_epoch;
+        // For the post-registration family guard the topology update runs,
+        // exactly as the SDL backend tracks it.
+        synced_material_family_mask =
+            scene.material_family_mask;
+
+        const auto initialize_render_tasks = [&] {
+            state.release_render_tasks();
+            state.render_tasks.resize(engine.frame_tasks.size());
+            for (const TaskHandle handle : scene.tasks) {
+                const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+                if (task.kind == FrameTaskKind::render) {
+                    DawnRenderTask& render_task =
+                        handle_at(state.render_tasks, handle);
+                    render_task.view_projection = create_buffer(
+                        state,
+                        WGPUBufferUsage_Uniform,
+                        nullptr,
+                        64);
+                }
+            }
+            rebuild_task_draw_lists();
+        };
+        const auto rebuild_meshes = [&] {
+            render_plan = upstream::build_render_plan(scene, engine);
+            // Validate every item's kind and variant before uploading anything.
+            validate_render_plan_items(render_plan);
+            cpu_startup_mark("render-plan");
+            state.meshes.reserve(render_plan.items.size());
+            for (const upstream::RenderItem& item : render_plan.items) {
+                state.meshes.push_back(upload_dawn_scene_mesh(state, engine, item));
+            }
+            for (
+                std::size_t layer = 1;
+                layer < engine.registered_scenes.size();
+                ++layer) {
+                Scene* overlay_scene = engine.registered_scenes[layer].get();
+                if (!overlay_scene) continue;
+                upstream::RenderPlan overlay_plan =
+                    upstream::build_render_plan(*overlay_scene, engine);
+                validate_render_plan_items(overlay_plan);
+                std::vector<DawnMesh> overlay_layer_meshes;
+                overlay_layer_meshes.reserve(overlay_plan.items.size());
+                for (const upstream::RenderItem& item : overlay_plan.items) {
+                    overlay_layer_meshes.push_back(upload_dawn_scene_mesh(state, engine, item));
+                }
+                overlay_plans.push_back(std::move(overlay_plan));
+                state.overlay_meshes.push_back(
+                    std::move(overlay_layer_meshes));
+                overlay_topology_versions.push_back(
+                    overlay_scene->render_topology_version);
+            }
+#if BBLITE_PINNED_MATERIALS
+            state.overlay_frames.resize(overlay_plans.size());
+#endif
+            cpu_startup_mark("mesh-uploads");
+            initialize_render_tasks();
+            cpu_startup_mark("draw-lists-ready");
+        };
+        upstream::initialize_composition_feature_rows(engine);
+        rebuild_meshes();
+
+        initialize_dawn_environment(state, scene, use_skybox, use_ground, background_enabled);
+        // The composed variant modules load lazily in the loop, so this phase
+        // covers only the background/skybox/ground half SDL_GPU builds here too.
+        cpu_startup_mark("shaders-pipelines");
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        state.text = std::make_unique<DawnTextRenderer>(state.device, state.queue,
+            !environment_variable("BBLITE_RENDER_CAPTURE").empty());
+        auto& text_ops = data_.text_ops.emplace(state.text->owner);
+        const std::string text_color_format = state.frame_color_format == WGPUTextureFormat_BGRA8Unorm
+            ? "bgra8unorm" : state.frame_color_format == WGPUTextureFormat_RGBA8Unorm ? "rgba8unorm"
+            : throw std::runtime_error("Unrepresented default text color target.");
+        state.text->scene.bind(scene, state.text->owner.get(),
+            TextTargetSignature{text_color_format, state.sample_count, "depth24plus-stencil8"},
+            [&](const upstream::TextPipelineInfo& info) {
+                return state.text->pipeline(info, state.frame_color_format, WGPUTextureFormat_Depth24PlusStencil8);
+            }, text_ops);
+#endif
+
+
+        data_.camera = &(scene.camera.value < engine.cameras.size()
+                ? handle_at(engine.cameras, scene.camera)
+                : fallback_camera);
+
+
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+
+#endif
+
+
+
+
+
+
+
+
+        if (benchmark) {
+            benchmark_samples.reserve(
+                static_cast<std::size_t>(benchmark_frames));
+        }
+
+
+#if BBLITE_HAS_PICKING
+        // The pick pass. Installed before the loop, because the continuation
+        // that calls it arrives on the deferred queue at the first frame
+        // boundary; a pick taken before this point reports a miss, exactly as
+        // the pin's `pickAsync` does for a scene with no camera. The guard
+        // clears the hook when this scope ends, however it ends: the hook
+        // holds `state`, the scene and the render plan by reference, all of
+        // which die with the scope.
+        data_.pick_hook_guard.emplace(engine);
+#if BBLITE_HAS_BILLBOARDS
+        // The contributor's own GPU state, scoped to the hook it serves:
+        // upstream it lives in the closure the picker cached and frees in
+        // `disposePicker`, which is this scope.
+
+#endif
+        engine.pick_hook =
+            [&state, &engine, &root_plan = render_plan, &overlay_plans, &active_registered_scenes
+#if BBLITE_HAS_BILLBOARDS
+             ,
+             &billboard_pick
+#endif
+        ]([[maybe_unused]] GpuPickerHandle picker, double x, double y, const Engine::PickFilter* filter) -> PickingInfo {
+            return pick_dawn_scene(state, engine, root_plan, overlay_plans, active_registered_scenes, picker, x, y, filter
+#if BBLITE_HAS_BILLBOARDS
+                , billboard_pick
+#endif
+            );
+        };
+#endif
+
+
+
+
+
+
+
+
+
+        // Caller-owned scratch for the custom-shader stage blocks: the packer
+        // fills it in place, so the per-draw buffer writes reuse one
+        // allocation across draws and frames.
+
+#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
+
+#endif
+        // The shared drain owns the per-event contract; the scene loop only
+        // adds its camera-controls dispatch, which rides the hook so every
+        // event the scene receives also reaches the camera -- and none does
+        // in a deterministic test pass.
+
+#if BBLITE_OFFSCREEN_SURFACES
+        offscreen = OffscreenRun::current();
+
+        if (offscreen && !screenshot_path.empty()) {
+            throw std::runtime_error("Capture offscreen output from its presentation host.");
+        }
+#endif
+#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+        data_.draw_count_scope.emplace(engine);
+#endif
+    }
+
+    FramePreparation prepare() {
+        frame_.emplace();
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& input_replay = data_.input_replay;
+        [[maybe_unused]] auto& running = data_.running;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& active_registered_scenes = data_.active_registered_scenes;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& width = data_.width;
+        [[maybe_unused]] auto& height = data_.height;
+        [[maybe_unused]] auto& pointer_state = data_.pointer_state;
+        [[maybe_unused]] auto& surface_pointer_state = data_.surface_pointer_state;
+        [[maybe_unused]] auto& camera = *data_.camera;
+        [[maybe_unused]] auto& hidden_test_pass = data_.frame_options.test_pass;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen = data_.offscreen;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen_images = data_.offscreen_images;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen_image = frame_->offscreen_image;
+#endif
+        const auto camera_pointer_hook = [&](const SDL_Event& event) {
+            if (hidden_test_pass && !is_replayed_ui_event(event)) return;
+            dispatch_surface_camera_pointer(engine, event, camera, pointer_state, surface_pointer_state);
+        };
+
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
         if (state.device_lost) {
             force_device_loss(engine);
-            break;
+            return FramePreparation::stop;
         }
         engine.draw_call_count = 0;
 #endif
@@ -12717,26 +12865,26 @@ SceneRun run_dawn_engine(Engine& engine) {
             camera_pointer_hook);
 #endif
 #if BBLITE_OFFSCREEN_SURFACES
-        if (offscreen && !running) break;
+        if (offscreen && !running) return FramePreparation::stop;
 #endif
         input_replay.dispatch(frame, state.window, engine);
         if (request_renderer_restart_if_scene_set_changed(
                 engine, active_registered_scenes)) {
-            break;
+            return FramePreparation::restart;
         }
         sync_engine_canvas_size(state.window, engine);
         if (resize_dawn_surface(state, engine.options)) {
             width = state.surface_width;
             height = state.surface_height;
-            recreate_frame_targets();
+            recreate_dawn_scene_targets(state, scene, width, height);
         }
 #if BBLITE_OFFSCREEN_SURFACES
-        DawnOffscreenImage* offscreen_image = nullptr;
+        offscreen_image = nullptr;
         if (offscreen) {
             offscreen_image = offscreen_images.acquire(width, height, *offscreen, [&](auto w, auto h) {
                 return std::make_shared<DawnOffscreenImage>(state.device, w, h);
             });
-            if (!offscreen_image) { BBLITE_FRAME_YIELD(false); continue; }
+            if (!offscreen_image) { frame_->yield_when_skipped = true; return FramePreparation::skip; }
         }
 #endif
         // The benchmark bracket mirrors the SDL backend: frame CPU time
@@ -12747,10 +12895,29 @@ SceneRun run_dawn_engine(Engine& engine) {
         // the scene at all (a null swapchain must skip the frame entirely),
         // and a bracket that began at each backend's acquisition would then
         // cover a different span on each.
-        const double benchmark_start = monotonic_milliseconds();
+
+        return FramePreparation::ready;
+    }
+
+    FramePreparation update() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame_options = data_.frame_options;
+        [[maybe_unused]] auto& frame_clock = data_.frame_clock;
+        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
+        [[maybe_unused]] auto& active_registered_scenes = data_.active_registered_scenes;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& width = data_.width;
+        [[maybe_unused]] auto& height = data_.height;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
+#endif
+        [[maybe_unused]] auto& benchmark_start = frame_->benchmark_start;
+        [[maybe_unused]] auto& delta_ms = frame_->delta_ms;
+        [[maybe_unused]] auto& updated = frame_->updated;
+        benchmark_start = monotonic_milliseconds();
         // The frame trace, sprite passes and animated billboard passes
         // read the frame's own delta.
-        const double delta_ms =
+        delta_ms =
             advance_frame(
                 engine,
                 scene,
@@ -12761,7 +12928,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         // before syncing GPU resources or drawing from the disposed scene.
         if (request_renderer_restart_if_scene_set_changed(
                 engine, active_registered_scenes)) {
-            break;
+            return FramePreparation::restart;
         }
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         // Browser layout observes DOM changes made by this turn's RAF
@@ -12771,16 +12938,63 @@ SceneRun run_dawn_engine(Engine& engine) {
         // The phase stamps below feed only the CPU profile, so with
         // profiling off they cost nothing; `benchmark_start` above stays
         // unconditional because the benchmark bracket reads it.
-        const double updated =
+        updated =
             cpu_profile ? monotonic_milliseconds() : 0.0;
-        std::size_t profile_transformed_meshes = 0;
-        std::size_t profile_transformed_vertices = 0;
+
+        return FramePreparation::ready;
+    }
+
+    void synchronize() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& captures = data_.captures;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& width = data_.width;
+        [[maybe_unused]] auto& height = data_.height;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+        [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
+        [[maybe_unused]] auto& synced_render_topology_version = data_.synced_render_topology_version;
+        [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
+        [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
+        [[maybe_unused]] auto& camera_trace_state = data_.camera_trace_state;
+        [[maybe_unused]] auto& camera = *data_.camera;
+        [[maybe_unused]] auto& screenshot_frame = data_.frame_options.screenshot_frame;
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        [[maybe_unused]] auto& text_ops = *data_.text_ops;
+#endif
+#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
+        [[maybe_unused]] auto& pinned_instance_scratch = data_.pinned_instance_scratch;
+#endif
+        [[maybe_unused]] const auto& delta_ms = frame_->delta_ms;
+        [[maybe_unused]] auto& uploaded = frame_->uploaded;
+        [[maybe_unused]] auto& written = frame_->written;
+        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
+        [[maybe_unused]] auto& topology_updated = frame_->topology_updated;
+        [[maybe_unused]] auto& surface_extent = frame_->surface_extent;
+        [[maybe_unused]] auto& aspect = frame_->aspect;
+        [[maybe_unused]] auto& matrix = frame_->matrix;
+        [[maybe_unused]] auto& frame_view = frame_->frame_view;
+        [[maybe_unused]] auto& frame_projection = frame_->frame_projection;
+        [[maybe_unused]] auto& frame_camera_position = frame_->frame_camera_position;
+        [[maybe_unused]] auto& frame_pass_matrices = frame_->frame_pass_matrices;
+        [[maybe_unused]] auto& capture_ready = frame_->capture_ready;
+        [[maybe_unused]] auto& pass_scene = frame_->pass_scene;
+        [[maybe_unused]] auto& pass_meshes = frame_->pass_meshes;
+#if BBLITE_NODE_VARIANTS > 0
+        [[maybe_unused]] auto& node_mesh_blocks = frame_->node_mesh_blocks;
+#endif
+        profile_transformed_meshes = 0;
+        profile_transformed_vertices = 0;
         trace_dynamic_frame(engine, delta_ms, frame);
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         // Upstream updates every rendering context before recording any of
         // them. Scene callbacks above may have changed layer membership or
         // instance data, so synchronize and upload every sprite context now.
-        sync_sprite_gpu_contexts();
+        sync_dawn_scene_sprites(state, engine);
         for (DawnSpritePass& sprite_pass : state.sprite_passes) {
             // `spriteRendererUpdate` runs the renderer's own hooks before
             // it reads its layers, so an overlay HUD's hook is seen by this
@@ -12815,11 +13029,11 @@ SceneRun run_dawn_engine(Engine& engine) {
                 delta_ms);
         }
 #endif
-        bool topology_updated = refresh_overlay_render_plans(
+        topology_updated = refresh_overlay_render_plans(
             engine, overlay_plans, state.overlay_meshes, overlay_topology_versions,
             engine.draw_list_epoch != synced_draw_list_epoch,
             [](DawnMesh& mesh) { mesh.reset(); },
-            [&](const upstream::RenderItem& item) { return upload_render_item(item); });
+            [&](const upstream::RenderItem& item) { return upload_dawn_scene_mesh(state, engine, item); });
         if (topology_updated) {
             state.prune_shared_shader_geometries();
             state.prune_shared_shader_material_textures();
@@ -12850,7 +13064,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         mesh.reset();
                     },
                     [&](const upstream::RenderItem& item) {
-                        return upload_render_item(item);
+                        return upload_dawn_scene_mesh(state, engine, item);
                     });
             state.prune_shared_shader_geometries();
             state.prune_shared_shader_material_textures();
@@ -12921,7 +13135,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             const upstream::RenderItem& item =
                 sync_plan.items[index];
             const MeshRecord& mesh =
-                engine.meshes[item.mesh.value];
+                handle_at(engine.meshes, item.mesh);
             DawnMesh& dawn_mesh = sync_meshes[index];
             // Grid and shader-variant vertex stages own no
             // deformation or instancing uniforms.
@@ -13219,7 +13433,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 overlay_plans[layer],
                 state.overlay_meshes[layer]);
         }
-        const double uploaded =
+        uploaded =
             cpu_profile ? monotonic_milliseconds() : 0.0;
         update_surface_cameras(engine, camera);
         trace_camera_state(camera, camera_trace_state, frame);
@@ -13233,16 +13447,17 @@ SceneRun run_dawn_engine(Engine& engine) {
         // pinned function itself: a camera carrying a viewport scales
         // the target ratio by the viewport's own, and one without takes
         // the pin's literal 1.
-        const PixelViewport surface_extent = scene_surface_extent(
+        surface_extent = scene_surface_extent(
             engine, scene, width, height);
-        const double aspect =
+        aspect =
             upstream::effective_aspect_ratio(
                 camera,
                 static_cast<double>(surface_extent.width),
                 static_cast<double>(surface_extent.height));
-        const std::array<float, 16> matrix =
+        matrix =
             upstream::build_view_projection(camera, aspect);
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        validate_text_scene(scene);
         state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
         const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera), aspect};
         state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera : nullptr,
@@ -13253,14 +13468,14 @@ SceneRun run_dawn_engine(Engine& engine) {
         // them separately, and the billboard sort reads the view. The
         // projection is the pin's `getProjectionMatrix` -- the arm that
         // branches on the camera -- rather than the perspective writer.
-        const std::array<float, 16> frame_view =
+        frame_view =
             upstream::build_view_matrix(
                 upstream::camera_world_matrix(camera));
-        const std::array<float, 16> frame_projection =
+        frame_projection =
             upstream::build_scene_projection(camera, aspect);
-        const std::array<float, 4> frame_camera_position =
+        frame_camera_position =
             shader_camera_position(scene, engine, camera);
-        ShaderPassMatrices frame_pass_matrices{
+        frame_pass_matrices = {
             matrix.data(), &frame_view, &frame_projection};
         frame_pass_matrices.camera_position = &frame_camera_position;
 #if BBLITE_HAS_SPLATS
@@ -13351,37 +13566,10 @@ SceneRun run_dawn_engine(Engine& engine) {
             }
         }
 #endif
-        const bool capture_ready =
+        capture_ready =
             frame >= screenshot_frame && !topology_updated &&
             captures.drains_resolved();
-        const auto capture_render_state = [&] {
-        if (
-            capture_ready &&
-            !captures.render_capture_saved &&
-            !frame_options.render_capture_path.empty()) {
-            write_render_capture(
-                frame_options.render_capture_path,
-                "dawn",
-                scene,
-                engine,
-                camera,
-                render_plan,
-                matrix,
-                static_cast<int>(width),
-                static_cast<int>(height),
-                frame
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-                , &state.text->owner->capture
-#elif BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                , nullptr
-#endif
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                , &state.node_capture.capture
-#endif
-                );
-            captures.render_capture_saved = true;
-        }
-        };
+
 #if (!defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA) && (!defined(BBLITE_HAS_TEXT) || !BBLITE_HAS_TEXT)
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
             if (!state.node_capture.capture.enabled())
@@ -13421,7 +13609,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             overlay_frame_group(state, overlay);
             const CameraRecord& overlay_camera =
                 overlay_scene->camera.value < engine.cameras.size()
-                    ? engine.cameras[overlay_scene->camera.value]
+                    ? handle_at(engine.cameras, overlay_scene->camera)
                     : camera;
             // A layer's own camera answers `getEffectiveAspectRatio` for
             // itself: upstream each scene's render task writes its OWN
@@ -13493,280 +13681,15 @@ SceneRun run_dawn_engine(Engine& engine) {
         // Every reader is a material-variant draw, so a build that
         // composes no variants at all -- a splat-only scene, say -- sets
         // this and never reads it.
-        [[maybe_unused]] const Scene* pass_scene = &scene;
-        std::vector<DawnMesh>* pass_meshes = &state.meshes;
+        pass_scene = &scene;
+        pass_meshes = &state.meshes;
 #if BBLITE_NODE_VARIANTS > 0
         // This frame's node mesh blocks, composed once per mesh per scene
         // and written into every view's own buffer below. A local, so the
         // next frame composes them again against the meshes it moved.
-        NodeMeshBlockCache node_mesh_blocks;
+
 #endif
-        const auto write_material_uniforms =
-            [&](
-                const upstream::RenderDrawList& list,
-                const ShaderPassMatrices& pass_matrices,
-                const bool pass_dependent_only = false) {
-                for (const upstream::RenderDrawCommand& draw :
-                     list.commands) {
-                    DawnMesh& draw_mesh = (*pass_meshes)[draw.item_index];
-                    const bool grid_draw =
-                        draw.item.material_kind ==
-                        upstream::RenderMaterialKind::grid;
-                    const bool shader_draw =
-                        draw.item.material_kind ==
-                        upstream::RenderMaterialKind::shader;
-                    if (pass_dependent_only && !grid_draw && !shader_draw) {
-                        continue;
-                    }
-                    // The per-mesh vertex, deformation, instancing and
-                    // morph state is synced once per frame by the item
-                    // pass above; a draw writes only the blocks its
-                    // material kind owns.
-                    if (
-                        draw.item.material_kind ==
-                        upstream::RenderMaterialKind::standard) {
-#if BBLITE_STANDARD_VARIANTS > 0
-                        // The pin's own per-draw blocks; the transcribed
-                        // block is retired, so an unresolved draw errors
-                        // naming the mesh, matching the SDL_GPU backend.
-                        const std::size_t variant =
-                            standard_variant_for_draw(*pass_scene, engine, draw);
-                        if (variant == npos) {
-                            dawn_error(
-                                ("Standard draw for mesh " +
-                                 std::to_string(draw.item.mesh.value) +
-                                 ", material " +
-                                 std::to_string(draw.item.material.value) +
-                                 " resolves no composed variant: " +
-                                 standard_variant_request(engine, draw))
-                                    .c_str());
-                        }
-                        const MaterialRecord* standard_material =
-                            draw.item.material.value <
-                                    engine.materials.size()
-                                ? &engine.materials[
-                                      draw.item.material.value]
-                                : nullptr;
-#if defined(BBLITE_STANDARD_SKELETON)
-                        if (upstream::standard_variant_skeleton(
-                                upstream::standard_variants[variant])) {
-                            write_pinned_bone_texture(
-                                state, draw_mesh, engine.meshes[draw.item.mesh.value]);
-                        }
-#endif
-                        DawnDrawState& standard_state =
-                            ensure_standard_draw_buffers(
-                                state,
-                                draw_mesh,
-                                draw.item.material.value);
-                        // The bind group builds at encode: a depth-sampled
-                        // emissive render texture's view resolves only
-                        // after the frame-graph textures exist.
-                        standard_state.group_key = variant * 2 +
-                            ((standard_material &&
-                              standard_material
-                                  ->has_emissive_render_texture)
-                                 ? 1
-                                 : 0);
-                        write_standard_draw_blocks(
-                            state,
-                            *pass_scene,
-                            engine,
-                            draw,
-                            variant,
-                            standard_state.mesh_uniforms,
-                            standard_state.material_uniforms,
-                            standard_state.uv_uniforms,
-                            standard_state.uv_transform_uniforms);
-#else
-                        dawn_error(
-                            "Standard draw in a build with no composed "
-                            "variant table; the transcribed fragment is "
-                            "retired.");
-#endif
-#if BBLITE_NODE_VARIANTS > 0
-                    } else if (
-                        draw.item.material_kind ==
-                        upstream::RenderMaterialKind::node) {
-                        const std::size_t variant =
-                            draw.item.shader_variant;
-                        DawnDrawState& node_state =
-                            ensure_node_draw_buffers(
-                                state,
-                                draw_mesh,
-                                draw.item.material.value,
-                                upstream::node_variants.at(variant));
-                        write_node_mesh_block(
-                            state,
-                            node_mesh_block_for(
-                                node_mesh_blocks,
-                                *pass_scene,
-                                engine,
-                                draw.item.mesh.value),
-                            node_state);
-                        // The group itself is built at encode: a receiving
-                        // graph binds the generators' maps, which the frame
-                        // graph has not created yet at this point.
-#endif
-                    } else if (grid_draw) {
-                        const upstream::GridUniforms fragment =
-                            upstream::build_grid_uniforms(
-                                engine,
-                                draw.item);
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            (*pass_meshes)[draw.item_index]
-                                .material_uniforms,
-                            0,
-                            &fragment,
-                            sizeof(fragment));
-                    } else if (shader_draw) {
-                        if (
-                            draw.item.material.value <
-                            engine.materials.size()) {
-                            const MaterialRecord& material =
-                                engine.materials[
-                                    draw.item.material.value];
-                            const upstream::ShaderVariantInfo&
-                                shader_info =
-                                    upstream::shader_variant_info(
-                                        draw.item.shader_variant);
-                            const ShaderDrawMatrices shader_matrices(
-                                engine,
-                                engine.meshes[
-                                    draw.item.mesh.value],
-                                pass_matrices);
-                            const ShaderPassMatrices
-                                shader_pass_matrices =
-                                    shader_matrices.apply(
-                                        pass_matrices);
-                            // A block that is exactly the shared scene
-                            // matrix binds the frame's own buffer and
-                            // needs no write; everything else -- custom
-                            // gathers, or several system matrices --
-                            // owns the material's buffer and is filled
-                            // here.
-                            const auto write_stage_block =
-                                [&](
-                                    const upstream::
-                                        ShaderVariantStageBlock&
-                                            block,
-                                    WGPUBuffer buffer) {
-                                if (
-                                    !block.present ||
-                                    block_is_shared_scene_matrix(block)) {
-                                    return;
-                                }
-                                shader_stage_block_floats(
-                                    block,
-                                    shader_pass_matrices,
-                                    material,
-                                    shader_block_scratch);
-                                wgpuQueueWriteBuffer(
-                                    state.queue,
-                                    buffer,
-                                    0,
-                                    shader_block_scratch.data(),
-                                    shader_block_scratch.size() *
-                                        sizeof(float));
-                            };
-                            write_stage_block(
-                                shader_info.vertex,
-                                draw_mesh.shader_vertex_uniforms);
-                            write_stage_block(
-                                shader_info.fragment,
-                                draw_mesh.material_uniforms);
-                        } else {
-                            // The SDL backend's named refusal: encoding
-                            // the draw with stale or zero uniforms is
-                            // the silent alternative.
-                            dawn_error(
-                                "Shader draw has an invalid material.");
-                        }
-                    } else {
-#if BBLITE_PBR_VARIANTS > 0
-                        // The pin's own per-draw blocks. The transcribed
-                        // block is retired: a PBR draw that resolves no
-                        // variant is an error naming the mesh, matching the
-                        // SDL_GPU backend.
-                        pal::PinnedVariantKey pinned_key;
-                        const std::size_t variant =
-                            pinned_variant_for_draw(
-                                *pass_scene,
-                                engine,
-                                draw,
-                                npos,
-                                &pinned_key);
-                        if (variant == npos) {
-                            dawn_error(
-                                ("PBR draw for mesh " +
-                                 std::to_string(draw.item.mesh.value) +
-                                 ", material " +
-                                 std::to_string(draw.item.material.value) +
-                                 " resolves no pinned variant: " +
-                                 pal::pinned_variant_request(pinned_key))
-                                    .c_str());
-                        }
-                        {
-                            const MeshRecord& variant_record =
-                                engine.meshes[draw.item.mesh.value];
-                            // `pinned_draw_conventions` states the
-                            // skinned and palette-world contract these
-                            // three booleans carry.
-                            const PinnedDrawConventions conventions =
-                                pinned_draw_conventions(
-                                    variant,
-                                    variant_record);
-                            if (conventions.skeleton_draw) {
-                                write_pinned_bone_texture(
-                                    state,
-                                    draw_mesh,
-                                    variant_record);
-                            }
-#if BBLITE_VAT
-                            // Before the bind group is built: the settings
-                            // buffer it names has to exist by then, and a
-                            // cached group keeps the same buffer while the
-                            // clock is rewritten in place.
-                            if (conventions.vat_draw) {
-                                write_pinned_vat_texture(
-                                    state,
-                                    draw_mesh,
-                                    variant_record,
-                                    engine);
-                            }
-#endif
-                            DawnDrawState& pinned_state =
-                                ensure_pinned_draw_bindings(
-                                    state,
-                                    draw_mesh,
-                                    draw.item.material.value,
-                                    variant,
-                                    draw.item.material.value <
-                                            engine.materials.size()
-                                        ? &engine.materials[
-                                            draw.item.material.value]
-                                        : nullptr);
-                            pinned_state.mirrored_vertices =
-                                conventions.mirrored_vertices;
-                            write_pinned_draw_blocks(
-                                state,
-                                *pass_scene,
-                                engine,
-                                draw,
-                                variant,
-                                conventions,
-                                pinned_state.mesh_uniforms,
-                                pinned_state.material_uniforms);
-                        }
-#else
-                        dawn_error(
-                            "PBR draw in a build with no composed variant "
-                            "table; the transcribed fragment is retired.");
-#endif
-                    }
-                }
-            };
+
 #if !defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA
         write_material_uniforms(
             render_plan.draw_lists.opaque, frame_pass_matrices);
@@ -13783,7 +13706,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             if (!overlay_scene) continue;
             const CameraRecord& overlay_camera =
                 overlay_scene->camera.value < engine.cameras.size()
-                    ? engine.cameras[overlay_scene->camera.value]
+                    ? handle_at(engine.cameras, overlay_scene->camera)
                     : camera;
             // The layer's own effective aspect, as above: a viewport is
             // the camera's, not the target's.
@@ -13939,7 +13862,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                  graph_layer < engine.registered_scenes.size(); ++graph_layer) {
             const Scene& graph_scene = *engine.registered_scenes[graph_layer];
             const CameraRecord& graph_camera = graph_scene.camera.value < engine.cameras.size()
-                ? engine.cameras[graph_scene.camera.value] : camera;
+                ? handle_at(engine.cameras, graph_scene.camera) : camera;
             const auto graph_extent = scene_surface_extent(
                 engine, graph_scene, width, height);
 #if BBLITE_GEOMETRY_TASK_FAMILIES
@@ -13957,7 +13880,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         "Scene frame task handle is invalid.");
                 }
                 const FrameTaskRecord& task =
-                    engine.frame_tasks[handle.value];
+                    handle_at(engine.frame_tasks, handle);
                 if (task.kind == FrameTaskKind::geometry) {
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                     if (!graph_matrix) {
@@ -13967,7 +13890,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     }
 #endif
                     upstream::sort_transparent_draws(
-                        state.render_tasks[handle.value]
+                        handle_at(state.render_tasks, handle)
                             .draw_lists.transparent,
                         engine,
                         graph_camera);
@@ -13979,13 +13902,13 @@ SceneRun run_dawn_engine(Engine& engine) {
                     // decides only whether it is written at all.
                     if (
                         pinned_lists_have_pinned_draws(
-                            state.render_tasks[handle.value].draw_lists)) {
+                            handle_at(state.render_tasks, handle).draw_lists)) {
                         write_pinned_geometry_prologue(
                             state,
                             graph_scene,
                             engine,
                             graph_camera,
-                            state.geometry_tasks[handle.value],
+                            handle_at(state.geometry_tasks, handle),
                             *graph_matrix);
                     }
 #endif
@@ -13998,8 +13921,8 @@ SceneRun run_dawn_engine(Engine& engine) {
                         graph_scene,
                         engine,
                         task,
-                        state.geometry_tasks[handle.value],
-                        state.render_tasks[handle.value].draw_lists);
+                        handle_at(state.geometry_tasks, handle),
+                        handle_at(state.render_tasks, handle).draw_lists);
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
                     write_standard_geometry_task(
@@ -14007,8 +13930,8 @@ SceneRun run_dawn_engine(Engine& engine) {
                         graph_scene,
                         engine,
                         task,
-                        state.geometry_tasks[handle.value],
-                        state.render_tasks[handle.value].draw_lists);
+                        handle_at(state.geometry_tasks, handle),
+                        handle_at(state.render_tasks, handle).draw_lists);
 #endif
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
                     // The node family's own MRT arm, third and last: the
@@ -14020,14 +13943,14 @@ SceneRun run_dawn_engine(Engine& engine) {
                         graph_scene,
                         engine,
                         task,
-                        state.geometry_tasks[handle.value],
-                        state.render_tasks[handle.value].draw_lists);
+                        handle_at(state.geometry_tasks, handle),
+                        handle_at(state.render_tasks, handle).draw_lists);
 #endif
                     continue;
                 }
                 if (task.kind != FrameTaskKind::render) continue;
                 DawnRenderTask& render_task =
-                    state.render_tasks[handle.value];
+                    handle_at(state.render_tasks, handle);
                 if (
                     task.render.target.value >=
                     engine.render_targets.size()) {
@@ -14035,14 +13958,14 @@ SceneRun run_dawn_engine(Engine& engine) {
                         "Render task target is invalid.");
                 }
                 const RenderTargetRecord& target_record =
-                    engine.render_targets[task.render.target.value];
+                    handle_at(engine.render_targets, task.render.target);
                 const DawnRenderTarget& target =
-                    state.render_targets[task.render.target.value];
+                    handle_at(state.render_targets, task.render.target);
                 const CameraRecord& task_camera =
                     task.render.has_camera &&
                             task.render.camera.value <
                                 engine.cameras.size()
-                        ? engine.cameras[task.render.camera.value]
+                        ? handle_at(engine.cameras, task.render.camera)
                         : graph_camera;
                 // `_writePassSceneUBO` folds the camera's own viewport
                 // into whichever extent the task was configured for --
@@ -14239,16 +14162,31 @@ SceneRun run_dawn_engine(Engine& engine) {
 #endif
         }
 
-        const double written =
+        written =
             cpu_profile ? monotonic_milliseconds() : 0.0;
-        WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
+    }
+
+    bool acquire() {
+        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& acquired = frame_->acquired;
+        [[maybe_unused]] auto& surface_texture = frame_->surface_texture;
+        [[maybe_unused]] auto& surface = frame_->surface;
+        [[maybe_unused]] auto& surface_view = frame_->surface_view;
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen_image = frame_->offscreen_image;
+#endif
+        surface_texture = WGPU_SURFACE_TEXTURE_INIT;
+
 #if BBLITE_OFFSCREEN_SURFACES
         if (offscreen_image) {
             surface_texture.texture = offscreen_image->texture;
             wgpuTextureAddRef(surface_texture.texture);
+            surface = surface_texture.texture;
         } else {
 #endif
         wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
+        surface = surface_texture.texture;
         if (
             surface_texture.status !=
                 WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&
@@ -14259,21 +14197,44 @@ SceneRun run_dawn_engine(Engine& engine) {
 #if BBLITE_OFFSCREEN_SURFACES
         }
 #endif
-        WGPUTextureView surface_view =
-            wgpuTextureCreateView(surface_texture.texture, nullptr);
-        const double acquired =
+        surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
+        acquired =
             cpu_profile ? monotonic_milliseconds() : 0.0;
 
-        WGPUCommandEncoder encoder =
-            wgpuDeviceCreateCommandEncoder(state.device, nullptr);
-        WGPUTexture capture_source = surface_texture.texture;
+
+        return true;
+    }
+
+    void encode() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame_options = data_.frame_options;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& width = data_.width;
+        [[maybe_unused]] auto& height = data_.height;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
+        [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
+        [[maybe_unused]] auto& camera = *data_.camera;
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+        [[maybe_unused]] auto& text_ops = *data_.text_ops;
+#endif
+        [[maybe_unused]] auto& pass_scene = frame_->pass_scene;
+        [[maybe_unused]] auto& pass_meshes = frame_->pass_meshes;
+        [[maybe_unused]] auto& surface_texture = frame_->surface_texture;
+        [[maybe_unused]] auto& surface_view = frame_->surface_view;
+        [[maybe_unused]] auto& encoder = frame_->encoder;
+        [[maybe_unused]] auto& capture_source = frame_->capture_source;
+        [[maybe_unused]] auto& frame_graph_presented = frame_->frame_graph_presented;
+        encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+        capture_source = surface_texture.texture;
         // Meaningful only under the frame-graph arm, where the default
         // above is a never-rendered surface: set by the same two arms
         // that name the SDL backend's capture source -- the
         // copy-to-swapchain blit and the post-process present -- so a
         // graph that presents through neither refuses capture below
         // instead of reading the raw surface back.
-        bool frame_graph_presented = false;
+        frame_graph_presented = false;
         const auto draw_list_into = [&](
                                         WGPURenderPassEncoder list_pass,
                                         const upstream::RenderDrawList&
@@ -14346,7 +14307,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     // binds none of them and draws once.
                     const InstanceStreams pinned_streams =
                         instance_streams_for(
-                            engine.meshes[draw.item.mesh.value],
+                            handle_at(engine.meshes, draw.item.mesh),
                             mesh,
                             InstanceMatrixSource::pinned);
                     encode_variant_draw(
@@ -14436,7 +14397,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     }
                     const InstanceStreams standard_streams =
                         instance_streams_for(
-                            engine.meshes[draw.item.mesh.value],
+                            handle_at(engine.meshes, draw.item.mesh),
                             mesh,
                             InstanceMatrixSource::standard);
                     // Only a draw whose composed fragment declares the
@@ -14486,7 +14447,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     }
                     const MaterialRecord* node_material =
                         draw.item.material.value < engine.materials.size()
-                            ? &engine.materials[draw.item.material.value]
+                            ? &handle_at(engine.materials, draw.item.material)
                             : nullptr;
                     // Which of the graph's two compiled views: an ESM caster
                     // view carries the bit its own factory set.
@@ -14703,8 +14664,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         pass_descriptor.colorAttachmentCount = 1;
         pass_descriptor.colorAttachments = &color_attachment;
         pass_descriptor.depthStencilAttachment = &depth_attachment;
-        WGPURenderPassEncoder pass =
-            wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+        DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
         set_pass_camera_viewport(
             pass, scene, engine, camera, width, height);
         WGPURenderPipeline bound_pipeline = nullptr;
@@ -14738,7 +14698,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         // attachment, then resume loading color and
                         // depth for the transmissive draws.
                         wgpuRenderPassEncoderEnd(pass);
-                        wgpuRenderPassEncoderRelease(pass);
+                        pass.reset();
                         encode_transmission_grab(state, encoder);
                         color_attachment.loadOp = WGPULoadOp_Load;
                         depth_attachment.depthLoadOp =
@@ -14898,7 +14858,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         const auto draw_billboards = [&](BillboardDepthMode mode) {
             for (const DawnBillboardPass& billboard :
                  state.billboard_passes) {
-                if (engine.billboard_systems[billboard.system.value].depth_mode != mode) {
+                if (handle_at(engine.billboard_systems, billboard.system).depth_mode != mode) {
                     continue;
                 }
                 record_dawn_billboard_pass(pass, engine, billboard);
@@ -14987,7 +14947,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         draw_billboards(BillboardDepthMode::transparent);
 #endif
         wgpuRenderPassEncoderEnd(pass);
-        wgpuRenderPassEncoderRelease(pass);
+        pass.reset();
         // The swapchain overlay layers: one pass each on the same colour
         // attachment with a FRESH depth buffer. `createUtilityLayer`
         // states the contract -- the overlay keeps NORMAL depth testing
@@ -15026,14 +14986,13 @@ SceneRun run_dawn_engine(Engine& engine) {
             overlay_descriptor.colorAttachmentCount = 1;
             overlay_descriptor.colorAttachments = &overlay_color;
             overlay_descriptor.depthStencilAttachment = &overlay_depth;
-            WGPURenderPassEncoder overlay_pass =
-                wgpuCommandEncoderBeginRenderPass(
+            DawnRenderPass overlay_pass{wgpuCommandEncoderBeginRenderPass(
                     encoder,
-                    &overlay_descriptor);
+                    &overlay_descriptor)};
             {
                 const CameraRecord& overlay_pass_camera =
                     overlay_scene->camera.value < engine.cameras.size()
-                        ? engine.cameras[overlay_scene->camera.value]
+                        ? handle_at(engine.cameras, overlay_scene->camera)
                         : camera;
                 set_pass_camera_viewport(
                     overlay_pass,
@@ -15092,7 +15051,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 }
             }
             wgpuRenderPassEncoderEnd(overlay_pass);
-            wgpuRenderPassEncoderRelease(overlay_pass);
+            overlay_pass.reset();
             pass_scene = &scene;
             pass_meshes = &state.meshes;
         }
@@ -15121,7 +15080,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     "Render task depth must name a geometry task.");
             }
             WGPUTextureView view =
-                state.geometry_tasks[reference.task.value].depth_view;
+                handle_at(state.geometry_tasks, reference.task).depth_view;
             if (!view) {
                 throw std::runtime_error(
                     "Geometry task has no depth attachment to share.");
@@ -15141,7 +15100,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     "Frame graph source task handle is invalid.");
             }
             const FrameTaskRecord& source_task =
-                engine.frame_tasks[reference.task.value];
+                handle_at(engine.frame_tasks, reference.task);
             if (source_task.kind != FrameTaskKind::geometry) {
                 throw std::runtime_error(
                     "Frame graph source task is not geometry.");
@@ -15168,7 +15127,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         source_task.geometry.attachments.begin(),
                         found));
             DawnGeometryTask& geometry =
-                state.geometry_tasks[reference.task.value];
+                handle_at(state.geometry_tasks, reference.task);
             return {
                 geometry.sampled_colors[attachment_index],
                 geometry.sampled_views[attachment_index],
@@ -15204,7 +15163,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     "Scene frame task handle is invalid.");
             }
             FrameTaskRecord& task =
-                engine.frame_tasks[handle.value];
+                handle_at(engine.frame_tasks, handle);
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
             if (task.kind != FrameTaskKind::render && task.kind != FrameTaskKind::post_process) {
                 throw std::runtime_error("Temporal submission requires an admitted frame-task execution adapter.");
@@ -15218,11 +15177,11 @@ SceneRun run_dawn_engine(Engine& engine) {
                         "Render task target is invalid.");
                 }
                 const RenderTargetRecord& target_record =
-                    engine.render_targets[task.render.target.value];
+                    handle_at(engine.render_targets, task.render.target);
                 DawnRenderTarget& target =
-                    state.render_targets[task.render.target.value];
+                    handle_at(state.render_targets, task.render.target);
                 DawnRenderTask& render_task =
-                    state.render_tasks[handle.value];
+                    handle_at(state.render_tasks, handle);
                 const std::uint32_t samples = target_record.swapchain
                     ? 1u
                     : task_sample_count(state, target_record.samples);
@@ -15235,7 +15194,8 @@ SceneRun run_dawn_engine(Engine& engine) {
                 CameraRecord* source_camera = task.render.has_camera
                     ? &engine.cameras.at(task.render.camera.value)
                     : task.source_scene->camera.value < engine.cameras.size()
-                        ? &engine.cameras[task.source_scene->camera.value] : nullptr;
+                        ? &handle_at(engine.cameras, task.source_scene->camera) : nullptr;
+                validate_temporal_source(engine, task, source_camera, render_task.draw_lists);
                 const auto& task_camera = source_camera ? *source_camera : camera;
                 const auto graph_extent = scene_surface_extent(engine, graph_scene, width, height);
                 restore_temporal_source_buffer(state, task, render_task);
@@ -15255,13 +15215,6 @@ SceneRun run_dawn_engine(Engine& engine) {
                 ShaderPassMatrices matrices{task_matrix.data(), &task_view, &task_projection};
                 matrices.camera_position = &task_eye;
                 wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0, task_matrix.data(), sizeof(task_matrix));
-                for (const auto* list : {&render_task.draw_lists.opaque, &render_task.draw_lists.transparent}) {
-                    for (const auto& draw : list->commands) {
-                        if (draw.item.material_kind != upstream::RenderMaterialKind::standard) {
-                            throw std::runtime_error("Temporal source requires an admitted material preparation adapter.");
-                        }
-                    }
-                }
                 write_material_uniforms(render_task.draw_lists.opaque, matrices);
                 write_material_uniforms(render_task.draw_lists.transparent, matrices);
                 if (source_camera) upstream::sort_transparent_draws(render_task.draw_lists.transparent, engine, task_camera);
@@ -15327,10 +15280,9 @@ SceneRun run_dawn_engine(Engine& engine) {
                         target_record.has_color ? &shadow_color : nullptr;
                     shadow_descriptor.depthStencilAttachment =
                         &shadow_attachment;
-                    WGPURenderPassEncoder shadow_pass_encoder =
-                        wgpuCommandEncoderBeginRenderPass(
+                    DawnRenderPass shadow_pass_encoder{wgpuCommandEncoderBeginRenderPass(
                             encoder,
-                            &shadow_descriptor);
+                            &shadow_descriptor)};
                     const ShadowGeneratorRecord& shadow_generator =
                         engine.shadow_generators[
                             task.render.shadow_generator.value];
@@ -15361,7 +15313,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         esm_shadow_index,
                         render_task.view_projection);
                     wgpuRenderPassEncoderEnd(shadow_pass_encoder);
-                    wgpuRenderPassEncoderRelease(shadow_pass_encoder);
+                    shadow_pass_encoder.reset();
 #if BBLITE_SHADOWS_ESM
                     // `renderEsmShadowMap` blurs the map it just drew, in
                     // two passes, before anything samples it.
@@ -15406,18 +15358,16 @@ SceneRun run_dawn_engine(Engine& engine) {
                     pass_descriptor.colorAttachmentCount = 0;
                     pass_descriptor.depthStencilAttachment =
                         &depth_attachment;
-                    WGPURenderPassEncoder task_pass =
-                        wgpuCommandEncoderBeginRenderPass(
+                    DawnRenderPass task_pass{wgpuCommandEncoderBeginRenderPass(
                             encoder,
-                            &pass_descriptor);
+                            &pass_descriptor)};
                     if (!render_task.scene_group) {
-                        WGPUBindGroupLayout scene_layout =
-                            wgpuRenderPipelineGetBindGroupLayout(
+                        DawnBindGroupLayout scene_layout{wgpuRenderPipelineGetBindGroupLayout(
                                 depth_only_pipeline_for(
                                     state,
                                     false,
                                     samples),
-                                1);
+                                1)};
                         WGPUBindGroupEntry scene_entry =
                             WGPU_BIND_GROUP_ENTRY_INIT;
                         scene_entry.binding = 0;
@@ -15433,7 +15383,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                             wgpuDeviceCreateBindGroup(
                                 state.device,
                                 &scene_descriptor);
-                        wgpuBindGroupLayoutRelease(scene_layout);
+                        scene_layout.reset();
                     }
                     for (int sided_mode = 0;
                          sided_mode < 2;
@@ -15460,7 +15410,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                                     "invalid.");
                             }
                             const MaterialRecord& material =
-                                engine.materials[entry.material.value];
+                                handle_at(engine.materials, entry.material);
                             if (!material.no_color) {
                                 throw std::runtime_error(
                                     "Depth-only render task requires "
@@ -15476,7 +15426,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                             // own meshes and resolves each against the plan -- so it cannot
                             // inherit append_draw's answer and asks the same predicate.
                             if (!upstream::mesh_draws(
-                                    engine.meshes[entry.mesh.value])) {
+                                    handle_at(engine.meshes, entry.mesh))) {
                                 continue;
                             }
                             std::size_t mesh_index =
@@ -15532,7 +15482,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         }
                     }
                     wgpuRenderPassEncoderEnd(task_pass);
-                    wgpuRenderPassEncoderRelease(task_pass);
+                    task_pass.reset();
                     // Only a colour-less sampled-depth target has the copy
                     // to refresh; see `create_frame_graph_textures`.
                     if (target_record.sampled_depth && target.depth_copy) {
@@ -15611,10 +15561,9 @@ SceneRun run_dawn_engine(Engine& engine) {
                     pass_descriptor.depthStencilAttachment =
                         &depth_attachment;
                 }
-                WGPURenderPassEncoder task_pass =
-                    wgpuCommandEncoderBeginRenderPass(
+                DawnRenderPass task_pass{wgpuCommandEncoderBeginRenderPass(
                         encoder,
-                        &pass_descriptor);
+                        &pass_descriptor)};
                 WGPURenderPipeline bound_pipeline = nullptr;
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
                 if (source_camera && task_camera.viewport) {
@@ -15910,16 +15859,16 @@ SceneRun run_dawn_engine(Engine& engine) {
                 }
 #endif
                 wgpuRenderPassEncoderEnd(task_pass);
-                wgpuRenderPassEncoderRelease(task_pass);
+                task_pass.reset();
                 if (graph_layer == 0 && task.render.scene_stages) {
                     for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
                         const Scene& utility = *engine.registered_scenes[layer + 1];
                         if (utility.surface_canvas || !utility.tasks.empty()) continue;
                         color_attachment.loadOp = WGPULoadOp_Load;
                         depth_attachment.depthLoadOp = WGPULoadOp_Clear;
-                        WGPURenderPassEncoder utility_pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+                        DawnRenderPass utility_pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
                         const CameraRecord& utility_camera = utility.camera.value < engine.cameras.size()
-                            ? engine.cameras[utility.camera.value] : camera;
+                            ? handle_at(engine.cameras, utility.camera) : camera;
                         set_pass_camera_viewport(utility_pass, utility, engine, utility_camera, target.width, target.height);
                         pass_scene = &utility;
                         pass_meshes = &state.overlay_meshes[layer];
@@ -15936,7 +15885,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         draw_list_into(utility_pass, overlay_plans[layer].draw_lists.transparent,
                             samples, utility_pipeline, pass_has_depth, utility_group, false, invalid_handle, utility_uniforms);
                         wgpuRenderPassEncoderEnd(utility_pass);
-                        wgpuRenderPassEncoderRelease(utility_pass);
+                        utility_pass.reset();
                     }
                     pass_scene = &graph_scene;
                     pass_meshes = &graph_meshes;
@@ -15945,9 +15894,9 @@ SceneRun run_dawn_engine(Engine& engine) {
             }
             if (task.kind == FrameTaskKind::geometry) {
                 DawnGeometryTask& geometry =
-                    state.geometry_tasks[handle.value];
+                    handle_at(state.geometry_tasks, handle);
                 DawnRenderTask& render_task =
-                    state.render_tasks[handle.value];
+                    handle_at(state.render_tasks, handle);
                 const std::uint32_t samples =
                     task_sample_count(state, task.geometry.samples);
                 std::vector<WGPURenderPassColorAttachment>
@@ -16016,10 +15965,9 @@ SceneRun run_dawn_engine(Engine& engine) {
                     color_attachments.data();
                 pass_descriptor.depthStencilAttachment =
                     &depth_attachment;
-                WGPURenderPassEncoder task_pass =
-                    wgpuCommandEncoderBeginRenderPass(
+                DawnRenderPass task_pass{wgpuCommandEncoderBeginRenderPass(
                         encoder,
-                        &pass_descriptor);
+                        &pass_descriptor)};
                 // Both are read only by the composed families' arms below,
                 // so a scene reaching neither leaves them untouched.
                 [[maybe_unused]] WGPURenderPipeline bound_pipeline = nullptr;
@@ -16227,7 +16175,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 draw_geometry_list(render_task.draw_lists.opaque);
                 draw_geometry_list(render_task.draw_lists.transparent);
                 wgpuRenderPassEncoderEnd(task_pass);
-                wgpuRenderPassEncoderRelease(task_pass);
+                task_pass.reset();
                 continue;
             }
 #if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
@@ -16238,11 +16186,11 @@ SceneRun run_dawn_engine(Engine& engine) {
                 if (state.effect_tasks.size() < engine.frame_tasks.size()) {
                     state.effect_tasks.resize(engine.frame_tasks.size());
                 }
-                DawnEffectPass& pass = state.effect_tasks[handle.value];
+                DawnEffectPass& pass = handle_at(state.effect_tasks, handle);
                 const RenderTargetRecord& target_record =
-                    engine.render_targets[task.effect.target.value];
+                    handle_at(engine.render_targets, task.effect.target);
                 DawnRenderTarget& target =
-                    state.render_targets[task.effect.target.value];
+                    handle_at(state.render_targets, task.effect.target);
                 if (!pass.pipeline) {
                     pass = create_dawn_effect_pass(
                         state,
@@ -16276,11 +16224,10 @@ SceneRun run_dawn_engine(Engine& engine) {
                     WGPU_RENDER_PASS_DESCRIPTOR_INIT;
                 descriptor.colorAttachmentCount = 1;
                 descriptor.colorAttachments = &attachment;
-                WGPURenderPassEncoder effect_pass =
-                    wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+                DawnRenderPass effect_pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
                 record_dawn_effect_pass(effect_pass, pass);
                 wgpuRenderPassEncoderEnd(effect_pass);
-                wgpuRenderPassEncoderRelease(effect_pass);
+                effect_pass.reset();
                 continue;
             }
 #endif
@@ -16304,7 +16251,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     if (!source.source_scene) throw std::runtime_error("Temporal source has no retained scene.");
                     restore_temporal_source_buffer(state, source, gpu_source);
                     CameraRecord* source_camera = source.source_scene->camera.value < engine.cameras.size()
-                        ? &engine.cameras[source.source_scene->camera.value] : nullptr;
+                        ? &handle_at(engine.cameras, source.source_scene->camera) : nullptr;
                     [[maybe_unused]] const double draws = upstream::execute_taa_post_process(taa,
                         task.post_process.passes.at(0).params[0], source_camera,
                         [](CameraRecord* value) { return upstream::scene_camera_change_key(*value); },
@@ -16380,9 +16327,9 @@ SceneRun run_dawn_engine(Engine& engine) {
                         "Resolve source must be a render target.");
                 }
                 DawnRenderTarget& resolve_source =
-                    state.render_targets[copy.source.target.value];
+                    handle_at(state.render_targets, copy.source.target);
                 DawnRenderTarget& resolve_target =
-                    state.render_targets[copy.resolve_target.value];
+                    handle_at(state.render_targets, copy.resolve_target);
                 if (!state.multisampled()) {
                     // Nothing to average: the pinned resolve of a
                     // single-sample source is the source, so the frame
@@ -16413,18 +16360,17 @@ SceneRun run_dawn_engine(Engine& engine) {
                     WGPU_RENDER_PASS_DESCRIPTOR_INIT;
                 pass_descriptor.colorAttachmentCount = 1;
                 pass_descriptor.colorAttachments = &resolve_attachment;
-                WGPURenderPassEncoder resolve_pass =
-                    wgpuCommandEncoderBeginRenderPass(
+                DawnRenderPass resolve_pass{wgpuCommandEncoderBeginRenderPass(
                         encoder,
-                        &pass_descriptor);
+                        &pass_descriptor)};
                 wgpuRenderPassEncoderEnd(resolve_pass);
-                wgpuRenderPassEncoderRelease(resolve_pass);
+                resolve_pass.reset();
                 continue;
             }
             const RenderTargetRecord& target_record =
-                engine.render_targets[copy.target.value];
+                handle_at(engine.render_targets, copy.target);
             DawnRenderTarget& target =
-                state.render_targets[copy.target.value];
+                handle_at(state.render_targets, copy.target);
             const auto [source_texture, source_view] =
                 source_texture_view(copy.source);
             const auto surface_pane = target_record.swapchain && !force_full_viewport
@@ -16442,10 +16388,9 @@ SceneRun run_dawn_engine(Engine& engine) {
                 WGPU_RENDER_PASS_DESCRIPTOR_INIT;
             pass_descriptor.colorAttachmentCount = 1;
             pass_descriptor.colorAttachments = &blit_attachment;
-            WGPURenderPassEncoder blit_pass =
-                wgpuCommandEncoderBeginRenderPass(
+            DawnRenderPass blit_pass{wgpuCommandEncoderBeginRenderPass(
                     encoder,
-                    &pass_descriptor);
+                    &pass_descriptor)};
             const std::uint32_t blit_samples = target_record.swapchain
                 ? 1u
                 : task_sample_count(state, target_record.samples);
@@ -16497,7 +16442,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     nullptr);
                 count_gpu_draw(wgpuRenderPassEncoderDraw, blit_pass, 3, 1, 0, 0);
                 wgpuRenderPassEncoderEnd(blit_pass);
-                wgpuRenderPassEncoderRelease(blit_pass);
+                blit_pass.reset();
                 wgpuBindGroupRelease(blit_group);
             }
             if (target_record.swapchain) {
@@ -16544,7 +16489,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                         "started has no Dawn pass yet.");
                 }
                 const SpriteRendererRecord& renderer =
-                    engine.sprite_renderers[handle.value];
+                    handle_at(engine.sprite_renderers, handle);
                 WGPURenderPassColorAttachment sprite_attachment =
                     WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                 sprite_attachment.view = renderer.has_target
@@ -16564,21 +16509,56 @@ SceneRun run_dawn_engine(Engine& engine) {
                     WGPU_RENDER_PASS_DESCRIPTOR_INIT;
                 sprite_descriptor.colorAttachmentCount = 1;
                 sprite_descriptor.colorAttachments = &sprite_attachment;
-                WGPURenderPassEncoder sprite_encoder =
-                    wgpuCommandEncoderBeginRenderPass(
+                DawnRenderPass sprite_encoder{wgpuCommandEncoderBeginRenderPass(
                         encoder,
-                        &sprite_descriptor);
+                        &sprite_descriptor)};
                 record_dawn_sprite_pass(
                     sprite_encoder,
                     engine,
-                    state.sprite_passes[handle.value]);
+                    handle_at(state.sprite_passes, handle));
                 wgpuRenderPassEncoderEnd(sprite_encoder);
-                wgpuRenderPassEncoderRelease(sprite_encoder);
+                sprite_encoder.reset();
             }
             capture_source = surface_texture.texture;
         }
 #endif
+    }
 
+    FramePreparation present() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& captures = data_.captures;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& width = data_.width;
+        [[maybe_unused]] auto& height = data_.height;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] auto& benchmark_samples = data_.samples_ms;
+        [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
+        [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
+        [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& capture_ui = data_.frame_options.capture_ui;
+#endif
+        [[maybe_unused]] const auto benchmark = data_.frame_options.benchmarking();
+        [[maybe_unused]] const auto benchmark_warmup = data_.frame_options.benchmark_warmup();
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen = data_.offscreen;
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+        [[maybe_unused]] auto& offscreen_images = data_.offscreen_images;
+#endif
+        [[maybe_unused]] const auto& benchmark_start = frame_->benchmark_start;
+        [[maybe_unused]] const auto& capture_ready = frame_->capture_ready;
+        [[maybe_unused]] auto& surface_texture = frame_->surface_texture;
+        [[maybe_unused]] auto& surface = frame_->surface;
+        [[maybe_unused]] auto& surface_view = frame_->surface_view;
+        [[maybe_unused]] auto& encoder = frame_->encoder;
+        [[maybe_unused]] auto& capture_source = frame_->capture_source;
+        [[maybe_unused]] auto& frame_graph_presented = frame_->frame_graph_presented;
         const bool capture_frame =
             capture_ready &&
             !captures.screenshot_saved &&
@@ -16599,7 +16579,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             }
         }
 #endif
-        WGPUBuffer readback = nullptr;
+        DawnBuffer readback{nullptr};
         const std::uint32_t bytes_per_row = (width * 4 + 255) & ~255u;
         if (capture_frame) {
             if (!scene.tasks.empty() && !frame_graph_presented) {
@@ -16629,11 +16609,10 @@ SceneRun run_dawn_engine(Engine& engine) {
                 &copy_destination,
                 &copy_size);
         }
-        WGPUCommandBuffer command =
-            wgpuCommandEncoderFinish(encoder, nullptr);
-        wgpuQueueSubmit(state.queue, 1, &command);
-        wgpuCommandBufferRelease(command);
-        wgpuCommandEncoderRelease(encoder);
+        DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
+        submit_dawn_command(state.queue, command);
+        command.reset();
+        encoder.reset();
 
         if (capture_frame) {
             WGPUBufferMapCallbackInfo map_callback =
@@ -16677,25 +16656,23 @@ SceneRun run_dawn_engine(Engine& engine) {
                 screenshot_path);
             captures.screenshot_saved = true;
         }
-        if (readback) wgpuBufferRelease(readback);
+        if (readback) readback.reset();
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         if (ui_after_capture_copy) {
             // Complete the canvas-only readback before transitioning the
             // surface back to a render attachment for host UI. Encoding both
             // uses in one submission can leave Dawn's map future unresolved.
-            WGPUCommandEncoder ui_encoder =
-                wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+            DawnCommandEncoder ui_encoder{wgpuDeviceCreateCommandEncoder(state.device, nullptr)};
             render_ui_dawn_frame(
                 state,
                 ui_encoder,
                 surface_texture.texture,
                 surface_view,
                 ui_frame);
-            WGPUCommandBuffer ui_command =
-                wgpuCommandEncoderFinish(ui_encoder, nullptr);
-            wgpuQueueSubmit(state.queue, 1, &ui_command);
-            wgpuCommandBufferRelease(ui_command);
-            wgpuCommandEncoderRelease(ui_encoder);
+            DawnCommandBuffer ui_command{wgpuCommandEncoderFinish(ui_encoder, nullptr)};
+            submit_dawn_command(state.queue, ui_command);
+            ui_command.reset();
+            ui_encoder.reset();
         }
 #endif
 
@@ -16735,13 +16712,13 @@ SceneRun run_dawn_engine(Engine& engine) {
             benchmark_samples.push_back(
                 monotonic_milliseconds() - benchmark_start);
         }
-        wgpuTextureViewRelease(surface_view);
-        wgpuTextureRelease(surface_texture.texture);
+        surface_view.reset();
+        surface.reset();
         wgpuInstanceProcessEvents(state.instance);
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
         if (state.device_lost) {
             force_device_loss(engine);
-            break;
+            return FramePreparation::stop;
         }
 #endif
         if (!state.uncaptured_error.empty()) {
@@ -16774,7 +16751,7 @@ SceneRun run_dawn_engine(Engine& engine) {
             for (std::size_t i = 0; i < engine.shadow_generators.size(); ++i) {
                 const auto& generator = engine.shadow_generators[i];
                 if (generator.map_target.value >= state.render_targets.size()) continue;
-                auto texture = state.render_targets[generator.map_target.value].depth;
+                auto texture = handle_at(state.render_targets, generator.map_target).depth;
 #if BBLITE_SHADOWS_ESM
                 if (generator.filter == ShadowFilter::esm_directional && generator.esm_index < state.esm_blurs.size()) texture = state.esm_blurs[generator.esm_index].blur_v;
 #endif
@@ -16784,6 +16761,25 @@ SceneRun run_dawn_engine(Engine& engine) {
             recovery.resources_ready = true;
         }
 #endif
+
+        return FramePreparation::ready;
+    }
+
+    void complete() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& frame = data_.frame;
+        [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
+        [[maybe_unused]] auto& mem_profile = data_.mem_profile;
+        [[maybe_unused]] auto& scene = data_.scene;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& render_plan = data_.render_plan;
+        [[maybe_unused]] const auto& benchmark_start = frame_->benchmark_start;
+        [[maybe_unused]] const auto& updated = frame_->updated;
+        [[maybe_unused]] const auto& uploaded = frame_->uploaded;
+        [[maybe_unused]] const auto& written = frame_->written;
+        [[maybe_unused]] const auto& acquired = frame_->acquired;
+        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
         finish_frame(engine);
         ++frame;
         // Profile-only too: this backend's benchmark sample above reads its
@@ -16824,20 +16820,43 @@ SceneRun run_dawn_engine(Engine& engine) {
                 profile_transformed_meshes,
                 profile_transformed_vertices);
         }
-        BBLITE_FRAME_YIELD(true);
     }
-    report_benchmark(benchmark_samples, "Dawn", "D3D12");
+
+    void finish_run() {
+        [[maybe_unused]] auto& engine = data_.engine;
+        [[maybe_unused]] auto& state = data_.state;
+        [[maybe_unused]] auto& benchmark_samples = data_.samples_ms;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
+#endif
+        report_benchmark(benchmark_samples, "Dawn", "D3D12");
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-    if (engine.device_recovery && (engine.device_recovery->requested || engine.device_recovery->disposed)) wgpuDeviceDestroy(state.device);
+        if (engine.device_recovery && (engine.device_recovery->requested || engine.device_recovery->disposed)) wgpuDeviceDestroy(state.device);
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-    ui_runtime.reset();
+        ui_runtime.reset();
 #endif
-    // No catch arm: everything `~DawnState` and the unique_ptr UI runtime
-    // own unwinds on its own, and `pick_hook_guard` clears the hook on
-    // either exit.
-    release_run_window(state.window);
-    state.window = nullptr;
+        // No catch arm: everything `~DawnState` and the unique_ptr UI runtime
+        // own unwinds on its own, and `pick_hook_guard` clears the hook on
+        // either exit.
+    }
+
+};
+
+SceneRun run_dawn_engine(Engine& engine) {
+    if (engine.registered_scenes.empty() || !engine.registered_scenes.front())
+        throw std::runtime_error("Dawn renderer requires a registered scene.");
+    DawnSceneRun renderer(engine);
+    renderer.setup();
+    for (;;) {
+        renderer.discard_frame();
+        const FrameOutcome outcome = conduct_frame(renderer);
+        if (outcome == FrameOutcome::stopped || outcome == FrameOutcome::restart) break;
+        if (outcome == FrameOutcome::rendered || renderer.yield_when_skipped())
+            BBLITE_FRAME_YIELD(outcome == FrameOutcome::rendered);
+    }
+    renderer.discard_frame();
+    renderer.finish_run();
     BBLITE_RUN_RETURN(true);
 }
 

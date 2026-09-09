@@ -160,7 +160,7 @@ test("the capsule builder flows the pin's truthiness defaults and its reverse", 
 
 test("mesh factory tables flow from the pinned builders", () => {
     const context = new LoweringContext();
-    const lowered = new FactoryLowerer(context).lowerMeshFactories();
+    const lowered = new FactoryLowerer(context).lowerMeshFactories(["mesh:torus"]);
     // Box: the first face decoded from the pinned BOX_POSITION_SIGNS
     // words, and one face per pinned table group.
     assert.match(

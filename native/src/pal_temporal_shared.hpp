@@ -6,6 +6,36 @@
 
 namespace bbl::pal {
 
+inline void validate_temporal_source(const Engine& engine, const FrameTaskRecord& task,
+    const CameraRecord* camera, const upstream::RenderDrawLists& draws) {
+    if (!task.source_scene || task.render.scene_stages ||
+        task.render.shadow_generator.value != invalid_handle) {
+        throw std::runtime_error("Temporal source requires an explicit color pass in its owning scene.");
+    }
+    if (!camera || camera->kind != CameraKind::arc_rotate || camera->orthographic) {
+        throw std::runtime_error("Temporal source camera requires tracked ArcRotate perspective transport.");
+    }
+    if (task.source_scene->clustered_lights.value != invalid_handle || task.source_scene->transmission_enabled) {
+        throw std::runtime_error("Temporal source requires preparation for its clustered-light or transmission state.");
+    }
+    if (bbl::has_sprite_renderers(engine) || !engine.registered_effect_renderers.empty() ||
+        !engine.registered_frame_graph_contexts.empty() || !engine.registered_text_renderers.empty()) {
+        throw std::runtime_error("Temporal submission requires preparation for the engine's registered renderer or UI contexts.");
+    }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (!engine.ui_root_children.empty()) {
+        throw std::runtime_error("Temporal submission requires preparation for the engine's retained UI.");
+    }
+#endif
+    for (const auto* list : {&draws.opaque, &draws.transparent}) {
+        for (const auto& draw : list->commands) {
+            if (draw.item.material_kind != upstream::RenderMaterialKind::standard) {
+                throw std::runtime_error("Temporal source requires a prepared Standard material draw adapter.");
+            }
+        }
+    }
+}
+
 /** Borrow task/cache inputs without changing the identities held by the pin. */
 template<class Upload>
 void prepare_temporal_scene_uniforms(

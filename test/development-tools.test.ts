@@ -55,6 +55,12 @@ test("discovers the CMake, Ninja, clang-cl, and vcpkg bundled with Visual Studio
     assert.equal(tools.cmake, cmake);
     assert.equal(tools.vcpkg, vcpkg);
     assert.equal(tools.vcpkgRoot, resolve(vs, "VC/vcpkg"));
+    const ccache = resolve(root, "artifacts/tools/ccache/ccache.exe");
+    touch(ccache);
+    assert.equal(discoverDevelopmentTools(options).ccache, ccache);
+    assert.equal(discoverDevelopmentTools({ ...options, environment: {
+        ...environment, CCACHE_PATH: resolve(root, "missing-ccache.exe"),
+    } }).ccache, undefined);
 });
 
 test("an explicit invalid vcpkg root is reported instead of hidden by a fallback", (t) => {

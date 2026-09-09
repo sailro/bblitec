@@ -29,8 +29,8 @@ import type { LoweringContext } from "./context.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import {
     type PinnedBinding,
-    PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 /** The module the extension and both its writers live in. */
 const MODULE = "src/material/standard/fragments/std-uv-transform-fragment.ts";
@@ -242,13 +242,11 @@ export function lowerStandardUvTransformWriter(
     if (!channelWriter.body) {
         throw new Error("Pinned writeChannel has no body.");
     }
-    const lowerer = new PinnedNumericLowerer(file, {
+
+    const channelBody = lowerPinnedBody(file, channelWriter.body.statements, {
         bindings,
         calls: pinnedNumericMathCalls(),
     });
-    const channelBody = channelWriter.body.statements
-        .flatMap((statement) => lowerer.statement(statement, "    "))
-        .join("\n");
 
     // The data writer's own two reads and the two folded arguments, asserted
     // against their own expressions so a changed pin fails here rather than

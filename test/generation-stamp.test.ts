@@ -101,7 +101,7 @@ test("the shader compiler's products and the stamp pair move without a miss", ()
     recordGeneration(scene, arguments_, Date.now());
     assert.equal(generationIsCurrent(scene, arguments_), true);
 
-    // compile-shaders.ps1 runs after generation and writes beside the
+    // The offline shader compiler runs after generation and writes beside the
     // WGSL; those are not generation's outputs.
     for (const name of ["a.dxil", "a.slots", "a.hlsl", "shader-compiler.json"]) {
         writeFileSync(resolve(scene.output, "upstream", "shaders", name), "x");
@@ -148,10 +148,13 @@ test("the output digest sees a touched file and ignores what it excludes", () =>
 test("post-compilation materialization refreshes the generated input digests", () => {
     refreshBuildStamp(scene.output);
     const path = resolve(scene.output, "upstream", "src", "shape_geometry.cpp");
+    const sameTimestamp = new Date(1_000_000);
     writeFileSync(path, "const float shape[] = {1.0f};\n");
+    utimesSync(path, sameTimestamp, sameTimestamp);
     assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), true);
     const first = readFileSync(resolve(scene.output, buildStampHeaderPath), "utf8");
     writeFileSync(path, "const float shape[] = {2.0f};\n");
+    utimesSync(path, sameTimestamp, sameTimestamp);
     assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), true);
     assert.notEqual(readFileSync(resolve(scene.output, buildStampHeaderPath), "utf8"), first);
     assert.equal(refreshBuildStamp(scene.output, { generatedInputsChanged: true }), false);

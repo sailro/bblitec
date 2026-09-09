@@ -1,3 +1,4 @@
+import { EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
 import { compileCharacterIntrinsic } from "./character-controller.js";
 import {
@@ -129,13 +130,13 @@ export interface IntrinsicContext
  * A family whose intrinsics record none says so in its own module, which is
  * where the reason for it lives; this composes what they declare.
  */
-export const runtimeOnlyIntrinsics: ReadonlySet<string> = new Set([
+export const runtimeOnlyIntrinsics: ReadonlySet<string> = new EmissionSet([
     ...runtimeOnlyClusteredLightIntrinsics,
     ...runtimeOnlyPickingIntrinsics,
 ]);
 
 /** Repeated data work still uses its normal lowerer to record stream facts. */
-export const nativeDataIterationIntrinsics: ReadonlySet<string> = new Set([
+export const nativeDataIterationIntrinsics: ReadonlySet<string> = new EmissionSet([
     ...runtimeOnlyIntrinsics,
     ...nativeMeshDataIntrinsics,
     // These operations update native instances or closed bindings; their
@@ -143,6 +144,7 @@ export const nativeDataIterationIntrinsics: ReadonlySet<string> = new Set([
     "addSprite2DIndex", "addSprite2D", "updateSprite2DIndex", "updateSprite2D",
     "clearSprite2DLayer", "removeSprite2D",
     "createPhysicsAggregate", "setPhysicsShapeFilterMembershipMask",
+    "createPhysicsBody", "createPhysicsShape", "setPhysicsBodyShape",
     "setParent", "markMeshDirty", "setMeshVisible", "setSubtreeVisible",
     "createStorageBuffer", "setShaderStorageBuffer", "updateStorageBuffer", "disposeStorageBuffer",
     "setShaderUniform", "setShaderFloat", "setShaderVector3", "setShaderTexture",

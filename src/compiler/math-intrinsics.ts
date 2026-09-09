@@ -16,6 +16,7 @@
  * numeric container as a loop, so `DataLowerer.compileMathCall` owns them
  * as one arm rather than this table pretending they are one call.
  */
+import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import {
     pinnedHypotCall,
@@ -55,7 +56,7 @@ function compilerOnly(name: string): MathMember["cpp"] {
     return (args) => `std::${name}(${args.join(", ")})`;
 }
 
-export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new Map<
+export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     string,
     MathMember
 >([
@@ -162,7 +163,7 @@ export interface MathConstant {
 }
 
 /** The `Math` constants a numeric reader folds, and how a float sink spells them. */
-export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> = new Map<
+export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> = new EmissionMap<
     string,
     MathConstant
 >([
@@ -181,7 +182,7 @@ export const MATH_CONSTANTS: ReadonlyMap<string, MathConstant> = new Map<
 export const FORMATTED_MATH_FOLDS: ReadonlyMap<
     string,
     { readonly arity: number; readonly fold: (...args: number[]) => number }
-> = new Map([
+> = new EmissionMap([
     ["atan2", { arity: 2, fold: Math.atan2 }],
     ["cos", { arity: 1, fold: Math.cos }],
     ["sin", { arity: 1, fold: Math.sin }],

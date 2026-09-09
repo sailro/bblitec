@@ -1,3 +1,4 @@
+import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 /**
  * The C++ mirror of each pinned PBR variant's material UBO.
  *
@@ -1433,7 +1434,8 @@ export function pinnedPbrVariantsHeader(
     renderableMeshFeatures: readonly number[],
     runtimeMeshFeatures?: number,
     pinnedMaterialCount?: number,
-): string {
+): CppModule {
+    const cpp = new CppDefinitions();
     const blocks: string[] = [];
     const table: string[] = [];
     // Filled as the variants are emitted, so the indices match the table order.
@@ -1822,7 +1824,7 @@ export function pinnedPbrVariantsHeader(
             );
         }
     }
-    return `// ${provenance}
+    return cpp.finish(`// ${provenance}
 // Generated from the pin's own composed variants; see
 // upstream/pbr-variants/variants.json.
 #pragma once
@@ -1870,12 +1872,9 @@ ${lightUniformsBlock(context, pinnedMaxLights, lightKinds)}
 
 ${meshUniformsBlock(variants[0]!.fragmentWgsl, meshLightIndexWordOffset)}
 
-${blocks.join("\n\n")}
+${cpp.privateCode(blocks.join("\n\n"))}
 
-inline constexpr std::array<PinnedVariantBinding, ${bindingRows.length}>
-    pbr_variant_bindings{{
-${bindingRows.join("\n")}
-}};
+${cpp.table("PinnedVariantBinding", "pbr_variant_bindings", bindingRows.length, `${bindingRows.join("\n")}`)}
 
 /**
  * The receiver's group, read out of the composed text like the group above.
@@ -1885,10 +1884,7 @@ ${bindingRows.join("\n")}
  * family's: three per shadow-casting light, each typed from that light's own
  * filter.
  */
-inline constexpr std::array<PinnedShadowBinding, ${pbrShadowRows.length}>
-    pbr_shadow_bindings{{
-${pbrShadowRows.join("\n")}
-}};
+${cpp.table("PinnedShadowBinding", "pbr_shadow_bindings", pbrShadowRows.length, `${pbrShadowRows.join("\n")}`)}
 
 // The vertex inputs one variant's stage declares, in location order. A PAL
 // resolves each name against its own vertex layout: the names are the pin's, the
@@ -1900,10 +1896,7 @@ struct PbrVariantAttribute {
     std::string_view wgsl_type;
 };
 
-inline constexpr std::array<PbrVariantAttribute, ${attributeRows.length}>
-    pbr_variant_attributes{{
-${attributeRows.join("\n")}
-}};
+${cpp.table("PbrVariantAttribute", "pbr_variant_attributes", attributeRows.length, `${attributeRows.join("\n")}`)}
 
 struct PbrVariantEntry {
     std::string_view key;
@@ -1949,10 +1942,7 @@ struct PbrVariantEntry {
     bool esm_shadow_output;
 };
 
-inline constexpr std::array<PbrVariantEntry, ${variants.length}>
-    pbr_variants{{
-${table.join("\n")}
-}};
+${cpp.table("PbrVariantEntry", "pbr_variants", variants.length, `${table.join("\n")}`)}
 
 // The pin's own composition key, per composed variant.
 //
@@ -1976,10 +1966,7 @@ struct PbrVariantSelector {
     std::size_t variant;
 };
 
-inline constexpr std::array<PbrVariantSelector, ${selectors.length}>
-    pbr_variant_selectors{{
-${selectors.join("\n")}
-}};
+${cpp.table("PbrVariantSelector", "pbr_variant_selectors", selectors.length, `${selectors.join("\n")}`)}
 
 /**
  * How many materials the composed asset declares.
@@ -1991,8 +1978,7 @@ ${selectors.join("\n")}
  * appended past it are the shadow caster views the scene's own shadow task
  * builds, and those draw through their own no-colour variants.
  */
-inline constexpr std::size_t pbr_variant_material_count =
-    ${materialCount};
+${cpp.constant("std::size_t", "pbr_variant_material_count", materialCount)}
 
 /**
  * The mesh attributes each material is drawn with, or \`npos\` when the asset
@@ -2004,11 +1990,7 @@ inline constexpr std::size_t pbr_variant_material_count =
  * asset is unambiguous this is the missing half of the key; where it is not, the
  * caller has to supply the bits itself.
  */
-inline constexpr std::array<
-    std::size_t,
-    ${meshFeatureRows.length}> pbr_variant_mesh_features{{
-${meshFeatureRows.join("\n")}
-}};
+${cpp.table("std::size_t", "pbr_variant_mesh_features", meshFeatureRows.length, `${meshFeatureRows.join("\n")}`)}
 
 /**
  * The mesh attribute bits per runtime mesh handle.
@@ -2020,19 +2002,15 @@ ${meshFeatureRows.join("\n")}
  * per renderable rather than per material, so one material drawn under two
  * attribute sets resolves each mesh's own variant.
  */
-inline constexpr std::array<
-    std::size_t,
-    ${renderableMeshFeatures.length}> pbr_renderable_mesh_features{{
-${renderableMeshFeatures.map((bits) => `    ${bits},`).join("\n")}
-}};
+${cpp.table("std::size_t", "pbr_renderable_mesh_features", renderableMeshFeatures.length, `${renderableMeshFeatures.map((bits) => `    ${bits},`).join("\n")}`)}
 
 /**
  * The bits for meshes created past the static table -- scene code can keep
  * creating meshes after registration, all from the fixed-set builders --
  * or npos when the scene's builders disagree and such a draw must refuse.
  */
-inline constexpr std::size_t pbr_runtime_mesh_features =
-    ${runtimeMeshFeatures ?? "std::numeric_limits<std::size_t>::max()"};
+${cpp.constant("std::size_t", "pbr_runtime_mesh_features",
+        runtimeMeshFeatures ?? "std::numeric_limits<std::size_t>::max()")}
 
 /**
  * Fills a variant's material block, whichever variant it is.
@@ -2041,12 +2019,12 @@ inline constexpr std::size_t pbr_runtime_mesh_features =
  * opaque byte range needs one entry point. The bytes written are the struct's,
  * and the destination is checked against the pin's own total for that variant.
  */
-inline void write_pbr_variant_material(
+${cpp.function(`void write_pbr_variant_material(
     std::size_t variant,
     const MaterialRecord& material,
     void* destination,
     std::size_t bytes,
-    float thickness_scale = 1.0f) {
+    float thickness_scale)`, `
     // Unused when no composed variant carries a thickness lane.
     (void)thickness_scale;
     switch (variant) {
@@ -2054,7 +2032,12 @@ ${variantMaterialCases.join("\n")}
         default:
             return;
     }
-}
+`, `void write_pbr_variant_material(
+    std::size_t variant,
+    const MaterialRecord& material,
+    void* destination,
+    std::size_t bytes,
+    float thickness_scale = 1.0f)`)}
 
 /**
  * The pin's own name for a light's kind.
@@ -2102,7 +2085,7 @@ inline std::size_t pbr_variant_for(
 }
 
 } // namespace bbl::upstream
-`;
+`);
 }
 
 /** Which slot groups a scene compiles, mirroring the render capabilities. */
@@ -2485,7 +2468,8 @@ export function materialTextureSlotsHeader(
     features: MaterialTextureSlotFeatures,
     variants: readonly { vertexWgsl: string; fragmentWgsl: string }[],
     provenance: string,
-): string {
+): CppModule {
+    const cpp = new CppDefinitions();
     const bindings = variants.flatMap(variant => variantBindings(variant.vertexWgsl, variant.fragmentWgsl));
     const { mesh, state } = materialTextureSlotRows({...features,
         localCubemap: bindings.some(binding => binding.name === "localProbeTexture")});
@@ -2523,7 +2507,7 @@ export function materialTextureSlotsHeader(
         `MaterialTextureFallback::${row.fallback}, ` +
         `"${row.textureName}", "${row.samplerName}"},`
     );
-    return `// ${provenance}
+    return cpp.finish(`// ${provenance}
 // The material texture-slot table both render backends execute: which
 // record field fills each slot, the slot's sRGB rule and fallback texel,
 // and the pin's own binding names for it. Rows follow the append order the
@@ -2664,13 +2648,10 @@ struct MaterialTextureSlot {
 /** How many mesh-owned texture slots this scene compiles. */
 inline constexpr std::size_t material_texture_mesh_slots = ${mesh.length};
 
-inline constexpr std::array<MaterialTextureSlot, ${rows.length}>
-    material_texture_slots{{
-${rows.join("\n")}
-}};
+${cpp.table("MaterialTextureSlot", "material_texture_slots", rows.length, `${rows.join("\n")}`)}
 
 } // namespace bbl::upstream
-`;
+`);
 }
 
 /**
@@ -2837,7 +2818,8 @@ export function pinnedStandardVariantsHeader(
     provenance: string,
     variants: readonly PinnedStandardVariantManifestEntry[],
     uvOffset = false,
-): string {
+): CppModule {
+    const cpp = new CppDefinitions();
     if (variants.length === 0) {
         throw new Error(
             "pinnedStandardVariantsHeader needs at least one composed " +
@@ -3072,7 +3054,7 @@ export function pinnedStandardVariantsHeader(
             );
         }
     }
-    return `// ${provenance}
+    return cpp.finish(`// ${provenance}
 // Generated from the pin's own composed Standard variants. Nothing selects
 // these yet: the transcribed standard fragment stays live until wave D wires
 // the PALs over, so this header ships beside it rather than replacing it.
@@ -3118,12 +3100,10 @@ ${mirrored.asserts}
 // texture_level is the composition-time value the renderable passes:
 // (features & NEEDS_UV) != 0 ? 1 : 0 for the colour path, and the geometry
 // renderable's HAS_DIFFUSE_TEXTURE form for the MRT path.
-inline void write_standard_material(
+${cpp.function(`void write_standard_material(
     [[maybe_unused]] const StandardMaterialProps& material,
     float texture_level,
-    StandardMaterialUniforms& out) {
-${materialWriterBody}
-}
+    StandardMaterialUniforms& out)`, materialWriterBody)}
 
 // src/material/standard/standard-template.ts upUniforms — the vertex-stage
 // UV transform block, bound only when the variant carries NEEDS_UV.
@@ -3140,28 +3120,20 @@ static_assert(
 // invert_y is isStandardUvInverted(features, material): the diffuse
 // texture's invertY when one exists, else the opacity texture's, else the
 // bump texture's.
-inline void write_standard_uv_transform(
+${cpp.function(`void write_standard_uv_transform(
     [[maybe_unused]] const StandardMaterialProps& material,
     bool invert_y,
-    StandardUvTransformUniforms& out) {
-${uvWriterBody}
-}
+    StandardUvTransformUniforms& out)`, uvWriterBody)}
 
 // What each composed variant declares in group 1, past the hand-managed
 // mesh (0) and material (1) blocks -- the same reading discipline, and the
 // same reflected rows, as pbr_variants.hpp.
-inline constexpr std::array<PinnedVariantBinding, ${bindingRows.length}>
-    standard_variant_bindings{{
-${bindingRows.join("\n")}
-}};
+${cpp.table("PinnedVariantBinding", "standard_variant_bindings", bindingRows.length, `${bindingRows.join("\n")}`)}
 
 /**
  * The receiver's group, read out of the composed text like the group above.
  */
-inline constexpr std::array<PinnedShadowBinding, ${shadowRows.length}>
-    standard_shadow_bindings{{
-${shadowRows.join("\n")}
-}};
+${cpp.table("PinnedShadowBinding", "standard_shadow_bindings", shadowRows.length, `${shadowRows.join("\n")}`)}
 
 struct StandardVariantAttribute {
     std::uint32_t location;
@@ -3169,10 +3141,7 @@ struct StandardVariantAttribute {
     std::string_view wgsl_type;
 };
 
-inline constexpr std::array<StandardVariantAttribute, ${attributeRows.length}>
-    standard_variant_attributes{{
-${attributeRows.join("\n")}
-}};
+${cpp.table("StandardVariantAttribute", "standard_variant_attributes", attributeRows.length, `${attributeRows.join("\n")}`)}
 
 struct StandardVariantEntry {
     std::string_view key;
@@ -3201,14 +3170,11 @@ struct StandardVariantEntry {
     bool uses_local_position;
 };
 
-inline constexpr std::array<StandardVariantEntry, ${variants.length}>
-    standard_variants{{
-${table.join("\n")}
-}};
+${cpp.table("StandardVariantEntry", "standard_variants", variants.length, `${table.join("\n")}`)}
 
 /** Every variant shares the template's one material block. */
 inline constexpr std::size_t standard_material_ubo_bytes = ${totalBytes};
 
 } // namespace bbl::upstream
-`;
+`);
 }

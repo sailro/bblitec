@@ -76,6 +76,11 @@ Sync-PinnedCheckout `
     "libnyquist"
 
 $coreOnlyBuild = $CoreOnly -or ($StaticRuntime -and -not $EnableCodecs)
+$decoderPatch = Join-Path $root "tools\patches\labsound-lazy-decoders.patch"
+git -C $source apply --check $decoderPatch
+if ($LASTEXITCODE -ne 0) { throw "The maintained LabSound decoder patch no longer applies to the pin." }
+git -C $source apply $decoderPatch
+if ($LASTEXITCODE -ne 0) { throw "Unable to apply the maintained LabSound decoder patch." }
 if ($coreOnlyBuild) {
     $corePatch = Join-Path $root "tools\patches\labsound-core-only.patch"
     git -C $source apply --check $corePatch
@@ -163,6 +168,7 @@ if ($coreOnlyBuild) {
         Remove-Item -LiteralPath $obsolete -Force -ErrorAction SilentlyContinue
     }
 } else {
+    Copy-Item -LiteralPath (Join-Path $nyquist "include\libnyquist") -Destination $includeOut -Recurse -Force
     Copy-Item -Force (Join-Path $nyquist "LICENSE") (Join-Path $output "libnyquist-LICENSE.txt")
     Copy-Item -Force (Join-Path $nyquist "COPYING") (Join-Path $output "libnyquist-COPYING.txt")
 }

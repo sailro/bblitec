@@ -30,12 +30,11 @@ class SdlWindowPresenter final : public WindowPresenter {
         return in_flight_.size() < 3;
     }
     bool present(std::span<const WindowCanvasFrame> frames, const UiRenderFrame& ui, const std::string& capture) override {
-        auto* command = SDL_AcquireGPUCommandBuffer(device_.get());
+        SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device_.get())};
         if (!command) gpu_error("SDL_AcquireGPUCommandBuffer Window");
-        struct Cancel { SDL_GPUCommandBuffer*& command; ~Cancel() { if (command) SDL_CancelGPUCommandBuffer(command); } } cancel{command};
         SDL_GPUTexture* swapchain = nullptr;
         Uint32 width = 0, height = 0;
-        if (!SDL_WaitAndAcquireGPUSwapchainTexture(command, window_, &swapchain, &width, &height)) gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture Window");
+        if (!command.acquire_swapchain(window_, &swapchain, &width, &height)) gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture Window");
         if (!swapchain || width == 0 || height == 0) return false;
         const auto format = SDL_GetGPUSwapchainTextureFormat(device_.get(), window_);
         if (!capture.empty() && (!composite_ || width_ != width || height_ != height)) {
@@ -49,9 +48,9 @@ class SdlWindowPresenter final : public WindowPresenter {
         target.load_op = SDL_GPU_LOADOP_CLEAR;
         target.store_op = SDL_GPU_STOREOP_STORE;
         target.clear_color = {0, 0, 0, 1};
-        auto* pass = SDL_BeginGPURenderPass(command, &target, 1, nullptr);
+        SdlRenderPass pass{SDL_BeginGPURenderPass(command, &target, 1, nullptr)};
         if (!pass) gpu_error("SDL_BeginGPURenderPass Window");
-        SDL_EndGPURenderPass(pass);
+        pass.end();
 
         const auto external_texture = [&](std::uint64_t id) -> SDL_GPUTexture* {
             const auto texture = std::find_if(ui.textures.begin(), ui.textures.end(), [&](const auto& value) { return value.id == id; });
@@ -70,10 +69,9 @@ class SdlWindowPresenter final : public WindowPresenter {
             blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
             blit.filter = SDL_GPU_FILTER_NEAREST;
             SDL_BlitGPUTexture(command, &blit);
-            auto* submitted = std::exchange(command, nullptr);
-            save_texture_png(device_.get(), submitted, destination, format, width, height, capture);
+            save_texture_png(device_.get(), command, destination, format, width, height, capture);
         } else {
-            Fence fence(SDL_SubmitGPUCommandBufferAndAcquireFence(std::exchange(command, nullptr)), {device_.get()});
+            Fence fence(command.submit_with_fence(), {device_.get()});
             if (!fence) gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence Window");
             in_flight_.push_back({std::move(fence), {frames.begin(), frames.end()}});
         }

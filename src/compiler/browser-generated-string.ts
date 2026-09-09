@@ -14,6 +14,7 @@
 // bake cache: warm recompiles launch no Chromium and yield the exact
 // bytes of the run that produced them.
 
+import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
@@ -24,7 +25,7 @@ import { transpileCommonJs } from "../typescript-transpile.js";
 // Same-process fast path in front of the durable bake cache: a scene
 // that calls the same helper twice pays neither a subprocess nor a
 // cache-file read the second time.
-const cache = new Map<string, string>();
+const cache = new EmissionMap<string, string>();
 
 /**
  * Fold one argument to the literal a generation-time call can carry.

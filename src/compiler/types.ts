@@ -1,5 +1,10 @@
+import { metadataFieldsForKind, type ValueMetadataKey } from "./values/metadata.js";
+import type { Value } from "./values/model.js";
+export type { Value } from "./values/model.js";
+export { nativeDataMetadata, valueForKind, withNativeMetadata } from "./values/model.js";
+import { EmissionSet } from "./emission-transaction.js";
 import type ts from "typescript";
-import type { NativeCaptureBinding, NativeCompanionKey } from "./closure-captures.js";
+import type { NativeCaptureBinding, NativeCompanionKey, NativeExpression } from "./closure-captures.js";
 import type { CompileAdaptation } from "../fidelity.js";
 import type {
   NodeParticleBakeRequest,
@@ -15,14 +20,12 @@ import type {
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
-import type { CsgSolidPlan } from "../pinned-csg.js";
-import type { Csg2SolidPlan } from "../pinned-csg2.js";
 import type {
   NativeHostUiStyleSource,
 } from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
-import type { CompiledTextData, TextFontSource } from "../pinned-text-data.js";
+import type { CompiledTextData } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { LocalCubemapPlan } from "../pinned-local-cubemap.js";
 
@@ -945,6 +948,8 @@ export interface HandleCollectionInfo {
 export interface CompileAsset {
   /** Indices into CompileManifest.meshWalks demanded for this asset. */
   meshWalks?: number[];
+  /** Texture-loading modes reached by this Babylon asset's call sites. */
+  babylonTextureModes?: boolean[];
   source: string;
   output: string;
   kind:
@@ -974,8 +979,7 @@ export interface CompileAsset {
     // rotation beside the rows.
     | "sog"
     // A Basis Universal texture, transcoded by the pin's own loader at
-    // generation and packaged as the KTX1 container the runtime's one
-    // compressed-texture reader takes.
+    // generation and packaged as a mip table with GPU blocks.
     | "basis"
     // Opaque bytes consumed by scene code through fetch().arrayBuffer().
     // The compiler packages them unchanged and the native program reads
@@ -1716,21 +1720,40 @@ export function runtimeMeshValue(value: Value): Value {
   };
 }
 
+export interface AssetRootState {
+  reparented: boolean;
+  alternatives?: readonly AssetRootState[];
+}
+
+export function assetRootMutationStates(value: Value): readonly AssetRootState[] {
+  const states = new Set<AssetRootState>();
+  const visit = (state: AssetRootState): void => {
+    if (states.has(state)) return;
+    states.add(state);
+    state.alternatives?.forEach(visit);
+  };
+  if (value.assetRootState) visit(value.assetRootState);
+  return [...states];
+}
+
 /** A runtime choice retains only facts shared by every possible resource. */
 export function commonResourceValue(value: Value, candidates: readonly Value[]): Value {
-  if (value.kind !== "mesh" && value.kind !== "material") return value;
   const common = { ...value };
-  for (const key of [
-    "scenePbrMaterialIndex", "sceneMaterialSlot", "sceneMeshIndex", "sceneMeshProfileIndex",
-    "shaderVariant", "sceneShaderVariant", "nodeMaterialIndex", "standardMaterial",
-    "standardMaterialPluginIndex", "standardMaterialInput", "assetPbrMaterial", "assetWholeMeshList",
-  ] as const) {
+  for (const key of metadataFieldsForKind(value.kind)) {
     if (candidates.some((candidate) => candidate[key] !== value[key])) delete common[key];
   }
-  if (candidates.some((candidate) => candidate.runtimeMeshStreams)) common.runtimeMeshStreams = true;
+  if (common.kind === "asset" || common.kind === "asset-root" || common.kind === "asset-entity" || common.kind === "splat-mesh") {
+    const kind = value.asset?.kind ?? value.assetKind;
+    if (kind && candidates.every(candidate => (candidate.asset?.kind ?? candidate.assetKind) === kind)) common.assetKind = kind;
+    if (!common.assetRootState && candidates.every(candidate => candidate.assetRootState)) {
+      common.assetRootState = { reparented: false, alternatives: [...new Set(candidates.flatMap(assetRootMutationStates))] };
+    }
+  }
+  if ((common.kind === "mesh" || common.kind === "transform-node" || common.kind === "scene-node") &&
+      candidates.some((candidate) => candidate.runtimeMeshStreams)) common.runtimeMeshStreams = true;
   if (!candidates.every((candidate) => candidate.directMorphCompatible)) delete common.directMorphCompatible;
   if (value.kind === "material") {
-    const variants = [...new Set(candidates.flatMap((candidate) => [
+    const variants = [...new EmissionSet(candidates.flatMap((candidate) => [
       ...(candidate.sceneShaderVariant === undefined ? [] : [candidate.sceneShaderVariant]),
       ...(candidate.possibleSceneShaderVariants ?? []),
     ]))].sort();
@@ -1740,13 +1763,16 @@ export function commonResourceValue(value: Value, candidates: readonly Value[]):
   return common;
 }
 
-export interface Value {
-  /** Generation-only identities, retained through aliases and inlined helpers. */
-  textFont?: { source: TextFontSource; bytes: Uint8Array };
+/** Storage, capture and expression facts shared by value kinds. */
+export type ValueBase = Omit<ValueFields, ValueMetadataKey>;
+
+/** Field types for payloads; producers use the discriminated Value type. */
+export interface ValueFields {
+  /** Closed packaged candidates of a generation-time Response. */
+  packagedSources?: readonly string[];
+  /** A fresh response read; only that exact expression proves unchanged bytes. */
+  fetchedBytes?: { expression: ts.CallExpression; sources: readonly string[] };
   ownedEngineCpp?: string;
-  promiseResult?: Value;
-  promiseType?: string;
-  kind: ValueKind;
   cpp: string;
   /** Owning cell for a mutable captured binding; cpp reads its current value. */
   sharedStorageCpp?: string;
@@ -1969,7 +1995,7 @@ export interface Value {
    * map is shared by Value copies so a material stored in a class field keeps
    * the bindings registered on its construction-site value.
    */
-  materialUboArrayFields?: Map<string, string>;
+  materialUboArrayFields?: Map<string, NativeExpression>;
   /**
    * Which composed node graph a material value names.
    *
@@ -1995,16 +2021,6 @@ export interface Value {
    * the material assignment, which is where the pairing exists.
    */
   runtimeMeshStreams?: true;
-  /**
-   * The expression tree a `CsgSolid` value stands for.
-   *
-   * A solid has no native representation: it is replayed against the
-   * pin's own modules at `createMeshFromCsg` and the geometry it produced
-   * is baked. So the plan IS the value, and a boolean composes two of
-   * them the way the pin composes two solids.
-   */
-  csgSolid?: CsgSolidPlan;
-  csg2Solid?: { readonly plan: Csg2SolidPlan; disposed: boolean };
   /** Stable identity shared by every Value alias of one light handle. */
   lightIdentity?: LightIdentity;
   /**
@@ -2047,7 +2063,9 @@ export interface Value {
    * alias keeps this state, while another `loadGltf` call (even for the same
    * source) receives a different one.
    */
-  assetRootState?: { reparented: boolean };
+  assetRootState?: AssetRootState;
+  /** Loader kind shared by a runtime selection of different asset sources. */
+  assetKind?: CompileAsset["kind"];
   /**
    * Set on the hierarchy `cloneTransformNode` returned for a glTF root.
    * Both values use the asset handle as their native identity, but only
@@ -2086,8 +2104,6 @@ export interface Value {
    */
   nodeParticleLive?: true;
   nodeParticleColumn?: NodeParticleColumn;
-  /** For an `executed-url`: the module and export the driver runs. */
-  executedUrl?: { module: string; exportName: string };
   /**
    * For a `createTexture2DFromPixels` texture: what the bake driver needs
    * to build the same texture in the browser. A particle system's texture
@@ -2105,16 +2121,6 @@ export interface Value {
    */
   animationGroupSource?: "property";
   /**
-   * What an `animation-group-mask` value carries: the target names the
-   * mask lists, and whether listing them excludes or includes. The pin's
-   * `animationGroupMaskRetainsTarget` reads exactly those two, and the
-   * generated writer resolves them against the asset's own node names.
-   */
-  animationGroupMask?: {
-    readonly names: readonly string[];
-    readonly include: boolean;
-  };
-  /**
    * For a handle that may be absent: the native boolean saying whether
    * it is there. A search produces one — upstream's `find` returns
    * `undefined` when nothing matched — and so does a record slot
@@ -2129,14 +2135,6 @@ export interface Value {
   truthinessCpp?: string;
   /** An Error delivered by native device recovery, with the Error message contract. */
   nativeError?: true;
-  /**
-   * A nullable string whose JavaScript falsiness includes the empty
-   * string, not only absence. `localStorage.getItem` is the one producer:
-   * an unset key and a key holding "" are different states that the
-   * source's own `if (!raw)` treats alike. The flag rides the value
-   * through a binding so the condition is right wherever it is tested.
-   */
-  nullableStringFalsy?: true;
   /** Storage behind a nullable resource value whose `cpp` is its dereference. */
   optionalStorageCpp?: string;
   /**
@@ -2522,6 +2520,13 @@ export type Feature =
   | "audio:engine"
   | "audio:buffer-source"
   | "audio:decoded-buffer"
+  | "audio:decode-wav"
+  | "audio:decode-wv"
+  | "audio:decode-mpc"
+  | "audio:decode-flac"
+  | "audio:decode-mp3"
+  | "audio:decode-opus"
+  | "audio:decode-ogg"
   | "audio:oscillator"
   | "audio:biquad-filter"
   | "audio:stereo-panner"

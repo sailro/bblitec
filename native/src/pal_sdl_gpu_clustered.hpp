@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_clustered_shared.hpp"
 
 // The clustered light field's SDL_GPU resources.
 //
@@ -27,7 +28,7 @@
 namespace bbl::pal {
 
 /** The three data textures, their shared sampler, and what was uploaded. */
-struct ClusteredLightGpu {
+struct ClusteredLightGpuResources {
     SDL_GPUTexture* lights = nullptr;
     SDL_GPUTexture* cells = nullptr;
     SDL_GPUTexture* indices = nullptr;
@@ -35,6 +36,9 @@ struct ClusteredLightGpu {
     std::uint64_t uploaded_version = 0;
     bool created = false;
 };
+inline void release_clustered_lights_resources(SDL_GPUDevice*, ClusteredLightGpuResources&) noexcept;
+using ClusteredLightGpu = OwnedGpuRecord<ClusteredLightGpuResources, std::remove_pointer_t<SDL_GPUDevice*>, release_clustered_lights_resources>;
+
 
 /**
  * Create the three textures, once, at the extents the container was sized to.
@@ -47,6 +51,7 @@ inline void create_clustered_textures(
     const ClusteredLightContainer& container,
     ClusteredLightGpu& gpu) {
     if (gpu.created) return;
+    gpu = ClusteredLightGpu{device};
     const auto make = [&](std::uint32_t rows,
                           SDL_GPUTextureFormat format,
                           const char* label) {
@@ -94,66 +99,29 @@ inline void create_clustered_textures(
  * comparison and no upload at all.
  */
 inline void upload_clustered_lights(
-    SDL_GPUDevice* device,
-    ClusteredLightContainer& container,
-    const std::array<float, 16>& view,
-    const std::array<float, 16>& projection,
-    double near_plane,
-    double far_plane,
-    ClusteredLightGpu& gpu) {
+    SDL_GPUDevice* device, ClusteredLightContainer& container,
+    const std::array<float, 16>& view, const std::array<float, 16>& projection,
+    double near_plane, double far_plane, ClusteredLightGpu& gpu) {
     create_clustered_textures(device, container, gpu);
-    upstream::refresh_clustered_lights(
-        container, view, projection, near_plane, far_plane);
-    if (gpu.uploaded_version == container.upload_version) return;
-    const auto write = [&](SDL_GPUTexture* texture,
-                           const void* bytes,
-                           std::size_t byte_size,
-                           std::uint32_t texels,
-                           std::uint32_t rows,
-                           const char* label) {
-        const auto region = container.upload_region(texels, rows);
-        upload_2d_texture_into(
-            device,
-            texture,
-            bytes,
-            byte_size,
-            region.width,
-            region.height,
-            label);
-    };
-    write(
-        gpu.lights,
-        container.light_data.data(),
-        container.light_data.size() * sizeof(float),
-        container.light_texels,
-        container.light_rows,
-        "clustered light data upload");
-    write(
-        gpu.cells,
-        container.slice_data.data(),
-        container.slice_data.size() * sizeof(std::uint32_t),
-        container.slice_count,
-        container.slice_rows,
-        "clustered slice upload");
-    write(
-        gpu.indices,
-        container.mask_data.data(),
-        container.mask_data.size() * sizeof(std::uint32_t),
-        container.mask_texels,
-        container.mask_rows,
-        "clustered tile mask upload");
-    gpu.uploaded_version = container.upload_version;
+    sync_clustered_payloads(container, gpu.uploaded_version, view, projection, near_plane, far_plane,
+        [](const void*, std::size_t) {},
+        [&](ClusteredTexture slot, const void* bytes, std::size_t size, std::uint32_t,
+            std::uint32_t width, std::uint32_t height) {
+            const auto texture = slot == ClusteredTexture::lights ? gpu.lights
+                : slot == ClusteredTexture::cells ? gpu.cells : gpu.indices;
+            upload_2d_texture_into(device, texture, bytes, size, width, height, "clustered payload upload");
+        });
 }
 
 /** Release what this state created. */
-inline void release_clustered_lights(
-    SDL_GPUDevice* device,
-    ClusteredLightGpu& gpu) {
+inline void release_clustered_lights_resources([[maybe_unused]] SDL_GPUDevice* device, ClusteredLightGpuResources& gpu) noexcept {
     if (gpu.lights) SDL_ReleaseGPUTexture(device, gpu.lights);
     if (gpu.cells) SDL_ReleaseGPUTexture(device, gpu.cells);
     if (gpu.indices) SDL_ReleaseGPUTexture(device, gpu.indices);
     if (gpu.sampler) SDL_ReleaseGPUSampler(device, gpu.sampler);
-    gpu = ClusteredLightGpu{};
+    gpu = ClusteredLightGpuResources{};
 }
+
+inline void release_clustered_lights(SDL_GPUDevice*, ClusteredLightGpu& gpu) { gpu.reset(); }
 
 }  // namespace bbl::pal

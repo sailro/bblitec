@@ -271,7 +271,7 @@ RendererKind renderer_kind(const Engine& engine) {
     if (!engine.registered_effect_renderers.empty()) {
         return RendererKind::effects;
     }
-    if (!engine.registered_sprite_renderers.empty()) {
+    if (bbl::has_sprite_renderers(engine)) {
         return RendererKind::sprites;
     }
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI

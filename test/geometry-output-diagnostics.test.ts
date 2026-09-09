@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -7,7 +8,31 @@ import {
     geometryTaskPaths,
 } from "../src/geometry-output-diagnostics.js";
 import { writeSeekMeta } from "../src/tooling/artifacts.js";
-import { resolveNativeExecutable } from "../src/tooling/native-run.js";
+import { defaultExecutable, resolveNativeExecutable, withEnvironment } from "../src/tooling/native-run.js";
+import { compiledBuildDirectory } from "../src/build-options.js";
+
+test("measured runs select coexisting backend builds without modifying their payloads", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bblite-backends-"));
+    const directory = join(root, "build-scene-release");
+    try {
+        await withEnvironment("BBLITE_NATIVE_EXE", undefined, async () => {
+            for (const backend of ["BOTH", "SDL_GPU", "DAWN"] as const) {
+                const build = compiledBuildDirectory(directory, backend);
+                mkdirSync(build);
+                writeFileSync(defaultExecutable(build), backend);
+            }
+            for (const backend of ["SDL_GPU", "DAWN", "BOTH", "SDL_GPU"] as const) {
+                await withEnvironment("BBLITE_BACKEND", backend, async () => {
+                    const executable = resolveNativeExecutable(undefined, directory);
+                    assert.equal(readFileSync(executable, "utf8"), backend);
+                    assert.equal(resolveNativeExecutable("explicit/exe", directory), resolve("explicit/exe"));
+                });
+            }
+        });
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 // TL-6's parseable pieces, in the gaps-test style: the per-task path
 // quartet, the diff-rule staleness reader for cached impostor

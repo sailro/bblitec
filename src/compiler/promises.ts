@@ -1,30 +1,24 @@
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 
-export interface PromiseLoweringContext {
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    compileValue(expression: ts.Expression): Value;
-    compileCallbackWithValues(
-        declaration: ts.ArrowFunction | ts.FunctionExpression,
-        arguments_: readonly Value[],
-        callNode: ts.Node,
-        discardReturn?: boolean,
-    ): Value;
-    emitStatement(statement: ts.Statement): void;
-    emit(line: string): void;
-    increaseIndent(): void;
-    decreaseIndent(): void;
-    bindLocalValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void;
-    pushScope(cppPrefix: string): void;
-    popScope(): void;
-    allocateBlockPrefix(): string;
-    allocateTemporaryCppName(label: string): string;
-    fail(node: ts.Node, message: string): never;
-}
+export interface PromiseLoweringContext
+    extends Pick<LoweringServices,
+        | "isDefaultLibraryIdentifier"
+        | "compileValue"
+        | "compileCallbackWithValues"
+        | "emitStatement"
+        | "emit"
+        | "increaseIndent"
+        | "decreaseIndent"
+        | "bindLocalValue"
+        | "pushScope"
+        | "popScope"
+        | "allocateBlockPrefix"
+        | "allocateTemporaryCppName"
+        | "fail"
+    > {}
 
 export function compileImmediatePromise(
     context: PromiseLoweringContext,
@@ -112,7 +106,7 @@ export function compileImmediatePromise(
             }
             const temporary =
                 context.allocateTemporaryCppName("awaited");
-            context.emit(`auto ${temporary} = ${value.cpp};`);
+            context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp });
             elements.push({ ...value, cpp: temporary });
         }
         return { kind: "tuple", cpp: "", tupleElements: elements };
@@ -169,7 +163,7 @@ export function compileImmediatePromise(
         ? context.allocateTemporaryCppName("promise_fulfilled")
         : undefined;
     if (fulfilled) {
-        context.emit(`bool ${fulfilled} = false;`);
+        context.emit({ kind: "declaration", type: "bool", name: fulfilled, initializer: "false" });
         context.emit("try {");
         context.increaseIndent();
     }
@@ -180,7 +174,7 @@ export function compileImmediatePromise(
         value.cpp.length > 0
     ) {
         const settled = context.allocateTemporaryCppName("promise_value");
-        context.emit(`auto ${settled} = ${value.cpp};`);
+        context.emit({ kind: "declaration", type: "auto", name: settled, initializer: value.cpp });
         value = { ...value, cpp: settled };
     } else if (value.kind === "void") {
         emitValue(context, value);
@@ -241,7 +235,7 @@ function compileImmediateCatch(
     const settled = context.allocateTemporaryCppName(
         "promise_settled",
     );
-    context.emit(`[[maybe_unused]] bool ${settled} = true;`);
+    context.emit({ kind: "declaration", type: "bool", name: settled, initializer: "true", attributes: "[[maybe_unused]] " });
     context.emit("try {");
     context.increaseIndent();
     const value = context.compileValue(

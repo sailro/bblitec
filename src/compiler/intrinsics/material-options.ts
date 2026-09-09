@@ -1,3 +1,13 @@
+import type { LoweringServices } from "../lowering-services.js";
+// Material option lowering: PBR, grid, clearcoat, and sheen options.
+//
+// Each function turns a material factory's options argument into the
+// positional C++ arguments the PAL constructor takes, resolving the
+// pinned defaults at compile time. The PBR lowering also records the
+// resolved record in the scene-material manifest, because the pinned
+// composer's `createPbrMaterial` is `{...props}` and the feature
+// derivation reads exactly these values back. The intrinsic lowerer
+// in material.ts calls these through its context.
 // Material option lowering: PBR, grid, clearcoat, and sheen options.
 //
 // Each function turns a material factory's options argument into the
@@ -13,11 +23,9 @@ import type {
     ScenePbrClearCoatManifest,
     ScenePbrIridescenceManifest,
     ScenePbrMetallicReflectanceManifest,
-    ScenePbrMaterialManifest,
     ScenePbrSheenManifest,
     ScenePbrSubsurfaceManifest,
     Value,
-    ValueKind,
 } from "../types.js";
 import {
     compileOptionalStaticBoolean,
@@ -28,6 +36,10 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
+// The pin's own `?? d` fallbacks, stated once: the UBO-writer lowerer
+// asserts each discarded pinned default against this table, and the
+// defaults below read the same entries, so the record seed IS the number
+// the assert pins.
 // The pin's own `?? d` fallbacks, stated once: the UBO-writer lowerer
 // asserts each discarded pinned default against this table, and the
 // defaults below read the same entries, so the record seed IS the number
@@ -54,39 +66,26 @@ function pinnedScalarDefault(
 }
 
 export interface MaterialOptionContext
-    extends ObjectValidationContext, PositiveIntegerContext {
-    readonly scenePbrMaterials: ScenePbrMaterialManifest[];
-    currentGltfAssetCount(): number;
-    recordSceneMaterialSlot(): number;
-    compileValue(expression: ts.Expression): Value;
-    compileForDataSink(expression: ts.Expression, type: import("../data-types.js").DataType): string;
-    noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void;
-    noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileBoolean(expression: ts.Expression): string;
-    compileColor3(expression: ts.Expression): string;
-    compileColor4(expression: ts.Expression): string;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileVec2(expression: ts.Expression): string;
-}
+    extends ObjectValidationContext,
+    PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "scenePbrMaterials"
+        | "currentGltfAssetCount"
+        | "recordSceneMaterialSlot"
+        | "compileValue"
+        | "compileForDataSink"
+        | "noteMaterialColorObjectWrite"
+        | "noteMaterialColorRead"
+        | "expectKind"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "compileNumber"
+        | "compileBoolean"
+        | "compileColor3"
+        | "compileColor4"
+        | "compileVec3"
+        | "compileVec2"
+    > {}
 
 /**
  * `createPbrMaterial`'s resolved options: the two texture values, the

@@ -11,11 +11,7 @@ class DawnWindowPresenter final : public WindowPresenter {
     explicit DawnWindowPresenter(SDL_Window* window) {
         EngineOptions engine;
         if (!SDL_GetWindowSizeInPixels(window, &engine.width, &engine.height)) dawn_error(SDL_GetError());
-        DawnDeviceOptions options;
-        options.host_window = window;
-        options.shared_errors = &errors_;
-        try { create_dawn_device(engine, options, state_); }
-        catch (...) { release_device(); throw; }
+        create_dawn_device(engine, {}, state_, {window, &errors_});
         shared_.emplace(state_);
     }
     ~DawnWindowPresenter() override {
@@ -31,7 +27,6 @@ class DawnWindowPresenter final : public WindowPresenter {
         in_flight_.clear();
         bindings_.clear();
         release_sprite_ui_dawn_resources(ui_);
-        release_device();
     }
     OffscreenDevice& device() override { return *shared_; }
 
@@ -49,17 +44,13 @@ class DawnWindowPresenter final : public WindowPresenter {
         if (width != state_.surface_width || height != state_.surface_height) configure_dawn_surface(state_, width, height);
         WGPUSurfaceTexture target = WGPU_SURFACE_TEXTURE_INIT;
         wgpuSurfaceGetCurrentTexture(state_.surface, &target);
-        struct ReleaseTexture { WGPUTexture texture; ~ReleaseTexture() { if (texture) wgpuTextureRelease(texture); } } release{target.texture};
+        DawnTexture acquired_texture{target.texture};
         if (target.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal && target.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
             if (target.status == WGPUSurfaceGetCurrentTextureStatus_Timeout || target.status == WGPUSurfaceGetCurrentTextureStatus_Outdated) return false;
             dawn_error("Window surface acquisition failed.");
         }
-        auto view = wgpuTextureCreateView(target.texture, nullptr);
-        auto encoder = wgpuDeviceCreateCommandEncoder(state_.device, nullptr);
-        struct ReleaseRecording {
-            WGPUTextureView view; WGPUCommandEncoder encoder;
-            ~ReleaseRecording() { if (encoder) wgpuCommandEncoderRelease(encoder); if (view) wgpuTextureViewRelease(view); }
-        } recording{view, encoder};
+        DawnTextureView view{create_dawn_texture_view(target.texture, nullptr)};
+        DawnCommandEncoder encoder{wgpuDeviceCreateCommandEncoder(state_.device, nullptr)};
         WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
         attachment.view = view;
         attachment.loadOp = WGPULoadOp_Clear;
@@ -68,9 +59,9 @@ class DawnWindowPresenter final : public WindowPresenter {
         WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
         descriptor.colorAttachmentCount = 1;
         descriptor.colorAttachments = &attachment;
-        auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+        DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
         wgpuRenderPassEncoderEnd(pass);
-        wgpuRenderPassEncoderRelease(pass);
+        pass.reset();
         const auto external_texture = [&](std::uint64_t id) -> const SpriteUiDawnTexture* {
             const auto texture = std::find_if(ui.textures.begin(), ui.textures.end(), [&](const auto& value) { return value.id == id; });
             if (texture == ui.textures.end() || texture->external_canvas == invalid_handle) return nullptr;
@@ -83,11 +74,10 @@ class DawnWindowPresenter final : public WindowPresenter {
         render_sprite_ui_dawn_frame(state_, encoder, target.texture, view, ui_, ui, external_texture);
         DawnSurfaceCapture snapshot;
         if (!capture.empty()) snapshot = begin_dawn_surface_capture(state_.device, encoder, target.texture, width, height);
-        auto command = wgpuCommandEncoderFinish(encoder, nullptr);
-        wgpuQueueSubmit(state_.queue, 1, &command);
-        wgpuCommandBufferRelease(command);
+        DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
+        submit_dawn_command(state_.queue, command);
+        command.reset();
         if (!capture.empty()) {
-            const auto release_snapshot = js::finally([&] { wgpuBufferRelease(snapshot.readback); });
             finish_dawn_surface_capture(state_, snapshot, width, height, capture);
         } else {
             WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
@@ -106,13 +96,6 @@ class DawnWindowPresenter final : public WindowPresenter {
         return true;
     }
   private:
-    void release_device() noexcept {
-        if (state_.surface) wgpuSurfaceRelease(std::exchange(state_.surface, nullptr));
-        if (state_.queue) wgpuQueueRelease(std::exchange(state_.queue, nullptr));
-        if (state_.device) wgpuDeviceRelease(std::exchange(state_.device, nullptr));
-        if (state_.adapter) wgpuAdapterRelease(std::exchange(state_.adapter, nullptr));
-        if (state_.instance) wgpuInstanceRelease(std::exchange(state_.instance, nullptr));
-    }
     void retire_frames() {
         while (!in_flight_.empty()) {
             WGPUFutureWaitInfo info{};
@@ -128,7 +111,7 @@ class DawnWindowPresenter final : public WindowPresenter {
             const auto* native = dynamic_cast<DawnOffscreenImage*>(source.get());
             if (!native) dawn_error("Window received an incompatible canvas GPU image.");
             try {
-                texture.view = wgpuTextureCreateView(native->texture, nullptr);
+                texture.view = create_dawn_texture_view(native->texture, nullptr);
                 texture.group = create_sprite_ui_dawn_texture_group(state, ui, texture.view, ui.sampler);
                 texture.nearest_group = create_sprite_ui_dawn_texture_group(state, ui, texture.view, ui.nearest_sampler);
             } catch (...) { texture.release(); throw; }

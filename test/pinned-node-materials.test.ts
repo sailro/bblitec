@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 /**
  * The node-material composition path: a Babylon NME graph compiled by the
  * pin's own emitter and pipeline builder, never re-derived here.
@@ -109,7 +110,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         ...nodeVariantStageStems(0),
         composed,
     };
-    const header = pinnedNodeVariantsHeader("test", [variant], []);
+    const header = inlineCpp(pinnedNodeVariantsHeader("test", [variant], []));
     assert.equal(
         nodeVariantsUseMorphStorage([variant]),
         true,
@@ -147,7 +148,6 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         animationPointerMaterials: false,
         assetTransmission: false,
         materialSpecular: false,
-        materialExtensionPayload: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
         standardDiffuseUv2: false,
@@ -238,11 +238,11 @@ test("carries the pin's alpha-combine state into the node variant", async () => 
     const graph = { ...(await corpusGraph(60)), forceAlphaBlending: true };
     const composed = await composeNodeMaterial(graph, "blended");
     assert.equal(composed.alphaBlending, true);
-    const header = pinnedNodeVariantsHeader(
+    const header = inlineCpp(pinnedNodeVariantsHeader(
         "test",
         [{ index: 0, ...nodeVariantStageStems(0), composed }],
         [],
-    );
+    ));
     assert.match(
         header,
         /bool alpha_blending;/,
@@ -299,12 +299,12 @@ test("emits the variant table and the pin's own mesh block", async () => {
         await corpusGraph(60),
         "scene60",
     );
-    const header = pinnedNodeVariantsHeader(
+    const header = inlineCpp(pinnedNodeVariantsHeader(
         "test",
         [{ index: 0, ...nodeVariantStageStems(0), composed }],
         [],
-    );
-    assert.match(header, /node_variants\{\{/);
+    ));
+    assert.match(header, /node_variants_data\{\{/);
     assert.match(header, /"node-0\.vert", "node-0\.frag"/);
     // The mesh block is mirrored field for field, with the light-index array
     // where the pin's own layout puts it.
@@ -329,7 +329,7 @@ test("refuses two graphs whose mesh blocks disagree", async () => {
     };
     assert.throws(
         () =>
-            pinnedNodeVariantsHeader(
+            inlineCpp(pinnedNodeVariantsHeader(
                 "test",
                 [
                     { index: 0, ...nodeVariantStageStems(0), composed },
@@ -340,7 +340,7 @@ test("refuses two graphs whose mesh blocks disagree", async () => {
                     },
                 ],
                 [],
-            ),
+            )),
         /mesh block/,
     );
 });

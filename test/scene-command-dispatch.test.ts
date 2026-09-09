@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import test from "node:test";
 
 // The dispatcher's wiring, exercised through a spawned `scene-command`:
@@ -63,8 +64,14 @@ test("refuses an unknown command and an unknown flag, naming the valid set", () 
     assert.match(check.stderr, /No check is declared for 'no-such-check'/);
 });
 
-test("status reports a scene whose tree and binary are absent as not current", () => {
-    const result = sceneCommand("status", "primitives");
+test("status reports a scene whose tree and binary are absent as not current", (t) => {
+    mkdirSync(resolve("artifacts"), { recursive: true });
+    const directory = mkdtempSync(resolve("artifacts/status-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const id = basename(directory).toLowerCase();
+    const source = join(directory, `${id}.ts`);
+    writeFileSync(source, "export {};\n");
+    const result = sceneCommand("status", source);
     assert.equal(result.status, 1);
-    assert.match(result.stdout, /status primitives: NOT current/);
+    assert.match(result.stdout, new RegExp(`status ${id}: NOT current`));
 });

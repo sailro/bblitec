@@ -1,3 +1,10 @@
+import type { LoweringServices } from "./lowering-services.js";
+/**
+ * Particle simulation and initialization writes execute in the ordered bake.
+ * Buffer and column aliases retain the originating system identity. Native
+ * reads expose its final snapshot, including Float64 ages and inactive slots;
+ * writes after that boundary refuse instead of silently moving an earlier read.
+ */
 /**
  * Particle simulation and initialization writes execute in the ordered bake.
  * Buffer and column aliases retain the originating system identity. Native
@@ -9,19 +16,21 @@ import {
     staticNumberValue,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
-import type { CompiledNodeParticles, Value } from "./types.js";
+import type { Value } from "./types.js";
 import {
     nodeParticleColumnWidths,
     type NodeParticleColumn,
     type NodeParticleFrozenBufferRequest,
 } from "../pinned-node-particle.js";
 
-interface ParticleBufferContext extends PositiveIntegerContext {
-    readonly reachedNodeParticles: CompiledNodeParticles;
-    unwrap(expression: ts.Expression): ts.Expression;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    isRuntimeResourceConstruction(): boolean;
-}
+interface ParticleBufferContext
+    extends PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "reachedNodeParticles"
+        | "unwrap"
+        | "isDefaultLibraryIdentifier"
+        | "isRuntimeResourceConstruction"
+    > {}
 
 type BufferIdentity = { set: number; system: number };
 

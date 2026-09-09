@@ -23,7 +23,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 /**
- * Every artifact extension `tools/compile-shaders.ps1` derives from one
+ * Every artifact extension `src/compile-shaders.ts` derives from one
  * `.native.wgsl` stem. The pruning rule below and every keep-alive for a
  * stem another module declares consume this one list, so a new offline
  * artifact kind cannot be pruned by half the consumers.

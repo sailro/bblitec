@@ -8,6 +8,7 @@ struct DawnStandaloneTextOps : DawnTextResourceOps {
     WGPUTextureFormat format;
     WGPUCommandEncoder encoder = nullptr;
     WGPUTextureView target = nullptr;
+    DawnRenderPass owned_pass;
     DawnStandaloneTextOps(DawnTextRenderer& renderer,WGPUTextureFormat format)
         : DawnTextResourceOps(renderer.owner),renderer(renderer),format(format) { renderer.ensure_layout(); }
     TextPipelineBinding resolve_text_renderer_pipeline() {
@@ -24,8 +25,9 @@ struct DawnStandaloneTextOps : DawnTextResourceOps {
         attachment.storeOp=WGPUStoreOp_Store;
         WGPURenderPassDescriptor descriptor=WGPU_RENDER_PASS_DESCRIPTOR_INIT;
         descriptor.colorAttachmentCount=1;descriptor.colorAttachments=&attachment;
-        pass=wgpuCommandEncoderBeginRenderPass(encoder,&descriptor);
+        owned_pass=wgpuCommandEncoderBeginRenderPass(encoder,&descriptor);
+        pass=owned_pass.get();
     }
-    void end_text_renderer_pass() { wgpuRenderPassEncoderEnd(pass);wgpuRenderPassEncoderRelease(pass);pass=nullptr; }
+    void end_text_renderer_pass() { wgpuRenderPassEncoderEnd(pass);owned_pass.reset();pass=nullptr; }
 };
 } // namespace bbl::pal

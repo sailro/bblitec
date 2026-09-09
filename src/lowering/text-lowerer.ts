@@ -1,12 +1,16 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
-import { lowerMat4MultiplyWriterCpp, lowerPinnedFunction, lowerTupleComponents } from "./pinned-function-lowerer.js";
+
 import { PinnedNumericLowerer, type PinnedBinding, type PinnedNumericScope } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 import type { CompiledTextData, TextBlob } from "../pinned-text-data.js";
 import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
 import { assertAsyncSceneBuilder } from "./scene-deferred.js";
+import {
+    lowerPinnedBody,
+} from "./pinned-body-lowerer.js";
+import { lowerMat4MultiplyWriterCpp, lowerPinnedFunction, lowerTupleComponents } from "./pinned-function-lowerer.js";
 
 const module = "src/text/text-renderable.ts";
 const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
@@ -221,8 +225,8 @@ inline TextRenderable create_text_renderable(TextData data, const TextRenderable
             out += `inline void text_write_${field}(TextRenderableState& r, std::size_t axis, double value) {\n    switch (axis) {\n`;
             for (const [index, lane] of lanes.entries()) {
                 const setter = owner.members.find((member): member is ts.SetAccessorDeclaration => ts.isSetAccessorDeclaration(member) && member.name.getText(file) === lane)!;
-                const lowerer = new PinnedNumericLowerer(file, scope);
-                out += `    case ${index}: {\n${lowerer.statements(setter.body!.statements, "        ").join("\n")}\n        return;\n    }\n`;
+
+                out += `    case ${index}: {\n${lowerPinnedBody(file, setter.body!.statements, scope, "        ")}\n        return;\n    }\n`;
             }
             out += `    default: throw std::out_of_range("Text vector component");\n    }\n}\n`;
             const set = owner.members.find((member): member is ts.MethodDeclaration => ts.isMethodDeclaration(member) && member.name.getText(file) === "set")!;
@@ -251,8 +255,8 @@ inline TextRenderable create_text_renderable(TextData data, const TextRenderable
             for (const [index, lane] of ["x", "y", "z"].entries()) {
                 const accessor = returned.properties.find((property) => (write ? ts.isSetAccessorDeclaration(property) : ts.isGetAccessorDeclaration(property)) && property.name?.getText(proxy.file) === lane);
                 if (!accessor || !(ts.isGetAccessorDeclaration(accessor) || ts.isSetAccessorDeclaration(accessor))) c.contractError(returned, "Expected Euler accessors.");
-                const lowerer = new PinnedNumericLowerer(proxy.file, {...scope, returnValue: (expression) => lowerer.expression(expression!)});
-                out += `    case ${index}: {\n${lowerer.statements(accessor.body!.statements, "        ").join("\n")}\n${write ? "        return;\n" : ""}    }\n`;
+
+                out += `    case ${index}: {\n${lowerPinnedBody(proxy.file, accessor.body!.statements, {...scope, returnValue: (expression, lowerer) => lowerer.expression(expression!)}, "        ")}\n${write ? "        return;\n" : ""}    }\n`;
             }
             out += `    default: throw std::out_of_range("Text Euler component");\n    }\n}\n`;
         }

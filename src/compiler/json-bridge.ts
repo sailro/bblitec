@@ -1,3 +1,4 @@
+import type { LoweringServices } from "./lowering-services.js";
 // The JSON bridge: `JSON.stringify` over the plain-data model, and
 // `JSON.parse` plus the surface a parsed document is interrogated with.
 //
@@ -12,53 +13,53 @@
 // `JSON.parse` and by reads that descend into one, and it converts at a
 // sink (a number, a string, a condition) exactly where JavaScript coerces.
 
+// The JSON bridge: `JSON.stringify` over the plain-data model, and
+// `JSON.parse` plus the surface a parsed document is interrogated with.
+//
+// Neither half knows an application. `stringify` takes whatever data type
+// its argument already has and registers the records it reaches so their
+// codecs are generated beside them; `parse` produces the model's one
+// dynamic value, and every read over that value answers the way the
+// browser's does -- a missing property is `undefined`, a wrong-typed one
+// fails its guard rather than the program.
+//
+// The dynamic value stays where the parse put it. It is produced by
+// `JSON.parse` and by reads that descend into one, and it converts at a
+// sink (a number, a string, a condition) exactly where JavaScript coerces.
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { DataType } from "./data-types.js";
-import type { Feature, Value } from "./types.js";
+import type { Value } from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
-interface JsonBridgeContext {
-    readonly checker: ts.TypeChecker;
-    unwrap(expression: ts.Expression): ts.Expression;
-    fail(node: ts.Node, message: string): never;
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    compileValue(expression: ts.Expression): Value;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileCondition(expression: ts.Expression): string;
-    cppString(value: string): string;
-    reachFeature(feature: Feature, site?: ts.Node): void;
-    reachJsData(): void;
-    reachJson(): void;
-    readonly dataLowerer: {
-        dataTypeAt(node: ts.Node): DataType | undefined;
-        compileForSink(expression: ts.Expression, dataType: DataType): string;
-    };
-    readonly dataTypes: {
-        markJsonSerialized(dataType: DataType, node: ts.Node): void;
-    };
-}
+interface JsonBridgeContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "unwrap"
+        | "fail"
+        | "expectArgumentCount"
+        | "isDefaultLibraryIdentifier"
+        | "lookupOptional"
+        | "compileValue"
+        | "compileNumber"
+        | "compileCondition"
+        | "cppString"
+        | "reachFeature"
+        | "reachJsData"
+        | "reachJson"
+        | "dataLowerer"
+        | "dataTypes"
+    > {}
 
-interface JsonStrictComparisonContext {
-    compileValue(expression: ts.Expression): Value;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileCondition(expression: ts.Expression): string;
-    fail(node: ts.Node, message: string): never;
-}
+interface JsonStrictComparisonContext
+    extends Pick<LoweringServices,
+        | "compileValue"
+        | "compileNumber"
+        | "compileCondition"
+        | "fail"
+    > {}
 
 const jsonType: DataType = { kind: "json" };
 

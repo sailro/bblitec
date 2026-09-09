@@ -48,7 +48,7 @@
 #include "LabSound/extended/RecorderNode.h"
 #endif
 #if BBLITE_HAS_AUDIO_DECODE_FILE
-#include "LabSound/extended/AudioFileReader.h"
+#include "pal_audio_decode.hpp"
 #endif
 
 #include <algorithm>
@@ -777,15 +777,19 @@ AudioBufferHandle audio_create_buffer(
 #endif
 }
 
-AudioBufferHandle audio_decode_file(
+AudioBufferHandle audio_decode_buffer(
     AudioContextHandle context,
-    const std::string& path)
+    const bbl::js::ArrayBuffer& encoded)
 {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE && BBLITE_HAS_AUDIO_DECODE_FILE
     try {
         ContextRecord& context_record = require_context(context.value);
-        const std::shared_ptr<lab::AudioBus> decoded = lab::MakeBusFromFile(
-            path, false, static_cast<float>(context_record.sample_rate));
+        const auto extension = audio_container_extension({encoded.data(), encoded.byte_length()});
+        if (extension.empty()) return {};
+        const std::vector<std::uint8_t> bytes(encoded.data(), encoded.data() + encoded.byte_length());
+        const auto source = decode_audio_bus(bytes, extension);
+        const auto decoded = source ? lab::AudioBus::createBySampleRateConverting(
+            source.get(), false, static_cast<float>(context_record.sample_rate)) : nullptr;
         if (!decoded || decoded->numberOfChannels() <= 0 || decoded->length() <= 0) {
             return {};
         }
@@ -804,12 +808,12 @@ AudioBufferHandle audio_decode_file(
         }
         return handle;
     } catch (...) {
-        // Racer's source helper catches fetch/decode failures and returns null.
+        // Decode failure uses the optional-buffer sentinel.
         return {};
     }
 #else
     (void)context;
-    (void)path;
+    (void)encoded;
     return {};
 #endif
 }

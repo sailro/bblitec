@@ -21,6 +21,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 const transmissionModule = "src/frame-graph/transmission.ts";
 const imageProcessingModule = "src/frame-graph/image-processing-task.ts";
@@ -130,14 +131,7 @@ export function pinnedInverseImageProcessingHeader(
             calls,
         },
     );
-    return `#pragma once
-
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-
-namespace bbl::upstream {
-
+    return pinnedHeader(["<algorithm>","<cmath>","<cstdint>"], `
 ${clamp}
 
 /**
@@ -150,7 +144,5 @@ ${clamp}
  * curve the composed stages state in WGSL.
  */
 ${inverse}
-
-} // namespace bbl::upstream
-`;
+`);
 }

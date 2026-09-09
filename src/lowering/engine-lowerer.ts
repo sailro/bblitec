@@ -1,6 +1,7 @@
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
+
 import { canvasDatasetSource } from "./canvas-dataset.js";
 
 export class EngineLowerer {
@@ -147,7 +148,8 @@ ${canvasDatasetSource}
             !this.context.expressionMatchesShape(notify.statement.statements[0]!.expression, "c._resize?.()")) {
             this.context.contractError(notify, "setSurfaceSize renderer resize notifications changed.");
         }
-        const lowerer = new PinnedNumericLowerer(file, {
+
+        const body = lowerPinnedBody(file, statements.slice(1, split), {
             bindings: new Map([
                 ["widthPx", { cpp: "width_px", type: "scalar" }],
                 ["heightPx", { cpp: "height_px", type: "scalar" }],
@@ -155,7 +157,6 @@ ${canvasDatasetSource}
                 ["canvas.height", { cpp: "engine.offscreen_run->extent().height", type: "scalar" }],
             ]), calls: new Map(), booleanAnd: true, checkedBitwiseCoercions: true,
         });
-        const body = lowerer.statements(statements.slice(1, split), "    ").join("\n");
         return `
 // ${this.context.provenance(module, "setSurfaceSize")}
 void set_engine_size(Engine& engine, double width_px, double height_px) {

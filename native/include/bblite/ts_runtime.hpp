@@ -1,8 +1,10 @@
 #pragma once
 
 #include <bblite/js_data.hpp>
+#include <bblite/js_json.hpp>
 
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <stdexcept>
@@ -43,6 +45,23 @@ class JsonValue {
     [[nodiscard]] const std::string& as_string() const { return require<std::string>("string"); }
     [[nodiscard]] double as_number() const { return require<double>("number"); }
     [[nodiscard]] bool as_boolean() const { return require<bool>("boolean"); }
+    [[nodiscard]] bool is_null() const { return std::holds_alternative<std::nullptr_t>(storage_); }
+    [[nodiscard]] bool is_number() const { return std::holds_alternative<double>(storage_); }
+    [[nodiscard]] bool is_boolean() const { return std::holds_alternative<bool>(storage_); }
+    [[nodiscard]] bool is_string() const { return std::holds_alternative<std::string>(storage_); }
+    [[nodiscard]] bool is_array() const { return std::holds_alternative<Array>(storage_); }
+    [[nodiscard]] bool is_object() const { return std::holds_alternative<Object>(storage_); }
+    [[nodiscard]] std::string stringify() const {
+        js::JsonWriter writer;
+        write_json(writer);
+        return writer.take();
+    }
+    [[nodiscard]] bool truthy() const {
+        if (const auto* value = std::get_if<bool>(&storage_)) return *value;
+        if (const auto* value = std::get_if<double>(&storage_)) return *value != 0 && !std::isnan(*value);
+        if (const auto* value = std::get_if<std::string>(&storage_)) return !value->empty();
+        return !is_null();
+    }
 
     static JsonValue from_native(const nlohmann::json& value) {
         if (value.is_null()) return JsonValue();
@@ -66,6 +85,25 @@ class JsonValue {
     }
 
   private:
+    void write_json(js::JsonWriter& writer) const {
+        if (is_null()) writer.null_value();
+        else if (is_boolean()) writer.boolean(as_boolean());
+        else if (is_number()) writer.number(as_number());
+        else if (is_string()) writer.string(as_string());
+        else if (is_array()) {
+            writer.begin_array();
+            for (const auto& value : as_array()) value.write_json(writer);
+            writer.end_array();
+        } else {
+            writer.begin_object();
+            for (const auto& [key, value] : as_object()) {
+                writer.key(key);
+                value.write_json(writer);
+            }
+            writer.end_object();
+        }
+    }
+
     template <typename T>
     [[nodiscard]] const T& require(const char* expected) const {
         const T* value = std::get_if<T>(&storage_);

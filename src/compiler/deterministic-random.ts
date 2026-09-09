@@ -1,3 +1,26 @@
+import { EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+// `Math.random = <arrow>`: the deterministic seed a scene installs before
+// stepping a node-particle simulation.
+//
+// For frozen simulations, this is the one place scene text travels to
+// generation rather than being lowered, and the reason is specific: the
+// simulation it seeds is EXECUTED by the pin under the browser
+// (`src/pinned-node-particle.ts`), so the sequence has to be drawn by the
+// same function in the same engine. An arrow moved verbatim into the driver
+// draws an identical sequence by construction; anything restated here --
+// even a faithful transcription -- would only agree until the scene changed
+// it, and the corpus seeds through `Math.sin`, which is not reproducible off
+// V8 anyway.
+//
+// In that path the assignment lowers to nothing native. It parameterizes the bake and
+// nothing else, which is only sound while no lowered code answers
+// `Math.random`: the native runtime would answer with the pinned mulberry32
+// and disagree with the browser. `assertDeterministicRandomUnreached` is
+// that check, run once the whole entry has been walked.
+// Provider-backed sets instead run the authored callback and simulation
+// natively, so their random assignments install native closures and saved
+// random functions retain their JavaScript identity and captured state.
 // `Math.random = <arrow>`: the deterministic seed a scene installs before
 // stepping a node-particle simulation.
 //
@@ -20,21 +43,17 @@
 // natively, so their random assignments install native closures and saved
 // random functions retain their JavaScript identity and captured state.
 import ts from "typescript";
-import type { CompiledNodeParticles, Value } from "./types.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
-import type { DataType } from "./data-types.js";
 
-export interface DeterministicRandomContext {
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    readonly reachedNodeParticles: CompiledNodeParticles;
-    /** The native name a source identifier is bound to in this scope. */
-    lookup(identifier: ts.Identifier): Value;
-    /** Mark an emitted local whose only reader moved to generation. */
-    markEmittedLocalUnused(cppName: string, site: ts.Node): void;
-    compileForDataSink(expression: ts.Expression, type: DataType): string;
-    emit(line: string): void;
-    fail(node: ts.Node, message: string): never;
-}
+export interface DeterministicRandomContext
+    extends Pick<LoweringServices,
+        | "isDefaultLibraryIdentifier"
+        | "reachedNodeParticles"
+        | "lookup"
+        | "compileForDataSink"
+        | "emit"
+        | "fail"
+    > {}
 
 /** Whether an expression is the bare `Math.random` function reference. */
 export function isDeterministicRandomRead(
@@ -150,8 +169,8 @@ function capturedDeclarations(
     arrow: ts.ArrowFunction | ts.FunctionDeclaration,
     checker: ts.TypeChecker,
 ): string[] {
-    const captured: ts.VariableDeclaration[] = [];
-    const declared = new Set<ts.Symbol>();
+    const captured: Array<{ declaration: ts.VariableDeclaration; name: ts.Identifier; initializer: ts.NumericLiteral }> = [];
+    const declared = new EmissionSet<ts.Symbol>();
     const collectDeclared = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
             const symbol = checker.getSymbolAtLocation(node.name);
@@ -186,6 +205,7 @@ function capturedDeclarations(
             if (
                 !declaration ||
                 !ts.isVariableDeclaration(declaration) ||
+                !ts.isIdentifier(declaration.name) ||
                 !declaration.initializer ||
                 !ts.isNumericLiteral(declaration.initializer)
             ) {
@@ -195,8 +215,8 @@ function capturedDeclarations(
                         `numeric locals only; '${node.text}' is not one.`,
                 );
             }
-            if (!captured.includes(declaration)) {
-                captured.push(declaration);
+            if (!captured.some(capture => capture.declaration === declaration)) {
+                captured.push({ declaration, name: declaration.name, initializer: declaration.initializer });
             }
             return;
         }
@@ -205,18 +225,11 @@ function capturedDeclarations(
     ts.forEachChild(arrow, visit);
 
     return captured
-        .sort((left, right) => left.pos - right.pos)
-        .map((declaration) => {
-            const name = declaration.name as ts.Identifier;
-            // The lowered program no longer reads it: the arrow that did is
-            // the driver's now.
-            context.markEmittedLocalUnused(
-                context.lookup(name).cpp,
-                name,
-            );
+        .sort((left, right) => left.declaration.pos - right.declaration.pos)
+        .map(({ name, initializer }) => {
             return (
                 `let ${name.text} = ` +
-                `${(declaration.initializer as ts.NumericLiteral).text};`
+                `${initializer.text};`
             );
         });
 }

@@ -1,9 +1,11 @@
 import ts from "typescript";
 import { cameraChangeKeyHeader } from "./camera-change-key-lowerer.js";
 import { LoweringContext } from "./context.js";
-import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 const TAA_MODULE = "src/post-process/taa.ts";
 const SCENE_MODULE = "src/frame-graph/render-task.ts";
@@ -84,13 +86,7 @@ export class SceneUboLowerer {
     }
 
     public packingHeader(): string {
-        return `#pragma once
-#include <algorithm>
-#include <cstddef>
-#include <vector>
-
-namespace bbl::upstream {
-${this.packMatrix()}
+        return pinnedHeader(["<algorithm>","<cstddef>","<vector>"], `${this.packMatrix()}
 
 ${this.packScene()}
 
@@ -98,9 +94,7 @@ ${this.contributor("writeFogUbo", "write_fog_scene_uniforms")}
 
 ${this.contributor("writeClipPlaneUbo", "write_clip_scene_uniforms")}
 
-${this.contributor("writeEnvUbo", "write_environment_scene_uniforms")}
-} // namespace bbl::upstream
-`;
+${this.contributor("writeEnvUbo", "write_environment_scene_uniforms")}`, { compactPragma: true });
     }
 
     private writeScene(): string {
@@ -141,13 +135,13 @@ ${this.contributor("writeEnvUbo", "write_environment_scene_uniforms")}
                 `s[${index}]`, { cpp: `source.cache.${field}`, type: index === 0 || index === 1 || index === 6 ? "opaque" : "scalar", mutable: true },
             ]),
         ]);
-        const lowerer = new PinnedNumericLowerer(file, { bindings, booleanAnd: true,
-            calls: new Map([["_cameraChangeKey", (args) => `camera_key(${args.join(", ")})`]]) });
+
         return `// ${this.context.provenance(SCENE_MODULE, "_writePassSceneUBO", "cache before scene packing and upload")}
 template<class Source, class Engine, class Scene, class Camera, class CameraKey, class WriteFull>
 void write_pass_scene_ubo(Source& source, const Engine& engine, const Scene& scene, Camera* camera,
     CameraKey&& camera_key, WriteFull&& write_full) {
-${declaration.body!.statements.slice(0, tailIndex).flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
+${lowerPinnedBody(file, declaration.body!.statements.slice(0, tailIndex), { bindings, booleanAnd: true,
+            calls: new Map([["_cameraChangeKey", (args) => `camera_key(${args.join(", ")})`]]) })}
     write_full(source, aspect);
 }`;
     }
@@ -184,15 +178,15 @@ ${declaration.body!.statements.slice(0, tailIndex).flatMap((statement) => lowere
             ["task._haltonIndex", { cpp: "state.halton_index", type: "scalar" }],
             ["task._jitterScratch", { cpp: "state.jitter_scratch", type: "f32" }],
         ]);
-        const lowerer = new PinnedNumericLowerer(file, {
+
+        return `template<class State, class Source, class WriteSpan>
+void advance_taa_jitter(State& state, Source& source, double width, double height, WriteSpan&& write_span) {
+${lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
             booleanOr: true,
             calls: new Map([["task.engine._device.queue.writeBuffer", (args) =>
                 `write_span(${args.join(", ")})`]]),
-        });
-        return `template<class State, class Source, class WriteSpan>
-void advance_taa_jitter(State& state, Source& source, double width, double height, WriteSpan&& write_span) {
-${declaration.body!.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
+        })}
 }`;
     }
 

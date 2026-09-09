@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 import assert from "node:assert/strict";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -158,11 +159,11 @@ test("generated compiler and node factory preserve retained slots and deferred b
     const factory = new FactoryLowerer(context);
     const graph = await executeModuleGraph({ modulePath: "corpus/babylon-lite/lab/lite/src/shared/scene149-nme.ts", exportName: "SCENE149_NME_JSON" });
     const composed = await composeNodeMaterial(graph, "input lifecycle", { pinnedBlockLoader: "geometry" });
-    writeFileSync(join(includes, "node_variants.hpp"), pinnedNodeVariantsHeader("input lifecycle", [{ index: 0, ...nodeVariantStageStems(0), composed }], []));
+    writeFileSync(join(includes, "node_variants.hpp"), inlineCpp(pinnedNodeVariantsHeader("input lifecycle", [{ index: 0, ...nodeVariantStageStems(0), composed }], [])));
     writeFileSync(join(includes, "pinned_variant_bindings.hpp"), pinnedSharedVariantDecls(context, "input lifecycle"));
-    writeFileSync(join(includes, "material_texture_slots.hpp"), materialTextureSlotsHeader({ transmission: false, clearcoat: false, sheen: false, iridescence: false,
+    writeFileSync(join(includes, "material_texture_slots.hpp"), inlineCpp(materialTextureSlotsHeader({ transmission: false, clearcoat: false, sheen: false, iridescence: false,
         lightmap: false, metallicReflectanceMap: false, reflectanceMap: false, specularGlossiness: false, occlusionUv2: false, standardBump: false,
-        standardReflection: false, clusteredLights: false, vat: false, vatInstances: false }, [], "input lifecycle"));
+        standardReflection: false, clusteredLights: false, vat: false, vatInstances: false }, [], "input lifecycle")));
     writeFileSync(join(output, "node_factory.hpp"), factory.lowerNodeMaterialFactory().source);
     const solid = factory.lowerFileTextureFactory().source;
     const scene = new SceneLowerer(context).lowerCore({ nodeMaterials: true }).source;

@@ -11,6 +11,7 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 const LOOK_DIRECTION_MODULE =
     "src/math/quat-from-look-direction-rh.ts";
@@ -88,20 +89,9 @@ export function pinnedLookDirectionHeader(context: LoweringContext): string {
         },
     );
 
-    return `#pragma once
-
-#include <bblite/runtime.hpp>
-#include <bblite/js_data.hpp>
-
-#include <array>
-#include <cmath>
-
-namespace bbl::upstream {
-
+    return pinnedHeader(["<bblite/runtime.hpp>","<bblite/js_data.hpp>","","<array>","<cmath>"], `
 ${basis}
 
 ${lookDirection}
-
-} // namespace bbl::upstream
-`;
+`);
 }

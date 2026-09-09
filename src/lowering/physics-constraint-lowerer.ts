@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const module = "src/physics/havok.ts";
 
@@ -69,12 +70,12 @@ export function lowerPhysicsConstraints(context: LoweringContext): { header: str
         ...axisNames.map((name, index) => [`axis.${name}`, scalar(`${index}.0`)] as const),
     ]);
     const axisMapping = context.functionDeclaration(module, "constraintAxisToNative");
-    const axisLowerer = new PinnedNumericLowerer(axisMapping.file, {
+
+    const nativeAxis = `double native_constraint_axis(double value) {\n${lowerPinnedBody(axisMapping.file, axisMapping.declaration.body!.statements, {
         calls: new Map(),
         bindings: new Map([...bindings(), ["value", scalar("value")]]),
-        returnValue: value => value ? axisLowerer.expression(value) : context.contractError(axisMapping.declaration, "A constraint axis mapping must return a value."),
-    });
-    const nativeAxis = `double native_constraint_axis(double value) {\n${axisLowerer.statements(axisMapping.declaration.body!.statements, "    ").join("\n")}\n    throw std::runtime_error("Unknown constraint axis.");\n}`;
+        returnValue: (value, axisLowerer) => value ? axisLowerer.expression(value) : context.contractError(axisMapping.declaration, "A constraint axis mapping must return a value."),
+    })}\n    throw std::runtime_error("Unknown constraint axis.");\n}`;
     const configurations = select.caseBlock.clauses.map(clause => {
         if (!ts.isCaseClause(clause) || !ts.isPropertyAccessExpression(clause.expression)) context.contractError(clause, "Constraint configuration requires named type cases.");
         const name = clause.expression.name.text;
@@ -133,17 +134,17 @@ export function lowerPhysicsConstraints(context: LoweringContext): { header: str
     const normalFunctions = ["normalizeVec3", "normalTo"].map(name => {
         const { file, declaration } = context.functionDeclaration(module, name);
         const parameter = name === "normalTo" ? "axis" : "v";
-        const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+
+        return `Vec3d ${name === "normalTo" ? "constraint_normal_to" : "constraint_normalize"}(Vec3d ${parameter}) {\n${lowerPinnedBody(file, declaration.body!.statements, {
             bindings: new Map([[parameter, { cpp: parameter, type: "vec3" as const }]]),
             calls: new Map([...pinnedNumericMathCallsWithHypot(), ["normalizeVec3", args => `constraint_normalize(${args.join(", ")})`]]),
             booleanAnd: true,
             vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
-            returnValue: expression => {
+            returnValue: (expression, lowerer) => {
                 if (!expression) context.contractError(declaration, "A constraint normal helper must return a vector.");
                 return lowerer.expression(expression);
             },
-        });
-        return `Vec3d ${name === "normalTo" ? "constraint_normal_to" : "constraint_normalize"}(Vec3d ${parameter}) {\n${lowerer.statements(declaration.body!.statements, "    ").join("\n")}\n}`;
+        })}\n}`;
     }).join("\n");
     const header = `
 struct PhysicsConstraintOptions {

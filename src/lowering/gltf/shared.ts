@@ -1,3 +1,4 @@
+import type { RenderedCpp } from "../pinned-numeric-expression.js";
 import ts from "typescript";
 import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
 import {
@@ -14,11 +15,7 @@ export { findNodes, unwrapExpression };
 
 export const laneMembers = ["x", "y", "z", "w"] as const;
 
-export interface RenderedCpp {
-    text: string;
-    /** How tightly the text binds, for minimal re-parenthesization. */
-    precedence: number;
-}
+export type { RenderedCpp } from "../pinned-numeric-expression.js";
 
 export interface CppExpressionScope {
     /** The pinned symbol, for refusal messages. */

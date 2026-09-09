@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { compiledBuildDirectory } from "../build-options.js";
 import {
     comparePayload,
     computeBuildStamp,
@@ -83,7 +84,7 @@ export function resolveNativeExecutable(
     return resolve(
         explicit ??
             process.env.BBLITE_NATIVE_EXE ??
-            defaultExecutable(buildDirectory),
+            defaultExecutable(compiledBuildDirectory(buildDirectory)),
     );
 }
 

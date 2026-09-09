@@ -1,8 +1,11 @@
+import { nativeDataMetadata, withNativeMetadata } from "./types.js";
 // The data-container method knowledge: the method-name sets every
 // mutation walk consults, and the dispatcher that lowers a data-method
 // call (invoked through `DataLowerer.compileDataMethodCall`).
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { staticNumberValue } from "./option-helpers.js";
 import { compileArrayValueMethod } from "./array-methods.js";
 import { compileStringValueMethod } from "./string-methods.js";
 import { compileCollectionForEach } from "./collection-methods.js";
@@ -104,7 +107,7 @@ function relativeRangeArguments(
 }
 
 /** Data-container methods whose receiver is not mutated. */
-export const readOnlyDataMethods: ReadonlySet<string> = new Set([
+export const readOnlyDataMethods: ReadonlySet<string> = new EmissionSet([
     "at",
     "concat",
     "entries",
@@ -151,7 +154,7 @@ export function arrayCallbackReceiverPolicy(method: string): ArrayCallbackReceiv
 }
 
 /** Array methods that can change its length and invalidate element aliases. */
-export const resizingArrayMethods: ReadonlySet<string> = new Set([
+export const resizingArrayMethods: ReadonlySet<string> = new EmissionSet([
     "push",
     "pop",
     "shift",
@@ -160,7 +163,7 @@ export const resizingArrayMethods: ReadonlySet<string> = new Set([
 ]);
 
 /** Array methods that mutate the receiver even when its length is unchanged. */
-export const mutatingArrayMethods: ReadonlySet<string> = new Set([
+export const mutatingArrayMethods: ReadonlySet<string> = new EmissionSet([
     ...resizingArrayMethods,
     "copyWithin",
     "fill",
@@ -169,7 +172,7 @@ export const mutatingArrayMethods: ReadonlySet<string> = new Set([
 ]);
 
 /** Methods that retain argument identity without mutating the argument itself. */
-export const storingDataMethods: ReadonlySet<string> = new Set([
+export const storingDataMethods: ReadonlySet<string> = new EmissionSet([
     "add",
     "concat",
     "fill",
@@ -188,7 +191,7 @@ export function isStoringDataCall(node: ts.Node): node is ts.CallExpression | ts
             (node.expression.text === "Map" || node.expression.text === "Set"));
 }
 
-const writeReceiverMethods: ReadonlySet<string> = new Set([
+const writeReceiverMethods: ReadonlySet<string> = new EmissionSet([
     "pop",
     "shift",
     "push",
@@ -203,7 +206,7 @@ const writeReceiverMethods: ReadonlySet<string> = new Set([
     "delete",
 ]);
 
-const constantArrayMethods: ReadonlySet<string> = new Set([
+const constantArrayMethods: ReadonlySet<string> = new EmissionSet([
     "at", "concat", "lastIndexOf", "flatMap",
     "indexOf",
     "includes",
@@ -218,7 +221,7 @@ const constantArrayMethods: ReadonlySet<string> = new Set([
     "join",
 ]);
 
-const snapshotInvalidatingMethods: ReadonlySet<string> = new Set([
+const snapshotInvalidatingMethods: ReadonlySet<string> = new EmissionSet([
     "pop",
     "shift",
     "unshift",
@@ -312,7 +315,7 @@ export function compileDataMethodCall(
                 lowerer.context.allocateTemporaryCppName(
                     "filled_array",
                 );
-            lowerer.context.emit(`auto ${temporary} = ${typed.cpp};`);
+            lowerer.context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: typed.cpp });
             const number = lowerer.context.compileNumber(
                 argumentAt(call, 0),
                 "double",
@@ -509,7 +512,7 @@ export function compileDataMethodCall(
     let constructedOwner: Value | undefined;
     if (ts.isNewExpression(ownerExpression) && dynamicOwner?.kind === "data") {
         const receiver = lowerer.context.allocateTemporaryCppName("constructed_receiver");
-        lowerer.context.emit(`auto ${receiver} = ${dynamicOwner.cpp};`);
+        lowerer.context.emit({ kind: "declaration", type: "auto", name: receiver, initializer: dynamicOwner.cpp });
         constructedOwner = { ...dynamicOwner, cpp: receiver };
     }
     const owner =
@@ -558,7 +561,7 @@ export function compileDataMethodCall(
         const receiver = lowerer.context.allocateTemporaryCppName("optional_array");
         const result = lowerer.context.allocateTemporaryCppName("optional_search");
         const resultType: DataType = { kind: "optional", inner: { kind: method === "indexOf" ? "number" : "boolean" } };
-        lowerer.context.emit(`const auto ${receiver} = ${owner.cpp};`);
+        lowerer.context.emit({ kind: "declaration", type: "const auto", name: receiver, initializer: owner.cpp });
         lowerer.context.emit(`${lowerer.context.dataTypes.cppType(resultType)} ${result};`);
         lowerer.context.emit(`if (${receiver}.has_value()) {`);
         lowerer.context.increaseIndent();
@@ -605,7 +608,7 @@ export function compileDataMethodCall(
         );
         lowerer.context.emit("{");
         lowerer.context.increaseIndent();
-        lowerer.context.emit(`const auto ${lookup} = ${owner.cpp};`);
+        lowerer.context.emit({ kind: "declaration", type: "const auto", name: lookup, initializer: owner.cpp });
         lowerer.context.emit(`if (${lookup}.has_value()) {`);
         lowerer.context.increaseIndent();
         lowerer.context.emit(`${optional} = *${lookup};`);
@@ -731,599 +734,9 @@ export function compileDataMethodCall(
                 : { kind: "void", cpp };
         }
     }
-    if (dataType?.kind === "map") {
-        if (method === "forEach") return compileCollectionForEach(lowerer, call, narrowed, dataType);
-        lowerer.context.reachJsData();
-        if (method === "clear") {
-            if (call.arguments.length !== 0) {
-                lowerer.context.fail(
-                    call,
-                    "Map.clear expects no arguments.",
-                );
-            }
-            lowerer.context.recordCollectionClear(narrowed);
-            if (lowerer.context.isInRuntimeControlFlow()) {
-                lowerer.context.invalidateRecordProperties(narrowed);
-            } else if (narrowed.recordProperties) {
-                for (const key of Object.keys(narrowed.recordProperties)) {
-                    delete narrowed.recordProperties[key];
-                }
-            }
-            return {
-                kind: "void",
-                cpp: `${narrowed.cpp}.clear()`,
-            };
-        }
-        if (method === "has" || method === "get" || method === "delete") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(
-                    call,
-                    `Map.${method} expects exactly one key.`,
-                );
-            }
-            const keyValue = lowerer.context.compileValue(
-                argumentAt(call, 0),
-            );
-            const key = lowerer.compileKnownValueForSink(
-                keyValue,
-                dataType.key,
-                argumentAt(call, 0),
-            );
-            const staticKey =
-                keyValue.staticString ??
-                (keyValue.staticNumber !== undefined
-                    ? String(keyValue.staticNumber)
-                    : undefined);
-            if (method === "has") {
-                return {
-                    kind: "boolean",
-                    cpp: `${narrowed.cpp}.has(${key})`,
-                };
-            }
-            if (method === "delete") {
-                lowerer.context.recordCollectionKey(narrowed, keyValue, true);
-                if (lowerer.context.isInRuntimeControlFlow()) {
-                    lowerer.context.invalidateRecordProperties(narrowed);
-                } else if (
-                    staticKey !== undefined &&
-                    narrowed.recordProperties
-                ) {
-                    delete narrowed.recordProperties[staticKey];
-                } else if (staticKey === undefined) {
-                    lowerer.context.invalidateRecordProperties(narrowed);
-                }
-                return {
-                    kind: "boolean",
-                    cpp: `${narrowed.cpp}.erase(${key})`,
-                    requiresExplicitDiscard: true,
-                };
-            }
-            if (dataType.value.kind === "handle") {
-                const result =
-                    lowerer.context.allocateTemporaryCppName(
-                        "map_get",
-                    );
-                lowerer.context.emit(
-                    `const auto ${result} = ${narrowed.cpp}.get(${key});`,
-                );
-                const known =
-                    staticKey === undefined
-                        ? undefined
-                        : narrowed.recordProperties?.[staticKey];
-                return {
-                    ...(known ?? {}),
-                    ...lowerer.leafValue(
-                        `(*${result})`,
-                        dataType.value,
-                    ),
-                    optionalFoundCpp: `${result}.has_value()`,
-                    optionalStorageCpp: `${result}.to_optional()`,
-                };
-            }
-            if (
-                dataType.value.kind === "struct" &&
-                lowerer.context.dataTypes.isReferenceStruct(
-                    dataType.value.name,
-                )
-            ) {
-                // Shared object handles carry absence themselves. Do
-                // not wrap and immediately dereference Map.get: a miss
-                // must remain an empty handle for the source guard.
-                return {
-                    ...lowerer.leafValue(
-                        `${narrowed.cpp}.get(${key})`,
-                        dataType.value,
-                    ),
-                };
-            }
-            return {
-                kind: "data",
-                cpp: `${narrowed.cpp}.get(${key})`,
-                // TypeScript flattens `(T | null) | undefined` to one
-                // nullable union. Preserve that shape so a single
-                // source guard narrows a Map whose value is nullable.
-                dataType:
-                    dataType.value.kind === "optional"
-                        ? dataType.value
-                        : {
-                              kind: "optional",
-                              inner: dataType.value,
-                          },
-            };
-        }
-        if (method === "set") {
-            if (call.arguments.length !== 2) {
-                lowerer.context.fail(
-                    call,
-                    "Map.set expects exactly one key and one value.",
-                );
-            }
-            const keyValue = lowerer.context.compileValue(
-                argumentAt(call, 0),
-            );
-            const assignedValue = lowerer.context.compileValue(
-                argumentAt(call, 1),
-            );
-            lowerer.context.recordCollectionKey(narrowed, keyValue);
-            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.key)) {
-                lowerer.context.refuseBorrowedPlatformEventEscape(
-                    keyValue,
-                    argumentAt(call, 0),
-                    "Map.set key",
-                );
-            }
-            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.value)) {
-                lowerer.context.refuseBorrowedPlatformEventEscape(
-                    assignedValue,
-                    argumentAt(call, 1),
-                    "Map.set value",
-                );
-            }
-            const key = lowerer.compileKnownValueForSink(
-                keyValue,
-                dataType.key,
-                argumentAt(call, 0),
-            );
-            const value = lowerer.compileKnownValueForSink(
-                assignedValue,
-                dataType.value,
-                argumentAt(call, 1),
-            );
-            const staticKey =
-                keyValue.staticString ??
-                (keyValue.staticNumber !== undefined
-                    ? String(keyValue.staticNumber)
-                    : undefined);
-            if (lowerer.context.isInRuntimeControlFlow()) {
-                lowerer.context.invalidateRecordProperties(narrowed);
-            } else if (
-                staticKey !== undefined &&
-                narrowed.recordProperties
-            ) {
-                narrowed.recordProperties[staticKey] = assignedValue;
-            } else if (staticKey === undefined) {
-                lowerer.context.invalidateRecordProperties(narrowed);
-            }
-            return {
-                kind: "data",
-                cpp: `${narrowed.cpp}.set(${key}, ${value})`,
-                dataType,
-                ...(narrowed.collectionCardinality ? { collectionCardinality: narrowed.collectionCardinality } : {}),
-                ...(narrowed.recordProperties
-                    ? {
-                          recordProperties:
-                              narrowed.recordProperties,
-                      }
-                    : {}),
-            };
-        }
-        if (method === "values" || method === "keys") {
-            if (call.arguments.length !== 0) {
-                lowerer.context.fail(
-                    call,
-                    `Map.${method} expects no arguments.`,
-                );
-            }
-            return {
-                kind: "data",
-                cpp: `bbl::js::map_${method}(${narrowed.cpp})`,
-                dataType: {
-                    kind: "vector",
-                    element:
-                        method === "values"
-                            ? dataType.value
-                            : dataType.key,
-                },
-                freshData: true,
-            };
-        }
-        lowerer.context.fail(
-            callee.name,
-            `Map method '${method}' is not supported.`,
-        );
-    }
-    if (dataType?.kind === "set") {
-        if (method === "forEach") return compileCollectionForEach(lowerer, call, narrowed, dataType);
-        lowerer.context.reachJsData();
-        if (method === "clear") {
-            if (call.arguments.length !== 0) {
-                lowerer.context.fail(
-                    call,
-                    "Set.clear expects no arguments.",
-                );
-            }
-            lowerer.context.recordCollectionClear(narrowed);
-            return {
-                kind: "void",
-                cpp: `${narrowed.cpp}.clear()`,
-            };
-        }
-        if (method === "has" || method === "delete") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(
-                    call,
-                    `Set.${method} expects exactly one value.`,
-                );
-            }
-            const member = lowerer.context.compileValue(argumentAt(call, 0));
-            const value = lowerer.compileKnownValueForSink(member, dataType.element, argumentAt(call, 0));
-            if (method === "delete") lowerer.context.recordCollectionKey(narrowed, member, true);
-            return {
-                kind: "boolean",
-                cpp:
-                    method === "has"
-                        ? `${narrowed.cpp}.has(${value})`
-                        : `${narrowed.cpp}.erase(${value})`,
-                ...(method === "delete"
-                    ? { requiresExplicitDiscard: true }
-                    : {}),
-            };
-        }
-        if (method === "add") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(
-                    call,
-                    "Set.add expects exactly one value.",
-                );
-            }
-            const member = lowerer.context.compileValue(argumentAt(call, 0));
-            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.element)) {
-                lowerer.context.refuseBorrowedPlatformEventEscape(member, argumentAt(call, 0), "Set.add");
-            }
-            const value = lowerer.compileKnownValueForSink(member, dataType.element, argumentAt(call, 0));
-            lowerer.context.recordCollectionKey(narrowed, member);
-            return {
-                kind: "data",
-                cpp: `${narrowed.cpp}.add(${value})`,
-                dataType,
-                ...(narrowed.collectionCardinality ? { collectionCardinality: narrowed.collectionCardinality } : {}),
-            };
-        }
-        lowerer.context.fail(
-            callee.name,
-            `Set method '${method}' is not supported.`,
-        );
-    }
-    if (dataType?.kind === "string") {
-        lowerer.context.reachJsData();
-        const stringValue = compileStringValueMethod(lowerer, call, method, narrowed);
-        if (stringValue) return stringValue;
-        if (method === "match" || method === "matchAll") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(
-                    call,
-                    `String.${method} expects one RegExp argument.`,
-                );
-            }
-            const pattern = lowerer.context.compileValue(
-                argumentAt(call, 0),
-            );
-            if (pattern.kind !== "regexp") {
-                lowerer.context.fail(
-                    argumentAt(call, 0),
-                    `Reached String.${method} uses a RegExp pattern.`,
-                );
-            }
-            const matches = {
-                kind: "vector",
-                element: { kind: "string" },
-            } as const;
-            return method === "match"
-                ? {
-                      kind: "data",
-                      cpp: `${pattern.cpp}.match(${narrowed.cpp})`,
-                      dataType: {
-                          kind: "optional",
-                          inner: matches,
-                      },
-                  }
-                : {
-                      kind: "data",
-                      cpp: `${pattern.cpp}.match_all(${narrowed.cpp})`,
-                      dataType: {
-                          kind: "vector",
-                          element: matches,
-                      },
-                      freshData: true,
-                  };
-        }
-        if (method === "indexOf" || method === "includes") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(
-                    call,
-                    `String.${method} expects one argument; the fromIndex form is outside the supported subset.`,
-                );
-            }
-            const search = lowerer.compileForSink(
-                argumentAt(call, 0),
-                { kind: "string" },
-            );
-            const index =
-                `bbl::js::string_index_of(${narrowed.cpp}, ${search})`;
-            return method === "indexOf"
-                ? {
-                      kind: "number",
-                      cpp: index,
-                      dataType: { kind: "number" },
-                  }
-                : {
-                      kind: "boolean",
-                      cpp: `${index} >= 0.0`,
-                      dataType: { kind: "boolean" },
-                  };
-        }
-        if (method === "toUpperCase") {
-            if (call.arguments.length !== 0) {
-                lowerer.context.fail(call, "String.toUpperCase takes no arguments.");
-            }
-            return {
-                kind: "data",
-                cpp: `bbl::js::string_upper(${narrowed.cpp})`,
-                dataType: { kind: "string" },
-            };
-        }
-        if (method === "toLowerCase") {
-            if (call.arguments.length !== 0) {
-                lowerer.context.fail(call, "String.toLowerCase takes no arguments.");
-            }
-            return {
-                kind: "data",
-                cpp: `bbl::js::string_lower(${narrowed.cpp})`,
-                dataType: { kind: "string" },
-            };
-        }
-        if (method === "trim") {
-            if (call.arguments.length !== 0) {
-                lowerer.context.fail(call, "String.trim takes no arguments.");
-            }
-            return {
-                kind: "data",
-                cpp: `bbl::js::string_trim(${narrowed.cpp})`,
-                dataType: { kind: "string" },
-            };
-        }
-        if (method === "slice") {
-            if (call.arguments.length < 1 || call.arguments.length > 2) {
-                lowerer.context.fail(call, "String.slice expects one or two arguments.");
-            }
-            const staticBegin = lowerer.context.compileValue(
-                argumentAt(call, 0),
-            );
-            const staticEnd = call.arguments[1]
-                ? lowerer.context.compileValue(call.arguments[1])
-                : undefined;
-            if (
-                narrowed.staticString !== undefined &&
-                staticBegin.kind === "number" &&
-                staticBegin.staticNumber !== undefined &&
-                !staticBegin.parameterBinding &&
-                (staticEnd === undefined ||
-                    (staticEnd.kind === "number" &&
-                        staticEnd.staticNumber !== undefined &&
-                        !staticEnd.parameterBinding))
-            ) {
-                const value = narrowed.staticString.slice(
-                    staticBegin.staticNumber,
-                    staticEnd?.staticNumber,
-                );
-                return {
-                    kind: "string",
-                    cpp: lowerer.context.cppString(value),
-                    staticString: value,
-                    dataType: { kind: "string" },
-                };
-            }
-            const begin = lowerer.context.castNumber(staticBegin, "double");
-            const end = staticEnd
-                ? lowerer.context.castNumber(staticEnd, "double")
-                : `static_cast<double>(${narrowed.cpp}.size())`;
-            return {
-                kind: "data",
-                cpp: `bbl::js::string_slice(${narrowed.cpp}, ${begin}, ${end})`,
-                dataType: { kind: "string" },
-            };
-        }
-        if (method === "split") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(
-                    call,
-                    "String.split expects one separator.",
-                );
-            }
-            const separatorValue = lowerer.context.compileValue(
-                argumentAt(call, 0),
-            );
-            if (separatorValue.kind === "regexp") {
-                return {
-                    kind: "data",
-                    cpp: `${separatorValue.cpp}.split(${narrowed.cpp})`,
-                    dataType: {
-                        kind: "vector",
-                        element: { kind: "string" },
-                    },
-                };
-            }
-            const separator = lowerer.compileForSink(
-                argumentAt(call, 0),
-                { kind: "string" },
-            );
-            return {
-                kind: "data",
-                cpp: `bbl::js::string_split(${narrowed.cpp}, ${separator})`,
-                dataType: {
-                    kind: "vector",
-                    element: { kind: "string" },
-                },
-            };
-        }
-        if (method === "replace" || method === "replaceAll") {
-            if (call.arguments.length !== 2) {
-                lowerer.context.fail(
-                    call,
-                    "String.replace expects a pattern and replacement.",
-                );
-            }
-            const source = lowerer.context.allocateTemporaryCppName("replace_source");
-            lowerer.context.emit(`[[maybe_unused]] const std::string ${source} = ${narrowed.cpp};`);
-            const pattern = lowerer.context.compileValue(
-                argumentAt(call, 0),
-            );
-            if (pattern.kind === "string" || pattern.dataType?.kind === "string") {
-                const search = lowerer.context.allocateTemporaryCppName("replace_search");
-                lowerer.context.emit(`const std::string ${search} = ${pattern.cpp};`);
-                const replacement = lowerer.compileForSink(argumentAt(call, 1), { kind: "string" });
-                return lowerer.leafValue(`bbl::js::string_replace(${source}, ${search}, ${replacement}, ${method === "replaceAll"})`, { kind: "string" });
-            }
-            if (method === "replaceAll") lowerer.context.fail(call, "String.replaceAll currently requires a string pattern.");
-            if (pattern.kind !== "regexp") {
-                lowerer.context.fail(
-                    argumentAt(call, 0),
-                    "Reached String.replace uses a RegExp pattern.",
-                );
-            }
-            const replacementValue = lowerer.context.compileValue(
-                argumentAt(call, 1),
-            );
-            const patternExpression = lowerer.context.unwrap(
-                argumentAt(call, 0),
-            );
-            if (
-                narrowed.staticString !== undefined &&
-                replacementValue.staticString !== undefined &&
-                ts.isRegularExpressionLiteral(patternExpression)
-            ) {
-                const literal = patternExpression.text;
-                const delimiter = literal.lastIndexOf("/");
-                const flags = literal.slice(delimiter + 1);
-                const source = literal
-                    .slice(1, delimiter)
-                    .replaceAll("\\/", "/");
-                const value = narrowed.staticString.replace(
-                    new RegExp(source, flags),
-                    replacementValue.staticString,
-                );
-                return {
-                    kind: "string",
-                    cpp: lowerer.context.cppString(value),
-                    staticString: value,
-                    dataType: { kind: "string" },
-                };
-            }
-            if (
-                replacementValue.kind !== "string" &&
-                !(
-                    replacementValue.kind === "data" &&
-                    replacementValue.dataType?.kind === "string"
-                )
-            ) {
-                lowerer.context.fail(
-                    argumentAt(call, 1),
-                    "String.replace expects a string replacement.",
-                );
-            }
-            const replacement = replacementValue.cpp;
-            return {
-                kind: "data",
-                cpp: `${pattern.cpp}.replace(${source}, ${replacement})`,
-                dataType: { kind: "string" },
-            };
-        }
-        if (method === "startsWith") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(call, "String.startsWith expects one argument.");
-            }
-            const prefixValue = lowerer.context.compileValue(
-                argumentAt(call, 0),
-            );
-            if (
-                narrowed.staticString !== undefined &&
-                prefixValue.staticString !== undefined
-            ) {
-                const value = narrowed.staticString.startsWith(
-                    prefixValue.staticString,
-                );
-                return {
-                    kind: "boolean",
-                    cpp: value ? "true" : "false",
-                    staticBoolean: value,
-                    dataType: { kind: "boolean" },
-                };
-            }
-            if (
-                prefixValue.kind !== "string" &&
-                !(
-                    prefixValue.kind === "data" &&
-                    prefixValue.dataType?.kind === "string"
-                )
-            ) {
-                lowerer.context.fail(
-                    argumentAt(call, 0),
-                    "String.startsWith expects a string argument.",
-                );
-            }
-            const prefix = prefixValue.cpp;
-            return {
-                kind: "boolean",
-                cpp: `bbl::js::string_starts_with(${narrowed.cpp}, ${prefix})`,
-            };
-        }
-        if (method === "endsWith") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(call, "String.endsWith expects one argument.");
-            }
-            const suffix = lowerer.compileForSink(
-                argumentAt(call, 0),
-                { kind: "string" },
-            );
-            return {
-                kind: "boolean",
-                cpp: `bbl::js::string_ends_with(${narrowed.cpp}, ${suffix})`,
-            };
-        }
-        if (method === "charCodeAt") {
-            if (call.arguments.length !== 1) {
-                lowerer.context.fail(call, "String.charCodeAt expects one argument.");
-            }
-            return {
-                kind: "number",
-                cpp: `bbl::js::string_char_code_at(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`,
-                dataType: { kind: "number" },
-            };
-        }
-        if (method === "padStart") {
-            if (call.arguments.length < 1 || call.arguments.length > 2) {
-                lowerer.context.fail(call, "String.padStart expects one or two arguments.");
-            }
-            const fill = call.arguments[1]
-                ? lowerer.compileForSink(call.arguments[1], { kind: "string" })
-                : lowerer.context.cppString(" ");
-            return {
-                kind: "data",
-                cpp: `bbl::js::string_pad_start(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")}, ${fill})`,
-                dataType: { kind: "string" },
-            };
-        }
-    }
+    if (dataType?.kind === "map") { return compileMapDataMethod(lowerer, call, callee, method, narrowed, dataType); }
+    if (dataType?.kind === "set") { return compileSetDataMethod(lowerer, call, callee, method, narrowed, dataType); }
+    if (dataType?.kind === "string") { const result = compileStringDataMethod(lowerer, call, callee, method, narrowed, dataType); if (result) return result; }
     if (
         dataType?.kind === "vector" &&
         method === "next" &&
@@ -1339,7 +752,7 @@ export function compileDataMethodCall(
         const values = lowerer.context.allocateTemporaryCppName(
             "map_iterator_values",
         );
-        lowerer.context.emit(`auto ${values} = ${narrowed.cpp};`);
+        lowerer.context.emit({ kind: "declaration", type: "auto", name: values, initializer: narrowed.cpp });
         lowerer.registerLocal(values, "owned");
         const found = `!${values}.empty()`;
         const first = `bbl::js::array_at_or_default(${values}, 0.0)`;
@@ -1596,6 +1009,7 @@ export function compileDataMethodCall(
             "find",
             "findIndex",
             "filter",
+            "flat",
             "reduce",
             "some",
             "every",
@@ -1609,515 +1023,348 @@ export function compileDataMethodCall(
         return undefined;
     }
     lowerer.context.reachJsData();
-    if (method === "join") {
-        if (
-            !["string", "enum", "number", "boolean"].includes(
-                dataType.element.kind,
-            ) ||
-            call.arguments.length > 1
-        ) {
-            lowerer.context.fail(
-                call,
-                "Array.join supports scalar arrays with at most one separator.",
-            );
-        }
-        const separator = call.arguments[0]
-            ? lowerer.context.compileValue(argumentAt(call, 0))
-            : undefined;
-        if (
-            separator &&
-            separator.kind !== "string" &&
-            !(
-                separator.kind === "data" &&
-                separator.dataType?.kind === "string"
-            )
-        ) {
-            lowerer.context.fail(
-                argumentAt(call, 0),
-                "Array.join separator must be a string.",
-            );
-        }
-        return {
-            kind: "string",
-            cpp: `bbl::js::array_join(${narrowed.cpp}, ${
-                separator
-                    ? separator.cpp
-                    : lowerer.context.cppString(",")
-            }${
-                dataType.element.kind === "enum"
-                    ? `, [](const auto& value) { return ${lowerer.context.dataTypes.enumToStringCpp(
-                          dataType.element,
-                          "value",
-                          call,
-                      )}; }`
-                    : dataType.element.kind === "number"
-                      ? ", [](double value) { return bbl::js::number_to_string(value); }"
-                      : dataType.element.kind === "boolean"
-                        ? ', [](bool value) { return value ? "true" : "false"; }'
-                        : ""
-            })`,
-            dataType: { kind: "string" },
-        };
-    }
-    if (method === "slice") {
-        if (call.arguments.length > 2) {
-            lowerer.context.fail(
-                call,
-                "Array.slice expects zero, one, or two arguments.",
-            );
-        }
-        const begin = call.arguments[0]
-            ? lowerer.context.compileNumber(call.arguments[0], "double")
-            : "0.0";
-        const end = call.arguments[1]
-            ? lowerer.context.compileNumber(call.arguments[1], "double")
-            : `static_cast<double>(${narrowed.cpp}.size())`;
-        return {
-            kind: "data",
-            cpp: `bbl::js::array_slice(${narrowed.cpp}, ${begin}, ${end})`,
-            dataType,
-        };
-    }
-    if (method === "sort") {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                "Array.sort currently requires one comparator callback.",
-            );
-        }
-        const callback = lowerer.context.unwrap(argumentAt(call, 0));
-        if (
-            !ts.isIdentifier(callback) &&
-            !ts.isArrowFunction(callback) &&
-            !ts.isFunctionExpression(callback)
-        ) {
-            lowerer.context.fail(
-                callback,
-                "Array.sort requires a local function or function literal comparator.",
-            );
-        }
-        const result = lowerer.context.allocateTemporaryCppName(
-            "sort_result",
-        );
-        const left = lowerer.context.allocateTemporaryCppName("sort_left");
-        const right = lowerer.context.allocateTemporaryCppName("sort_right");
-        lowerer.context.emit(`auto ${result} = ${narrowed.cpp};`);
-        lowerer.context.emit(
-            `std::sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`,
-        );
-        lowerer.context.increaseIndent();
-        lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
-        try {
-            lowerer.context.enterRuntimeIteration();
-            try {
-                const compared = lowerer.context.compileCallbackWithValues(
-                    callback,
-                    [
-                        lowerer.leafValue(left, dataType.element),
-                        lowerer.leafValue(right, dataType.element),
-                    ],
-                    call,
-                );
-                if (compared.kind !== "number") {
-                    lowerer.context.fail(
-                        callback,
-                        "Array.sort comparator must return a number.",
-                    );
-                }
-                lowerer.context.emit(`return ${compared.cpp} < 0.0;`);
-            } finally {
-                lowerer.context.leaveRuntimeIteration();
-            }
-        } finally {
-            lowerer.context.popScope();
-            lowerer.context.decreaseIndent();
-        }
-        lowerer.context.emit("});");
-        lowerer.registerLocal(result, "owned");
-        return { kind: "data", cpp: result, dataType };
-    }
-    if (method === "find") {
-        const resultType = lowerer.dataTypeAt(call) ?? {
-            kind: "optional" as const,
-            inner: dataType.element,
-        };
-        const result = lowerer.context.allocateTemporaryCppName(
-            "find_result",
-        );
-        lowerer.emitArrayCallbackLoop(
-            call,
-            "find",
-            narrowed,
-            dataType,
-            false,
-            () =>
-                lowerer.context.emit(
-                    `${lowerer.context.dataTypes.cppType(resultType)} ${result}{};`,
-                ),
-            (matched, callback, source, index) => {
-                if (matched.kind !== "boolean") {
-                    lowerer.context.fail(
-                        callback,
-                        "Array.find callback must return a boolean value.",
-                    );
-                }
-                lowerer.context.emit(`if (${matched.cpp}) {`);
-                lowerer.context.increaseIndent();
-                lowerer.context.emit(
-                    `${result} = ${source}[${index}];`,
-                );
-                lowerer.context.emit("break;");
-                lowerer.context.decreaseIndent();
-                lowerer.context.emit("}");
-            },
-        );
-        lowerer.registerLocal(result, "owned");
-        return lowerer.leafValue(result, resultType);
-    }
-    if (method === "findIndex") {
-        const result =
-            lowerer.context.allocateTemporaryCppName(
-                "find_index_result",
-            );
-        lowerer.emitArrayCallbackLoop(
-            call,
-            "findIndex",
-            narrowed,
-            dataType,
-            false,
-            () => lowerer.context.emit(`double ${result} = -1.0;`),
-            (matched, callback, _source, index) => {
-                if (matched.kind !== "boolean") {
-                    lowerer.context.fail(
-                        callback,
-                        "Array.findIndex callback must return a boolean value.",
-                    );
-                }
-                lowerer.context.emit(`if (${matched.cpp}) {`);
-                lowerer.context.increaseIndent();
-                lowerer.context.emit(
-                    `${result} = static_cast<double>(${index});`,
-                );
-                lowerer.context.emit("break;");
-                lowerer.context.decreaseIndent();
-                lowerer.context.emit("}");
-            },
-        );
-        return {
-            kind: "number",
-            cpp: result,
-            dataType: { kind: "number" },
-        };
-    }
-    if (method === "filter") {
-        const filteredType = {
-            kind: "vector" as const,
-            element: dataType.element,
-        };
-        const output =
-            lowerer.context.allocateTemporaryCppName(
-                "filter_result",
-            );
-        lowerer.emitArrayCallbackLoop(
-            call,
-            "filter",
-            narrowed,
-            dataType,
-            false,
-            (source) => {
-                lowerer.context.emit(
-                    `bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}> ${output};`,
-                );
-                lowerer.context.emit(
-                    `${output}.reserve(${source}.size());`,
-                );
-            },
-            (matched, callback, source, index) => {
-                if (matched.kind !== "boolean") {
-                    lowerer.context.fail(
-                        callback,
-                        "Array.filter callback must return a boolean value.",
-                    );
-                }
-                lowerer.context.emit(
-                    `if (${matched.cpp}) ${output}.push_back(${source}[${index}]);`,
-                );
-            },
-        );
-        lowerer.registerLocal(output, "owned");
-        return {
-            kind: "data",
-            cpp: output,
-            dataType: filteredType,
-        };
-    }
-    if (method === "reduce") {
-        if (call.arguments.length !== 2) {
-            lowerer.context.fail(
-                call,
-                "Array.reduce currently requires a callback and an initial value.",
-            );
-        }
-        const callback = lowerer.context.unwrap(argumentAt(call, 0));
-        if (
-            !ts.isIdentifier(callback) &&
-            !ts.isArrowFunction(callback) &&
-            !ts.isFunctionExpression(callback)
-        ) {
-            lowerer.context.fail(
-                callback,
-                "Array.reduce requires a local function or function literal callback.",
-            );
-        }
-        const resultType = lowerer.dataTypeAt(call);
-        if (!resultType) {
-            lowerer.context.fail(
-                call,
-                "Array.reduce accumulator must belong to the native data model.",
-            );
-        }
-        const source =
-            lowerer.context.allocateTemporaryCppName("reduce_source");
-        const count =
-            lowerer.context.allocateTemporaryCppName("reduce_count");
-        const index =
-            lowerer.context.allocateTemporaryCppName("reduce_index");
-        const accumulator =
-            lowerer.context.allocateTemporaryCppName("reduce_result");
-        lowerer.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
-        lowerer.context.emit(
-            `const std::size_t ${count} = ${source}.size();`,
-        );
-        lowerer.context.emit(
-            `${lowerer.context.dataTypes.cppType(resultType)} ${accumulator} = ${lowerer.compileForSink(argumentAt(call, 1), resultType)};`,
-        );
-        lowerer.context.emit(
-            `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
-        );
-        lowerer.context.increaseIndent();
-        lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
-        try {
-            lowerer.context.enterRuntimeIteration();
-            try {
-                const reduced =
-                    lowerer.context.compileCallbackWithValues(
-                        callback,
-                        [
-                            lowerer.leafValue(
-                                accumulator,
-                                resultType,
-                            ),
-                            lowerer.leafValue(
-                                `${source}[${index}]`,
-                                dataType.element,
-                            ),
-                            {
-                                kind: "number",
-                                cpp: `static_cast<double>(${index})`,
-                                dataType: { kind: "number" },
-                            },
-                            {
-                                ...narrowed,
-                                kind: "data",
-                                cpp: source,
-                                dataType,
-                            },
-                        ],
-                        call,
-                    );
-                lowerer.context.emit(
-                    `${accumulator} = ${lowerer.compileKnownValueForSink(reduced, resultType, callback)};`,
-                );
-            } finally {
-                lowerer.context.leaveRuntimeIteration();
-            }
-        } finally {
-            lowerer.context.popScope();
-            lowerer.context.decreaseIndent();
-        }
-        lowerer.context.emit("}");
-        lowerer.registerLocal(accumulator, "owned");
-        return lowerer.leafValue(accumulator, resultType);
-    }
-    if (method === "some") {
-        const result =
-            lowerer.context.allocateTemporaryCppName(
-                "some_result",
-            );
-        lowerer.emitArrayCallbackLoop(
-            call,
-            "some",
-            narrowed,
-            dataType,
-            false,
-            () => lowerer.context.emit(`bool ${result} = false;`),
-            (matched, callback) => {
-                if (matched.kind !== "boolean") {
-                    lowerer.context.fail(
-                        callback,
-                        "Array.some callback must return a boolean value.",
-                    );
-                }
-                lowerer.context.emit(`if (${matched.cpp}) {`);
-                lowerer.context.increaseIndent();
-                lowerer.context.emit(`${result} = true;`);
-                lowerer.context.emit("break;");
-                lowerer.context.decreaseIndent();
-                lowerer.context.emit("}");
-            },
-        );
-        return {
-            kind: "boolean",
-            cpp: result,
-            dataType: { kind: "boolean" },
-        };
-    }
-    if (method === "every") {
-        const result =
-            lowerer.context.allocateTemporaryCppName(
-                "every_result",
-            );
-        lowerer.emitArrayCallbackLoop(
-            call,
-            "every",
-            narrowed,
-            dataType,
-            false,
-            () => lowerer.context.emit(`bool ${result} = true;`),
-            (matched, callback) => {
-                if (matched.kind !== "boolean") {
-                    lowerer.context.fail(
-                        callback,
-                        "Array.every callback must return a boolean value.",
-                    );
-                }
-                lowerer.context.emit(`if (!(${matched.cpp})) {`);
-                lowerer.context.increaseIndent();
-                lowerer.context.emit(`${result} = false;`);
-                lowerer.context.emit("break;");
-                lowerer.context.decreaseIndent();
-                lowerer.context.emit("}");
-            },
-        );
-        return {
-            kind: "boolean",
-            cpp: result,
-            dataType: { kind: "boolean" },
-        };
-    }
-    if (method === "map" || method === "flatMap") {
-        const mappedType = lowerer.dataTypeAt(call);
-        if (mappedType?.kind !== "vector") {
-            lowerer.context.fail(
-                call,
-                `Array.${method} callback results must belong to the native data model.`,
-            );
-        }
-        const callback = call.arguments[0]
-            ? lowerer.context.unwrap(call.arguments[0])
-            : undefined;
-        if (
-            method === "map" && call.arguments.length === 1 &&
-            callback &&
-            ts.isIdentifier(callback) &&
-            callback.text === "Number" &&
-            !lowerer.context.lookupIdentifierValue(callback) &&
-            mappedType.element.kind === "number" &&
-            (dataType.element.kind === "string" ||
-                dataType.element.kind === "number")
-        ) {
-            const source = lowerer.context.allocateTemporaryCppName(
-                "map_source",
-            );
-            const index = lowerer.context.allocateTemporaryCppName(
-                "map_index",
-            );
-            const output = lowerer.context.allocateTemporaryCppName(
-                "map_result",
-            );
-            lowerer.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
-            lowerer.context.emit(`bbl::js::Array<double> ${output};`);
-            lowerer.context.emit(`${output}.reserve(${source}.size());`);
-            lowerer.context.emit(
-                `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
-            );
+    const handler = arrayMethodHandlers.get(method);
+    if (handler) return handler({ lowerer, call, narrowed, dataType, dynamicOwner });
+    lowerer.context.fail(callee.name, `Array method '${method}' is not supported.`);
+}
+
+interface ArrayMethodState {
+    lowerer: DataLowerer;
+    call: ts.CallExpression;
+    narrowed: Value;
+    dataType: DataType & { kind: "vector" | "span" };
+    dynamicOwner: Value | undefined;
+}
+
+function compileArrayFlat({ lowerer, call, narrowed, dataType }: ArrayMethodState): Value {
+    if (call.arguments.length > 1) lowerer.context.fail(call, "Array.flat expects at most one depth argument.");
+    const requested = call.arguments[0] ? staticNumberValue(lowerer.context, call.arguments[0]) : 1;
+    if (requested === undefined) return lowerer.context.fail(call, "Array.flat requires a generation-known depth.");
+    const depth = Number.isNaN(requested) ? 0 : Math.max(0, Math.trunc(requested));
+    const resultType = lowerer.dataTypeAt(call);
+    if (resultType?.kind !== "vector") return lowerer.context.fail(call, "Array.flat result must belong to the native data model.");
+    const output = lowerer.context.allocateTemporaryCppName("flat_result");
+    lowerer.context.emit({ kind: "declaration", type: lowerer.context.dataTypes.cppType(resultType), name: output, initializer: "{}" });
+    const append = (cpp: string, type: DataType, levels: number): void => {
+        if (levels > 0 && (type.kind === "vector" || type.kind === "span" || type.kind === "tuple")) {
+            const item = lowerer.context.allocateTemporaryCppName("flat_item");
+            lowerer.context.emit(`for (const auto& ${item} : ${cpp}) {`);
             lowerer.context.increaseIndent();
-            const converted = dataType.element.kind === "string"
-                ? `bbl::js::number_from_string(${source}[${index}])`
-                : `static_cast<double>(${source}[${index}])`;
-            lowerer.context.emit(`${output}.push_back(${converted});`);
+            append(item, type.kind === "tuple" ? { kind: "number" } : type.element, levels - 1);
             lowerer.context.decreaseIndent();
             lowerer.context.emit("}");
-            lowerer.registerLocal(output, "owned");
-            return {
-                kind: "data",
-                cpp: output,
-                dataType: mappedType,
-            };
+        } else {
+            const value = lowerer.compileKnownValueForSink(lowerer.leafValue(cpp, type), resultType.element, call);
+            lowerer.context.emit(`${output}.push_back(${value});`);
         }
-        const output =
-            lowerer.context.allocateTemporaryCppName(
-                "map_result",
-            );
-        lowerer.emitArrayCallbackLoop(
-            call,
-            method,
-            narrowed,
-            dataType,
-            true,
-            (source) => {
-                lowerer.context.emit(
-                    `bbl::js::Array<${lowerer.context.dataTypes.cppType(mappedType.element)}> ${output};`,
-                );
-                lowerer.context.emit(
-                    `${output}.reserve(${source}.size());`,
-                );
-            },
-            (result, callback) => {
-                if (method === "flatMap" && (result.kind === "tuple" || result.dataType?.kind === "tuple" ||
-                    result.dataType?.kind === "vector" || result.dataType?.kind === "span")) {
-                    if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(mappedType.element))
-                        lowerer.context.refuseBorrowedPlatformEventEscape(result, callback, "Array.flatMap result");
-                    const values = lowerer.compileKnownValueForSink(result, mappedType, callback);
-                    lowerer.context.emit(`bbl::js::array_append(${output}, ${values});`);
-                    return;
-                }
-                let value: string;
-                if (
-                    result.kind === "void" &&
-                    mappedType.element.kind === "boolean"
-                ) {
-                    // Promise<void> is represented by its synchronous
-                    // settlement token. The callback body has already
-                    // run; preserve a concise call expression too, then
-                    // store the fulfilled token consumed by Promise.all.
-                    if (result.cpp.length > 0) {
-                        lowerer.context.emit(`${result.cpp};`);
-                    }
-                    value = "true";
-                } else {
-                    if (
-                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                            mappedType.element,
-                        )
-                    ) {
-                        lowerer.context.refuseBorrowedPlatformEventEscape(
-                            result,
-                            callback,
-                            "Array.map result",
-                        );
-                    }
-                    value = lowerer.compileKnownValueForSink(
-                        result,
-                        mappedType.element,
-                        callback,
-                    );
-                }
-                lowerer.context.emit(
-                    `${output}.push_back(${value});`,
-                );
-            },
-        );
+    };
+    append(narrowed.cpp, dataType, depth + 1);
+    lowerer.registerLocal(output, "owned");
+    return { kind: "data", cpp: output, dataType: resultType, freshData: true };
+}
+
+function compileArrayJoin(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    if (!["string", "enum", "number", "boolean"].includes(dataType.element.kind) ||
+        call.arguments.length > 1) {
+        lowerer.context.fail(call, "Array.join supports scalar arrays with at most one separator.");
+    }
+    const separator = call.arguments[0]
+        ? lowerer.context.compileValue(argumentAt(call, 0))
+        : undefined;
+    if (separator &&
+        separator.kind !== "string" &&
+        !(separator.kind === "data" &&
+            separator.dataType?.kind === "string")) {
+        lowerer.context.fail(argumentAt(call, 0), "Array.join separator must be a string.");
+    }
+    return {
+        kind: "string",
+        cpp: `bbl::js::array_join(${narrowed.cpp}, ${separator
+            ? separator.cpp
+            : lowerer.context.cppString(",")}${dataType.element.kind === "enum"
+            ? `, [](const auto& value) { return ${lowerer.context.dataTypes.enumToStringCpp(dataType.element, "value", call)}; }`
+            : dataType.element.kind === "number"
+                ? ", [](double value) { return bbl::js::number_to_string(value); }"
+                : dataType.element.kind === "boolean"
+                    ? ', [](bool value) { return value ? "true" : "false"; }'
+                    : ""})`,
+        dataType: { kind: "string" },
+    };
+}
+
+function compileArraySlice(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    if (call.arguments.length > 2) {
+        lowerer.context.fail(call, "Array.slice expects zero, one, or two arguments.");
+    }
+    const begin = call.arguments[0]
+        ? lowerer.context.compileNumber(call.arguments[0], "double")
+        : "0.0";
+    const end = call.arguments[1]
+        ? lowerer.context.compileNumber(call.arguments[1], "double")
+        : `static_cast<double>(${narrowed.cpp}.size())`;
+    return {
+        kind: "data",
+        cpp: `bbl::js::array_slice(${narrowed.cpp}, ${begin}, ${end})`,
+        dataType,
+    };
+}
+
+function compileArraySort(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    if (call.arguments.length !== 1) {
+        lowerer.context.fail(call, "Array.sort currently requires one comparator callback.");
+    }
+    const callback = lowerer.context.unwrap(argumentAt(call, 0));
+    if (!ts.isIdentifier(callback) &&
+        !ts.isArrowFunction(callback) &&
+        !ts.isFunctionExpression(callback)) {
+        lowerer.context.fail(callback, "Array.sort requires a local function or function literal comparator.");
+    }
+    const result = lowerer.context.allocateTemporaryCppName("sort_result");
+    const left = lowerer.context.allocateTemporaryCppName("sort_left");
+    const right = lowerer.context.allocateTemporaryCppName("sort_right");
+    lowerer.context.emit({ kind: "declaration", type: "auto", name: result, initializer: narrowed.cpp });
+    lowerer.context.emit(`std::sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`);
+    lowerer.context.increaseIndent();
+    lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
+    try {
+        lowerer.context.enterRuntimeIteration();
+        try {
+            const compared = lowerer.context.compileCallbackWithValues(callback, [
+                { ...lowerer.leafValue(left, dataType.element), nativeCaptures: [lowerer.context.registerNativeBinding(left)] },
+                { ...lowerer.leafValue(right, dataType.element), nativeCaptures: [lowerer.context.registerNativeBinding(right)] },
+            ], call);
+            if (compared.kind !== "number") {
+                lowerer.context.fail(callback, "Array.sort comparator must return a number.");
+            }
+            lowerer.context.emit(`return ${compared.cpp} < 0.0;`);
+        }
+        finally {
+            lowerer.context.leaveRuntimeIteration();
+        }
+    }
+    finally {
+        lowerer.context.popScope();
+        lowerer.context.decreaseIndent();
+    }
+    lowerer.context.emit("});");
+    lowerer.registerLocal(result, "owned");
+    return { kind: "data", cpp: result, dataType };
+}
+
+function compileArrayFind(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    const resultType = lowerer.dataTypeAt(call) ?? {
+        kind: "optional" as const,
+        inner: dataType.element,
+    };
+    const result = lowerer.context.allocateTemporaryCppName("find_result");
+    lowerer.emitArrayCallbackLoop(call, "find", narrowed, dataType, false, () => lowerer.context.emit(`${lowerer.context.dataTypes.cppType(resultType)} ${result}{};`), (matched, callback, source, index) => {
+        if (matched.kind !== "boolean") {
+            lowerer.context.fail(callback, "Array.find callback must return a boolean value.");
+        }
+        lowerer.context.emit(`if (${matched.cpp}) {`);
+        lowerer.context.increaseIndent();
+        lowerer.context.emit(`${result} = ${source}[${index}];`);
+        lowerer.context.emit("break;");
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
+    });
+    lowerer.registerLocal(result, "owned");
+    return lowerer.leafValue(result, resultType);
+}
+
+function compileArrayFindIndex(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    const result = lowerer.context.allocateTemporaryCppName("find_index_result");
+    lowerer.emitArrayCallbackLoop(call, "findIndex", narrowed, dataType, false, () => lowerer.context.emit({ kind: "declaration", type: "double", name: result, initializer: "-1.0" }), (matched, callback, _source, index) => {
+        if (matched.kind !== "boolean") {
+            lowerer.context.fail(callback, "Array.findIndex callback must return a boolean value.");
+        }
+        lowerer.context.emit(`if (${matched.cpp}) {`);
+        lowerer.context.increaseIndent();
+        lowerer.context.emit(`${result} = static_cast<double>(${index});`);
+        lowerer.context.emit("break;");
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
+    });
+    return {
+        kind: "number",
+        cpp: result,
+        dataType: { kind: "number" },
+    };
+}
+
+function compileArrayFilter(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    const filteredType = {
+        kind: "vector" as const,
+        element: dataType.element,
+    };
+    const output = lowerer.context.allocateTemporaryCppName("filter_result");
+    lowerer.emitArrayCallbackLoop(call, "filter", narrowed, dataType, false, (source) => {
+        lowerer.context.emit(`bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}> ${output};`);
+        lowerer.context.emit(`${output}.reserve(${source}.size());`);
+    }, (matched, callback, source, index) => {
+        if (matched.kind !== "boolean") {
+            lowerer.context.fail(callback, "Array.filter callback must return a boolean value.");
+        }
+        lowerer.context.emit(`if (${matched.cpp}) ${output}.push_back(${source}[${index}]);`);
+    });
+    lowerer.registerLocal(output, "owned");
+    return {
+        kind: "data",
+        cpp: output,
+        dataType: filteredType,
+    };
+}
+
+function compileArrayReduce(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    if (call.arguments.length !== 2) {
+        lowerer.context.fail(call, "Array.reduce currently requires a callback and an initial value.");
+    }
+    const callback = lowerer.context.unwrap(argumentAt(call, 0));
+    if (!ts.isIdentifier(callback) &&
+        !ts.isArrowFunction(callback) &&
+        !ts.isFunctionExpression(callback)) {
+        lowerer.context.fail(callback, "Array.reduce requires a local function or function literal callback.");
+    }
+    const resultType = lowerer.dataTypeAt(call);
+    if (!resultType) {
+        lowerer.context.fail(call, "Array.reduce accumulator must belong to the native data model.");
+    }
+    const source = lowerer.context.allocateTemporaryCppName("reduce_source");
+    const count = lowerer.context.allocateTemporaryCppName("reduce_count");
+    const index = lowerer.context.allocateTemporaryCppName("reduce_index");
+    const accumulator = lowerer.context.allocateTemporaryCppName("reduce_result");
+    lowerer.context.emit({ kind: "declaration", type: "auto&&", name: source, initializer: narrowed.cpp });
+    lowerer.context.emit({ kind: "declaration", type: "const std::size_t", name: count, initializer: `${source}.size()` });
+    lowerer.context.emit({ kind: "declaration", type: lowerer.context.dataTypes.cppType(resultType), name: accumulator, initializer: lowerer.compileForSink(argumentAt(call, 1), resultType) });
+    lowerer.context.emit(`for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`);
+    lowerer.context.increaseIndent();
+    lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
+    try {
+        lowerer.context.enterRuntimeIteration();
+        try {
+            const reduced = lowerer.context.compileCallbackWithValues(callback, [
+                { ...lowerer.leafValue(accumulator, resultType), nativeCaptures: [lowerer.context.registerNativeBinding(accumulator)] },
+                { ...lowerer.leafValue(`${source}[${index}]`, dataType.element),
+                    nativeCaptures: [lowerer.context.registerNativeBinding(source), lowerer.context.registerNativeBinding(index)] },
+                {
+                    kind: "number",
+                    cpp: `static_cast<double>(${index})`,
+                    dataType: { kind: "number" },
+                    nativeCaptures: [lowerer.context.registerNativeBinding(index)],
+                },
+                {
+                    ...nativeDataMetadata(narrowed),
+                    kind: "data",
+                    cpp: source,
+                    dataType,
+                    nativeCaptures: [lowerer.context.registerNativeBinding(source)],
+                },
+            ], call);
+            lowerer.context.emit(`${accumulator} = ${lowerer.compileKnownValueForSink(reduced, resultType, callback)};`);
+        }
+        finally {
+            lowerer.context.leaveRuntimeIteration();
+        }
+    }
+    finally {
+        lowerer.context.popScope();
+        lowerer.context.decreaseIndent();
+    }
+    lowerer.context.emit("}");
+    lowerer.registerLocal(accumulator, "owned");
+    return lowerer.leafValue(accumulator, resultType);
+}
+
+function compileArraySome(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    const result = lowerer.context.allocateTemporaryCppName("some_result");
+    lowerer.emitArrayCallbackLoop(call, "some", narrowed, dataType, false, () => lowerer.context.emit({ kind: "declaration", type: "bool", name: result, initializer: "false" }), (matched, callback) => {
+        if (matched.kind !== "boolean") {
+            lowerer.context.fail(callback, "Array.some callback must return a boolean value.");
+        }
+        lowerer.context.emit(`if (${matched.cpp}) {`);
+        lowerer.context.increaseIndent();
+        lowerer.context.emit(`${result} = true;`);
+        lowerer.context.emit("break;");
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
+    });
+    return {
+        kind: "boolean",
+        cpp: result,
+        dataType: { kind: "boolean" },
+    };
+}
+
+function compileArrayEvery(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    const result = lowerer.context.allocateTemporaryCppName("every_result");
+    lowerer.emitArrayCallbackLoop(call, "every", narrowed, dataType, false, () => lowerer.context.emit({ kind: "declaration", type: "bool", name: result, initializer: "true" }), (matched, callback) => {
+        if (matched.kind !== "boolean") {
+            lowerer.context.fail(callback, "Array.every callback must return a boolean value.");
+        }
+        lowerer.context.emit(`if (!(${matched.cpp})) {`);
+        lowerer.context.increaseIndent();
+        lowerer.context.emit(`${result} = false;`);
+        lowerer.context.emit("break;");
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
+    });
+    return {
+        kind: "boolean",
+        cpp: result,
+        dataType: { kind: "boolean" },
+    };
+}
+
+function compileArrayMap(state: ArrayMethodState, method: "map" | "flatMap"): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    const mappedType = lowerer.dataTypeAt(call);
+    if (mappedType?.kind !== "vector") {
+        lowerer.context.fail(call, `Array.${method} callback results must belong to the native data model.`);
+    }
+    const callback = call.arguments[0]
+        ? lowerer.context.unwrap(call.arguments[0])
+        : undefined;
+    if (method === "map" && call.arguments.length === 1 &&
+        callback &&
+        ts.isIdentifier(callback) &&
+        callback.text === "Number" &&
+        !lowerer.context.lookupIdentifierValue(callback) &&
+        mappedType.element.kind === "number" &&
+        (dataType.element.kind === "string" ||
+            dataType.element.kind === "number")) {
+        const source = lowerer.context.allocateTemporaryCppName("map_source");
+        const index = lowerer.context.allocateTemporaryCppName("map_index");
+        const output = lowerer.context.allocateTemporaryCppName("map_result");
+        lowerer.context.emit({ kind: "declaration", type: "auto&&", name: source, initializer: narrowed.cpp });
+        lowerer.context.emit(`bbl::js::Array<double> ${output};`);
+        lowerer.context.emit(`${output}.reserve(${source}.size());`);
+        lowerer.context.emit(`for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`);
+        lowerer.context.increaseIndent();
+        const converted = dataType.element.kind === "string"
+            ? `bbl::js::number_from_string(${source}[${index}])`
+            : `static_cast<double>(${source}[${index}])`;
+        lowerer.context.emit(`${output}.push_back(${converted});`);
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
         lowerer.registerLocal(output, "owned");
         return {
             kind: "data",
@@ -2125,280 +1372,704 @@ export function compileDataMethodCall(
             dataType: mappedType,
         };
     }
-    if (method === "forEach") {
-        lowerer.emitArrayCallbackLoop(
-            call,
-            "forEach",
-            narrowed,
-            dataType,
-            true,
-            () => undefined,
-            (result) => lowerer.context.emitDiscardedValue(result),
-        );
-        return { kind: "void", cpp: "" };
-    }
-    if (method === "push") {
-        if (call.arguments.length === 0) {
-            lowerer.context.fail(
-                call,
-                "Array push requires at least one element.",
-            );
+    const output = lowerer.context.allocateTemporaryCppName("map_result");
+    lowerer.emitArrayCallbackLoop(call, method, narrowed, dataType, true, (source) => {
+        lowerer.context.emit(`bbl::js::Array<${lowerer.context.dataTypes.cppType(mappedType.element)}> ${output};`);
+        lowerer.context.emit(`${output}.reserve(${source}.size());`);
+    }, (result, callback) => {
+        if (method === "flatMap" && (result.kind === "tuple" || result.dataType?.kind === "tuple" ||
+            result.dataType?.kind === "vector" || result.dataType?.kind === "span")) {
+            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(mappedType.element))
+                lowerer.context.refuseBorrowedPlatformEventEscape(result, callback, "Array.flatMap result");
+            const values = lowerer.compileKnownValueForSink(result, mappedType, callback);
+            lowerer.context.emit(`bbl::js::array_append(${output}, ${values});`);
+            return;
         }
-        lowerer.invalidateAliases(narrowed.cpp);
-        const pushedHandleKind =
-            dataType.element.kind === "handle"
-                ? dataType.element.handle
-                : undefined;
-        const hasSpread = call.arguments.some((argument) =>
-            ts.isSpreadElement(argument),
-        );
-        const staticElements =
-            narrowed.staticElementsOwner?.staticElements ??
-            narrowed.staticElements;
-        const pushedValues =
-            (pushedHandleKind || staticElements) && !hasSpread
-                ? call.arguments.map((argument) =>
-                      lowerer.context.compileValue(argument),
-                  )
-                : undefined;
-        let added: number | undefined = 0;
-        for (const argument of call.arguments) {
-            const count = ts.isSpreadElement(argument)
-                ? lowerer.context.knownCollectionCardinality(argument.expression)
-                : 1;
-            if (count === undefined) { added = undefined; break; }
-            added += count;
-        }
-        const knownPush = lowerer.context.recordArrayPush(narrowed, added);
-        // A snapshot consumed by a later static iteration must be
-        // path-complete. Intrinsics record their own generation-time reach
-        // while the pushed arguments are compiled, so handles created behind
-        // a runtime branch do not need to remain in this array snapshot.
-        // Keeping one there would leak its block-local C++ name into code
-        // emitted after the branch.
-        if (
-            knownPush && !lowerer.context.isInRuntimeControlFlow() &&
-            staticElements &&
-            pushedValues?.every(
-                (value) =>
-                    (!pushedHandleKind ||
-                        value.kind === pushedHandleKind) &&
-                    !value.runtimeIteration,
-            )
-        ) {
-            const firstIndex = staticElements.length;
-            const snapshotCpp =
-                (narrowed.staticElementsOwner ?? narrowed).cpp;
-            staticElements.push(
-                ...pushedValues.map((value, index) => {
-                    if (pushedHandleKind) return value;
-                    // A pushed object literal is a compile-time record,
-                    // but the array stores a native element. Keep the
-                    // record's static facts while rebasing its identity
-                    // and every later writable path to that stored slot.
-                    return {
-                        ...value,
-                        ...lowerer.leafValue(
-                            `${snapshotCpp}[${firstIndex + index}]`,
-                            dataType.element,
-                        ),
-                    };
-                }),
-            );
-        } else {
-            if (pushedHandleKind && pushedValues?.length) {
-                const snapshotOwner =
-                    narrowed.staticElementsOwner ?? narrowed;
-                snapshotOwner.runtimeElementTemplate ??=
-                    staticElements?.[0] ?? pushedValues[0]!;
-                if (pushedHandleKind === "mesh") {
-                    const candidates = [
-                        snapshotOwner.runtimeElementTemplate,
-                        ...(staticElements ?? []),
-                        ...pushedValues,
-                    ];
-                    snapshotOwner.runtimeElementTemplate = commonResourceValue(
-                        runtimeMeshValue(snapshotOwner.runtimeElementTemplate), candidates,
-                    );
-                } else if (pushedHandleKind === "material") {
-                    snapshotOwner.runtimeElementTemplate = commonResourceValue(
-                        snapshotOwner.runtimeElementTemplate,
-                        [snapshotOwner.runtimeElementTemplate, ...(staticElements ?? []), ...pushedValues],
-                    );
-                }
+        let value: string;
+        if (result.kind === "void" &&
+            mappedType.element.kind === "boolean") {
+            // Promise<void> is represented by its synchronous
+            // settlement token. The callback body has already
+            // run; preserve a concise call expression too, then
+            // store the fulfilled token consumed by Promise.all.
+            if (result.cpp.length > 0) {
+                lowerer.context.emit(`${result.cpp};`);
             }
-            lowerer.invalidateStaticElements(narrowed, true);
-            // `compileDataPath(..., "write")` may return a leaf wrapper
-            // around an identifier binding. Invalidate the binding too;
-            // otherwise a later for-of still sees the initializer's
-            // stale static snapshot (notably `[]`) and erases a spread
-            // append of a loaded asset's meshes.
-            if (dynamicOwner) {
-                lowerer.invalidateStaticElements(dynamicOwner, true);
+            value = "true";
+        }
+        else {
+            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(mappedType.element)) {
+                lowerer.context.refuseBorrowedPlatformEventEscape(result, callback, "Array.map result");
+            }
+            value = lowerer.compileKnownValueForSink(result, mappedType.element, callback);
+        }
+        lowerer.context.emit(`${output}.push_back(${value});`);
+    });
+    lowerer.registerLocal(output, "owned");
+    return {
+        kind: "data",
+        cpp: output,
+        dataType: mappedType,
+    };
+}
+
+function compileArrayForEach(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    lowerer.emitArrayCallbackLoop(call, "forEach", narrowed, dataType, true, () => undefined, (result) => lowerer.context.emitDiscardedValue(result));
+    return { kind: "void", cpp: "" };
+}
+
+function compileArrayPush(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType, dynamicOwner } = state;
+    if (call.arguments.length === 0) {
+        lowerer.context.fail(call, "Array push requires at least one element.");
+    }
+    lowerer.invalidateAliases(narrowed.cpp);
+    const pushedHandleKind = dataType.element.kind === "handle"
+        ? dataType.element.handle
+        : undefined;
+    const hasSpread = call.arguments.some((argument) => ts.isSpreadElement(argument));
+    const staticElements = narrowed.staticElementsOwner?.staticElements ??
+        narrowed.staticElements;
+    const pushedValues = (pushedHandleKind || staticElements) && !hasSpread
+        ? call.arguments.map((argument) => lowerer.context.compileValue(argument))
+        : undefined;
+    let added: number | undefined = 0;
+    for (const argument of call.arguments) {
+        const count = ts.isSpreadElement(argument)
+            ? lowerer.context.knownCollectionCardinality(argument.expression)
+            : 1;
+        if (count === undefined) {
+            added = undefined;
+            break;
+        }
+        added += count;
+    }
+    const knownPush = lowerer.context.recordArrayPush(narrowed, added);
+    // A snapshot consumed by a later static iteration must be
+    // path-complete. Intrinsics record their own generation-time reach
+    // while the pushed arguments are compiled, so handles created behind
+    // a runtime branch do not need to remain in this array snapshot.
+    // Keeping one there would leak its block-local C++ name into code
+    // emitted after the branch.
+    if (knownPush && !lowerer.context.isInRuntimeControlFlow() &&
+        staticElements &&
+        pushedValues?.every((value) => (!pushedHandleKind ||
+            value.kind === pushedHandleKind) &&
+            !value.runtimeIteration)) {
+        const firstIndex = staticElements.length;
+        const snapshotCpp = (narrowed.staticElementsOwner ?? narrowed).cpp;
+        staticElements.push(...pushedValues.map((value, index) => {
+            if (pushedHandleKind)
+                return value;
+            // A pushed object literal is a compile-time record,
+            // but the array stores a native element. Keep the
+            // record's static facts while rebasing its identity
+            // and every later writable path to that stored slot.
+            return withNativeMetadata(lowerer.leafValue(`${snapshotCpp}[${firstIndex + index}]`, dataType.element), value);
+        }));
+    }
+    else {
+        if (pushedHandleKind && pushedValues?.length) {
+            const snapshotOwner = narrowed.staticElementsOwner ?? narrowed;
+            snapshotOwner.runtimeElementTemplate ??=
+                staticElements?.[0] ?? pushedValues[0]!;
+            if (pushedHandleKind === "mesh") {
+                const candidates = [
+                    snapshotOwner.runtimeElementTemplate,
+                    ...(staticElements ?? []),
+                    ...pushedValues,
+                ];
+                snapshotOwner.runtimeElementTemplate = commonResourceValue(runtimeMeshValue(snapshotOwner.runtimeElementTemplate), candidates);
+            }
+            else if (pushedHandleKind === "material") {
+                snapshotOwner.runtimeElementTemplate = commonResourceValue(snapshotOwner.runtimeElementTemplate, [snapshotOwner.runtimeElementTemplate, ...(staticElements ?? []), ...pushedValues]);
             }
         }
-        const pushes = call.arguments.map((argument, index) => {
-            if (ts.isSpreadElement(argument)) {
-                const spread = lowerer.context.compileValue(
-                    argument.expression,
-                );
-                if (
-                    lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                        dataType.element,
-                    )
-                ) {
-                    lowerer.context.refuseBorrowedPlatformEventEscape(
-                        spread,
-                        argument,
-                        "Array.push spread",
-                    );
-                }
-                if (
-                    spread.kind === "tuple" &&
-                    spread.tupleElements
-                ) {
-                    const values = spread.tupleElements.map(
-                        (value) =>
-                            lowerer.compileKnownValueForSink(
-                                value,
-                                dataType.element,
-                                argument,
-                            ),
-                    );
-                    return (
-                        `${narrowed.cpp}.insert(${narrowed.cpp}.end(), ` +
-                        `{${values.join(", ")}})`
-                    );
-                }
-                let source: string;
-                if (
-                    spread.kind === "handle-collection" &&
-                    spread.handleCollection &&
-                    dataType.element.kind === "handle" &&
-                    spread.handleCollection.elementKind ===
-                        dataType.element.handle
-                ) {
-                    source = spread.handleCollection.containerCpp;
-                } else if (
-                    spread.kind === "data" &&
-                    ((spread.dataType?.kind === "vector" ||
-                        spread.dataType?.kind === "span") &&
-                    dataTypesEqual(
-                        spread.dataType.element,
-                        dataType.element,
-                    ) ||
-                        spread.dataType?.kind === "tuple" &&
-                        dataType.element.kind === "number")
-                ) {
-                    source = spread.cpp;
-                } else {
-                    lowerer.context.fail(
-                        argument,
-                        `Array.push spread must contain values of the destination element type ${JSON.stringify(dataType.element)}; received ${spread.kind} ${spread.dataType ? JSON.stringify(spread.dataType) : "without a data type"}.`,
-                    );
-                }
-                return (
-                    `${narrowed.cpp}.insert(${narrowed.cpp}.end(), ` +
-                    `${source}.begin(), ${source}.end())`
-                );
+        lowerer.invalidateStaticElements(narrowed, true);
+        // `compileDataPath(..., "write")` may return a leaf wrapper
+        // around an identifier binding. Invalidate the binding too;
+        // otherwise a later for-of still sees the initializer's
+        // stale static snapshot (notably `[]`) and erases a spread
+        // append of a loaded asset's meshes.
+        if (dynamicOwner) {
+            lowerer.invalidateStaticElements(dynamicOwner, true);
+        }
+    }
+    const pushes = call.arguments.map((argument, index) => {
+        if (ts.isSpreadElement(argument)) {
+            const spread = lowerer.context.compileValue(argument.expression);
+            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.element)) {
+                lowerer.context.refuseBorrowedPlatformEventEscape(spread, argument, "Array.push spread");
             }
-            if (
-                pushedValues &&
-                lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                    dataType.element,
-                )
-            ) {
-                lowerer.context.refuseBorrowedPlatformEventEscape(
-                    pushedValues[index]!,
-                    argument,
-                    "Array.push",
-                );
+            if (spread.kind === "tuple" &&
+                spread.tupleElements) {
+                const values = spread.tupleElements.map((value) => lowerer.compileKnownValueForSink(value, dataType.element, argument));
+                return (`${narrowed.cpp}.insert(${narrowed.cpp}.end(), ` +
+                    `{${values.join(", ")}})`);
             }
-            return `${narrowed.cpp}.push_back(${pushedValues
-                ? lowerer.compileKnownValueForSink(
-                      pushedValues[index]!,
-                      dataType.element,
-                      argument,
-                  )
-                : lowerer.compileForRetainedSink(
-                      argument,
-                      dataType.element,
-                      "Array.push",
-                  )})`;
-        });
-        return {
-            kind: "void",
-            cpp:
-                pushes.length === 1
-                    ? pushes[0]!
-                    : `(${pushes.join(", ")})`,
-        };
-    }
-    if (method === "pop") {
-        if (call.arguments.length !== 0) {
-            lowerer.context.fail(
-                call,
-                "Array.pop expects no arguments.",
-            );
+            let source: string;
+            if (spread.kind === "handle-collection" &&
+                spread.handleCollection &&
+                dataType.element.kind === "handle" &&
+                spread.handleCollection.elementKind ===
+                    dataType.element.handle) {
+                source = spread.handleCollection.containerCpp;
+            }
+            else if (spread.kind === "data" &&
+                ((spread.dataType?.kind === "vector" ||
+                    spread.dataType?.kind === "span") &&
+                    dataTypesEqual(spread.dataType.element, dataType.element) ||
+                    spread.dataType?.kind === "tuple" &&
+                        dataType.element.kind === "number")) {
+                source = spread.cpp;
+            }
+            else {
+                lowerer.context.fail(argument, `Array.push spread must contain values of the destination element type ${JSON.stringify(dataType.element)}; received ${spread.kind} ${spread.dataType ? JSON.stringify(spread.dataType) : "without a data type"}.`);
+            }
+            return (`${narrowed.cpp}.insert(${narrowed.cpp}.end(), ` +
+                `${source}.begin(), ${source}.end())`);
         }
-        lowerer.invalidateAliases(narrowed.cpp);
-        const popped = `bbl::js::array_pop(${narrowed.cpp})`;
-        return lowerer.leafValue(
-            popped,
-            dataType.element,
-        );
-    }
-    if (method === "shift") {
-        if (call.arguments.length !== 0) {
-            lowerer.context.fail(
-                call,
-                "Array.shift expects no arguments.",
-            );
+        if (pushedValues &&
+            lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.element)) {
+            lowerer.context.refuseBorrowedPlatformEventEscape(pushedValues[index]!, argument, "Array.push");
         }
-        lowerer.invalidateAliases(narrowed.cpp);
-        return lowerer.leafValue(
-            `bbl::js::array_shift(${narrowed.cpp})`,
-            dataType.element,
-        );
+        return `${narrowed.cpp}.push_back(${pushedValues
+            ? lowerer.compileKnownValueForSink(pushedValues[index]!, dataType.element, argument)
+            : lowerer.compileForRetainedSink(argument, dataType.element, "Array.push")})`;
+    });
+    return {
+        kind: "void",
+        cpp: pushes.length === 1
+            ? pushes[0]!
+            : `(${pushes.join(", ")})`,
+    };
+}
+
+function compileArrayPop(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    if (call.arguments.length !== 0) {
+        lowerer.context.fail(call, "Array.pop expects no arguments.");
     }
-    if (method === "unshift") {
-        if (call.arguments.length === 0) {
-            return {
-                kind: "number",
-                cpp: `static_cast<double>(${narrowed.cpp}.size())`,
-            };
-        }
-        lowerer.invalidateAliases(narrowed.cpp);
-        const values = call.arguments.map((argument) =>
-            lowerer.compileForRetainedSink(
-                argument,
-                dataType.element,
-                "Array.unshift",
-            ),
-        );
+    lowerer.invalidateAliases(narrowed.cpp);
+    const popped = `bbl::js::array_pop(${narrowed.cpp})`;
+    return lowerer.leafValue(popped, dataType.element);
+}
+
+function compileArrayShift(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    if (call.arguments.length !== 0) {
+        lowerer.context.fail(call, "Array.shift expects no arguments.");
+    }
+    lowerer.invalidateAliases(narrowed.cpp);
+    return lowerer.leafValue(`bbl::js::array_shift(${narrowed.cpp})`, dataType.element);
+}
+
+function compileArrayUnshift(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    if (call.arguments.length === 0) {
         return {
             kind: "number",
-            cpp:
-                `bbl::js::array_unshift(${narrowed.cpp}, ` +
-                `{${values.join(", ")}})`,
+            cpp: `static_cast<double>(${narrowed.cpp}.size())`,
         };
     }
-    if (method === "reverse") {
+    lowerer.invalidateAliases(narrowed.cpp);
+    const values = call.arguments.map((argument) => lowerer.compileForRetainedSink(argument, dataType.element, "Array.unshift"));
+    return {
+        kind: "number",
+        cpp: `bbl::js::array_unshift(${narrowed.cpp}, ` +
+            `{${values.join(", ")}})`,
+    };
+}
+
+function compileArrayReverse(state: ArrayMethodState): Value {
+    const lowerer: DataLowerer = state.lowerer;
+    const { call, narrowed, dataType } = state;
+    if (call.arguments.length !== 0) {
+        lowerer.context.fail(call, "Array.reverse expects no arguments.");
+    }
+    lowerer.invalidateAliases(narrowed.cpp);
+    return {
+        kind: "data",
+        cpp: `bbl::js::array_reverse(${narrowed.cpp})`,
+        dataType,
+    };
+}
+
+function compileMapDataMethod(lowerer: DataLowerer, call: ts.CallExpression, callee: ts.PropertyAccessExpression, method: string, narrowed: Value, dataType: DataType & {kind: "map"}): Value | undefined {
+    if (method === "forEach")
+        return compileCollectionForEach(lowerer, call, narrowed, dataType);
+    lowerer.context.reachJsData();
+    if (method === "clear") {
         if (call.arguments.length !== 0) {
-            lowerer.context.fail(
-                call,
-                "Array.reverse expects no arguments.",
-            );
+            lowerer.context.fail(call, "Map.clear expects no arguments.");
         }
-        lowerer.invalidateAliases(narrowed.cpp);
+        lowerer.context.recordCollectionClear(narrowed);
+        if (lowerer.context.isInRuntimeControlFlow()) {
+            lowerer.context.invalidateRecordProperties(narrowed);
+        }
+        else if (narrowed.recordProperties) {
+            for (const key of Object.keys(narrowed.recordProperties)) {
+                delete narrowed.recordProperties[key];
+            }
+        }
+        return {
+            kind: "void",
+            cpp: `${narrowed.cpp}.clear()`,
+        };
+    }
+    if (method === "has" || method === "get" || method === "delete") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, `Map.${method} expects exactly one key.`);
+        }
+        const keyValue = lowerer.context.compileValue(argumentAt(call, 0));
+        const key = lowerer.compileKnownValueForSink(keyValue, dataType.key, argumentAt(call, 0));
+        const staticKey = keyValue.staticString ??
+            (keyValue.staticNumber !== undefined
+                ? String(keyValue.staticNumber)
+                : undefined);
+        if (method === "has") {
+            return {
+                kind: "boolean",
+                cpp: `${narrowed.cpp}.has(${key})`,
+            };
+        }
+        if (method === "delete") {
+            lowerer.context.recordCollectionKey(narrowed, keyValue, true);
+            if (lowerer.context.isInRuntimeControlFlow()) {
+                lowerer.context.invalidateRecordProperties(narrowed);
+            }
+            else if (staticKey !== undefined &&
+                narrowed.recordProperties) {
+                delete narrowed.recordProperties[staticKey];
+            }
+            else if (staticKey === undefined) {
+                lowerer.context.invalidateRecordProperties(narrowed);
+            }
+            return {
+                kind: "boolean",
+                cpp: `${narrowed.cpp}.erase(${key})`,
+                requiresExplicitDiscard: true,
+            };
+        }
+        if (dataType.value.kind === "handle") {
+            const result = lowerer.context.allocateTemporaryCppName("map_get");
+            lowerer.context.emit({ kind: "declaration", type: "const auto", name: result, initializer: `${narrowed.cpp}.get(${key})` });
+            const known = staticKey === undefined
+                ? undefined
+                : narrowed.recordProperties?.[staticKey];
+            return { ...withNativeMetadata(lowerer.leafValue(`(*${result})`, dataType.value), known), optionalFoundCpp: `${result}.has_value()`, optionalStorageCpp: `${result}.to_optional()` };
+        }
+        if (dataType.value.kind === "struct" &&
+            lowerer.context.dataTypes.isReferenceStruct(dataType.value.name)) {
+            // Shared object handles carry absence themselves. Do
+            // not wrap and immediately dereference Map.get: a miss
+            // must remain an empty handle for the source guard.
+            return {
+                ...lowerer.leafValue(`${narrowed.cpp}.get(${key})`, dataType.value),
+            };
+        }
         return {
             kind: "data",
-            cpp: `bbl::js::array_reverse(${narrowed.cpp})`,
-            dataType,
+            cpp: `${narrowed.cpp}.get(${key})`,
+            // TypeScript flattens `(T | null) | undefined` to one
+            // nullable union. Preserve that shape so a single
+            // source guard narrows a Map whose value is nullable.
+            dataType: dataType.value.kind === "optional"
+                ? dataType.value
+                : {
+                    kind: "optional",
+                    inner: dataType.value,
+                },
         };
     }
-    lowerer.context.fail(
-        callee.name,
-        `Array method '${method}' is not supported.`,
-    );
+    if (method === "set") {
+        if (call.arguments.length !== 2) {
+            lowerer.context.fail(call, "Map.set expects exactly one key and one value.");
+        }
+        const keyValue = lowerer.context.compileValue(argumentAt(call, 0));
+        const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
+        lowerer.context.recordCollectionKey(narrowed, keyValue);
+        if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.key)) {
+            lowerer.context.refuseBorrowedPlatformEventEscape(keyValue, argumentAt(call, 0), "Map.set key");
+        }
+        if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.value)) {
+            lowerer.context.refuseBorrowedPlatformEventEscape(assignedValue, argumentAt(call, 1), "Map.set value");
+        }
+        const key = lowerer.compileKnownValueForSink(keyValue, dataType.key, argumentAt(call, 0));
+        const value = lowerer.compileKnownValueForSink(assignedValue, dataType.value, argumentAt(call, 1));
+        const staticKey = keyValue.staticString ??
+            (keyValue.staticNumber !== undefined
+                ? String(keyValue.staticNumber)
+                : undefined);
+        if (lowerer.context.isInRuntimeControlFlow()) {
+            lowerer.context.invalidateRecordProperties(narrowed);
+        }
+        else if (staticKey !== undefined &&
+            narrowed.recordProperties) {
+            narrowed.recordProperties[staticKey] = assignedValue;
+        }
+        else if (staticKey === undefined) {
+            lowerer.context.invalidateRecordProperties(narrowed);
+        }
+        return {
+            kind: "data",
+            cpp: `${narrowed.cpp}.set(${key}, ${value})`,
+            dataType,
+            ...(narrowed.collectionCardinality ? { collectionCardinality: narrowed.collectionCardinality } : {}),
+            ...(narrowed.recordProperties
+                ? {
+                    recordProperties: narrowed.recordProperties,
+                }
+                : {}),
+        };
+    }
+    if (method === "values" || method === "keys") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, `Map.${method} expects no arguments.`);
+        }
+        return {
+            kind: "data",
+            cpp: `bbl::js::map_${method}(${narrowed.cpp})`,
+            dataType: {
+                kind: "vector",
+                element: method === "values"
+                    ? dataType.value
+                    : dataType.key,
+            },
+            freshData: true,
+        };
+    }
+    lowerer.context.fail(callee.name, `Map method '${method}' is not supported.`);
 }
+
+function compileSetDataMethod(lowerer: DataLowerer, call: ts.CallExpression, callee: ts.PropertyAccessExpression, method: string, narrowed: Value, dataType: DataType & {kind: "set"}): Value | undefined {
+    if (method === "forEach")
+        return compileCollectionForEach(lowerer, call, narrowed, dataType);
+    lowerer.context.reachJsData();
+    if (method === "clear") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, "Set.clear expects no arguments.");
+        }
+        lowerer.context.recordCollectionClear(narrowed);
+        return {
+            kind: "void",
+            cpp: `${narrowed.cpp}.clear()`,
+        };
+    }
+    if (method === "has" || method === "delete") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, `Set.${method} expects exactly one value.`);
+        }
+        const member = lowerer.context.compileValue(argumentAt(call, 0));
+        const value = lowerer.compileKnownValueForSink(member, dataType.element, argumentAt(call, 0));
+        if (method === "delete")
+            lowerer.context.recordCollectionKey(narrowed, member, true);
+        return {
+            kind: "boolean",
+            cpp: method === "has"
+                ? `${narrowed.cpp}.has(${value})`
+                : `${narrowed.cpp}.erase(${value})`,
+            ...(method === "delete"
+                ? { requiresExplicitDiscard: true }
+                : {}),
+        };
+    }
+    if (method === "add") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, "Set.add expects exactly one value.");
+        }
+        const member = lowerer.context.compileValue(argumentAt(call, 0));
+        if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.element)) {
+            lowerer.context.refuseBorrowedPlatformEventEscape(member, argumentAt(call, 0), "Set.add");
+        }
+        const value = lowerer.compileKnownValueForSink(member, dataType.element, argumentAt(call, 0));
+        lowerer.context.recordCollectionKey(narrowed, member);
+        return {
+            kind: "data",
+            cpp: `${narrowed.cpp}.add(${value})`,
+            dataType,
+            ...(narrowed.collectionCardinality ? { collectionCardinality: narrowed.collectionCardinality } : {}),
+        };
+    }
+    lowerer.context.fail(callee.name, `Set method '${method}' is not supported.`);
+}
+
+function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, _callee: ts.PropertyAccessExpression, method: string, narrowed: Value, _dataType: DataType & {kind: "string"}): Value | undefined {
+    lowerer.context.reachJsData();
+    const stringValue = compileStringValueMethod(lowerer, call, method, narrowed);
+    if (stringValue)
+        return stringValue;
+    if (method === "match" || method === "matchAll") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, `String.${method} expects one RegExp argument.`);
+        }
+        const pattern = lowerer.context.compileValue(argumentAt(call, 0));
+        if (pattern.kind !== "regexp") {
+            lowerer.context.fail(argumentAt(call, 0), `Reached String.${method} uses a RegExp pattern.`);
+        }
+        const matches = {
+            kind: "vector",
+            element: { kind: "string" },
+        } as const;
+        return method === "match"
+            ? {
+                kind: "data",
+                cpp: `${pattern.cpp}.match(${narrowed.cpp})`,
+                dataType: {
+                    kind: "optional",
+                    inner: matches,
+                },
+            }
+            : {
+                kind: "data",
+                cpp: `${pattern.cpp}.match_all(${narrowed.cpp})`,
+                dataType: {
+                    kind: "vector",
+                    element: matches,
+                },
+                freshData: true,
+            };
+    }
+    if (method === "indexOf" || method === "includes") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, `String.${method} expects one argument; the fromIndex form is outside the supported subset.`);
+        }
+        const search = lowerer.compileForSink(argumentAt(call, 0), { kind: "string" });
+        const index = `bbl::js::string_index_of(${narrowed.cpp}, ${search})`;
+        return method === "indexOf"
+            ? {
+                kind: "number",
+                cpp: index,
+                dataType: { kind: "number" },
+            }
+            : {
+                kind: "boolean",
+                cpp: `${index} >= 0.0`,
+                dataType: { kind: "boolean" },
+            };
+    }
+    if (method === "toUpperCase") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, "String.toUpperCase takes no arguments.");
+        }
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_upper(${narrowed.cpp})`,
+            dataType: { kind: "string" },
+        };
+    }
+    if (method === "toLowerCase") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, "String.toLowerCase takes no arguments.");
+        }
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_lower(${narrowed.cpp})`,
+            dataType: { kind: "string" },
+        };
+    }
+    if (method === "trim") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, "String.trim takes no arguments.");
+        }
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_trim(${narrowed.cpp})`,
+            dataType: { kind: "string" },
+        };
+    }
+    if (method === "slice") {
+        if (call.arguments.length < 1 || call.arguments.length > 2) {
+            lowerer.context.fail(call, "String.slice expects one or two arguments.");
+        }
+        const staticBegin = lowerer.context.compileValue(argumentAt(call, 0));
+        const staticEnd = call.arguments[1]
+            ? lowerer.context.compileValue(call.arguments[1])
+            : undefined;
+        if (narrowed.staticString !== undefined &&
+            staticBegin.kind === "number" &&
+            staticBegin.staticNumber !== undefined &&
+            !staticBegin.parameterBinding &&
+            (staticEnd === undefined ||
+                (staticEnd.kind === "number" &&
+                    staticEnd.staticNumber !== undefined &&
+                    !staticEnd.parameterBinding))) {
+            const value = narrowed.staticString.slice(staticBegin.staticNumber, staticEnd?.staticNumber);
+            return {
+                kind: "string",
+                cpp: lowerer.context.cppString(value),
+                staticString: value,
+                dataType: { kind: "string" },
+            };
+        }
+        const begin = lowerer.context.castNumber(staticBegin, "double");
+        const end = staticEnd
+            ? lowerer.context.castNumber(staticEnd, "double")
+            : `static_cast<double>(${narrowed.cpp}.size())`;
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_slice(${narrowed.cpp}, ${begin}, ${end})`,
+            dataType: { kind: "string" },
+        };
+    }
+    if (method === "split") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, "String.split expects one separator.");
+        }
+        const separatorValue = lowerer.context.compileValue(argumentAt(call, 0));
+        if (separatorValue.kind === "regexp") {
+            return {
+                kind: "data",
+                cpp: `${separatorValue.cpp}.split(${narrowed.cpp})`,
+                dataType: {
+                    kind: "vector",
+                    element: { kind: "string" },
+                },
+            };
+        }
+        const separator = lowerer.compileForSink(argumentAt(call, 0), { kind: "string" });
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_split(${narrowed.cpp}, ${separator})`,
+            dataType: {
+                kind: "vector",
+                element: { kind: "string" },
+            },
+        };
+    }
+    if (method === "replace" || method === "replaceAll") {
+        if (call.arguments.length !== 2) {
+            lowerer.context.fail(call, "String.replace expects a pattern and replacement.");
+        }
+        const source = lowerer.context.allocateTemporaryCppName("replace_source");
+        lowerer.context.emit({ kind: "declaration", type: "const std::string", name: source, initializer: narrowed.cpp, attributes: "[[maybe_unused]] " });
+        const pattern = lowerer.context.compileValue(argumentAt(call, 0));
+        if (pattern.kind === "string" || pattern.dataType?.kind === "string") {
+            const search = lowerer.context.allocateTemporaryCppName("replace_search");
+            lowerer.context.emit({ kind: "declaration", type: "const std::string", name: search, initializer: pattern.cpp });
+            const replacement = lowerer.compileForSink(argumentAt(call, 1), { kind: "string" });
+            return lowerer.leafValue(`bbl::js::string_replace(${source}, ${search}, ${replacement}, ${method === "replaceAll"})`, { kind: "string" });
+        }
+        if (method === "replaceAll")
+            lowerer.context.fail(call, "String.replaceAll currently requires a string pattern.");
+        if (pattern.kind !== "regexp") {
+            lowerer.context.fail(argumentAt(call, 0), "Reached String.replace uses a RegExp pattern.");
+        }
+        const replacementValue = lowerer.context.compileValue(argumentAt(call, 1));
+        const patternExpression = lowerer.context.unwrap(argumentAt(call, 0));
+        if (narrowed.staticString !== undefined &&
+            replacementValue.staticString !== undefined &&
+            ts.isRegularExpressionLiteral(patternExpression)) {
+            const literal = patternExpression.text;
+            const delimiter = literal.lastIndexOf("/");
+            const flags = literal.slice(delimiter + 1);
+            const source = literal
+                .slice(1, delimiter)
+                .replaceAll("\\/", "/");
+            const value = narrowed.staticString.replace(new RegExp(source, flags), replacementValue.staticString);
+            return {
+                kind: "string",
+                cpp: lowerer.context.cppString(value),
+                staticString: value,
+                dataType: { kind: "string" },
+            };
+        }
+        if (replacementValue.kind !== "string" &&
+            !(replacementValue.kind === "data" &&
+                replacementValue.dataType?.kind === "string")) {
+            lowerer.context.fail(argumentAt(call, 1), "String.replace expects a string replacement.");
+        }
+        const replacement = replacementValue.cpp;
+        return {
+            kind: "data",
+            cpp: `${pattern.cpp}.replace(${source}, ${replacement})`,
+            dataType: { kind: "string" },
+        };
+    }
+    if (method === "startsWith") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, "String.startsWith expects one argument.");
+        }
+        const prefixValue = lowerer.context.compileValue(argumentAt(call, 0));
+        if (narrowed.staticString !== undefined &&
+            prefixValue.staticString !== undefined) {
+            const value = narrowed.staticString.startsWith(prefixValue.staticString);
+            return {
+                kind: "boolean",
+                cpp: value ? "true" : "false",
+                staticBoolean: value,
+                dataType: { kind: "boolean" },
+            };
+        }
+        if (prefixValue.kind !== "string" &&
+            !(prefixValue.kind === "data" &&
+                prefixValue.dataType?.kind === "string")) {
+            lowerer.context.fail(argumentAt(call, 0), "String.startsWith expects a string argument.");
+        }
+        const prefix = prefixValue.cpp;
+        return {
+            kind: "boolean",
+            cpp: `bbl::js::string_starts_with(${narrowed.cpp}, ${prefix})`,
+        };
+    }
+    if (method === "endsWith") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, "String.endsWith expects one argument.");
+        }
+        const suffix = lowerer.compileForSink(argumentAt(call, 0), { kind: "string" });
+        return {
+            kind: "boolean",
+            cpp: `bbl::js::string_ends_with(${narrowed.cpp}, ${suffix})`,
+        };
+    }
+    if (method === "charCodeAt") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(call, "String.charCodeAt expects one argument.");
+        }
+        return {
+            kind: "number",
+            cpp: `bbl::js::string_char_code_at(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`,
+            dataType: { kind: "number" },
+        };
+    }
+    if (method === "padStart") {
+        if (call.arguments.length < 1 || call.arguments.length > 2) {
+            lowerer.context.fail(call, "String.padStart expects one or two arguments.");
+        }
+        const fill = call.arguments[1]
+            ? lowerer.compileForSink(call.arguments[1], { kind: "string" })
+            : lowerer.context.cppString(" ");
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_pad_start(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")}, ${fill})`,
+            dataType: { kind: "string" },
+        };
+    }
+}
+
+const arrayMethodHandlers = new EmissionMap<string, (state: ArrayMethodState) => Value>([
+    ["flat", compileArrayFlat],
+    ["join", compileArrayJoin],
+    ["slice", compileArraySlice],
+    ["sort", compileArraySort],
+    ["find", compileArrayFind],
+    ["findIndex", compileArrayFindIndex],
+    ["filter", compileArrayFilter],
+    ["reduce", compileArrayReduce],
+    ["some", compileArraySome],
+    ["every", compileArrayEvery],
+    ["map", state => compileArrayMap(state, "map")],
+    ["flatMap", state => compileArrayMap(state, "flatMap")],
+    ["forEach", compileArrayForEach],
+    ["push", compileArrayPush],
+    ["pop", compileArrayPop],
+    ["shift", compileArrayShift],
+    ["unshift", compileArrayUnshift],
+    ["reverse", compileArrayReverse],
+]);

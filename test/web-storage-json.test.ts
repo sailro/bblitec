@@ -153,7 +153,7 @@ test("getItem answers a nullable string with JavaScript falsiness", () => {
     // Absent AND empty are both falsy, which `has_value()` alone is not.
     assert.match(
         result.cpp,
-        /if \(\(\w+\.has_value\(\) && !\w+\.value\(\)\.empty\(\)\)\)/,
+        /if \(bbl::js::nullable_truthy\(\w+\)\)/,
     );
 });
 

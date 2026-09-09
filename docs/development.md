@@ -13,6 +13,7 @@ npm run doctor
 ```
 
 Rebuild installed dependencies when their maintained patches change.
+LabSound uses `tools/patches/labsound-lazy-decoders.patch` to keep its optional file-decoder registry lazy.
 For RmlUi: `pwsh -File tools/build-rmlui.ps1`. `scene` commands discover CMake
 through vswhere; the `tools/*.ps1` build scripts need it on `PATH`, in
 `CMAKE_COMMAND`, or through their `-CMake` parameter.
@@ -39,7 +40,7 @@ repository-local TypeScript path; `all` selects the registry.
 `npm run sweep` runs `validate all`; `npm test` is separate. `scenes:compile`,
 `scenes:build`, `scenes:process` and `scenes:parity` are the registry-wide
 commands; `upstream:report` runs the upstream tests then a full generation;
-`shaders:build` runs the shader step (`tools/compile-shaders.ps1`) without a
+`shaders:build` runs the shader step (`src/compile-shaders.ts`) without a
 build; `clean:dist` deletes `dist/` when no scene command is running from it.
 Build `dist/` once with `npm run build`, then use
 `node dist/src/scene-command.js ...` for a sequence. Logs belong in `artifacts/`.
@@ -118,20 +119,26 @@ use the saved differential reports and the validation sequence above.
 requires Dawn. `--compiler auto|clangcl|msvc` selects the Windows compiler.
 `BBLITE_DEV_COMPILER` and `BBLITE_CMAKE_GENERATOR` override compiler/generator.
 
+Dual-backend builds use `native/build-<id>-release`; single-backend builds append
+`-sdl_gpu` or `-dawn`. Set `BBLITE_BACKEND=SDL_GPU|DAWN|BOTH` to select the same
+compiled tree for build, run and status commands. Measuring commands' `--backend`
+selects the runtime renderer; `--exe` overrides the compiled-tree selection.
+
 Reached features select dependencies and switches; a scene links nothing it does not reach.
 
 | Feature | Build effect |
 | --- | --- |
 | `renderer:scene` | `BBLITE_HAS_PBR_RENDERER`; the SDL_GPU and Dawn scene units |
-| Packaged image formats | vcpkg `png`, `jpeg`, `webp` (SDL_image codecs) |
+| Packaged image formats | Image features in `native/vcpkg.json`; their `$bblite-image` metadata selects decoding and package notices |
 | `loader:gltf`, `loader:babylon`, `data:json` | nlohmann-json |
-| `ui:rml` | vcpkg `ui` (FreeType), the pinned RmlUi artifact, DirectWrite, `BBLITE_HAS_UI` |
+| `ui:rml` | vcpkg `ui` (FreeType), the pinned RmlUi artifact, DirectWrite, `BBLITE_HAS_UI`; static Windows FreeType keeps SFNT font drivers |
 | `ui:inline-svg` | vcpkg `ui-svg` (LunaSVG) and the `-EnableSvg` RmlUi artifact; development builds always include it |
 | `text:layout` | vcpkg `text-layout` (HarfBuzz) |
 | `text:renderable`, `renderer:text` | `BBLITE_HAS_TEXT` |
 | `physics:world` | vcpkg `physics` (Bullet) |
+| `shadow:csm` | Cascade records, fitting and receiver paths through `BBLITE_SHADOWS_CSM` |
 | `navigation:recast`, `:crowd`, `:tile-cache` | vcpkg `navigation`, `navigation-crowd`, `navigation-tile-cache` |
-| `audio:engine`, `audio:decoded-buffer` | the pinned LabSound artifact; libnyquist for decoded buffers or capture |
+| `audio:engine`, `audio:decoded-buffer` | Pinned LabSound and libnyquist; direct packaged-buffer reads select container decoders from their bytes, other inputs retain all decoders |
 | `platform:window` | `BBLITE_OFFSCREEN_SURFACES` and the window presenters |
 | `input:gamepad`, `browser:file`, `audio:engine` | require an SDL build with that subsystem (`tools/build-sdl-min.ps1` flags) |
 
@@ -158,12 +165,21 @@ defaults and coordinate independent workflows. Inspect scheduling with
 `node tools/model-build-scheduling.mjs <workspace> <workers>`.
 Batch shared-header edits before population builds.
 
+Development setup installs pinned ccache. Native builds reuse objects in
+`artifacts/native-cache` and skip per-scene PCHs when ccache is active.
+Identical generated backend headers share a directory in that cache.
+`CCACHE_PATH` selects another executable; `BBLITE_NATIVE_CACHE=0` disables it.
+Without ccache, builds use the configured PCH setting. Debug configurations
+keep directory-sensitive cache keys.
+
 ## Shader compilation
 
 `process --shader d3d12|vulkan|metal|all` selects offline output; default is the
 host target. `BBLITE_SHADER_TARGET` is the environment equivalent. Dawn consumes
 WGSL and skips offline compilation unless requested. `build` deploys shaders
 but does not compile them. `TINT_PATH`/`DXC_PATH` override tools.
+Each shader directory reuses a checkpoint of its input and output bytes,
+target and compiler identities. Tint and DXC identities are shared across the run.
 
 Assets use `.cache/assets`, executed bakes `artifacts/bake-cache`, and
 Tint/DXC `artifacts/shader-cache`. `BBLITE_BAKE_CACHE=0` bypasses bake replay;
@@ -175,7 +191,7 @@ work without deleting content caches.
 Measured runs check the binary's generated/native digest, deployed payload and
 CMake configuration. Generation is keyed by the bytes of what it read (a
 checkout that rewrites unchanged files is a hit) and writes changed bytes only;
-build outputs and shader products are keyed by size and mtime; native edits
+build outputs are keyed by size and mtime; shader checkpoints use content hashes. Native edits
 refresh build stamps. Explicit payload overrides are diagnostic and bypass
 normal deployment checks. None of these checks is tamper-proof verification.
 `parity` refuses an executable built after a `native/CMakeLists.txt` edit until

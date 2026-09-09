@@ -636,860 +636,7 @@ std::uint32_t scene_material_families(const Scene& scene) {
 
 } // namespace
 
-double scene_callback_delta(const Scene& scene, double engine_delta_ms) {
-    return ${callbackDelta};
-}
-
-Scene create_scene_context(Engine& engine) {
-    Scene scene;
-    scene.engine = &engine;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    scene.surface_canvas = engine.surface_canvas;
-#endif
-    scene.clear_color = Color4{
-        ${value(clear("r"))},
-        ${value(clear("g"))},
-        ${value(clear("b"))},
-        ${value(clear("a"))},
-    };
-    return scene;
-}
-
-Surface create_surface(Engine& engine, UiElementHandle canvas) {
-    Surface surface;
-    surface.engine = &engine;
-    surface.canvas = canvas;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    if (canvas.value < engine.ui_elements.size()) {
-        engine.ui_elements[canvas.value].client_rect_requested = true;
-    }
-#endif
-    return surface;
-}
-
-void dispose_surface(Surface& surface) {
-    if (surface.disposed) {
-        *surface.disposed = true;
-    }
-}
-
-Scene create_scene_context(Surface& surface) {
-    if (!surface.engine || !surface.disposed || *surface.disposed) {
-        throw std::runtime_error(
-            "Cannot create a scene from a disposed surface.");
-    }
-    Scene scene = create_scene_context(*surface.engine);
-    scene.surface_canvas = surface.canvas;
-    return scene;
-}
-
-void add_to_scene(Scene& scene, MeshHandle mesh) {
-    require_scene_engine(scene);
-    if (mesh.value >= scene.engine->meshes.size()) {
-        throw std::runtime_error(
-            "Invalid mesh handle " + std::to_string(mesh.value) +
-            " for " + std::to_string(scene.engine->meshes.size()) +
-            " meshes.");
-    }
-    if (scene.engine->meshes[mesh.value].retired) {
-        throw std::runtime_error(
-            "Mesh '" + scene.engine->meshes[mesh.value].name +
-            "' was removed from the scene and its geometry reclaimed; "
-            "re-adding a removed mesh is outside the reached subset.");
-    }
-    scene.meshes.push_back(mesh);
-    ++scene.render_topology_version;
-    scene.material_family_mask |=
-        material_family_bit(*scene.engine, mesh);
-${options.nodeMaterials ? "    queue_node_material_group(scene, mesh);\n" : ""}\
-}
-
-// A static glTF mesh normally bakes its node world into each vertex. Once
-// scene code replaces that node's quaternion, those baked vertices would
-// rotate around the flattened asset origin. Recover the node translation and
-// scale retained by the loader, route the draw through the local vertex lanes,
-// and let the caller install the replacement rotation immediately afterward.
-void prepare_imported_mesh_quaternion_write(
-    Engine& engine,
-    MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid imported mesh handle.");
-    }
-    MeshRecord& record = engine.meshes[mesh.value];
-    if (
-        record.name.rfind("wheel", 0) != 0 ||
-        record.live_imported_transform ||
-        record.geometry >= engine.geometries.size() ||
-        engine.geometries[record.geometry].vertex_space !=
-            VertexSpace::world) {
-        return;
-    }
-    const std::array<float, 16>& matrix =
-        record.instance_parent_matrix;
-    record.position = Vec3d{
-        matrix[12], matrix[13], matrix[14]};
-    const auto column_length = [&matrix](std::size_t column) {
-        const std::size_t lane = column * 4;
-        return std::sqrt(
-            matrix[lane] * matrix[lane] +
-            matrix[lane + 1] * matrix[lane + 1] +
-            matrix[lane + 2] * matrix[lane + 2]);
-    };
-    record.scaling = Vec3{
-        column_length(0),
-        column_length(1),
-        column_length(2)};
-    record.rotation = Vec3{};
-    record.has_rotation_quaternion = false;
-    record.gpu_world_transform = true;
-    record.live_imported_transform = true;
-    ++record.transform_version;
-}
-
-void set_mesh_rotation_quaternion(
-    Engine& engine,
-    MeshHandle mesh,
-    Vec4 quaternion,
-    bool runtime_transform) {
-    prepare_imported_mesh_quaternion_write(engine, mesh);
-    MeshRecord& record = engine.meshes[mesh.value];
-    if (record.live_imported_transform) {
-        // The loader mirrors glTF's local X coordinate before retaining the
-        // wheel vertices. Conjugating a rotation by that reflection keeps
-        // X-axis roll unchanged and reverses Y/Z rotation into the same
-        // basis, so steering and combined steer+roll remain coherent.
-        quaternion.y = -quaternion.y;
-        quaternion.z = -quaternion.z;
-    }
-    record.rotation_quaternion = quaternion;
-    record.has_rotation_quaternion = true;
-    if (runtime_transform) {
-        mark_mesh_runtime_transform(engine, mesh);
-    } else {
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-// The pin's removeFromScene drops the mesh from the scene list and lets the
-// JavaScript collector free its arrays once nothing else holds them. A
-// streaming world retires meshes continuously -- a voxel chunk mesh is a
-// megabyte of vertices, and one sprint retires hundreds -- so the removal
-// frees the CPU geometry here, when no other mesh record shares it. The
-// handle stays valid; only a later add_to_scene of the same mesh refuses.
-void reclaim_unshared_geometry(Engine& engine, MeshHandle mesh) {
-    MeshRecord& record = engine.meshes[mesh.value];
-    const std::uint32_t geometry = record.geometry;
-    if (geometry == invalid_handle || geometry >= engine.geometries.size()) {
-        return;
-    }
-    record.retired = true;
-    ModelGeometry& shared = engine.geometries[geometry];
-    if (shared.owners > 1) {
-        --shared.owners;
-        return;
-    }
-    release_geometry_storage(shared);
-}
-
-// src/scene/scene-remove.ts removeFromScene: drop the mesh from the
-// scene list and mark the topology dirty (the pinned helper is
-// idempotent — removing a mesh the scene never held is a no-op). The
-// material-family mask stays monotonic: it gates which pipelines the
-// backend created, and a removal never invalidates one.
-void remove_from_scene(Scene& scene, MeshHandle mesh) {
-    require_scene_engine(scene);
-    const auto found = std::find_if(
-        scene.meshes.begin(),
-        scene.meshes.end(),
-        [mesh](const MeshHandle candidate) {
-            return candidate.value == mesh.value;
-        });
-    if (found == scene.meshes.end()) return;
-    scene.meshes.erase(found);
-    ++scene.render_topology_version;
-    reclaim_unshared_geometry(*scene.engine, mesh);
-}
-
-
-// Light removal is a topology mutation rather than a light-record disposal:
-// handles stay stable in the engine, while the scene list and receiver render
-// plan are rebuilt from the surviving membership. An old shadow task stays
-// scheduled until the replacement rebuild succeeds, matching the pin's
-// failure-safe retirement order.
-void remove_from_scene(Scene& scene, LightHandle light) {
-    require_scene_engine(scene);
-    const auto found = std::find_if(
-        scene.lights.begin(),
-        scene.lights.end(),
-        [light](const LightHandle candidate) {
-            return candidate.value == light.value;
-        });
-    if (found == scene.lights.end()) return;
-    if (light.value < scene.engine->lights.size()) {
-        const LightRecord& record = scene.engine->lights[light.value];
-        const ShadowGeneratorHandle generator = record.shadow_generator;
-        if (
-            generator.value < scene.engine->shadow_generators.size() &&
-            std::none_of(
-                scene.pending_shadow_retirements.begin(),
-                scene.pending_shadow_retirements.end(),
-                [generator](const ShadowGeneratorHandle candidate) {
-                    return candidate.value == generator.value;
-                })) {
-            scene.pending_shadow_retirements.push_back(generator);
-        }
-    }
-    scene.lights.erase(found);
-    scene.topology_rebuild_pending = true;
-    ++scene.render_topology_version;
-}
-
-void add_to_scene(Scene& scene, LightHandle light) {
-    require_scene_engine(scene);
-    if (light.value >= scene.engine->lights.size()) throw std::runtime_error("Invalid light handle.");
-    scene.lights.push_back(light);
-    ++scene.render_topology_version;
-}
-
-namespace {
-
-AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {
-    if (asset >= engine.assets.size()) {
-        throw std::runtime_error("Invalid asset handle.");
-    }
-    return engine.assets[asset];
-}
-
-}  // namespace
-
-/**
- * src/scene/transform-node.ts cloneTransformNode/cloneMeshNode over the
- * imported synthetic root. Native loading has flattened the hierarchy, so
- * the clone is a mesh-only AssetRecord: distinct mesh wrappers sharing the
- * source geometry/material state, without the container's animation groups,
- * tick, camera, lights or scene setup. The source runtime callback mirrors
- * the retained skeleton resource by registering each skinned wrapper against
- * the same pose evaluator.
- */
-AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
-    const AssetRecord& source = asset_record(engine, asset.value);
-    if (!source.lights.empty() || source.has_camera) {
-        throw std::runtime_error(
-            "Cloning an imported root with light or camera descendants is not supported.");
-    }
-    const std::vector<MeshHandle> source_meshes = source.meshes;
-    const auto clone_animation = source.clone_mesh_animation;
-    AssetRecord clone;
-    clone.source_mesh_walks = source.source_mesh_walks;
-    clone.root_position = source.root_position;
-    clone.root_rotation = source.root_rotation;
-    clone.root_scaling_reset = source.root_scaling_reset;
-    clone.clone_mesh_animation = clone_animation;
-    clone.meshes.reserve(source_meshes.size());
-    for (const MeshHandle source_mesh : source_meshes) {
-        if (source_mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord record = engine.meshes[source_mesh.value];
-        if (record.geometry < engine.geometries.size()) {
-            ++engine.geometries[record.geometry].owners;
-        }
-        record.name += "${cloneSuffix}";
-        record.feature_source_mesh =
-            record.feature_source_mesh != invalid_handle
-                ? record.feature_source_mesh
-                : source_mesh.value;
-        const MeshHandle cloned_mesh{
-            static_cast<std::uint32_t>(engine.meshes.size())};
-        engine.meshes.push_back(std::move(record));
-        clone.meshes.push_back(cloned_mesh);
-        if (clone_animation) {
-            clone_animation(source_mesh, cloned_mesh);
-        }
-    }
-    const AssetHandle cloned_asset{
-        static_cast<std::uint32_t>(engine.assets.size())};
-    engine.assets.push_back(std::move(clone));
-    return cloned_asset;
-}
-
-/**
- * src/scene/transform-node.ts cloneMeshNode, reached through
- * cloneTransformNode's own \`"_gpu" in src\` arm when the cloned node is a
- * mesh rather than an imported root. The record copy is the pin's
- * \`{ ...mesh }\` spread: position, rotation quaternion, scaling, material
- * and every GPU-backed reference travel with it, and the geometry owner
- * count is the native form of the pin's \`retain\`. The clone starts with
- * no children of its own, exactly as the pin's \`children: []\` does.
- */
-MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid mesh handle.");
-    }
-    if (engine.meshes[mesh.value].retired) {
-        throw std::runtime_error(
-            "Mesh '" + engine.meshes[mesh.value].name +
-            "' cannot be cloned: it was disposed when it left its last "
-            "scene.");
-    }
-    if (!engine.meshes[mesh.value].children.empty()) {
-        throw std::runtime_error(
-            "Mesh '" + engine.meshes[mesh.value].name +
-            "' has children; the pin clones a node's children recursively "
-            "and no reached scene clones a parented mesh.");
-    }
-    MeshRecord record = engine.meshes[mesh.value];
-    if ((record.primitive == PrimitiveKind::gltf || record.primitive == PrimitiveKind::babylon) && !record.detached_imported_mesh) {
-        const ModelGeometry& geometry = engine.geometries.at(record.geometry);
-        if ((record.primitive == PrimitiveKind::gltf && geometry.vertex_space != VertexSpace::world) ||
-            geometry.bind_vertices.size() != geometry.vertices.size() || geometry.vertices.empty()) {
-            throw std::runtime_error("Detached imported mesh clones require retained static local geometry.");
-        }
-        record.detached_imported_mesh = true;
-        record.live_imported_transform = false;
-        record.gpu_world_transform = false;
-        record.baked_world_scale = 1;
-        record.mirrored_x = false;
-        record.clockwise_front_face = false;
-        record.authored_clockwise_front_face = false;
-        if (record.imported_clone_trs) {
-            if (record.transform_version != 0) {
-                throw std::runtime_error("Cloning a transformed Babylon import requires retained source transform ownership.");
-            }
-            const auto& trs = *record.imported_clone_trs;
-            record.position = {trs.position.x, trs.position.y, trs.position.z};
-            record.rotation = trs.rotation;
-            record.scaling = trs.scaling;
-            record.has_rotation_quaternion = false;
-        }
-        Vec3 minimum = geometry.vertices.front().local_position;
-        Vec3 maximum = minimum;
-        for (const auto& vertex : geometry.vertices) {
-            const auto& p = vertex.local_position;
-            minimum = {std::min(minimum.x, p.x), std::min(minimum.y, p.y), std::min(minimum.z, p.z)};
-            maximum = {std::max(maximum.x, p.x), std::max(maximum.y, p.y), std::max(maximum.z, p.z)};
-        }
-        if (!record.has_bounds_min_override) record.bounds_min_override = minimum;
-        if (!record.has_bounds_max_override) record.bounds_max_override = maximum;
-        record.has_bounds_min_override = true;
-        record.has_bounds_max_override = true;
-    }
-    if (record.geometry < engine.geometries.size()) {
-        ++engine.geometries[record.geometry].owners;
-    }
-    record.name += "${cloneSuffix}";
-    record.parent = {};
-    record.transform_parent = {};
-    record.outer_position = {};
-    record.outer_rotation = {};
-    record.parented_meshes.clear();
-    record.feature_source_mesh =
-        record.feature_source_mesh != invalid_handle
-            ? record.feature_source_mesh
-            : mesh.value;
-    const MeshHandle clone{
-        static_cast<std::uint32_t>(engine.meshes.size())};
-    engine.meshes.push_back(std::move(record));
-    return clone;
-}
-
-void set_asset_root_position_component(
-    Engine& engine,
-    AssetHandle asset,
-    std::size_t component,
-    float value) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    const auto component_ref = [component](Vec3& vector) -> float& {
-        switch (component) {
-            case 0: return vector.x;
-            case 1: return vector.y;
-            case 2: return vector.z;
-            default:
-                throw std::runtime_error(
-                    "Imported root position component is out of range.");
-        }
-    };
-    float& root_component = component_ref(root.root_position);
-    const float delta = value - root_component;
-    root_component = value;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        component_ref(record.outer_position) += delta;
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void set_asset_root_rotation_component(
-    Engine& engine,
-    AssetHandle asset,
-    std::size_t component,
-    float value) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    const auto component_ref = [component](Vec3& vector) -> float& {
-        switch (component) {
-            case 0: return vector.x;
-            case 1: return vector.y;
-            case 2: return vector.z;
-            default:
-                throw std::runtime_error(
-                    "Imported root rotation component is out of range.");
-        }
-    };
-    float& root_component = component_ref(root.root_rotation);
-    const float delta = value - root_component;
-    root_component = value;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        component_ref(record.outer_rotation) += delta;
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void set_asset_root_position(
-    Engine& engine,
-    AssetHandle asset,
-    Vec3 value) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    const Vec3 delta{
-        value.x - root.root_position.x,
-        value.y - root.root_position.y,
-        value.z - root.root_position.z};
-    root.root_position = value;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        record.outer_position.x += delta.x;
-        record.outer_position.y += delta.y;
-        record.outer_position.z += delta.z;
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void set_asset_root_rotation(
-    Engine& engine,
-    AssetHandle asset,
-    Vec3 value) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    const Vec3 delta{
-        value.x - root.root_rotation.x,
-        value.y - root.root_rotation.y,
-        value.z - root.root_rotation.z};
-    root.root_rotation = value;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        record.outer_rotation.x += delta.x;
-        record.outer_rotation.y += delta.y;
-        record.outer_rotation.z += delta.z;
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void reset_asset_root_scaling(
-    Engine& engine,
-    AssetHandle asset) {
-    AssetRecord& root = asset_record(engine, asset.value);
-    if (root.root_scaling_reset) return;
-    root.root_scaling_reset = true;
-    for (const MeshHandle mesh : root.meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid mesh handle in imported root.");
-        }
-        MeshRecord& record = engine.meshes[mesh.value];
-        // load-gltf.ts creates the public synthetic root with scale (-1,1,1).
-        // Native glTF matrices fold that root convention into the leading X
-        // reflection. Replacing its scale with identity therefore removes the
-        // reflection by multiplying the recorded parent world on the left.
-        for (std::size_t column = 0; column < 4; ++column) {
-            record.instance_parent_matrix[column * 4] =
-                -record.instance_parent_matrix[column * 4];
-        }
-        mark_mesh_dirty(engine, mesh);
-    }
-}
-
-void add_to_scene(Scene& scene, AssetHandle asset) {
-    require_scene_engine(scene);
-    const AssetRecord& record =
-        asset_record(*scene.engine, asset.value);
-    for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
-    for (const LightHandle light : record.lights) add_to_scene(scene, light);
-    // addToScene registers the file's animation groups with the scene, which
-    // is what makes them reachable as scene.animationGroups.
-    for (const AnimationGroupHandle group : record.animation_groups) {
-        scene.animation_groups.push_back(group);
-    }
-    if (record.scene_setup) record.scene_setup(scene);
-    if (record.has_camera) scene.camera = record.camera;
-    if (record.has_clear_color) scene.clear_color = record.clear_color;
-    if (record.animation_tick) {
-        scene.before_render.push_back(record.animation_tick);
-    }
-    if (record.animation_seek) {
-        scene.animation_seekers.push_back(record.animation_seek);
-    }
-}
-
-/**
- * A container's entities, which is what a scene iterating entities and
- * calling addToScene per entity adds: the pinned container arm's own entity
- * recursion and nothing else. Its animation groups, their per-frame
- * tick, its camera and its clear colour are container-level wiring the
- * pin performs for the container itself, and a scene iterating entities
- * is usually avoiding exactly that — it drives those groups from its own
- * AnimationManager instead.
- *
- * The pin seeds a glTF container with its root node and lets each loader
- * feature append its own entities, so adding them one by one adds the
- * loader's meshes and its lights — which is what this adds in one step.
- * Generation refuses any other container.
- *
- * The animation seeker is not part of the pinned walk: it is this port's
- * deterministic-pose entry point (BBLITE_ANIMATION_SEEK_SECONDS),
- * standing for the goToFrame the browser harness calls on the same
- * groups, so it follows the asset rather than the way it was added.
- */
-void add_asset_entities(Scene& scene, AssetHandle asset) {
-    require_scene_engine(scene);
-    const AssetRecord& record =
-        asset_record(*scene.engine, asset.value);
-    for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
-    for (const LightHandle light : record.lights) add_to_scene(scene, light);
-    if (record.animation_seek) {
-        scene.animation_seekers.push_back(record.animation_seek);
-    }
-}
-
-void add_to_scene(Scene& scene, const SceneNodeHandle& node) {
-    std::visit(
-        [&scene](const auto& concrete) {
-            using Handle = std::decay_t<decltype(concrete)>;
-            if constexpr (std::is_same_v<Handle, AssetHandle>) {
-                add_asset_entities(scene, concrete);
-            } else if constexpr (std::is_same_v<Handle, TransformNodeHandle>) {
-                ${options.transformNodes
-                  ? "add_to_scene(scene, concrete);"
-                  : 'throw std::runtime_error("No transform-node factory is reached by this scene.");'}
-            } else {
-                add_to_scene(scene, concrete);
-            }
-        },
-        node);
-}
-
-void on_before_render(
-    Scene& scene,
-    js::Callback<void(float)> callback) {
-    scene.before_render.insert(
-        scene.before_render.begin(),
-        std::move(callback));
-}
-
-void on_scene_dispose(
-    Scene& scene,
-    js::Callback<void()> callback) {
-    scene.disposables.push_back(std::move(callback));
-}
-
-void on_key_down(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void(const PlatformKeyboardEvent&)> callback,
-    bool once) {
-    engine.key_down_callbacks.add(identity, std::move(callback), once);
-}
-void off_key_down(Engine& engine, std::size_t identity) {
-    engine.key_down_callbacks.remove(identity);
-}
-
-void on_key_up(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void(const PlatformKeyboardEvent&)> callback,
-    bool once) {
-    engine.key_up_callbacks.add(identity, std::move(callback), once);
-}
-void off_key_up(Engine& engine, std::size_t identity) {
-    engine.key_up_callbacks.remove(identity);
-}
-
-void on_pointer_down(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void()> callback,
-    bool once) {
-    engine.pointer_down_callbacks.add(identity, std::move(callback), once);
-}
-void off_pointer_down(Engine& engine, std::size_t identity) {
-    engine.pointer_down_callbacks.remove(identity);
-}
-
-void on_canvas_click(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void()> callback,
-    bool once) {
-    engine.canvas_click_callbacks.add(identity, std::move(callback), once);
-}
-void off_canvas_click(Engine& engine, std::size_t identity) {
-    engine.canvas_click_callbacks.remove(identity);
-}
-
-void on_mouse_down(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
-    bool once) {
-    engine.mouse_down_callbacks.add(identity, std::move(callback), once);
-}
-void off_mouse_down(Engine& engine, std::size_t identity) {
-    engine.mouse_down_callbacks.remove(identity);
-}
-
-void on_mouse_up(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
-    bool once) {
-    engine.mouse_up_callbacks.add(identity, std::move(callback), once);
-}
-void off_mouse_up(Engine& engine, std::size_t identity) {
-    engine.mouse_up_callbacks.remove(identity);
-}
-
-void on_mouse_move(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
-    bool once) {
-    engine.mouse_move_callbacks.add(identity, std::move(callback), once);
-}
-void off_mouse_move(Engine& engine, std::size_t identity) {
-    engine.mouse_move_callbacks.remove(identity);
-}
-
-void on_mouse_wheel(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
-    bool once) {
-    engine.mouse_wheel_callbacks.add(identity, std::move(callback), once);
-}
-void off_mouse_wheel(Engine& engine, std::size_t identity) {
-    engine.mouse_wheel_callbacks.remove(identity);
-}
-
-void on_mouse_cancel(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
-    bool once) {
-    engine.mouse_cancel_callbacks.add(identity, std::move(callback), once);
-}
-void off_mouse_cancel(Engine& engine, std::size_t identity) {
-    engine.mouse_cancel_callbacks.remove(identity);
-}
-
-void on_window_resize(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void()> callback,
-    bool once) {
-    engine.window_resize_callbacks.add(identity, std::move(callback), once);
-}
-void off_window_resize(Engine& engine, std::size_t identity) {
-    engine.window_resize_callbacks.remove(identity);
-}
-
-void on_pointer_lock_change(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void()> callback,
-    bool once) {
-    engine.pointer_lock_change_callbacks.add(identity, std::move(callback), once);
-}
-void off_pointer_lock_change(Engine& engine, std::size_t identity) {
-    engine.pointer_lock_change_callbacks.remove(identity);
-}
-
-void set_canvas_cursor(Engine& engine, std::string cursor) {
-    engine.canvas_cursor = std::move(cursor);
-}
-
-void focus_canvas(Engine& engine) {
-    engine.canvas_focused = true;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    // Canvas focus replaces DOM focus, just as button focus replaces canvas
-    // focus. Otherwise a stale button still reports activeElement and paints
-    // its focus-visible outline after the source has focused the canvas.
-    engine.ui_focused_element = {};
-    ++engine.ui_focus_revision;
-#endif
-}
-
-void request_pointer_lock(Engine& engine) {
-    engine.pointer_lock_requested = true;
-}
-
-void exit_pointer_lock(Engine& engine) {
-    engine.pointer_lock_requested = false;
-}
-
-void on_visibility_change(
-    Engine& engine,
-    std::size_t identity,
-    std::function<void(bool)> callback,
-    bool once) {
-    engine.visibility_change_callbacks.add(identity, std::move(callback), once);
-}
-void off_visibility_change(Engine& engine, std::size_t identity) {
-    engine.visibility_change_callbacks.remove(identity);
-}
-
-void drain_scene_deferred_builders(Scene& scene) {
-    while (!scene.deferred_builders.empty()) {
-        auto builders = std::move(scene.deferred_builders);
-        scene.deferred_builders.clear();
-        // Array.map stops on a synchronous throw. Async wrappers instead
-        // reject, allowing every callback in this batch to run first.
-        std::exception_ptr failure;
-        for (const auto& builder : builders) {
-            try {
-                builder();
-            } catch (...) {
-                if (builder.failure_mode == SceneDeferredFailure::synchronous_throw) throw;
-                if (!failure) failure = std::current_exception();
-            }
-        }
-        if (failure) std::rethrow_exception(failure);
-    }
-}
-
-void register_scene(Scene& scene) {
-    require_scene_engine(scene);
-    const auto found = std::find_if(
-        scene.engine->registered_scenes.begin(),
-        scene.engine->registered_scenes.end(),
-        [&scene](const std::shared_ptr<Scene>& registered) {
-            return registered && registered->shares_identity(scene);
-        });
-    if (found != scene.engine->registered_scenes.end()) return;${managerSeek}${vatSeek}
-    drain_scene_deferred_builders(scene);
-    // The source builders read public material arrays when registration
-    // creates their UBOs; direct later array writes do not bump _uboVersion.
-    for (const auto mesh : scene.meshes) {
-        const auto material = scene.engine->meshes.at(mesh.value).material;
-        if (material.value < scene.engine->materials.size()) {
-            auto& record = scene.engine->materials[material.value];
-            if (!record.source_colors_registered) {
-                project_material_source_colors(record);
-                record.source_colors_registered = true;
-            }
-        }
-    }
-    scene.material_family_mask = scene_material_families(scene);
-${options.text ? `    std::stable_sort(scene.state->text_renderables.begin(), scene.state->text_renderables.end(),
-        [](const auto& a, const auto& b) { return a->order < b->order; });\n` : ""}\
-    scene.engine->registered_scenes.push_back(
-        std::make_shared<Scene>(scene));
-}
-
-void unregister_scene(Scene& scene) {
-    require_scene_engine(scene);
-    scene.engine->registered_scenes.erase(
-        std::remove_if(
-            scene.engine->registered_scenes.begin(),
-            scene.engine->registered_scenes.end(),
-            [&scene](const std::shared_ptr<Scene>& registered) {
-                return registered && registered->shares_identity(scene);
-            }),
-        scene.engine->registered_scenes.end());
-}
-
-void dispose_scene(Scene& scene) {
-    if (scene.disposed) return;
-    scene.disposed = true;
-    unregister_scene(scene);
-    auto disposables = std::move(scene.disposables);
-    scene.disposables.clear();
-    for (const auto& dispose : disposables) {
-        dispose();
-    }
-    scene.meshes.clear();
-    scene.lights.clear();
-    scene.tasks.clear();
-    scene.pending_shadow_retirements.clear();
-    scene.animation_groups.clear();
-    scene.billboard_systems.clear();
-    scene.depth_hosted_sprite_layers.clear();
-    scene.splat_meshes.clear();
-${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
-    scene.before_render.clear();
-    scene.animation_seekers.clear();
-    scene.deferred_builders.clear();
-${options.nodeMaterials ? "    scene.state->node_material_groups.clear();\n" : ""}\
-    scene.camera = {};
-}
-
-void rebuild_scene_renderables(Scene& scene) {
-    require_scene_engine(scene);
-    for (const ShadowGeneratorHandle generator :
-         scene.pending_shadow_retirements) {
-        if (generator.value >= scene.engine->shadow_generators.size()) {
-            continue;
-        }
-        const bool still_active = std::any_of(
-            scene.lights.begin(),
-            scene.lights.end(),
-            [&](const LightHandle light) {
-                return
-                    light.value < scene.engine->lights.size() &&
-                    scene.engine->lights[light.value]
-                            .shadow_generator.value == generator.value;
-            });
-        if (still_active) continue;
-        ShadowGeneratorRecord& shadow =
-            scene.engine->shadow_generators[generator.value];
-        // Every caster pass the generator built: one for a single-map
-        // generator, one per cascade layer for a cascaded one.
-        const std::vector<TaskHandle> retired = shadow.caster_tasks;
-        scene.tasks.erase(
-            std::remove_if(
-                scene.tasks.begin(),
-                scene.tasks.end(),
-                [&retired](const TaskHandle candidate) {
-                    return std::any_of(
-                        retired.begin(),
-                        retired.end(),
-                        [candidate](const TaskHandle task) {
-                            return candidate.value == task.value;
-                        });
-                }),
-            scene.tasks.end());
-        shadow.caster_tasks.clear();
-        shadow.map_target = RenderTargetHandle{};
-        for (LightRecord& light : scene.engine->lights) {
-            if (light.shadow_generator.value == generator.value) {
-                light.shadow_generator = ShadowGeneratorHandle{};
-            }
-        }
-    }
-    scene.pending_shadow_retirements.clear();
-    scene.topology_rebuild_pending = false;
-    ++scene.render_topology_version;
-}
-
-void enable_scene_transmission(Scene& scene) {
+${this.sceneCreationSource(callbackDelta, value, clear)}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix)}${this.assetRootSource()}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
@@ -2601,4 +1748,917 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
       : "";
   }
 
+
+  private sceneCreationSource(
+    callbackDelta: string,
+    value: (input: number) => string,
+    clear: (name: string) => number,
+  ): string {
+    return `double scene_callback_delta(const Scene& scene, double engine_delta_ms) {
+    return ${callbackDelta};
+}
+
+Scene create_scene_context(Engine& engine) {
+    Scene scene;
+    scene.engine = &engine;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    scene.surface_canvas = engine.surface_canvas;
+#endif
+    scene.clear_color = Color4{
+        ${value(clear("r"))},
+        ${value(clear("g"))},
+        ${value(clear("b"))},
+        ${value(clear("a"))},
+    };
+    return scene;
+}
+
+Surface create_surface(Engine& engine, UiElementHandle canvas) {
+    Surface surface;
+    surface.engine = &engine;
+    surface.canvas = canvas;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (canvas.value < engine.ui_elements.size()) {
+        engine.ui_elements[canvas.value].client_rect_requested = true;
+    }
+#endif
+    return surface;
+}
+
+void dispose_surface(Surface& surface) {
+    if (surface.disposed) {
+        *surface.disposed = true;
+    }
+}
+
+Scene create_scene_context(Surface& surface) {
+    if (!surface.engine || !surface.disposed || *surface.disposed) {
+        throw std::runtime_error(
+            "Cannot create a scene from a disposed surface.");
+    }
+    Scene scene = create_scene_context(*surface.engine);
+    scene.surface_canvas = surface.canvas;
+    return scene;
+}
+
+`;
+  }
+
+
+  private meshMembershipSource(
+    options: SceneCoreOptions,
+  ): string {
+    return `void add_to_scene(Scene& scene, MeshHandle mesh) {
+    require_scene_engine(scene);
+    if (mesh.value >= scene.engine->meshes.size()) {
+        throw std::runtime_error(
+            "Invalid mesh handle " + std::to_string(mesh.value) +
+            " for " + std::to_string(scene.engine->meshes.size()) +
+            " meshes.");
+    }
+    if (scene.engine->meshes[mesh.value].retired) {
+        throw std::runtime_error(
+            "Mesh '" + scene.engine->meshes[mesh.value].name +
+            "' was removed from the scene and its geometry reclaimed; "
+            "re-adding a removed mesh is outside the reached subset.");
+    }
+    scene.meshes.push_back(mesh);
+    ++scene.render_topology_version;
+    scene.material_family_mask |=
+        material_family_bit(*scene.engine, mesh);
+${options.nodeMaterials ? "    queue_node_material_group(scene, mesh);\n" : ""}\
+}
+
+// A static glTF mesh normally bakes its node world into each vertex. Once
+// scene code replaces that node's quaternion, those baked vertices would
+// rotate around the flattened asset origin. Recover the node translation and
+// scale retained by the loader, route the draw through the local vertex lanes,
+// and let the caller install the replacement rotation immediately afterward.
+void prepare_imported_mesh_quaternion_write(
+    Engine& engine,
+    MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid imported mesh handle.");
+    }
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (
+        record.name.rfind("wheel", 0) != 0 ||
+        record.live_imported_transform ||
+        record.geometry >= engine.geometries.size() ||
+        engine.geometries[record.geometry].vertex_space !=
+            VertexSpace::world) {
+        return;
+    }
+    const std::array<float, 16>& matrix =
+        record.instance_parent_matrix;
+    record.position = Vec3d{
+        matrix[12], matrix[13], matrix[14]};
+    const auto column_length = [&matrix](std::size_t column) {
+        const std::size_t lane = column * 4;
+        return std::sqrt(
+            matrix[lane] * matrix[lane] +
+            matrix[lane + 1] * matrix[lane + 1] +
+            matrix[lane + 2] * matrix[lane + 2]);
+    };
+    record.scaling = Vec3{
+        column_length(0),
+        column_length(1),
+        column_length(2)};
+    record.rotation = Vec3{};
+    record.has_rotation_quaternion = false;
+    record.gpu_world_transform = true;
+    record.live_imported_transform = true;
+    ++record.transform_version;
+}
+
+void set_mesh_rotation_quaternion(
+    Engine& engine,
+    MeshHandle mesh,
+    Vec4 quaternion,
+    bool runtime_transform) {
+    prepare_imported_mesh_quaternion_write(engine, mesh);
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (record.live_imported_transform) {
+        // The loader mirrors glTF's local X coordinate before retaining the
+        // wheel vertices. Conjugating a rotation by that reflection keeps
+        // X-axis roll unchanged and reverses Y/Z rotation into the same
+        // basis, so steering and combined steer+roll remain coherent.
+        quaternion.y = -quaternion.y;
+        quaternion.z = -quaternion.z;
+    }
+    record.rotation_quaternion = quaternion;
+    record.has_rotation_quaternion = true;
+    if (runtime_transform) {
+        mark_mesh_runtime_transform(engine, mesh);
+    } else {
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
+// The pin's removeFromScene drops the mesh from the scene list and lets the
+// JavaScript collector free its arrays once nothing else holds them. A
+// streaming world retires meshes continuously -- a voxel chunk mesh is a
+// megabyte of vertices, and one sprint retires hundreds -- so the removal
+// frees the CPU geometry here, when no other mesh record shares it. The
+// handle stays valid; only a later add_to_scene of the same mesh refuses.
+void reclaim_unshared_geometry(Engine& engine, MeshHandle mesh) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    const std::uint32_t geometry = record.geometry;
+    if (geometry == invalid_handle || geometry >= engine.geometries.size()) {
+        return;
+    }
+    record.retired = true;
+    ModelGeometry& shared = engine.geometries[geometry];
+    if (shared.owners > 1) {
+        --shared.owners;
+        return;
+    }
+    release_geometry_storage(shared);
+}
+
+// src/scene/scene-remove.ts removeFromScene: drop the mesh from the
+// scene list and mark the topology dirty (the pinned helper is
+// idempotent — removing a mesh the scene never held is a no-op). The
+// material-family mask stays monotonic: it gates which pipelines the
+// backend created, and a removal never invalidates one.
+void remove_from_scene(Scene& scene, MeshHandle mesh) {
+    require_scene_engine(scene);
+    const auto found = std::find_if(
+        scene.meshes.begin(),
+        scene.meshes.end(),
+        [mesh](const MeshHandle candidate) {
+            return candidate.value == mesh.value;
+        });
+    if (found == scene.meshes.end()) return;
+    scene.meshes.erase(found);
+    ++scene.render_topology_version;
+    reclaim_unshared_geometry(*scene.engine, mesh);
+}
+
+
+// Light removal is a topology mutation rather than a light-record disposal:
+// handles stay stable in the engine, while the scene list and receiver render
+// plan are rebuilt from the surviving membership. An old shadow task stays
+// scheduled until the replacement rebuild succeeds, matching the pin's
+// failure-safe retirement order.
+void remove_from_scene(Scene& scene, LightHandle light) {
+    require_scene_engine(scene);
+    const auto found = std::find_if(
+        scene.lights.begin(),
+        scene.lights.end(),
+        [light](const LightHandle candidate) {
+            return candidate.value == light.value;
+        });
+    if (found == scene.lights.end()) return;
+#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+    if (light.value < scene.engine->lights.size()) {
+        const LightRecord& record = scene.engine->lights[light.value];
+        const ShadowGeneratorHandle generator = record.shadow_generator;
+        if (
+            generator.value < scene.engine->shadow_generators.size() &&
+            std::none_of(
+                scene.pending_shadow_retirements.begin(),
+                scene.pending_shadow_retirements.end(),
+                [generator](const ShadowGeneratorHandle candidate) {
+                    return candidate.value == generator.value;
+                })) {
+            scene.pending_shadow_retirements.push_back(generator);
+        }
+    }
+#endif
+    scene.lights.erase(found);
+    scene.topology_rebuild_pending = true;
+    ++scene.render_topology_version;
+}
+
+void add_to_scene(Scene& scene, LightHandle light) {
+    require_scene_engine(scene);
+    if (light.value >= scene.engine->lights.size()) throw std::runtime_error("Invalid light handle.");
+    scene.lights.push_back(light);
+    ++scene.render_topology_version;
+}
+
+namespace {
+
+`;
+  }
+
+
+  private assetCloneSource(
+    cloneSuffix: string,
+  ): string {
+    return `AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {
+    if (asset >= engine.assets.size()) {
+        throw std::runtime_error("Invalid asset handle.");
+    }
+    return engine.assets[asset];
+}
+
+}  // namespace
+
+/**
+ * src/scene/transform-node.ts cloneTransformNode/cloneMeshNode over the
+ * imported synthetic root. Native loading has flattened the hierarchy, so
+ * the clone is a mesh-only AssetRecord: distinct mesh wrappers sharing the
+ * source geometry/material state, without the container's animation groups,
+ * tick, camera, lights or scene setup. The source runtime callback mirrors
+ * the retained skeleton resource by registering each skinned wrapper against
+ * the same pose evaluator.
+ */
+AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
+    const AssetRecord& source = asset_record(engine, asset.value);
+    if (!source.lights.empty() || source.has_camera) {
+        throw std::runtime_error(
+            "Cloning an imported root with light or camera descendants is not supported.");
+    }
+    const std::vector<MeshHandle> source_meshes = source.meshes;
+    const auto clone_animation = source.clone_mesh_animation;
+    AssetRecord clone;
+    clone.source_mesh_walks = source.source_mesh_walks;
+    clone.root_position = source.root_position;
+    clone.root_rotation = source.root_rotation;
+    clone.root_scaling_reset = source.root_scaling_reset;
+    clone.clone_mesh_animation = clone_animation;
+    clone.meshes.reserve(source_meshes.size());
+    for (const MeshHandle source_mesh : source_meshes) {
+        if (source_mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord record = engine.meshes[source_mesh.value];
+        if (record.geometry < engine.geometries.size()) {
+            ++engine.geometries[record.geometry].owners;
+        }
+        record.name += "${cloneSuffix}";
+        record.feature_source_mesh =
+            record.feature_source_mesh != invalid_handle
+                ? record.feature_source_mesh
+                : source_mesh.value;
+        const MeshHandle cloned_mesh{
+            static_cast<std::uint32_t>(engine.meshes.size())};
+        engine.meshes.push_back(std::move(record));
+        clone.meshes.push_back(cloned_mesh);
+        if (clone_animation) {
+            clone_animation(source_mesh, cloned_mesh);
+        }
+    }
+    const AssetHandle cloned_asset{
+        static_cast<std::uint32_t>(engine.assets.size())};
+    engine.assets.push_back(std::move(clone));
+    return cloned_asset;
+}
+
+/**
+ * src/scene/transform-node.ts cloneMeshNode, reached through
+ * cloneTransformNode's own \`"_gpu" in src\` arm when the cloned node is a
+ * mesh rather than an imported root. The record copy is the pin's
+ * \`{ ...mesh }\` spread: position, rotation quaternion, scaling, material
+ * and every GPU-backed reference travel with it, and the geometry owner
+ * count is the native form of the pin's \`retain\`. The clone starts with
+ * no children of its own, exactly as the pin's \`children: []\` does.
+ */
+MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh handle.");
+    }
+    if (engine.meshes[mesh.value].retired) {
+        throw std::runtime_error(
+            "Mesh '" + engine.meshes[mesh.value].name +
+            "' cannot be cloned: it was disposed when it left its last "
+            "scene.");
+    }
+    if (!engine.meshes[mesh.value].children.empty()) {
+        throw std::runtime_error(
+            "Mesh '" + engine.meshes[mesh.value].name +
+            "' has children; the pin clones a node's children recursively "
+            "and no reached scene clones a parented mesh.");
+    }
+    MeshRecord record = engine.meshes[mesh.value];
+    if ((record.primitive == PrimitiveKind::gltf || record.primitive == PrimitiveKind::babylon) && !record.detached_imported_mesh) {
+        const ModelGeometry& geometry = engine.geometries.at(record.geometry);
+        if ((record.primitive == PrimitiveKind::gltf && geometry.vertex_space != VertexSpace::world) ||
+            geometry.bind_vertices.size() != geometry.vertices.size() || geometry.vertices.empty()) {
+            throw std::runtime_error("Detached imported mesh clones require retained static local geometry.");
+        }
+        record.detached_imported_mesh = true;
+        record.live_imported_transform = false;
+        record.gpu_world_transform = false;
+        record.baked_world_scale = 1;
+        record.mirrored_x = false;
+        record.clockwise_front_face = false;
+        record.authored_clockwise_front_face = false;
+        if (record.imported_clone_trs) {
+            if (record.transform_version != 0) {
+                throw std::runtime_error("Cloning a transformed Babylon import requires retained source transform ownership.");
+            }
+            const auto& trs = *record.imported_clone_trs;
+            record.position = {trs.position.x, trs.position.y, trs.position.z};
+            record.rotation = trs.rotation;
+            record.scaling = trs.scaling;
+            record.has_rotation_quaternion = false;
+        }
+        Vec3 minimum = geometry.vertices.front().local_position;
+        Vec3 maximum = minimum;
+        for (const auto& vertex : geometry.vertices) {
+            const auto& p = vertex.local_position;
+            minimum = {std::min(minimum.x, p.x), std::min(minimum.y, p.y), std::min(minimum.z, p.z)};
+            maximum = {std::max(maximum.x, p.x), std::max(maximum.y, p.y), std::max(maximum.z, p.z)};
+        }
+        if (!record.has_bounds_min_override) record.bounds_min_override = minimum;
+        if (!record.has_bounds_max_override) record.bounds_max_override = maximum;
+        record.has_bounds_min_override = true;
+        record.has_bounds_max_override = true;
+    }
+    if (record.geometry < engine.geometries.size()) {
+        ++engine.geometries[record.geometry].owners;
+    }
+    record.name += "${cloneSuffix}";
+    record.parent = {};
+    record.transform_parent = {};
+    record.outer_position = {};
+    record.outer_rotation = {};
+    record.parented_meshes.clear();
+    record.feature_source_mesh =
+        record.feature_source_mesh != invalid_handle
+            ? record.feature_source_mesh
+            : mesh.value;
+    const MeshHandle clone{
+        static_cast<std::uint32_t>(engine.meshes.size())};
+    engine.meshes.push_back(std::move(record));
+    return clone;
+}
+
+`;
+  }
+
+
+  private assetRootSource(
+
+  ): string {
+    return `void set_asset_root_position_component(
+    Engine& engine,
+    AssetHandle asset,
+    std::size_t component,
+    float value) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    const auto component_ref = [component](Vec3& vector) -> float& {
+        switch (component) {
+            case 0: return vector.x;
+            case 1: return vector.y;
+            case 2: return vector.z;
+            default:
+                throw std::runtime_error(
+                    "Imported root position component is out of range.");
+        }
+    };
+    float& root_component = component_ref(root.root_position);
+    const float delta = value - root_component;
+    root_component = value;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        component_ref(record.outer_position) += delta;
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
+void set_asset_root_rotation_component(
+    Engine& engine,
+    AssetHandle asset,
+    std::size_t component,
+    float value) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    const auto component_ref = [component](Vec3& vector) -> float& {
+        switch (component) {
+            case 0: return vector.x;
+            case 1: return vector.y;
+            case 2: return vector.z;
+            default:
+                throw std::runtime_error(
+                    "Imported root rotation component is out of range.");
+        }
+    };
+    float& root_component = component_ref(root.root_rotation);
+    const float delta = value - root_component;
+    root_component = value;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        component_ref(record.outer_rotation) += delta;
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
+void set_asset_root_position(
+    Engine& engine,
+    AssetHandle asset,
+    Vec3 value) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    const Vec3 delta{
+        value.x - root.root_position.x,
+        value.y - root.root_position.y,
+        value.z - root.root_position.z};
+    root.root_position = value;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        record.outer_position.x += delta.x;
+        record.outer_position.y += delta.y;
+        record.outer_position.z += delta.z;
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
+void set_asset_root_rotation(
+    Engine& engine,
+    AssetHandle asset,
+    Vec3 value) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    const Vec3 delta{
+        value.x - root.root_rotation.x,
+        value.y - root.root_rotation.y,
+        value.z - root.root_rotation.z};
+    root.root_rotation = value;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        record.outer_rotation.x += delta.x;
+        record.outer_rotation.y += delta.y;
+        record.outer_rotation.z += delta.z;
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
+void reset_asset_root_scaling(
+    Engine& engine,
+    AssetHandle asset) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    if (root.root_scaling_reset) return;
+    root.root_scaling_reset = true;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        // load-gltf.ts creates the public synthetic root with scale (-1,1,1).
+        // Native glTF matrices fold that root convention into the leading X
+        // reflection. Replacing its scale with identity therefore removes the
+        // reflection by multiplying the recorded parent world on the left.
+        for (std::size_t column = 0; column < 4; ++column) {
+            record.instance_parent_matrix[column * 4] =
+                -record.instance_parent_matrix[column * 4];
+        }
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
+void add_to_scene(Scene& scene, AssetHandle asset) {
+    require_scene_engine(scene);
+    const AssetRecord& record =
+        asset_record(*scene.engine, asset.value);
+    for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
+    for (const LightHandle light : record.lights) add_to_scene(scene, light);
+    // addToScene registers the file's animation groups with the scene, which
+    // is what makes them reachable as scene.animationGroups.
+    for (const AnimationGroupHandle group : record.animation_groups) {
+        scene.animation_groups.push_back(group);
+    }
+    if (record.scene_setup) record.scene_setup(scene);
+    if (record.has_camera) scene.camera = record.camera;
+    if (record.has_clear_color) scene.clear_color = record.clear_color;
+    if (record.animation_tick) {
+        scene.before_render.push_back(record.animation_tick);
+    }
+    if (record.animation_seek) {
+        scene.animation_seekers.push_back(record.animation_seek);
+    }
+}
+
+/**
+ * A container's entities, which is what a scene iterating entities and
+ * calling addToScene per entity adds: the pinned container arm's own entity
+ * recursion and nothing else. Its animation groups, their per-frame
+ * tick, its camera and its clear colour are container-level wiring the
+ * pin performs for the container itself, and a scene iterating entities
+ * is usually avoiding exactly that — it drives those groups from its own
+ * AnimationManager instead.
+ *
+ * The pin seeds a glTF container with its root node and lets each loader
+ * feature append its own entities, so adding them one by one adds the
+ * loader's meshes and its lights — which is what this adds in one step.
+ * Generation refuses any other container.
+ *
+ * The animation seeker is not part of the pinned walk: it is this port's
+ * deterministic-pose entry point (BBLITE_ANIMATION_SEEK_SECONDS),
+ * standing for the goToFrame the browser harness calls on the same
+ * groups, so it follows the asset rather than the way it was added.
+ */
+`;
+  }
+
+
+  private assetMembershipSource(
+    options: SceneCoreOptions,
+  ): string {
+    return `void add_asset_entities(Scene& scene, AssetHandle asset) {
+    require_scene_engine(scene);
+    const AssetRecord& record =
+        asset_record(*scene.engine, asset.value);
+    for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
+    for (const LightHandle light : record.lights) add_to_scene(scene, light);
+    if (record.animation_seek) {
+        scene.animation_seekers.push_back(record.animation_seek);
+    }
+}
+
+void add_to_scene(Scene& scene, const SceneNodeHandle& node) {
+    std::visit(
+        [&scene](const auto& concrete) {
+            using Handle = std::decay_t<decltype(concrete)>;
+            if constexpr (std::is_same_v<Handle, AssetHandle>) {
+                add_asset_entities(scene, concrete);
+            } else if constexpr (std::is_same_v<Handle, TransformNodeHandle>) {
+                ${options.transformNodes
+                  ? "add_to_scene(scene, concrete);"
+                  : 'throw std::runtime_error("No transform-node factory is reached by this scene.");'}
+            } else {
+                add_to_scene(scene, concrete);
+            }
+        },
+        node);
+}
+
+`;
+  }
+
+
+  private eventRegistrationSource(
+
+  ): string {
+    return `void on_before_render(
+    Scene& scene,
+    js::Callback<void(float)> callback) {
+    scene.before_render.insert(
+        scene.before_render.begin(),
+        std::move(callback));
+}
+
+void on_scene_dispose(
+    Scene& scene,
+    js::Callback<void()> callback) {
+    scene.disposables.push_back(std::move(callback));
+}
+
+void on_key_down(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void(const PlatformKeyboardEvent&)> callback,
+    bool once) {
+    engine.key_down_callbacks.add(identity, std::move(callback), once);
+}
+void off_key_down(Engine& engine, std::size_t identity) {
+    engine.key_down_callbacks.remove(identity);
+}
+
+void on_key_up(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void(const PlatformKeyboardEvent&)> callback,
+    bool once) {
+    engine.key_up_callbacks.add(identity, std::move(callback), once);
+}
+void off_key_up(Engine& engine, std::size_t identity) {
+    engine.key_up_callbacks.remove(identity);
+}
+
+void on_pointer_down(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once) {
+    engine.pointer_down_callbacks.add(identity, std::move(callback), once);
+}
+void off_pointer_down(Engine& engine, std::size_t identity) {
+    engine.pointer_down_callbacks.remove(identity);
+}
+
+void on_canvas_click(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once) {
+    engine.canvas_click_callbacks.add(identity, std::move(callback), once);
+}
+void off_canvas_click(Engine& engine, std::size_t identity) {
+    engine.canvas_click_callbacks.remove(identity);
+}
+
+void on_mouse_down(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_down_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_down(Engine& engine, std::size_t identity) {
+    engine.mouse_down_callbacks.remove(identity);
+}
+
+void on_mouse_up(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_up_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_up(Engine& engine, std::size_t identity) {
+    engine.mouse_up_callbacks.remove(identity);
+}
+
+void on_mouse_move(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_move_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_move(Engine& engine, std::size_t identity) {
+    engine.mouse_move_callbacks.remove(identity);
+}
+
+void on_mouse_wheel(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_wheel_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_wheel(Engine& engine, std::size_t identity) {
+    engine.mouse_wheel_callbacks.remove(identity);
+}
+
+void on_mouse_cancel(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_cancel_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_cancel(Engine& engine, std::size_t identity) {
+    engine.mouse_cancel_callbacks.remove(identity);
+}
+
+void on_window_resize(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once) {
+    engine.window_resize_callbacks.add(identity, std::move(callback), once);
+}
+void off_window_resize(Engine& engine, std::size_t identity) {
+    engine.window_resize_callbacks.remove(identity);
+}
+
+void on_pointer_lock_change(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once) {
+    engine.pointer_lock_change_callbacks.add(identity, std::move(callback), once);
+}
+void off_pointer_lock_change(Engine& engine, std::size_t identity) {
+    engine.pointer_lock_change_callbacks.remove(identity);
+}
+
+void set_canvas_cursor(Engine& engine, std::string cursor) {
+    engine.canvas_cursor = std::move(cursor);
+}
+
+void focus_canvas(Engine& engine) {
+    engine.canvas_focused = true;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    // Canvas focus replaces DOM focus, just as button focus replaces canvas
+    // focus. Otherwise a stale button still reports activeElement and paints
+    // its focus-visible outline after the source has focused the canvas.
+    engine.ui_focused_element = {};
+    ++engine.ui_focus_revision;
+#endif
+}
+
+void request_pointer_lock(Engine& engine) {
+    engine.pointer_lock_requested = true;
+}
+
+void exit_pointer_lock(Engine& engine) {
+    engine.pointer_lock_requested = false;
+}
+
+void on_visibility_change(
+    Engine& engine,
+    std::size_t identity,
+    std::function<void(bool)> callback,
+    bool once) {
+    engine.visibility_change_callbacks.add(identity, std::move(callback), once);
+}
+void off_visibility_change(Engine& engine, std::size_t identity) {
+    engine.visibility_change_callbacks.remove(identity);
+}
+
+`;
+  }
+
+
+  private sceneLifecycleSource(
+    managerSeek: string,
+    vatSeek: string,
+    options: SceneCoreOptions,
+  ): string {
+    return `void drain_scene_deferred_builders(Scene& scene) {
+    while (!scene.deferred_builders.empty()) {
+        auto builders = std::move(scene.deferred_builders);
+        scene.deferred_builders.clear();
+        // Array.map stops on a synchronous throw. Async wrappers instead
+        // reject, allowing every callback in this batch to run first.
+        std::exception_ptr failure;
+        for (const auto& builder : builders) {
+            try {
+                builder();
+            } catch (...) {
+                if (builder.failure_mode == SceneDeferredFailure::synchronous_throw) throw;
+                if (!failure) failure = std::current_exception();
+            }
+        }
+        if (failure) std::rethrow_exception(failure);
+    }
+}
+
+void register_scene(Scene& scene) {
+    require_scene_engine(scene);
+    const auto found = std::find_if(
+        scene.engine->registered_scenes.begin(),
+        scene.engine->registered_scenes.end(),
+        [&scene](const std::shared_ptr<Scene>& registered) {
+            return registered && registered->shares_identity(scene);
+        });
+    if (found != scene.engine->registered_scenes.end()) return;${managerSeek}${vatSeek}
+    drain_scene_deferred_builders(scene);
+    // The source builders read public material arrays when registration
+    // creates their UBOs; direct later array writes do not bump _uboVersion.
+    for (const auto mesh : scene.meshes) {
+        const auto material = scene.engine->meshes.at(mesh.value).material;
+        if (material.value < scene.engine->materials.size()) {
+            auto& record = scene.engine->materials[material.value];
+            if (!record.source_colors_registered) {
+                project_material_source_colors(record);
+                record.source_colors_registered = true;
+            }
+        }
+    }
+    scene.material_family_mask = scene_material_families(scene);
+${options.text ? `    std::stable_sort(scene.state->text_renderables.begin(), scene.state->text_renderables.end(),
+        [](const auto& a, const auto& b) { return a->order < b->order; });\n` : ""}\
+    scene.engine->registered_scenes.push_back(
+        std::make_shared<Scene>(scene));
+}
+
+void unregister_scene(Scene& scene) {
+    require_scene_engine(scene);
+    scene.engine->registered_scenes.erase(
+        std::remove_if(
+            scene.engine->registered_scenes.begin(),
+            scene.engine->registered_scenes.end(),
+            [&scene](const std::shared_ptr<Scene>& registered) {
+                return registered && registered->shares_identity(scene);
+            }),
+        scene.engine->registered_scenes.end());
+}
+
+void dispose_scene(Scene& scene) {
+    if (scene.disposed) return;
+    scene.disposed = true;
+    unregister_scene(scene);
+    auto disposables = std::move(scene.disposables);
+    scene.disposables.clear();
+    for (const auto& dispose : disposables) {
+        dispose();
+    }
+    scene.meshes.clear();
+    scene.lights.clear();
+    scene.tasks.clear();
+#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+    scene.pending_shadow_retirements.clear();
+#endif
+    scene.animation_groups.clear();
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+    scene.billboard_systems.clear();
+    scene.depth_hosted_sprite_layers.clear();
+#endif
+    scene.splat_meshes.clear();
+${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
+    scene.before_render.clear();
+    scene.animation_seekers.clear();
+    scene.deferred_builders.clear();
+${options.nodeMaterials ? "    scene.state->node_material_groups.clear();\n" : ""}\
+    scene.camera = {};
+}
+
+void rebuild_scene_renderables(Scene& scene) {
+    require_scene_engine(scene);
+#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+    for (const ShadowGeneratorHandle generator :
+         scene.pending_shadow_retirements) {
+        if (generator.value >= scene.engine->shadow_generators.size()) {
+            continue;
+        }
+        const bool still_active = std::any_of(
+            scene.lights.begin(),
+            scene.lights.end(),
+            [&](const LightHandle light) {
+                return
+                    light.value < scene.engine->lights.size() &&
+                    scene.engine->lights[light.value]
+                            .shadow_generator.value == generator.value;
+            });
+        if (still_active) continue;
+        ShadowGeneratorRecord& shadow =
+            scene.engine->shadow_generators[generator.value];
+        // Every caster pass the generator built: one for a single-map
+        // generator, one per cascade layer for a cascaded one.
+        const std::vector<TaskHandle> retired = shadow.caster_tasks;
+        scene.tasks.erase(
+            std::remove_if(
+                scene.tasks.begin(),
+                scene.tasks.end(),
+                [&retired](const TaskHandle candidate) {
+                    return std::any_of(
+                        retired.begin(),
+                        retired.end(),
+                        [candidate](const TaskHandle task) {
+                            return candidate.value == task.value;
+                        });
+                }),
+            scene.tasks.end());
+        shadow.caster_tasks.clear();
+        shadow.map_target = RenderTargetHandle{};
+        for (LightRecord& light : scene.engine->lights) {
+            if (light.shadow_generator.value == generator.value) {
+                light.shadow_generator = ShadowGeneratorHandle{};
+            }
+        }
+    }
+    scene.pending_shadow_retirements.clear();
+#endif
+    scene.topology_rebuild_pending = false;
+    ++scene.render_topology_version;
+}
+
+`;
+  }
 }

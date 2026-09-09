@@ -1,4 +1,6 @@
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import type { CompilerSymbols } from "./symbols.js";
 import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
 
@@ -33,21 +35,19 @@ export function collectReboundSymbols(
     symbols: CompilerSymbols,
     countUpdateOperators: boolean,
 ): Set<ts.Symbol> {
-    const rebound = new Set<ts.Symbol>();
+    const rebound = new EmissionSet<ts.Symbol>();
     const record = (target: ts.Expression): void => {
         if (!ts.isIdentifier(target)) return;
         const symbol = symbols.valueSymbol(target);
         if (symbol) rebound.add(symbol);
     };
-    const visit = (node: ts.Node): void => {
+    forEachAnalysisNode(sourceFile, (node) => {
         if (isAssignmentExpression(node)) {
             record(node.left);
         } else if (countUpdateOperators && isUpdateExpression(node)) {
             record(node.operand);
         }
-        ts.forEachChild(node, visit);
-    };
-    visit(sourceFile);
+    });
     return rebound;
 }
 
@@ -118,13 +118,13 @@ class ModuleInitializerPlanner {
                         file,
                     ),
             );
-        const stateByModule = new Map(
+        const stateByModule = new EmissionMap(
             projectModules.map((file) => [
                 file,
                 this.moduleVariableSymbols(file),
             ]),
         );
-        const allState = new Set(
+        const allState = new EmissionSet(
             [...stateByModule.values()].flatMap((state) => [
                 ...state,
             ]),
@@ -133,7 +133,7 @@ class ModuleInitializerPlanner {
             projectModules,
             allState,
         );
-        const mutatingModules = new Set(
+        const mutatingModules = new EmissionSet(
             projectModules.filter((file) =>
                 this.moduleHasObservableInitializer(
                     file,
@@ -141,7 +141,7 @@ class ModuleInitializerPlanner {
                 ),
             ),
         );
-        const mutableStateModules = new Set(
+        const mutableStateModules = new EmissionSet(
             projectModules.filter((file) =>
                 this.moduleHasObservedMutableState(
                     file,
@@ -159,13 +159,13 @@ class ModuleInitializerPlanner {
         // A registrar module may populate storage declared by one of its
         // dependencies. Materialize both the work and the owner of every
         // state symbol that work can mutate.
-        const mutatedState = new Set<ts.Symbol>();
+        const mutatedState = new EmissionSet<ts.Symbol>();
         for (const symbol of observedState) {
             if (
                 [...mutatingModules].some((file) =>
                     this.moduleHasObservableInitializer(
                         file,
-                        new Set([symbol]),
+                        new EmissionSet([symbol]),
                     ),
                 )
             ) {
@@ -251,7 +251,7 @@ class ModuleInitializerPlanner {
         file: ts.SourceFile,
         subset: "all" | "mutable" = "all",
     ): Set<ts.Symbol> {
-        const result = new Set<ts.Symbol>();
+        const result = new EmissionSet<ts.Symbol>();
         for (const statement of file.statements) {
             if (
                 !ts.isVariableStatement(statement) ||
@@ -282,21 +282,20 @@ class ModuleInitializerPlanner {
         projectModules: readonly ts.SourceFile[],
         moduleState: ReadonlySet<ts.Symbol>,
     ): Set<ts.Symbol> {
-        const observed = new Set<ts.Symbol>();
-        const visit = (node: ts.Node): void => {
+        const observed = new EmissionSet<ts.Symbol>();
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, node => {
             if (ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
                 if (symbol && moduleState.has(symbol)) {
                     observed.add(symbol);
                 }
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         visit(this.sourceFile);
         for (const file of projectModules) {
             const moduleSymbol =
                 this.checker.getSymbolAtLocation(file);
-            const exported = new Set(
+            const exported = new EmissionSet(
                 moduleSymbol
                     ? this.checker
                           .getExportsOfModule(moduleSymbol)
@@ -386,14 +385,11 @@ class ModuleInitializerPlanner {
         file: ts.SourceFile,
         moduleState: ReadonlySet<ts.Symbol>,
     ): Set<ts.Symbol> {
-        const dependencies = new Set<ts.Symbol>();
-        const activeFunctions = new Set<
+        const dependencies = new EmissionSet<ts.Symbol>();
+        const activeFunctions = new EmissionSet<
             ts.FunctionLikeDeclaration
         >();
-        const visit = (node: ts.Node): void => {
-            if (ts.isFunctionLike(node)) {
-                return;
-            }
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, node => {
             if (ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
                 if (symbol && moduleState.has(symbol)) {
@@ -412,8 +408,7 @@ class ModuleInitializerPlanner {
                     visit(called.body);
                 }
             }
-            ts.forEachChild(node, visit);
-        };
+        }, { functions: "skip" });
         for (const statement of file.statements) {
             if (!isModuleInitializerStatement(statement)) {
                 continue;
@@ -441,7 +436,7 @@ class ModuleInitializerPlanner {
             this.nodeMayMutateSymbols(
                 file,
                 moduleState,
-                new Set(),
+                new EmissionSet(),
             )
         );
     }
@@ -486,9 +481,8 @@ class ModuleInitializerPlanner {
         node: ts.Node,
         targets: ReadonlySet<ts.Symbol>,
         activeFunctions: Set<ts.FunctionLikeDeclaration>,
-        aliases = new Set(targets),
+        aliases = new EmissionSet(targets),
     ): boolean {
-        let found = false;
         const targetsSymbol = (
             expression: ts.Expression,
         ): boolean => {
@@ -523,10 +517,7 @@ class ModuleInitializerPlanner {
                 return false;
             }
         };
-        const visit = (current: ts.Node): void => {
-            if (found || ts.isFunctionLike(current)) {
-                return;
-            }
+        return someAnalysisNode(node, (current) => {
             if (
                 ts.isVariableDeclaration(current) &&
                 ts.isIdentifier(current.name) &&
@@ -544,23 +535,20 @@ class ModuleInitializerPlanner {
                 isAssignmentExpression(current) &&
                 targetsSymbol(current.left)
             ) {
-                found = true;
-                return;
+                return true;
             }
             if (
                 (ts.isPostfixUnaryExpression(current) ||
                     ts.isPrefixUnaryExpression(current)) &&
                 targetsSymbol(current.operand)
             ) {
-                found = true;
-                return;
+                return true;
             }
             if (
                 ts.isDeleteExpression(current) &&
                 targetsSymbol(current.expression)
             ) {
-                found = true;
-                return;
+                return true;
             }
             if (ts.isCallExpression(current)) {
                 const callee = current.expression;
@@ -569,12 +557,10 @@ class ModuleInitializerPlanner {
                         ts.isElementAccessExpression(callee)) &&
                     targetsSymbol(callee.expression)
                 ) {
-                    found = true;
-                    return;
+                    return true;
                 }
                 if (current.arguments.some(targetsSymbol)) {
-                    found = true;
-                    return;
+                    return true;
                 }
                 const called = this.calledFunction(callee);
                 if (
@@ -590,14 +576,11 @@ class ModuleInitializerPlanner {
                             aliases,
                         )
                     ) {
-                        found = true;
-                        return;
+                        return true;
                     }
                 }
             }
-            ts.forEachChild(current, visit);
-        };
-        visit(node);
-        return found;
+            return false;
+        }, { functions: "skip" });
     }
 }

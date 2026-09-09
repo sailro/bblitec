@@ -25,6 +25,7 @@ export const CPP_ELEMENT = {
     f64: "double",
     u32: "std::uint32_t",
     u8: "std::uint8_t",
+    i64: "std::int64_t",
 } as const;
 
 export type CppElementWidth = keyof typeof CPP_ELEMENT;
@@ -32,6 +33,10 @@ export type CppElementWidth = keyof typeof CPP_ELEMENT;
 /** An owned buffer of one element width: the pin's typed array. */
 export function cppVector(element: CppElementWidth | string): string {
     return `std::vector<${element in CPP_ELEMENT ? CPP_ELEMENT[element as CppElementWidth] : element}>`;
+}
+
+export function cppFixedArray(element: CppElementWidth, length: number): string {
+    return `std::array<${CPP_ELEMENT[element]}, ${length}>`;
 }
 
 /**

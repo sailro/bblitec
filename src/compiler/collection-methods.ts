@@ -11,7 +11,7 @@ export function compileCollectionForEach(lowerer: DataLowerer, call: ts.CallExpr
         lowerer.context.fail(callback, "Collection.forEach requires a local function or function literal.");
     const source = lowerer.context.allocateTemporaryCppName("foreach_collection");
     const entry = lowerer.context.allocateTemporaryCppName("foreach_entry");
-    lowerer.context.emit(`auto ${source} = ${owner.cpp};`);
+    lowerer.context.emit({ kind: "declaration", type: "auto", name: source, initializer: owner.cpp });
     // Copy each entry before the callback: deletion or replacement of its
     // collection slot must not alter already evaluated callback arguments.
     lowerer.context.emit(`for (const auto ${entry} : ${source}) {`);
@@ -22,7 +22,12 @@ export function compileCollectionForEach(lowerer: DataLowerer, call: ts.CallExpr
     try {
         const value = type.kind === "map" ? lowerer.leafValue(`${entry}.second`, type.value) : lowerer.leafValue(entry, type.element);
         const key = type.kind === "map" ? lowerer.leafValue(`${entry}.first`, type.key) : value;
-        const result = lowerer.context.compileCallbackWithValues(callback, [value, key, { ...owner, cpp: source }], call, true);
+        const entryCaptures = [lowerer.context.registerNativeBinding(entry)];
+        const result = lowerer.context.compileCallbackWithValues(callback, [
+            { ...value, nativeCaptures: entryCaptures },
+            { ...key, nativeCaptures: entryCaptures },
+            { ...owner, cpp: source, nativeCaptures: [lowerer.context.registerNativeBinding(source)] },
+        ], call, true);
         lowerer.context.emitDiscardedValue(result);
     } finally {
         lowerer.context.leaveRuntimeControlFlow();
@@ -48,10 +53,10 @@ export function compileMapInitializer(lowerer: DataLowerer, expression: ts.NewEx
                 lowerer.context.fail(pair, "Map initializer entries must be key/value pairs.");
             const key = lowerer.compileForRetainedSink(pair.elements[0]!, type.key, "Map key");
             const keyName = lowerer.context.allocateTemporaryCppName("map_key");
-            lowerer.context.emit(`const auto ${keyName} = ${key};`);
+            lowerer.context.emit({ kind: "declaration", type: "const auto", name: keyName, initializer: key });
             const value = lowerer.compileForRetainedSink(pair.elements[1]!, type.value, "Map value");
             const valueName = lowerer.context.allocateTemporaryCppName("map_value");
-            lowerer.context.emit(`const auto ${valueName} = ${value};`);
+            lowerer.context.emit({ kind: "declaration", type: "const auto", name: valueName, initializer: value });
             return { keyName, valueName };
         });
         for (const entry of entries) lowerer.context.emit(`${result}.set(${entry.keyName}, ${entry.valueName});`);

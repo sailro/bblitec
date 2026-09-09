@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 /** Closed scene-supplied node-material emitter loaders. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -98,9 +99,9 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
     });
     assert.deepEqual(composed.textures.map(({ name }) => name), ["albedo"]);
     assert.deepEqual(composed.inputs, [{ name: "albedo", type: "texture2d" }]);
-    const inputHeader = pinnedNodeVariantsHeader("input metadata", [0, 1].map((index) => ({
+    const inputHeader = inlineCpp(pinnedNodeVariantsHeader("input metadata", [0, 1].map((index) => ({
         index, vertexStem: `node-${index}.vert`, fragmentStem: `node-${index}.frag`, composed,
-    })), []);
+    })), []));
     assert.match(inputHeader, /std::array<NodeVariantInput, 2> node_variant_inputs/);
     assert.match(inputHeader, /\{0, "albedo", "texture2d"\}/);
     assert.match(inputHeader, /\{1, "albedo", "texture2d"\}/);

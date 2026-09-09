@@ -24,15 +24,14 @@
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { sourceLocation } from "../source-location.js";
+import { cppPrimary, renderPinnedArithmetic, type PinnedExpressionSpelling, type RenderedCpp } from "./pinned-numeric-expression.js";
 import { cppCondition } from "../cpp-expressions.js";
-import { doubleLiteral } from "../cpp-literals.js";
 import { moduleScopeConstant, unwrapExpression } from "./context.js";
 import { CPP_RECORD, type CppRecordShape, cppVector } from "./cpp-types.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_ASSIGNMENT_OPERATORS,
-    PINNED_RELATIONAL_OPERATORS,
-    pinnedRemainderCall,
 } from "./pinned-operators.js";
 
 /**
@@ -285,7 +284,9 @@ export interface PinnedBinding {
 
 export interface PinnedNumericScope {
     /** Domain-owned records and library values; arithmetic still recurses through this lowerer. */
-    expression?: (expression: ts.Expression, lowerer: PinnedNumericLowerer) => string | undefined;
+    expression?: (expression: ts.Expression, lowerer: PinnedNumericLowerer) => string | RenderedCpp | undefined;
+    expressionSpelling?: PinnedExpressionSpelling;
+    foldConditions?: boolean;
     /** An explicitly validated platform boundary within an otherwise lowered
      * body. Undefined retains the ordinary translator and its refusals. */
     statement?: (statement: ts.Statement, lowerer: PinnedNumericLowerer, indent: string) => readonly string[] | undefined;
@@ -475,15 +476,6 @@ const TYPED_ARRAY_CONVERSIONS: ReadonlyMap<
     ["Uint32Array", { conversion: "u32_array_from", type: "u32" as const }],
 ]);
 
-// The shared arithmetic set plus the orderings these bodies guard with.
-// `pinned-operators.ts` owns both so an operator one lowerer learns is an
-// operator all of them know; the equalities take the absence-aware arm
-// below before any table.
-const BINARY_OPERATORS = new Map<ts.SyntaxKind, string>([
-    ...PINNED_ARITHMETIC_OPERATORS,
-    ...PINNED_RELATIONAL_OPERATORS,
-]);
-
 export class PinnedNumericLowerer {
     public constructor(
         private readonly file: ts.SourceFile,
@@ -499,8 +491,9 @@ export class PinnedNumericLowerer {
     >();
 
     private fail(node: ts.Node, what: string): never {
+        const location = sourceLocation(node);
         throw new Error(
-            `Unsupported pinned ${what}: ${node.getText(this.file)}.`,
+            `${this.file.fileName}:${location.line}:${location.character}: Unsupported pinned ${what}: ${node.getText(this.file)}.`,
         );
     }
 
@@ -2060,12 +2053,24 @@ export class PinnedNumericLowerer {
     }
 
     public expression(expression: ts.Expression): string {
-        const node = unwrapExpression(expression);
-        const adapted = this.scope.expression?.(node, this);
-        if (adapted !== undefined) return adapted;
-        if (ts.isNumericLiteral(node)) {
-            return doubleLiteral(Number(node.text));
+        return this.renderExpression(expression).text;
+    }
+
+    public renderExpression(expression: ts.Expression): RenderedCpp {
+        if (this.scope.expressionSpelling?.parentheses === "source" && ts.isNonNullExpression(expression)) {
+            return this.renderExpression(expression.expression);
         }
+        if (this.scope.expressionSpelling?.parentheses === "source" && ts.isParenthesizedExpression(expression)) {
+            return cppPrimary(`(${this.expression(expression.expression)})`);
+        }
+        const node = unwrapExpression(expression);
+        const domain = this.scope.expression?.(node, this) ?? this.expressionDomain(node);
+        if (domain !== undefined) return typeof domain === "string" ? cppPrimary(domain) : domain;
+        return renderPinnedArithmetic(node, child => this.renderExpression(child), this.scope.expressionSpelling)
+            ?? this.fail(node, ts.isBinaryExpression(node) ? "binary operator" : "expression");
+    }
+
+    protected expressionDomain(node: ts.Expression): string | RenderedCpp | undefined {
         if (ts.isIdentifier(node)) {
             if (node.text === "Infinity") {
                 return "std::numeric_limits<double>::infinity()";
@@ -2105,7 +2110,7 @@ export class PinnedNumericLowerer {
                 const absent = this.absenceTest(node.operand);
                 if (absent) return `(${absent})`;
             }
-            return `(${operator}${this.expression(node.operand)})`;
+
         }
         // `[ar1, ar2]` -- a list of lists written out. The pin builds one
         // where it splits a single path in two, and each element is
@@ -2177,27 +2182,14 @@ export class PinnedNumericLowerer {
                 `${this.assignmentTarget(node.operand)}${operator})`
             );
         }
-        if (
-            node.kind === ts.SyntaxKind.TrueKeyword ||
-            node.kind === ts.SyntaxKind.FalseKeyword
-        ) {
-            return node.kind === ts.SyntaxKind.TrueKeyword
-                ? "true"
-                : "false";
-        }
         if (ts.isConditionalExpression(node)) {
             // `typeof s === "number" ? s : 1` over a shape the graph fixed:
             // only the selected arm is a value here, and the other may not
             // even translate.
             const known = this.staticCondition(node.condition);
             if (known !== undefined) {
-                return this.expression(known ? node.whenTrue : node.whenFalse);
+                return this.renderExpression(known ? node.whenTrue : node.whenFalse);
             }
-            return (
-                `(${this.expression(node.condition)} ? ` +
-                `${this.expression(node.whenTrue)} : ` +
-                `${this.expression(node.whenFalse)})`
-            );
         }
         if (ts.isPropertyAccessExpression(node)) {
             return this.propertyAccess(node);
@@ -2216,7 +2208,7 @@ export class PinnedNumericLowerer {
                 return this.vec3Literal(node, this.scope.vec3Literal);
             }
         }
-        return this.fail(node, "expression");
+        return undefined;
     }
 
     /**
@@ -2269,6 +2261,7 @@ export class PinnedNumericLowerer {
      * bindings a condition reads are in place before either.
      */
     private staticCondition(expression: ts.Expression): boolean | undefined {
+        if (this.scope.foldConditions === false) return undefined;
         if (this.staticConditions.has(expression)) {
             return this.staticConditions.get(expression);
         }
@@ -2835,7 +2828,7 @@ export class PinnedNumericLowerer {
         return spelling(args);
     }
 
-    private binary(node: ts.BinaryExpression): string {
+    private binary(node: ts.BinaryExpression): string | undefined {
         // A caller may bind a whole COMPARISON, where the question the pin
         // asks is one the native record answers directly:
         // `options.diameterTop === 0` is not a test on the resolved
@@ -2896,13 +2889,6 @@ export class PinnedNumericLowerer {
                 return node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? equal : `!${equal}`;
             }
         }
-        const operator = BINARY_OPERATORS.get(node.operatorToken.kind);
-        if (operator) {
-            return (
-                `(${this.expression(node.left)} ${operator} ` +
-                `${this.expression(node.right)})`
-            );
-        }
         switch (node.operatorToken.kind) {
             case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
                 return `bbl::js::shift_right_unsigned(${this.expression(node.left)}, ${this.expression(node.right)})`;
@@ -2945,16 +2931,8 @@ export class PinnedNumericLowerer {
                     this.expression(node.right),
                 );
             }
-            case ts.SyntaxKind.EqualsEqualsEqualsToken:
-                return (
-                    `(${this.expression(node.left)} == ` +
-                    `${this.expression(node.right)})`
-                );
-            case ts.SyntaxKind.ExclamationEqualsEqualsToken:
-                return (
-                    `(${this.expression(node.left)} != ` +
-                    `${this.expression(node.right)})`
-                );
+
+
             case ts.SyntaxKind.AmpersandToken:
                 // A mask over an integral loop counter (`corner & 1` picks
                 // one AABB corner's axis, and the bounding-box cage's
@@ -2971,6 +2949,7 @@ export class PinnedNumericLowerer {
                 );
             case ts.SyntaxKind.BarBarToken:
                 if (this.scope.booleanOr) {
+                    if (this.absenceTest(node.left) === undefined && this.absenceTest(node.right) === undefined) return undefined;
                     return (
                         `(${this.booleanOperand(node.left)} || ` +
                         `${this.booleanOperand(node.right)})`
@@ -2991,6 +2970,7 @@ export class PinnedNumericLowerer {
                 );
             case ts.SyntaxKind.AmpersandAmpersandToken:
                 if (this.scope.booleanAnd) {
+                    if (this.absenceTest(node.left) === undefined && this.absenceTest(node.right) === undefined) return undefined;
                     return (
                         `(${this.booleanOperand(node.left)} && ` +
                         `${this.booleanOperand(node.right)})`
@@ -3033,27 +3013,10 @@ export class PinnedNumericLowerer {
                     `${this.expression(node.left)}) << ` +
                     `static_cast<std::int32_t>(${this.expression(node.right)}))`
                 );
-            case ts.SyntaxKind.PercentToken:
-                // JavaScript's `%` is floating-point remainder. The reached
-                // mesh builders use it with non-negative integral operands,
-                // but spelling fmod retains the JS-number contract instead
-                // of silently changing the operator to integer modulo.
-                return pinnedRemainderCall(
-                    this.expression(node.left),
-                    this.expression(node.right),
-                );
-            case ts.SyntaxKind.AsteriskAsteriskToken:
-                // `**` over JS numbers is Number::exponentiate, the same
-                // algorithm ECMA-262 gives `Math.pow`, so it lowers to the
-                // `std::pow` the Math table already maps that call to. The
-                // AST carries the operator's right associativity, so the
-                // spelling needs no parenthesization rule of its own.
-                return (
-                    `std::pow(${this.expression(node.left)}, ` +
-                    `${this.expression(node.right)})`
-                );
+
+
             default:
-                return this.fail(node, "binary operator");
+                return undefined;
         }
     }
 }

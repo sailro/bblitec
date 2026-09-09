@@ -1,3 +1,10 @@
+import type { LoweringServices } from "../lowering-services.js";
+// Environment option lowering: the .env, .dds, and .hdr loaders.
+//
+// Each function turns an environment loader's options argument into
+// the resolved values the generated loader consumes, folding the skip
+// flags and sizes to statics at compile time. The intrinsic lowerer in
+// asset.ts calls these through its context.
 // Environment option lowering: the .env, .dds, and .hdr loaders.
 //
 // Each function turns an environment loader's options argument into
@@ -5,6 +12,7 @@
 // flags and sizes to statics at compile time. The intrinsic lowerer in
 // asset.ts calls these through its context.
 import type ts from "typescript";
+import { imageCodecForFileName } from "../../image-codec-manifest.js";
 import { compileDynamicPackagedAsset, type StaticFetchContext } from "../static-fetch.js";
 import {
     compileOptionalStaticBoolean,
@@ -16,28 +24,17 @@ import {
 } from "../option-helpers.js";
 
 export interface AssetOptionContext
-    extends ObjectValidationContext, StaticFetchContext,
-        PositiveIntegerContext,
-        StaticBooleanContext {
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileStringLiteral(
-        expression: ts.Expression,
-    ): string;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-}
+    extends ObjectValidationContext,
+    StaticFetchContext,
+    PositiveIntegerContext,
+    StaticBooleanContext,
+    Pick<LoweringServices,
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "compileNumber"
+        | "compileStringLiteral"
+        | "compileVec3"
+    > {}
 
 export function compileEnvironmentOptions(
     context: AssetOptionContext,
@@ -70,7 +67,7 @@ export function compileEnvironmentOptions(
     const skyboxSize = context.objectProperty(object, "skyboxSize");
     const brdfUrl = context.objectProperty(object, "brdfUrl");
     const brdfPathCpp = brdfUrl ? compileDynamicPackagedAsset(context, brdfUrl, "texture",
-        source => /\.(?:png|jpe?g|webp)(?:[?#]|$)/i.test(source))?.dynamicAssetPathCpp : undefined;
+        source => imageCodecForFileName(source) !== undefined)?.dynamicAssetPathCpp : undefined;
     // `skipSkybox` and `skipGround` decide whether `loadEnvironment`'s
     // deferred builder pushes a background renderable at all, so they are
     // read rather than tolerated: the solid-colour skybox is what a scene

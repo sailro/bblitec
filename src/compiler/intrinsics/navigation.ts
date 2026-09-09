@@ -1,3 +1,12 @@
+import type { LoweringServices } from "../lowering-services.js";
+// The navigation family: `createNavigationPluginAsync`, `createNavMesh`,
+// `createDebugNavMeshGeometry`, `raycast`.
+//
+// The pinned module's own logic is generated (upstream/navigation.cpp,
+// src/lowering/navigation-lowerer.ts); the toolset behind it is the
+// PAL's, linked from the exact recastnavigation commit the pinned
+// wrapper's wasm compiles — so unlike physics, nothing is substituted
+// and the answers are expected to match the browser reference.
 // The navigation family: `createNavigationPluginAsync`, `createNavMesh`,
 // `createDebugNavMeshGeometry`, `raycast`.
 //
@@ -21,39 +30,21 @@ import { PINNED_AGENT_PARAM_DEFAULTS } from "../../lowering/navigation-lowerer.j
 
 export interface NavigationIntrinsicContext
     extends IntrinsicCallContext,
-        ObjectValidationContext,
-        PositiveIntegerContext {
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    expectStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileBoolean(expression: ts.Expression): string;
-    emitDataVectorOfStructs(
-        node: ts.Node,
-        sourceCpp: string,
-        fieldValues: (
-            element: string,
-        ) => Readonly<Record<string, string>>,
-    ): Value;
-    allocateTemporaryCppName(label: string): string;
-    emit(line: string): void;
-    requireEngine(value: Value, node: ts.Node): string;
-    unwrap(expression: ts.Expression): ts.Expression;
-}
+    ObjectValidationContext,
+    PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "expectObjectLiteral"
+        | "expectStaticArrayLiteral"
+        | "objectProperty"
+        | "compileNumber"
+        | "compileVec3"
+        | "compileBoolean"
+        | "emitDataVectorOfStructs"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "requireEngine"
+        | "unwrap"
+    > {}
 
 /**
  * The build parameters a reached `createNavMesh` may name, each mapping
@@ -684,7 +675,7 @@ function navVec3Record(
 ): Value {
     const temporary = context.allocateTemporaryCppName(label);
     context.emit(
-        `const bbl::Vec3d ${temporary} = ${expression};`,
+        { kind: "declaration", type: "const bbl::Vec3d", name: temporary, initializer: expression },
     );
     return vec3LanesOf(temporary);
 }

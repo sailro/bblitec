@@ -7,7 +7,6 @@ import type { LightKind } from "../src/compiler/types.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
-import { BabylonLowerer } from "../src/lowering/babylon-lowerer.js";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
@@ -46,7 +45,8 @@ import {
 import { shadowFactorySource } from "../src/lowering/shadow-lowerer.js";
 import {
     bakeCsgMesh,
-    csgGeometryDeclarations,
+    packBakedCsgMesh,
+    unpackBakedCsgMesh,
     type CsgSolidPlan,
     type CsgSourceMesh,
 } from "../src/pinned-csg.js";
@@ -1103,48 +1103,6 @@ test("emits the opt-in bone-control chunk only when it is reached", () => {
     assert.match(source, /if \(!animated && !skin_json\.empty\(\)\)/);
 });
 
-test("generates the Babylon loader adapter from pinned scene semantics", () => {
-    const lowered = new BabylonLowerer(
-        new LoweringContext(),
-    ).lowerLoaderAdapter();
-    assert.match(lowered.source, /AssetHandle load_babylon/);
-    assert.match(lowered.source, /material\.standard_material = true/);
-    assert.match(lowered.source, /material\.alpha_cutoff = 0\.4f/);
-    assert.match(lowered.source, /result\.sampler\.max_anisotropy = 4\.0f/);
-    assert.match(lowered.source, /engine\.reflection_cubes/);
-    assert.match(lowered.source, /PrimitiveKind::babylon/);
-    assert.match(lowered.source, /create_free_camera/);
-    // The pivot bake is the pinned bakeLocalMatrix translated whole over
-    // the attribute buffers, and the node TRS reaches the vertices through
-    // the pinned composition and the shared emitted world multiply pair,
-    // not a loader-local rotator or copy of the multiply.
-    assert.match(
-        lowered.source,
-        /void bake_local_matrix\(\n    std::vector<float>& positions,\n    std::vector<float>& normals,\n    const std::array<double, 16>& lm\)/,
-    );
-    assert.match(
-        lowered.source,
-        /bake_local_matrix\(\n\s*baked_positions, baked_normals, \*local_matrix\);/,
-    );
-    assert.match(
-        lowered.source,
-        /std::array<float, 16> node_world_matrix\(\n    Vec3 position,\n    Vec3 rotation,\n    Vec3 scaling\) \{\n    return upstream::trs_matrix\(upstream::TrsLanes\{\n        \.rotation = rotation,\n        \.scaling = scaling,\n        \.position = Vec3d\{position\.x, position\.y, position\.z\}\}\);/,
-    );
-    assert.match(
-        lowered.source,
-        /upstream::transform_position\(\n\s*mesh_world, local_position\)/,
-    );
-    assert.match(
-        lowered.source,
-        /upstream::normalize_baked_direction\(\n\s*upstream::transform_direction\(\n\s*mesh_world, local_normal\)\)/,
-    );
-    assert.match(lowered.source, /mesh\.instance_parent_matrix = mesh_world;/);
-    assert.doesNotMatch(
-        lowered.source,
-        /Vec3 transform_point\(|Vec3 rotate\(|Vec3 normalize\(|matrix_or_identity/,
-    );
-});
-
 test("generates engine API wrappers over the PAL", () => {
     const lowered = new EngineLowerer(new LoweringContext()).lowerCore();
     assert.match(lowered.source, /return pal::create_engine/);
@@ -1244,6 +1202,8 @@ test("emits the torus knot only where a scene reached it", () => {
     const bare = new FactoryLowerer(new LoweringContext())
         .lowerMeshFactories([]);
     assert.doesNotMatch(bare.source, /pinned_create_torus_knot_data/);
+    assert.doesNotMatch(bare.source, /pinned_create_torus_data/);
+    assert.doesNotMatch(bare.source, /MeshHandle create_torus\(/);
     assert.doesNotMatch(bare.source, /pinned_torus_knot_pos/);
     assert.doesNotMatch(bare.source, /pinned_compute_normals/);
     assert.doesNotMatch(bare.source, /#include <bblite\/js_data\.hpp>/);
@@ -1452,7 +1412,7 @@ test("the pinned pool states the emitted refusals mirror", async () => {
 
 test("generates mesh and standard-material factories from upstream defaults", () => {
     const lowerer = new FactoryLowerer(new LoweringContext());
-    const mesh = lowerer.lowerMeshFactories();
+    const mesh = lowerer.lowerMeshFactories(["mesh:torus"]);
     const material = lowerer.lowerStandardMaterialFactory();
     const grid = lowerer.lowerGridMaterialFactory();
     const shader = lowerer.lowerShaderMaterialFactory();
@@ -3343,11 +3303,7 @@ test("executes the pinned CSG solid and bakes the geometry it produced", () => {
     );
 });
 
-test("spells a baked CSG float at float32 round-trip width", () => {
-    // The values come out of a `Float32Array`, so the shortest decimal that
-    // round-trips through `Math.fround` names the identical float in about
-    // half the characters of the double spelling -- and a boolean solid
-    // emits hundreds of thousands of them.
+test("preserves float32 values in literals and baked mesh transport", () => {
     assert.equal(float32Literal(Math.fround(0.3)), "0.3f");
     assert.equal(float32Literal(2), "2.0f");
     assert.equal(float32Literal(-0), "-0.0f");
@@ -3360,37 +3316,13 @@ test("spells a baked CSG float at float32 round-trip width", () => {
         () => float32Literal(Number.POSITIVE_INFINITY),
         /needs a finite value/,
     );
-    // MSVC counts a `std::initializer_list` element as an object-file
-    // section (C1128 at 140k floats), so the geometry lands in a plain
-    // array and the vector is built from its bounds.
-    const declarations = csgGeometryDeclarations("v_csg", {
-        positions: new Float32Array([1, 2, 3]),
-        normals: new Float32Array([0, 1, 0]),
-        uvs: new Float32Array([0, 0]),
-        indices: new Uint32Array([0]),
-    });
-    assert.match(
-        declarations.lines.join("\n"),
-        /static const float v_csg_positions\[\] = \{\n\s+1\.0f, 2\.0f, 3\.0f,\n\};/,
-    );
-    assert.equal(
-        declarations.positions,
-        "std::vector<float>(v_csg_positions, v_csg_positions + 3)",
-    );
-    assert.equal(
-        declarations.indices,
-        "std::vector<std::uint32_t>(v_csg_indices, v_csg_indices + 1)",
-    );
-    // An empty stream has no array to bound: a zero-length C array is not
-    // C++, so the expression is the empty vector itself.
-    const empty = csgGeometryDeclarations("v_csg", {
-        positions: new Float32Array(),
-        normals: new Float32Array(),
+    const mesh = {
+        positions: Float32Array.of(-0, 1 / 3, 2),
+        normals: Float32Array.of(0, 1, 0),
         uvs: new Float32Array(),
-        indices: new Uint32Array(),
-    });
-    assert.deepEqual(empty.lines, []);
-    assert.equal(empty.positions, "std::vector<float>{}");
+        indices: Uint32Array.of(0, 1, 2),
+    };
+    assert.deepEqual(unpackBakedCsgMesh(packBakedCsgMesh(mesh)), mesh);
 });
 
 test("reads the stock splat module's dialect off the packaged text", () => {

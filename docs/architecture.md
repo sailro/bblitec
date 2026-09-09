@@ -38,14 +38,34 @@ generated evidence inventory.
 `compiler/program.ts` owns the TypeScript program; `symbols.ts` resolves
 intrinsics. Expression/statement/assignment/property modules dispatch constructs.
 Static evaluation folds proven values; `intrinsics/` separates API families.
+`lowering-services.ts` declares shared compiler operations; each module selects the members it uses.
+`ui-projection.ts` owns retained UI, HTML/CSS projection and host companions;
+`platform-calls.ts` lowers DOM calls, timers and event registration.
+
+`emission-transaction.ts` commits successful probes and restores compiler state
+on decline or exception. Collection journals preserve aliases and iteration
+order; AST nodes, checker objects and compile options remain shared inputs.
+
+`analysis-walk.ts` shares traversal boundaries and branch-local state across
+mutation, capture, reach and control-flow queries. Binding identity uses symbols.
+
+Closure environments contain referenced native bindings. Deferred entry parts
+share invocation-owned storage for locals read after a yield; other locals stay
+automatic. Direct recursive groups use automatic callables, while escaping
+groups retain traced callback storage.
 
 `data-types.ts` defines storage; `data-lowering.ts` handles typed sinks.
-Data-typed functions use `native-functions.ts`, including supported recursion;
-handle-dependent helpers inline through `user-functions.ts`. Dedicated modules
-own classes, module initialization, closures and collections.
+`values/` selects metadata payloads by value kind. `native-functions.ts` emits
+data functions; `user-functions.ts` specializes resource helpers by arguments,
+receiver and lexical dependencies. Dedicated modules own classes, module
+initialization, closures and collections.
 
-Reuse `LoweringContext`, `lowerPinnedFunction`, numeric lowering and the
-shared UBO writer. Custom WGSL uses typed IR/parser or strict reflected-source
+Use `lowerPinnedFunction` for whole functions and `lowerPinnedBody` for selected
+statement sequences. Storage initializers and specialized guards retain source
+contracts; numeric lowering, vector bindings and header framing are shared.
+Numeric bodies, UBO writers and glTF interpolation share arithmetic rendering
+with explicit literal, remainder and parenthesis policies.
+Custom WGSL uses typed IR/parser or strict reflected-source
 contracts. Extend those boundaries before adding text recognizers.
 
 ## Scene orchestration
@@ -81,6 +101,8 @@ surfaces are described in [backends](backends.md#workers-and-offscreen-surfaces)
 
 Generated tables and writers determine layouts, uniforms and fixed-function
 state. GPU objects stay in their backend; shared transport contains no foreign
-API handles. The OS window survives renderer rebuilds. Live topology/uploads
+API handles. Scene and standalone renderers share frame orchestration through
+`pal_frame_conductor.hpp`; each backend selects its surface-acquisition phase.
+The OS window survives renderer rebuilds. Live topology/uploads
 must preserve in-flight resources; synchronization is specific to the affected
 path, not a universal GPU-idle rule. See [backends](backends.md).

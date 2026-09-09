@@ -5,12 +5,20 @@ import {
     canonicalCompiledBackend,
     canonicalDevelopmentCompiler,
     canonicalOfflineShaderTarget,
+    compiledBuildDirectory,
     defaultDevelopmentBackend,
     DEVELOPMENT_VCPKG_INSTALL,
     developmentVcpkgFeatures,
     hostOfflineShaderTarget,
     needsOfflineShaders,
 } from "../src/build-options.js";
+
+test("compiled backends have independent build and deployment directories", () => {
+    const directory = "native/build-primitives-release";
+    assert.equal(compiledBuildDirectory(directory, "BOTH"), directory);
+    assert.equal(compiledBuildDirectory(directory, "SDL_GPU"), `${directory}-sdl_gpu`);
+    assert.equal(compiledBuildDirectory(directory, "DAWN"), `${directory}-dawn`);
+});
 
 test("Dawn-only iteration needs no offline compiler unless a target is explicitly requested", () => {
     assert.equal(needsOfflineShaders("DAWN"), false);
@@ -537,28 +545,6 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(packager, /RmlUi-LICENSE\.txt/);
     assert.match(packager, /LunaSVG\.txt.*lunasvg/s);
     assert.match(packager, /PlutoVG\.txt.*plutovg/s);
-});
-
-test("shader compilation gates non-target formats", () => {
-    const script = readFileSync("tools/compile-shaders.ps1", "utf8");
-    assert.match(script, /\$emitDxil = \$Target -in/);
-    assert.match(script, /\$emitSpirv = \$Target -in/);
-    assert.match(script, /\$emitMsl = \$Target -in/);
-    assert.match(script, /if \(\$emitSpirv\)/);
-    assert.match(script, /if \(\$emitMsl\)/);
-    assert.match(script, /target = \$Target/);
-    assert.doesNotMatch(script, /Copy-Item \$cached(?:Dxil|Spirv)/);
-    assert.match(script, /Copy-IfDifferent \$cachedDxil/);
-});
-
-test("shader slot sidecars rebase storage buffers within their register space", () => {
-    const script = readFileSync("tools/compile-shaders.ps1", "utf8");
-    assert.match(script, /\$sampledBySpace = @\{\}/);
-    assert.match(script, /\$sampled\.Groups\[1\]\.Success/);
-    assert.match(script, /\$_\.Groups\[6\]\.Success/);
-    assert.match(script, /\$sampledBySpace\[\$space\]/);
-    assert.match(script, /\$sampledBySpace\[\$space\] \?\? 0/);
-    assert.doesNotMatch(script, /\[int\]\$_\.Groups\[5\]\.Value - \$sampledCount/);
 });
 
 test("SDL shader slot loading rejects unbounded generated indices", () => {

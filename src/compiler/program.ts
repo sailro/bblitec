@@ -1,3 +1,4 @@
+import { EmissionMap } from "./emission-transaction.js";
 import {
     dirname,
     relative,
@@ -22,7 +23,7 @@ function cachedSourceFile(
     path: string,
     load: () => ts.SourceFile | undefined,
 ): ts.SourceFile | undefined {
-    sharedSourceFiles ??= new Map();
+    sharedSourceFiles ??= new EmissionMap();
     const key = resolve(path);
     const cached = sharedSourceFiles.get(key);
     if (cached) {

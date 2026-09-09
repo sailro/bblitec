@@ -39,11 +39,6 @@
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 import { createRecordingDevice } from "./recording-device.js";
-import {
-    cppArrayDeclaration,
-    float32Literal,
-    type CppArrayTableRegistrar,
-} from "./cpp-literals.js";
 
 /**
  * A mesh a CSG solid was built from.
@@ -107,52 +102,6 @@ export interface BakedCsgMesh {
     readonly indices: Uint32Array;
 }
 
-/**
- * The baked geometry as C++: the four arrays the mesh's streams become,
- * and the four expressions that hand them to `create_mesh_from_data`.
- *
- * The declaration shape belongs to `cpp-literals.ts` -- every baked
- * numeric stream wants it -- and what is CSG's own is only which four
- * streams there are and at which width each is spelled.
- */
-export function csgGeometryDeclarations(
-    prefix: string,
-    mesh: BakedCsgMesh,
-    registerTable?: CppArrayTableRegistrar,
-): {
-    readonly lines: readonly string[];
-    readonly positions: string;
-    readonly normals: string;
-    readonly indices: string;
-    readonly uvs: string;
-} {
-    const lines: string[] = [];
-    const stream = (
-        name: string,
-        elementType: "float" | "std::uint32_t",
-        values: ArrayLike<number>,
-    ): string => {
-        const declared = cppArrayDeclaration(
-            `${prefix}_${name}`,
-            elementType,
-            values,
-            elementType === "float"
-                ? float32Literal
-                : (value: number) => `${value}u`,
-            registerTable,
-        );
-        lines.push(...declared.lines);
-        return declared.expression;
-    };
-    return {
-        lines,
-        positions: stream("positions", "float", mesh.positions),
-        normals: stream("normals", "float", mesh.normals),
-        uvs: stream("uvs", "float", mesh.uvs),
-        indices: stream("indices", "std::uint32_t", mesh.indices),
-    };
-}
-
 /** The pin's own `Mesh`, in the members this replay reads. */
 interface PinnedCsgMesh {
     readonly worldMatrix: ArrayLike<number>;
@@ -213,67 +162,40 @@ const identityMatrix = [
 
 /** One replay per distinct plan; a scene builds each solid once. */
 const bakedMeshes = new Map<string, BakedCsgMesh>();
-
-/**
- * The four streams as one payload, because a cache entry is bytes.
- *
- * Four element counts, then the streams in declaration order. The header
- * is 16 bytes and every stream is 4 wide, so each one lands aligned and
- * unpacking is views rather than copies.
- */
+/** Four little-endian u32 counts, then f32 positions, normals, UVs and u32 indices. */
 export function packBakedCsgMesh(mesh: BakedCsgMesh): Uint8Array {
-    const counts = [
-        mesh.positions.length,
-        mesh.normals.length,
-        mesh.uvs.length,
-        mesh.indices.length,
-    ];
-    const bytes = new Uint8Array(
-        16 + 4 * counts.reduce((sum, count) => sum + count, 0),
-    );
-    new Uint32Array(bytes.buffer, 0, 4).set(counts);
+    const streams = [mesh.positions, mesh.normals, mesh.uvs, mesh.indices];
+    const bytes = new Uint8Array(16 + streams.reduce((size, stream) => size + stream.byteLength, 0));
+    const view = new DataView(bytes.buffer);
     let offset = 16;
-    for (const stream of [mesh.positions, mesh.normals, mesh.uvs]) {
-        new Float32Array(bytes.buffer, offset, stream.length).set(stream);
-        offset += 4 * stream.length;
-    }
-    new Uint32Array(bytes.buffer, offset, mesh.indices.length).set(
-        mesh.indices,
-    );
+    streams.forEach((stream, index) => {
+        if (stream.length > 0xffffffff) throw new Error("Baked mesh stream exceeds its u32 count.");
+        view.setUint32(index * 4, stream.length, true);
+        for (const value of stream) {
+            if (stream instanceof Uint32Array) view.setUint32(offset, value, true);
+            else view.setFloat32(offset, value, true);
+            offset += 4;
+        }
+    });
     return bytes;
 }
-
+/** Decode the private cache/package transport without depending on host byte order. */
 export function unpackBakedCsgMesh(payload: Uint8Array): BakedCsgMesh {
-    // `readFileSync` answers with a view that can start at any offset in a
-    // pooled buffer, and a typed-array view needs a 4-byte-aligned one; the
-    // copy is one memcpy and only on an unaligned read.
-    const bytes =
-        payload.byteOffset % 4 === 0 ? payload : new Uint8Array(payload);
-    const [positionCount = 0, normalCount = 0, uvCount = 0, indexCount = 0] =
-        new Uint32Array(bytes.buffer, bytes.byteOffset, 4);
-    let offset = bytes.byteOffset + 16;
-    // Each stream starts where the last ended, so the calls below have to
-    // run in declaration order -- which is what an object literal's
-    // property order guarantees.
-    const take = (count: number): number => {
-        const start = offset;
-        offset += 4 * count;
-        return start;
+    if (payload.byteLength < 16) throw new Error("Truncated baked mesh header.");
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    const count = (index: number): number => view.getUint32(index * 4, true);
+    const expected = 16 + 4 * (count(0) + count(1) + count(2) + count(3));
+    if (expected !== payload.byteLength) throw new Error("Invalid baked mesh stream lengths.");
+    let offset = 16;
+    const floats = (length: number): Float32Array => {
+        const result = new Float32Array(length);
+        for (let i = 0; i < length; ++i, offset += 4) result[i] = view.getFloat32(offset, true);
+        return result;
     };
-    return {
-        positions: new Float32Array(
-            bytes.buffer,
-            take(positionCount),
-            positionCount,
-        ),
-        normals: new Float32Array(
-            bytes.buffer,
-            take(normalCount),
-            normalCount,
-        ),
-        uvs: new Float32Array(bytes.buffer, take(uvCount), uvCount),
-        indices: new Uint32Array(bytes.buffer, take(indexCount), indexCount),
-    };
+    const positions = floats(count(0)), normals = floats(count(1)), uvs = floats(count(2));
+    const indices = new Uint32Array(count(3));
+    for (let i = 0; i < indices.length; ++i, offset += 4) indices[i] = view.getUint32(offset, true);
+    return { positions, normals, uvs, indices };
 }
 
 /**

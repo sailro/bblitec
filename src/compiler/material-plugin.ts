@@ -1,3 +1,61 @@
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+/**
+ * The `MaterialPlugin` a scene declares, folded to plain data.
+ *
+ * A plugin is a plain object upstream (`material/plugin/material-plugin.ts`
+ * is types only), and everything the pin's bridges read off one for the
+ * reached slice is a constant the scene wrote: its `name`, the WGSL
+ * `getCustomCode(shaderType)` returns per injection point, and the texture
+ * and sampler NAMES `getSamplers()` declares. So the plugin is folded
+ * rather than executed — the fidelity rule's first answer, and the one
+ * available here because the value is literal text rather than something
+ * only an engine can produce.
+ *
+ * What the fold does NOT do is decide where that text lands. The injection
+ * point to template slot mapping, the concatenation of several plugins into
+ * one slot, the binding declarations the sampler pairs become and the
+ * per-signature index that keys the compose and pipeline caches are all
+ * `plugin-bridge-shared.ts`, executed at composition
+ * (`src/pinned-material-plugins.ts`). This module only reads the scene's
+ * declaration and checks each point name against the pin's own two tables,
+ * so a plugin naming a point upstream has no slot for fails here with a
+ * source location instead of composing a fragment that silently drops it.
+ *
+ * The two texture members are folded as a pair. `getSamplers` declares the
+ * bindings, `bindTextures` fills them positionally, and `getActiveTextures`
+ * enumerates the same textures for the pin's acquire and release — upstream
+ * trusts the plugin author to keep the three in step, and a mismatch there
+ * binds the wrong texture or retires a live one. Nothing runs at generation
+ * that could observe the disagreement, so the fold proves it instead: equal
+ * counts, and the same RESOLVED texture at each position — the declaration
+ * each reference names, never the C++ spelling it renders as.
+ *
+ * A plugin reached through a factory folds the same way. Scene code writes
+ * `mat.plugins = [createStudMaterialPlugin(studs)]` as readily as it writes
+ * the object inline, because the texture members close over the argument.
+ * The call is therefore seen THROUGH rather than executed: the callee is
+ * resolved by the compiler's own identifier-to-declaration resolver, its
+ * body has to be one return of an object literal, and its parameters are
+ * bound to the values the call site passed. No statement runs and no branch
+ * is taken, so the object folded is the one the pin would have been handed.
+ *
+ * The declared names are checked against the WHOLE material's composition,
+ * because that is the scope the pin composes in: one fragment out of the
+ * whole plugin list, spliced into a variant that already declares the
+ * Standard family's own bindings. So a name is refused when a second plugin
+ * in the same list declares it, and when it is one the composed variant
+ * declares for itself — the latter read from the one list the generated
+ * `standard_binding_resources` table is rendered from, never restated here.
+ *
+ * Everything past that refuses by name: `priority`, `isEnabled`, `defines`,
+ * `getUniforms` and `writeUbo`. The last two would put a uniform block into
+ * the PBR material UBO or build the Standard self-managed `pluginUbo`,
+ * which is a second bind-group contract no measurement covers. So does a
+ * PBR material's `getSamplers`, whose entries the pin appends inside
+ * `createPbrMeshBindGroup` against a row keyed by material index — a
+ * different path from the Standard record lane this port binds.
+ */
 /**
  * The `MaterialPlugin` a scene declares, folded to plain data.
  *
@@ -65,30 +123,29 @@ import type {
 } from "../pinned-material-plugins.js";
 // The pin's own Standard binding names, from the one list the generated
 // `standard_binding_resources` table is rendered from.
-import { standardBuiltinBindingNames } from "../pinned-standard-variants.js";
+// The pin's own Standard binding names, from the one list the generated
+// `standard_binding_resources` table is rendered from.
+import {
+    standardBuiltinBindingNames,
+} from "../pinned-standard-variants.js";
 import type { Value } from "./types.js";
 
 /** Which family's bind path the material a plugin attaches to takes. */
 type MaterialPluginFamily = "standard" | "pbr";
 
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
-interface MaterialPluginContext {
-    readonly checker: ts.TypeChecker;
-    resolveStaticExpression(expression: ts.Expression): ts.Expression;
-    unwrap(expression: ts.Expression): ts.Expression;
-    propertyName(name: ts.PropertyName): string | undefined;
-    probeStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression | undefined;
-    compileStaticString(expression: ts.Expression): string;
-    compileValue(expression: ts.Expression): Value;
-    /** Runs `work` with an inlined function's parameters bound in a scope. */
-    withBoundParameters<T>(
-        parameters: readonly { name: ts.Identifier; value: Value }[],
-        work: () => T,
-    ): T;
-    fail(node: ts.Node, message: string): never;
-}
+interface MaterialPluginContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "resolveStaticExpression"
+        | "unwrap"
+        | "propertyName"
+        | "probeStaticArrayLiteral"
+        | "compileStaticString"
+        | "compileValue"
+        | "withBoundParameters"
+        | "fail"
+    > {}
 
 /** One texture a plugin's `bindTextures` binds, and where it came from. */
 interface MaterialPluginTextureBinding {
@@ -255,11 +312,11 @@ function pinnedPluginContract(): PinnedPluginContract {
             },
         );
     contract = {
-        fragmentPoints: new Set([
+        fragmentPoints: new EmissionSet([
             ...names("FRAG_POINT_TO_SLOTS"),
             definitionsPoint(context, declaration),
         ]),
-        vertexPoints: new Set(names("VERT_POINT_TO_SLOT")),
+        vertexPoints: new EmissionSet(names("VERT_POINT_TO_SLOT")),
         textureType: samplerTypeDefault(context, declaration, "textureType"),
         samplerType: samplerTypeDefault(context, declaration, "samplerType"),
     };
@@ -353,7 +410,7 @@ export function foldMaterialPluginList(
                 "takes a signature index upstream; drop the assignment.",
         );
     }
-    const declared = new Map<string, string>();
+    const declared = new EmissionMap<string, string>();
     const folded = array.elements.map((element) =>
         foldMaterialPlugin(context, element, family, declared),
     );

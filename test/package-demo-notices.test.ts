@@ -103,7 +103,7 @@ test("packager ships a third-party notice for every linkable dependency", () => 
         end > begin,
         "tools/package-demo.ps1 must close its notice table with the end-of-notices marker comment",
     );
-    const region = script.slice(begin, end);
+    const region = script.slice(begin, end) + readFileSync("tools/image-codecs.psm1", "utf8");
 
     for (const name of [...names].sort()) {
         if (NOTICE_EXEMPT.has(name)) continue;

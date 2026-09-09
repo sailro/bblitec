@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { CppDefinitions, type CppModule } from "../cpp-definitions.js";
 import {
     SCREEN_SPACE_KINDS,
     SCREEN_SPACE_SCALAR_SETTINGS,
@@ -13,11 +14,7 @@ import {
 import type { ScreenSpaceTaskManifest } from "../compiler/types.js";
 import { doubleLiteral, stringLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import {
-    lowerMat4InvertCpp,
-    lowerObjectComponents,
-    lowerPinnedFunction,
-} from "./pinned-function-lowerer.js";
+
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
@@ -27,6 +24,12 @@ import {
     pinnedRoundCall,
 } from "./pinned-operators.js";
 import { nativeTextureFormat } from "./post-process-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import {
+    lowerMat4InvertCpp,
+    lowerObjectComponents,
+    lowerPinnedFunction,
+} from "./pinned-function-lowerer.js";
 
 const CONTACT = screenSpaceFactsOfKind("scalar");
 const GI = screenSpaceFactsOfKind("color");
@@ -802,13 +805,11 @@ ${arms}
                     : { cpp: `task.params[${slot}]`, type: "scalar" },
             );
         }
-        const lowerer = new PinnedNumericLowerer(file, {
+
+        return lowerPinnedBody(file, body.statements, {
             bindings,
             calls: pinnedNumericMathCallsWithHypot(),
-        });
-        return body.statements
-            .flatMap((statement) => lowerer.statement(statement, indent))
-            .join("\n");
+        }, indent);
     }
 
     /** `computeScreenSpaceScaledSize`, whole, as the backend's sizing rule. */
@@ -1893,7 +1894,8 @@ export interface ScreenSpaceStageRow {
 export function screenSpaceShadersHeader(
     provenance: string,
     stages: readonly ScreenSpaceStageRow[],
-): string {
+): CppModule {
+    const cpp = new CppDefinitions();
     const roleName = (role: ScreenSpaceStageBinding["role"]): string => {
         switch (role) {
             case "depth":
@@ -1941,7 +1943,7 @@ export function screenSpaceShadersHeader(
                 `screen_space_bindings_${index}.size()},`,
         )
         .join("\n");
-    return `// ${provenance}
+    return cpp.finish(`// ${provenance}
 #pragma once
 
 #include <bblite/runtime.hpp>
@@ -1989,15 +1991,10 @@ struct ScreenSpaceShaderInfo {
     std::size_t binding_count;
 };
 
-${tables}
+${cpp.privateCode(tables)}
 
-inline constexpr std::size_t screen_space_shader_count = ${stages.length}u;
-
-inline constexpr std::array<ScreenSpaceShaderInfo, screen_space_shader_count>
-    screen_space_shader_infos{{
-${rows}
-}};
+${cpp.table("ScreenSpaceShaderInfo", "screen_space_shader_infos", stages.length, rows)}
 
 } // namespace bbl::upstream
-`;
+`);
 }

@@ -1,3 +1,4 @@
+import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
@@ -30,7 +31,7 @@ export function compileWorkerApplication(
     compile: (frontend: CompilerProgram, workers: WorkerCompilation) => CompileResult,
     fail: (node: ts.Node, message: string) => never,
 ): CompileResult {
-    const modules = new Map<string, Module>();
+    const modules = new EmissionMap<string, Module>();
     const configuration = (owner: CompilerProgram, namespace?: string): WorkerCompilation => ({
         namespace,
         register(node) {
@@ -83,7 +84,7 @@ export function compileWorkerApplication(
             fail(frontend.sourceFile, `Worker application reaches incompatible generated rendering products in '${result.manifest.source}'; distinct product domains are not yet admitted.`);
         }
     }
-    const assets = new Map<string, CompileManifest["assets"][number]>();
+    const assets = new EmissionMap<string, CompileManifest["assets"][number]>();
     for (const result of results) for (const asset of result.manifest.assets) {
         const prior = assets.get(asset.source);
         if (prior && JSON.stringify(prior) !== JSON.stringify(asset)) {
@@ -91,17 +92,17 @@ export function compileWorkerApplication(
         }
         assets.set(asset.source, asset);
     }
-    const runtimeSources = [...new Set(features.flatMap(feature => featureSources[feature]))];
+    const runtimeSources = [...new EmissionSet(features.flatMap(feature => featureSources[feature]))];
     const generatedSources = reachedGeneratedSources(features as Feature[]);
     return {
         cpp: results.map(result => result.cpp).join("\n"),
         cmake: renderFeaturesCmake(features, runtimeSources, generatedSources),
-        assetPayloads: new Map(results.flatMap(result => [...result.assetPayloads])),
+        assetPayloads: new EmissionMap(results.flatMap(result => [...result.assetPayloads])),
         ...(rendering.nodeParticles ? { nodeParticles: rendering.nodeParticles } : {}),
         manifest: {
             ...rendering.manifest, source: application.manifest.source, assets: [...assets.values()],
             adaptations: results.flatMap(result => result.manifest.adaptations),
-            inputs: [...new Set(results.flatMap(result => result.manifest.inputs))].sort(),
+            inputs: [...new EmissionSet(results.flatMap(result => result.manifest.inputs))].sort(),
             features, runtimeSources, generatedSources,
             featureSites: Object.assign({}, ...results.map(result => result.manifest.featureSites)),
         },

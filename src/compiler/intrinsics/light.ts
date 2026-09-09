@@ -1,19 +1,16 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
-export interface LightIntrinsicContext extends IntrinsicCallContext {
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    requireDefaultEngine(node: ts.Node): string;
-}
+export interface LightIntrinsicContext
+    extends IntrinsicCallContext,
+    Pick<LoweringServices,
+        | "compileVec3"
+        | "compileNumber"
+        | "requireDefaultEngine"
+    > {}
 
 export function compileLightIntrinsic(
     context: LightIntrinsicContext,

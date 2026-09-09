@@ -24,6 +24,43 @@ static std::unique_ptr<lab::AudioBus> render(AudioContextHandle handle, int fram
     return record.recorder->createBusFromRecording(false);
 }
 
+static void check_loop_and_playback_rate() {
+    for (const bool loop : {false, true}) {
+        for (const float rate : {1.0f, 2.0f}) {
+            const auto context = audio_create_context();
+            const auto source = audio_create_buffer_source(context);
+            const auto buffer = audio_create_buffer(context, 1, 512, 48000.0);
+            auto channel = audio_buffer_channel(buffer, 0);
+            for (std::size_t index = 0; index < channel.size(); ++index)
+                channel[index] = 0.25f * std::sin(static_cast<float>(index) * 6.283185307179586f / 64.0f);
+            audio_set_buffer(source, buffer);
+            audio_set_loop(source, loop);
+            const auto playback_rate = audio_node_param(source, AudioParamName::PlaybackRate);
+            audio_param_set_value(playback_rate, rate);
+            assert(audio_param_value(playback_rate) == rate);
+            audio_connect(source, audio_destination(context));
+            audio_node_start(source, 0.0);
+            const auto pcm = render(context, 4096);
+            assert(pcm && pcm->length() >= 2048);
+            const auto* samples = pcm->channel(0)->data();
+            float peak = 0.0f;
+            int crossings = 0;
+            for (int index = pcm->length() - 2048; index < pcm->length(); ++index) {
+                peak = std::max(peak, std::abs(samples[index]));
+                if (samples[index - 1] <= 0.0f && samples[index] > 0.0f) ++crossings;
+            }
+            if (loop) {
+                const int expected = static_cast<int>(32.0f * rate);
+                assert(peak > 0.1f);
+                assert(std::abs(crossings - expected) <= 1);
+            } else {
+                assert(peak < 0.0001f && crossings == 0);
+            }
+            audio_close_context(context);
+        }
+    }
+}
+
 static void check_session_isolation() {
     // Finishing one engine preserves another's contexts and SDL audio device.
     _putenv_s("BBLITE_AUDIO_CAPTURE", "");
@@ -103,6 +140,7 @@ int main() {
         return 0;
     }
     _putenv_s("BBLITE_AUDIO_CAPTURE", "fixture-unused.wav");
+    check_loop_and_playback_rate();
     const auto context = audio_create_context();
     const auto other = audio_create_context();
     const auto destination = audio_destination(context);

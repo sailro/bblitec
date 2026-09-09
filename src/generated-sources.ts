@@ -26,6 +26,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     { source: "upstream/src/engine.cpp", features: [] },
     { source: "upstream/src/device_recovery.cpp", features: ["engine:device-recovery"] },
     { source: "upstream/src/scene_core.cpp", features: [] },
+    { source: "upstream/src/variant_data.cpp", features: [] },
     { source: "upstream/src/text_data.cpp", features: ["text:data"] },
     {
         source: "upstream/src/frame_graph_resources.cpp",
@@ -121,7 +122,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/light_point.cpp",
-        features: ["light:point"],
+        features: ["light:point", "loader:babylon"],
     },
     {
         source: "upstream/src/light_spot.cpp",
@@ -240,7 +241,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/texture_file.cpp",
-        features: ["texture:file"],
+        features: ["texture:file", "loader:babylon"],
     },
     {
         source: "upstream/src/texture_pixels.cpp",

@@ -1,3 +1,13 @@
+import type { LoweringServices } from "../lowering-services.js";
+// The line-system family: `createLineMaterial`, `createLineSystem`,
+// `updateLineSystem`.
+//
+// A polyline system is an ordinary mesh drawn by an ordinary
+// `ShaderMaterial`, so nothing here builds a renderer: the geometry goes
+// through the generated flatten and `createMeshFromData`, and the material
+// is the program `line-material.ts` composes, registered as a scene-local
+// shader variant like any other. What the compiler owns is the reach — which
+// permutation each call settles, and which shapes refuse.
 // The line-system family: `createLineMaterial`, `createLineSystem`,
 // `updateLineSystem`.
 //
@@ -9,10 +19,6 @@
 // permutation each call settles, and which shapes refuse.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type {
-    LineMaterialPermutation,
-    ReachedLineMaterial,
-} from "../line-material.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -24,36 +30,21 @@ import {
 
 export interface LineIntrinsicContext
     extends IntrinsicCallContext,
-        ObjectValidationContext,
-        PositiveIntegerContext {
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    expectStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileColor4(expression: ts.Expression): string;
-    compileBoolean(expression: ts.Expression): string;
-    compileStringLiteral(expression: ts.Expression): string;
-    cppString(value: string): string;
-    requireDefaultEngine(node: ts.Node): string;
-    reachLineMaterial(
-        node: ts.Node,
-        options: ReachedLineMaterial,
-    ): { name: string; id: number };
-    lineMaterialPermutation(
-        name: string,
-        node: ts.Node,
-    ): LineMaterialPermutation | undefined;
-}
+    ObjectValidationContext,
+    PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "expectObjectLiteral"
+        | "expectStaticArrayLiteral"
+        | "objectProperty"
+        | "compileVec3"
+        | "compileColor4"
+        | "compileBoolean"
+        | "compileStringLiteral"
+        | "cppString"
+        | "requireDefaultEngine"
+        | "reachLineMaterial"
+        | "lineMaterialPermutation"
+    > {}
 
 /** The options a reached `createLineMaterial` may name. */
 const LINE_MATERIAL_OPTIONS = [

@@ -1,3 +1,4 @@
+import type { LoweringServices } from "../lowering-services.js";
 // What every intrinsic lowerer needs from the compiler.
 //
 // Each family declares the surface it uses, which is the point of the
@@ -7,44 +8,15 @@
 // feature -- because they are what lowering *an intrinsic* means rather
 // than what any one family needs. They are declared here and extended,
 // so a family's own interface says only what makes it different.
-import type ts from "typescript";
 
-import type {
-    Feature,
-    Value,
-    ValueKind,
-} from "../types.js";
 
-export interface IntrinsicCallContext {
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    compileValue(expression: ts.Expression): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
-    /**
-     * Records the feature and its first reaching scene-source call
-     * site, so the activation inventory can cite file:line. `site` is
-     * the scene AST node being lowered — for an intrinsic, the call.
-     */
-    reachFeature(feature: Feature, site: ts.Node): void;
-    /** Records one scene-code material creation or native construction profile. */
-    recordSceneMaterialSlot(): number;
-    isRuntimeResourceConstruction(): boolean;
-    /** Records a scene-code mesh's composition row before its execution mode is applied. */
-    recordSceneMesh(
-        kind: string,
-        streams?: {
-            hasUv2: boolean;
-            hasTangents: boolean;
-            hasColors: boolean;
-            /** At least one stream's presence is a run-time answer. */
-            runtimeStreams?: true;
-        },
-    ): number;
-}
+export interface IntrinsicCallContext
+    extends Pick<LoweringServices,
+        | "expectArgumentCount"
+        | "compileValue"
+        | "expectKind"
+        | "reachFeature"
+        | "recordSceneMaterialSlot"
+        | "isRuntimeResourceConstruction"
+        | "recordSceneMesh"
+    > {}

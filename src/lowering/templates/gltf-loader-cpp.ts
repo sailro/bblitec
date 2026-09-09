@@ -1,12 +1,14 @@
 import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
+import { compressedTextureFormat } from "../../compressed-texture-format.js";
 // Imported from the module rather than the barrel: the barrel reaches this
 // template through gltf/loader.ts, so a value import of the barrel here
 // would be a runtime cycle.
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
-import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MATERIAL_EXTENSION_PAYLOAD, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES } from "../../gltf-document.js";
+import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
+import { gltfMaterialProjection } from "../gltf/material-projection.js";
 /**
  * The generated glTF loader.
  *
@@ -31,23 +33,16 @@ export interface GltfLoaderLoweredSegments {
      * branch).
      */
     animationInterpolation: string;
-    /**
-     * The sampler filter/wrap mapping inside `texture_data`, lowered from
-     * `src/loader-gltf/gltf-sampler-desc.ts#gltfTexSamplerDesc`.
-     */
-    samplerMapping: string;
-    /**
-     * The four integer componentType clauses of `read_component`, lowered
-     * from `src/loader-gltf/gltf-ext-quantization.ts#readComponent` — the
-     * byte/ubyte/short/ushort scale factors and the signed clamps.
-     */
+    /** Complete pinned DataView component reader, including normalization. */
     accessorNormalization: string;
-    /**
-     * The COLOR_0 → Vec4 build, lowered from
-     * `src/loader-gltf/gltf-color-normalize.ts#normalizeColorToVec4`: the
-     * channel order, the VEC3 alpha default, and the proof that the pinned
-     * color divisors are the accessor divisors `read_component` applies.
-     */
+    /** Pinned accessor component counts and typed-array constructor widths. */
+    accessorShape: string;
+    hierarchy: string;
+    parserJson: string;
+    materialAssembly: string;
+    materialTextures: string;
+    materialProperties: string;
+    /** Pinned color and UV typed-array conversion bodies. */
     vertexColor: string;
     /**
      * `pre_scale_harmonics`, lowered from
@@ -62,27 +57,8 @@ export interface GltfLoaderLoweredSegments {
      * `src/loader-gltf/gltf-ext-lights-image-based.ts`.
      */
     imageProcessingDefaults: string;
-    /**
-     * The dielectric/ior/dispersion/iridescence JSON keys and default
-     * constants, lowered from `src/loader-gltf/gltf-ext-dielectric.ts` and
-     * `src/loader-gltf/gltf-ext-iridescence.ts`.
-     */
-    extensionDefaults: GltfExtensionDefaults;
-    /**
-     * The remaining material JSON keys and default constants, lowered
-     * from `gltf-material.ts#assembleMaterial`, the dielectric
-     * specular-factor treatment, the KHR_texture_transform identity
-     * (`gltf-ext-uv-transform.ts` + the pinned writer's defaults), and
-     * the clearcoat/sheen/emissive-strength option objects.
-     */
-    materialDefaults: GltfMaterialDefaults;
-    /**
-     * The factor-bake helpers and their byte constants, lowered from
-     * `src/math/color.ts#linearToSrgbByte` and the pinned factor-texture
-     * bakes (`src/loader-gltf/gltf-pbr-builder.ts`
-     * `uploadBaseColorFactorTexture` / `uploadOrmFactorTexture`).
-     */
-    factorBake: GltfFactorBake;
+    /** Pinned sRGB byte conversion. */
+    factorBake: string;
     /**
      * `local_matrix`, lowered from
      * `src/loader-gltf/gltf-parser.ts#computeNodeWorldMatrix` (the
@@ -159,98 +135,6 @@ export interface GltfLoaderLoweredSegments {
 }
 
 /** One lowered glTF extension default: the JSON key and the C++ literal. */
-export interface GltfLoweredDefault {
-    key: string;
-    literal: string;
-}
-
-/**
- * The pinned factor bakes: `unorm_byte` / `linear_to_srgb_byte`
- * emitted whole, plus the round-clamp-scale constants the material
- * build inlines for the base-color alpha lane and the ORM texel's
- * constant opaque lanes.
- */
-export interface GltfFactorBake {
-    helpers: string;
-    /** `Math.round(clamp(v, lo, hi) * scale)` as float literals. */
-    unormClampLo: string;
-    unormClampHi: string;
-    unormScale: string;
-    /** The pinned ORM texel's constant occlusion/alpha byte. */
-    opaqueByte: string;
-}
-
-export interface GltfExtensionDefaults {
-    ior: GltfLoweredDefault;
-    transmissionFactor: GltfLoweredDefault;
-    thicknessFactor: GltfLoweredDefault;
-    attenuationDistance: GltfLoweredDefault;
-    dispersion: GltfLoweredDefault;
-    /** Babylon's fixed Abbe numerator in `strength = 20 / dispersion`. */
-    dispersionScale: string;
-    iridescenceFactor: GltfLoweredDefault;
-    iridescenceIor: GltfLoweredDefault;
-    iridescenceThicknessMinimum: GltfLoweredDefault;
-    iridescenceThicknessMaximum: GltfLoweredDefault;
-}
-
-/**
- * The round-4 material defaults — see the round-4 notes in
- * `gltf-lowerer.ts` for the absent-arm asymmetries (the base color's
- * native default, the texture-transform identity, the doubleSided
- * coercion).
- */
-export interface GltfMaterialDefaults {
-    /** Key only: the absent arm is the record's native Color4{1,1,1,1}. */
-    baseColorFactorKey: string;
-    metallicFactor: GltfLoweredDefault;
-    roughnessFactor: GltfLoweredDefault;
-    /** The key plus the identity seed the loader writes before the read. */
-    emissiveFactor: { key: string; identity: string };
-    /** glTF `normalTexture.scale`. */
-    normalScale: GltfLoweredDefault;
-    /** glTF `occlusionTexture.texCoord`; the literal is an integer. */
-    occlusionTexCoord: GltfLoweredDefault;
-    alphaMode: { key: string; literal: string };
-    /** Key only: `bool_or(..., false)` is the pin's `!!` coercion. */
-    doubleSidedKey: string;
-    alphaCutoff: GltfLoweredDefault;
-    /** A factor within `epsilon` of `clear` drops both pinned options. */
-    specularFactor: { key: string; clear: string; epsilon: string };
-    /** `((ior - one) / (ior + one)) ** 2 / baseReflectance`. */
-    iorToF0: { one: string; baseReflectance: string };
-    /** The `!== unit` triple gating the dielectric tint, and its length. */
-    specularColor: { key: string; length: string; unit: string };
-    /** KHR_texture_transform: the three field keys; rotation's identity. */
-    textureTransform: {
-        rotation: GltfLoweredDefault;
-        scaleKey: string;
-        offsetKey: string;
-    };
-    /** `clearcoatFactor ?? (clearcoatTexture ? present : absent)`. */
-    clearcoatIntensity: { key: string; present: string; absent: string };
-    clearcoatRoughness: { key: string; present: string; absent: string };
-    clearcoatNormalScale: GltfLoweredDefault;
-    sheenColor: { key: string; identity: string };
-    sheenRoughness: GltfLoweredDefault;
-    sheenIntensity: string;
-    emissiveStrength: GltfLoweredDefault;
-    /**
-     * KHR_materials_pbrSpecularGlossiness rewrites the metallic-roughness
-     * pair rather than defaulting into it, so all three of its values are
-     * pinned formulas: `metallicFactor`, `complement - (glossiness ?? …)`,
-     * and the specular factor's largest channel with its absent arm. The
-     * two texture keys carry the fields the pin assigns them to.
-     */
-    specGloss: {
-        diffuseTextureKey: string;
-        specGlossTextureKey: string;
-        metallicFactor: string;
-        glossiness: { key: string; literal: string; complement: string };
-        reflectance: { key: string; channels: string; absent: string };
-    };
-}
-
 export function gltfLoaderCpp(
     provenance: string,
     lowered: GltfLoaderLoweredSegments,
@@ -278,7 +162,6 @@ export function gltfLoaderCpp(
         animatedWorldBounds = false,
         animationPointerMaterials = false,
         assetTransmission = false,
-        materialSpecular = false,
         selectedMaterialVariant = "",
         gltfCameras = false,
         boneControl = false,
@@ -293,8 +176,7 @@ export function gltfLoaderCpp(
     // The features that contribute scene wiring the container chains at
     // add; the helper is emitted with its callers.
     const chainsSceneSetup = assetTransmission || gaussianSplats || interactivity;
-    const defaults = lowered.extensionDefaults;
-    const materialDefaults = lowered.materialDefaults;
+
     const factorBake = lowered.factorBake;
     return `// ${provenance}
 #include <bblite/pal_gltf.hpp>
@@ -317,6 +199,7 @@ ${compressedImages ? "#include <bblite/upstream/compressed_texture.hpp>\n" : ""}
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace bbl {
@@ -335,6 +218,8 @@ const ts::JsonValue* optional(const JsonObject& object, const std::string& key) 
     const auto found = object.find(key);
     return found == object.end() ? nullptr : &found->second;
 }
+
+${lowered.parserJson}
 
 const JsonArray& array_or_empty(const JsonObject& object, const std::string& key) {
     static const JsonArray empty;
@@ -356,28 +241,12 @@ ${sourceMeshWalks ? `
 void load_source_mesh_walks(AssetRecord& asset, const JsonObject& document) {
     const auto* packed = optional(document, ${JSON.stringify(GLTF_MESH_WALKS)});
     if (!packed) return; // This file has no reached source collector.
-    auto walks = std::make_shared<std::vector<std::vector<std::size_t>>>();
+    std::vector<std::vector<double>> walks;
     for (const auto& row : packed->as_array()) {
-        auto& walk = walks->emplace_back();
-        const auto& entries = row.as_array();
-        if (entries.empty()) continue; // Collector demanded by another asset.
-        if (entries.size() != asset.meshes.size()) {
-            throw std::runtime_error("Invalid glTF source mesh walk size.");
-        }
-        std::vector<bool> seen(asset.meshes.size(), false);
-        walk.reserve(entries.size());
-        for (const auto& entry : entries) {
-            const double number = entry.as_number();
-            if (!(number >= 0 && number < static_cast<double>(asset.meshes.size())) || std::floor(number) != number) {
-                throw std::runtime_error("Invalid glTF source mesh walk index.");
-            }
-            const auto index = unsigned_value(entry);
-            if (seen[index]) throw std::runtime_error("Repeated glTF source mesh walk index.");
-            seen[index] = true;
-            walk.push_back(index);
-        }
+        auto& walk = walks.emplace_back();
+        for (const auto& entry : row.as_array()) walk.push_back(entry.as_number());
     }
-    asset.source_mesh_walks = std::move(walks);
+    install_asset_mesh_walks(asset, walks);
 }
 ` : ""}
 
@@ -447,7 +316,7 @@ struct BufferViewInfo {
 };
 
 struct AccessorInfo {
-    std::size_t buffer_view = 0;
+    std::size_t buffer_view = std::numeric_limits<std::size_t>::max();
     std::size_t offset = 0;
     std::size_t count = 0;
     std::uint32_t component_type = 0;
@@ -890,30 +759,7 @@ struct AnimationRuntime {
     std::vector<AnimatedMeshBinding> meshes;
 };
 
-std::size_t component_size(std::uint32_t component_type) {
-    switch (component_type) {
-        case 5120:
-        case 5121:
-            return 1;
-        case 5122:
-        case 5123:
-            return 2;
-        case 5125:
-        case 5126:
-            return 4;
-        default:
-            throw std::runtime_error("Unsupported glTF component type.");
-    }
-}
-
-std::size_t component_count(const std::string& type) {
-    if (type == "SCALAR") return 1;
-    if (type == "VEC2") return 2;
-    if (type == "VEC3") return 3;
-    if (type == "VEC4") return 4;
-    if (type == "MAT4") return 16;
-    throw std::runtime_error("Unsupported glTF accessor type.");
-}
+${lowered.accessorShape}
 
 template <typename T>
 T read_value(const std::uint8_t* data) {
@@ -922,14 +768,15 @@ T read_value(const std::uint8_t* data) {
     return value;
 }
 
-float read_component(
+${lowered.accessorNormalization}
+
+const std::uint8_t* accessor_component_address(
     const ts::ArrayBuffer& buffer,
     const upstream::ParsedGlbContainer& container,
     const std::vector<BufferViewInfo>& views,
     const AccessorInfo& accessor,
     std::size_t element,
     std::size_t component) {
-    const BufferViewInfo& view = views.at(accessor.buffer_view);
     const std::size_t component_bytes =
         component_size(accessor.component_type);
     const std::size_t components =
@@ -938,6 +785,8 @@ float read_component(
         throw std::runtime_error(
             "glTF accessor element or component is out of range.");
     }
+    if (accessor.buffer_view == std::numeric_limits<std::size_t>::max()) return nullptr;
+    const BufferViewInfo& view = views.at(accessor.buffer_view);
     const std::size_t packed_stride =
         component_bytes * components;
     const std::size_t stride = view.stride != 0 ? view.stride : packed_stride;
@@ -967,22 +816,36 @@ float read_component(
         throw std::runtime_error(
             "glTF accessor exceeds its bufferView.");
     }
-    const std::size_t offset =
-        container.bin_offset +
-        view.offset +
-        accessor.offset +
-        element_offset +
-        component_offset;
-    const std::uint8_t* data = buffer.data() + offset;
-    switch (accessor.component_type) {
-${lowered.accessorNormalization}
-        case 5125:
-            return static_cast<float>(read_value<std::uint32_t>(data));
-        case 5126:
-            return read_value<float>(data);
-        default:
-            throw std::runtime_error("Unsupported glTF component type.");
+    if (container.bin_offset > buffer.byte_length() || container.bin_length > buffer.byte_length() - container.bin_offset ||
+        view.offset > container.bin_length || view.length > container.bin_length - view.offset) {
+        throw std::runtime_error("glTF bufferView exceeds its buffer.");
     }
+    return buffer.data() + container.bin_offset + view.offset + accessor.offset + element_offset + component_offset;
+}
+
+double read_accessor_component(
+    const ts::ArrayBuffer& buffer,
+    const upstream::ParsedGlbContainer& container,
+    const std::vector<BufferViewInfo>& views,
+    const AccessorInfo& accessor,
+    std::size_t element,
+    std::size_t component,
+    bool normalized) {
+    const auto* data = accessor_component_address(buffer, container, views, accessor, element, component);
+    if (!data) return 0.0;
+    return accessor.component_type == 5125
+        ? static_cast<double>(read_value<std::uint32_t>(data))
+        : read_quantized_component(data, 0, accessor.component_type, normalized);
+}
+
+float read_component(
+    const ts::ArrayBuffer& buffer,
+    const upstream::ParsedGlbContainer& container,
+    const std::vector<BufferViewInfo>& views,
+    const AccessorInfo& accessor,
+    std::size_t element,
+    std::size_t component) {
+    return static_cast<float>(read_accessor_component(buffer, container, views, accessor, element, component, accessor.normalized));
 }
 
 std::uint32_t read_index(
@@ -991,8 +854,21 @@ std::uint32_t read_index(
     const std::vector<BufferViewInfo>& views,
     const AccessorInfo& accessor,
     std::size_t element) {
-    return static_cast<std::uint32_t>(read_component(buffer, container, views, accessor, element, 0));
+    return js::to_uint32(read_accessor_component(buffer, container, views, accessor, element, 0, false));
 }
+
+struct GltfAccessorView {
+    const ts::ArrayBuffer& buffer;
+    const upstream::ParsedGlbContainer& container;
+    const std::vector<BufferViewInfo>& views;
+    const AccessorInfo& accessor;
+    double operator[](std::size_t index) const {
+        const auto components = component_count(accessor.type);
+        return read_accessor_component(buffer, container, views, accessor, index / components, index % components, false);
+    }
+};
+
+${lowered.vertexColor}
 
 // src/loader-gltf/gltf-feature-lights-punctual.ts applyAsset: a punctual
 // light's world forward is \`Math.hypot(fx, fy, fz) || 1\` under its three
@@ -1161,6 +1037,8 @@ ${lowered.matrixCompose}
 
 ${lowered.matrixNative}
 
+${lowered.hierarchy}
+
 // The raw world multiplies live in the always-emitted
 // upstream::transform_position/transform_direction pair; these wrappers add
 // only the loader's RH->LH x-negation.
@@ -1178,27 +1056,6 @@ Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
     return Vec3{-transformed.x, transformed.y, transformed.z};
 }
 
-// getTextureImageIndex: an alternate-source extension supplies the image index
-// in place of the core field. The pin keeps this on its core path rather than
-// behind a feature import, because the decode needs no extra module there —
-// createImageBitmap reads WebP natively.
-std::size_t texture_image_index(const JsonObject& texture) {
-    if (
-        const ts::JsonValue* extensions =
-            optional(texture, "extensions")) {
-        if (
-            const ts::JsonValue* webp = optional(
-                extensions->as_object(),
-                "EXT_texture_webp")) {
-            if (
-                const ts::JsonValue* source =
-                    optional(webp->as_object(), "source")) {
-                return unsigned_value(*source);
-            }
-        }
-    }
-    return unsigned_value(required(texture, "source"));
-}
 ${materialVariants ? `
 // src/loader-gltf/material-variants.ts#selectVariant composed with
 // gltf-feature-variants.ts's mapping walk: the selection restores every
@@ -1272,13 +1129,10 @@ TextureData image_data(
     }
     const std::string mime_type =
         string_or(image, "mimeType");${compressedImages ? `
-    // A KTX2 image the packager transcoded: what is embedded is the KTX1
-    // container the pin's own \`parseKtx1\` reads, so the blocks are taken
-    // as they are and nothing is decoded. \`uploadCompressed\` gives every
-    // KTX2 texture \`invertY: true\`, which is a texture-object property
-    // rather than an upload flip, so the record carries it here.
-    if (mime_type == "image/ktx") {
-        result.compressed = upstream::parse_ktx1(
+    // The pin's transcoded blocks and parsed mip list, packaged together.
+    // KTX2 invertY is a texture-object property, not an upload flip.
+    if (mime_type == "${compressedTextureFormat.mimeType}") {
+        result.compressed = upstream::read_compressed_texture(
             std::vector<std::uint8_t>(
                 buffer.bytes().begin() + start,
                 buffer.bytes().begin() + end));
@@ -1399,46 +1253,6 @@ ${lowered.imageProcessingDefaults}
     return true;
 }
 
-TextureData texture_data(
-    const ts::ArrayBuffer& buffer,
-    const upstream::ParsedGlbContainer& container,
-    const std::vector<BufferViewInfo>& views,
-    const JsonArray& images,
-    const JsonArray& textures,
-    const JsonArray& samplers,
-    const ts::JsonValue* texture_info) {
-    TextureData result;
-    if (!texture_info) return result;
-    const JsonObject& info = texture_info->as_object();
-    const std::size_t texture_index = unsigned_value(required(info, "index"));
-    const JsonObject& texture = textures.at(texture_index).as_object();
-    const JsonObject* sampler = nullptr;
-    if (const ts::JsonValue* sampler_value = optional(texture, "sampler")) {
-        sampler = &samplers.at(unsigned_value(*sampler_value)).as_object();
-    }
-${lowered.samplerMapping}
-    const std::size_t image_index = texture_image_index(texture);
-    // The whole payload, because a slot's image can be either an encoded
-    // file or a container's blocks: TextureData::has_image is the one
-    // predicate that answers for both, and copying only the encoded bytes
-    // here would silently drop every compressed slot.
-    // Non-const, and the mip chain MOVES: compressed is a vector of
-    // per-level byte vectors, so copy-assigning it duplicates every block
-    // -- 117 MB for a fifteen-image KTX2 asset, on top of the copy the
-    // parse already made. bytes is shared-pointer backed, so its
-    // assignment is a refcount either way.
-    TextureData payload = image_data(
-        buffer,
-        container,
-        views,
-        images,
-        image_index);
-    result.bytes = payload.bytes;
-    result.compressed = std::move(payload.compressed);
-    result.uv_invert_y = payload.uv_invert_y;
-    return result;
-}
-
 const ts::JsonValue* texture_transform_value(
     const ts::JsonValue* texture_info) {
     if (!texture_info) return nullptr;
@@ -1452,42 +1266,7 @@ const ts::JsonValue* texture_transform_value(
         "KHR_texture_transform");
 }
 
-// Read one textureInfo's KHR_texture_transform into that slot's own transform.
-// The pinned wrapTexture patches only the fields the extension declares and
-// leaves the rest at their defaults, so an absent scale/offset/rotation keeps
-// the identity values this record is constructed with.
-void apply_texture_transform(
-    TextureTransform& slot,
-    const ts::JsonValue* texture_info) {
-    if (!texture_info) return;
-    const ts::JsonValue* extensions_value =
-        optional(
-            texture_info->as_object(),
-            "extensions");
-    if (!extensions_value) return;
-    const ts::JsonValue* transform_value =
-        optional(
-            extensions_value->as_object(),
-            "KHR_texture_transform");
-    if (!transform_value) return;
-    const JsonObject& transform =
-        transform_value->as_object();
-    const std::vector<float> scale =
-        float_array(optional(transform, "${materialDefaults.textureTransform.scaleKey}"));
-    const std::vector<float> offset =
-        float_array(optional(transform, "${materialDefaults.textureTransform.offsetKey}"));
-    if (scale.size() == 2) {
-        slot.u_scale = scale[0];
-        slot.v_scale = scale[1];
-    }
-    if (offset.size() == 2) {
-        slot.u_offset = offset[0];
-        slot.v_offset = offset[1];
-    }
-    slot.rotation = float_or(transform, "${materialDefaults.textureTransform.rotation.key}", ${materialDefaults.textureTransform.rotation.literal});
-}
-
-${factorBake.helpers}
+${factorBake}
 
 // animation-pointer-basecolor.ts#collectBaseColorDefs: which materials have
 // their base colour factor driven by a KHR_animation_pointer channel. It is a
@@ -1539,761 +1318,11 @@ std::vector<bool> collect_animated_base_color(
     return animated;
 }
 
-MaterialHandle load_material(
-    Engine& engine,
-    const JsonObject& material_json,
-    const ts::ArrayBuffer& buffer,
-    const upstream::ParsedGlbContainer& container,
-    const std::vector<BufferViewInfo>& views,
-    const JsonArray& images,
-    const JsonArray& textures,
-    const JsonArray& samplers,
-    bool animated_base_color) {
-    MaterialRecord material;
-    material.name = string_or(material_json, "name");
-    // buildDefaultPbrTextures always creates a source Texture2D, including
-    // the factor-baked 1x1 fallback. Renderer image presence is not source
-    // property presence.
-    material.has_public_base_color_texture = true;
-    std::vector<double> source_base{1, 1, 1, 1};
-    material.emissive_factor = ${materialDefaults.emissiveFactor.identity};
-    material.specular_aa = true;
-    if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {
-        const JsonObject& pbr = pbr_value->as_object();
-        auto source_factor = double_array(optional(pbr, "${materialDefaults.baseColorFactorKey}"));
-        if (source_factor.size() == 4) {
-            source_base = std::move(source_factor);
-            material.base_color_factor = Color4{static_cast<float>(source_base[0]),
-                static_cast<float>(source_base[1]), static_cast<float>(source_base[2]), static_cast<float>(source_base[3])};
-        }
-        material.metallic_factor = float_or(pbr, "${materialDefaults.metallicFactor.key}", ${materialDefaults.metallicFactor.literal});
-        material.roughness_factor = float_or(pbr, "${materialDefaults.roughnessFactor.key}", ${materialDefaults.roughnessFactor.literal});
-        const ts::JsonValue* base_color_texture =
-            optional(pbr, "baseColorTexture");
-        material.base_color_texture = texture_data(
-            buffer, container, views, images, textures, samplers, base_color_texture);
-        apply_texture_transform(
-            material.base_color_transform,
-            base_color_texture);
-        const ts::JsonValue*
-            metallic_roughness_texture =
-                optional(
-                    pbr,
-                    "metallicRoughnessTexture");
-        material.metallic_roughness_texture = texture_data(
-            buffer, container, views, images, textures, samplers, metallic_roughness_texture);
-        apply_texture_transform(
-            material.orm_transform,
-            metallic_roughness_texture);
-        if (material.metallic_roughness_texture.bytes.empty()) {
-            // uploadOrmFactorTexture: the factors bake into the texel and the
-            // uniforms revert to one. The product is what it always was, but
-            // the split matters the moment a KHR_animation_pointer channel
-            // writes a factor — the pointer drives the UNIFORM, which the
-            // shader multiplies by this texel, so a material authored at
-            // roughness zero stays a mirror however its factor animates. Ours
-            // kept the factor in the uniform against a white texel, which let
-            // an animated factor resurrect a value the pin holds at zero.
-            material.orm_fallback = {
-                ${factorBake.opaqueByte},
-                unorm_byte(material.roughness_factor),
-                unorm_byte(material.metallic_factor),
-                ${factorBake.opaqueByte},
-            };
-            material.metallic_factor = 1.0f;
-            material.roughness_factor = 1.0f;
-        }
-        if (material.base_color_texture.bytes.empty()) {
-            if (animated_base_color) {
-                // animation-pointer-basecolor.ts#whiteFallback: a base
-                // colour factor that is animated, on a material with no
-                // base colour image, bakes a fully WHITE texel and keeps
-                // the real factor — alpha included — in the uniform for
-                // the pointer writer to overwrite. Baking the factor here
-                // as well multiplies it in twice: Scene 253's Transparency
-                // sphere carried 0.502 in the texel and 0.648 in the
-                // uniform against the browser's 0.648 alone.
-                material.base_color_fallback = {255, 255, 255, 255};
-                material.animated_base_color = true;
-            } else {
-                // Pinned uploadBaseColorFactorTexture: the factor bakes
-                // into the sRGB fallback texel (alpha as a linear byte)
-                // and the shader uniform reverts to white; the raw alpha
-                // stays on the record for the pinned blend semantics.
-                material.base_color_fallback = {
-                    linear_to_srgb_byte(material.base_color_factor.r),
-                    linear_to_srgb_byte(material.base_color_factor.g),
-                    linear_to_srgb_byte(material.base_color_factor.b),
-                    static_cast<std::uint8_t>(
-                        std::round(
-                            std::clamp(
-                                material.base_color_factor.a,
-                                ${factorBake.unormClampLo},
-                                ${factorBake.unormClampHi}) *
-                            ${factorBake.unormScale})),
-                };
-                material.base_color_factor.r = 1.0f;
-                material.base_color_factor.g = 1.0f;
-                material.base_color_factor.b = 1.0f;
-            }
-        }
-    }
-    // The pointer feature seeds its public array even without a pbr block.
-    if (animated_base_color || gltf_has_base_color_factor(
-        material.base_color_texture.has_image(), source_base)) {
-        material.source_base_color_factor = std::make_shared<std::vector<double>>(std::move(source_base));
-    }
-    const ts::JsonValue* normal_texture =
-        optional(material_json, "normalTexture");
-    material.normal_texture = texture_data(
-        buffer, container, views, images, textures, samplers, normal_texture);
-    apply_texture_transform(
-        material.normal_transform,
-        normal_texture);
-    if (normal_texture) {
-        material.normal_texture_scale =
-            float_or(normal_texture->as_object(), "${materialDefaults.normalScale.key}", ${materialDefaults.normalScale.literal});
-    }
-    const ts::JsonValue* occlusion_texture_info =
-        optional(material_json, "occlusionTexture");
-    material.has_occlusion_texture = occlusion_texture_info != nullptr;
-    // assemblePbrPropsExt seeds occlusionStrength as image presence -- the
-    // glTF strength is not what the field carries -- and the animation
-    // pointer overwrites the live value from there. A no-image material
-    // carries 0 so the fragment's occlusion mix stays at the composed 1.0
-    // instead of sampling the metallic-roughness red channel.
-    material.occlusion_strength =
-        occlusion_texture_info ? 1.0f : 0.0f;
-    if (occlusion_texture_info) {
-        // Babylon Lite's buildDefaultPbrTexturesExt, arm for arm.
-        //
-        // Which texture the ORM slot samples, and whether occlusion gets a
-        // carrier of its own, are two separate questions there, and the pin
-        // answers each from the images the material actually resolved:
-        //
-        //  - occlusion on a non-zero texCoord with NO metallic-roughness
-        //    image is occlusionOnUv2: the ORM slot stays the factor texel
-        //    baked above and the occlusion image binds through the dedicated
-        //    pair the composed variant declares for uv2 mask bit 32.
-        //  - occlusion with no metallic-roughness image on TEXCOORD_0 becomes
-        //    the ORM texture itself, at the OCCLUSION slot's own transform
-        //    (ormTi = raw.occlusionTexture), and assemblePbrPropsExt then
-        //    passes no metallic or roughness factor at all, so the engine
-        //    defaults of 1.0 apply.
-        //  - occlusion beside a metallic-roughness image that shares its
-        //    image keeps the ORM slot on the metallic-roughness textureInfo
-        //    and gives occlusion a second wrapper over the same image
-        //    whenever the two can be sampled apart: on TEXCOORD_1 through the
-        //    uv2 pair, or -- occlusionNeedsSplit -- through a distinct
-        //    texture object or its own KHR_texture_transform, which is the
-        //    orm-unpack split the fragment reads as a second ormTexture
-        //    sample at occlUV.
-        //
-        // Distinct occlusion and metallic-roughness IMAGES composite on a
-        // canvas upstream (gltf-ext-orm.ts) and stay unreached natively.
-        const ts::JsonValue* metallic_roughness_info = nullptr;
-        if (const ts::JsonValue* pbr_value =
-                optional(material_json, "pbrMetallicRoughness")) {
-            metallic_roughness_info = optional(
-                pbr_value->as_object(),
-                "metallicRoughnessTexture");
-        }
-        const auto texture_index_of =
-            [&](const ts::JsonValue* info) -> std::size_t {
-                return unsigned_value(
-                    required(info->as_object(), "index"));
-            };
-        const auto texture_image =
-            [&](const ts::JsonValue* info) -> std::size_t {
-                return texture_image_index(
-                    textures.at(texture_index_of(info)).as_object());
-            };
-        const std::size_t occlusion_uv = unsigned_or(
-            occlusion_texture_info->as_object(),
-            "${materialDefaults.occlusionTexCoord.key}",
-            ${materialDefaults.occlusionTexCoord.literal});
-        if (occlusion_uv > 1) {
-            // wrapTexCoord stamps _texCoord only for 1, so upstream samples
-            // TEXCOORD_0 here while assemblePbrPropsExt still records the
-            // texCoord and leaves the uv2 mask bit clear -- a shape whose
-            // occlusion reaches neither the dedicated pair nor the split. No
-            // corpus asset authors it, so it is refused rather than mirrored.
-            throw std::runtime_error(
-                "Reached glTF occlusion texture uses an unsupported "
-                "texture-coordinate set.");
-        }
-        const bool occlusion_on_uv2 =
-            occlusion_uv != 0 && !metallic_roughness_info;
-        // occlusionNeedsSplit: a distinct texture object, or occlusion
-        // carrying a KHR_texture_transform an animation pointer can drive
-        // apart from the metallic-roughness one.
-        const bool occlusion_needs_split =
-            metallic_roughness_info != nullptr &&
-            (texture_index_of(occlusion_texture_info) !=
-                 texture_index_of(metallic_roughness_info) ||
-             texture_transform_value(occlusion_texture_info) != nullptr);
-        if (
-            metallic_roughness_info &&
-            texture_image(metallic_roughness_info) !=
-                texture_image(occlusion_texture_info)) {
-            throw std::runtime_error(
-                "Reached glTF material uses distinct occlusion "
-                "and metallic-roughness images.");
-        }
-        if (
-            occlusion_uv == 1 &&
-            metallic_roughness_info &&
-            !occlusion_needs_split) {
-            // assemblePbrPropsExt sets uv2 mask bit 32 from the texCoord
-            // while buildDefaultPbrTexturesExt builds the carrier only for
-            // occlusionNeedsSplit, so the composed fragment declares the
-            // dedicated occlusion pair with no texture behind it. The
-            // browser fails validation and draws nothing; refusing here is
-            // the same verdict, named.
-            throw std::runtime_error(
-                "Reached glTF occlusion texture on TEXCOORD_1 names the "
-                "same texture object as the metallic-roughness slot, "
-                "which composes an occlusion binding with no texture.");
-        }
-        if (!metallic_roughness_info && !occlusion_on_uv2) {
-            material.metallic_roughness_texture = texture_data(
-                buffer,
-                container,
-                views,
-                images,
-                textures,
-                samplers,
-                occlusion_texture_info);
-            apply_texture_transform(
-                material.orm_transform,
-                occlusion_texture_info);
-            material.metallic_factor = 1.0f;
-            material.roughness_factor = 1.0f;
-        } else if (occlusion_on_uv2 || occlusion_needs_split) {
-            material.has_occlusion_transform = true;
-            // The carrier's own transform, always -- both arms sample at a UV
-            // the occlusion slot owns. Its BYTES are only wanted by the uv2
-            // arm: the split one re-samples ormTexture at occlUV, over the
-            // image the ORM slot already uploaded, so packaging a second copy
-            // of those bytes into the record would bind nothing.
-            apply_texture_transform(
-                material.occlusion_transform,
-                occlusion_texture_info);
-            if (occlusion_uv == 1) {
-                material.occlusion_texture = texture_data(
-                    buffer,
-                    container,
-                    views,
-                    images,
-                    textures,
-                    samplers,
-                    occlusion_texture_info);
-            }
-        }
-        material.occlusion_texture_uv2 = occlusion_uv == 1;
-    }
-    if (const ts::JsonValue* extensions_value = optional(material_json, "extensions")) {
-        const JsonObject& extensions = extensions_value->as_object();
-        material.unlit = optional(extensions, "KHR_materials_unlit") != nullptr;
-        // KHR_materials_pbrSpecularGlossiness replaces the metallic-roughness
-        // workflow: gltf-ext-spec-gloss.ts maps the diffuse map onto base
-        // colour, keeps the specular/glossiness pair in one texture, and
-        // rewrites the two factors. The scalars ride the composed variant;
-        // what the record carries is the texture the fragment samples. Every
-        // key and constant below is lowered from the extension's own AST.
-        //
-        // Emitted ahead of the dielectric arms because the pin's registry
-        // lists spec-gloss before the cluster and runGltfMaterialFeatures
-        // Object.assigns each fragment in that order: an IOR or specular
-        // reflectance is the write that survives when both trigger.
-        if (const ts::JsonValue* spec_gloss_value =
-                optional(extensions, "KHR_materials_pbrSpecularGlossiness")) {
-            const JsonObject& spec_gloss = spec_gloss_value->as_object();
-            const ts::JsonValue* diffuse =
-                optional(spec_gloss, "${materialDefaults.specGloss.diffuseTextureKey}");
-            const ts::JsonValue* spec_gloss_texture =
-                optional(spec_gloss, "${materialDefaults.specGloss.specGlossTextureKey}");
-            if (diffuse) {
-                material.base_color_texture = texture_data(
-                    buffer,
-                    container,
-                    views,
-                    images,
-                    textures,
-                    samplers,
-                    diffuse);
-                // The pin fetches both maps through ctx._texture, which runs
-                // the KHR_texture_transform wrap: the diffuse map lands in the
-                // base-color slot, so it takes that slot's transform.
-                apply_texture_transform(
-                    material.base_color_transform,
-                    diffuse);
-            }
-            if (texture_transform_value(spec_gloss_texture)) {
-                // The spec-gloss slot carries no transform of its own, so a
-                // wrapped specular-glossiness map would shade unwrapped.
-                throw std::runtime_error(
-                    "Reached KHR_materials_pbrSpecularGlossiness supports an "
-                    "untransformed specular-glossiness texture only.");
-            }
-            material.spec_gloss_texture = texture_data(
-                buffer,
-                container,
-                views,
-                images,
-                textures,
-                samplers,
-                spec_gloss_texture);
-            // The extension's own rewrite of the metallic-roughness pair:
-            // metallic is a constant, roughness is the glossiness complement,
-            // and reflectance takes the specular factor's largest channel.
-            material.metallic_factor = ${materialDefaults.specGloss.metallicFactor};
-            material.roughness_factor =
-                ${materialDefaults.specGloss.glossiness.complement} -
-                float_or(
-                    spec_gloss,
-                    "${materialDefaults.specGloss.glossiness.key}",
-                    ${materialDefaults.specGloss.glossiness.literal});
-            const ts::JsonValue* specular_factor =
-                optional(spec_gloss, "${materialDefaults.specGloss.reflectance.key}");
-            const std::vector<float> specular = float_array(specular_factor);
-            if (specular_factor && specular.size() != ${materialDefaults.specGloss.reflectance.channels}) {
-                // The pin indexes exactly ${materialDefaults.specGloss.reflectance.channels} channels, so a shorter array is a
-                // NaN reflectance there rather than a defined fallback.
-                throw std::runtime_error(
-                    "Reached KHR_materials_pbrSpecularGlossiness specular "
-                    "factor is not a three-channel array.");
-            }
-            material.reflectance = specular_factor
-                ? std::max({specular[0], specular[1], specular[2]})
-                : ${materialDefaults.specGloss.reflectance.absent};
-        }
-        if (const ts::JsonValue* ior_value =
-                optional(extensions, "KHR_materials_ior")) {
-            material.has_ior = true;
-            material.index_of_refraction =
-                float_or(ior_value->as_object(), "${defaults.ior.key}", ${defaults.ior.literal});
-            const float ratio =
-                (material.index_of_refraction - ${materialDefaults.iorToF0.one}) /
-                (material.index_of_refraction + ${materialDefaults.iorToF0.one});
-            material.reflectance = ratio * ratio;
-        }
-${materialSpecular ? `        if (const ts::JsonValue* specular_value =
-                optional(
-                    extensions,
-                    "KHR_materials_specular")) {
-            const JsonObject& specular =
-                specular_value->as_object();
-            const ts::JsonValue* specular_texture = optional(specular, "specularTexture");
-            const ts::JsonValue* specular_color_texture = optional(specular, "specularColorTexture");
-            material.metallic_reflectance_texture = texture_data(
-                buffer, container, views, images, textures, samplers, specular_texture);
-            material.reflectance_texture = texture_data(
-                buffer, container, views, images, textures, samplers, specular_color_texture);
-            apply_texture_transform(material.metallic_reflectance_transform, specular_texture);
-            apply_texture_transform(material.reflectance_transform, specular_color_texture);
-            material.has_metallic_reflectance = true;
-            // The pin keeps the material's own reflectance at its default and
-            // scales it with metallicF0Factor, so the IOR fold this loader
-            // applies above — exact while nothing else scales F0 — has to be
-            // undone the moment a second scale exists. IOR seeds the factor and
-            // the specular factor then replaces it, which is the spec's
-            // "specular wins" rule and what the pinned loader does by
-            // overwriting the same option.
-            const float base_reflectance = ${materialDefaults.iorToF0.baseReflectance};
-            material.metallic_f0_factor =
-                material.has_ior
-                    ? material.reflectance / base_reflectance
-                    : 1.0f;
-            material.reflectance = base_reflectance;
-            if (optional(specular, "${materialDefaults.specularFactor.key}")) {
-                const float factor =
-                    float_or(specular, "${materialDefaults.specularFactor.key}", ${materialDefaults.specularFactor.clear});
-                // A specular factor of one is the default: the pin drops both
-                // options rather than writing them, so an IOR-seeded factor
-                // does not survive it either.
-                material.metallic_f0_factor =
-                    std::abs(factor - ${materialDefaults.specularFactor.clear}) > ${materialDefaults.specularFactor.epsilon} ? factor : ${materialDefaults.specularFactor.clear};
-                material.specular_weight =
-                    material.metallic_f0_factor;
-            }
-            const std::vector<float> specular_color =
-                float_array(
-                    optional(specular, "${materialDefaults.specularColor.key}"));
-            if (
-                specular_color.size() == ${materialDefaults.specularColor.length} &&
-                (specular_color[0] != ${materialDefaults.specularColor.unit} ||
-                 specular_color[1] != ${materialDefaults.specularColor.unit} ||
-                 specular_color[2] != ${materialDefaults.specularColor.unit})) {
-                material.metallic_reflectance_color = Color3{
-                    specular_color[0],
-                    specular_color[1],
-                    specular_color[2],
-                };
-            }
-        }
-` : ""}        if (const ts::JsonValue* volume_value =
-                optional(extensions, "KHR_materials_volume")) {
-            const JsonObject& volume = volume_value->as_object();
-            material.has_volume = true;
-            material.use_thickness_as_depth = true;
-            material.thickness =
-                float_or(volume, "${defaults.thicknessFactor.key}", ${defaults.thicknessFactor.literal});
-            const std::vector<float> attenuation =
-                float_array(optional(volume, "attenuationColor"));
-            if (attenuation.size() == 3) {
-                material.attenuation_color = Color3{
-                    attenuation[0],
-                    attenuation[1],
-                    attenuation[2],
-                };
-            }
-            material.attenuation_distance =
-                float_or(volume, "${defaults.attenuationDistance.key}", ${defaults.attenuationDistance.literal});
-            material.thickness_texture = texture_data(
-                buffer,
-                container,
-                views,
-                images,
-                textures,
-                samplers,
-                optional(volume, "thicknessTexture"));
-            apply_texture_transform(
-                material.thickness_transform,
-                optional(volume, "thicknessTexture"));
-        }
-        if (const ts::JsonValue* transmission_value =
-                optional(extensions, "KHR_materials_transmission")) {
-            const JsonObject& transmission =
-                transmission_value->as_object();
-            material.transmission_factor =
-                float_or(transmission, "${defaults.transmissionFactor.key}", ${defaults.transmissionFactor.literal});
-            material.transmission_texture = texture_data(
-                buffer,
-                container,
-                views,
-                images,
-                textures,
-                samplers,
-                optional(transmission, "transmissionTexture"));
-            apply_texture_transform(
-                material.transmission_transform,
-                optional(transmission, "transmissionTexture"));
-        }
-        if (const ts::JsonValue* dispersion_value =
-                optional(
-                    extensions,
-                    "KHR_materials_dispersion")) {
-            const float dispersion = float_or(
-                dispersion_value->as_object(),
-                "${defaults.dispersion.key}",
-                ${defaults.dispersion.literal});
-            const bool has_refraction =
-                material.has_ior ||
-                material.transmission_factor > 0.0f ||
-                !material.transmission_texture.bytes.empty();
-            const bool has_thickness =
-                material.thickness > 0.0f ||
-                !material.thickness_texture.bytes.empty();
-            if (
-                dispersion > 0.0f &&
-                has_refraction &&
-                has_thickness) {
-                material.dispersion = ${defaults.dispersionScale} / dispersion;
-            }
-        }
-        if (const ts::JsonValue* clearcoat_value =
-                optional(
-                    extensions,
-                    "KHR_materials_clearcoat")) {
-            const JsonObject& clearcoat =
-                clearcoat_value->as_object();
-            const ts::JsonValue* clearcoat_texture =
-                optional(clearcoat, "clearcoatTexture");
-            const ts::JsonValue*
-                clearcoat_roughness_texture = optional(
-                    clearcoat,
-                    "clearcoatRoughnessTexture");
-            const ts::JsonValue* clearcoat_normal_texture =
-                optional(
-                    clearcoat,
-                    "clearcoatNormalTexture");
-            material.clearcoat_intensity = float_or(
-                clearcoat,
-                "${materialDefaults.clearcoatIntensity.key}",
-                clearcoat_texture ? ${materialDefaults.clearcoatIntensity.present} : ${materialDefaults.clearcoatIntensity.absent});
-            material.clearcoat_roughness = float_or(
-                clearcoat,
-                "${materialDefaults.clearcoatRoughness.key}",
-                clearcoat_roughness_texture ? ${materialDefaults.clearcoatRoughness.present} : ${materialDefaults.clearcoatRoughness.absent});
-            material.clearcoat_texture = texture_data(
-                buffer,
-                container,
-                views,
-                images,
-                textures,
-                samplers,
-                clearcoat_texture);
-            material.clearcoat_roughness_texture =
-                texture_data(
-                    buffer,
-                    container,
-                    views,
-                    images,
-                    textures,
-                    samplers,
-                    clearcoat_roughness_texture);
-            material.clearcoat_normal_texture = texture_data(
-                buffer,
-                container,
-                views,
-                images,
-                textures,
-                samplers,
-                clearcoat_normal_texture);
-            material.clearcoat_normal_scale =
-                clearcoat_normal_texture
-                    ? float_or(
-                          clearcoat_normal_texture
-                              ->as_object(),
-                          "${materialDefaults.clearcoatNormalScale.key}",
-                          ${materialDefaults.clearcoatNormalScale.literal})
-                    : ${materialDefaults.clearcoatNormalScale.literal};
-            apply_texture_transform(
-                material.clearcoat_transform,
-                clearcoat_texture);
-            apply_texture_transform(
-                material.clearcoat_roughness_transform,
-                clearcoat_roughness_texture);
-            apply_texture_transform(
-                material.clearcoat_normal_transform,
-                clearcoat_normal_texture);
-        }
-        if (const ts::JsonValue* sheen_value =
-                optional(extensions, "KHR_materials_sheen")) {
-            const JsonObject& sheen =
-                sheen_value->as_object();
-            const ts::JsonValue* sheen_color_texture =
-                optional(sheen, "sheenColorTexture");
-            const ts::JsonValue* sheen_roughness_texture =
-                optional(sheen, "sheenRoughnessTexture");
-            const std::vector<float> sheen_color =
-                float_array(
-                    optional(sheen, "${materialDefaults.sheenColor.key}"));
-            material.sheen_color = sheen_color.size() == 3
-                ? Color3{
-                      sheen_color[0],
-                      sheen_color[1],
-                      sheen_color[2],
-                  }
-                : ${materialDefaults.sheenColor.identity};
-            material.sheen_roughness = float_or(
-                sheen,
-                "${materialDefaults.sheenRoughness.key}",
-                ${materialDefaults.sheenRoughness.literal});
-            material.sheen_intensity = ${materialDefaults.sheenIntensity};
-            material.sheen_color_texture = texture_data(
-                buffer,
-                container,
-                views,
-                images,
-                textures,
-                samplers,
-                sheen_color_texture);
-            const bool same_as_color =
-                sheen_roughness_texture &&
-                sheen_color_texture &&
-                unsigned_value(
-                    required(
-                        sheen_roughness_texture->as_object(),
-                        "index")) ==
-                    unsigned_value(
-                        required(
-                            sheen_color_texture->as_object(),
-                            "index")) &&
-                texture_transform_value(
-                    sheen_roughness_texture) ==
-                    texture_transform_value(
-                        sheen_color_texture);
-            if (sheen_roughness_texture && !same_as_color) {
-                material.sheen_roughness_texture =
-                    texture_data(
-                        buffer,
-                        container,
-                        views,
-                        images,
-                        textures,
-                        samplers,
-                        sheen_roughness_texture);
-            } else if (
-                !material.sheen_color_texture.bytes.empty()) {
-                material.sheen_roughness_texture =
-                    material.sheen_color_texture;
-            }
-            apply_texture_transform(
-                material.sheen_transform,
-                sheen_color_texture);
-            // Roughness shares the colour texture when the asset declares no
-            // separate one, so it shares that texture's transform too — the
-            // fallback the pinned pointer resolver makes explicit.
-            apply_texture_transform(
-                material.sheen_roughness_transform,
-                sheen_roughness_texture
-                    ? sheen_roughness_texture
-                    : sheen_color_texture);
-        }
-        if (const ts::JsonValue* iridescence_value =
-                optional(
-                    extensions,
-                    "KHR_materials_iridescence")) {
-            const JsonObject& iridescence =
-                iridescence_value->as_object();
-            const ts::JsonValue* iridescence_texture =
-                optional(
-                    iridescence,
-                    "iridescenceTexture");
-            const ts::JsonValue*
-                iridescence_thickness_texture = optional(
-                    iridescence,
-                    "iridescenceThicknessTexture");
-            material.iridescence_intensity = float_or(
-                iridescence,
-                "${defaults.iridescenceFactor.key}",
-                ${defaults.iridescenceFactor.literal});
-            material.iridescence_index_of_refraction =
-                float_or(iridescence, "${defaults.iridescenceIor.key}", ${defaults.iridescenceIor.literal});
-            material.iridescence_minimum_thickness = float_or(
-                iridescence,
-                "${defaults.iridescenceThicknessMinimum.key}",
-                ${defaults.iridescenceThicknessMinimum.literal});
-            material.iridescence_maximum_thickness = float_or(
-                iridescence,
-                "${defaults.iridescenceThicknessMaximum.key}",
-                ${defaults.iridescenceThicknessMaximum.literal});
-            material.iridescence_texture = texture_data(
-                buffer,
-                container,
-                views,
-                images,
-                textures,
-                samplers,
-                iridescence_texture);
-            material.iridescence_thickness_texture =
-                texture_data(
-                    buffer,
-                    container,
-                    views,
-                    images,
-                    textures,
-                    samplers,
-                    iridescence_thickness_texture);
-            apply_texture_transform(
-                material.iridescence_transform,
-                iridescence_texture);
-            apply_texture_transform(
-                material.iridescence_thickness_transform,
-                iridescence_thickness_texture);
-        }
-    }
-${options.materialExtensionPayload ? `    // Packaged option objects come from the pinned handlers' ordered merge.
-    // Native texture transforms remain independently mutable by animation.
-    if (const ts::JsonValue* payload_value = optional(material_json, "${GLTF_MATERIAL_EXTENSION_PAYLOAD}")) {
-        const JsonObject& payload = payload_value->as_object();
-        const auto color = [](const JsonObject& object, const char* key, Color3& field) {
-            if (const ts::JsonValue* value = optional(object, key)) {
-                const std::vector<float> lanes = float_array(value);
-                if (lanes.size() != 3) throw std::runtime_error("Invalid packaged material color.");
-                field = Color3{lanes[0], lanes[1], lanes[2]};
-            }
-        };
-        const auto texture = [&](const JsonObject& object, const char* key, TextureData& data, TextureTransform& transform) {
-            const ts::JsonValue* info = optional(object, key);
-            data = texture_data(buffer, container, views, images, textures, samplers, info);
-            apply_texture_transform(transform, info);
-        };
-        if (const ts::JsonValue* value = optional(payload, "anisotropy")) {
-            const JsonObject& anisotropy = value->as_object();
-            material.has_anisotropy = true;
-            material.anisotropy_intensity = float_or(anisotropy, "intensity", material.anisotropy_intensity);
-            const std::vector<float> direction = float_array(optional(anisotropy, "direction"));
-            if (direction.size() != 2) throw std::runtime_error("Invalid packaged anisotropy direction.");
-            material.anisotropy_direction = Vec2{direction[0], direction[1]};
-            texture(anisotropy, "texture", material.anisotropy_texture, material.anisotropy_transform);
-        }
-        if (const ts::JsonValue* value = optional(payload, "subsurface")) {
-            const JsonObject& subsurface = value->as_object();
-            const JsonObject& translucency = required(subsurface, "translucency").as_object();
-            material.has_subsurface = true;
-            material.subsurface_intensity = float_or(translucency, "intensity", material.subsurface_intensity);
-            color(translucency, "color", material.subsurface_color);
-            color(translucency, "diffusionDistance", material.subsurface_diffusion_distance);
-            if (const ts::JsonValue* thickness = optional(subsurface, "thickness")) {
-                material.subsurface_minimum_thickness = float_or(thickness->as_object(), "min", material.subsurface_minimum_thickness);
-                material.subsurface_maximum_thickness = float_or(thickness->as_object(), "max", material.subsurface_maximum_thickness);
-            }
-            texture(translucency, "colorTexture", material.translucency_color_texture, material.translucency_color_transform);
-            texture(translucency, "intensityTexture", material.translucency_intensity_texture, material.translucency_intensity_transform);
-        }
-    } else if (const ts::JsonValue* extensions = optional(material_json, "extensions")) {
-        if (optional(extensions->as_object(), "KHR_materials_anisotropy") ||
-            optional(extensions->as_object(), "KHR_materials_diffuse_transmission")) {
-            throw std::runtime_error("glTF material extensions require the pinned packaging pass.");
-        }
-    }
-` : ""}    material.emissive_texture = texture_data(
-        buffer, container, views, images, textures, samplers, optional(material_json, "emissiveTexture"));
-    apply_texture_transform(
-        material.emissive_transform,
-        optional(material_json, "emissiveTexture"));
-    if (material.metallic_roughness_texture.bytes.empty()) {
-        // Occlusion is sampled from the ORM texture, so it carries that slot's
-        // transform. When the asset declares no metallic-roughness texture the
-        // occlusion image IS the ORM texture, so its own transform is the one
-        // that slot must use.
-        apply_texture_transform(
-            material.orm_transform,
-            optional(material_json, "occlusionTexture"));
-    }
-    const std::vector<float> emissive = float_array(optional(material_json, "${materialDefaults.emissiveFactor.key}"));
-    if (emissive.size() == 3) material.emissive_factor = Color3{emissive[0], emissive[1], emissive[2]};${animationPointerMaterials ? `
-    material.emissive_base_factor = material.emissive_factor;` : ""}
-    if (const ts::JsonValue* extensions_value =
-            optional(material_json, "extensions")) {
-        const JsonObject& extensions =
-            extensions_value->as_object();
-        if (const ts::JsonValue* strength_value =
-                optional(
-                    extensions,
-                    "KHR_materials_emissive_strength")) {
-            const float strength = float_or(
-                strength_value->as_object(),
-                "${materialDefaults.emissiveStrength.key}",
-                ${materialDefaults.emissiveStrength.literal});${animationPointerMaterials ? `
-            material.emissive_strength = strength;` : ""}
-            material.emissive_factor.r *= strength;
-            material.emissive_factor.g *= strength;
-            material.emissive_factor.b *= strength;
-        }
-    }
-    material.double_sided = bool_or(material_json, "${materialDefaults.doubleSidedKey}", false);
-    const std::string alpha_mode = string_or(material_json, "${materialDefaults.alphaMode.key}", "${materialDefaults.alphaMode.literal}");
-    material.alpha_mode =
-        alpha_mode == "BLEND"
-            ? MaterialAlphaMode::blend
-            : alpha_mode == "MASK"
-                ? MaterialAlphaMode::mask
-                : MaterialAlphaMode::opaque;
-    // The pin's glTF builder copies the base-factor alpha into the separate
-    // material alpha for BLEND/MASK. Animated factors use a white fallback and
-    // leave material alpha at its default while the live factor supplies it.
-    material.alpha =
-        material.alpha_mode == MaterialAlphaMode::opaque || animated_base_color
-            ? 1.0f
-            : material.base_color_factor.a;
-    material.alpha_cutoff = float_or(material_json, "${materialDefaults.alphaCutoff.key}", ${materialDefaults.alphaCutoff.literal});
-    engine.materials.push_back(std::move(material));
-    return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
-}
+${lowered.materialAssembly}
+${lowered.materialTextures}
+
+${lowered.materialProperties}
+${gltfMaterialProjection(animationPointerMaterials)}
 
 } // namespace
 
@@ -2301,6 +1330,10 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     ts::ArrayBuffer buffer = ts::await(pal::fetch_array_buffer(path));
     const upstream::ParsedGlbContainer container = upstream::parse_glb_container(buffer);
     const JsonObject& document = container.json.as_object();
+    const auto material_features = gltf_pbr_material_features(GltfPbrValue{&container.json});
+    const bool material_texture_wrap = gltf_pbr_has_texture_wrap(GltfPbrValue{&container.json});
+    const bool extended_material = gltf_pbr_needs_extended(GltfPbrValue{&container.json}, GltfPbrValue{material_texture_wrap}, GltfPbrValue{false}).truthy();
+    const bool sampled_material = gltf_pbr_needs_sampler(GltfPbrValue{&container.json}).truthy();
     const JsonArray& view_json = array_or_empty(document, "bufferViews");
     const JsonArray& accessor_json = array_or_empty(document, "accessors");
     const JsonArray& image_json = array_or_empty(document, "images");
@@ -2349,8 +1382,8 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
                 "bblitec, which resolves sparse accessors at generation.");
         }
         const std::size_t buffer_view =
-            unsigned_value(required(object, "bufferView"));
-        if (buffer_view >= views.size()) {
+            unsigned_or(object, "bufferView", std::numeric_limits<std::size_t>::max());
+        if (buffer_view != std::numeric_limits<std::size_t>::max() && buffer_view >= views.size()) {
             throw std::runtime_error(
                 "glTF accessor references an invalid bufferView.");
         }
@@ -2365,6 +1398,14 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     }
     std::vector<MaterialHandle> materials;
     materials.reserve(material_json.size());
+    GltfMaterialImageCache material_image_cache;
+    GltfTextureCache material_texture_cache;
+    GltfSamplerContext material_sampler_context(texture_json, sampler_json);
+    const auto resolve_material_image = [&](std::size_t index) -> GltfMaterialImage {
+        if (index >= image_json.size()) throw std::runtime_error("Invalid glTF material image index.");
+        return std::make_shared<GltfMaterialImageSource>(GltfMaterialImageSource{index});
+    };
+    const auto extension_image_fetcher = make_gltf_extension_image_fetcher(document, double(material_features.size()), resolve_material_image);
 ${sourceTextureReads ? `
     // Association IDs come from the pin's image cache and Texture2D wrappers
     // at packaging. Each load allocates fresh public producer identities.
@@ -2398,29 +1439,35 @@ ${sourceTextureReads ? `
     };` : ""}
     const std::vector<bool> animated_base_color =
         collect_animated_base_color(document, material_json.size());
-    for (std::size_t index = 0; index < material_json.size(); ++index) {
-        materials.push_back(load_material(
-            engine, material_json[index].as_object(), buffer, container, views,
-            image_json, texture_json, sampler_json,
-            animated_base_color[index]));
-${sourceTextureReads ? `        retain_source_albedo(materials.back(), index);` : ""}
-    }
+    GltfCoreMaterialCache core_material_cache;
+    GltfBuiltMaterialCache built_material_cache;
+    const auto material_for = [&](std::size_t index) {
+        const auto source_index = index == material_json.size() ? js::Nullable<double>{} : js::Nullable<double>{double(index)};
+        const auto core = gltf_cached_core_material(core_material_cache, source_index, [&](double selected) -> GltfCoreMaterialRef {
+            const auto selected_index = selected == -1.0 ? std::numeric_limits<std::size_t>::max() : gltf_checked_index(selected);
+            return std::make_shared<GltfCoreMaterial>(assemble_gltf_material(document, selected_index, material_image_cache, resolve_material_image));
+        }).get();
+        return gltf_cached_built_material(built_material_cache, core, [&](GltfCoreMaterialRef material) {
+            const auto source_material_index = material->_rawMatDef ? static_cast<std::size_t>(material->_rawMatDef - material_json.data()) : material_json.size();
+            const auto handle = load_material(engine, gltf_material_object(material->_rawMatDef), *material, buffer, container, views,
+                image_json, texture_json, sampler_json, extension_image_fetcher,
+                source_material_index < animated_base_color.size() && animated_base_color[source_material_index],
+                material_features, extended_material, material_texture_wrap, sampled_material, &material_texture_cache, &material_sampler_context);
+${sourceTextureReads ? `            retain_source_albedo(handle, source_material_index);` : ""}
+            return handle;
+        }).get();
+    };
+    for (std::size_t index = 0; index < material_json.size(); ++index) materials.push_back(material_for(index));
 
-    std::vector<int> parents(node_json.size(), -1);
-    for (std::size_t index = 0; index < node_json.size(); ++index) {
-        for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children")) {
-            const std::size_t child_index = unsigned_value(child);
-            if (child_index >= parents.size()) {
-                throw std::runtime_error(
-                    "glTF node references an invalid child.");
-            }
-            if (parents[child_index] >= 0) {
-                throw std::runtime_error(
-                    "glTF node has multiple parents.");
-            }
-            parents[child_index] = static_cast<int>(index);
-        }
-    }${nodeVisibility ? `
+    const auto parents = build_gltf_parents(document);
+    validate_gltf_parents(parents);
+    GltfWorldCache world_cache(node_json.size());
+    std::vector<Matrix> world(node_json.size());
+    const auto compute_world = [&](std::size_t index) -> const Matrix& {
+        world[index] = gltf_document_world(compute_gltf_node_world(document, index, parents, world_cache));
+        return world.at(index);
+    };
+${nodeVisibility ? `
     // KHR_node_visibility. The pinned extension cascades \`visible: false\`
     // through the subtree at load, so a node draws only when it and every
     // ancestor are visible, and the render path tests one boolean.
@@ -2448,24 +1495,6 @@ ${sourceTextureReads ? `        retain_source_albedo(materials.back(), index);` 
             }
         }
     }` : ""}
-    std::vector<Matrix> world(node_json.size());
-    std::vector<bool> computed(node_json.size(), false);
-    std::vector<bool> computing(node_json.size(), false);
-    std::function<const Matrix&(std::size_t)> compute_world = [&](std::size_t index) -> const Matrix& {
-        if (computed[index]) return world[index];
-        if (computing[index]) {
-            throw std::runtime_error(
-                "glTF node hierarchy contains a cycle.");
-        }
-        computing[index] = true;
-        const Matrix local = local_matrix(node_json[index].as_object());
-        world[index] = parents[index] >= 0
-            ? upstream::matrix_product(compute_world(static_cast<std::size_t>(parents[index])), local)
-            : local;
-        computing[index] = false;
-        computed[index] = true;
-        return world[index];
-    };
 
     AssetRecord asset;${interactivity ? `
     // KHR_interactivity's node-to-meshes table, filled by the mesh walk
@@ -2991,11 +2020,7 @@ ${nonTrianglePrimitives
             if (
                 material_index == material_json.size() &&
                 materials.size() == material_json.size()) {
-                materials.push_back(load_material(
-                    engine, JsonObject{}, buffer, container, views,
-                    image_json, texture_json, sampler_json,
-                    false));
-${sourceTextureReads ? `                retain_source_albedo(materials.back(), material_json.size());` : ""}
+                materials.push_back(material_for(material_index));
             }
             const bool clockwise_front_face =
                 determinant < 0.0 &&
@@ -3005,6 +2030,15 @@ ${sourceTextureReads ? `                retain_source_albedo(materials.back(), m
                 engine.materials[
                     materials[material_index].value]
                     .double_sided;
+            const auto color_values = colors
+                ? normalize_gltf_colors(GltfAccessorView{buffer, container, views, *colors}, double(colors->count), double(component_count(colors->type)))
+                : std::vector<float>{};
+            const auto uv_values = texcoords
+                ? normalize_gltf_uvs(GltfAccessorView{buffer, container, views, *texcoords}, double(texcoords->count))
+                : std::vector<float>{};
+            const auto uv2_values = texcoords1
+                ? normalize_gltf_uvs(GltfAccessorView{buffer, container, views, *texcoords1}, double(texcoords1->count))
+                : std::vector<float>{};
             for (std::size_t index = 0; index < positions.count; ++index) {
                 ModelVertex vertex;
                 const Vec3 local_position{
@@ -3075,17 +2109,18 @@ ${sourceTextureReads ? `                retain_source_albedo(materials.back(), m
                 }
                 if (texcoords) {
                     vertex.uv = Vec2{
-                        read_component(buffer, container, views, *texcoords, index, 0),
-                        read_component(buffer, container, views, *texcoords, index, 1),
+                        uv_values.at(index * 2), uv_values.at(index * 2 + 1),
                     };
                 }
                 if (texcoords1) {
                     vertex.uv2 = Vec2{
-                        read_component(buffer, container, views, *texcoords1, index, 0),
-                        read_component(buffer, container, views, *texcoords1, index, 1),
+                        uv2_values.at(index * 2), uv2_values.at(index * 2 + 1),
                     };
                 }
-${lowered.vertexColor}
+                if (colors) {
+                    vertex.color = Vec4{color_values.at(index * 4), color_values.at(index * 4 + 1),
+                        color_values.at(index * 4 + 2), color_values.at(index * 4 + 3)};
+                }
                 if (joints && weights) {
                     for (std::size_t component = 0; component < 4; ++component) {
                         vertex.joints[component] =
@@ -3501,8 +2536,8 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             ++gltf_mesh_counter;
             record.primitive = PrimitiveKind::gltf;
             record.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
-            // src/material/pbr/fragments/refraction-rtt-fragment.ts
-            // thicknessScaleLine: the refraction fragment scales its
+            // src/material/pbr/fragments/refraction-rtt-fragment.ts,
+            // makeRefractionMod/thicknessScaleLine: the refraction fragment scales its
             // thickness lanes by \`ts = max(length(mesh.world[0].xyz),
             // max(length(mesh.world[1].xyz), length(mesh.world[2].xyz)))\`,
             // the mesh world's longest basis column. This loader bakes the
@@ -5083,14 +4118,14 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                         material.transmission_factor = mix(a.x, b.x);
                         break;
                     case MaterialTrackKind::index_of_refraction:
-                        // The render plan recomposes the dielectric ratio from
-                        // this every frame, so writing the index is the whole
-                        // of it — the pin instead reaches its reflectance ext,
-                        // which arrives at the same F0.
                         material.index_of_refraction = mix(a.x, b.x);
+                        material.metallic_f0_factor = static_cast<float>(
+                            gltf_pbr_animation_pointer_ext_iorToF0Factor(GltfPbrValue{double(material.index_of_refraction)}).number());
+                        material.specular_weight = 1.0f;
                         break;
                     case MaterialTrackKind::volume_thickness:
                         material.thickness = mix(a.x, b.x);
+                        material.use_thickness_as_depth = true;
                         break;
                     case MaterialTrackKind::volume_attenuation_distance:
                         material.attenuation_distance = mix(a.x, b.x);

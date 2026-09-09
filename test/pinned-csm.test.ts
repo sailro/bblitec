@@ -6,7 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedCsmFunctions } from "../src/lowering/pinned-csm.js";
-import { pinnedShadowHeader } from "../src/lowering/shadow-lowerer.js";
+import { csmShadowHeader, pinnedShadowHeader } from "../src/lowering/shadow-lowerer.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { importPinnedModule, importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
@@ -30,7 +30,7 @@ class ChangedCsmContext extends LoweringContext {
 }
 
 test("CSM emits the pinned fitting, coordinate, caster and receiver bodies", () => {
-    const header = pinnedShadowHeader(context);
+    const header = csmShadowHeader(context);
     for (const symbol of [
         "_computeCsmCascades", "transformCoordInto", "_castersWorldAabbInto",
         "_thinInstanceWorldAabb", "_writeCsmUbo", "_biasViewProjection",
@@ -407,7 +407,8 @@ test("CSM full shadow header compiles and publishes pinned receiver bytes", {
     const output = resolve("artifacts\\pinned-csm-header-check");
     const rendererIncludes = join(output, "bblite", "upstream");
     mkdirSync(rendererIncludes, { recursive: true });
-    writeFileSync(join(output, "shadow.hpp"), pinnedShadowHeader(context));
+    writeFileSync(join(rendererIncludes, "pinned_shadow.hpp"), pinnedShadowHeader(context, ["shadow:csm"]));
+    writeFileSync(join(rendererIncludes, "csm_shadow.hpp"), csmShadowHeader(context));
     // The shadow header composes a caster's local matrix through the
     // pinned TRS composition every generated tree emits.
     writeFileSync(
@@ -424,10 +425,11 @@ std::array<float, 16> build_view_projection(const CameraRecord&, double);
 }
 `);
     const fixture = join(output, "check.cpp");
-    writeFileSync(fixture, `#include "shadow.hpp"
+    writeFileSync(fixture, `#include <bblite/upstream/pinned_shadow.hpp>
 #include <cassert>
 #include <iostream>
 int main() {
+    static_assert(bbl::upstream::shadow_receiver_block_bytes == 320);
     bbl::ShadowGeneratorRecord generator;
     generator.csm_num_cascades = 2;
     generator.csm_cascade_blend_percentage = 0.1;
@@ -449,7 +451,29 @@ ${matrices.map((matrix, index) => `    generator.csm_cascades[${index}].transfor
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(nativeTools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/fp:strict",
+        "/DBBLITE_SHADOWS_CSM=1",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include", fixture,
     ]);
     assert.match(execFileSync(executable, { encoding: "utf8" }), /pinned-csm-header-check: ok/);
+
+    writeFileSync(join(rendererIncludes, "pinned_shadow.hpp"), pinnedShadowHeader(context));
+    writeFileSync(fixture, `#include <bblite/upstream/pinned_shadow.hpp>
+#include <cassert>
+template <typename T> concept HasCascades = requires(T value) { value.csm_cascades; };
+template <typename T> concept HasCsmTextures = requires(T value) { value.shader_csm_textures; };
+int main() {
+    static_assert(!HasCascades<bbl::ShadowGeneratorRecord>);
+    static_assert(!HasCsmTextures<bbl::MaterialRecord>);
+    static_assert(bbl::upstream::shadow_receiver_block_bytes == 96);
+    bbl::ShadowGeneratorRecord generator;
+    const auto block = bbl::upstream::shadow_receiver_block(generator);
+    assert(block.size == 96);
+}
+`);
+    runNativeFixtureCompiler(nativeTools!, [
+        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/fp:strict",
+        "/DBBLITE_SHADOWS_CSM=0",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include", fixture,
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
 });
