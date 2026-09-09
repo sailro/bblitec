@@ -102,7 +102,8 @@ test("resource factories and forwarding helpers share native bodies", () => {
         assert.equal(result.cpp.split(marker).length - 1, 1, marker);
     }
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 3);
-    assert.equal(result.manifest.sceneMeshes.filter(mesh => mesh.runtimeInstances).length, 2);
+    assert.equal(result.manifest.sceneMeshes.length, 7);
+    assert.ok(result.manifest.sceneMeshes.every(mesh => !mesh.runtimeInstances));
 });
 
 const tools = optionalNativeFixtureTools(false);

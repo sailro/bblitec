@@ -2,6 +2,7 @@ import { assetRootMutationStates, nativeDataMetadata, valueForKind } from "./com
 import { forEachAnalysisNode, findAnalysisNodeWithState } from "./compiler/analysis-walk.js";
 import { emissionArray, EmissionMap, EmissionSet, EmissionTransaction, EmissionWeakMap, EmissionWeakSet } from "./compiler/emission-transaction.js";
 import type { LoweringServices, NativeFunctionBodyOptions } from "./compiler/lowering-services.js";
+import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
 import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
@@ -173,6 +174,7 @@ import {
     parameterizedResourceLoop,
     requiresStaticDataIteration,
     canShareFunctionBody,
+    sharedFunctionHasCallEffects,
     requiresStaticLoopIteration,
     runtimeProfileConstructionIntrinsics,
     walkReachedLoopNodes,
@@ -500,6 +502,7 @@ class Compiler
     private readonly expressions: ExpressionLowerer;
     private readonly nativeFunctionPrototypes: string[] = emissionArray([]);
     private readonly nativeFunctionDefinitions: string[] = emissionArray([]);
+    private readonly sharedNativeFunctions = new SharedNativeFunctions();
     private readonly staticNativeDeclarations: string[] = emissionArray([]);
     private readonly returnFrames: Array<
         | ({
@@ -9012,11 +9015,20 @@ class Compiler
         this.nativeFunctionDefinitions.push(...definitionLines, "");
     }
 
+    public registerSharedNativeFunction(name: string, definitionLines: string[], localBindings: readonly string[]): string {
+        const entry = this.sharedNativeFunctions.intern(name, definitionLines.join("\n"), new Set(localBindings));
+        if (entry.added) this.registerNativeFunction("", definitionLines);
+        return entry.name;
+    }
+
     public beginNativeFunctionBody(
         returnType: DataType | undefined,
         contextualVoid = false,
         options: NativeFunctionBodyOptions = {},
     ): void {
+        if (options.callSiteEffects && !this.definiteCollectionMutation()) {
+            throw new Error("Shared call effects require a definite source invocation.");
+        }
         this.returnFrames.push({
             kind: "native",
             type: returnType ?? "void",
@@ -9169,12 +9181,15 @@ class Compiler
             }
             this.managedCaptures.pop();
         }
-        capture.retainReferenced(lines);
+        const identifiers = capture.retainReferenced(lines);
+        const localBindings = [...identifiers].filter(name =>
+            (this.nativeBindings.get(name)?.sequence ?? 0) > capture.boundary);
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,
             initializer: capture.initializer,
             nativeCaptures: capture.nativeCaptures,
+            localBindings: [capture.environment, ...capture.nativeCaptures.map(binding => binding.name), ...localBindings],
         };
     }
 
@@ -9662,12 +9677,16 @@ class Compiler
         return this.dataLowerer.iterationTarget(expression, knownTuple);
     }
 
-    public requiresStaticDataIteration(statement: ts.Statement): boolean {
+    public requiresStaticDataIteration(statement: ts.Node): boolean {
         return requiresStaticDataIteration(this, statement);
     }
 
     public canShareFunctionBody(body: ts.Node): boolean {
-        return canShareFunctionBody(this, body);
+        return canShareFunctionBody(this, body, this.definiteCollectionMutation());
+    }
+
+    public canReplaySharedCallEffects(body: ts.Node): boolean {
+        return this.definiteCollectionMutation() && sharedFunctionHasCallEffects(this, body);
     }
 
     public compileSharedMethod(declaration: ts.MethodDeclaration, call: ts.CallExpression, arguments_: readonly Value[]): Value | undefined {
@@ -11941,7 +11960,7 @@ class Compiler
     ): Value {
         let dataType = this.dataLowerer.dataTypeAt(identifier);
         const parameter = identifier.parent;
-        if (dataType?.kind === "number" && ts.isParameter(parameter) &&
+        if (dataType && ["number", "string", "boolean"].includes(dataType.kind) && ts.isParameter(parameter) &&
             isSupportedFunction(parameter.parent) &&
             parameterIsReadOnly(this.checker, parameter.parent, identifier)) {
             const value = this.compileValue(argument);
@@ -11951,6 +11970,10 @@ class Compiler
                 ...(value.staticNumber !== undefined && !value.parameterBinding
                     ? { staticNumber: value.staticNumber }
                     : {}),
+                ...(value.staticString !== undefined && !value.parameterBinding
+                    ? { staticString: value.staticString } : {}),
+                ...(value.staticBoolean !== undefined && !value.parameterBinding
+                    ? { staticBoolean: value.staticBoolean } : {}),
             };
         }
         if (dataType?.kind === "struct") {
@@ -12897,7 +12920,7 @@ class Compiler
                 this.runtimeIterationDepth === frame.iterationDepth + 1
             : this.runtimeControlFlowDepth === 0 && this.runtimeIterationDepth === 0;
         return definite && this.frameCallbackDepth === 0 &&
-            (frame !== undefined || !this.isInNativeFunctionBody()) &&
+            (frame !== undefined || this.returnFrames.every(current => current.kind !== "native" || current.callSiteEffects)) &&
             !this.returnFrames.some((current) => this.resourceLoopReturns.has(current));
     }
 

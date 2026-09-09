@@ -27,6 +27,7 @@ export interface CapturedClosure {
     environment: string;
     initializer: string;
     nativeCaptures: readonly NativeCaptureBinding[];
+    localBindings: readonly string[];
 }
 
 export function renderClosure(closure: CapturedClosure, parameters: string, returnType?: string): string {
@@ -44,11 +45,12 @@ export class ClosureCaptures {
         if (binding.sequence <= this.boundary) this.bindings.add(binding);
     }
 
-    retainReferenced(lines: readonly string[]): void {
+    retainReferenced(lines: readonly string[]): ReadonlySet<string> {
         const identifiers = cppIdentifiers(lines.join("\n"));
         for (const binding of this.bindings) {
             if (!identifiers.has(binding.name)) this.bindings.delete(binding);
         }
+        return identifiers;
     }
 
     get initializer(): string {

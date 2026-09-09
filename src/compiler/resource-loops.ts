@@ -24,6 +24,8 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { nativeDataIterationIntrinsics, runtimeOnlyIntrinsics } from "./intrinsics/registry.js";
+import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
+import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
 import { declarationInDefaultLibrary } from "./symbols.js";
 import { resizingArrayMethods } from "./data-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
@@ -179,6 +181,7 @@ export function requiresStaticLoopIteration(
 export function requiresStaticDataIteration(
     context: ResourceLoopContext,
     statement: ts.Node,
+    callEffects = false,
 ): boolean {
     let required = false;
     walkReachedLoopNodes(context, statement, (node) => {
@@ -227,7 +230,10 @@ export function requiresStaticDataIteration(
             ? unwrapExpression(awaited.expression) : undefined;
         const awaitedIntrinsic = awaitedCallee && ts.isIdentifier(awaitedCallee)
             ? context.symbols.importedName(awaitedCallee) : undefined;
-        if ((ts.isAwaitExpression(node) &&
+        const effectAwait = callEffects && awaited && ts.isCallExpression(awaited) &&
+            ((awaitedIntrinsic && (isMaterialCallEffectIntrinsic(awaitedIntrinsic) || isAssetCallEffectIntrinsic(awaitedIntrinsic))) ||
+                isSupportedFunction(resolvedLoopCallee(context, awaited)));
+        if ((ts.isAwaitExpression(node) && !effectAwait &&
                 !(awaitedIntrinsic && (runtimeOnlyIntrinsics.has(awaitedIntrinsic) ||
                     (awaited && ts.isCallExpression(awaited) && runtimeProfileCall(context, awaitedIntrinsic, awaited))))) ||
             ts.isYieldExpression(node)) {
@@ -240,6 +246,7 @@ export function requiresStaticDataIteration(
                 ? context.symbols.importedName(callee)
                 : undefined;
             if (imported && !nativeDataIterationIntrinsics.has(imported) &&
+                !(callEffects && (isMaterialCallEffectIntrinsic(imported) || isAssetCallEffectIntrinsic(imported))) &&
                 !nativeSceneMembershipChange(context, imported, node) &&
                 !runtimeProfileCall(context, imported, node)) {
                 required = true;
@@ -263,7 +270,7 @@ export function requiresStaticDataIteration(
                     : kind === "node-input"
                         ? property !== "texture"
                     : kind === "material"
-                        ? !runtimeMaterialProperties.has(property)
+                        ? !callEffects && !runtimeMaterialProperties.has(property)
                         : true;
                 return !required;
             }
@@ -274,8 +281,8 @@ export function requiresStaticDataIteration(
 }
 
 /** Shared bodies use native construction profiles and ordinary resource operations. */
-export function canShareFunctionBody(context: ResourceLoopContext, body: ts.Node): boolean {
-    if (requiresStaticDataIteration(context, body)) return false;
+export function canShareFunctionBody(context: ResourceLoopContext, body: ts.Node, callEffects = false): boolean {
+    if (requiresStaticDataIteration(context, body, callEffects)) return false;
     let touchesHandle = false;
     let specializes = false;
     walkReachedLoopNodes(context, body, node => {
@@ -283,11 +290,28 @@ export function canShareFunctionBody(context: ResourceLoopContext, body: ts.Node
             expressionHandleKind(context, node)) touchesHandle = true;
         if (nativePlatformRead(context, node)) touchesHandle = true;
         if (!ts.isCallExpression(node)) return;
+        const callee = unwrapExpression(node.expression);
+        const imported = ts.isIdentifier(callee) ? context.symbols.importedName(callee) : undefined;
+        if (callEffects && imported && (isMaterialCallEffectIntrinsic(imported) || isAssetCallEffectIntrinsic(imported))) touchesHandle = true;
         const resolved = resolvedLoopCallee(context, node);
         if (resolved && !resolved.getSourceFile().isDeclarationFile &&
             !(isSupportedFunction(resolved) && resolved.body)) specializes = true;
     });
     return touchesHandle && !specializes;
+}
+
+/** Construction and generation-dependent operations replay their ordinary recorder effects. */
+export function sharedFunctionHasCallEffects(context: ResourceLoopContext, body: ts.Node): boolean {
+    if (!canShareFunctionBody(context, body, true)) return false;
+    if (requiresStaticDataIteration(context, body)) return true;
+    let constructs = false;
+    walkReachedLoopNodes(context, body, node => {
+        if (!ts.isCallExpression(node)) return;
+        const callee = unwrapExpression(node.expression);
+        const imported = ts.isIdentifier(callee) ? context.symbols.importedName(callee) : undefined;
+        if (imported && runtimeProfileConstructionIntrinsics.has(imported)) constructs = true;
+    });
+    return constructs;
 }
 
 /** A folded bound must not be invalidated by the loop or its called helpers. */

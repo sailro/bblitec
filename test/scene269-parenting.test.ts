@@ -7,6 +7,9 @@ import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 
 test("compiles setParent for imported roots and transform-node parents", () => {
+    const asset = "data:model/gltf+json;base64," + Buffer.from(JSON.stringify({
+        asset: {version: "2.0"}, scene: 0, scenes: [{nodes: [0]}], nodes: [{mesh: 0}], meshes: [{primitives: [{attributes: {}}]}],
+    })).toString("base64");
     const result = compileSource(`
         import {
             createEngine,
@@ -18,7 +21,7 @@ test("compiles setParent for imported roots and transform-node parents", () => {
 
         async function main() {
             const engine = await createEngine({});
-            const container = await loadGltf(engine, "model.glb");
+            const container = await loadGltf(engine, ${JSON.stringify(asset)});
             const parent = createTransformNode("parent");
             setParent(container.entities[0]!, parent);
             const meshes = getContainerMeshes(container);

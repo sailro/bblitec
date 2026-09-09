@@ -77,6 +77,7 @@ export interface StatementLoweringContext
         | "captureEmittedLines"
         | "canShareFunctionBody"
         | "pinValueToTemporary"
+        | "useNativeValue"
         | "emitFinallyGuard"
         | "emitEngineFinally"
         | "nativeBindingCheckpoint"
@@ -2416,6 +2417,7 @@ export class StatementLowerer {
             this.bindsEnclosingLoop(statement.statement) || !context.canShareFunctionBody(statement.statement)) return false;
         const cppType = context.handleCollections.staticHandleTableCppType(kind)!;
         const values = elements.map(element => context.pinValueToTemporary(element, "handle_element"));
+        for (const value of values) context.useNativeValue(value);
         const table = context.allocateTemporaryCppName("handle_table");
         context.emit("const " + cppType + " " + table + "[" + values.length + "] = {");
         context.increaseIndent();

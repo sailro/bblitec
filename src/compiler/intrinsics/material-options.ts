@@ -31,6 +31,7 @@ import {
     compileOptionalStaticBoolean,
     staticNumberPair,
     staticNumberValue,
+    selectedStaticNumberValue,
     staticTupleElements,
     validateObjectProperties,
     type ObjectValidationContext,
@@ -81,6 +82,7 @@ export interface MaterialOptionContext
         | "objectProperty"
         | "compileNumber"
         | "compileBoolean"
+        | "compileCondition"
         | "compileColor3"
         | "compileColor4"
         | "compileVec3"
@@ -292,8 +294,8 @@ function requiredStaticFiniteNumber(
     fallback: number,
     label: string,
 ): { cpp: string; value: number } {
-    if (!expression) return { cpp: `${fallback}.0f`, value: fallback };
-    const value = staticNumberValue(context, expression);
+    if (!expression) return { cpp: floatLiteral(fallback), value: fallback };
+    const value = selectedStaticNumberValue(context, expression);
     if (value === undefined || !Number.isFinite(value)) {
         context.fail(
             expression,
@@ -529,8 +531,10 @@ export function compilePbrMaterialOptions(
     );
     const transmissive = context.objectProperty(object, "transmissive");
     const subsurfaceExpression = context.objectProperty(object, "subsurface");
-    let transmission = pinnedDefaultFloatCpp("transmissionIntensity");
-    let ior = pinnedDefaultFloatCpp("transmissionIndexOfRefraction");
+    let transmission = requiredStaticFiniteNumber(context, undefined,
+        pinnedDefaultNumber("transmissionIntensity"), "PBR transmission intensity");
+    let ior = requiredStaticFiniteNumber(context, undefined,
+        pinnedDefaultNumber("transmissionIndexOfRefraction"), "PBR index of refraction");
     // NOT the pin's `?? 1`: with a refraction object and no thickness the
     // pinned writer reads `thick?.max ?? 1` while this record seeds 0 —
     // the absent-subsurface ground state. UNREACHABLE today, measured
@@ -540,7 +544,7 @@ export function compilePbrMaterialOptions(
     // resolve this seed against the pin's `?? 1` for the
     // refraction-without-thickness shape before measuring. The `?? 1` arm
     // the defaults table anchors is the inner thickness branch below.
-    let thickness = "0.0f";
+    let thickness = requiredStaticFiniteNumber(context, undefined, 0, "PBR thickness");
     let useThicknessAsDepth = "false";
     let hasVolume = "false";
     let attenuationColor = pinnedDefaultColor3Cpp("attenuationColor");
@@ -562,14 +566,10 @@ export function compilePbrMaterialOptions(
                 refraction,
                 "useThicknessAsDepth",
             );
-            transmission = intensity
-                ? context.compileNumber(intensity)
-                : transmissive
-                    ? "1.0f"
-                    : pinnedDefaultFloatCpp("transmissionIntensity");
-            ior = indexOfRefraction
-                ? context.compileNumber(indexOfRefraction)
-                : pinnedDefaultFloatCpp("transmissionIndexOfRefraction");
+            transmission = requiredStaticFiniteNumber(context, intensity,
+                transmissive ? 1 : pinnedDefaultNumber("transmissionIntensity"), "PBR transmission intensity");
+            ior = requiredStaticFiniteNumber(context, indexOfRefraction,
+                pinnedDefaultNumber("transmissionIndexOfRefraction"), "PBR index of refraction");
             useThicknessAsDepth = thicknessAsDepth
                 ? context.compileBoolean(thicknessAsDepth)
                 : "false";
@@ -582,9 +582,8 @@ export function compilePbrMaterialOptions(
             const thicknessObject =
                 context.expectObjectLiteral(thicknessExpression);
             const maximum = context.objectProperty(thicknessObject, "max");
-            thickness = maximum
-                ? context.compileNumber(maximum)
-                : pinnedDefaultFloatCpp("transmissionThicknessMax");
+            thickness = requiredStaticFiniteNumber(context, maximum,
+                pinnedDefaultNumber("transmissionThicknessMax"), "PBR thickness");
         }
         const tintExpression = context.objectProperty(subsurface, "tint");
         if (tintExpression) {
@@ -600,21 +599,11 @@ export function compilePbrMaterialOptions(
                 : attenuationDistance;
         }
     }
-    const metallicCpp = metallic
-        ? context.compileNumber(metallic)
-        : pinnedDefaultFloatCpp("pbrMetallicFactor");
-    const roughnessCpp = roughness
-        ? context.compileNumber(roughness)
-        : pinnedDefaultFloatCpp("pbrRoughnessFactor");
-    const directCpp = direct
-        ? context.compileNumber(direct)
-        : pinnedDefaultFloatCpp("pbrDirectIntensity");
-    const environmentCpp = environment
-        ? context.compileNumber(environment)
-        : pinnedDefaultFloatCpp("pbrEnvironmentIntensity");
-    const alphaCpp = alpha
-        ? context.compileNumber(alpha)
-        : pinnedDefaultFloatCpp("pbrAlpha");
+    const metallicOption = requiredStaticFiniteNumber(context, metallic, pinnedDefaultNumber("pbrMetallicFactor"), "PBR metallic factor");
+    const roughnessOption = requiredStaticFiniteNumber(context, roughness, pinnedDefaultNumber("pbrRoughnessFactor"), "PBR roughness factor");
+    const directOption = requiredStaticFiniteNumber(context, direct, pinnedDefaultNumber("pbrDirectIntensity"), "PBR direct intensity");
+    const environmentOption = requiredStaticFiniteNumber(context, environment, pinnedDefaultNumber("pbrEnvironmentIntensity"), "PBR environment intensity");
+    const alphaOption = requiredStaticFiniteNumber(context, alpha, pinnedDefaultNumber("pbrAlpha"), "PBR alpha");
     const staticAlphaBlend = compileOptionalStaticBoolean(
         context,
         alphaBlend,
@@ -624,9 +613,7 @@ export function compilePbrMaterialOptions(
     const alphaBlendCpp = staticAlphaBlend
         ? "true"
         : "false";
-    const reflectanceCpp = reflectance
-        ? context.compileNumber(reflectance)
-        : pinnedDefaultFloatCpp("pbrReflectance");
+    const reflectanceOption = requiredStaticFiniteNumber(context, reflectance, pinnedDefaultNumber("pbrReflectance"), "PBR reflectance");
     const staticOcclusionStrength = occlusionStrength
         ? staticNumberValue(context, occlusionStrength)
         : pinnedDefaultNumber("occlusionStrength");
@@ -691,13 +678,13 @@ export function compilePbrMaterialOptions(
         hasOrmTexture: true,
         ...(baseColorFactor?.value ? { baseColorFactor: baseColorFactor.value } :
             baseColorFactor ? {baseColorFactorRuntime: true as const} : {}),
-        metallicFactor: Number.parseFloat(metallicCpp),
-        roughnessFactor: Number.parseFloat(roughnessCpp),
-        directIntensity: Number.parseFloat(directCpp),
-        environmentIntensity: Number.parseFloat(environmentCpp),
-        alpha: Number.parseFloat(alphaCpp),
+        metallicFactor: metallicOption.value,
+        roughnessFactor: roughnessOption.value,
+        directIntensity: directOption.value,
+        environmentIntensity: environmentOption.value,
+        alpha: alphaOption.value,
         ...(staticAlphaBlend ? { alphaBlend: true } : {}),
-        reflectance: Number.parseFloat(reflectanceCpp),
+        reflectance: reflectanceOption.value,
         ...(staticOcclusionStrength === pinnedDefaultNumber("occlusionStrength")
             ? {}
             : { occlusionStrength: staticOcclusionStrength }),
@@ -706,9 +693,9 @@ export function compilePbrMaterialOptions(
             : { metallicF0Factor: staticMetallicF0Factor }),
         ...(staticEnableSpecularAA ? { enableSpecularAA: true } : {}),
         doubleSided: doubleSidedCpp === "true",
-        transmission: Number.parseFloat(transmission),
-        ior: Number.parseFloat(ior),
-        thickness: Number.parseFloat(thickness),
+        transmission: transmission.value,
+        ior: ior.value,
+        thickness: thickness.value,
         ...(staticPhysicalLightFalloff
             ? {}
             : { usePhysicalLightFalloff: false }),
@@ -721,22 +708,22 @@ export function compilePbrMaterialOptions(
             baseColorFactor?.cpp ??
             "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
         orm,
-        metallicFactor: metallicCpp,
-        roughnessFactor: roughnessCpp,
-        directIntensity: directCpp,
-        environmentIntensity: environmentCpp,
-        alpha: alphaCpp,
+        metallicFactor: metallicOption.cpp,
+        roughnessFactor: roughnessOption.cpp,
+        directIntensity: directOption.cpp,
+        environmentIntensity: environmentOption.cpp,
+        alpha: alphaOption.cpp,
         alphaBlend: alphaBlendCpp,
-        reflectance: reflectanceCpp,
+        reflectance: reflectanceOption.cpp,
         // `setPbrUnlit` and `setPbrSkybox` are the opt-ins that raise these;
         // the creation options carry neither.
         unlit: "false",
         doubleSided: doubleSidedCpp,
         enableSpecularAA: enableSpecularAACpp,
         skyboxMode: "false",
-        transmission,
-        indexOfRefraction: ior,
-        thickness,
+        transmission: transmission.cpp,
+        indexOfRefraction: ior.cpp,
+        thickness: thickness.cpp,
         useThicknessAsDepth,
         hasVolume,
         attenuationColor,

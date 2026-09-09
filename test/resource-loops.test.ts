@@ -954,8 +954,8 @@ test("a helper can return after unconditional construction and before runtime mu
             mesh.position.x = x;
         }
     `));
-    assert.equal(result.manifest.sceneMeshes.length, 1);
-    assert.equal(result.manifest.sceneMeshes[0]!.runtimeInstances, true);
+    assert.equal(result.manifest.sceneMeshes.length, 4);
+    assert.ok(result.manifest.sceneMeshes.every(mesh => !mesh.runtimeInstances));
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.cpp.match(/\.position\.x =/g)?.length, 1);
 });
@@ -1113,7 +1113,7 @@ test("mutable helper parameter bounds cannot be mistaken for fixed resource coun
                 createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
             }
         }
-    `)), /static resource loop requires an invariant bound/);
+    `)), /Runtime resource construction requires a generation-known iteration count/);
 });
 
 test("bound-alias analysis type-checks only initializers rooted in tracked aliases", () => {

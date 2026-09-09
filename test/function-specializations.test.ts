@@ -143,7 +143,7 @@ const controls = `
 test("recursive specializations share bodies within their native scope", () => {
     const result = compileSource(controls);
     assert.equal(result.cpp.match(/make_recursive_group\(/g)?.length, 6);
-    assert.equal(result.cpp.match(/"shared move body"/g)?.length, 2);
+    assert.equal(result.cpp.match(/"shared move body"/g)?.length, 1);
     assert.equal(result.cpp.match(/"shared method body"/g)?.length, 1);
     assert.match(result.cpp, /storedmover_receiver/);
 });

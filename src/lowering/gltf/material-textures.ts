@@ -201,13 +201,21 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
         functions.push(`// ${context.provenance(module, symbol)}\n${signature} {\n${cache}${picker}${body}\n}`);
     }
     return `${gltfSamplerDeclarations}
+struct GltfPbrObject;
+struct GltfTextureIdentity { std::weak_ptr<GltfPbrObject> value; };
 struct GltfMaterialTexture {
     GltfMaterialImage image;
     bool srgb = false;
     std::optional<std::array<std::uint8_t, 4>> fallback;
     const ts::JsonValue* info = nullptr;
     GltfMaterialSampler sampler = nullptr;
+    std::shared_ptr<GltfTextureIdentity> identity = image || fallback ? std::make_shared<GltfTextureIdentity>() : nullptr;
     explicit operator bool() const { return image || fallback.has_value(); }
+    GltfMaterialTexture clone() const {
+        auto result = *this;
+        if (result) result.identity = std::make_shared<GltfTextureIdentity>();
+        return result;
+    }
 };
 struct GltfPbrTextures {
 ${textureFields.map(name => `    GltfMaterialTexture ${name};`).join("\n")}

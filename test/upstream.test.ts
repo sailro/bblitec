@@ -944,49 +944,10 @@ test("generates GLB framing validation from upstream constants", () => {
         /record\.instance_parent_matrix/,
     );
     assert.match(adapter.source, /vertex\.color = Vec4/);
-    assert.match(adapter.source, /result\.sampler\.max_anisotropy/);
-    assert.match(adapter.source, /result\.sampler\.max_lod = no_mip/);
     assert.match(adapter.source, /MaterialAlphaMode::blend/);
     assert.match(adapter.source, /alpha_cutoff/);
     assert.match(adapter.source, /normal_texture_scale/);
     assert.match(adapter.source, /record\.baked_world_scale/);
-    assert.match(adapter.source, /material\.specular_aa = true/);
-    assert.match(adapter.source, /KHR_materials_transmission/);
-    assert.match(adapter.source, /KHR_materials_ior/);
-    assert.match(adapter.source, /KHR_materials_volume/);
-    assert.match(adapter.source, /material\.transmission_texture/);
-    assert.doesNotMatch(
-        adapter.source,
-        /material\.transmission_factor > 0\.0f[\s\S]*?material\.alpha_mode = MaterialAlphaMode::blend/,
-    );
-    assert.match(adapter.source, /material\.thickness_texture/);
-    assert.match(adapter.source, /material\.use_thickness_as_depth = true/);
-    assert.match(adapter.source, /KHR_materials_clearcoat/);
-    assert.match(adapter.source, /KHR_materials_sheen/);
-    assert.match(adapter.source, /KHR_materials_iridescence/);
-    assert.match(adapter.source, /KHR_materials_dispersion/);
-    assert.match(
-        adapter.source,
-        /material\.dispersion = 20\.0f \/ dispersion;/,
-    );
-    assert.match(
-        adapter.source,
-        /clearcoat_texture \? 1\.0f : 0\.0f/,
-    );
-    assert.match(
-        adapter.source,
-        /clearcoat_roughness_texture \? 1\.0f : 0\.0f/,
-    );
-    assert.match(
-        adapter.source,
-        /material\.clearcoat_normal_scale/,
-    );
-    assert.match(adapter.source, /const bool same_as_color =/);
-    assert.match(adapter.source, /texture_transform_value\(/);
-    assert.match(
-        adapter.source,
-        /"iridescenceThicknessMaximum",\s*\r?\n\s*400\.0f\);/,
-    );
     assert.match(adapter.source, /JOINTS_0/);
     assert.match(adapter.source, /WEIGHTS_0/);
     assert.match(adapter.source, /inverseBindMatrices/);

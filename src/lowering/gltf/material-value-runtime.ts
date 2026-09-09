@@ -71,7 +71,9 @@ GltfPbrValue::GltfPbrValue(const std::vector<double>& value) : value_(std::make_
 }
 GltfPbrValue::GltfPbrValue(GltfMaterialTexture value) {
     if (!value) return;
+    if (auto shared = value.identity->value.lock()) { value_ = std::move(shared); return; }
     auto object = std::make_shared<GltfPbrObject>();
+    value.identity->value = object;
     object->texture = std::move(value);
     value_ = std::move(object);
 }
@@ -189,7 +191,12 @@ void GltfPbrValue::merge(const GltfPbrValue& other) const {
 GltfPbrValue GltfPbrValue::clone() const {
     if (const auto* object = std::get_if<std::shared_ptr<GltfPbrObject>>(&value_)) {
         GltfPbrValue result;
-        result.value_ = std::make_shared<GltfPbrObject>(**object);
+        auto copied = std::make_shared<GltfPbrObject>(**object);
+        if (copied->texture) {
+            copied->texture = copied->texture->clone();
+            copied->texture->identity->value = copied;
+        }
+        result.value_ = std::move(copied);
         return result;
     }
     auto result = GltfPbrValue::object();

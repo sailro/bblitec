@@ -1491,3 +1491,6 @@ const materialIntrinsicHandlers = new EmissionMap<string, (context: MaterialIntr
     ["enableStandardVertexColors", (context, call) => compileEnableStandardSkeleton(context, call, "enableStandardVertexColors")],
     ["rebuildMaterial", compileRebuildMaterial],
 ]);
+
+/** Material effects can be replayed at each statically reached shared call. */
+export function isMaterialCallEffectIntrinsic(name: string): boolean { return materialIntrinsicHandlers.has(name); }

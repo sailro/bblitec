@@ -2,6 +2,7 @@ import { someAnalysisNode, findAnalysisNodeWithState } from "./analysis-walk.js"
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { arrayReturnStorage } from "./array-return-storage.js";
 import {
     cppIdentifier,
     cppIdentifierPattern,
@@ -22,6 +23,7 @@ import {
 
 export interface NativeFunctionContext
     extends Pick<LoweringServices,
+        | "canReplaySharedCallEffects"
         | "checker"
         | "dataTypes"
         | "dataLowerer"
@@ -761,6 +763,7 @@ export class NativeFunctionLowerer {
                 checkerSignature,
             );
         let returnType: DataType | undefined;
+        let arrayStorage: ReturnType<typeof arrayReturnStorage>;
         if (
             (returnTsType.flags & ts.TypeFlags.Void) ===
             0
@@ -769,7 +772,11 @@ export class NativeFunctionLowerer {
                 returnTsType,
                 declaration,
             );
-            if (mapped) mapped = this.context.dataTypes.ownReturnedArray(mapped);
+            if (mapped && this.context.dataTypes.returnsArray(mapped)) {
+                arrayStorage = arrayReturnStorage(this.context.checker, declaration,
+                    root => this.context.dataLowerer.materializeStaticTable(root)?.dataType?.kind === "table");
+                if (arrayStorage !== "static") mapped = this.context.dataTypes.ownReturnedArray(mapped);
+            }
             if (
                 mapped?.kind === "struct" &&
                 !options.markAllStructReturns &&
@@ -810,7 +817,9 @@ export class NativeFunctionLowerer {
                     parameterTsType,
                     parameter,
                 );
-            if (parameterType && this.context.dataTypes.returnsArray(returnType)) {
+            const freshMatchingArray = arrayStorage === "fresh" && parameterType?.kind === "span" &&
+                returnType?.kind === "vector" && dataTypesEqual(parameterType.element, returnType.element);
+            if (parameterType && this.context.dataTypes.returnsArray(returnType) && arrayStorage !== "static" && !freshMatchingArray) {
                 parameterType = this.context.dataTypes.ownReturnedArray(parameterType);
             }
             if (
@@ -872,6 +881,10 @@ export class NativeFunctionLowerer {
                 declaration,
             );
         if (!checkerSignature) {
+            return undefined;
+        }
+        if (declaration.body && this.context.canReplaySharedCallEffects(declaration.body)) {
+            this.rejected.add(declaration);
             return undefined;
         }
         if (this.capturesEnclosingBindings(declaration)) {
@@ -1002,6 +1015,7 @@ export class NativeFunctionLowerer {
             ...closure.methods,
             ...closure.getters,
         ]) {
+            if (member.body && this.context.canReplaySharedCallEffects(member.body)) return reject();
             if (
                 member !== method &&
                 !this.methodIsStructurallyEligible(member)

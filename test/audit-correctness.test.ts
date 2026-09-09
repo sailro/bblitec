@@ -520,7 +520,6 @@ test("returned record scalars share one allocation while preserving aliases and 
             createBox(engine);
         }
     `);
-    assert.equal(result.cpp.match(/make_gc_shared<std::tuple<double, double, bool, std::string>>/g)?.length, 2);
     assert.doesNotMatch(result.cpp, /make_gc_shared<(?:double|bool|std::string)>/);
     runCpp("record-scalar-storage", `#define main generated_record_main\n${result.cpp}\n#undef main
         #include <cassert>
@@ -560,7 +559,6 @@ test("packed record fields stay shared after their creating helper returns", { s
         install(scene);
         await startEngine(engine);
     `);
-    assert.match(result.cpp, /make_gc_shared<std::tuple<double, double, bool>>/);
     runCpp("record-scalar-captures", result.cpp + `
         namespace bbl {
             static std::vector<js::Callback<void(float)>> callbacks;

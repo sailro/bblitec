@@ -8,10 +8,9 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 - [ ] Extend the remaining core-library forms in data-methods.ts/data-lowering.ts: reverse callbacks, array iterators, sparse `new Array(n)`, typed-array `subarray`, weak collections, Unicode normalization and locale collation. L; generic user TypeScript reaches these, beyond the supported forms in Features.
 - [ ] A finally spanning startEngine admits plain writes only (compiler.ts:20545-20567); lower exception completion so a cleanup exception replaces the active one instead of terminating. M; 8 trees reach finally.
-- [ ] Share generation-dependent PBR/glTF function bodies while preserving per-call material and asset metadata (compiler/function-specializations.ts). L; functions that construct PBR materials or load glTF assets.
 - [ ] Union discriminants accept string literals only (data-types.ts:1393); generic user functions refuse (user-functions.ts:691). S each; no corpus reach measured, drop if none.
 - [ ] Typed WGSL parsing falls back to `rawSource` (shader-ir.ts:982) behind three regex predicates (:1154-1194); 37 regex-over-WGSL sites remain across the shader pipeline. Extend the IR to helper functions, constants and loops (:1320) before removing any. L.
-- [ ] Lower remaining loader control flow from pinned ASTs: glTF caches, mesh construction and animation orchestration, and remaining .babylon paths (lowering/templates/). L; imported assets.
+- [ ] Lower remaining glTF material scheduling, mesh construction and animation orchestration from pinned ASTs (lowering/templates/gltf-loader-cpp.ts). L; imported assets.
 
 ## Assets and composition
 

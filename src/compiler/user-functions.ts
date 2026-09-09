@@ -4,9 +4,11 @@ import { someAnalysisNode, forEachAnalysisNode, findAnalysisNodeWithState } from
 import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { arrayReturnStorage } from "./array-return-storage.js";
 import { sanitizeCppIdentifier } from "../cpp-literals.js";
 import {
     passesByReference,
+    dataTypesEqual,
     declaredInDomLibrary,
     isHandleKind,
     type DataType,
@@ -780,6 +782,8 @@ export interface UserFunctionContext
         | "functionEmissionScope"
         | "activeThis"
         | "canShareFunctionBody"
+        | "canReplaySharedCallEffects"
+        | "requiresStaticDataIteration"
         | "probeEmission"
         | "compileCondition"
         | "isBrowserOnlyExpression"
@@ -807,6 +811,7 @@ export interface UserFunctionContext
         | "endNativeFunctionBody"
         | "registerNativeBinding"
         | "registerNativeFunction"
+        | "registerSharedNativeFunction"
         | "captureManagedClosureLines"
         | "callbackIdentity"
         | "emit"
@@ -1574,6 +1579,7 @@ export class UserFunctionLowerer {
         pinArguments = true,
     ): Value {
         const argumentExpressions = pinArguments && ts.isCallExpression(call) ? call.arguments : [];
+        const callSiteEffects = !recursive && root.declaration.body !== undefined && context.canReplaySharedCallEffects(root.declaration.body);
         rootArguments = rootArguments.map((value, index) => {
             const expression = argumentExpressions[index];
             return isHandleKind(value.kind) && expression && !ts.isIdentifier(unwrapExpression(expression))
@@ -1624,13 +1630,17 @@ export class UserFunctionLowerer {
                     "Recursive function return type must be plain data or void.",
                 );
             }
+            const returnsArray = context.dataTypes.returnsArray(returnType);
+            const arrayStorage = returnsArray ? arrayReturnStorage(this.checker, declaration) : undefined;
             const parameterTypes = ir.parameters.map(
                 ({ type, declaration: parameter }) => {
                     let mapped = context.dataTypes.fromTsType(
                         type,
                         parameter,
                     );
-                    if (mapped && context.dataTypes.returnsArray(returnType)) {
+                    const freshMatchingArray = arrayStorage === "fresh" &&
+                        mapped?.kind === "span" && returnType?.kind === "vector" && dataTypesEqual(mapped.element, returnType.element);
+                    if (mapped && returnsArray && !freshMatchingArray) {
                         mapped = context.dataTypes.ownReturnedArray(mapped);
                     }
                     const inner = mapped?.kind === "optional" ? mapped.inner : mapped;
@@ -1675,6 +1685,9 @@ export class UserFunctionLowerer {
                 captured,
                 value,
                 returnMetadata: undefined as Value | undefined,
+                callSiteEffects,
+                argumentFacts: callSiteEffects && declaration.body && context.requiresStaticDataIteration(declaration.body)
+                    ? rootArguments : [],
             };
         });
         const entryByDeclaration = new EmissionMap(
@@ -1687,7 +1700,10 @@ export class UserFunctionLowerer {
             const loopBound = argument?.staticNumber !== undefined && symbol && root.declaration.body &&
                 someAnalysisNode(root.declaration.body, node => ts.isForStatement(node) && node.condition !== undefined &&
                     someAnalysisNode(node.condition, part => ts.isIdentifier(part) && this.checker.getSymbolAtLocation(part) === symbol));
-            if (argument?.kind === "record" || (argument && rootEntry.parameterReadOnly[index] &&
+            const tupleFacts = argument && rootEntry.argumentFacts.length > 0 &&
+                rootEntry.parameterTypes[index]?.kind === "tuple" &&
+                (argument.tupleElements || argument.staticElementsOwner?.staticElements || argument.staticElements);
+            if (argument?.kind === "record" || tupleFacts || (argument && rootEntry.parameterReadOnly[index] &&
                 (argument.staticString !== undefined || argument.staticBoolean !== undefined || loopBound))) {
                 rootEntry.parameterTypes[index] = undefined;
                 rootEntry.captured[index] = argument;
@@ -1712,22 +1728,15 @@ export class UserFunctionLowerer {
         const scope = sharedBody
             ? { lexical: this.sharedBodyScope, emission: 0, block: 0, continuation: -1 }
             : context.functionEmissionScope();
-        const specialization = this.emittedRecursiveGroups.key(scope, [
+        const specialization = callSiteEffects ? undefined : this.emittedRecursiveGroups.key(scope, [
             rootEntry.captured,
             declarations.some(declaration => this.readsReceiver(declaration)) ? context.activeThis() : undefined,
             functionDependencies(context, declarations),
         ]);
-        const previous = this.emittedRecursiveGroups.get(root.declaration, specialization);
+        const previous = specialization === undefined ? undefined : this.emittedRecursiveGroups.get(root.declaration, specialization);
         if (previous) {
             const result = this.compileSpecializedCallbackCall(context, call, previous.value, rootArguments, argumentExpressions);
-            if (previous.returnMetadata?.truthinessCpp === "true" && result.kind === "data") {
-                return { ...result, truthinessCpp: "true", optionalFoundCpp: "true" };
-            }
-            if (isHandleKind(result.kind) && previous.returnMetadata) {
-                return withNativeMetadata(result, previous.returnMetadata);
-            }
-            return previous.returnMetadata?.recordProperties
-                ? valueForKind(result.kind, { ...result, recordProperties: previous.returnMetadata.recordProperties }) : result;
+            return this.sharedReturnValue(context, result, previous.returnMetadata, call);
         }
         context.reachJsData();
         const localGroup = escapes && recursive ? undefined : {
@@ -1816,9 +1825,11 @@ export class UserFunctionLowerer {
                 }
             }
         }
-        this.emittedRecursiveGroups.set(root.declaration, specialization, {
-            value: rootEntry.value, returnMetadata: rootEntry.returnMetadata,
-        });
+        if (specialization !== undefined) {
+            this.emittedRecursiveGroups.set(root.declaration, specialization, {
+                value: rootEntry.value, returnMetadata: rootEntry.returnMetadata,
+            });
+        }
         const result = this.compileSpecializedCallbackCall(
             context,
             call,
@@ -1826,18 +1837,27 @@ export class UserFunctionLowerer {
             rootArguments,
             argumentExpressions,
         );
-        if (rootEntry.returnMetadata?.truthinessCpp === "true" && result.kind === "data") {
-            return { ...result, truthinessCpp: "true", optionalFoundCpp: "true" };
+        return this.sharedReturnValue(context, result, rootEntry.returnMetadata, call);
+    }
+
+    private sharedReturnValue(context: UserFunctionContext, result: Value, metadata: Value | undefined, call: ts.Node): Value {
+        if (!metadata) return result;
+        if (isHandleKind(result.kind)) return withNativeMetadata(result, metadata);
+        if (result.kind !== "data") return result;
+        if (metadata.recordProperties && result.dataType?.kind === "struct")
+            result = context.pinValueToTemporary(result, "shared_return", ts.isExpression(call) ? call : undefined);
+        const projected = { ...result };
+        if (metadata.truthinessCpp === "true") Object.assign(projected, { truthinessCpp: "true", optionalFoundCpp: "true" });
+        if (metadata.recordProperties && result.dataType?.kind === "struct") {
+            const fields = context.dataTypes.structFields(result.dataType.name, call);
+            const member = context.dataTypes.isReferenceStruct(result.dataType.name) ? "->" : ".";
+            projected.recordProperties = Object.fromEntries(Object.keys(metadata.recordProperties).map(key => {
+                const field = fields.find(field => field.sourceName === key);
+                if (!field) throw new SharedReturnRequiresInline();
+                return [key, context.dataValue(`(${result.cpp})${member}${field.name}`, field.type)];
+            }));
         }
-        if (isHandleKind(result.kind) && rootEntry.returnMetadata) {
-            return withNativeMetadata(result, rootEntry.returnMetadata);
-        }
-        return rootEntry.returnMetadata?.recordProperties
-            ? valueForKind(result.kind, {
-                  ...result,
-                  recordProperties: rootEntry.returnMetadata.recordProperties,
-              })
-            : result;
+        return projected;
     }
 
     /** Recursive bodies run as real lambdas, so all return statements stay. */
@@ -1888,6 +1908,8 @@ export class UserFunctionLowerer {
             parameterReadOnly: readonly boolean[];
             cppName: string;
             captured: readonly (Value | undefined)[];
+            callSiteEffects: boolean;
+            argumentFacts: readonly Value[];
         },
         escapes: boolean,
         localGroup?: { self?: string; sharedName?: string; accept: (body: string) => void },
@@ -1899,6 +1921,7 @@ export class UserFunctionLowerer {
         context.pushScope(context.allocateUserFunctionPrefix());
         try {
             const parameterDeclarations: string[] = localGroup?.self ? [`[[maybe_unused]] auto& ${localGroup.self}`] : [];
+            const parameterNames: string[] = [];
             const parameterBindings: Array<{
                 parameter: UserFunctionParameterIr;
                 value: Value;
@@ -1936,6 +1959,7 @@ export class UserFunctionLowerer {
                     return;
                 }
                 const cppName = `${parameterPrefix}recursive_arg_${runtimeIndex++}`;
+                parameterNames.push(cppName);
                 parameterDeclarations.push(
                     `${this.recursiveParameterCpp(context.dataTypes, type, entry.parameterReadOnly[index]!)} ${cppName}`,
                 );
@@ -1946,15 +1970,21 @@ export class UserFunctionLowerer {
                         ...(entry.parameterReadOnly[index]
                             ? { readOnly: true as const }
                             : {}),
+                        ...(entry.parameterReadOnly[index] && entry.argumentFacts[index]?.staticNumber !== undefined
+                            ? { staticNumber: entry.argumentFacts[index]!.staticNumber,
+                                nativeBinding: true as const } : {}),
                     },
                 });
             });
             const returnedValues: Value[] = [];
             const compileReturn = localGroup && !localGroup.self && entry.returnType &&
-                (context.dataTypes.carriesHandle(entry.returnType) || (entry.returnType.kind === "struct" &&
-                    !context.dataTypes.isReferenceStruct(entry.returnType.name)))
+                (context.dataTypes.carriesHandle(entry.returnType) || entry.returnType.kind === "struct")
                 ? (expression: ts.Expression, type: DataType): string => {
                     const value = context.compileValue(expression);
+                    const resourceType = type.kind === "optional" ? type.inner : type;
+                    if (resourceType.kind === "handle" && value.kind !== resourceType.handle && value.kind !== "json-null") {
+                        throw new SharedReturnRequiresInline();
+                    }
                     if (value.retainedNativeRecord || value.cameraVector || value.sceneNodeVector || value.borrowedData ||
                         value.materialUboArrayFields?.size) {
                         throw new SharedReturnRequiresInline();
@@ -1965,6 +1995,7 @@ export class UserFunctionLowerer {
                 : undefined;
             context.beginNativeFunctionBody(entry.returnType, false, {
                 runtimeDataLoops: localGroup !== undefined && localGroup.self === undefined,
+                callSiteEffects: entry.callSiteEffects,
                 ...(compileReturn ? { compileReturn } : {}),
             });
             let captured: CapturedClosure;
@@ -1972,6 +2003,9 @@ export class UserFunctionLowerer {
                 captured = context.captureManagedClosureLines(() => {
                 if (localGroup?.self) context.registerNativeBinding(localGroup.self, true);
                 for (const { parameter, value, compileTime } of parameterBindings) {
+                    if (value.nativeBinding && parameterNames.includes(value.cpp)) {
+                        value.nativeCaptures = [context.registerNativeBinding(value.cpp, true)];
+                    }
                     if (compileTime && ts.isIdentifier(parameter.name)) {
                         context.bindCompileTimeValue(parameter.name, value);
                         continue;
@@ -2027,7 +2061,14 @@ export class UserFunctionLowerer {
                     });
                 } else if (returnedValues.length > 0 && returnedValues.every(value =>
                     value.kind === "record" || value.truthinessCpp === "true")) {
-                    returnMetadata = { kind: "record", cpp: "", truthinessCpp: "true" };
+                    const properties = returnedValues[0]!.recordProperties;
+                    const keys = properties && Object.keys(properties);
+                    const sameKeys = keys && returnedValues.every(value => {
+                        const current = Object.keys(value.recordProperties ?? {});
+                        return current.length === keys.length && current.every((key, index) => key === keys[index]);
+                    });
+                    returnMetadata = { kind: "record", cpp: "", truthinessCpp: "true",
+                        ...(sameKeys ? { recordProperties: properties } : {}) };
                 }
             } finally {
                 context.endNativeFunctionBody();
@@ -2035,12 +2076,12 @@ export class UserFunctionLowerer {
             let closure: string;
             if (localGroup?.sharedName) {
                 const parameters = [`[[maybe_unused]] auto& ${captured.environment}`, ...parameterDeclarations];
-                context.registerNativeFunction("", [
+                const sharedName = context.registerSharedNativeFunction(localGroup.sharedName, [
                     `inline constexpr auto ${localGroup.sharedName} = [](${parameters.join(", ")}) -> ${returnCpp} {`,
                     ...captured.lines.map(line => `    ${line}`),
                     "};",
-                ]);
-                closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${localGroup.sharedName})`;
+                ], [...captured.localBindings, ...parameterNames]);
+                closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName})`;
                 entry.value.nativeCaptures = captured.nativeCaptures;
             } else closure = renderClosure(captured, parameterDeclarations.join(", "), returnCpp);
             if (localGroup) localGroup.accept(closure);

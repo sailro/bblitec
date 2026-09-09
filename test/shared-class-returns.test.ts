@@ -57,8 +57,8 @@ test("eligible class-returning helpers and methods share bodies across callback 
     for (const marker of ["shared class factory", "shared class method"])
         assert.equal(result.cpp.split(marker).length - 1, 1, marker);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 2);
-    assert.equal(result.manifest.sceneMeshes.length, 2);
-    assert.ok(result.manifest.sceneMeshes.every(mesh => mesh.runtimeInstances));
+    assert.equal(result.manifest.sceneMeshes.length, 7);
+    assert.ok(result.manifest.sceneMeshes.every(mesh => !mesh.runtimeInstances));
 });
 
 const tools = optionalNativeFixtureTools(false);

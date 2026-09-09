@@ -65,6 +65,7 @@ import type { CompiledTextData } from "../pinned-text-data.js";
 /** Execution facts for one native function body. */
 export interface NativeFunctionBodyOptions {
     runtimeDataLoops?: boolean;
+    callSiteEffects?: boolean;
     compileReturn?: (expression: ts.Expression, type: DataType) => string;
 }
 
@@ -360,6 +361,8 @@ export interface LoweringServices {
     captureEmittedLines(emitBody: () => void): string[];
     recordAccessor(owner: Value, mapType: string, entries: readonly string[], canHoist: boolean): string;
     registerNativeFunction(prototype: string, definitionLines: string[]): void;
+    registerSharedNativeFunction(name: string, definitionLines: string[], localBindings: readonly string[]): string;
+    canReplaySharedCallEffects(body: ts.Node): boolean;
     beginNativeFunctionBody(returnType: DataType | undefined, contextualVoid?: boolean, options?: NativeFunctionBodyOptions): void;
     prefersNativeDataIteration(): boolean;
     endNativeFunctionBody(): void;
@@ -392,7 +395,7 @@ export interface LoweringServices {
         element: DataIterationElement;
         template?: Value;
     } | undefined;
-    requiresStaticDataIteration(statement: ts.Statement): boolean;
+    requiresStaticDataIteration(statement: ts.Node): boolean;
     canShareFunctionBody(body: ts.Node): boolean;
     compileSharedMethod(declaration: ts.MethodDeclaration, call: ts.CallExpression, arguments_: readonly Value[]): Value | undefined;
     emitNativeDataIteration<T>(statement: ts.Statement, emitBody: () => T): T;

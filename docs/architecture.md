@@ -60,6 +60,12 @@ data functions; `user-functions.ts` specializes resource helpers by arguments,
 receiver and lexical dependencies. Dedicated modules own classes, module
 initialization, closures and collections.
 
+Definite generation-dependent helper calls replay compiler metadata and intern
+equivalent native definitions using explicit local bindings. Each call retains
+its own capture tuple and resource identities. Failed shared-return probes roll
+back before inline lowering. Array-return storage follows fresh allocation or
+proven static-table lifetime; other escapes use owning storage.
+
 Use `lowerPinnedFunction` for whole functions and `lowerPinnedBody` for selected
 statement sequences. Storage initializers and specialized guards retain source
 contracts; numeric lowering, vector bindings and header framing are shared.

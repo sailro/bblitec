@@ -1729,9 +1729,15 @@ export class DataTypeRegistry {
 
   /** Shared returns can own local classes whose fields all have native storage. */
   public fromSharedReturnType(type: ts.Type, node: ts.Node): DataType | undefined {
+    const concrete = this.checker.getNonNullableType(type);
+    const resource = isPinnedType(concrete, ["PbrMaterialProps", "StandardMaterialProps"]) ? "material"
+      : isPinnedType(concrete, ["AssetContainer"]) ? "asset" : undefined;
+    if (resource) {
+      const handle: DataType = { kind: "handle", handle: resource };
+      return concrete === type ? handle : { kind: "optional", inner: handle };
+    }
     const mapped = this.fromTsType(type, node);
     if (mapped) return this.ownReturnedArray(mapped);
-    const concrete = this.checker.getNonNullableType(type);
     const symbol = concrete.symbol;
     const declaration = symbol?.declarations?.find(ts.isClassDeclaration);
     if (!symbol || !declaration || declaredInBabylonLite(symbol) ||

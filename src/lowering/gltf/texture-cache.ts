@@ -107,7 +107,7 @@ export function lowerGltfSampledTexture(context: LoweringContext): string {
                 if (node.properties.length !== 2 || !spread || !ts.isSpreadAssignment(spread) || !sampler ||
                     !ts.isPropertyAssignment(sampler) || !ts.isIdentifier(sampler.name) || sampler.name.text !== "sampler")
                     context.contractError(node, "Expected a texture spread with sampler replacement.");
-                return `[&]() { auto result = ${lowerer.expression(spread.expression)}; result.sampler = ${lowerer.expression(sampler.initializer)}; return result; }()`;
+                return `[&]() { auto result = (${lowerer.expression(spread.expression)}).clone(); result.sampler = ${lowerer.expression(sampler.initializer)}; return result; }()`;
             }
             return undefined;
         },

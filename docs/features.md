@@ -35,7 +35,7 @@ Audio, physics, navigation, retained UI and codecs also select their native depe
 | --- | --- |
 | Entry/modules | Local or imported entry helpers, supported top-level statements, named local imports/re-exports and ordered reached initializers. |
 | Control flow | Blocks, conditionals, supported switches and loops, applicable break/continue, throw, bounded catch and finally. |
-| Functions/classes | Data-typed functions, supported recursion, defaults, handle-helper inlining, local fields/methods/accessors and demanded shared instances. Stored subclass dispatch is unsupported. |
+| Functions/classes | Data-typed functions, supported recursion, defaults, shared resource helpers, local fields/methods/accessors and demanded shared instances. Definite PBR/glTF calls preserve per-call metadata; unsupported shared return shapes inline. Stored subclass dispatch is unsupported. |
 | Closures | Supported retained API callbacks, timers/RAF, shared outer cells and represented function identity. |
 | Data | Typed/nullable records, arrays, insertion-ordered Map/Set, tuples, destructuring, spreads and bounded static records. |
 | Numeric/string | Reached Math, JavaScript rounding/coercions, deterministic random and supported string operations. |

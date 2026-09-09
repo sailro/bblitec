@@ -126,6 +126,8 @@ test("glTF material and extension image caches retain identities, null results a
                 ${lowerGltfParserJson(context)}
                 ${lowerGltfMaterialAssembly(context)}
                 using GltfMaterialSampler = std::shared_ptr<const TextureSamplerState>;
+                struct GltfPbrObject;
+                ${cppFunction(lowerGltfMaterialTextures(context), "struct GltfTextureIdentity {")};
                 ${cppRecord(lowerGltfMaterialTextures(context), "struct GltfMaterialTexture {")}
                 ${gltfMaterialValueRuntime}
                 ${lowerGltfTextureCache(context)}

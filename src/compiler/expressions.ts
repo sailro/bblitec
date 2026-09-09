@@ -1191,7 +1191,10 @@ export class ExpressionLowerer {
                 dataType: resultType,
             };
         }
-        if (object.kind !== "record") {
+        const completeDataRecord = object.kind === "data" && object.dataType?.kind === "struct" &&
+            object.recordProperties && this.context.dataTypes.structFields(object.dataType.name, call)
+                .every(field => Object.hasOwn(object.recordProperties!, field.sourceName));
+        if (object.kind !== "record" && !completeDataRecord) {
             this.context.fail(
                 argumentAt(call, 0),
                 `Object.${projection} currently expects a compile-time record.`,

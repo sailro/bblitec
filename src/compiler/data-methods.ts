@@ -1434,7 +1434,15 @@ function compileArrayPush(state: ArrayMethodState): Value {
     const staticElements = narrowed.staticElementsOwner?.staticElements ??
         narrowed.staticElements;
     const pushedValues = (pushedHandleKind || staticElements) && !hasSpread
-        ? call.arguments.map((argument) => lowerer.context.compileValue(argument))
+        ? call.arguments.map((argument) => {
+            const value = lowerer.context.compileValue(argument);
+            // A static snapshot owns the value selected at push, including
+            // creation calls and a mutable source handle that is rebound later.
+            if (!pushedHandleKind || !staticElements) return value;
+            const snapshot = { ...value };
+            delete snapshot.nativeBinding;
+            return lowerer.context.pinValueToTemporary(snapshot, "array_handle", argument);
+        })
         : undefined;
     let added: number | undefined = 0;
     for (const argument of call.arguments) {

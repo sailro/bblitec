@@ -246,6 +246,31 @@ for (const [variant, context] of [
         int main() {
             using namespace bbl;
             {
+                GltfTextureCache cache;
+                const auto image = std::make_shared<GltfMaterialImageSource>(GltfMaterialImageSource{3});
+                const auto texture = gltf_cached_material_texture(cache, image, true);
+                GltfPbrValue first{texture};
+                const GltfPbrValue second{gltf_cached_material_texture(cache, image, true)};
+                assert(first.equals(second));
+                first.set("uOffset", GltfPbrValue{0.25});
+                assert(second.get("uOffset").number() == 0.25);
+                const GltfPbrValue linear{gltf_cached_material_texture(cache, image, false)};
+                assert(!first.equals(linear));
+                const auto cloned = first.clone();
+                assert(!first.equals(cloned));
+                cloned.set("uOffset", GltfPbrValue{0.5});
+                assert(first.get("uOffset").number() == 0.25);
+                assert(GltfPbrValue{cloned.texture()}.equals(cloned));
+                const GltfPbrValue sampled{texture.clone()};
+                assert(!sampled.equals(first));
+                const GltfPbrValue factorA{gltf_base_factor_texture({1,1,1,1})};
+                const GltfPbrValue factorB{gltf_base_factor_texture({1,1,1,1})};
+                assert(!factorA.equals(factorB));
+                auto independent = texture.clone();
+                { const GltfPbrValue temporary{independent}; assert(!independent.identity->value.expired()); }
+                assert(independent.identity->value.expired());
+            }
+            {
                 MaterialRecord animated;
                 ${[1, 1.2, 1.5, 2, 3].map(sample => `animate_ior(animated, static_cast<float>(${context.doubleLiteral(sample)}));
                 assert(std::abs(animated.metallic_f0_factor - static_cast<float>(${Number(execute.get(iorFunction.cpp)!(Math.fround(sample)))})) < 1e-6f);

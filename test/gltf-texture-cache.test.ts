@@ -197,6 +197,7 @@ test("sampled wrappers and extension caches follow source branching, keys and up
             bool srgb = false;
             unsigned serial = 0;
             GltfMaterialSampler sampler;
+            GltfMaterialTexture clone() const { return *this; }
             explicit operator bool() const { return bool(image); }
         };
         ${checks.join("\n")}

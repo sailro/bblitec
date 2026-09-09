@@ -126,6 +126,7 @@ export interface DataLoweringContext
         | "lookupOptional"
         | "dataTypes"
         | "compileValue"
+        | "pinValueToTemporary"
         | "emitDiscardedValue"
         | "compileNumber"
         | "castNumber"

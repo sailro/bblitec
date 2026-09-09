@@ -83,7 +83,7 @@ test("inferred factory records share replaced buffers across stored owners", { s
         if (second.owner.pools[key].values.length !== 3) throw new Error("replacement lost");
         if (second.owner.pools[key].count !== 3) throw new Error("count alias lost");
     `);
-    assert.equal((cpp.match(/make_ref<bblscene::PoolData>/g) ?? []).length, 2);
+    assert.equal((cpp.match(/make_ref<bblscene::PoolData>/g) ?? []).length, 1);
     assert.ok((cpp.match(/make_ref<bblscene::OwnerData>/g) ?? []).length <= 1);
     assert.doesNotMatch(cpp, /std::make_shared<(?:double|bbl::js::F32Array)>/);
 });

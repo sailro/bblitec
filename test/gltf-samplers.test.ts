@@ -9,6 +9,7 @@ import { GltfLowerer } from "../src/lowering/gltf/loader.js";
 import { gltfSamplerDeclarations, lowerGltfSamplers } from "../src/lowering/gltf/sampler-resolver.js";
 import { lowerGltfDefaultSampler } from "../src/lowering/gltf/sampler-mapping.js";
 import { gltfMaterialValueRuntime } from "../src/lowering/gltf/material-value-runtime.js";
+import { lowerGltfMaterialTextures } from "../src/lowering/gltf/material-textures.js";
 import { transpileCommonJs } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
 import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
@@ -86,9 +87,11 @@ test("glTF sampler lookup, descriptors and sharing execute the pinned source", t
             using JsonObject = ts::JsonValue::Object;
             using JsonArray = ts::JsonValue::Array;
             using GltfMaterialImage = std::shared_ptr<int>;
-            struct GltfMaterialTexture { explicit operator bool() const { return false; } };
             ${cppFunction(new GltfLowerer(contexts[0]!).lowerLoaderAdapter().source, "const ts::JsonValue* optional(")}
             ${gltfSamplerDeclarations}
+            struct GltfPbrObject;
+            ${cppFunction(lowerGltfMaterialTextures(contexts[0]!), "struct GltfTextureIdentity {")};
+            ${cppFunction(lowerGltfMaterialTextures(contexts[0]!), "struct GltfMaterialTexture {")};
             ${gltfMaterialValueRuntime}
             ${contexts.map((context, variant) => `namespace variant${variant} {
                 ${lowerGltfDefaultSampler(context)}

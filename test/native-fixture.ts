@@ -24,14 +24,19 @@ export function cppRecord(source: string, signature: string): string {
 export function cppFunction(source: string, signature: string): string {
     const start = source.indexOf(signature);
     assert.ok(start >= 0, signature);
-    let parameters = source.indexOf("(", start), parameterDepth = 1;
-    assert.ok(parameters >= 0, signature);
-    while (parameterDepth && ++parameters < source.length) {
-        if (source[parameters] === "(") ++parameterDepth;
-        if (source[parameters] === ")") --parameterDepth;
+    let open: number;
+    if (signature.trimEnd().endsWith("{") || /^(?:struct|class|enum)\b/.test(signature)) {
+        open = source.indexOf("{", start);
+    } else {
+        let parameters = source.indexOf("(", start), parameterDepth = 1;
+        assert.ok(parameters >= 0, signature);
+        while (parameterDepth && ++parameters < source.length) {
+            if (source[parameters] === "(") ++parameterDepth;
+            if (source[parameters] === ")") --parameterDepth;
+        }
+        assert.equal(parameterDepth, 0);
+        open = source.indexOf("{", parameters);
     }
-    assert.equal(parameterDepth, 0);
-    const open = source.indexOf("{", parameters);
     let depth = 1, end = open + 1;
     while (depth && end < source.length) {
         const char = source[end++];

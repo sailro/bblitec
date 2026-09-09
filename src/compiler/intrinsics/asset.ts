@@ -828,3 +828,6 @@ const assetIntrinsicHandlers = new EmissionMap<string, (context: AssetIntrinsicC
     ["loadDdsEnvironment", compileLoadDdsEnvironment],
     ["loadHdrEnvironment", compileLoadHdrEnvironment],
 ]);
+
+/** Packaged asset effects can be replayed at each statically reached shared call. */
+export function isAssetCallEffectIntrinsic(name: string): boolean { return assetIntrinsicHandlers.has(name); }

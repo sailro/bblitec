@@ -1,6 +1,7 @@
 import type { HandleKind } from "./model.js";
 
 const handleCppTypes: Record<HandleKind, string> = {
+  asset: "bbl::AssetHandle",
   "gpu-device": "bbl::GpuDeviceIdentity",
   "gpu-texture": "bbl::GpuTextureIdentity",
   "device-recovery": "std::shared_ptr<bbl::DeviceRecoveryRegistration>",

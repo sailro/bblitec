@@ -8616,7 +8616,8 @@ test("stores retained UI elements in explicitly typed DOM arrays", () => {
     `);
 
     assert.match(result.cpp, /bbl::js::Array<bbl::UiElementHandle>/);
-    assert.match(result.cpp, /\.push_back\(v_[^)]+cell\)/);
+    assert.match(result.cpp, /v_bblite_array_handle_\d+ = v_[^;]+cell;/);
+    assert.match(result.cpp, /\.push_back\(v_bblite_array_handle_\d+\)/);
     assert.match(result.cpp, /ui_set_style_property/);
 });
 
