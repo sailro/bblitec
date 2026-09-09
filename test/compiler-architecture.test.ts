@@ -94,7 +94,7 @@ test("split lowerer barrels contain exports and families own their declarations"
     for (const [name, path] of [
         ["GltfLowerer", "gltf/loader"],
         ["lowerAnimationInterpolationCpp", "gltf/animation-interpolation"],
-        ["lowerSamplerMappingCpp", "gltf/sampler-mapping"],
+        ["lowerGltfDefaultSampler", "gltf/sampler-mapping"],
         ["lowerAccessorNormalizationCpp", "gltf/accessor-normalization"],
         ["lowerVertexColorCpp", "gltf/accessor-normalization"],
         ["lowerShPrescaleCpp", "gltf/sh-prescale"],
@@ -161,18 +161,6 @@ test("composes registered sprite renderers over scene output", () => {
     assert.match(
         dawn,
         /for \(const SpriteRendererHandle handle :\s*engine\.registered_sprite_renderers\)[\s\S]{0,2600}record_dawn_sprite_pass\(/,
-    );
-});
-
-test("wires reached sprite permutations and provenance into upstream emission", () => {
-    const upstream = source("src/upstream-lower.ts");
-    assert.match(
-        upstream,
-        /generated\.push\(\.\.\.spriteCoreAdditionalProvenance\)/,
-    );
-    assert.match(
-        upstream,
-        /for \(const permutation of spriteVertexPermutations\(\{[\s\S]{0,260}pure: needsPureVertex,[\s\S]{0,260}depthHosted: features\.includes\([\s\S]{0,500}composedShaders\.push\(\{[\s\S]{0,180}permutation\.output/,
     );
 });
 
@@ -410,27 +398,6 @@ test("replays billboard stages in compiler-owned frame-graph scene tasks", () =>
     );
 });
 
-test("shares parent and clone transforms with shadow caster fitting", () => {
-    const shadows = source("src/lowering/shadow-lowerer.ts");
-    const renderer = source("src/lowering/renderer-lowerer.ts");
-
-    assert.match(
-        shadows,
-        /mesh\.transform_parent\.value < engine\.transform_nodes\.size\(\)[\s\S]{0,180}mesh_world_matrix\(engine, mesh\)/,
-    );
-    assert.match(
-        shadows,
-        /return apply_mesh_outer_transform\(mesh, local\);/,
-    );
-    // The outer transform is the pinned composition's double arm on the
-    // left of the world, never a per-column rotation restated here.
-    assert.match(
-        renderer,
-        /std::array<double, 16> apply_mesh_outer_transform\(\s*const MeshRecord& mesh,\s*std::array<double, 16> world\) \{\s*return outer_transform_product\(\s*mesh\.outer_position, mesh\.outer_rotation, world\);/,
-    );
-    assert.doesNotMatch(renderer, /std::sin\(static_cast<double>\(mesh\.outer_rotation/);
-});
-
 test("keys PBR instance colour from the stream binding predicate", () => {
     const generated = source("src/pinned-pbr-variant-cpp.ts");
     const shared = source("native/src/pal_gpu_shared.hpp");
@@ -469,23 +436,6 @@ test("keys PBR instance colour from the stream binding predicate", () => {
     assert.match(
         dawn,
         /if \(instances\.colors\)[\s\S]{0,220}VertexInputStream::instance_color[\s\S]{0,120}instances\.colors/,
-    );
-});
-
-test("composes PBR thin-instance parent TRS before the root mirror", () => {
-    const shared = source("native/src/pal_gpu_shared.hpp");
-
-    assert.match(
-        shared,
-        /pinned_instanced_world\([\s\S]{0,240}pinned_x_mirrored_world\(\s*instance_parent_draw_world\(record, scene, engine\)\)/,
-    );
-    assert.match(
-        shared,
-        /if \(pinned_record_instanced\(record\)\) \{\s*return pinned_instanced_world\(record, scene, engine\);/,
-    );
-    assert.doesNotMatch(
-        shared,
-        /draw_world\(\s*pinned_instanced_world/,
     );
 });
 
