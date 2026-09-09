@@ -4,6 +4,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <span>
 
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -67,6 +68,7 @@ struct DawnSplatPass : PassState {
     Buffer* uniforms = nullptr;
 };
 #include "pal_update.hpp"
+#include "frame_uploads.hpp"
 }
 
 template <typename Pass, typename Sync, typename Frame>
@@ -153,10 +155,10 @@ int main() try {
     const std::array<float, 16> identity{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
     check<bbl::pal::SplatPass>(
         [](auto& recorder, const auto& record, auto& pass) { bbl::pal::sync_splat_data(&recorder, record, pass); },
-        [&](auto& recorder, const auto& engine, auto& pass) { bbl::pal::upload_splat_pass(&recorder, engine, pass, identity); });
+        [&](auto& recorder, const auto& engine, auto& pass) { bbl::pal::frame_sdl_gpu(recorder, engine, pass, identity); });
     check<bbl::pal::DawnSplatPass>(
         [](auto& recorder, const auto& record, auto& pass) { bbl::pal::sync_dawn_splat_data(&recorder, record, pass); },
-        [&](auto& recorder, const auto& engine, auto& pass) { bbl::pal::upload_dawn_splat_pass(&recorder, engine, pass, identity, identity, std::array<float, 4>{}, 1280, 720); });
+        [&](auto& recorder, const auto& engine, auto& pass) { bbl::pal::frame_dawn(recorder, engine, pass, identity); });
     std::cout << "splat-pal-update: ok\n";
 } catch (const std::exception& error) {
     std::cerr << error.what() << "\n";
