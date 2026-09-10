@@ -35,6 +35,13 @@ interface SceneFeatureMesh {
     _gpu: { tangentBuffer: boolean; colorBuffer: boolean; uv2Buffer: boolean };
     skeleton: object | null;
     morphTargets: object | null;
+    _flatNormal?: boolean;
+    thinInstances?: object | null;
+}
+
+async function computeMeshFeatures(mesh: SceneFeatureMesh): Promise<number> {
+    const pin = await importPinnedModule<{_computeMeshFeatures(mesh: SceneFeatureMesh): number}>("material/mesh-features.js");
+    return pin._computeMeshFeatures(mesh);
 }
 
 /**
@@ -46,10 +53,7 @@ export async function pinnedSceneMeshFeatures(mesh: SceneMeshManifest): Promise<
     if (mesh.morphTargets && mesh.thinInstances) {
         throw new Error("Direct morph targets combined with thin instances require a native-coordinate instance stream; that combination is not lowered.");
     }
-    const pin = await importPinnedModule<{
-        _computeMeshFeatures(mesh: SceneFeatureMesh): number;
-    }>("material/mesh-features.js");
-    return pin._computeMeshFeatures({
+    return computeMeshFeatures({
         _gpu: {
             tangentBuffer: mesh.hasTangents === true,
             colorBuffer: mesh.hasColors === true,
@@ -74,26 +78,21 @@ async function meshFeatureBits(): Promise<MeshFeatureBits> {
  */
 export async function pinnedMeshFeaturesFromPrimitive(
     primitive: JsonObject,
-    options: { skinned?: boolean; instanced?: boolean } = {},
+    options: { skinned?: boolean; instanced?: boolean; geometry?: {attributes: JsonObject; flatNormal: boolean} } = {},
 ): Promise<number> {
-    const bit = await meshFeatureBits();
     const attributes =
-        (primitive["attributes"] as JsonObject | undefined) ?? {};
-    let features = 0;
-    if (attributes["TANGENT"] !== undefined) features |= bit.MSH_HAS_TANGENTS;
-    if (attributes["COLOR_0"] !== undefined) {
-        features |= bit.MSH_HAS_VERTEX_COLOR;
-    }
-    if (attributes["TEXCOORD_1"] !== undefined) features |= bit.MSH_HAS_UV2;
-    if (attributes["NORMAL"] === undefined) features |= bit.MSH_FLAT_NORMAL;
-    if (Array.isArray(primitive["targets"]) && primitive["targets"].length > 0) {
-        features |= bit.MSH_HAS_MORPH_TARGETS;
-    }
-    if (options.skinned) features |= bit.MSH_HAS_SKELETON;
-    // The node's EXT_mesh_gpu_instancing, which composes the pin's
-    // thin-instance arm: the per-instance matrix as four vec4 attributes.
-    if (options.instanced) features |= bit.MSH_HAS_THIN_INSTANCES;
-    return features;
+        options.geometry?.attributes ?? (primitive["attributes"] as JsonObject | undefined) ?? {};
+    return computeMeshFeatures({
+        _gpu: {
+            tangentBuffer: attributes.TANGENT !== undefined,
+            colorBuffer: attributes.COLOR_0 !== undefined,
+            uv2Buffer: attributes.TEXCOORD_1 !== undefined,
+        },
+        _flatNormal: options.geometry?.flatNormal ?? attributes.NORMAL === undefined,
+        skeleton: options.skinned ? {} : null,
+        morphTargets: Array.isArray(primitive.targets) && primitive.targets.length > 0 ? {} : null,
+        thinInstances: options.instanced ? {} : null,
+    });
 }
 
 /**

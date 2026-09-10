@@ -6,18 +6,20 @@ import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
 import { importPinnedModule, pinnedModuleTextUrl } from "./pinned-shader-composer.js";
 import { createRecordingDevice } from "./recording-device.js";
 import { transpileForBrowser } from "./typescript-transpile.js";
+import { GltfGeometryPacker, type GltfMeshGeometry, type GltfRecordedGeometry } from "./gltf-mesh-geometry.js";
 
 export interface GltfMeshPlan {
     /** Source material indices in assembly order; -1 denotes the implicit default. */
     cores: number[];
     /** Core record indices in native material construction order. */
     materials: number[];
-    meshes: Array<{node: number; primitive: number; material: number; geometry: number; name: string}>;
+    meshes: Array<{node: number; primitive: number; material: number; geometry: number; name: string; flatNormal: boolean}>;
+    geometries: GltfMeshGeometry[];
 }
 type CoreMaterial = object;
 type Material = object;
-interface MeshData { _nodeIndex: number; _primitive: JsonObject }
-interface Mesh { material: Material; name: string; _gpu: object }
+interface MeshData { _nodeIndex: number; _primitive: JsonObject; _vertexCount: number }
+interface Mesh { material: Material; name: string; _gpu: GltfRecordedGeometry; _flatNormal?: boolean }
 interface UploadContext {
     _engine: {_device: object}; _json: JsonObject; _binChunk: DataView; _baseUrl: string;
     _matExts: unknown[]; _wrapTex: unknown; recordMaterial(material: CoreMaterial): Promise<Material>;
@@ -70,6 +72,10 @@ async function recordingLoader(context: LoweringContext): Promise<SourceLoader> 
 
 /** Run complete pinned extraction and mesh upload with real bytes and recording GPU resources. */
 export async function gltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext): Promise<GltfMeshPlan> {
+    return (await recordMeshPlan(document, bin, context)).plan;
+}
+
+async function recordMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext): Promise<{plan: GltfMeshPlan; packer: GltfGeometryPacker}> {
     const loader = await (context ? recordingLoader(context) : pinnedLoader ??= recordingLoader(new LoweringContext()));
     const {buildParentMap} = await importPinnedModule<{buildParentMap(json: JsonObject): Map<number, number>}>("loader-gltf/gltf-parser.js");
     const {identityTexWrap} = await importPinnedModule<{identityTexWrap: unknown}>("loader-gltf/gltf-pbr-builder.js");
@@ -112,7 +118,9 @@ export async function gltfMeshPlan(document: JsonObject, bin: DataView, context?
     const primitiveIndices = definitions.map(definition => new Map(asRecords(definition.primitives).map((primitive, index) => [primitive, index])));
     if (meshes.length !== data.length) throw new Error("glTF mesh planning changed its extraction cardinality.");
     const geometries = new Map<object, number>();
-    return {cores, materials, meshes: meshes.map(mesh => {
+    const packer = new GltfGeometryPacker(document, bin);
+    const geometryRecords: GltfMeshGeometry[] = [];
+    const plannedMeshes = meshes.map(mesh => {
         const input = associations.get(mesh);
         if (!input || asIndex(input._nodeIndex) === undefined) throw new Error("glTF mesh planning lost its source node.");
         const node = nodes[input._nodeIndex];
@@ -120,12 +128,18 @@ export async function gltfMeshPlan(document: JsonObject, bin: DataView, context?
         const primitive = meshIndex === undefined ? undefined : primitiveIndices[meshIndex]?.get(input._primitive);
         if (primitive === undefined) throw new Error("glTF mesh planning lost its source primitive.");
         const material = builtRecords.get(mesh.material);
-        if (material === undefined || !mesh._gpu || typeof mesh.name !== "string")
+        if (material === undefined || !mesh._gpu || typeof mesh.name !== "string" ||
+            (mesh._flatNormal !== undefined && typeof mesh._flatNormal !== "boolean"))
             throw new Error("glTF mesh planning lost its constructed resource identity.");
         let geometry = geometries.get(mesh._gpu);
-        if (geometry === undefined) { geometry = geometries.size; geometries.set(mesh._gpu, geometry); }
-        return {node: input._nodeIndex, primitive, material, geometry, name: mesh.name};
-    })};
+        if (geometry === undefined) {
+            geometry = geometries.size;
+            geometries.set(mesh._gpu, geometry);
+            geometryRecords.push(packer.geometry(mesh._gpu, input._vertexCount));
+        }
+        return {node: input._nodeIndex, primitive, material, geometry, name: mesh.name, flatNormal: mesh._flatNormal === true};
+    });
+    return {plan: {cores, materials, meshes: plannedMeshes, geometries: geometryRecords}, packer};
 }
 
 /** Read the validated source-owned schedule carried by a packaged asset. */
@@ -134,8 +148,19 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
     const sourceMaterialCount = asRecords(document.materials).length;
     if (!plan || !Array.isArray(plan.cores) || !plan.cores.every(index => index === -1 ||
         (asIndex(index) !== undefined && index < sourceMaterialCount)) ||
-        !areGltfIndices(plan.materials, plan.cores.length) || !Array.isArray(plan.meshes))
+        !areGltfIndices(plan.materials, plan.cores.length) || !Array.isArray(plan.meshes) || !Array.isArray(plan.geometries))
         throw new Error("Invalid or missing packaged glTF mesh schedule.");
+    const accessorCount = asRecords(document.accessors).length;
+    const geometries = plan.geometries.map(value => {
+        const geometry = asObject(value), attributes = asObject(geometry?.attributes), indices = asIndex(geometry?.indices);
+        if (!attributes || indices === undefined || indices >= accessorCount ||
+            !areGltfIndices(Object.values(attributes), accessorCount) ||
+            !["POSITION", "NORMAL", "TEXCOORD_0"].every(key => asIndex(attributes[key]) !== undefined))
+            throw new Error("Invalid packaged glTF geometry.");
+        const mapped: Record<string, number> = {};
+        for (const [key, value] of Object.entries(attributes)) mapped[key] = asIndex(value)!;
+        return {attributes: mapped, indices};
+    });
     const nodes = asRecords(document.nodes), definitions = asRecords(document.meshes);
     const primitives = definitions.map(definition => asRecords(definition.primitives));
     const materialIndices = plan.materials, meshRecords = plan.meshes;
@@ -144,15 +169,21 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
         const node = asIndex(mesh?.node), primitive = asIndex(mesh?.primitive), material = asIndex(mesh?.material), geometry = asIndex(mesh?.geometry);
         const definition = node === undefined ? undefined : asIndex(nodes[node]?.mesh);
         if (!mesh || node === undefined || primitive === undefined || material === undefined || material >= materialIndices.length ||
-            geometry === undefined || geometry >= meshRecords.length || typeof mesh.name !== "string" ||
+            geometry === undefined || geometry >= geometries.length || typeof mesh.name !== "string" || typeof mesh.flatNormal !== "boolean" ||
             definition === undefined || !primitives[definition]?.[primitive])
             throw new Error("Invalid packaged glTF mesh resource.");
-        return {node, primitive, material, geometry, name: mesh.name};
+        return {node, primitive, material, geometry, name: mesh.name, flatNormal: mesh.flatNormal};
     });
-    return {cores: plan.cores, materials: plan.materials, meshes};
+    return {cores: plan.cores, materials: plan.materials, meshes, geometries};
 }
 
-export async function packageGltfMeshPlan(document: JsonObject, bin: DataView): Promise<void> {
+export async function packageGltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext): Promise<Buffer> {
     if (GLTF_MESH_PLAN in document) throw new Error("glTF source already carries compiler mesh scheduling metadata.");
-    document[GLTF_MESH_PLAN] = await gltfMeshPlan(document, bin);
+    const {plan, packer} = await recordMeshPlan(document, bin, context);
+    const binary = packer.build();
+    document.accessors = packer.accessors;
+    document.bufferViews = packer.bufferViews;
+    document.buffers = [{byteLength: binary.length}];
+    document[GLTF_MESH_PLAN] = plan;
+    return binary;
 }

@@ -8,7 +8,7 @@ export async function packageGltfLoadPlan(bytes: Uint8Array, label: string): Pro
     const glb = readGlb(bytes);
     if (!glb) return bytes;
     await resolveGlbGeometry(glb, label);
-    await packageGltfMeshPlan(glb.json, new DataView(glb.binary.buffer, glb.binary.byteOffset, glb.binary.byteLength));
+    glb.binary = await packageGltfMeshPlan(glb.json, new DataView(glb.binary.buffer, glb.binary.byteOffset, glb.binary.byteLength));
     await packageVariantPlan(glb.json);
     return writeGlb(glb.json, glb.binary);
 }

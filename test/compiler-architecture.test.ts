@@ -91,7 +91,6 @@ test("split lowerer barrels contain exports and families own their declarations"
         ["lowerAnimationInterpolationCpp", "gltf/animation-interpolation"],
         ["lowerGltfDefaultSampler", "gltf/sampler-mapping"],
         ["lowerAccessorNormalizationCpp", "gltf/accessor-normalization"],
-        ["lowerVertexColorCpp", "gltf/accessor-normalization"],
         ["lowerShPrescaleCpp", "gltf/sh-prescale"],
         ["lowerImageProcessingDefaultsCpp", "gltf/image-processing-defaults"],
         ["lowerMatrixComposeCpp", "gltf/matrix-leaves"],

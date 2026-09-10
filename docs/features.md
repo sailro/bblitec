@@ -196,6 +196,7 @@ including packaged external/compressed resources and reached material extensions
 Skin inverse bind matrices require contiguous, unnormalized FLOAT MAT4 accessors.
 Animation samplers require contiguous accessor storage and complete elements.
 Mesh order, names and base/variant material scheduling execute from the pinned loader during packaging.
+Native vertex/index streams and flat-normal flags consume its recorded geometry uploads.
 Unused base declarations allocate no render material; variant materials retain separate identities.
 Separate occlusion and metallic-roughness images use the pinned ORM composition and upload path.
 Its CPU Canvas2D adapter requires equally sized opaque images; scaling, alpha compositing and

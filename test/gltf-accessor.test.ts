@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
-import { lowerAccessorNormalizationCpp, lowerVertexColorCpp } from "../src/lowering/gltf/accessor-normalization.js";
+import { lowerAccessorNormalizationCpp } from "../src/lowering/gltf/accessor-normalization.js";
 import { lowerGltfAccessorShape } from "../src/lowering/gltf/accessor-shape.js";
 import { lowerGltfParserJson } from "../src/lowering/gltf/parser-json.js";
 import { transpileCommonJs } from "../src/typescript-transpile.js";
@@ -14,7 +14,6 @@ import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNat
 
 const parserModule = "src/loader-gltf/gltf-parser.ts";
 const quantizationModule = "src/loader-gltf/gltf-ext-quantization.ts";
-const colorModule = "src/loader-gltf/gltf-color-normalize.ts";
 const context = new LoweringContext();
 
 /** Execute the pinned declaration with its module constants and typed-array imports. */
@@ -33,8 +32,6 @@ function pinned<T>(ctx: LoweringContext, module: string, symbol: string): T {
 type NumericArray = Float32Array | Uint32Array | Uint16Array | Uint8Array | Int16Array | Int8Array;
 type AccessorResolver = (json: object, bin: DataView, index: number) => { _data: NumericArray; _count: number; _componentCount: number };
 type ComponentReader = (view: DataView, offset: number, componentType: number, normalized: boolean) => number;
-type ColorNormalizer = (data: NumericArray, count: number, components: number) => Float32Array;
-type UvNormalizer = (data: NumericArray, count: number) => Float32Array;
 
 const arrayTypes = [
     [5120, Int8Array, [-128, -127, -1, 0, 1, 127]],
@@ -49,23 +46,17 @@ test("accessor constructors cannot diverge from native binary reads", () => {
     assert.throws(() => lowerGltfAccessorShape(doctoredContext(parserModule, "Ctor = U32;", "Ctor = U16;")), /constructor does not match its native binary read/);
 });
 
-test("glTF accessors preserve pinned widths, normalization, colors, UVs and zero-filled storage", t => {
+test("glTF accessors preserve pinned widths, normalization and zero-filled storage", t => {
     const native = optionalNativeFixtureTools();
     if (!native) { t.skip("Native fixture compiler unavailable."); return; }
     const resolveAccessor = pinned<AccessorResolver>(context, parserModule, "resolveAccessor");
     const readComponent = pinned<ComponentReader>(context, quantizationModule, "readComponent");
-    const normalizeColor = pinned<ColorNormalizer>(context, colorModule, "normalizeColorToVec4");
-    const normalizeUv = pinned<UvNormalizer>(context, colorModule, "normalizeUvToVec2");
     const readerContexts = [context,
         doctoredContext(quantizationModule, "c / 65535 : c", "c / 65534 : c"),
         doctoredContext(quantizationModule, "Math.max(c / 127, -1)", "Math.max(c / 127, 0)"),
         doctoredContext(quantizationModule, "Math.max(c / 127, -1)", "Math.min(c / 127, -1)"),
     ];
     const readers = readerContexts.map(ctx => pinned<ComponentReader>(ctx, quantizationModule, "readComponent"));
-    const colorContexts = [context,
-        doctoredContext(colorModule, "const inv = 1 / 65535;", "const inv = 1 / 65534;"),
-        doctoredContext(colorModule, "hasAlpha ? data[v * comps + 3]! : 1;", "hasAlpha ? data[v * comps + 3]! : .5;"),
-    ];
     const rows = arrayTypes.flatMap(([type, Ctor, values]) => [false, true].map(normalized => {
         const bytes = new Uint8Array(28 + values.length * Ctor.BYTES_PER_ELEMENT);
         new Ctor(bytes.buffer, 28, values.length).set(values);
@@ -77,13 +68,6 @@ test("glTF accessors preserve pinned widths, normalization, colors, UVs and zero
             readers: type === 5125 ? [] : readers.map(reader => [...resolved._data].map((_raw, index) => reader(new DataView(bytes.buffer), 28 + index * Ctor.BYTES_PER_ELEMENT, type, normalized))),
         };
     }));
-    const conversions = arrayTypes.flatMap(([type, Ctor, values]) => [3, 4].map(components => {
-        const data = new Ctor([...values, ...values].slice(0, components * 2));
-        return { type, components, bytes: [...new Uint8Array(data.buffer)],
-            color: [...normalizeColor(data, 2, components)], uv: [...normalizeUv(data, 2)],
-            changed: colorContexts.map(ctx => [...pinned<ColorNormalizer>(ctx, colorModule, "normalizeColorToVec4")(data, 2, components)]),
-        };
-    }));
     const zeroRows = ["SCALAR", "VEC2", "VEC3", "VEC4", "MAT2", "MAT3", "MAT4", "unknown"].map(type => {
         const result = resolveAccessor({ accessors: [{ type, componentType: 5126, count: 2 }] }, new DataView(new ArrayBuffer(0)), 0);
         return { type, components: result._componentCount, values: [...result._data] };
@@ -93,8 +77,6 @@ test("glTF accessors preserve pinned widths, normalization, colors, UVs and zero
     const helpers = loader.slice(loader.indexOf("std::size_t component_count("), loader.indexOf("// src/loader-gltf/gltf-feature-lights-punctual.ts applyAsset:"));
     const changedReaders = readerContexts.map((ctx, index) =>
         lowerAccessorNormalizationCpp(ctx.sourceFile(quantizationModule)).replace("read_quantized_component(", `reader_${index}(`));
-    const changedColors = colorContexts.map((ctx, index) => lowerVertexColorCpp(ctx.sourceFile(colorModule))
-        .replace("normalize_gltf_colors(", `colors_${index}(`).replace("normalize_gltf_uvs(", `uvs_${index}(`));
     const changedShape = lowerGltfAccessorShape(doctoredContext(parserModule, "MAT3: 9", "MAT3: 8"))
         .replace("component_count(", "changed_component_count(").replace("component_size(", "changed_component_size(");
     const directory = resolve("artifacts/test-gltf-accessor");
@@ -103,7 +85,7 @@ test("glTF accessors preserve pinned widths, normalization, colors, UVs and zero
     assert.ok(containerStart >= 0);
     const containerRecord = parserHeader.slice(containerStart, parserHeader.indexOf("\n};", containerStart) + 3);
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "expected.json"), JSON.stringify({ rows, conversions, zeroRows }));
+    writeFileSync(join(directory, "expected.json"), JSON.stringify({ rows, zeroRows }));
     const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
     writeFileSync(source, `#include <bblite/ts_runtime.hpp>
 #include <nlohmann/json.hpp>
@@ -119,7 +101,6 @@ ${["const ts::JsonValue& required(", "const ts::JsonValue* optional("].map(signa
 ${lowerGltfParserJson(context)}
 ${helpers}
 ${changedReaders.join("\n")}
-${changedColors.join("\n")}
 ${changedShape}
 }
 int main() {
@@ -175,21 +156,6 @@ int main() {
         reject([&]{read_component(buffer,container,bad,accessor,0,0);});
         bad=views; bad[0].offset=container.bin_length;
         reject([&]{read_component(buffer,container,bad,accessor,0,0);});
-    }
-    for(const auto& row:expected.at("conversions")) {
-        const ts::ArrayBuffer buffer(row.at("bytes").get<std::vector<std::uint8_t>>());
-        upstream::ParsedGlbContainer container; container.bin_length=buffer.byte_length();
-        const std::vector<BufferViewInfo> views{{0,buffer.byte_length(),0}};
-        const auto comps=row.at("components").get<std::size_t>();
-        for(bool normalized:{false,true}) {
-            const AccessorInfo accessor{0,0,2,row.at("type").get<std::uint32_t>(),comps==3?"VEC3":"VEC4",normalized};
-            const GltfAccessorView data{buffer,container,views,accessor};
-            assert(normalize_gltf_colors(data,2,double(comps))==row.at("color").get<std::vector<float>>());
-            assert(normalize_gltf_uvs(data,2)==row.at("uv").get<std::vector<float>>());
-            assert(colors_0(data,2,double(comps))==row.at("changed")[0].get<std::vector<float>>());
-            assert(colors_1(data,2,double(comps))==row.at("changed")[1].get<std::vector<float>>());
-            assert(colors_2(data,2,double(comps))==row.at("changed")[2].get<std::vector<float>>());
-        }
     }
     for(const auto& row:expected.at("zeroRows")) {
         AccessorInfo accessor; accessor.component_type=5126; accessor.type=row.at("type").get<std::string>(); accessor.count=2;

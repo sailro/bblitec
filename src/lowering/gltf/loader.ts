@@ -14,7 +14,6 @@ import { lowerGltfAnimationClips } from "./animation-clips.js";
 import { lowerGltfAnimationSamplers } from "./animation-samplers.js";
 import {
     lowerAccessorNormalizationCpp,
-    lowerVertexColorCpp,
 } from "./accessor-normalization.js";
 import {
     lowerAnimationInterpolationCpp,
@@ -651,11 +650,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const accessorNormalization =
             lowerAccessorNormalizationCpp(quantization);
         const accessorShape = lowerGltfAccessorShape(this.context);
-        const vertexColor = lowerVertexColorCpp(
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-color-normalize.ts",
-            ),
-        );
         const assemblyFile = this.context.sourceFile(
             "src/loader-gltf/ibl-env-assembly.ts",
         );
@@ -758,7 +752,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     materialAssembly: lowerGltfMaterialAssembly(this.context),
                     materialTextures: lowerGltfMaterialTextures(this.context),
                     materialProperties: lowerGltfMaterialProperties(this.context).source,
-                    vertexColor,
                     shPrescale,
                     imageProcessingDefaults,
                     factorBake,

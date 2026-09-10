@@ -1,7 +1,6 @@
 import ts from "typescript";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import { pinnedNumericMathCalls } from "../pinned-operators.js";
-import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
 import { identifierParameters, refuseNode, topLevelFunction, unwrapExpression } from "./shared.js";
 
 /** DataView reads supported by the native little-endian transport. */
@@ -48,35 +47,4 @@ export function lowerAccessorNormalizationCpp(
         returnValue: (expression, lowerer) => lowerer.expression(expression!),
     });
     return `// ${file.fileName}#readComponent\ndouble read_quantized_component(const std::uint8_t* view, double offset, double component_type, bool normalized) {\n${body}\n}`;
-}
-
-/** Color and UV conversions retain the pin's independent normalization rules. */
-export function lowerVertexColorCpp(file: ts.SourceFile): string {
-    const arrayTypes: Readonly<Record<string, number>> = { Float32Array: 5126, Uint16Array: 5123, Uint8Array: 5121 };
-    return ([
-        ["normalizeColorToVec4", "normalize_gltf_colors", ["data", "count", "comps"]],
-        ["normalizeUvToVec2", "normalize_gltf_uvs", ["data", "count"]],
-    ] as const).map(([symbol, cpp, cppNames]) => {
-        const declaration = topLevelFunction(file, symbol);
-        const parameters = identifierParameters(symbol, file, declaration);
-        if (parameters.length !== cppNames.length) refuseNode(symbol, file, declaration, "has an unrepresented parameter list");
-        const bindings = new Map<string, PinnedBinding>(parameters.map((name, index) =>
-            [name, { cpp: cppNames[index]!, type: index === 0 ? "f64-buffer" : "scalar" }]));
-        const body = lowerPinnedBody(file, declaration.body.statements, {
-            bindings, calls: new Map(),
-            expression(node) {
-                if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword) return undefined;
-                const left = unwrapExpression(node.left), right = unwrapExpression(node.right);
-                const componentType = ts.isIdentifier(right) ? arrayTypes[right.text] : undefined;
-                if (!ts.isIdentifier(left) || left.text !== parameters[0] || componentType === undefined)
-                    refuseNode(symbol, file, node, "tests an unrepresented accessor array type");
-                return `(data.accessor.component_type == ${componentType})`;
-            },
-            returnValue: (value, lowerer) => lowerer.expression(value!),
-        });
-        return `// ${file.fileName}#${symbol}
-std::vector<float> ${cpp}(const GltfAccessorView& data, double count${cppNames.length === 3 ? ", double comps" : ""}) {
-${body}
-}`;
-    }).join("\n");
 }

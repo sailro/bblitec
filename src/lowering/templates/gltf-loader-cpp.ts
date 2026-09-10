@@ -45,8 +45,6 @@ export interface GltfLoaderLoweredSegments {
     materialAssembly: string;
     materialTextures: string;
     materialProperties: string;
-    /** Pinned color and UV typed-array conversion bodies. */
-    vertexColor: string;
     /**
      * `pre_scale_harmonics`, lowered from
      * `src/loader-gltf/ibl-env-assembly.ts#polynomialToPreScaledHarmonics`
@@ -884,8 +882,6 @@ std::vector<float> gltf_skin_float32_view(const GltfAccessorView& view, double l
 
 ${lowered.inverseBindMatrices}
 
-${lowered.vertexColor}
-
 // src/loader-gltf/gltf-feature-lights-punctual.ts applyAsset: a punctual
 // light's world forward is \`Math.hypot(fx, fy, fz) || 1\` under its three
 // lanes, a zero forward kept as it is. The load-time call is the one
@@ -1382,6 +1378,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     const auto& mesh_plan = required(document, "${GLTF_MESH_PLAN}").as_object();
     const auto& planned_materials = required(mesh_plan, "materials").as_array();
     const auto& planned_meshes = required(mesh_plan, "meshes").as_array();
+    const auto& planned_geometries = required(mesh_plan, "geometries").as_array();
     std::vector<MaterialHandle> materials;
     materials.reserve(planned_materials.size());
 ${animationPointerMaterials || interactivity ? `    std::vector<MaterialHandle> source_materials(material_json.size());` : ""}
@@ -1775,28 +1772,27 @@ ${nonTrianglePrimitives
             : `            if (unsigned_or(primitive, "mode", 4) != 4) {
                 throw std::runtime_error("Only triangle-list glTF primitives are supported.");
             }`}
-            const JsonObject& attributes = required(primitive, "attributes").as_object();
+            const auto& planned_geometry = planned_geometries.at(unsigned_value(required(planned, "geometry"))).as_object();
+            const JsonObject& attributes = required(planned_geometry, "attributes").as_object();
+            const JsonObject& source_attributes = required(primitive, "attributes").as_object();
             const AccessorInfo& positions = accessors.at(unsigned_value(required(attributes, "POSITION")));
-            const AccessorInfo* normals = optional(attributes, "NORMAL")
-                ? &accessors.at(unsigned_value(*optional(attributes, "NORMAL")))
-                : nullptr;
+            const AccessorInfo* normals = required(planned, "flatNormal").as_boolean()
+                ? nullptr : &accessors.at(unsigned_value(required(attributes, "NORMAL")));
             const AccessorInfo* tangents = optional(attributes, "TANGENT")
                 ? &accessors.at(unsigned_value(*optional(attributes, "TANGENT")))
                 : nullptr;
-            const AccessorInfo* texcoords = optional(attributes, "TEXCOORD_0")
-                ? &accessors.at(unsigned_value(*optional(attributes, "TEXCOORD_0")))
-                : nullptr;
+            const AccessorInfo& texcoords = accessors.at(unsigned_value(required(attributes, "TEXCOORD_0")));
             const AccessorInfo* texcoords1 = optional(attributes, "TEXCOORD_1")
                 ? &accessors.at(unsigned_value(*optional(attributes, "TEXCOORD_1")))
                 : nullptr;
             const AccessorInfo* colors = optional(attributes, "COLOR_0")
                 ? &accessors.at(unsigned_value(*optional(attributes, "COLOR_0")))
                 : nullptr;
-            const AccessorInfo* joints = optional(attributes, "JOINTS_0")
-                ? &accessors.at(unsigned_value(*optional(attributes, "JOINTS_0")))
+            const AccessorInfo* joints = optional(source_attributes, "JOINTS_0")
+                ? &accessors.at(unsigned_value(*optional(source_attributes, "JOINTS_0")))
                 : nullptr;
-            const AccessorInfo* weights = optional(attributes, "WEIGHTS_0")
-                ? &accessors.at(unsigned_value(*optional(attributes, "WEIGHTS_0")))
+            const AccessorInfo* weights = optional(source_attributes, "WEIGHTS_0")
+                ? &accessors.at(unsigned_value(*optional(source_attributes, "WEIGHTS_0")))
                 : nullptr;
             std::vector<const AccessorInfo*> morph_positions;
             std::vector<const AccessorInfo*> morph_normals;
@@ -1991,15 +1987,6 @@ ${nonTrianglePrimitives
                 engine.materials[
                     materials[material_index].value]
                     .double_sided;
-            const auto color_values = colors
-                ? normalize_gltf_colors(GltfAccessorView{buffer, container, views, *colors}, double(colors->count), double(component_count(colors->type)))
-                : std::vector<float>{};
-            const auto uv_values = texcoords
-                ? normalize_gltf_uvs(GltfAccessorView{buffer, container, views, *texcoords}, double(texcoords->count))
-                : std::vector<float>{};
-            const auto uv2_values = texcoords1
-                ? normalize_gltf_uvs(GltfAccessorView{buffer, container, views, *texcoords1}, double(texcoords1->count))
-                : std::vector<float>{};
             for (std::size_t index = 0; index < positions.count; ++index) {
                 ModelVertex vertex;
                 const Vec3 local_position{
@@ -2068,19 +2055,23 @@ ${nonTrianglePrimitives
                             local_tangent_w,
                     };
                 }
-                if (texcoords) {
-                    vertex.uv = Vec2{
-                        uv_values.at(index * 2), uv_values.at(index * 2 + 1),
-                    };
-                }
+                vertex.uv = Vec2{
+                    read_component(buffer, container, views, texcoords, index, 0),
+                    read_component(buffer, container, views, texcoords, index, 1),
+                };
                 if (texcoords1) {
                     vertex.uv2 = Vec2{
-                        uv2_values.at(index * 2), uv2_values.at(index * 2 + 1),
+                        read_component(buffer, container, views, *texcoords1, index, 0),
+                        read_component(buffer, container, views, *texcoords1, index, 1),
                     };
                 }
                 if (colors) {
-                    vertex.color = Vec4{color_values.at(index * 4), color_values.at(index * 4 + 1),
-                        color_values.at(index * 4 + 2), color_values.at(index * 4 + 3)};
+                    vertex.color = Vec4{
+                        read_component(buffer, container, views, *colors, index, 0),
+                        read_component(buffer, container, views, *colors, index, 1),
+                        read_component(buffer, container, views, *colors, index, 2),
+                        read_component(buffer, container, views, *colors, index, 3),
+                    };
                 }
                 if (joints && weights) {
                     for (std::size_t component = 0; component < 4; ++component) {
@@ -2214,16 +2205,11 @@ ${nonTrianglePrimitives
                 geometry.morph_tangents.push_back(
                     std::move(tangent_deltas));
             }
-            if (const ts::JsonValue* indices_value = optional(primitive, "indices")) {
-                const AccessorInfo& indices = accessors.at(unsigned_value(*indices_value));
+            {
+                const AccessorInfo& indices = accessors.at(unsigned_value(required(planned_geometry, "indices")));
                 geometry.indices.resize(indices.count);
                 for (std::size_t index = 0; index < indices.count; ++index) {
                     geometry.indices[index] = read_index(buffer, container, views, indices, index);
-                }
-            } else {
-                geometry.indices.resize(geometry.vertices.size());
-                for (std::size_t index = 0; index < geometry.indices.size(); ++index) {
-                    geometry.indices[index] = static_cast<std::uint32_t>(index);
                 }
             }${nonTrianglePrimitives
             ? `
@@ -2383,7 +2369,7 @@ ${nonTrianglePrimitives
                 }
             }
             geometry.has_tangents = tangents != nullptr;
-            geometry.has_uvs = texcoords != nullptr;
+            geometry.has_uvs = true;
             geometry.has_vertex_colors = colors != nullptr;
             // The same fork the position store above took: a static
             // primitive carries its mirrored node world, an animated or

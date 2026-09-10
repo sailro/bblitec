@@ -598,14 +598,15 @@ export async function materialSubjects(
     const basePlan = packagedGltfMeshPlan(document);
     const primitiveOf = new Map<
         number,
-        { mesh: number; primitive: JsonObject }
+        { mesh: number; primitive: JsonObject; geometry: {attributes: JsonObject; flatNormal: boolean} }
     >();
     const nodes = asRecords(document.nodes), meshes = asRecords(document.meshes);
     const primitives = meshes.map(mesh => asRecords(mesh.primitives));
     for (const entry of basePlan.meshes) {
         const mesh = asIndex(nodes[entry.node]!.mesh)!;
         if (!primitiveOf.has(entry.material)) primitiveOf.set(entry.material,
-            {mesh: entry.node, primitive: primitives[mesh]![entry.primitive]!});
+            {mesh: entry.node, primitive: primitives[mesh]![entry.primitive]!,
+                geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal}});
     }
     const subjects: MaterialSubject[] = [];
     const variantPlan = await gltfVariantPlan(document);
@@ -649,6 +650,7 @@ export async function materialSubjects(
             meshFeatures: drawn
                 ? await pinnedMeshFeaturesFromPrimitive(drawn.primitive, {
                     skinned: nodes[drawn.mesh]!.skin !== undefined,
+                    geometry: drawn.geometry,
                 })
                 : 0,
             metallicReflectanceRegistered,
@@ -1470,6 +1472,7 @@ export async function gltfRenderables(
             features: await pinnedMeshFeaturesFromPrimitive(primitive, {
                 skinned: node.skin !== undefined,
                 instanced: asObject(node.extensions)?.EXT_mesh_gpu_instancing !== undefined,
+                geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal},
             }),
         });
     }

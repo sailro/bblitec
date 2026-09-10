@@ -6,7 +6,6 @@ export {
 } from "./gltf/animation-interpolation.js";
 export {
     lowerAccessorNormalizationCpp,
-    lowerVertexColorCpp,
 } from "./gltf/accessor-normalization.js";
 export {
     COLOR_CHANNEL_HELPERS_CPP,
