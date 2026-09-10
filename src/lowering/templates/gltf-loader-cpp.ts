@@ -41,6 +41,7 @@ export interface GltfLoaderLoweredSegments {
     parserJson: string;
     inverseBindMatrices: string;
     animationNodeRest: string;
+    animationClips: string;
     materialAssembly: string;
     materialTextures: string;
     materialProperties: string;
@@ -1343,6 +1344,7 @@ ${lowered.materialAssembly}
 ${lowered.materialTextures}
 
 ${lowered.materialProperties}
+${lowered.animationClips}
 ${gltfMaterialProjection(animationPointerMaterials)}
 
 } // namespace
@@ -2629,18 +2631,29 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
         }
     }
     if (animated) {
-        for (const ts::JsonValue& animation_value : animation_json) {
-            const JsonObject& animation =
-                animation_value.as_object();
+        {
+        const bool sampler_converter_enabled = gltf_needs_animation_sampler_converter(GltfPbrValue{&container.json}).truthy() || ${animationPointer};
+        const auto parsed = gltf_animation_clips(GltfPbrValue{&container.json},
+            [&](double index) { return GltfAccessorView{buffer, container, views, accessors.at(gltf_checked_index(index))}; },
+            [&](const GltfAccessorView& view, double length, bool normalized) {
+                auto values = gltf_animation_sampler_float32(view, length, normalized, sampler_converter_enabled);
+                return GltfAnimationSamples{std::move(values), view.accessor.type};
+            }, ${animationPointer}, [](const GltfPbrValue& pointer, const GltfPbrValue& channel) {
+                auto parsed_channel = js::make_ref<GltfParsedChannel>();
+                parsed_channel->samplerIdx = channel.get("sampler").number();
+                parsed_channel->nodeIdx = -1.0;
+                parsed_channel->path = -1.0;
+                parsed_channel->pointer = pointer;
+                return parsed_channel;
+            });
+        for (const auto& parsed_clip : parsed.clips) {
             // One clip per glTF animation, named the way
             // createAnimationGroups names it, and started only for the first.
             const std::size_t clip_index =
                 animation_runtime->clips.size();
             AnimationClip clip;
-            clip.name = string_or(
-                animation,
-                "name",
-                "animation_" + std::to_string(clip_index));
+            clip.name = parsed_clip->name.empty() ? "animation_" + std::to_string(clip_index) : parsed_clip->name;
+            clip.duration = static_cast<float>(parsed_clip->duration);
             clip.playing = clip_index == 0;
             clip.stopped = !clip.playing;
             animation_runtime->clips.push_back(std::move(clip));${animationBlending ? `
@@ -2655,54 +2668,16 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                 animation_runtime->translation_tracks.size();
             clip_track_range.scale.first =
                 animation_runtime->scale_tracks.size();` : ""}
-            // Every channel path notes its key times here, so a clip whose
-            // only channels are animation pointers still gets a duration.
-            const auto note_clip_time =
-                [animation_runtime, clip_index](float time) {
-                AnimationClip& owner =
-                    animation_runtime->clips[clip_index];
-                owner.duration = std::max(owner.duration, time);
-            };
-            const JsonArray& animation_samplers =
-                array_or_empty(animation, "samplers");
-            for (const ts::JsonValue& channel_value :
-                 array_or_empty(animation, "channels")) {
-                const JsonObject& channel =
-                    channel_value.as_object();
-                const JsonObject& target =
-                    required(channel, "target").as_object();
-                std::string path_name =
-                    required(target, "path").as_string();
+            for (const auto& parsed_channel : parsed_clip->channels) {
+                std::string path_name = gltf_animation_path_name(parsed_channel->path);
+                const auto& parsed_sampler = parsed_clip->samplers.at(gltf_checked_index(parsed_channel->samplerIdx));
                 // A node-TRS pointer resolves to the same thing a standard
                 // channel does, so it carries a node index the standard path
                 // reads in place of the target's own.
                 bool pointer_node_override = false;
                 std::size_t pointer_node_index = 0;${animationPointer ? `
                 if (path_name == "pointer") {
-                    // KHR_animation_pointer. The pinned base module resolves
-                    // node-visibility and node-TRS pointers itself and pulls
-                    // separate modules for material, light and camera
-                    // targets; only the visibility pointer is reached.
-                    const ts::JsonValue* target_extensions =
-                        optional(target, "extensions");
-                    const ts::JsonValue* pointer_extension =
-                        target_extensions
-                            ? optional(
-                                  target_extensions->as_object(),
-                                  "KHR_animation_pointer")
-                            : nullptr;
-                    if (!pointer_extension) {
-                        throw std::runtime_error(
-                            "glTF pointer channel is missing its KHR_animation_pointer target.");
-                    }
-                    // Dropped before dispatch, so an unported target the pin
-                    // DOES resolve still fails explicitly below rather than
-                    // rendering a value nothing animates.
-                    const std::string pointer_target =
-                        required(
-                            pointer_extension->as_object(),
-                            "pointer")
-                            .as_string();
+                    const std::string& pointer_target = parsed_channel->pointer.string();
                     if (pointer_unhandled_upstream(pointer_target)) {
                         continue;
                     }
@@ -2805,30 +2780,19 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                             }
                             track.light =
                                 punctual_lights[light_definition];
-                            const JsonObject& light_sampler =
-                                animation_samplers
-                                    .at(unsigned_value(
-                                        required(channel, "sampler")))
-                                    .as_object();
+                            const auto& light_sampler = parsed_sampler;
                             const std::string light_interpolation =
-                                string_or(
-                                    light_sampler,
-                                    "interpolation",
-                                    "LINEAR");
+                                gltf_animation_interpolation_name(light_sampler->interpolation);
                             if (light_interpolation != "LINEAR") {
                                 throw std::runtime_error(
                                     "Reached KHR_animation_pointer light targets support LINEAR interpolation only.");
                             }
-                            const AccessorInfo& light_input =
-                                accessors.at(unsigned_value(
-                                    required(light_sampler, "input")));
-                            const AccessorInfo& light_output =
-                                accessors.at(unsigned_value(
-                                    required(light_sampler, "output")));
+                            const GltfAnimationSamples& light_input = light_sampler->input;
+                            const GltfAnimationSamples& light_output = light_sampler->output;
                             if (
                                 light_input.type != "SCALAR" ||
                                 light_input.count != light_output.count ||
-                                component_count(light_output.type) !=
+                                light_output.components !=
                                     components) {
                                 throw std::runtime_error(
                                     "glTF light pointer accessors have an unsupported layout.");
@@ -2837,15 +2801,8 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                                 std::size_t index = 0;
                                 index < light_input.count;
                                 ++index) {
-                                const float time = read_component(
-                                    buffer,
-                                    container,
-                                    views,
-                                    light_input,
-                                    index,
-                                    0);
+                                const float time = light_input.component(index, 0);
                                 track.times.push_back(time);
-                                note_clip_time(time);
                                 Vec4 value{};
                                 float* const channels[4] = {
                                     &value.x,
@@ -2857,13 +2814,7 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                                     std::size_t component = 0;
                                     component < components;
                                     ++component) {
-                                    *channels[component] = read_component(
-                                        buffer,
-                                        container,
-                                        views,
-                                        light_output,
-                                        index,
-                                        component);
+                                    *channels[component] = light_output.component(index, component);
                                 }
                                 track.values.push_back(value);
                             }
@@ -2873,11 +2824,7 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                         }
                     }
                     if (!pointer_node_override) {
-                    const std::string pointer =
-                        required(
-                            pointer_extension->as_object(),
-                            "pointer")
-                            .as_string();
+                    const std::string& pointer = pointer_target;
 ${animationPointerMaterials ? `                    // Material targets. The pinned base module hands these to
                     // animation-pointer-basecolor and -ext; the three the
                     // asset reaches all write a PBR factor the fragment
@@ -3041,28 +2988,17 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                                 "glTF animation pointer targets a material that does not exist.");
                         }
                         track.material = materials[material_index].value;
-                        const JsonObject& material_sampler =
-                            animation_samplers
-                                .at(unsigned_value(
-                                    required(channel, "sampler")))
-                                .as_object();
+                        const auto& material_sampler = parsed_sampler;
                         if (
-                            string_or(
-                                material_sampler,
-                                "interpolation",
-                                "LINEAR") != "LINEAR") {
+                            gltf_animation_interpolation_name(material_sampler->interpolation) != "LINEAR") {
                             throw std::runtime_error(
                                 "glTF material animation supports LINEAR interpolation.");
                         }
-                        const AccessorInfo& material_input =
-                            accessors.at(unsigned_value(
-                                required(material_sampler, "input")));
-                        const AccessorInfo& material_output =
-                            accessors.at(unsigned_value(
-                                required(material_sampler, "output")));
+                        const GltfAnimationSamples& material_input = material_sampler->input;
+                        const GltfAnimationSamples& material_output = material_sampler->output;
                         if (
                             material_input.type != "SCALAR" ||
-                            component_count(material_output.type) !=
+                            material_output.components !=
                                 components ||
                             material_output.count != material_input.count) {
                             throw std::runtime_error(
@@ -3072,15 +3008,8 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                             std::size_t index = 0;
                             index < material_input.count;
                             ++index) {
-                            const float time = read_component(
-                                buffer,
-                                container,
-                                views,
-                                material_input,
-                                index,
-                                0);
+                            const float time = material_input.component(index, 0);
                             track.times.push_back(time);
-                            note_clip_time(time);
                             Vec4 value{};
                             float* channels[4] = {
                                 &value.x,
@@ -3092,13 +3021,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                                 std::size_t component = 0;
                                 component < components;
                                 ++component) {
-                                *channels[component] = read_component(
-                                    buffer,
-                                    container,
-                                    views,
-                                    material_output,
-                                    index,
-                                    component);
+                                *channels[component] = material_output.component(index, component);
                             }
                             track.values.push_back(value);
                         }
@@ -3143,27 +3066,16 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         throw std::runtime_error(
                             "glTF animation pointer targets a node that does not exist.");
                     }
-                    const JsonObject& pointer_sampler =
-                        animation_samplers
-                            .at(unsigned_value(
-                                required(channel, "sampler")))
-                            .as_object();
+                    const auto& pointer_sampler = parsed_sampler;
                     if (
-                        string_or(
-                            pointer_sampler,
-                            "interpolation",
-                            "LINEAR") != "STEP") {
+                        gltf_animation_interpolation_name(pointer_sampler->interpolation) != "STEP") {
                         // Visibility is a boolean; the pin authors it STEP
                         // and interpolating one would have no meaning.
                         throw std::runtime_error(
                             "glTF node-visibility animation requires STEP interpolation.");
                     }
-                    const AccessorInfo& pointer_input =
-                        accessors.at(unsigned_value(
-                            required(pointer_sampler, "input")));
-                    const AccessorInfo& pointer_output =
-                        accessors.at(unsigned_value(
-                            required(pointer_sampler, "output")));
+                    const GltfAnimationSamples& pointer_input = pointer_sampler->input;
+                    const GltfAnimationSamples& pointer_output = pointer_sampler->output;
                     if (
                         pointer_input.type != "SCALAR" ||
                         pointer_output.type != "SCALAR" ||
@@ -3195,23 +3107,10 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         std::size_t index = 0;
                         index < pointer_input.count;
                         ++index) {
-                        const float time = read_component(
-                            buffer,
-                            container,
-                            views,
-                            pointer_input,
-                            index,
-                            0);
+                        const float time = pointer_input.component(index, 0);
                         track.times.push_back(time);
-                        note_clip_time(time);
                         track.values.push_back(
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                pointer_output,
-                                index,
-                                0) != 0.0f);
+                            pointer_output.component(index, 0) != 0.0f);
                     }
                     track.clip = clip_index;
                     animation_runtime
@@ -3228,48 +3127,24 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     throw std::runtime_error(
                         "Reached glTF animation lowering currently supports rotation, translation, scale, and weights channels.");
                 }
-                const std::size_t sampler_index =
-                    unsigned_value(required(channel, "sampler"));
-                const JsonObject& sampler =
-                    animation_samplers.at(sampler_index).as_object();
+                const auto& sampler = parsed_sampler;
                 const std::string interpolation =
-                    string_or(sampler, "interpolation", "LINEAR");
-                if (
-                    interpolation != "LINEAR" &&
-                    interpolation != "STEP" &&
-                    interpolation != "CUBICSPLINE") {
-                    throw std::runtime_error(
-                        "Reached glTF animation lowering supports LINEAR, STEP and CUBICSPLINE interpolation.");
-                }
-                // INTERP_MAP in gltf-animation.ts, which reads an unknown
-                // name as LINEAR -- unreachable past the gate above.
+                    gltf_animation_interpolation_name(sampler->interpolation);
                 const TrackInterpolation track_interpolation =
                     interpolation == "STEP"
                         ? TrackInterpolation::step
                         : interpolation == "CUBICSPLINE"
                             ? TrackInterpolation::cubic
                             : TrackInterpolation::linear;
-                const AccessorInfo& input =
-                    accessors.at(unsigned_value(required(sampler, "input")));
-                const AccessorInfo& output =
-                    accessors.at(unsigned_value(required(sampler, "output")));
+                const GltfAnimationSamples& input = sampler->input;
+                const GltfAnimationSamples& output = sampler->output;
                 const std::size_t target_node =
                     pointer_node_override
                         ? pointer_node_index
-                        : unsigned_value(required(target, "node"));
+                        : gltf_checked_index(parsed_channel->nodeIdx);
                 if (input.type != "SCALAR") {
                     throw std::runtime_error(
                         "glTF animation input accessor must be SCALAR.");
-                }
-                for (std::size_t index = 0; index < input.count; ++index) {
-                    const float time = read_component(
-                        buffer,
-                        container,
-                        views,
-                        input,
-                        index,
-                        0);
-                    note_clip_time(time);
                 }
                 if (path_name == "rotation") {
                     const bool cubic =
@@ -3286,22 +3161,16 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     track.interpolation = track_interpolation;
                     for (std::size_t index = 0; index < input.count; ++index) {
                         track.times.push_back(
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                input,
-                                index,
-                                0));
+                            input.component(index, 0));
                         const std::size_t value_index =
                             cubic ? index * 3 + 1 : index;
                         const auto read_quaternion =
                             [&](std::size_t output_index) {
                             return Vec4{
-                                read_component(buffer, container, views, output, output_index, 0),
-                                read_component(buffer, container, views, output, output_index, 1),
-                                read_component(buffer, container, views, output, output_index, 2),
-                                read_component(buffer, container, views, output, output_index, 3),
+                                output.component(output_index, 0),
+                                output.component(output_index, 1),
+                                output.component(output_index, 2),
+                                output.component(output_index, 3),
                             };
                         };
                         track.values.push_back(
@@ -3334,15 +3203,15 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     track.interpolation = track_interpolation;
                     for (std::size_t index = 0; index < input.count; ++index) {
                         track.times.push_back(
-                            read_component(buffer, container, views, input, index, 0));
+                            input.component(index, 0));
                         const std::size_t value_index =
                             cubic ? index * 3 + 1 : index;
                         const auto read_translation =
                             [&](std::size_t output_index) {
                             return Vec3{
-                                read_component(buffer, container, views, output, output_index, 0),
-                                read_component(buffer, container, views, output, output_index, 1),
-                                read_component(buffer, container, views, output, output_index, 2),
+                                output.component(output_index, 0),
+                                output.component(output_index, 1),
+                                output.component(output_index, 2),
                             };
                         };
                         track.values.push_back(
@@ -3386,22 +3255,10 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         output.count / input.count;
                     for (std::size_t index = 0; index < input.count; ++index) {
                         track.times.push_back(
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                input,
-                                index,
-                                0));
+                            input.component(index, 0));
                         for (std::size_t target_index = 0; target_index < track.target_count; ++target_index) {
                             track.values.push_back(
-                                read_component(
-                                    buffer,
-                                    container,
-                                    views,
-                                    output,
-                                    index * track.target_count + target_index,
-                                    0));
+                                output.component(index * track.target_count + target_index, 0));
                         }
                     }
                     track.clip = clip_index;
@@ -3418,6 +3275,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                 animation_runtime->scale_tracks.size();
             animation_runtime->clip_track_ranges.push_back(
                 clip_track_range);` : ""}
+        }
         }
 ${animationMask ? `        // parseAnimationData's own nodeNames, in document order: what an
         // AnimationGroupMask matches against. A node with no name matches

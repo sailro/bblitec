@@ -10,6 +10,8 @@ import { lowerGltfMaterialTextures } from "./material-textures.js";
 import { lowerGltfMaterialProperties } from "./material-properties.js";
 import { lowerGltfInverseBindMatrices } from "./skin-data.js";
 import { lowerGltfAnimationNodeRest } from "./animation-node-rest.js";
+import { lowerGltfAnimationClips } from "./animation-clips.js";
+import { lowerGltfAnimationSamplers } from "./animation-samplers.js";
 import {
     lowerAccessorNormalizationCpp,
     lowerVertexColorCpp,
@@ -755,6 +757,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     parserJson: lowerGltfParserJson(this.context),
                     inverseBindMatrices: lowerGltfInverseBindMatrices(this.context),
                     animationNodeRest: lowerGltfAnimationNodeRest(this.context),
+                    animationClips: lowerGltfAnimationSamplers(this.context) + "\n" + lowerGltfAnimationClips(this.context),
                     materialAssembly: lowerGltfMaterialAssembly(this.context),
                     materialTextures: lowerGltfMaterialTextures(this.context),
                     materialProperties: lowerGltfMaterialProperties(this.context).source,

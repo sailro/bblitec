@@ -14,6 +14,10 @@ export interface ReferenceSchema {
     returnType: string;
     numberAliases?: ReadonlySet<string>;
     typeAliases?: ReadonlyMap<string, string>;
+    /** Native transport values whose members and operations the caller lowers. */
+    storage?: ReadonlyMap<string, string>;
+    /** Adapt a transport range to the ordinary size/at array iteration contract. */
+    iterable?: (value: ReferenceValue) => ReferenceValue | undefined;
     expression?: (node: ts.Expression, expected: string | undefined, lowerer: PinnedReferenceLowerer) => ReferenceValue | undefined;
     statement?: (node: ts.Statement, lowerer: PinnedReferenceLowerer, indent: string) => string | undefined;
 }
@@ -53,6 +57,8 @@ export class PinnedReferenceLowerer {
     }
 
     public storage(type: string): string {
+        const transport = this.schema.storage?.get(type);
+        if (transport) return transport;
         if (type === "number") return CPP_SCALAR.number;
         if (type === "boolean") return CPP_SCALAR.boolean;
         if (type === "string") return CPP_SCALAR.string;
@@ -120,7 +126,8 @@ export class PinnedReferenceLowerer {
         if (ts.isForOfStatement(statement)) return this.scoped(() => {
             if (statement.awaitModifier || !ts.isVariableDeclarationList(statement.initializer) || statement.initializer.declarations.length !== 1 ||
                 !ts.isIdentifier(statement.initializer.declarations[0]!.name)) return this.context.contractError(statement, "Pinned for-of loop requires one ordinary binding.");
-            const values = this.expression(statement.expression);
+            const source = this.expression(statement.expression);
+            const values = this.schema.iterable?.(source) ?? source;
             if (!values.type.endsWith("[]")) return this.context.contractError(statement.expression, "Pinned for-of requires an array.");
             const name = statement.initializer.declarations[0]!.name as ts.Identifier;
             const array = `iterable_${this.temporary++}`, index = `index_${this.temporary++}`, item = `local_${name.text}`;

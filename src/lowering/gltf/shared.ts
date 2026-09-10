@@ -98,7 +98,7 @@ export function singleBinding(
 export function identifierParameters(
     symbol: string,
     file: ts.SourceFile,
-    declaration: ts.FunctionDeclaration,
+    declaration: ts.FunctionDeclaration | ts.ArrowFunction,
 ): string[] {
     return declaration.parameters.map((parameter) => {
         if (!ts.isIdentifier(parameter.name)) {

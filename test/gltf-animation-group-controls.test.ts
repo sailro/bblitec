@@ -28,12 +28,8 @@ test("carries STEP and the non-triangle topologies into the glTF loader", () => 
     const lowerer = new GltfLowerer(new LoweringContext());
     const plain = lowerer.lowerLoaderAdapter();
     // STEP is unconditional: the pin branches on it in `evaluateSampler`, so
-    // every glTF loader carries the arm and the accepted interpolation names.
+    // every glTF loader carries the arm. Sampler parsing has native source comparisons.
     assert.match(plain.source, /TrackInterpolation::step/);
-    assert.match(
-        plain.source,
-        /supports LINEAR, STEP and CUBICSPLINE interpolation/,
-    );
     assert.match(plain.source, /std::size_t track_step_key_at\(/);
     // The topology handling stays behind the specialization flag, the way
     // upstream keeps `gltf-feature-primitive.js` behind its own predicate.

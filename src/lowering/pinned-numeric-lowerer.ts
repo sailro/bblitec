@@ -24,6 +24,7 @@
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { cppIdentifier } from "../cpp-literals.js";
 import { isAssignmentExpression, isUpdateExpression } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import { cppPrimary, renderPinnedArithmetic, type PinnedExpressionSpelling, type RenderedCpp } from "./pinned-numeric-expression.js";
@@ -513,8 +514,9 @@ export class PinnedNumericLowerer {
         const occupied = new Set(["pi", ...Array.from(this.scope.bindings)
             .filter(([source, binding]) => !this.callerBindings.has(source) || source === binding.cpp)
             .map(([, binding]) => binding.cpp)]);
-        let cpp = name;
-        for (let suffix = 1; occupied.has(cpp); suffix++) cpp = `${name}_${suffix}`;
+        const base = cppIdentifier(name);
+        let cpp = base;
+        for (let suffix = 1; occupied.has(cpp); suffix++) cpp = `${base}_${suffix}`;
         return cpp;
     }
 

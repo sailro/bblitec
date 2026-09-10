@@ -194,6 +194,7 @@ Canvas dimensions follow drawable extent. Off-center orthographic planes and wid
 Generated glTF loaders create supported meshes, materials, lights, cameras, skins and animation,
 including packaged external/compressed resources and reached material extensions. Unsupported branches refuse.
 Skin inverse bind matrices require contiguous, unnormalized FLOAT MAT4 accessors.
+Animation samplers require contiguous accessor storage and complete elements.
 Separate occlusion and metallic-roughness images use the pinned ORM composition and upload path.
 Its CPU Canvas2D adapter requires equally sized opaque images; scaling, alpha compositing and
 compressed bitmap composition refuse.
