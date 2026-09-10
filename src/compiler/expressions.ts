@@ -136,6 +136,7 @@ export interface ExpressionContext
         | "isInRuntimeControlFlow"
         | "invalidateRecordProperties"
         | "emitLogicalAssignment"
+        | "resolveRecordValue"
         | "expectKind"
         | "expectSameEngine"
         | "activeThis"
@@ -3855,7 +3856,10 @@ export class ExpressionLowerer {
                 // function-literal argument already takes. Both
                 // arrive at the same inliner.
                 if (!ts.isIdentifier(recordMethod)) {
-                    return this.context.userFunctions.compileCallbackCall(this.context, call, recordMethod, (work) => this.context.withRecordScopes(instance, work));
+                    // `method() {}` and `function` literals read the record
+                    // as `this`; an arrow keeps the `this` it closed over.
+                    const bindThis = instance.classDeclaration !== undefined || !ts.isArrowFunction(recordMethod);
+                    return this.context.userFunctions.compileCallbackCall(this.context, call, recordMethod, (work) => this.context.withRecordScopes(instance, work, bindThis));
                 }
             const method = this.context.userFunctions.compile(this.context, call, recordMethod,
                 // Only the body runs in the record's

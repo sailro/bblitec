@@ -243,7 +243,7 @@ export class PlatformCalls {
         ) {
             return {
                 kind: "number",
-                cpp: "bbl::pal::epoch_milliseconds()",
+                cpp: "bbl::js::epoch_milliseconds()",
                 impure: true,
             };
         }

@@ -158,6 +158,18 @@ export function collectMutatedContainerSymbols(
             const identifier = root(node.expression.expression);
             const symbol = identifier && symbols.valueSymbol(identifier);
             if (symbol) mutated.add(symbol);
+        } else if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            ts.isIdentifier(node.expression.expression) &&
+            node.expression.expression.text === "Object" &&
+            node.expression.name.text === "assign" &&
+            node.arguments[0] !== undefined
+        ) {
+            // `Object.assign(target, ...)` writes into its first argument.
+            const identifier = root(node.arguments[0]);
+            const symbol = identifier && symbols.valueSymbol(identifier);
+            if (symbol) mutated.add(symbol);
         }
     });
     return mutated;

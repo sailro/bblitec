@@ -1745,10 +1745,12 @@ export class BrowserErasure {
             ts.isIdentifier(call.expression.expression) &&
             call.expression.expression.text === "Object" &&
             this.context.isDefaultLibraryIdentifier(call.expression.expression) &&
+            // Writing into a browser object instruments the page; writing
+            // into the scene's own data is an ordinary store.
             (call.expression.name.text === "assign" ||
-                (call.expression.name.text === "defineProperty" &&
-                    call.arguments[0] !== undefined &&
-                    this.isBrowserOnlyExpression(call.arguments[0])));
+                call.expression.name.text === "defineProperty") &&
+            call.arguments[0] !== undefined &&
+            this.isBrowserOnlyExpression(call.arguments[0]);
         const deviceEvent =
             ts.isPropertyAccessExpression(call.expression) &&
             call.expression.name.text ===

@@ -12,6 +12,7 @@
 #include <bit>
 #include <cassert>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1413,6 +1414,17 @@ template <typename K, typename V>
     values.reserve(map.size());
     for (const auto& entry : map) values.push_back(entry.second);
     return values;
+}
+
+/**
+ * `Date.now()`: milliseconds since the Unix epoch on the system clock. A
+ * fixed-delta capture paces the performance clock, not this one, exactly
+ * as a browser's Date keeps wall time under a paced animation frame.
+ */
+[[nodiscard]] inline double epoch_milliseconds() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
 /** JavaScript SameValue over numbers: NaN equals NaN and the signed zeros differ. */

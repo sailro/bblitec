@@ -349,7 +349,7 @@ export interface LoweringServices {
     resolveRecordMember(expression: ts.PropertyAccessExpression): Value | undefined;
     resolveRecordValue(expression: ts.Expression): Value | undefined;
     compileRecordSetter(owner: Value, setter: ts.SetAccessorDeclaration, value: ts.Expression): void;
-    withRecordScopes<T>(owner: Value, work: () => T): T;
+    withRecordScopes<T>(owner: Value, work: () => T, bindThis?: boolean): T;
     bindClassField(name: ts.Identifier, initializer: ts.Expression, declared?: DataType): void;
     bindNullableClassField(name: ts.Identifier): Value | undefined;
     bindUninitializedClassDataField(name: ts.Identifier, declared?: DataType): Value | undefined;

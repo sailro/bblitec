@@ -2359,22 +2359,37 @@ export class StatementLowerer {
             return false;
         }
         const receiver = call.expression.expression;
-        // A receiver with a native range takes the runtime loop, which
-        // resolves the iterator method itself; the probe only asks and
-        // keeps nothing it emitted while asking.
-        const nativeRange = context.probeEmission(
-            () => context.dataIterationTarget(receiver) !== undefined,
-            () => false,
-        );
-        if (nativeRange) {
-            return this.emitRuntimeForOf(context, statement, declaration);
+        // A library static (`Object.entries(x)`) and a call's result are
+        // values the plain loop resolves; probing them here would inline
+        // work the probe then discards.
+        if (
+            (ts.isIdentifier(receiver) && context.isDefaultLibraryIdentifier(receiver)) ||
+            someAnalysisNode(receiver, (node) => ts.isCallExpression(node) || ts.isNewExpression(node))
+        ) {
+            return false;
         }
+        // A compile-time tuple unrolls, as the plain tuple loop does, unless
+        // its elements are plain data a native range represents exactly;
+        // a receiver with a native range takes the runtime loop, which
+        // resolves the iterator method itself. The probes only ask and
+        // keep nothing they emitted while asking.
         const elements = context.probeEmission(
             () => context.handleCollections.tupleElements(receiver),
             (result) => result !== undefined,
         );
         if (!elements) {
-            return false;
+            const nativeRange = context.probeEmission(
+                () => context.dataIterationTarget(receiver) !== undefined,
+                () => false,
+            );
+            return nativeRange
+                ? this.emitRuntimeForOf(context, statement, declaration)
+                : false;
+        }
+        if (this.preferNativeDataIteration(context, statement, elements.length) &&
+            elements.every((value) => this.plainIterationData(context, value)) &&
+            this.emitRuntimeForOf(context, statement, declaration)) {
+            return true;
         }
         if (this.bindsEnclosingLoop(statement.statement)) {
             context.fail(
@@ -2940,7 +2955,16 @@ export class StatementLowerer {
                     const value = context.compileValue(
                         unwrapped.right,
                     );
+                    // `text += 1` appends the number's JavaScript spelling,
+                    // as the concatenation operator does.
+                    const appended =
+                        operator === "+=" && (value.kind === "number" || value.dataType?.kind === "number")
+                            ? (context.reachJsData(), `bbl::js::concat(bbl::js::NumberPart(${value.cpp}))`)
+                            : operator === "+=" && (value.kind === "boolean" || value.dataType?.kind === "boolean")
+                              ? `(${value.cpp} ? "true" : "false")`
+                              : undefined;
                     if (
+                        appended === undefined &&
                         value.kind !== "string" &&
                         !(
                             value.kind === "data" &&
@@ -2953,7 +2977,7 @@ export class StatementLowerer {
                         );
                     }
                     context.emit(
-                        `${target.cpp} ${operator} ${value.cpp};`,
+                        `${target.cpp} ${operator} ${appended ?? value.cpp};`,
                     );
                 } else if (
                     target.kind === "audio-node" &&

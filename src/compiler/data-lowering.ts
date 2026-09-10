@@ -1444,6 +1444,23 @@ export class DataLowerer {
             const fallback = this.context.compileValue(
                 expression.right,
             );
+            // A scalar element a bounds check found (`xs[0] ?? fallback`
+            // through a span) selects its value or the fallback.
+            if (
+                left.kind === "data" &&
+                left.dataType !== undefined &&
+                (left.dataType.kind === "number" ||
+                    left.dataType.kind === "string" ||
+                    left.dataType.kind === "boolean" ||
+                    left.dataType.kind === "enum") &&
+                fallback.kind !== "json-null"
+            ) {
+                const fallbackCpp = this.compileKnownValueForSink(fallback, left.dataType, expression.right);
+                return this.leafValue(
+                    `(${left.optionalFoundCpp} ? ${left.cpp} : ${fallbackCpp})`,
+                    left.dataType,
+                );
+            }
             if (
                 fallback.kind === "json-null" &&
                 left.dataType !== undefined
@@ -5791,7 +5808,7 @@ export class DataLowerer {
             if (narrowed?.dataType?.kind === "map") {
                 this.context.reachJsData();
                 const keyCpp = this.compileKnownValueForSink(key, narrowed.dataType.key, target.argumentExpression);
-                this.context.emit(`${narrowed.cpp}.erase(${keyCpp});`);
+                this.context.emit(`static_cast<void>(${narrowed.cpp}.erase(${keyCpp}));`);
                 this.context.invalidateRecordProperties(narrowed);
                 return;
             }
@@ -5876,6 +5893,94 @@ export class DataLowerer {
     }
 
     /**
+     * Whether the checker declares `expression` as a string-keyed
+     * dictionary: a `Record<string, T>` alias or an object type carrying a
+     * string index signature. Read off the type alone, so asking costs no
+     * emission and allocates nothing.
+     */
+    public declaredAsDictionary(expression: ts.Expression): boolean {
+        const type = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(expression),
+        );
+        if ((type.flags & ts.TypeFlags.Object) === 0) {
+            return false;
+        }
+        if (type.aliasSymbol?.name === "Record") {
+            const [key] = type.aliasTypeArguments ?? [];
+            return key !== undefined && (key.flags & ts.TypeFlags.String) !== 0;
+        }
+        return this.context.checker.getIndexInfoOfType(type, ts.IndexKind.String) !== undefined;
+    }
+
+    /**
+     * `dictionary[key]` or `dictionary.name` as a logical-assignment
+     * target: the map and the key expression, when the owner is a map.
+     */
+    private dictionaryEntryTarget(
+        left: ts.Expression,
+    ): { owner: Value; dataType: DataType & { kind: "map" }; keyCpp: string; keyNode: ts.Expression } | undefined {
+        if (!ts.isElementAccessExpression(left) && !ts.isPropertyAccessExpression(left)) {
+            return undefined;
+        }
+        const owner = this.context.probeEmission(() => {
+            const path = this.compileDataPath(left.expression, "read");
+            const candidate = path?.kind === "data" ? this.narrowOptional(path, left.expression) : undefined;
+            return candidate?.dataType?.kind === "map" ? candidate : undefined;
+        });
+        if (!owner || owner.dataType?.kind !== "map") {
+            return undefined;
+        }
+        const dataType = owner.dataType;
+        if (ts.isPropertyAccessExpression(left)) {
+            if (dataType.key.kind !== "string") return undefined;
+            return { owner, dataType, keyCpp: this.context.cppString(left.name.text), keyNode: left.name };
+        }
+        const key = this.context.compileValue(left.argumentExpression);
+        return {
+            owner,
+            dataType,
+            keyCpp: this.compileKnownValueForSink(key, dataType.key, left.argumentExpression),
+            keyNode: left.argumentExpression,
+        };
+    }
+
+    private emitLogicalEntryAssignment(
+        expression: ts.BinaryExpression,
+        entry: { owner: Value; dataType: DataType & { kind: "map" }; keyCpp: string; keyNode: ts.Expression },
+    ): boolean {
+        this.context.reachJsData();
+        const key = this.context.allocateTemporaryCppName("entry_key");
+        this.context.emit(`const auto ${key} = ${entry.keyCpp};`);
+        const kind = expression.operatorToken.kind;
+        let guard: string;
+        if (kind === ts.SyntaxKind.QuestionQuestionEqualsToken) {
+            guard = `!${entry.owner.cpp}.has(${key})`;
+        } else {
+            const present = this.context.compileCondition(expression.left);
+            guard = kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken
+                ? present
+                : `!(${present})`;
+        }
+        this.context.enterRuntimeControlFlow();
+        let lines: string[];
+        try {
+            lines = this.context.captureEmittedLines(() => {
+                const value = this.compileForSink(expression.right, entry.dataType.value);
+                this.context.emit(`${entry.owner.cpp}.set(${key}, ${value});`);
+                this.context.invalidateRecordProperties(entry.owner);
+            });
+        } finally {
+            this.context.leaveRuntimeControlFlow();
+        }
+        this.context.emit(`if (${guard}) {`);
+        this.context.increaseIndent();
+        for (const line of lines) this.context.emit(line);
+        this.context.decreaseIndent();
+        this.context.emit("}");
+        return true;
+    }
+
+    /**
      * `a ??= b`, `a ||= b` and `a &&= b` over the data model.
      *
      * The target is read for the guard and written for the store, which is
@@ -5904,6 +6009,12 @@ export class DataLowerer {
                 left,
                 "A logical assignment target must not contain a call; bind the call's result to a local first.",
             );
+        }
+        // A dictionary entry has no native lvalue: its presence is the
+        // guard and the store is `set`.
+        const entry = this.dictionaryEntryTarget(left);
+        if (entry) {
+            return this.emitLogicalEntryAssignment(expression, entry);
         }
         // A plain number, boolean or string local is a native scalar rather
         // than a data value; it stores the way its plain assignment does.
@@ -7008,7 +7119,15 @@ export class DataLowerer {
                 pinnedHandleKind(this.context.checker.getNonNullableType(this.context.checker.getTypeAtLocation(unwrapped.expression))) === "node-input") {
                 return this.context.compileValue(unwrapped);
             }
-            if (!ts.isOptionalChain(unwrapped)) {
+            // A dictionary lookup (`counts[key] === 2`) is the same
+            // nullable-or-value operand without the chain spelling. The
+            // owner's declared type decides, so no probe runs for the
+            // ordinary comparisons that are not one.
+            const dictionaryLookup =
+                !ts.isOptionalChain(unwrapped) &&
+                (ts.isElementAccessExpression(unwrapped) || ts.isPropertyAccessExpression(unwrapped)) &&
+                this.declaredAsDictionary(unwrapped.expression);
+            if (!ts.isOptionalChain(unwrapped) && !dictionaryLookup) {
                 return undefined;
             }
             const value = this.compileDataPath(
@@ -7406,6 +7525,19 @@ export class DataLowerer {
         const callee = call.expression;
         const method = callee.name.text;
         if (method !== "entries" && method !== "keys" && method !== "values") {
+            return undefined;
+        }
+        // Only a stored container's iterator: a library static
+        // (`Object.entries`) or a call's result is not one, and probing
+        // either would inline work the probe then discards.
+        if (
+            (ts.isIdentifier(callee.expression) &&
+                this.context.isDefaultLibraryIdentifier(callee.expression)) ||
+            someAnalysisNode(
+                callee.expression,
+                (node) => ts.isCallExpression(node) || ts.isNewExpression(node),
+            )
+        ) {
             return undefined;
         }
         // The receiver resolves as a range the way the loop would resolve

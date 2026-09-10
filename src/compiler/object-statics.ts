@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
@@ -29,6 +30,8 @@ type ObjectStaticContext = Pick<
     | "emit"
     | "isInRuntimeControlFlow"
     | "invalidateRecordProperties"
+    | "lookupIdentifierValue"
+    | "resolveRecordValue"
     | "unwrap"
     | "fail"
 >;
@@ -208,7 +211,9 @@ function compileObjectAssign(context: ObjectStaticContext, call: ts.CallExpressi
         context.fail(call, "Object.assign takes a target and its sources.");
     }
     const targetExpression = context.unwrap(argumentAt(call, 0));
-    const target = context.compileValue(targetExpression);
+    // A bound record is written in place, so its later reads see the
+    // stores; reading it as a value would write into a copy.
+    const target = context.resolveRecordValue(targetExpression) ?? context.compileValue(targetExpression);
     const sources = call.arguments.slice(1);
     const sourcePairs = (source: ts.Expression): Array<[string, Value]> => {
         const value = context.compileValue(source);
@@ -231,7 +236,24 @@ function compileObjectAssign(context: ObjectStaticContext, call: ts.CallExpressi
         }
         const properties = fresh ? { ...target.recordProperties } : (target.recordProperties ??= {});
         for (const source of sources) {
-            for (const [key, value] of sourcePairs(source)) properties[key] = value;
+            for (const [key, value] of sourcePairs(source)) {
+                const existing = properties[key];
+                // A property with native storage takes the store there; the
+                // record then reads its storage rather than a folded value.
+                if (
+                    !fresh &&
+                    existing !== undefined &&
+                    (existing.kind === "number" || existing.kind === "string" || existing.kind === "boolean") &&
+                    cppIdentifierPattern.test(existing.cpp)
+                ) {
+                    const scalarKind = existing.kind;
+                    const stored = context.dataLowerer.compileKnownValueForSink(value, { kind: scalarKind }, source);
+                    context.emit(`${existing.cpp} = ${stored};`);
+                    properties[key] = { kind: scalarKind, cpp: existing.cpp, dataType: { kind: scalarKind } };
+                    continue;
+                }
+                properties[key] = value;
+            }
         }
         return fresh ? { ...target, recordProperties: properties } : target;
     }
@@ -245,7 +267,15 @@ function compileObjectAssign(context: ObjectStaticContext, call: ts.CallExpressi
                 context.emit(`${target.cpp}${access}${field.name} = ${stored};`);
             }
         }
+        // The stores changed fields whose generation snapshot lives on the
+        // binding the target was read from, not only on this read of it.
         context.invalidateRecordProperties(target);
+        const bound = ts.isIdentifier(targetExpression)
+            ? context.lookupIdentifierValue(targetExpression)
+            : undefined;
+        if (bound) {
+            context.invalidateRecordProperties(bound);
+        }
         return target;
     }
     return context.fail(

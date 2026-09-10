@@ -4244,7 +4244,18 @@ class Compiler
                 return classType.name === value.dataType.name ? "true" : "false";
             }
         }
-        if (value.kind === "json-null") {
+        if (
+            value.kind === "json-null" ||
+            value.kind === "number" ||
+            value.kind === "string" ||
+            value.kind === "boolean" ||
+            value.kind === "tuple" ||
+            (value.kind === "data" &&
+                value.dataType !== undefined &&
+                value.dataType.kind !== "struct" &&
+                value.dataType.kind !== "optional")
+        ) {
+            // A scalar, a tuple, a collection: never an instance.
             return "false";
         }
         this.fail(
@@ -8626,11 +8637,15 @@ class Compiler
      * method or getter of that record sees the state it closed over
      * even when the scope that built it has since been left.
      */
-    public withRecordScopes<T>(owner: Value, work: () => T): T {
-        // An object literal's method reads its own record through `this`,
-        // as a class method reads its instance.
-        const ownsMethods = Object.keys(owner.recordMethods ?? {}).length > 0;
-        if (!owner.recordScopes && !owner.classDeclaration && !ownsMethods) {
+    public withRecordScopes<T>(
+        owner: Value,
+        work: () => T,
+        // A class method and an object literal's `method() {}` read their
+        // record through `this`; an arrow property keeps the `this` it
+        // closed over, so its caller passes false.
+        bindThis: boolean = owner.classDeclaration !== undefined,
+    ): T {
+        if (!owner.recordScopes && !bindThis) {
             return work();
         }
         const saved = [...this.variableScopes];
@@ -8639,7 +8654,7 @@ class Compiler
             this.variableScopes.length = 0;
             this.variableScopes.push(...owner.recordScopes);
         }
-        if (owner.classDeclaration || ownsMethods) {
+        if (bindThis) {
             this.defineThis(owner);
         }
         try {

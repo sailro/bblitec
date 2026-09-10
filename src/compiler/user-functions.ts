@@ -86,12 +86,19 @@ function writesThroughRoot(
     if (isUpdateExpression(node)) {
         return isTarget(node.operand);
     }
-    return (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        mutatesVia(node.expression.name.text) &&
-        isTarget(node.expression.expression)
-    );
+    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
+        return false;
+    }
+    // `Object.assign(target, ...)` writes into its first argument.
+    if (
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "Object" &&
+        node.expression.name.text === "assign"
+    ) {
+        const target = node.arguments[0];
+        return target !== undefined && isTarget(target);
+    }
+    return mutatesVia(node.expression.name.text) && isTarget(node.expression.expression);
 }
 
 /** `writesThroughRoot`, for a caller outside this module. */
