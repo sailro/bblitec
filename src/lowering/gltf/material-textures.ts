@@ -63,7 +63,7 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
     for (const [module, symbol, signature] of [
         [extModule, "occlusionNeedsSplit", "bool gltf_occlusion_needs_split(const JsonObject& raw)"],
         [builderModule, "buildDefaultPbrTextures", "GltfPbrTextures gltf_default_pbr_textures(const GltfCoreMaterial& mat, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr)"],
-        [extModule, "buildDefaultPbrTexturesExt", "GltfPbrTextures gltf_default_pbr_textures_ext(const GltfCoreMaterial& mat, bool sampled = false, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr)"],
+        [extModule, "buildDefaultPbrTexturesExt", "GltfPbrTextures gltf_default_pbr_textures_ext(const GltfCoreMaterial& mat, bool sampled = false, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr, const std::function<GltfMaterialTexture(GltfMaterialImage, bool)>& upload = {})"],
         ["src/loader-gltf/gltf-sampler-desc.ts", "buildSampledPbrTextures", "GltfPbrTextures gltf_sampled_pbr_textures(const GltfCoreMaterial& mat, GltfTextureCache* cache = nullptr, GltfSamplerContext* sampler_context = nullptr)"],
     ] as const) {
         const { file, declaration } = context.functionDeclaration(module, symbol);
@@ -195,7 +195,7 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
         const picker = symbol !== "buildDefaultPbrTexturesExt" ? "" : `    std::function<GltfMaterialSampler(const ts::JsonValue*)> sampler_for;
     if (sampled) sampler_for = [sampler_context](const ts::JsonValue* info) { return sampler_context->resolve(info); };
     auto pick_texture = gltf_extended_texture_picker(std::move(sampler_for),
-        [&](GltfMaterialImage image, bool srgb) { return gltf_cached_material_texture(tex_cache, std::move(image), srgb, sampler_context ? sampler_context->default_sampler : nullptr); },
+        [&](GltfMaterialImage image, bool srgb) { return upload ? upload(std::move(image), srgb) : gltf_cached_material_texture(tex_cache, std::move(image), srgb, sampler_context ? sampler_context->default_sampler : nullptr); },
         [](GltfMaterialImage image, bool srgb, GltfMaterialSampler sampler) { return GltfMaterialTexture{std::move(image), srgb, std::nullopt, nullptr, std::move(sampler)}; });
 `;
         functions.push(`// ${context.provenance(module, symbol)}\n${signature} {\n${cache}${picker}${body}\n}`);

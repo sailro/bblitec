@@ -47,6 +47,9 @@ function executableFunctions(functions: readonly GltfMaterialFunction[]): Map<st
         getPbrGroupBuilder: () => true,
         cloneTexture2D: (texture: object, fields: object) => ({ ...texture, ...fields }),
         engine: {}, sampler: {}, _generateMipmaps() {}, getCachedTexture() {}, wrapTex() {}, samplerFor() {},
+        generateMipmaps() {}, getCachedTex() {},
+        runMatExts: (...args: unknown[]) => modules["src/loader-gltf/gltf-feature-registry.ts"]!.runGltfMaterialFeatures!(...args),
+        buildDefaultPbrTexturesExt: textures,
         buildDefaultPbrTextures: textures,
         _ensurePbrExt: () => ({ ...modules["src/loader-gltf/gltf-pbr-builder-ext.ts"], buildDefaultPbrTexturesExt: textures }),
         ctx: { _runMatExts: (...args: unknown[]) => modules["src/loader-gltf/gltf-feature-registry.ts"]!.runGltfMaterialFeatures!(...args) },
@@ -97,6 +100,9 @@ for (const [variant, context] of [
     ["setup", alteredMaterialSetup()],
     ["construction", doctoredContext("src/loader-gltf/load-gltf.ts",
         "await applyGltfOptInPbrFeatures(props, mat);", "await applyGltfOptInPbrFeatures(props, mat); props.reflectance = 0.125;")],
+    ["variant-construction", doctoredContext("src/loader-gltf/gltf-variants.ts",
+        "await applyGltfOptInPbrFeatures(props, gltfMat);", "await applyGltfOptInPbrFeatures(props, gltfMat); props.reflectance = 0.375;")],
+    ["variant-sampler", doctoredContext("src/loader-gltf/gltf-variants.ts", "maxAnisotropy: 4,", "maxAnisotropy: 2,")],
 ] as const) test(`native material handlers and projection follow ${variant} source`, async t => {
     const native = optionalNativeFixtureTools();
     if (!native) { t.skip("Native fixture compiler unavailable."); return; }
@@ -106,6 +112,10 @@ for (const [variant, context] of [
     const samplerCall = context.findNodes(upload, (node): node is ts.CallExpression =>
         ts.isCallExpression(node) && context.expressionMatchesShape(node.expression, "getOrCreateSampler"))[0]!;
     const samplerDefaults = new Function(`return (${samplerCall.arguments[1]!.getText()});`)() as Record<string, number | string>;
+    const variantUpload = context.functionDeclaration("src/loader-gltf/gltf-variants.ts", "loadVariantMaterials").declaration;
+    const variantSamplerCall = context.findNodes(variantUpload, (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) && context.expressionMatchesShape(node.expression, "getOrCreateSampler"))[0]!;
+    const variantSamplerDefaults = new Function(`return (${variantSamplerCall.arguments[1]!.getText()});`)() as Record<string, number | string>;
     const setupCases = [
         {}, { materials: null }, { materials: [] }, { materials: [{}] },
         ...[0, 1, 2, 10, 1.25, 1e-7, -1, null].map(texCoord => ({ materials: [{ normalTexture: { texCoord } }] })),
@@ -177,7 +187,9 @@ for (const [variant, context] of [
             const selectedProps = await execute.get("gltf_pbr_build_material")!(mat,
                 selected.map(index => ({ applyMaterial: execute.get(lowered.features[index]!.handler.cpp)! })),
                 selectedContext, extended, sampled ? () => tex : undefined) as RecordValue;
-            fixtures.push({ mat, tex, document, selected, wrap, extended, sampled, expected: { ...expected, layers: selectedLayers, selectedProps } });
+            const variantProps = await execute.get("gltf_pbr_build_variant")!(mat,
+                selected.map(index => ({ applyMaterial: execute.get(lowered.features[index]!.handler.cpp)! })), selectedContext);
+            fixtures.push({ mat, tex, document, selected, wrap, extended, sampled, expected: { ...expected, layers: selectedLayers, selectedProps, variantProps } });
         }
     }
     const directory = resolve(`artifacts/gltf-material-properties-${variant}`);
@@ -253,6 +265,35 @@ for (const [variant, context] of [
                 GltfPbrValue first{texture};
                 const GltfPbrValue second{gltf_cached_material_texture(cache, image, true)};
                 assert(first.equals(second));
+                GltfPbrContext upload_context;
+                upload_context.upload_image = [](const GltfPbrValue& bitmap, bool srgb) {
+                    return GltfPbrValue{GltfMaterialTexture{bitmap.image(), srgb, std::nullopt, nullptr}};
+                };
+                const auto variant_first = gltf_pbr_variant_texture(GltfPbrValue{image}, GltfPbrValue{true}, upload_context);
+                const auto variant_second = gltf_pbr_variant_texture(GltfPbrValue{image}, GltfPbrValue{true}, upload_context);
+                assert(!variant_first.equals(variant_second) && !variant_first.equals(first));
+                assert(variant_first.texture().image == variant_second.texture().image);
+                const auto variant_document = ts::json_parse(R"({"textures":[{"source":0}]})");
+                const auto texture_info = ts::json_parse(R"({"index":0})");
+                GltfMaterialImageCache variant_images;
+                int image_resolutions = 0;
+                const auto resolve_image = [&](std::size_t index) -> GltfMaterialImage {
+                    ++image_resolutions;
+                    return std::make_shared<GltfMaterialImageSource>(GltfMaterialImageSource{index});
+                };
+                const auto variant_fetch = make_gltf_variant_image_fetcher(variant_document.as_object(), variant_images, resolve_image);
+                const auto core_image = make_gltf_image_fetcher(variant_document.as_object(), variant_images, resolve_image)(&texture_info).get();
+                assert(variant_fetch(&texture_info).get() == core_image && image_resolutions == 1);
+                const auto direct = [](GltfMaterialImage bitmap, bool srgb) { return GltfMaterialTexture{std::move(bitmap), srgb, std::nullopt, nullptr}; };
+                const auto wrap = [](GltfMaterialTexture tex, const GltfPbrValue& info) { return GltfPbrValue{gltf_wrap_material_texture(std::move(tex), info.source())}; };
+                const auto extension_first = gltf_variant_texture(GltfPbrValue{&texture_info}, true, variant_fetch, direct, wrap);
+                const auto extension_second = gltf_variant_texture(GltfPbrValue{&texture_info}, true, variant_fetch, direct, wrap);
+                assert(!extension_first.equals(extension_second) && image_resolutions == 1);
+                assert(gltf_variant_texture({}, true, variant_fetch, direct, wrap).undefined());
+                GltfSamplerContext variant_sampler(std::make_shared<const TextureSamplerState>(gltf_variant_sampler_state()));
+                bool refused_sampler_lookup = false;
+                try { variant_sampler.resolve(&texture_info); } catch (const std::runtime_error&) { refused_sampler_lookup = true; }
+                assert(refused_sampler_lookup);
                 first.set("uOffset", GltfPbrValue{0.25});
                 assert(second.get("uOffset").number() == 0.25);
                 const GltfPbrValue linear{gltf_cached_material_texture(cache, image, false)};
@@ -370,6 +411,7 @@ for (const [variant, context] of [
                 selected_context.extended_textures = selected_context.default_textures;
                 compare(gltf_pbr_build_material(mat, features, selected_context, GltfPbrValue{extended}, GltfPbrValue{sampled}),
                     row.at("expected").at("selectedProps"));
+                compare(gltf_pbr_build_variant(mat, features, selected_context), row.at("expected").at("variantProps"));
                 GltfCoreMaterial core;
                 ${[...gltfCoreMaterialFields].map(([name, type]) => {
                     const value = `mat.get("${name}")`;
@@ -384,11 +426,17 @@ for (const [variant, context] of [
                 const JsonObject image_document{{"textures", source_textures}};
                 const auto extension_fetcher = make_gltf_extension_image_fetcher(image_document, double(features.size()),
                     [](std::size_t index) -> GltfMaterialImage { return std::make_shared<GltfMaterialImageSource>(GltfMaterialImageSource{index}); });
+                GltfMaterialImageCache variant_cache;
+                const auto variant_fetcher = make_gltf_variant_image_fetcher(image_document, variant_cache,
+                    [](std::size_t index) -> GltfMaterialImage { return std::make_shared<GltfMaterialImageSource>(GltfMaterialImageSource{index}); });
+                for (const bool variant_material : {false, true}) {
+                GltfSamplerContext sampler_context(source_textures.as_array(), document.as_object().at("samplers").as_array());
+                if (variant_material) sampler_context.default_sampler = std::make_shared<const TextureSamplerState>(gltf_variant_sampler_state());
                 load_material(engine, core._rawMatDef->as_object(), core, {}, {}, {}, JsonArray(8), source_textures.as_array(),
-                    document.as_object().at("samplers").as_array(), extension_fetcher, false,
-                    features, extended, wrap, sampled);
+                    document.as_object().at("samplers").as_array(), variant_material ? variant_fetcher : extension_fetcher, false,
+                    features, extended, wrap, sampled, nullptr, &sampler_context, {}, variant_material);
                 const auto& record = engine.materials.back();
-                const auto wanted_input = ts::JsonValue::from_native(row.at("expected").at("selectedProps"));
+                const auto wanted_input = ts::JsonValue::from_native(row.at("expected").at(variant_material ? "variantProps" : "selectedProps"));
                 const GltfPbrValue wanted{&wanted_input};
                 const auto numeric = [&](const GltfPbrValue& object, const char* key, float actual, float fallback) {
                     const auto expected = object.get(key, true);
@@ -421,12 +469,13 @@ for (const [variant, context] of [
                 assert(std::abs(record.emissive_base_factor.r * record.emissive_strength - record.emissive_factor.r) < 1e-6f);
                 if (mat.get("_rawMatDef").get("pbrMetallicRoughness").truthy()) {
                     assert(record.base_color_texture.has_image());
-                    assert(record.base_color_texture.sampler.max_lod == (sampled ? 0.0f : TextureData{}.sampler.max_lod));
-                    assert(record.base_color_texture.sampler.max_anisotropy == (sampled ? 1.0f : ${Number(samplerDefaults.maxAnisotropy)}.0f));
+                    assert(record.base_color_texture.sampler.max_lod == (!variant_material && sampled ? 0.0f : TextureData{}.sampler.max_lod));
+                    assert(record.base_color_texture.sampler.max_anisotropy == (variant_material ? ${Number(variantSamplerDefaults.maxAnisotropy)}.0f : sampled ? 1.0f : ${Number(samplerDefaults.maxAnisotropy)}.0f));
                 }
                 if (record.metallic_reflectance_texture.has_image()) {
                     assert(record.metallic_reflectance_texture.sampler.max_lod == TextureData{}.sampler.max_lod);
-                    assert(record.metallic_reflectance_texture.sampler.max_anisotropy == ${Number(samplerDefaults.maxAnisotropy)}.0f);
+                    assert(record.metallic_reflectance_texture.sampler.max_anisotropy == (variant_material ? ${Number(variantSamplerDefaults.maxAnisotropy)}.0f : ${Number(samplerDefaults.maxAnisotropy)}.0f));
+                }
                 }
             }
         }`);

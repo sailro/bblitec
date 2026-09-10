@@ -20,6 +20,7 @@ struct GltfSamplerContext {
     GltfMaterialSampler default_sampler;
     std::unordered_map<std::string, GltfMaterialSampler> cache;
     GltfSamplerContext(const JsonArray& textures, const JsonArray& samplers);
+    explicit GltfSamplerContext(GltfMaterialSampler sampler) : default_sampler(std::move(sampler)) {}
     GltfMaterialSampler resolve(const ts::JsonValue* info);
 };`;
 
@@ -132,6 +133,7 @@ GltfSamplerContext::GltfSamplerContext(const JsonArray& source_textures, const J
     cache.emplace(gltf_source_sampler_key(default_descriptor).string(), default_sampler);
 }
 GltfMaterialSampler GltfSamplerContext::resolve(const ts::JsonValue* info) {
+    if (!document) throw std::runtime_error("This glTF material context has no per-texture sampler resolver.");
     const auto create_sampler = [](const GltfPbrValue& descriptor) -> GltfMaterialSampler {
         return std::make_shared<TextureSamplerState>(gltf_project_sampler(descriptor));
     };

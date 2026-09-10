@@ -20,10 +20,10 @@
 import {
     animatedMaterialPointerPatterns,
     asNumber,
+    asIndex,
     asObject,
     glbDocument,
     selectedVariantIndex,
-    variantMaterialIndex,
     type JsonObject,
 } from "./gltf-document.js";
 import {
@@ -60,6 +60,7 @@ import {
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
+import { gltfBaseMaterialCount, gltfVariantPlan } from "./gltf-variant-plan.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -611,16 +612,22 @@ export async function materialSubjects(
         }
     }
     const subjects: MaterialSubject[] = [];
-    for (const [index, material] of materials.entries()) {
+    const variantPlan = await gltfVariantPlan(document);
+    const materialEntries = [
+        ...materials.map((material, index) => ({material, index, sourceIndex: index, variant: false})),
+        ...variantPlan.materials.map((sourceIndex, index) => ({material: materials[sourceIndex]!,
+            index: variantPlan.baseCount + index, sourceIndex, variant: true})),
+    ];
+    for (const {index, material, sourceIndex, variant} of materialEntries) {
         let metallicReflectanceRegistered = false;
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
             ...scene,
-            animatedBaseColorFactor: animatedBaseColor.has(index),
-            animatedEmissive: animatedEmissive.has(index),
-            animatedUvTransform: animatedUvTransform.has(index),
-            ...(animatedExtensions.has(index)
-                ? { animatedExtensionTargets: animatedExtensions.get(index)! }
+            animatedBaseColorFactor: !variant && animatedBaseColor.has(sourceIndex),
+            animatedEmissive: !variant && animatedEmissive.has(sourceIndex),
+            animatedUvTransform: !variant && animatedUvTransform.has(sourceIndex),
+            ...(!variant && animatedExtensions.has(sourceIndex)
+                ? { animatedExtensionTargets: animatedExtensions.get(sourceIndex)! }
                 : {}),
             recordMetallicReflectanceRegistration: () => {
                 metallicReflectanceRegistered = true;
@@ -631,7 +638,7 @@ export async function materialSubjects(
         if (setters && lightmap?.materials.has(index)) {
             stampSceneLightmap(setters, input, lightmap.options);
         }
-        const drawn = primitiveOf.get(index);
+        const drawn = primitiveOf.get(sourceIndex);
         subjects.push({
             index,
             name: typeof material["name"] === "string"
@@ -663,7 +670,7 @@ export async function materialSubjects(
         if (setters && lightmap?.materials.has(materials.length)) {
             stampSceneLightmap(setters, input, lightmap.options);
         }
-        subjects.push({
+        subjects.splice(materials.length, 0, {
             index: materials.length,
             name: "default material",
             input,
@@ -1012,29 +1019,16 @@ export async function composeRenderableVariants(
 /** Whether any meshed primitive omits its material index, which makes the
  *  loader create the pin's default material after the document's. */
 function documentHasDefaultMaterial(document: GltfDocument): boolean {
-    const record = document as unknown as Record<string, unknown>;
-    const meshes = Array.isArray(record["meshes"])
-        ? (record["meshes"] as Record<string, unknown>[])
-        : [];
-    for (const mesh of meshes) {
-        const primitives = mesh["primitives"];
-        if (!Array.isArray(primitives)) continue;
-        for (const primitive of primitives as Record<string, unknown>[]) {
-            if (typeof primitive["material"] !== "number") return true;
-        }
-    }
-    return false;
+    return gltfBaseMaterialCount(document as unknown as JsonObject) > (document.materials?.length ?? 0);
 }
 
 /** The number of materials a glTF document creates -- the declared ones plus
  *  the pin's default when any primitive omits its index. */
-export function gltfMaterialCount(path: string): number {
+export async function gltfMaterialCount(path: string): Promise<number> {
     const document = glbView(path);
     if (!document) return 0;
-    return (
-        (document.materials?.length ?? 0) +
-        (documentHasDefaultMaterial(document) ? 1 : 0)
-    );
+    const plan = await gltfVariantPlan(document as unknown as JsonObject);
+    return plan.baseCount + plan.materials.length;
 }
 
 type PinnedLayerSetter<TProps> = (
@@ -1511,11 +1505,13 @@ export async function gltfRenderables(
         : [];
     // A selected variant reassigns which material a mapped primitive draws
     // with, so the arms compose for the material the frame actually carries.
-    const selectedVariant = selectedVariantIndex(
+    selectedVariantIndex(
         record,
         selectedVariantName,
         "composition",
     );
+    const variantPlan = await gltfVariantPlan(record);
+    const selectedMaterials = selectedVariantName === undefined ? undefined : variantPlan.selections[selectedVariantName];
     const prefix = pinnedGltfMeshNamePrefix(
         new LoweringContext(sharedUpstreamStore()),
     );
@@ -1532,12 +1528,9 @@ export async function gltfRenderables(
         if (!Array.isArray(primitives)) continue;
         const authored = mesh?.["name"];
         for (const primitive of primitives as Record<string, unknown>[]) {
-            const material = variantMaterialIndex(
-                primitive,
-                selectedVariant,
-            );
             renderables.push({
-                material: material ?? (document.materials?.length ?? 0),
+                material: selectedMaterials ? selectedMaterials[renderables.length]!
+                    : asIndex(primitive.material) ?? (document.materials?.length ?? 0),
                 name: typeof authored === "string" && authored !== ""
                     ? authored
                     : `${prefix}${renderables.length}`,

@@ -6,6 +6,7 @@ import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
 import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
 import { packageMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
+import { packageVariantPlan } from "./gltf-variant-plan.js";
 import {
     GLB_BINARY_CHUNK,
     GLB_JSON_CHUNK,
@@ -489,6 +490,7 @@ export async function packageGltf(
     );
     if (sourceTextureReads) await packageSourceAlbedoIdentities(document);
     await packageMeshWalks(document, meshWalks);
+    await packageVariantPlan(document);
     const resourceDirectory = remote || isDataUrl(source)
         ? baseDirectory
         : dirname(resolve(baseDirectory, source));

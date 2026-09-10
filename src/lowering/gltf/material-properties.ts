@@ -121,6 +121,7 @@ GltfPbrValue gltf_pbr_composite_orm(const GltfPbrContext& context, const GltfPbr
 }
 GltfPbrValue gltf_pbr_apply_feature(GltfPbrValue feature, GltfPbrValue material, const GltfPbrContext& context);
 ${lowerGltfExtensionImages(context)}
+${lowerGltfExtensionImages(context, true)}
 ${lowerGltfMaterialCaches(context)}
 ${bodies.join("\n")}
 ${setup.source}

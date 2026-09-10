@@ -2,6 +2,7 @@ import ts from "typescript";
 import { LoweringContext } from "../context.js";
 import { lowerGltfMaterialObjectFunction, type GltfMaterialFunction } from "./material-object-lowerer.js";
 import { lowerGltfDefaultSampler } from "./sampler-mapping.js";
+import { gltfVariantMaterialSource } from "./material-variants.js";
 
 /** Document-wide material path selection from the loader's upload setup. */
 export function lowerGltfMaterialSetup(context: LoweringContext, resolveCall: (name: string) => string | undefined): {
@@ -44,17 +45,26 @@ export function lowerGltfMaterialSetup(context: LoweringContext, resolveCall: (n
         return { module, name, cpp: name, declaration: selected, sourceSymbol: "uploadMeshes",
             ...(name === "gltf_pbr_build_material" ? { contextParameter: "extCtx" } : {}) };
     });
-    return { functions: targets, source: lowerGltfDefaultSampler(context) + "\n" + targets.map(target => lowerGltfMaterialObjectFunction(context, target, resolveCall,
+    const variant = gltfVariantMaterialSource(context);
+    targets.push(variant.upload, variant.build);
+    return { functions: targets, source: lowerGltfDefaultSampler(context) + "\n" + lowerGltfDefaultSampler(context, true) + "\n" + targets.map(target => lowerGltfMaterialObjectFunction(context, target, resolveCall,
         (call, lowerer) => {
+            if (target === variant.upload && context.expressionMatchesShape(call.expression, "uploadTex")) {
+                if (call.arguments.length !== 5) context.contractError(call, "Expected variant texture upload arguments.");
+                for (const [index, shape] of [[0, "engine"], [3, "sampler"], [4, "generateMipmaps"]] as const)
+                    context.assertExpressionShape(call.arguments[index]!, shape, "Variant texture upload environment");
+                return `extCtx.upload_image(${lowerer.expression(call.arguments[1]!)}, GltfPbrValue{${lowerer.expression(call.arguments[2]!)}}.truthy())`;
+            }
             if (context.expressionMatchesShape(call.expression, "_ensurePbrExt") && call.arguments.length === 0)
                 return "GltfPbrValue{true}";
-            if (context.expressionMatchesShape(call.expression, "ctx._runMatExts")) {
+            if (context.expressionMatchesShape(call.expression, "ctx._runMatExts") || context.expressionMatchesShape(call.expression, "runMatExts")) {
                 const run = resolveCall("runGltfMaterialFeatures");
                 if (!run || call.arguments.length !== 3) context.contractError(call, "Expected the material extension runner.");
                 return `${run}(${call.arguments.map(argument => lowerer.expression(argument)).join(", ")})`;
             }
             const builders = [
                 ["extMod.buildDefaultPbrTexturesExt", "extended_textures", ["engine", "mat", "sampler", "_generateMipmaps!", "getCachedTexture", "wrapTex", "samplerFor"]],
+                ["buildDefaultPbrTexturesExt", "extended_textures", ["engine", "gltfMat", "sampler", "generateMipmaps", "getCachedTex", "wrapTex"]],
                 ["buildSampledPbrTextures", "sampled_textures", ["engine", "mat", "sampler", "_generateMipmaps!", "samplerFor!", "getCachedTexture"]],
                 ["buildDefaultPbrTextures", "default_textures", ["engine", "mat", "sampler", "_generateMipmaps!", "getCachedTexture"]],
             ] as const;

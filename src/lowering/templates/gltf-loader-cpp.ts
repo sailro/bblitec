@@ -6,7 +6,7 @@ import { compressedTextureFormat } from "../../compressed-texture-format.js";
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
-import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES } from "../../gltf-document.js";
+import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES, GLTF_VARIANT_PLAN } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 import { gltfMaterialProjection } from "../gltf/material-projection.js";
 /**
@@ -1085,51 +1085,17 @@ ${materialVariants ? `
 // a primitive that variant does not map keeps its own material. The chosen
 // name is the scene's; the variant order and the mappings are the
 // document's.
-std::size_t variant_material_index(
-    const JsonObject& document,
-    const JsonObject& primitive,
-    std::size_t fallback) {
-    const std::size_t own = unsigned_or(primitive, "material", fallback);
-    const ts::JsonValue* extensions = optional(document, "extensions");
-    if (!extensions) return own;
-    const ts::JsonValue* declared =
-        optional(extensions->as_object(), "KHR_materials_variants");
-    if (!declared) return own;
-    const JsonArray& variants =
-        array_or_empty(declared->as_object(), "variants");
-    std::size_t selected = variants.size();
-    for (std::size_t index = 0; index < variants.size(); ++index) {
-        const ts::JsonValue* name =
-            optional(variants[index].as_object(), "name");
-        if (name && name->as_string() == ${selectedVariantLiteral}) {
-            selected = index;
-            break;
-        }
-    }
-    if (selected == variants.size()) return own;
-    const ts::JsonValue* extended = optional(primitive, "extensions");
-    if (!extended) return own;
-    const ts::JsonValue* mappings_ext =
-        optional(extended->as_object(), "KHR_materials_variants");
-    if (!mappings_ext) return own;
-    // selectVariant assigns every entry the variant maps, in order, so the
-    // last mapping naming it is the one that survives.
-    std::size_t mapped = own;
-    for (
-        const ts::JsonValue& mapping :
-        array_or_empty(mappings_ext->as_object(), "mappings")) {
-        for (
-            const ts::JsonValue& variant :
-            array_or_empty(mapping.as_object(), "variants")) {
-            if (unsigned_value(variant) == selected) {
-                mapped =
-                    unsigned_or(mapping.as_object(), "material", mapped);
-                break;
-            }
-        }
-    }
-    return mapped;
+std::size_t variant_material_slot(const JsonObject& document, std::size_t mesh_index, std::size_t original) {
+    const auto* plan = optional(document, "${GLTF_VARIANT_PLAN}");
+    if (!plan) return original;
+    const auto& selections = required(plan->as_object(), "selections").as_object();
+    const auto* selected = optional(selections, ${selectedVariantLiteral});
+    if (!selected) return original;
+    const auto& slots = selected->as_array();
+    if (mesh_index >= slots.size()) throw std::runtime_error("Invalid glTF variant mesh slot.");
+    return unsigned_value(slots.at(mesh_index));
 }
+
 ` : ""}
 TextureData image_data(
     const ts::ArrayBuffer& buffer,
@@ -1464,6 +1430,10 @@ ${sourceTextureReads ? `
         collect_animated_base_color(document, material_json.size());
     GltfCoreMaterialCache core_material_cache;
     GltfBuiltMaterialCache built_material_cache;
+    const auto decode_material_image = [](const TextureData& texture) {
+        if (!texture.compressed.mips.empty()) throw std::runtime_error("Canvas2D composition of compressed glTF images is unsupported.");
+        return pal::decode_image(js::ArrayBuffer(texture.bytes));
+    };
     const auto material_for = [&](std::size_t index) {
         const auto source_index = index == material_json.size() ? js::Nullable<double>{} : js::Nullable<double>{double(index)};
         const auto core = gltf_cached_core_material(core_material_cache, source_index, [&](double selected) -> GltfCoreMaterialRef {
@@ -1476,15 +1446,34 @@ ${sourceTextureReads ? `
                 image_json, texture_json, sampler_json, extension_image_fetcher,
                 source_material_index < animated_base_color.size() && animated_base_color[source_material_index],
                 material_features, extended_material, material_texture_wrap, sampled_material, &material_texture_cache, &material_sampler_context,
-                [](const TextureData& texture) {
-                    if (!texture.compressed.mips.empty()) throw std::runtime_error("Canvas2D composition of compressed glTF images is unsupported.");
-                    return pal::decode_image(js::ArrayBuffer(texture.bytes));
-                });
+                decode_material_image);
 ${sourceTextureReads ? `            retain_source_albedo(handle, source_material_index);` : ""}
             return handle;
         }).get();
     };
     for (std::size_t index = 0; index < material_json.size(); ++index) materials.push_back(material_for(index));
+    const auto* variant_plan_value = optional(document, "${GLTF_VARIANT_PLAN}");
+    const auto* variant_names = gltf_json_path(document, {"extensions", "KHR_materials_variants", "variants"});
+    if (variant_names && !variant_names->as_array().empty() && !variant_plan_value)
+        throw std::runtime_error("Material variants require packaged source scheduling metadata.");
+    if (variant_plan_value) {
+        const auto& plan = variant_plan_value->as_object();
+        const auto base_count = unsigned_value(required(plan, "baseCount"));
+        if (base_count == materials.size() + 1) materials.push_back(material_for(material_json.size()));
+        if (base_count != materials.size()) throw std::runtime_error("Invalid glTF variant base material count.");
+        GltfMaterialImageCache variant_image_cache;
+        GltfSamplerContext variant_sampler_context(std::make_shared<const TextureSamplerState>(gltf_variant_sampler_state()));
+        const auto variant_fetcher = make_gltf_variant_image_fetcher(document, variant_image_cache, resolve_material_image);
+        for (const auto& source : required(plan, "materials").as_array()) {
+            const auto index = unsigned_value(source);
+            if (index >= material_json.size()) throw std::runtime_error("Invalid glTF variant material index.");
+            const auto core = assemble_gltf_material(document, index, variant_image_cache, resolve_material_image);
+            materials.push_back(load_material(engine, material_json.at(index).as_object(), core, buffer, container, views,
+                image_json, texture_json, sampler_json, variant_fetcher, false, material_features,
+                true, material_texture_wrap, false, nullptr, &variant_sampler_context,
+                decode_material_image, true));
+        }
+    }
 
     const auto parents = build_gltf_parents(document);
     validate_gltf_parents(parents);
@@ -1977,7 +1966,7 @@ ${nonTrianglePrimitives
                 upstream::pinned_mat4_determinant3(matrix);
             const std::size_t material_index =
                 ${materialVariants
-                    ? `variant_material_index(document, primitive, material_json.size())`
+                    ? `variant_material_slot(document, gltf_mesh_counter, unsigned_or(primitive, "material", material_json.size()))`
                     : `unsigned_or(primitive, "material", material_json.size())`};
             const std::string authored_name = string_or(mesh, "name");
             const bool retains_live_wheel_vertices =

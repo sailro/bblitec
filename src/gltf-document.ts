@@ -44,6 +44,7 @@ export const GAUSSIAN_SPLATTING_EXTENSION = "KHR_gaussian_splatting";
 export const GAUSSIAN_SPLAT_DOCUMENT_KEY = "__bblitecGaussianSplats";
 export const GLTF_SOURCE_ALBEDO_IDENTITIES = "__bblitecSourceAlbedoIdentities";
 export const GLTF_MESH_WALKS = "__bblitecMeshWalks";
+export const GLTF_VARIANT_PLAN = "__bblitecVariantMaterials";
 
 /** A parsed JSON object — the shape every glTF document read shares. */
 export type JsonObject = Record<string, unknown>;

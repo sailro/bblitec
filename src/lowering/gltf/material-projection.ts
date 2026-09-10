@@ -35,7 +35,8 @@ MaterialHandle load_material(
     bool sampled_material = false,
     GltfTextureCache* texture_cache = nullptr,
     GltfSamplerContext* sampler_context = nullptr,
-    const std::function<pal::DecodedImage(const TextureData&)>& decode_image = {}) {
+    const std::function<pal::DecodedImage(const TextureData&)>& decode_image = {},
+    bool variant_material = false) {
     static_cast<void>(material_json);
     MaterialRecord material;
     if (core._baseColorFactor.size() != 4 || core._emissiveFactor.size() != 3)
@@ -63,25 +64,42 @@ MaterialHandle load_material(
         return result;
     };
     GltfPbrContext context;
+    const auto upload_texture = [&](GltfMaterialImage bitmap, bool encoded) {
+        return GltfMaterialTexture{std::move(bitmap), encoded, std::nullopt, nullptr, sampler_context->default_sampler};
+    };
     context.decode_image = [&](const GltfMaterialImage& image) {
         if (image->decoded) return *image->decoded;
         if (!decode_image) throw std::runtime_error("Missing glTF bitmap decoder.");
         return decode_image(image_data(buffer, container, views, images, image->index));
     };
     context.upload_image = [&](const GltfPbrValue& image, bool srgb) {
-        return gltf_extension_upload_image(image, srgb, [&](GltfMaterialImage bitmap, bool encoded) {
-            return GltfPbrValue{GltfMaterialTexture{std::move(bitmap), encoded, std::nullopt, nullptr, sampler_context->default_sampler}};
-        });
+        const auto upload = [&](GltfMaterialImage bitmap, bool encoded) {
+            return GltfPbrValue{upload_texture(std::move(bitmap), encoded)};
+        };
+        return variant_material ? gltf_variant_upload_image(image, srgb, upload) : gltf_extension_upload_image(image, srgb, upload);
     };
     context.default_textures = [&](const GltfPbrValue&) { return texture_values(gltf_default_pbr_textures(core, texture_cache, sampler_context), false); };
     context.sampled_textures = [&](const GltfPbrValue&) { return texture_values(gltf_sampled_pbr_textures(core, texture_cache, sampler_context), false); };
-    context.extended_textures = [&](const GltfPbrValue&) { return texture_values(gltf_default_pbr_textures_ext(core, sampled_material, texture_cache, sampler_context), true); };
-    context.texture = [&](const GltfPbrValue& info, bool srgb) {
-        return gltf_extension_texture(info, srgb, extension_fetcher,
-            [&](GltfMaterialImage image, bool encoded) { return gltf_cached_material_texture(*texture_cache, std::move(image), encoded, sampler_context->default_sampler); },
-            [&](GltfMaterialTexture texture, const GltfPbrValue& selected) { return wrap(gltf_wrap_material_texture(std::move(texture), selected.source())); });
+    context.extended_textures = [&](const GltfPbrValue&) {
+        std::function<GltfMaterialTexture(GltfMaterialImage, bool)> upload;
+        if (variant_material) upload = [&](GltfMaterialImage bitmap, bool encoded) {
+            return gltf_pbr_variant_texture(GltfPbrValue{std::move(bitmap)}, GltfPbrValue{encoded}, context).texture();
+        };
+        return texture_values(gltf_default_pbr_textures_ext(core, !variant_material && sampled_material, texture_cache, sampler_context, upload), true);
     };
-    const auto props = gltf_pbr_build_material(core_value, features, context, GltfPbrValue{extended_material}, GltfPbrValue{sampled_material});
+    context.texture = [&](const GltfPbrValue& info, bool srgb) {
+        const auto upload = [&](GltfMaterialImage image, bool encoded) {
+            return variant_material ? upload_texture(std::move(image), encoded)
+                : gltf_cached_material_texture(*texture_cache, std::move(image), encoded, sampler_context->default_sampler);
+        };
+        const auto wrap_texture = [&](GltfMaterialTexture texture, const GltfPbrValue& selected) {
+            return wrap(gltf_wrap_material_texture(std::move(texture), selected.source()));
+        };
+        return variant_material ? gltf_variant_texture(info, srgb, extension_fetcher, upload, wrap_texture)
+            : gltf_extension_texture(info, srgb, extension_fetcher, upload, wrap_texture);
+    };
+    const auto props = variant_material ? gltf_pbr_build_variant(core_value, features, context)
+        : gltf_pbr_build_material(core_value, features, context, GltfPbrValue{extended_material}, GltfPbrValue{sampled_material});
     const auto stage = [&](const GltfPbrValue& value, bool srgb) {
         if (value.nullish()) return TextureData{};
         const auto& texture = value.texture();
@@ -95,7 +113,7 @@ MaterialHandle load_material(
                 result.rgba_height = static_cast<std::uint32_t>(image.height);
             } else result = image_data(buffer, container, views, images, texture.image->index);
         }
-        result.sampler = texture.sampler ? *texture.sampler : gltf_default_sampler_state();
+        result.sampler = texture.sampler ? *texture.sampler : *sampler_context->default_sampler;
         return result;
     };
     const auto project_texture = [&](const GltfPbrValue& object, const char* key, TextureData& data, TextureTransform& transform, bool srgb) {
