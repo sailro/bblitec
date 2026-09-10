@@ -148,6 +148,8 @@ export interface LoweringServices {
     emitLogicalAssignment(expression: ts.BinaryExpression): boolean;
     /** `delete object[key]` / `delete object.field` over the data model. */
     emitDelete(expression: ts.DeleteExpression): void;
+    /** Binds an object pattern from a record or struct value. */
+    bindObjectPattern(pattern: ts.ObjectBindingPattern, value: Value, source?: ts.Node): void;
     recordDataAssignmentMetadata(target: Value, source: ts.Expression, destination?: ts.Expression): boolean;
     isNativeUiValueExpression(expression: ts.Expression): boolean;
     readonly uiDegradedStyleProperties: Set<string>;

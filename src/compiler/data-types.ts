@@ -15,6 +15,22 @@ import { classInstanceProperties } from "./class-properties.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
+/**
+ * The value a union member's tag property is declared as, when it is one
+ * literal: a string, a number or a boolean. Each arm of a discriminated
+ * union carries one such literal, and the checker's own narrowing is what
+ * makes the tag decide the arm.
+ */
+function literalTagValue(checker: ts.TypeChecker, type: ts.Type): string | undefined {
+  if ((type.flags & ts.TypeFlags.StringLiteral) !== 0) {
+    return (type as ts.StringLiteralType).value;
+  }
+  if ((type.flags & (ts.TypeFlags.NumberLiteral | ts.TypeFlags.BooleanLiteral)) !== 0) {
+    return checker.typeToString(type);
+  }
+  return undefined;
+}
+
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
   DeviceLostRecoveryHandle: "device-recovery",
@@ -461,7 +477,14 @@ export class DataTypeRegistry {
    * being inlined. Empty outside a generic receiver.
    */
   private activeTypeArguments: ReadonlyMap<ts.Symbol, ts.Type> | undefined;
-  /** That substitution as one struct-identity key, spelled when it is set. */
+  /**
+   * What generic functions' type parameters stand for while their bodies
+   * are inlined, innermost call last. A frame's binding may itself name an
+   * enclosing frame's parameter (`g<U>` called on `f<T>`'s `T`), which the
+   * lookup follows outward.
+   */
+  private readonly callTypeArguments: ReadonlyMap<ts.Symbol, ts.Type>[] = [];
+  /** Every substitution in force as one struct-identity key, spelled when they change. */
   private activeTypeArgumentKey = "";
   private anonymousStructIndex = 0;
   private anonymousEnumIndex = 0;
@@ -1024,9 +1047,7 @@ export class DataTypeRegistry {
           candidate,
           declaration ?? node,
         );
-        return (value.flags & ts.TypeFlags.StringLiteral) !== 0
-          ? (value as ts.StringLiteralType).value
-          : undefined;
+        return literalTagValue(this.checker, value);
       });
       return (
         values.every((value) => value !== undefined) &&
@@ -1120,7 +1141,8 @@ export class DataTypeRegistry {
                 if (!properties.some(property => property.name === propertyName)) return [];
                 const tag = properties.find(property => property.name === discriminant.name)!;
                 const tagType = this.checker.getTypeOfSymbolAtLocation(tag, tag.valueDeclaration ?? tag.declarations?.[0] ?? node);
-                return (tagType.flags & ts.TypeFlags.StringLiteral) !== 0 ? [(tagType as ts.StringLiteralType).value] : [];
+                const tagValue = literalTagValue(this.checker, tagType);
+                return tagValue === undefined ? [] : [tagValue];
               }),
             } }
           : {}),
@@ -1229,14 +1251,44 @@ export class DataTypeRegistry {
     substitution: ReadonlyMap<ts.Symbol, ts.Type> | undefined,
   ): void {
     this.activeTypeArguments = substitution;
-    // The struct-identity key folds the instantiation in, and it is the
-    // same string for the whole window this substitution is in force --
-    // so it is spelled here rather than once per cache lookup.
-    this.activeTypeArgumentKey = substitution
-      ? [...substitution.values()]
+    this.refreshTypeArgumentKey();
+  }
+
+  /** Runs `work` with a generic call's instantiation in force above the receiver's. */
+  public withTypeArguments<T>(
+    substitution: ReadonlyMap<ts.Symbol, ts.Type> | undefined,
+    work: () => T,
+  ): T {
+    if (!substitution) {
+      return work();
+    }
+    this.callTypeArguments.push(substitution);
+    this.refreshTypeArgumentKey();
+    try {
+      return work();
+    } finally {
+      this.callTypeArguments.pop();
+      this.refreshTypeArgumentKey();
+    }
+  }
+
+  /**
+   * The struct-identity key folds every instantiation in force in, and it
+   * is the same string for the whole window a substitution is in force --
+   * so it is spelled when the frames change rather than per cache lookup.
+   */
+  private refreshTypeArgumentKey(): void {
+    const frames = [
+      ...(this.activeTypeArguments ? [this.activeTypeArguments] : []),
+      ...this.callTypeArguments,
+    ];
+    this.activeTypeArgumentKey = frames
+      .map((frame) =>
+        [...frame.values()]
           .map((argument) => this.checker.typeToString(argument))
-          .join(",")
-      : "";
+          .join(","),
+      )
+      .join(";");
   }
 
   /** The active substitution, so a receiver can carry it. */
@@ -1266,15 +1318,17 @@ export class DataTypeRegistry {
 
   /** The type a type parameter stands for here, when one is in force. */
   private substituteTypeParameter(type: ts.Type): ts.Type | undefined {
-    if (
-      !this.activeTypeArguments ||
-      (type.flags & ts.TypeFlags.TypeParameter) === 0 ||
-      !type.symbol
-    ) {
+    if ((type.flags & ts.TypeFlags.TypeParameter) === 0 || !type.symbol) {
       return undefined;
     }
-    const argument = this.activeTypeArguments.get(type.symbol);
-    return argument === type ? undefined : argument;
+    for (let index = this.callTypeArguments.length - 1; index >= 0; index -= 1) {
+      const argument = this.callTypeArguments[index]!.get(type.symbol);
+      if (argument !== undefined) {
+        return argument === type ? undefined : argument;
+      }
+    }
+    const argument = this.activeTypeArguments?.get(type.symbol);
+    return argument === undefined || argument === type ? undefined : argument;
   }
 
   /**
@@ -1294,7 +1348,10 @@ export class DataTypeRegistry {
     type: ts.Type,
     seen: Set<ts.Type> = new EmissionSet(),
   ): boolean {
-    if (!this.activeTypeArguments || seen.has(type)) {
+    if (
+      (!this.activeTypeArguments && this.callTypeArguments.length === 0) ||
+      seen.has(type)
+    ) {
       return false;
     }
     seen.add(type);

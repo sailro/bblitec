@@ -5685,8 +5685,19 @@ export class DataLowerer {
             );
         }
         const vectorRebind = kind === "vector";
-        const optionalRebind =
+        // An array, map or set copies its reference, and a reference
+        // struct its handle, so rebinding a nullable local to another one
+        // aliases exactly as JavaScript does.
+        const referenceInner =
             target.dataType.kind === "optional" &&
+            (target.dataType.inner.kind === "vector" ||
+                target.dataType.inner.kind === "map" ||
+                target.dataType.inner.kind === "set" ||
+                (target.dataType.inner.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(target.dataType.inner.name)));
+        const optionalRebind =
+            referenceInner ||
+            (target.dataType.kind === "optional" &&
             (target.dataType.inner.kind === "number" ||
                 target.dataType.inner.kind === "boolean" ||
                 target.dataType.inner.kind === "string" ||
@@ -5709,7 +5720,7 @@ export class DataLowerer {
                 this.context.unwrap(expression.right).kind ===
                     ts.SyntaxKind.NullKeyword ||
                 identifierText(this.context.unwrap(expression.right)) ===
-                    "undefined");
+                    "undefined"));
         if (
             kind !== "number" &&
             kind !== "boolean" &&

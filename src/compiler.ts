@@ -3984,14 +3984,27 @@ class Compiler
                       declaration.initializer,
                   )
                 : rawValue;
+        this.bindObjectPattern(declaration.name, value, declaration.initializer);
+    }
+
+    /**
+     * Binds an object pattern from a value: a compile-time record's
+     * properties, or a struct's fields. A destructuring declaration and a
+     * destructured parameter are the same binding over different sources.
+     */
+    public bindObjectPattern(
+        pattern: ts.ObjectBindingPattern,
+        value: Value,
+        source: ts.Node = pattern,
+    ): void {
         if (value.kind === "record") {
-            this.emitRecordBindingDeclaration(declaration.name, value);
+            this.emitRecordBindingDeclaration(pattern, value);
             return;
         }
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             const temporary = this.allocateTemporaryCppName("destructure");
             this.emit({ kind: "declaration", type: "auto&&", name: temporary, initializer: value.cpp });
-            for (const element of declaration.name.elements) {
+            for (const element of pattern.elements) {
                 const { name, property } = this.bindingProperty(element);
                 const field = this.dataTypes.structField(
                     value.dataType.name,
@@ -4058,7 +4071,7 @@ class Compiler
         if (value.kind === "physics-aggregate") {
             const temporary = this.allocateTemporaryCppName("destructure");
             this.emit({ kind: "declaration", type: "const auto", name: temporary, initializer: value.cpp });
-            for (const element of declaration.name.elements) {
+            for (const element of pattern.elements) {
                 if (element.initializer) {
                     this.fail(
                         element,
@@ -4090,13 +4103,13 @@ class Compiler
         }
         if (value.kind !== "render-target-texture") {
             this.fail(
-                declaration.initializer,
+                source,
                 `Object destructuring is not supported for ${value.kind}.`,
             );
         }
         const temporary = this.allocateTemporaryCppName("destructure");
         this.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp });
-        for (const element of declaration.name.elements) {
+        for (const element of pattern.elements) {
             const { name, property } = this.bindingProperty(element);
             const cppName = this.allocateTemporaryCppName(
                 `class_field_${name.text}`,
