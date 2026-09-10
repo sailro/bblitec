@@ -13,6 +13,10 @@
 //     `depths` rather than from the f64 it computed.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 import ts from "typescript";
 import {
     PinnedNumericLowerer,
@@ -93,6 +97,34 @@ test("method dispatch receives binding identity through aliases and element acce
     });
     assert.match(cpp, /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(0\.0\)\], 1\.0\)/);
     assert.match(cpp, /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(1\.0\)\], 2\.0\)/);
+});
+
+test("native typed-array chains capture indices before writes and preserve unrounded assignment values", t => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    const bindings: [string, PinnedBinding][] = [
+        ["values", { cpp: "values", type: "f32" }], ["bytes", { cpp: "bytes", type: "u8" }],
+    ];
+    const body = lower("values[values[0]] = values[0] = 1; values[2] = bytes[0] = 257.25;", bindings);
+    const values = new Float32Array([3, 0, 0, 0]), bytes = new Uint8Array(1);
+    values[values[0]!] = values[0] = 1;
+    values[2] = bytes[0] = 257.25;
+    const output = resolve("artifacts/pinned-numeric-chains"); mkdirSync(output, { recursive: true });
+    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
+    writeFileSync(file, `#include <bblite/js_data.hpp>
+        #include <cassert>
+        int main() {
+            std::vector<float> values{3, 0, 0, 0}; std::vector<std::uint8_t> bytes(1);
+            ${body}
+            assert((values == std::vector<float>{${[...values]}}));
+            assert(bytes[0] == ${bytes[0]});
+        }`);
+    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
+        `/Fo:${output}/`, `/Fe:${executable}`, "/I", "native/include", file]);
+    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    for (const source of ["values[0] = values[1] = next();", "values[bytes[0]++] = values[0] = 1;"])
+        assert.throws(() => lower(source, bindings), /scalar chained assignment targets/);
+    assert.throws(() => lower("values[0] = values[1] = -1;", [["values", { cpp: "values", type: "u32" }]]), /scalar chained assignment targets/);
 });
 
 test("caller substitutions can name later local declarations", () => {

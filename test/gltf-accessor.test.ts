@@ -7,9 +7,10 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { lowerAccessorNormalizationCpp, lowerVertexColorCpp } from "../src/lowering/gltf/accessor-normalization.js";
 import { lowerGltfAccessorShape } from "../src/lowering/gltf/accessor-shape.js";
+import { lowerGltfParserJson } from "../src/lowering/gltf/parser-json.js";
 import { transpileCommonJs } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
-import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const parserModule = "src/loader-gltf/gltf-parser.ts";
 const quantizationModule = "src/loader-gltf/gltf-ext-quantization.ts";
@@ -113,6 +114,9 @@ namespace bbl { namespace upstream {
 ${containerRecord}
 }
 ${records}
+using JsonObject = ts::JsonValue::Object; using JsonArray = ts::JsonValue::Array;
+${["const ts::JsonValue& required(", "const ts::JsonValue* optional("].map(signature => cppFunction(loader, signature)).join("\n")}
+${lowerGltfParserJson(context)}
 ${helpers}
 ${changedReaders.join("\n")}
 ${changedColors.join("\n")}
@@ -123,6 +127,31 @@ int main() {
     using Json=nlohmann::json;
     Json expected; std::ifstream("expected.json") >> expected;
     const auto reject=[](auto operation) { bool rejected=false; try { operation(); } catch(const std::exception&) { rejected=true; } assert(rejected); };
+    {
+        std::vector<std::uint8_t> bytes(16 + 32 * sizeof(float));
+        for (std::size_t index = 0; index < 32; ++index) {
+            const float value = static_cast<float>(index) / 8.0f;
+            std::memcpy(bytes.data() + 16 + index * sizeof(float), &value, sizeof(float));
+        }
+        const ts::ArrayBuffer buffer(bytes);
+        upstream::ParsedGlbContainer container; container.bin_offset = 4; container.bin_length = buffer.byte_length() - 4;
+        std::vector<BufferViewInfo> views{{8, buffer.byte_length() - 12, 0}};
+        AccessorInfo accessor{0, 4, 2, 5126, "MAT4", false};
+        const GltfAccessorView view{buffer, container, views, accessor};
+        for (double count : {0.0, 16.0, 32.0}) {
+            const auto values = gltf_skin_float32_view(view, count);
+            assert(values.size() == static_cast<std::size_t>(count));
+            for (std::size_t index = 0; index < values.size(); ++index) assert(values[index] == static_cast<float>(index) / 8.0f);
+        }
+        for (double count : {-1.0, 1.5, 33.0}) reject([&] { gltf_skin_float32_view(view, count); });
+        accessor.normalized = true; reject([&] { gltf_skin_float32_view(view, 16); }); accessor.normalized = false;
+        accessor.component_type = 5123; reject([&] { gltf_skin_float32_view(view, 16); }); accessor.component_type = 5126;
+        views[0].stride = 80; reject([&] { gltf_skin_float32_view(view, 16); }); views[0].stride = 64;
+        assert(gltf_skin_float32_view(view, 16).size() == 16);
+        views[0].length = 20; reject([&] { gltf_skin_float32_view(view, 16); });
+        accessor.buffer_view = std::numeric_limits<std::size_t>::max();
+        assert(gltf_skin_float32_view(view, 32) == std::vector<float>(32));
+    }
     for(const auto& row:expected.at("rows")) {
         const ts::ArrayBuffer buffer(row.at("bytes").get<std::vector<std::uint8_t>>());
         upstream::ParsedGlbContainer container; container.bin_offset=16; container.bin_length=buffer.byte_length()-16;

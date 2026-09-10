@@ -39,6 +39,8 @@ export interface GltfLoaderLoweredSegments {
     accessorShape: string;
     hierarchy: string;
     parserJson: string;
+    inverseBindMatrices: string;
+    animationNodeRest: string;
     materialAssembly: string;
     materialTextures: string;
     materialProperties: string;
@@ -285,6 +287,8 @@ std::vector<double> double_array(const ts::JsonValue* value) {
     }
     return result;
 }
+
+${lowered.animationNodeRest}
 
 ${chainsSceneSetup ? `
 /**
@@ -868,6 +872,22 @@ struct GltfAccessorView {
         return read_accessor_component(buffer, container, views, accessor, index / components, index % components, false);
     }
 };
+
+std::vector<float> gltf_skin_float32_view(const GltfAccessorView& view, double length) {
+    const auto count = gltf_checked_index(length);
+    const auto& accessor = view.accessor;
+    if (accessor.type != "MAT4" || accessor.component_type != 5126 || accessor.normalized ||
+        accessor.count > std::numeric_limits<std::size_t>::max() / 16 || count > accessor.count * 16 ||
+        (accessor.buffer_view != std::numeric_limits<std::size_t>::max() &&
+            view.views.at(accessor.buffer_view).stride != 0 && view.views.at(accessor.buffer_view).stride != 64)) {
+        throw std::runtime_error("glTF skin requires a contiguous FLOAT MAT4 accessor view.");
+    }
+    std::vector<float> result(count);
+    for (std::size_t index = 0; index < count; ++index) result[index] = static_cast<float>(view[index]);
+    return result;
+}
+
+${lowered.inverseBindMatrices}
 
 ${lowered.vertexColor}
 
@@ -1657,44 +1677,26 @@ ${animationPointer ? `    animation_runtime->light_nodes =
 ` : ""}${gltfCameras ? `    animation_runtime->camera_nodes =
         std::move(camera_node_bindings);
 ` : ""}    animation_runtime->node_meshes.resize(node_json.size());
-    animation_runtime->nodes.resize(node_json.size());
-    for (std::size_t index = 0; index < node_json.size(); ++index) {
+    {
+    const auto node_rest = gltf_animation_node_rest(document,
+        [&](double index) { gltf_checked_index(index); return find_gltf_parent(parents, index); });
+    animation_runtime->nodes.resize(node_rest.size());
+    for (std::size_t index = 0; index < node_rest.size(); ++index) {
         const JsonObject& node = node_json[index].as_object();
+        const auto& rest = node_rest[index];
         AnimatedNode& animated_node =
             animation_runtime->nodes[index];
-        animated_node.parent = parents[index];
-        if (optional(node, "matrix")) {
+        if (!std::isfinite(rest.parentIdx) || std::floor(rest.parentIdx) != rest.parentIdx || rest.parentIdx < -1 ||
+            rest.parentIdx > static_cast<double>(std::numeric_limits<int>::max()))
+            throw std::runtime_error("glTF animation parent index is not representable.");
+        animated_node.parent = static_cast<int>(rest.parentIdx);
+        if (rest.matrix && !rest.matrix->is_null()) {
             animated_node.has_matrix = true;
-            animated_node.matrix = local_matrix(node);
+            animated_node.matrix = gltf_matrix_from_json(rest.matrix);
         }
-        const std::vector<float> translation =
-            float_array(optional(node, "translation"));
-        if (translation.size() == 3) {
-            animated_node.translation = Vec3{
-                translation[0],
-                translation[1],
-                translation[2],
-            };
-        }
-        const std::vector<float> rotation =
-            float_array(optional(node, "rotation"));
-        if (rotation.size() == 4) {
-            animated_node.rotation = Vec4{
-                rotation[0],
-                rotation[1],
-                rotation[2],
-                rotation[3],
-            };
-        }
-        const std::vector<float> scale =
-            float_array(optional(node, "scale"));
-        if (scale.size() == 3) {
-            animated_node.scale = Vec3{
-                scale[0],
-                scale[1],
-                scale[2],
-            };
-        }
+        animated_node.translation = Vec3{static_cast<float>(rest.tx), static_cast<float>(rest.ty), static_cast<float>(rest.tz)};
+        animated_node.rotation = Vec4{static_cast<float>(rest.rx), static_cast<float>(rest.ry), static_cast<float>(rest.rz), static_cast<float>(rest.rw)};
+        animated_node.scale = Vec3{static_cast<float>(rest.sx), static_cast<float>(rest.sy), static_cast<float>(rest.sz)};
         animated_node.weights =
             float_array(optional(node, "weights"));
         if (
@@ -1717,6 +1719,7 @@ ${animationPointer ? `    animation_runtime->light_nodes =
         animated_node.rest_rotation = animated_node.rotation;
         animated_node.rest_scale = animated_node.scale;` : ""}
     }
+    }
     for (const ts::JsonValue& skin_value : skin_json) {
         const JsonObject& skin = skin_value.as_object();
         SkinRuntime runtime_skin;
@@ -1725,40 +1728,14 @@ ${animationPointer ? `    animation_runtime->light_nodes =
             runtime_skin.joints.push_back(
                 unsigned_value(joint));
         }
-        const ts::JsonValue* inverse_bind_value =
-            optional(skin, "inverseBindMatrices");
-        if (inverse_bind_value) {
-            const AccessorInfo& inverse_bind =
-                accessors.at(unsigned_value(*inverse_bind_value));
-            if (
-                inverse_bind.type != "MAT4" ||
-                inverse_bind.count !=
-                    runtime_skin.joints.size()) {
-                throw std::runtime_error(
-                    "glTF inverse bind matrix layout is invalid.");
-            }
-            for (
-                std::size_t matrix_index = 0;
-                matrix_index < inverse_bind.count;
-                ++matrix_index) {
-                Matrix matrix{};
-                for (std::size_t component = 0; component < 16; ++component) {
-                    matrix[component] = read_component(
-                        buffer,
-                        container,
-                        views,
-                        inverse_bind,
-                        matrix_index,
-                        component);
-                }
-                runtime_skin
-                    .inverse_bind_matrices
-                    .push_back(matrix);
-            }
-        } else {
-            runtime_skin.inverse_bind_matrices.assign(
-                runtime_skin.joints.size(),
-                identity_matrix());
+        const auto inverse_bind = gltf_inverse_bind_matrices(skin,
+            [&](double index) { return GltfAccessorView{buffer, container, views, accessors.at(gltf_checked_index(index))}; },
+            gltf_skin_float32_view);
+        if (inverse_bind.size() != runtime_skin.joints.size() * 16)
+            throw std::runtime_error("glTF skin matrix storage does not match its joints.");
+        runtime_skin.inverse_bind_matrices.resize(runtime_skin.joints.size());
+        for (std::size_t index = 0; index < inverse_bind.size(); ++index) {
+            runtime_skin.inverse_bind_matrices[index / 16][index % 16] = inverse_bind[index];
         }
         animation_runtime->skins.push_back(
             std::move(runtime_skin));

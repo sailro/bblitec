@@ -1,22 +1,10 @@
-# Audit 2026-09-08
+# Audit
 
-Whole-repository audit at main `1e17bcf3` (386 commits after the 2026-09-01 audit), on the user's
-ten questions: feature activation, re-derivation of pinned behavior, transpiler structure, native
-isolation and sharing, generated C++, documentation, TODO accuracy, tooling, building and packaging.
-Method: ten read-only agents, one per axis, every finding verified at file:line; then fix waves in
-per-agent worktrees (byte-neutral refactors proven with the generated-tree digest, behavior changes
-measured on both backends), then `/simplify` over the whole branch, then the full sweep.
-
-Status values: **open**, **fixed** (this branch), **filed** (genuinely blocked; the row names what unblocks it).
-Sizes: S < 1 h, M < half day, L longer. Line numbers are those of `1e17bcf3`.
+Verified findings and their current disposition. Status values: **open**, **partial**,
+**fixed**, **filed** (blocked; the row names what unblocks it), and **declined**.
+Original location references use commit `1e17bcf3`; updated file paths identify current owners.
 
 ## 1. Feature activation
-
-Measured over all 307 generated trees: one activation ledger (`manifest.features` == `features.cmake`
-== active activation rows in 307/307), fed by fifteen mechanisms; the renderer-capability defines are a
-second layer with thirteen predicates re-typed in TypeScript deciding what the executed pin already
-decided. All opt-in functions the docs mention are the pin's own exported API (15 of its 53 opt-ins are
-unwired). No scene-name detection exists in the activation path.
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
@@ -40,11 +28,6 @@ unwired). No scene-name detection exists in the activation path.
 
 ## 2. Re-derivation of pinned behavior
 
-Native code owns no 3D formula beyond fitted physics and browser-UI substitutes; the PAL's matrix,
-sort, CSM-bounds and camera-control bodies are generated from the pin. The gap is in the family
-lowerers: 474 shape assertions guard hand-typed C++ bodies against 84 whole-function AST translations,
-and an assertion pins a constant, never the composition order, the numeric width or the degenerate arm.
-
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
 | RD-1 | H | fixed | Three hand Euler rotators apply X then Y then Z; the pin's `eulerToQuat` is qx·qy·qz (Z first). Framing, `.babylon` vertex baking, floating-origin packing and shadow fitting disagree with the draw path (which uses the lowered `outer_transform_matrix`) for two-axis rotations | camera-lowerer.ts:767-781, renderer-lowerer.ts:2339-2372 (used :2403, shadow-lowerer.ts:1806), babylon-loader-cpp.ts:148-170 (:572,:659) | all three deleted; every site composes through `pinnedTrsComposition`, emitted once in `pinned_world_transform.hpp`; a test compares the composition bit-for-bit against the pin on F64 storage; only racer writes a multi-axis outer rotation in the corpus and its MADs did not move |
@@ -61,11 +44,6 @@ and an assertion pins a constant, never the composition order, the numeric width
 | RD-12 | L | fixed | `pick_sprite_2d` hidden-sprite guard `== 0` where the pin says `<= 0`; `baked_world_scale` names no pinned symbol | runtime.hpp:5113-5137, gltf-loader-cpp.ts:3486-3499 | Sprite picking rejects non-positive sizes; baked_world_scale cites makeRefractionMod/thicknessScaleLine in refraction-rtt-fragment.ts. |
 
 ## 3. Transpiler: entry compiler
-
-105 files, 104k lines; `Compiler` is 20.8k lines implementing 19 context interfaces (85 interfaces
-re-type the same members up to 52 times); the same analysis question is answered by 14 escape walks,
-13 loop-control walks and 6 capture walks with different descent rules; demo-shaped recognizers
-survive; probes roll back 9 of 161 fields.
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
@@ -87,13 +65,9 @@ survive; probes roll back 9 of 161 fields.
 
 ## 4. Transpiler: lowering layer
 
-124 files, 96k lines; 1.2 MB of the layer's 3.65 MB is C++ inside template literals; 76 files use no
-AST translator; two loaders are 100% and 86% hand-written; the flow-graph and live-particle lowerers
-carry the same partial evaluator twice; nine expression walkers over pinned bodies drift on operators.
-
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
-| LW-1 | H | partial | Hand-written glTF loader control flow | templates/gltf-loader-cpp.ts, gltf/ | Accessors, transforms, hierarchy, material assembly, samplers, caches, extension texture fetching/upload, ORM composition and material construction lower from pinned ASTs. Material scheduling, mesh construction and animation orchestration retain hand-written control flow. |
+| LW-1 | H | partial | Hand-written glTF loader control flow | templates/gltf-loader-cpp.ts, gltf/ | Pinned ASTs own accessors, transforms, hierarchy, material construction/caches, texture composition/upload, inverse bind matrices and animation rest nodes. Material scheduling, mesh construction and the remaining animation orchestration retain hand-written control flow. |
 | LW-2 | H | fixed | Hand-written `.babylon` loader control flow | templates/babylon-loader-cpp.ts, babylon-lowerer.ts | Mesh construction, hierarchy, material slots, lights and camera selection lower from pinned ASTs. Native adapters own I/O and record storage. Native fixtures and five scenes pass on both backends. |
 | LW-3 | H | fixed | Same partial evaluator twice (`Env`, `Completion`, exact-duplicate `moduleEnv`, free-name ladder, truthiness/typeof, statement/expression/binary/closure walks) | flow-graph-lowerer.ts:84-1886, node-particle-live-lowerer.ts:181-1223 | `src/lowering/pinned-partial-evaluator.ts`; both lowerers are value models over it; all trees byte-identical |
 | LW-4 | H | fixed | Duplicated pinned expression walkers and drifting operator support | lowering/pinned-numeric-expression.ts | Numeric bodies, UBO writers and glTF interpolation share arithmetic rendering with literal, remainder and parenthesis policies; domain adapters retain their record and binding semantics. |
@@ -109,12 +83,6 @@ carry the same partial evaluator twice; nine expression walkers over pinned bodi
 | LW-14 | L | fixed | Six parallel C++ type-spelling tables | pinned-function-lowerer.ts:113-177, pinned-reference-lowerer.ts:54-66, pinned-numeric-lowerer.ts:40-102, flow-graph-lowerer.ts:178-185, node-particle-live-lowerer.ts:165-173, data-types.ts:2613-2685 | All six consumers use shared scalar, element, matrix and record spellings in cpp-types.ts. |
 
 ## 5. Native runtime and PALs
-
-Isolation holds: 22 single-backend builds (11 feature-diverse scenes × DAWN and SDL_GPU) configure
-and build clean, single-backend executables reproduce the dual-build MADs exactly, backend APIs are
-reached only through `pal_gpu.hpp` and two dispatch sites, generated code names no backend. About
-900-1,100 duplicated lines are movable into the shared header; the two scene frame loops are single
-6.7-6.9k-line functions.
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
@@ -134,18 +102,11 @@ reached only through `pal_gpu.hpp` and two dispatch sites, generated code names 
 | NT-14 | L | fixed | Transient GPU commands and driver resources use manual release | native/src/pal_dawn_resources.hpp, pal_sdl_gpu_resources.hpp, pal_owned_gpu_record.hpp | Move-only owners release partial allocations, command passes, staging, captures and cache transfers. SDL commands cancel before swapchain acquisition and submit after acquisition. Failure-injection fixtures verify consumption and release order; 24 scene builds and parity checks pass. |
 | NT-15 | L | fixed | Device-option structs and the release lambda re-spelled 8 times | pal_sdl_gpu_shared.hpp:580-583, pal_dawn_shared.hpp:280-293 | DeviceOptions supplies every renderer; noncopyable backend device owners release partial construction and preserve borrowed resources. |
 | NT-16 | L | fixed | Dead: `wide_to_utf8`; legacy `BBLITE_IMAGE_CODECS` default serving 0/307 trees; stale `BBLITE_ENTRY_DRIVER` cache entry | pal_win32_text.hpp:50-84, CMakeLists.txt:22-27 | `wide_to_utf8` deleted; the codec default is a configure error |
-| NT-17 | L | declined | Capture structs are ungated members of shipping text records | pal_*_text_resources.hpp:16,58,103 | a constant-false `TextGpuCapture` in no-capture builds was tried and reverted: `test/fixtures/text-sdl-resources-check.cpp` reads the receipts in a `BBLITE_VISUAL_CAPTURE=0` compile (the SDL shared header's PNG readback cannot compile standalone); the shipping cost is one flag and empty vectors per text device |
+| NT-17 | L | declined | Capture structs are ungated members of shipping text records | pal_*_text_resources.hpp:16,58,103 | `test/fixtures/text-sdl-resources-check.cpp` reads receipts with `BBLITE_VISUAL_CAPTURE=0`; the SDL shared header's PNG readback requires a capture build. Shipping text devices retain one flag and empty vectors. |
 | NT-18 | L | fixed | Unchecked `[handle.value]` indexing convention with no debug switch | pal_dawn.cpp (94 sites), pal_sdl_gpu.cpp (64) | BBLITE_CHECKED_HANDLES enables bounds checks with index, record count and source location across PAL handle accesses. |
 | NT-19 | L | fixed | `Callback::operator()` copies the callback (two shared_ptr copies) per invocation | js_callback.hpp:80-84 | Ordinary dispatch retains only the closure body; recursive dispatch also retains its cell through self-replacement. |
 
 ## 6. Generated C++
-
-The unrolled-loop class is mostly gone; the remaining size mechanism is inlining: every
-handle-touching function or method call re-emits its whole body, so the eight demos are 89-98% repeated
-text (minecraft 9.2 MB with 215 KB of distinct lines; `main.cpp.obj` 402-622 s for antigravity-racer).
-Memory safety: no raw pointers, casts or container-reference reuse in generated demo code; the
-record-callback cycles are collectable; idle 3,000-frame runs of tetris, doom and sandblox grow 0.0-0.1 MB.
-Two demos run every frame on dead stack slots (GC-2).
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
@@ -164,10 +125,6 @@ Two demos run every frame on dead stack slots (GC-2).
 | GC-13 | L | fixed | Exception boundary is "terminate the program", undocumented for generated callbacks | pal_event_loop.hpp:322-334, pal_sdl.cpp:414-426 | Fidelity documents callback exception propagation, process exit and realm error handlers. |
 
 ## 7. Tooling
-
-The `src/` half is one consistent set (one flag parser, report writer, native spawn, browser ceremony,
-staleness rule) with real gaps; the `tools/` half is an accumulation: 28 checker scripts (2,941 lines,
-37% re-typed harness), 14 files reachable from nothing, two documented pairs not runnable at HEAD.
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
@@ -189,10 +146,6 @@ staleness rule) with real gaps; the `tools/` half is an accumulation: 28 checker
 
 ## 8. Building and packaging
 
-Dependency partitioning is right for codecs, FreeType/LunaSVG, Bullet, LabSound core-vs-codecs and
-Dawn (linker maps of the 15 shipping builds); SDL's own subsystem trim is vacuous; the shipping RmlUi is
-two patches stale; 35% of all native compile time is the two backend TUs recompiled per scene.
-
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
 | BD-1 | H | fixed | SDL trim vacuous: `-DSDL_AUDIO=$audioSetting` unquoted, caches hold the literal, capability files claim OFF, a test pins the broken text; ~386 KiB (22%) of a visual-only exe is unreachable subsystems | tools/build-sdl-min.ps1:144-147, test/build-options.test.ts:260 | one option table drives the configure and is read back from the produced cache (a `$` refuses); both installs rebuilt (`sdl-min` library 8.9 MB to 4.1 MB); torus-states exe 1,843,712 to 1,426,432 bytes, packaged and smoke-run |
@@ -212,11 +165,6 @@ two patches stale; 35% of all native compile time is the two backend TUs recompi
 | BD-15 | M | fixed | The shared vcpkg install stamp hashed absolute paths, so two worktrees with identical inputs re-reconciled the install in turns and collided on its lock (found by the fix streams) | validation-resume.ts:84-97 | `contentFingerprint` keys files relative to the working directory; one stamp per content |
 
 ## 9. Documentation
-
-355 links resolve; every command, flag, environment variable, tool, patch, adaptation id, registry
-field and number cited resolves to code except 18 stale items; ~45 lines restate each other between
-features.md and fidelity.md; the physics contract is a measurement diary; docs/reviews accumulates
-unread records.
 
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
@@ -247,11 +195,6 @@ unread records.
 
 ## 10. TODO.md
 
-Of 68 units (50 entries, 17 rows, 1 fact): 24 real as stated, 19 mis-stated, 4 done, 6 unreached,
-4 not a task, 1 not measurable; 11 of 17 table rows carry qualifiers that name no code; open work
-absent from it: the SDL trim (BD-1), the Win32 move/resize stall, text/post-process/flow-graph/asset
-rows, five project-owned gates whose retirement conditions are met.
-
 | Id | Sev | Status | Defect | Where | Fix |
 | --- | --- | --- | --- | --- | --- |
 | TD-1 | H | fixed | TODO.md carries stale structure: a fact section, entries naming no code (`manager-delta sinks`, `result-shape registries`, pick-ray copies), unreached items (namespace imports, static-tuple `every`), 3 source comments citing entries that no longer exist | TODO.md, material-options.ts:539, scene-registry.ts:1538, output-projection.ts:446 | TODO.md rewritten from the measured entries (145 to 94 lines) |
@@ -266,17 +209,3 @@ rows, five project-owned gates whose retirement conditions are met.
 | TD-10 | M | fixed | Five project-owned gates meet their own retirement conditions; one example never registered | scene-registry.ts:767,805,983,4307, examples/audit-gizmo-interaction.ts | The five gates, their example sources and status rows are removed; corpus scenes 104/105, 114/231, 149 and 215 cover their contracts. The unregistered example is absent. |
 | TD-11 | M | fixed | Backend items measured: `create_torus` emitted in 182 trees for 12 reaching; unversioned bone palettes; whole stylesheet re-projected per frame; per-draw eye offset; mesh triangles stored up to five times | mesh_factories emitter, pal_dawn.cpp:12907, pal_ui_rml.cpp:3306, pal_gpu_shared.hpp:626, pal_physics_bullet.cpp:157-2385 | Bone palettes use versioned uploads; physics shapes retain one triangle copy; torus lowering follows reach; stylesheet projection follows its own revision; high-precision eyes are memoized by exact inputs. |
 | TD-12 | L | fixed | SDL Vulkan entry is not a task (compiled out, no defect recorded); SDL versions in lockstep | build-sdl-min.ps1:156 | entry trimmed to the platform gap |
-
-## 11. Housekeeping (local checkout, not repository content)
-
-- 163 local branches merged into main; 53 unmerged codex/claude branches; 10 stashes; 41 worktrees
-  (6 merged) under `C:/Dev/bbl-*` and `.claude/worktrees`. Deleting is the user's call.
-- Orphan files: `docs/images/scenes/scene11-banner.png` and `test/fixtures/frame-graph-effect-only.ts` were
-  referenced by nothing (deleted on this branch); `reference/{morph-picking-standard,splat-update-picking}` and
-  14 `generated/` trees are untracked outputs of fixtures and probes; `reference/physics-drop` is the golden of
-  `examples/physics-drop.ts`; `text-resource-ops.hpp` is included by two fixtures (the earlier claim was wrong).
-- 37 GB of build trees (16.7 GB identical PCHs, 9.8 GB identical DLL copies); `.claude/worktrees/*/native` 28 GB.
-- This audit's own leftovers once the branch is merged: the nine worktrees `C:/Dev/bbl-audit-{activation,build,
-  compiler,lowering,lowermath,native,recorder,rederive,tooling}` (`tools/setup-worktree.ps1 -Path <path> -Remove`
-  unlinks their cache junctions first) and `C:/Dev/babylonlite-audit-baseline`; the branches `claude/audit-w-*`,
-  `claude/audit-merge-check`, `claude/audit-wave0`, `claude/audit-2026-08-24`, `claude/audit-2026-09-01`.

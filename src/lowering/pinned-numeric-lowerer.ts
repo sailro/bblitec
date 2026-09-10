@@ -24,6 +24,7 @@
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { isAssignmentExpression, isUpdateExpression } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
 import { cppPrimary, renderPinnedArithmetic, type PinnedExpressionSpelling, type RenderedCpp } from "./pinned-numeric-expression.js";
 import { cppCondition } from "../cpp-expressions.js";
@@ -562,6 +563,8 @@ export class PinnedNumericLowerer {
                 const right = unwrapExpression(expression.right);
                 if (ts.isBinaryExpression(right) && right.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
                     if (!ts.isIdentifier(expression.left) || !ts.isIdentifier(right.left)) {
+                        const arrayStores = this.chainedArrayStores(expression, indent);
+                        if (arrayStores) return arrayStores;
                         return this.fail(expression, "scalar chained assignment targets");
                     }
                     return [
@@ -1898,6 +1901,38 @@ export class PinnedNumericLowerer {
                 : undefined;
         }
         return undefined;
+    }
+
+    /** Capture element references before writes; assignment results retain the original number. */
+    private chainedArrayStores(expression: ts.BinaryExpression, indent: string): string[] | undefined {
+        const targets: ts.ElementAccessExpression[] = [];
+        let value: ts.Expression = expression;
+        while (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            const target = unwrapExpression(value.left);
+            if (!ts.isElementAccessExpression(target) || !this.elementType(target)) return undefined;
+            targets.push(target);
+            value = unwrapExpression(value.right);
+        }
+        // Literal fills cannot resize storage or rebind an owner during RHS evaluation.
+        if (!ts.isNumericLiteral(value) && !(ts.isPrefixUnaryExpression(value) &&
+            [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(value.operator) &&
+            ts.isNumericLiteral(value.operand))) return undefined;
+        const number = ts.isNumericLiteral(value) ? Number(value.text)
+            : (value.operator === ts.SyntaxKind.MinusToken ? -1 : 1) * Number((value.operand as ts.NumericLiteral).text);
+        if (targets.some(target => this.elementType(target) === "std::uint32_t") &&
+            !(Math.trunc(number) >= 0 && Math.trunc(number) <= 0xffff_ffff)) return undefined;
+        const effectFree = (node: ts.Node): boolean => {
+            if (ts.isCallExpression(node) || ts.isNewExpression(node) || isUpdateExpression(node) || isAssignmentExpression(node)) return false;
+            return !ts.forEachChild(node, child => effectFree(child) ? undefined : true);
+        };
+        if (targets.some(target => !effectFree(target))) return undefined;
+        const references = targets.map((target, index) => ({
+            target, name: this.temporaryName(target, index),
+        }));
+        return [
+            ...references.map(({ target, name }) => `${indent}auto& ${name} = ${this.assignmentTarget(target)};`),
+            ...references.reverse().map(({ target, name }) => `${indent}${name} = ${this.storedValue(target, value)};`),
+        ];
     }
 
     private elementType(target: ts.Expression): string | undefined {
