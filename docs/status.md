@@ -288,7 +288,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 | NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Live pure-2D node particles; sprite atlas; pointer-following emitter. |
 | Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.362 / 0.441 | 0.361 / 0.440 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.002, Dawn 0.000 / 0.000. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.016 / 0.016 | 0.014 / 0.014 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
-| Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | $\color{#1a7f37}{\textsf{0.197}} / \color{#9a6700}{\textsf{0.896}}$ | $\color{#1a7f37}{\textsf{0.197}} / \color{#9a6700}{\textsf{0.896}}$ | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only MAD: 0.000 / 0.002 on both backends. |
+| Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | $\color{#1a7f37}{\textsf{0.196}} / \color{#9a6700}{\textsf{0.896}}$ | $\color{#1a7f37}{\textsf{0.196}} / \color{#9a6700}{\textsf{0.896}}$ | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only MAD: 0.000 / 0.001 on both backends. |
 
 ## Project-owned differential gates
 

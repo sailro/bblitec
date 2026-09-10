@@ -3014,11 +3014,17 @@ struct FlowGraphHandle {
     std::uint32_t index = 0;
 };
 
+struct AssetMeshWalks {
+    // Absent for producers whose entity list is already their mesh storage.
+    std::optional<std::vector<std::size_t>> scene;
+    std::vector<std::vector<std::size_t>> collectors;
+};
+
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
-    // Source traversal permutations, separate from loader-order storage.
+    // Source traversals, separate from loader-order storage.
     // A cloned root shares the indices and maps them to its own mesh handles.
-    std::shared_ptr<const std::vector<std::vector<std::size_t>>> source_mesh_walks{};
+    std::shared_ptr<const AssetMeshWalks> source_mesh_walks{};
     std::vector<LightHandle> lights;
     /**
      * The cameras the `_camera` loader feature instantiated, one per
@@ -3151,22 +3157,40 @@ struct AssetRecord {
     std::function<void()> bake_skeletons;
 };
 
+inline std::vector<std::size_t> asset_mesh_indices(std::size_t count, const std::vector<double>& entries) {
+    std::vector<std::size_t> indices;
+    indices.reserve(entries.size());
+    for (const auto number : entries) {
+        if (!(number >= 0 && number < static_cast<double>(count)) || std::floor(number) != number)
+            throw std::runtime_error("Invalid source mesh walk index.");
+        indices.push_back(static_cast<std::size_t>(number));
+    }
+    return indices;
+}
+
+/** Scene registration can select a subset and can visit the same mesh again. */
+inline void install_asset_scene_meshes(AssetRecord& asset, const std::vector<double>& entries) {
+    auto indices = asset_mesh_indices(asset.meshes.size(), entries);
+    auto walks = std::make_shared<AssetMeshWalks>();
+    if (asset.source_mesh_walks) walks->collectors = asset.source_mesh_walks->collectors;
+    walks->scene = std::move(indices);
+    asset.source_mesh_walks = std::move(walks);
+}
+
 /** Install validated permutations over a loader's native mesh collection. */
 inline void install_asset_mesh_walks(AssetRecord& asset, const std::vector<std::vector<double>>& rows) {
-    auto walks = std::make_shared<std::vector<std::vector<std::size_t>>>();
+    auto walks = std::make_shared<AssetMeshWalks>();
+    if (asset.source_mesh_walks) walks->scene = asset.source_mesh_walks->scene;
+    walks->collectors.reserve(rows.size());
     for (const auto& entries : rows) {
-        auto& walk = walks->emplace_back();
+        auto& walk = walks->collectors.emplace_back();
         if (entries.empty()) continue;
         if (entries.size() != asset.meshes.size()) throw std::runtime_error("Invalid source mesh walk size.");
         std::vector<bool> seen(asset.meshes.size());
-        walk.reserve(entries.size());
-        for (const auto number : entries) {
-            if (!(number >= 0 && number < static_cast<double>(asset.meshes.size())) || std::floor(number) != number)
-                throw std::runtime_error("Invalid source mesh walk index.");
-            const auto index = static_cast<std::size_t>(number);
+        walk = asset_mesh_indices(asset.meshes.size(), entries);
+        for (const auto index : walk) {
             if (seen[index]) throw std::runtime_error("Repeated source mesh walk index.");
             seen[index] = true;
-            walk.push_back(index);
         }
     }
     asset.source_mesh_walks = std::move(walks);
@@ -3894,7 +3918,7 @@ inline std::vector<MeshHandle> asset_mesh_walk(
     if (!record.source_mesh_walks) {
         throw std::runtime_error("Source mesh walk metadata is missing.");
     }
-    const auto& indices = record.source_mesh_walks->at(walk_index);
+    const auto& indices = record.source_mesh_walks->collectors.at(walk_index);
     if (indices.size() != record.meshes.size()) {
         throw std::runtime_error("Source mesh walk does not cover the loaded mesh set.");
     }

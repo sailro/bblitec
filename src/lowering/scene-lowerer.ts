@@ -2259,11 +2259,21 @@ void reset_asset_root_scaling(
     }
 }
 
+void add_asset_meshes(Scene& scene, const AssetRecord& record) {
+    if (record.source_mesh_walks && record.source_mesh_walks->scene) {
+        for (const auto index : *record.source_mesh_walks->scene) {
+            add_to_scene(scene, record.meshes.at(index));
+        }
+    } else {
+        for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
+    }
+}
+
 void add_to_scene(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);
     const AssetRecord& record =
         asset_record(*scene.engine, asset.value);
-    for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
+    add_asset_meshes(scene, record);
     for (const LightHandle light : record.lights) add_to_scene(scene, light);
     // addToScene registers the file's animation groups with the scene, which
     // is what makes them reachable as scene.animationGroups.
@@ -2311,7 +2321,7 @@ void add_to_scene(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);
     const AssetRecord& record =
         asset_record(*scene.engine, asset.value);
-    for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
+    add_asset_meshes(scene, record);
     for (const LightHandle light : record.lights) add_to_scene(scene, light);
     if (record.animation_seek) {
         scene.animation_seekers.push_back(record.animation_seek);

@@ -4103,6 +4103,7 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             "no animations.");
     }` : ""}
     if (asset.meshes.empty()${gaussianSplats ? " && asset.gaussian_splats.empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
+    install_asset_scene_meshes(asset, double_array(&required(mesh_plan, "sceneMeshes")));
 ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${interactivity ? `
     // KHR_interactivity, selected as the pinned registry selects it: by the
     // extension's presence (gltf-feature-registry.ts). The graphs generation

@@ -56,6 +56,50 @@ test("base core and built scheduling respond independently to source cache chang
     assert.deepEqual(built.meshes.map(mesh => mesh.material), [0, 1, 2, 3, 4]);
 });
 
+test("scene registration executes source traversal, predicates and repeated visits independently of upload order", async () => {
+    const {document, bin} = fixture();
+    assert.deepEqual((await gltfMeshPlan(document, bin)).sceneMeshes, [0, 1, 2, 3, 4]);
+    assert.deepEqual((await gltfMeshPlan({...document, scenes: [{nodes: [3, 2, 0]}]}, bin)).sceneMeshes, [3, 4, 2, 0, 1]);
+    assert.deepEqual((await gltfMeshPlan({...document, scenes: [{nodes: [2]}]}, bin)).sceneMeshes, [2]);
+    assert.deepEqual((await gltfMeshPlan({...document, scenes: [{nodes: []}]}, bin)).sceneMeshes, []);
+    const scene = "src/scene/scene-core.ts";
+    const reversed = await gltfMeshPlan(document, bin, doctoredContext(scene,
+        "for (const child of kids)", "for (const child of [...kids].reverse())"));
+    assert.deepEqual(reversed.sceneMeshes, [4, 3, 2, 1, 0]);
+    const filtered = await gltfMeshPlan(document, bin, doctoredContext(scene,
+        'if ("_gpu" in entity && "material" in entity)', 'if ("_gpu" in entity && "material" in entity && entity.name === "first")'));
+    assert.deepEqual(filtered.sceneMeshes, [2]);
+    const repeated = await gltfMeshPlan(document, bin, doctoredContext(scene,
+        "ctx.meshes.push(mesh);", "ctx.meshes.push(mesh, mesh);"));
+    assert.deepEqual(repeated.sceneMeshes, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]);
+    for (const plan of [reversed, filtered, repeated]) {
+        assert.deepEqual(plan.meshes.map(mesh => mesh.node), [0, 0, 2, 3, 3]);
+    }
+});
+
+test("scene recording refuses unknown resources and registration effects", async () => {
+    const {document, bin} = fixture();
+    const scene = "src/scene/scene-core.ts";
+    await assert.rejects(gltfMeshPlan(document, bin, doctoredContext(scene,
+        "ctx.meshes.push(mesh);", "ctx.meshes.push({...mesh});")), /unknown loader mesh/);
+    await assert.rejects(gltfMeshPlan(document, bin, doctoredContext(scene,
+        "if (build) {", "if (build) { build(ctx, []);")), /cannot execute a material GPU builder/);
+    await assert.rejects(gltfMeshPlan(document, bin, doctoredContext(scene,
+        "ctx.meshes.push(mesh);", "ctx.unrepresented.push(mesh);")), /Unrepresented glTF scene registration field/);
+    await assert.rejects(gltfMeshPlan(document, bin, doctoredContext(scene,
+        "ctx.meshes.push(mesh);", "ctx.unrepresented = true;")), /not extensible/);
+    await assert.rejects(gltfMeshPlan(document, bin, doctoredContext("src/scene/mesh-scene-registry.ts",
+        "if (mesh._disposed)", "if (mesh.name === 'first')")), /cannot be added/);
+    await packageGltfMeshPlan(document, bin);
+    const plan = packagedGltfMeshPlan(document);
+    for (const sceneMeshes of [undefined, [-1], [plan.meshes.length], [0.5], [null]]) {
+        assert.throws(() => packagedGltfMeshPlan({...document, [GLTF_MESH_PLAN]: {...plan, sceneMeshes}}), /Invalid/);
+    }
+    for (const sceneMeshes of [[], [2], [2, 2]]) {
+        assert.deepEqual(packagedGltfMeshPlan({...document, [GLTF_MESH_PLAN]: {...plan, sceneMeshes}}).sceneMeshes, sceneMeshes);
+    }
+});
+
 test("source extraction guards and upload names control the emitted schedule", async () => {
     const {document, bin} = fixture();
     const filtered = await gltfMeshPlan(document, bin, doctoredContext(module,

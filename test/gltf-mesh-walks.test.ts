@@ -5,13 +5,14 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import { GLTF_MESH_WALKS, glbJsonText } from "../src/gltf-document.js";
+import { GLTF_MESH_PLAN, GLTF_MESH_WALKS, glbJsonText } from "../src/gltf-document.js";
 import { gltfMeshWalks, packageMeshWalks, type CompiledMeshWalk } from "../src/gltf-mesh-walks.js";
 import { packageGltf } from "../src/gltf-packager.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { withMeshPlan } from "./gltf-mesh-fixture.js";
 
 // Preserve the actual authored worklist. The graph below distinguishes its
 // order from both source preorder and reversing the native node-array table.
@@ -131,12 +132,15 @@ const tools = optionalNativeFixtureTools();
 test("native source loops observe Map insertion order and retained per-asset permutations", {skip: !tools}, async () => {
     const result = compiledWalks();
     const document = structuredClone(hierarchy);
+    await withMeshPlan(document);
     await packageMeshWalks(document, result.manifest.meshWalks!);
     const source = new GltfLowerer(new LoweringContext()).lowerLoaderAdapter({sourceMeshWalks: true}).source;
-    const helpers = ["const ts::JsonValue* optional(", "std::size_t unsigned_value(", "void load_source_mesh_walks("]
+    const helpers = ["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(", "std::vector<double> double_array(", "void load_source_mesh_walks("]
         .map(signature => cppFunction(source, signature)).join("\n");
+    assert.match(source, /install_asset_scene_meshes\(asset, double_array\(&required\(mesh_plan, "sceneMeshes"\)\)\)/);
     const scene = new SceneLowerer(new LoweringContext()).lowerCore().source;
-    const cloneHelpers = ["AssetRecord& asset_record(", "AssetHandle clone_asset_root("]
+    const cloneHelpers = ["void require_scene_engine(", "AssetRecord& asset_record(", "AssetHandle clone_asset_root(",
+        "void add_asset_meshes(", "void add_to_scene(Scene& scene, AssetHandle asset)", "void add_asset_entities("]
         .map(signature => cppFunction(scene, signature)).join("\n");
     const directory = resolve("artifacts/test-gltf-mesh-walks");
     mkdirSync(directory, {recursive: true});
@@ -147,6 +151,8 @@ test("native source loops observe Map insertion order and retained per-asset per
 namespace bbl {
 using JsonObject = ts::JsonValue::Object;
 ${helpers}
+void add_to_scene(Scene& scene, MeshHandle mesh) { scene.meshes.push_back(mesh); }
+void add_to_scene(Scene& scene, LightHandle light) { scene.lights.push_back(light); }
 ${cloneHelpers}
 Engine create_engine(EngineOptions) { return Engine{}; }
 std::string asset_path(const std::string& path) { return path; }
@@ -157,7 +163,10 @@ AssetHandle load_gltf(Engine& engine, const std::string&) {
         asset.meshes.push_back(MeshHandle{static_cast<std::uint32_t>(engine.meshes.size())});
         MeshRecord mesh; mesh.material = MaterialHandle{material}; engine.meshes.push_back(mesh);
     }
-    load_source_mesh_walks(asset, ts::json_parse(R"(${JSON.stringify(document)})").as_object());
+    const auto document = ts::json_parse(R"(${JSON.stringify(document)})").as_object();
+    const auto& mesh_plan = required(document, "${GLTF_MESH_PLAN}").as_object();
+    install_asset_scene_meshes(asset, double_array(&required(mesh_plan, "sceneMeshes")));
+    load_source_mesh_walks(asset, document);
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }
@@ -172,6 +181,18 @@ int main() {
     const auto original = bbl::asset_mesh_walk(engine, first, 0);
     const auto copy = bbl::asset_mesh_walk(engine, clone, 0);
     for (std::size_t i = 0; i < copy.size(); ++i) assert(copy[i].value == original[i].value + 7);
+    const auto check_registration = [&](bbl::AssetHandle handle, const std::vector<std::uint32_t>& expected) {
+        bbl::Scene container; container.engine = &engine;
+        bbl::Scene entities; entities.engine = &engine;
+        bbl::add_to_scene(container, handle);
+        bbl::add_asset_entities(entities, handle);
+        assert(container.meshes.size() == expected.size() && entities.meshes.size() == expected.size());
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            assert(container.meshes[i].value == expected[i] && entities.meshes[i].value == expected[i]);
+        }
+    };
+    check_registration(first, {${preorderOrder.join(",")}});
+    check_registration(clone, {${preorderOrder.map(index => index + 7).join(",")}});
     auto& asset = engine.assets[first.value];
     const auto retained = asset.source_mesh_walks;
     for (const char* bad : {"[[0]]", "[[0,1,2,3,4,5,5]]", "[[0,1,2,3,4,5,7]]", "[[0,1,2,3,4,5,-1]]", "[[0,1,2,3,4,5,0.5]]"}) {
@@ -180,6 +201,20 @@ int main() {
         catch (const std::runtime_error&) { rejected = true; }
         assert(rejected && asset.source_mesh_walks == retained);
     }
+    for (const auto bad : {-1.0, 7.0, 0.5, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+        bool rejected = false;
+        try { bbl::install_asset_scene_meshes(asset, {bad}); }
+        catch (const std::runtime_error&) { rejected = true; }
+        assert(rejected && asset.source_mesh_walks == retained);
+    }
+    bbl::install_asset_scene_meshes(asset, {2,2,0});
+    check_registration(first, {2,2,0});
+    assert(bbl::asset_mesh_walk(engine, first, 0)[0].value == 4);
+    assert(engine.assets[clone.value].source_mesh_walks == retained);
+    bbl::install_asset_scene_meshes(asset, {});
+    check_registration(first, {});
+    asset.source_mesh_walks.reset();
+    check_registration(first, {0,1,2,3,4,5,6});
     engine.assets.clear();
     assert(original[0].value == 4 && copy[0].value == 11);
     std::puts("gltf-mesh-walks: ok");
