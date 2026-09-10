@@ -6,6 +6,7 @@ import {
 import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
 import { sceneNodeTransformsSource } from "./scene-node-transforms.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
+import {lowerAssetSceneAttachment} from "./asset-scene-attachment.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -2271,21 +2272,9 @@ void add_asset_meshes(Scene& scene, const AssetRecord& record) {
 
 void add_to_scene(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);
-    const AssetRecord& record =
+    AssetRecord& record =
         asset_record(*scene.engine, asset.value);
-    add_asset_meshes(scene, record);
-    for (const LightHandle light : record.lights) add_to_scene(scene, light);
-    // addToScene registers the file's animation groups with the scene, which
-    // is what makes them reachable as scene.animationGroups.
-    for (const AnimationGroupHandle group : record.animation_groups) {
-        scene.animation_groups.push_back(group);
-    }
-    if (record.scene_setup) record.scene_setup(scene);
-    if (record.has_camera) scene.camera = record.camera;
-    if (record.has_clear_color) scene.clear_color = record.clear_color;
-    if (record.animation_tick) {
-        scene.before_render.push_back(record.animation_tick);
-    }
+${lowerAssetSceneAttachment(this.context)}
     if (record.animation_seek) {
         scene.animation_seekers.push_back(record.animation_seek);
     }

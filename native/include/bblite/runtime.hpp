@@ -3044,6 +3044,7 @@ struct AssetRecord {
     bool has_clear_color = false;
     std::function<void(float)> animation_tick;
     std::function<void(float)> animation_seek;
+    js::Callback<void(float)> before_render_hook;
     /**
      * Registers a cloned mesh with the source asset's animation runtime.
      * Babylon Lite clones retain the same skeleton/morph resources, so a

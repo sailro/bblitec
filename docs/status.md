@@ -25,7 +25,7 @@ keep their published value while the newest report lies inside the recorded band
 | 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | HDR Glass Sphere |
 | 9 | <img src="images/scenes/scene9.png" alt="Scene 9 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sponza |
 | 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Rough Sphere |
-| 11 | <img src="images/scenes/scene11.png" alt="Scene 11 rendering" width="160"> | 0.010 / 0.281 | 0.010 / 0.281 | Spec-Gloss Shark |
+| 11 | <img src="images/scenes/scene11.png" alt="Scene 11 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Spec-Gloss Shark |
 | 12 | <img src="images/scenes/scene12.png" alt="Scene 12 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | PBR Shader Balls |
 | 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | PBR Spheres Grid |
 | 14 | <img src="images/scenes/scene14.png" alt="Scene 14 rendering" width="160"> | 0.012 / 0.006 | 0.012 / 0.006 | Flight Helmet |

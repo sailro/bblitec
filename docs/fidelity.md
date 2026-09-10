@@ -146,6 +146,8 @@ Borrowed buffers without an owning lifetime refuse.
 Property/glTF tracks have separate target/interpolation contracts. Preserve
 mutation and render-list invalidation boundaries. Autonomous managers issue ordered
 cancellable native frame requests.
+Container attachment retains fresh callback identities per add; its glTF callback body still
+uses the native per-asset playback adapter. Per-group ticking and mixing remain unfinished.
 
 ### Frame graph and post-process passes
 

@@ -216,6 +216,8 @@ compressed bitmap composition refuse.
 `.babylon` loading supports parented meshes, container nodes, Standard materials, point lights and cameras.
 Mesh construction, hierarchy and material/scene control flow lower from the pin. `loadCamera` and
 `loadTextures` are honored; `maxMeshes` is unsupported.
+Container attachment lowers the source field order and guards, including preserving an existing
+scene camera and running feature setup after animation-group and callback registration.
 
 Recognized closed glTF and `.babylon` collectors retain source traversal independently of native flat
 mesh storage. glTF owner maps retain insertion order. Metadata is demanded per asset/collector pair. Rest/default/

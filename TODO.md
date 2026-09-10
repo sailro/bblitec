@@ -49,7 +49,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 - [ ] Bullet writes an ACTION target pose immediately (pal_physics_bullet.cpp:2763-2770); Havok integrates a deferred target and keeps the derived velocity. M; scene 106.
 - [ ] Solver residuals at the registered poses (status.md: 105 0.274, 41 0.215, 101 0.178, 48 0.060, 45 0.039). Trace per substep with BBLITE_PHYSICS_TRACE (pal_physics_bullet.cpp:1715) before touching authored scenes or thresholds.
-- [ ] One 0.28 foreground residual is shared by scenes 11/152/218/219 (status.md); unit-scale and browser/native palette controls untested. M.
+- [ ] Investigate the remaining shark residuals at the published poses for scenes 152/218/219; compare mesh transforms, bone palettes and animation-manager state. M.
 - [ ] Editing gizmos are display-only (display-only-editing-gizmo adaptation; scenes 221/222/224): bounding-box and scale drags are not reached. M.
 
 ## Worker and platform
