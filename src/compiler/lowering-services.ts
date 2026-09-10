@@ -419,6 +419,7 @@ export interface LoweringServices {
     markAssetRootReparented(root: Value, node: ts.Node): void;
     assertAssetRootWritable(root: Value, node: ts.Node): void;
     recordGltfContainerLoad(asset: CompileAsset, node: ts.Node): void;
+    enableGltfCameras(node: ts.Node): void;
     probePixelsAsset(expression: ts.Expression): {
         cpp: string;
         source: string;

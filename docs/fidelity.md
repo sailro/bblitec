@@ -74,6 +74,7 @@ zero; record which comparison a control establishes.
 Packaged glTF light worlds retain the source Float32 matrices. Light scalars and colors enter
 native float records; ranges above float maximum clamp to that maximum. Spot cone angles retain
 double precision, and their uniform cosine comes from the source writer's Float32 store.
+Imported glTF cameras retain double scalar/vector fields and source Float32 parent/fixup matrices.
 
 ### The reference pose
 

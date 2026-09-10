@@ -202,6 +202,9 @@ consume the pinned hierarchy, scene attachment and feature-hook results.
 Scene mesh registration consumes the pinned traversal, separately from upload order and collector indices.
 Initial punctual lights use source constructors and registration, including unselected-node fallbacks
 and definition aliases. Source requests to grow the pinned native light capacity refuse.
+`enableGltfCameras()` requires definite setup ordering and affects subsequent loads.
+Imported perspective cameras retain source constructor state, fixup parents and container order;
+orthographic imports require unsupported explicit clip-plane storage.
 Skin/morph attachment, joint influences, target deltas and initial morph weights come from
 the pinned feature hooks and GPU constructors; weights are packaged per mesh.
 Unused base declarations allocate no render material; variant materials retain separate identities.

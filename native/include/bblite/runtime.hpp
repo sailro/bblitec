@@ -5083,6 +5083,7 @@ void update_line_system(
     const std::vector<std::vector<Vec3>>& lines,
     const std::vector<std::vector<Vec4>>& colors);
 AssetHandle load_gltf(Engine& engine, const std::string& path);
+AssetHandle load_gltf(Engine& engine, const std::string& path, bool load_cameras);
 // The opt-in bone-control surface (`src/skeleton/bone-control.ts`), defined
 // by a generated glTF loader compiled with it. `getBoneByName` answers from
 // the skeleton's own name map -- the first joint carrying the name, in joint

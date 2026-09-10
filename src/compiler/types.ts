@@ -950,6 +950,8 @@ export interface CompileAsset {
   meshWalks?: number[];
   /** Texture-loading modes reached by this Babylon asset's call sites. */
   babylonTextureModes?: boolean[];
+  /** At least one definite load follows enableGltfCameras. */
+  gltfCameras?: boolean;
   source: string;
   output: string;
   kind:

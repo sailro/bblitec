@@ -94,7 +94,6 @@ test("split lowerer barrels contain exports and families own their declarations"
         ["lowerShPrescaleCpp", "gltf/sh-prescale"],
         ["lowerImageProcessingDefaultsCpp", "gltf/image-processing-defaults"],
         ["lowerMatrixComposeCpp", "gltf/matrix-leaves"],
-        ["lowerLocalMatrixCpp", "gltf/local-matrix"],
         ["lowerMatrixNativeCpp", "gltf/matrix-leaves"],
         ["lowerIblPolynomialCpp", "gltf/ibl"],
         ["lowerIblEnvironmentScalarsCpp", "gltf/ibl"],

@@ -11,8 +11,9 @@ import { GltfGeometryPacker, type GltfMeshGeometry, type GltfRecordedGeometry } 
 import { packageMeshDeformation, readMeshDeformation, type GltfMeshDeformation, type RecordedMeshDeformation } from "./gltf-mesh-deformation.js";
 import { packageMeshSetup, readMeshSetup, type GltfMeshSetup, type RecordedMeshSetup, type SourceWorldBounds } from "./gltf-mesh-setup.js";
 import { packageGltfLight, packagedGltfLights, type GltfLightPlan } from "./gltf-light-plan.js";
+import { packageGltfCamera, packagedGltfCameras, type GltfCameraPlan, type SourceCameraMatrices } from "./gltf-camera-plan.js";
 
-export interface GltfMeshPlan extends GltfLightPlan {
+export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
     /** Source material indices in assembly order; -1 denotes the implicit default. */
     cores: number[];
     /** Core record indices in native material construction order. */
@@ -23,6 +24,7 @@ export interface GltfMeshPlan extends GltfLightPlan {
     meshes: Array<{node: number; primitive: number; material: number; geometry: number; name: string; flatNormal: boolean; setup: GltfMeshSetup} & GltfMeshDeformation>;
     geometries: GltfMeshGeometry[];
 }
+export interface GltfLoadFeatures { cameras?: boolean }
 type CoreMaterial = object;
 type Material = object;
 interface MeshData { _nodeIndex: number; _primitive: JsonObject; _vertexCount: number }
@@ -43,10 +45,13 @@ interface SourceLoader {
     __instanceFeature: MeshFeature;
     __visibilityFeature: MeshFeature;
     __lightFeature: MeshFeature;
+    __cameraFeature?: MeshFeature;
+    __enableGltfCameras?(): void;
+    __cameraMatrices?: SourceCameraMatrices;
     __getPunctualLight(json: JsonObject, index: number): object | undefined;
     __worldBounds: SourceWorldBounds;
     __addToScene(scene: object, entity: object): void;
-    __applyPreparedAssets(features: MeshFeature[], meshes: Mesh[], root: object, context: UploadContext): Promise<{entities: object[]}>;
+    __applyPreparedAssets(features: MeshFeature[], meshes: Mesh[], root: object, context: UploadContext): Promise<{entities: object[]; cameras?: object[]}>;
     __prepareMeshes(json: JsonObject): Promise<{features: MeshFeature[]; parentMap: Map<number, number>; worldMatrixCache: Map<number, Float32Array>}>;
     buildNodeHierarchy(json: JsonObject, meshes: Mesh[], data: MeshData[]): {root: object; nodeMap: readonly (SceneNode | undefined)[]};
     extractAllMeshes(json: JsonObject, bin: DataView, base: string, parents: Map<number, number>, world: Map<number, Float32Array>, decoded: Map<unknown, unknown>,
@@ -54,7 +59,8 @@ interface SourceLoader {
     uploadMeshes(data: MeshData[], features: MeshFeature[],
         context: UploadContext): Promise<Mesh[]>;
 }
-let pinnedLoader: Promise<SourceLoader> | undefined;
+const pinnedLoaders = new Map<boolean, Promise<SourceLoader>>();
+let loaderIdentity = 0;
 
 function materialIdentity(buildGroup?: () => never): object {
     return new Proxy(Object.freeze({}), {get(_target, key) {
@@ -64,11 +70,30 @@ function materialIdentity(buildGroup?: () => never): object {
     }});
 }
 
-async function recordingLoader(context: LoweringContext): Promise<SourceLoader> {
+async function recordingLoader(context: LoweringContext, options: GltfLoadFeatures): Promise<SourceLoader> {
     await ensurePinnedLoaderExecution();
     const sourceModule = (path: string, redirects: ReadonlyMap<string, string> = new Map()): string =>
         pinnedModuleTextUrl(path.replace(/^src\//, "").replace(/\.ts$/, ".js"),
             transpileForBrowser(context.sourceFile(path).text, path), [], redirects);
+    // Keep the pin's module-owned enable registry isolated between recordings
+    // with different API reach and between doctored source contexts.
+    const hooks = sourceModule("src/loader-gltf/gltf-feature-hooks.ts") + `#loader-${++loaderIdentity}`;
+    let cameraImports = "";
+    const cameraExports: string[] = [];
+    if (options.cameras) {
+        const cameraMatrices = sourceModule("src/scene/world-matrix-state.ts");
+        const sceneNode = sourceModule("src/scene/scene-node.ts", new Map([["./world-matrix-state.js", cameraMatrices]]));
+        const cameras = sourceModule("src/loader-gltf/gltf-feature-camera.ts", new Map([
+            ["./gltf-feature-hooks.js", hooks],
+            ["../camera/free-camera.js", sourceModule("src/camera/free-camera.ts")],
+            ["../camera/orthographic.js", sourceModule("src/camera/orthographic.ts")],
+            ["../scene/transform-node.js", sourceModule("src/scene/transform-node.ts", new Map([["./scene-node.js", sceneNode]]))],
+            ["../scene/scene-node.js", sceneNode],
+            ["./gltf-parser.js", sourceModule("src/loader-gltf/gltf-parser.ts")],
+        ]));
+        cameraImports = `import __cameraFeature, {enableGltfCameras as __enableGltfCameras} from ${JSON.stringify(cameras)};\nimport * as __cameraMatrices from ${JSON.stringify(cameraMatrices)};`;
+        cameraExports.push("__cameraFeature", "__enableGltfCameras", "__cameraMatrices");
+    }
     const skeleton = sourceModule("src/loader-gltf/gltf-feature-skeleton.ts", new Map([
         ["../skeleton/create-skeleton.js", sourceModule("src/skeleton/create-skeleton.ts")],
     ]));
@@ -156,22 +181,29 @@ async function recordingLoader(context: LoweringContext): Promise<SourceLoader> 
     ]));
     // Core material records are opaque to extraction. Their actual assembler
     // and the replaced PBR constructor both execute in the generated loader.
-    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
-    return await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation + "\n" + assetPhase + "\n" + setupImports,
-        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__applyPreparedAssets", "__addToScene", "__instanceFeature", "__visibilityFeature", "__lightFeature", "__getPunctualLight", "__worldBounds"],
-        new Map([["./gltf-feature-registry.js", registry]]))) as SourceLoader;
+    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\n${cameraImports}\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
+    const loader = await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation + "\n" + assetPhase + "\n" + setupImports,
+        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__applyPreparedAssets", "__addToScene", "__instanceFeature", "__visibilityFeature", "__lightFeature", ...cameraExports, "__getPunctualLight", "__worldBounds"],
+        new Map([["./gltf-feature-registry.js", registry], ["./gltf-feature-hooks.js", hooks]]))) as SourceLoader;
+    if (options.cameras) {
+        if (!loader.__enableGltfCameras) throw new Error("Missing glTF camera activation module.");
+        loader.__enableGltfCameras();
+    }
+    return loader;
 }
 
 /** Run complete pinned extraction and mesh upload with real bytes and recording GPU resources. */
-export async function gltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext): Promise<GltfMeshPlan> {
-    return (await recordMeshPlan(document, bin, context)).plan;
+export async function gltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext, options: GltfLoadFeatures = {}): Promise<GltfMeshPlan> {
+    return (await recordMeshPlan(document, bin, context, options)).plan;
 }
 
-async function recordMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext): Promise<{plan: GltfMeshPlan; packer: GltfGeometryPacker}> {
+async function recordMeshPlan(document: JsonObject, bin: DataView, context: LoweringContext | undefined, options: GltfLoadFeatures): Promise<{plan: GltfMeshPlan; packer: GltfGeometryPacker}> {
     // fetchGltfAsset gives each load a fresh document. Feature WeakMaps must
     // not leak bindings between recordings of the same caller-owned object.
     document = structuredClone(document);
-    const loader = await (context ? recordingLoader(context) : pinnedLoader ??= recordingLoader(new LoweringContext()));
+    const enabledCameras = options.cameras === true;
+    if (!context && !pinnedLoaders.has(enabledCameras)) pinnedLoaders.set(enabledCameras, recordingLoader(new LoweringContext(), options));
+    const loader = await (context ? recordingLoader(context, options) : pinnedLoaders.get(enabledCameras)!);
     const {identityTexWrap} = await importPinnedModule<{identityTexWrap: unknown}>("loader-gltf/gltf-pbr-builder.js");
     const {features, parentMap, worldMatrixCache} = await loader.__prepareMeshes(document);
     const cores: number[] = [], coreRecords = new Map<CoreMaterial, number>();
@@ -219,9 +251,10 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context?: Low
     uploadContext._nodeMap = nodeMap;
     // Other per-asset hooks retain their native adapters until their bindings
     // are represented. The source phase owns hook scheduling and fragment merge.
-    const prepared = features.filter(feature => feature === loader.__instanceFeature || feature === loader.__visibilityFeature || feature === loader.__lightFeature);
+    const prepared = features.filter(feature => feature === loader.__instanceFeature || feature === loader.__visibilityFeature || feature === loader.__lightFeature || feature === loader.__cameraFeature);
     const container = await loader.__applyPreparedAssets(prepared, meshes, root, uploadContext);
-    if (Object.keys(container).some(key => key !== "entities") || !Array.isArray(container.entities) ||
+    if (Object.keys(container).some(key => key !== "entities" && key !== "cameras") || !Array.isArray(container.entities) ||
+        (container.cameras !== undefined && (!Array.isArray(container.cameras) || container.cameras.some(camera => !asObject(camera)))) ||
         container.entities[0] !== root || container.entities.slice(1).some(entity => !asObject(entity) || !("lightType" in entity)))
         throw new Error("Unrepresented glTF mesh asset fragment.");
     const scene = {meshes: [] as Mesh[], lights: [] as object[], _groups: new Map<object, object>(),
@@ -273,11 +306,16 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context?: Low
         ? lightDefinitions.map((_, index) => loader.__getPunctualLight(document, index)) : [];
     const sourceLights = [...new Set([...scene.lights, ...targets.filter((light): light is object => light !== undefined)])];
     const lightIndices = new Map(sourceLights.map((light, index) => [light, index]));
-    const nodeIndices = new Map<object, number>(sourceLights.length ? nodeMap.flatMap((node, index) => node ? [[node, index] as const] : []) : []);
+    const sourceCameras = [...new Set(container.cameras ?? [])];
+    const nodeIndices = new Map<object, number>(sourceLights.length || sourceCameras.length ? nodeMap.flatMap((node, index) => node ? [[node, index] as const] : []) : []);
     const lights = sourceLights.map(light => packageGltfLight(light, nodeIndices, packer));
     const sceneLights = scene.lights.map(light => lightIndices.get(light)!);
     const lightTargets = targets.map(light => light === undefined ? null : lightIndices.get(light)!);
-    return {plan: {cores, materials, nodeVisibility, sceneMeshes, lights, sceneLights, lightTargets,
+    const cameraIndices = new Map(sourceCameras.map((camera, index) => [camera, index]));
+    if (sourceCameras.length && !loader.__cameraMatrices) throw new Error("Unrepresented glTF camera construction.");
+    const cameras = sourceCameras.map(camera => packageGltfCamera(camera, nodeIndices, packer, loader.__cameraMatrices!));
+    const containerCameras = (container.cameras ?? []).map(camera => cameraIndices.get(camera)!);
+    return {plan: {cores, materials, nodeVisibility, sceneMeshes, lights, sceneLights, lightTargets, cameras, containerCameras,
         meshes: plannedMeshes, geometries: geometryRecords}, packer};
 }
 
@@ -321,12 +359,12 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
             ...readMeshDeformation(mesh, accessorCount, skinCount)};
     });
     return {cores: plan.cores, materials: plan.materials, nodeVisibility: plan.nodeVisibility, sceneMeshes: plan.sceneMeshes,
-        ...packagedGltfLights(document), meshes, geometries};
+        ...packagedGltfLights(document), ...packagedGltfCameras(document), meshes, geometries};
 }
 
-export async function packageGltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext): Promise<Buffer> {
+export async function packageGltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext, options: GltfLoadFeatures = {}): Promise<Buffer> {
     if (GLTF_MESH_PLAN in document) throw new Error("glTF source already carries compiler mesh scheduling metadata.");
-    const {plan, packer} = await recordMeshPlan(document, bin, context);
+    const {plan, packer} = await recordMeshPlan(document, bin, context, options);
     const binary = packer.build();
     document.accessors = packer.accessors;
     document.bufferViews = packer.bufferViews;

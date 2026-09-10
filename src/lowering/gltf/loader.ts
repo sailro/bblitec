@@ -30,7 +30,7 @@ import {
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
 } from "./matrix-leaves.js";
-import { lowerLocalMatrixCpp } from "./local-matrix.js";
+import { gltfMatrixReaderCpp } from "./local-matrix.js";
 import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
 import { lowerShPrescaleCpp } from "./sh-prescale.js";
@@ -670,11 +670,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const composeFile = this.context.sourceFile(
             "src/math/mat4-compose-into.ts",
         );
-        const matrixLocal = lowerLocalMatrixCpp(
-            parserFile,
-            composeFile,
-            options.gltfCameras ?? false,
-        );
+        const matrixLocal = gltfMatrixReaderCpp();
         const matrixCompose = lowerMatrixComposeCpp(composeFile);
         const matrixNative = lowerMatrixNativeCpp(parserFile);
         assertEnvironmentTextureIdentity(this.context, imageBasedFile, "src/loader-gltf/ibl-env-assembly.ts", true);
@@ -685,15 +681,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 assemblyFile,
             );
         const gltfCameras = options.gltfCameras
-            ? lowerGltfCamerasCpp(
-                  this.context.sourceFile(
-                      "src/loader-gltf/gltf-feature-camera.ts",
-                  ),
-                  this.context.sourceFile(
-                      "src/loader-gltf/load-gltf.ts",
-                  ),
-                  parserFile,
-              )
+            ? lowerGltfCamerasCpp(parserFile)
             : { parentWriter: "", loading: "", poseRefresh: "" };
         const boneControl = options.boneControl
             ? lowerBoneControl(
@@ -737,7 +725,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     animationInterpolation,
                     accessorNormalization,
                     accessorShape,
-                    hierarchy: lowerGltfHierarchy(this.context, options.gltfCameras ?? false),
+                    hierarchy: lowerGltfHierarchy(this.context),
                     parserJson: lowerGltfParserJson(this.context),
                     inverseBindMatrices: lowerGltfInverseBindMatrices(this.context),
                     animationNodeRest: lowerGltfAnimationNodeRest(this.context),

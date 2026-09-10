@@ -324,6 +324,7 @@ async function materializeAsset(
                         asset.meshWalks?.includes(index) ? walk : undefined),
                 ),
                 source,
+                {cameras: asset.gltfCameras === true},
             ),
         );
         return;
@@ -415,7 +416,7 @@ async function materializeAsset(
     const bytes = await assetBytes(source, inputPath);
     writeFileSync(destination, asset.kind === "texture" && isKtx1(bytes)
         ? await packageKtx1(bytes)
-        : await packageGltfLoadPlan(bytes, source));
+        : await packageGltfLoadPlan(bytes, source, {cameras: asset.gltfCameras === true}));
 }
 
 function materializedAssetSource(

@@ -9842,6 +9842,14 @@ class Compiler
         }
     }
 
+    public enableGltfCameras(node: ts.Node): void {
+        if (!this.definiteCollectionMutation()) {
+            this.fail(node, "glTF camera activation requires a definite setup call; runtime activation order is not represented by packaged assets.");
+        }
+        this.reachFeature("loader:gltf-cameras", node);
+        this.reachFeature("camera:free", node);
+    }
+
     /**
      * Records one run-time glTF container while preserving the order that
      * generation can represent.
@@ -9870,6 +9878,7 @@ class Compiler
         // them, so the count is also what lets such a fact refuse instead of
         // widening silently.
         asset.containerCount = (asset.containerCount ?? 0) + 1;
+        if (this.hasFeature("loader:gltf-cameras")) asset.gltfCameras = true;
         this.lastGltfContainerAsset = asset;
     }
 

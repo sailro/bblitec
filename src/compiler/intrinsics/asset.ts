@@ -48,6 +48,8 @@ export interface AssetIntrinsicContext
         | "compileDdsEnvironmentBackgroundOptions"
         | "registerAsset"
         | "recordGltfContainerLoad"
+        | "enableGltfCameras"
+        | "hasFeature"
         | "selectGltfVariant"
         | "resolveBundledAsset"
         | "unwrap"
@@ -240,7 +242,7 @@ function compileLoadGltf(context: AssetIntrinsicContext, call: ts.CallExpression
         kind: "asset",
         cpp: `bbl::load_gltf(${engine.cpp}, ` +
             `bbl::asset_path(` +
-            `${context.cppString(asset.output)}))`,
+            `${context.cppString(asset.output)})${context.hasFeature("loader:gltf-cameras") ? ", true" : ""})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
         asset,
         assetRootState: { reparented: false },
@@ -359,18 +361,8 @@ function compileSelectVariant(context: AssetIntrinsicContext, call: ts.CallExpre
 }
 
 function compileEnableGltfCameras(context: AssetIntrinsicContext, call: ts.CallExpression): Value | undefined {
-    // src/loader-gltf/gltf-feature-camera.ts enableGltfCameras:
-    // registers the `_camera` feature for subsequent loadGltf
-    // calls, gated per asset by `!!json.cameras?.length`. The
-    // generated loader carries the lowered applyAsset walk for
-    // every glTF load, which is the pin's behaviour for a scene
-    // that enables cameras before loading — the corpus shape.
-    // The call itself creates nothing, so it emits no statement.
-    // Each imported camera is the pin's own parented FreeCamera,
-    // so the free-camera record family is part of this feature.
     context.expectArgumentCount(call, 0, 0);
-    context.reachFeature("loader:gltf-cameras", call);
-    context.reachFeature("camera:free", call);
+    context.enableGltfCameras(call);
     return { kind: "void", cpp: "" };
 }
 

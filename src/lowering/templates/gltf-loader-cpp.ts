@@ -361,7 +361,7 @@ struct WeightTrack {
 struct AnimatedCameraBinding {
     CameraHandle camera{};
     std::size_t node = 0;
-    std::array<float, 4> fixup_lanes{1.0f, 1.0f, 1.0f, 1.0f};
+    Matrix local{};
 };` : ""}${animationPointer ? `
 
 struct VisibilityTrack {
@@ -1294,7 +1294,11 @@ ${gltfMaterialProjection(animationPointerMaterials)}
 
 } // namespace
 
-AssetHandle load_gltf(Engine& engine, const std::string& path) {
+${gltfCameras ? `AssetHandle load_gltf(Engine& engine, const std::string& path) {
+    return load_gltf(engine, path, false);
+}
+
+` : ""}AssetHandle load_gltf(Engine& engine, const std::string& path${gltfCameras ? ", bool load_cameras" : ""}) {
     ts::ArrayBuffer buffer = ts::await(pal::fetch_array_buffer(path));
     const upstream::ParsedGlbContainer container = upstream::parse_glb_container(buffer);
     const JsonObject& document = container.json.as_object();
@@ -1466,17 +1470,7 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
     }
 
     const auto parents = build_gltf_parents(document);
-    validate_gltf_parents(parents);${gltfCameras ? `
-    std::optional<GltfWorldCache> world_cache;
-    std::vector<Matrix> world;
-    const auto compute_world = [&](std::size_t index) -> const Matrix& {
-        if (!world_cache) {
-            world_cache.emplace(node_json.size());
-            world.resize(node_json.size());
-        }
-        world.at(index) = gltf_document_world(compute_gltf_node_world(document, index, parents, *world_cache));
-        return world.at(index);
-    };` : ""}
+    validate_gltf_parents(parents);
 
     AssetRecord asset;${interactivity ? `
     // KHR_interactivity's node-to-meshes table, filled by the mesh walk

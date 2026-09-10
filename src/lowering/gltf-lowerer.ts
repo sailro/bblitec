@@ -18,7 +18,6 @@ export {
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
 } from "./gltf/matrix-leaves.js";
-export { lowerLocalMatrixCpp } from "./gltf/local-matrix.js";
 export {
     lowerIblEnvironmentScalarsCpp,
     lowerIblPolynomialCpp,
