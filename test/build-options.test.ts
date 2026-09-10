@@ -244,7 +244,8 @@ test("shipping packages require the trimmed static build", () => {
     // The package is the executable alone: the trimmed SDL carries only the
     // Direct3D 12 driver, so no launcher pins one, and the console window
     // is the log.
-    assert.doesNotMatch(script, /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/);
+    assert.doesNotMatch(script.slice(0, script.indexOf("$smokeFrames")), /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/);
+    assert.match(script, /\$smokeStart\.Environment\["SDL_ASSERT"\] = "abort"/);
     assert.match(script, /Double-click \$exeName/);
     assert.match(patterns, /\*\.dxil/);
     assert.doesNotMatch(patterns, /\*\.spv/);
@@ -379,7 +380,7 @@ test("feature macros come from one CMake function", () => {
     assert.doesNotMatch(cmake, /BBLITE_HAS_GLTF/);
     assert.equal((cmake.match(/\/STACK:8388608/g) ?? []).length, 1);
     // A generated tree without a codec list is refused, not defaulted.
-    assert.match(cmake, /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/);
+    assert.match(readFileSync("native/dependency-features.cmake", "utf8"), /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/);
 });
 
 test("the scene-invariant PAL units compile in their own object library", () => {

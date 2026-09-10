@@ -17,6 +17,7 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "image-codecs.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
 if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
     throw (
@@ -27,7 +28,7 @@ if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
 if (-not $BuildDirectory) {
     $BuildDirectory = "native\build-$Scene-min-sdl"
 }
-$buildPath = Join-Path $root $BuildDirectory
+$buildPath = Resolve-RepositoryPath $BuildDirectory
 $upstreamPin = Get-Content (
     Join-Path $root "upstream\babylon-lite.json"
 ) -Raw | ConvertFrom-Json
@@ -162,16 +163,14 @@ $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
     [System.IO.Path]::GetFullPath((Join-Path $root $OutputRoot))
 }
 $packageName = "bblitec-$Scene-$backendToken-windows-x64"
-$packageDirectory = Join-Path $outputRootPath $packageName
-$archivePath = Join-Path $outputRootPath "$packageName.zip"
+$outputPlan = New-PackageOutput $outputRootPath $packageName
+$packageDirectory = Join-Path $outputPlan.Staging $packageName
+$archivePath = Join-Path $outputPlan.Staging "$packageName.zip"
 $exeName = "bblitec-$Scene.exe"
-
-if (Test-Path $packageDirectory) {
-    Remove-Item $packageDirectory -Recurse -Force
-}
-if (Test-Path $archivePath) {
-    Remove-Item $archivePath -Force
-}
+$previousExe = Join-Path (Join-Path $outputRootPath $packageName) $exeName
+$previousZip = Join-Path $outputRootPath "$packageName.zip"
+$previousExeBytes = if (Test-Path -LiteralPath $previousExe) { (Get-Item -LiteralPath $previousExe).Length } else { $null }
+$previousZipBytes = if (Test-Path -LiteralPath $previousZip) { (Get-Item -LiteralPath $previousZip).Length } else { $null }
 
 $assets = Join-Path $packageDirectory "assets"
 $shaders = Join-Path $packageDirectory "shaders"
@@ -484,7 +483,16 @@ $smokeStart = [System.Diagnostics.ProcessStartInfo]::new()
 $smokeStart.FileName = Join-Path $packageDirectory $exeName
 $smokeStart.WorkingDirectory = $packageDirectory
 $smokeStart.UseShellExecute = $false
+$smokeStart.CreateNoWindow = $true
+foreach ($name in @($smokeStart.Environment.Keys | Where-Object { $_ -like 'BBLITE_*' })) {
+    [void]$smokeStart.Environment.Remove($name)
+}
 $smokeStart.Environment["BBLITE_MAX_FRAMES"] = "$smokeFrames"
+$smokeStart.Environment["BBLITE_GPU_DEBUG"] = "1"
+$smokeStart.Environment["BBLITE_TEST_PASS"] = "1"
+$smokeStart.Environment["BBLITE_LOCAL_STORAGE_ROOT"] = Join-Path $outputPlan.Staging "smoke-storage"
+$smokeStart.Environment["SDL_GPU_DRIVER"] = "direct3d12"
+$smokeStart.Environment["SDL_ASSERT"] = "abort"
 $smoke = [System.Diagnostics.Process]::Start($smokeStart)
 if (-not $smoke.WaitForExit(120000)) {
     $smoke.Kill()
@@ -496,4 +504,17 @@ if ($smoke.ExitCode -ne 0) {
 Write-Output "Smoke run: $exeName rendered $smokeFrames frames and exited 0."
 
 Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
-Write-Output "Created $archivePath ($backend payload)"
+$receipt = [ordered]@{
+    scene = $Scene; backend = $backend; buildDirectory = $buildPath
+    exeBytes = (Get-Item -LiteralPath (Join-Path $packageDirectory $exeName)).Length
+    zipBytes = (Get-Item -LiteralPath $archivePath).Length
+    unpackedBytes = (Get-ChildItem -LiteralPath $packageDirectory -File -Recurse | Measure-Object Length -Sum).Sum
+    exeSha256 = (Get-FileHash -LiteralPath (Join-Path $packageDirectory $exeName) -Algorithm SHA256).Hash
+    zipSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+    previousExeBytes = $previousExeBytes; previousZipBytes = $previousZipBytes
+    smokeFrames = $smokeFrames; smokeExit = $smoke.ExitCode
+}
+$receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputPlan.Staging "$packageName.json") -Encoding utf8
+Publish-PackageOutput $outputPlan
+$smoke.Dispose()
+Write-Output "Created $(Join-Path $outputRootPath "$packageName.zip") ($backend payload)"

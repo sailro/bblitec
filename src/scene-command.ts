@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { availableParallelism, totalmem } from "node:os";
 import {
     cpSync,
@@ -136,6 +135,7 @@ import {
     hashEntries,
     toolIdentity,
 } from "./validation-resume.js";
+import { installVcpkgManifest, type VcpkgManifestInstall } from "./vcpkg-install.js";
 import { runConcurrently } from "./run-concurrently.js";
 import { historicalBuildCostMs, orderByHistoricalCost } from "./build-scheduling.js";
 import { materializePhysicsDebugCatalog, physicsDebugCatalogPath, renderPhysicsDebugCatalog } from "./physics-debug-catalog.js";
@@ -618,14 +618,6 @@ function sceneUsesNativeFeature(
     );
 }
 
-/** One vcpkg manifest install: where it lands, for which triplet, with
- *  which of the manifest's features. */
-interface VcpkgManifestInstall {
-    installedDirectory: string;
-    triplet: string;
-    features: readonly string[];
-}
-
 /**
  * The install every development tree links against: the full manifest
  * feature set (`developmentVcpkgFeatures`) under the shared root.
@@ -642,70 +634,6 @@ function developmentVcpkgInstall(): VcpkgManifestInstall {
             readFileSync(resolve("native", "vcpkg.json"), "utf8"),
         ),
     };
-}
-
-/**
- * The one vcpkg run a population build makes.
- *
- * Every development tree consumes the same install, so the manifest is
- * installed there once -- before any tree configures, and only when what
- * it is built from moved -- and each configure is then told not to run
- * vcpkg at all (`VCPKG_MANIFEST_INSTALL=OFF`). A configure no longer
- * touches anything shared, so trees configure beside each other instead
- * of through a lock: the serialized manifest check was what made a cold
- * population, or a `CMakeLists.txt` edit, cost 229 vcpkg invocations one
- * after another. The install is keyed on its inputs rather than
- * re-verified per tree: the manifest, the registry configuration, the
- * overlay ports, the feature set, the triplet and the vcpkg executable.
- */
-function installVcpkgManifest(
-    vcpkgExecutable: string,
-    install: VcpkgManifestInstall,
-    environment: NodeJS.ProcessEnv,
-): void {
-    const stampPath = join(install.installedDirectory, ".bblite-install-stamp");
-    // The manifest fingerprint is keyed by repository-relative paths: the
-    // install is shared by every linked worktree, and a fingerprint carrying
-    // absolute paths would differ per worktree, so each one's first build
-    // would re-run vcpkg over an install it already matches -- and two
-    // worktrees building at once would collide on vcpkg's lock.
-    const manifestEntries = ["vcpkg.json", "vcpkg-configuration.json", "vcpkg-overlay-ports"]
-        .map((name) => resolve("native", name))
-        .flatMap((root) =>
-            existsSync(root)
-                ? (statSync(root).isDirectory() ? findFiles(root, () => true).sort() : [root])
-                : [`${relative(resolve("."), root)}\tmissing`],
-        )
-        .map((file) =>
-            file.endsWith("\tmissing")
-                ? file
-                : `${relative(resolve("."), file).replaceAll("\\", "/")}\t${createHash("sha256").update(readFileSync(file)).digest("hex")}`,
-        );
-    const stamp = hashEntries([
-        "vcpkg-install v2",
-        `triplet ${install.triplet}`,
-        `features ${install.features.join(";")}`,
-        `vcpkg ${toolIdentity(vcpkgExecutable)}`,
-        `manifest ${hashEntries(manifestEntries)}`,
-    ]);
-    if (
-        existsSync(stampPath) &&
-        readFileSync(stampPath, "utf8").trim() === stamp
-    ) {
-        return;
-    }
-    run(
-        vcpkgExecutable,
-        [
-            "install",
-            `--x-manifest-root=${resolve("native")}`,
-            `--x-install-root=${install.installedDirectory}`,
-            `--triplet=${install.triplet}`,
-            ...install.features.map((feature) => `--x-feature=${feature}`),
-        ],
-        environment,
-    );
-    writeFileSync(stampPath, `${stamp}\n`);
 }
 
 /** A positive-integer environment override, rejected loudly if malformed. */

@@ -40,6 +40,7 @@
     "scenes:process": "npm run scene -- process all",
     "scenes:parity": "npm run scene -- parity all --differential",
     "package:demo": "pwsh -File tools/package-demo.ps1",
+    "demos:release": "npm run build && node dist/src/shipping-demos.js",
     "shaders:build": "npm run build && node dist/src/compile-shaders.js",
     "simplify:verify": "npm run build && node dist/src/verify-simplify.js",
     "simplify:record": "npm run build && node dist/src/verify-simplify.js --path",

@@ -30,7 +30,7 @@ test("centralizes default-library identity and AST-driven upstream contracts", (
 });
 
 test("entry points acquire the dist lock and only its owner sets the nesting marker", () => {
-    for (const path of ["src/cli.ts", "src/scene-command.ts"]) {
+    for (const path of ["src/cli.ts", "src/scene-command.ts", "src/shipping-demos.ts"]) {
         assert.ok(sourceFacts(path).calls.has("holdDistLock"), path);
     }
     assert.deepEqual(sourcePaths.filter((path) => sourceFacts(path).lockSetter), ["src/dist-lock.ts"]);

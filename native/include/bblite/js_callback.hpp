@@ -31,10 +31,33 @@ struct Closure {
     void gc_trace(const TraceVisitor& visitor) const { visitor(environment); }
 };
 
+template <typename Invoke, typename Signature>
+struct ClosureInvoker;
+
+template <typename Invoke, typename R, bool Noexcept, typename... Args>
+struct ClosureInvoker<Invoke, R (*)(Args...) noexcept(Noexcept)> {
+    static R call(Args... args) noexcept(Noexcept) {
+        Invoke invoke;
+        return invoke(std::forward<Args>(args)...);
+    }
+};
+
 template <typename Environment, typename Invoke>
 [[nodiscard]] auto make_closure(Environment environment, Invoke invoke) {
     static_assert(std::is_empty_v<Invoke>, "Closure invokers must not hide captures.");
-    return Closure<Environment, Invoke>{std::move(environment), std::move(invoke)};
+    if constexpr (requires {
+        requires std::is_trivially_default_constructible_v<Invoke>;
+        requires std::is_trivially_destructible_v<Invoke>;
+        requires std::is_pointer_v<decltype(+invoke)>;
+        requires std::is_function_v<std::remove_pointer_t<decltype(+invoke)>>;
+    }) {
+        // Keep nested lambda scope names out of callback and GC ownership RTTI.
+        // Ordinary dispatch avoids the compiler's large lambda conversion thunks.
+        return Closure<Environment, decltype(+invoke)>{
+            std::move(environment), &ClosureInvoker<Invoke, decltype(+invoke)>::call};
+    } else {
+        return Closure<Environment, Invoke>{std::move(environment), std::move(invoke)};
+    }
 }
 
 /** Direct recursive calls share automatic callable storage. */

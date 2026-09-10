@@ -199,6 +199,27 @@ normal deployment checks. None of these checks is tamper-proof verification.
 
 ## Minimal-size shipping builds
 
+Build and package all registered application demos with:
+
+```powershell
+npm run demos:release -- --output artifacts/releases
+```
+
+`--scene <id,id>` selects application demos; `--workers N` and `--jobs N`
+bound concurrent builds and jobs per build. `--plan` reads existing generated
+features and prints the dependency plan without building or packaging.
+The command generates scenes and D3D12 shaders, prepares reached static
+dependencies once, then builds with MSVC and packages serially. Each image-codec
+set has its own vcpkg install, so SDL_image cannot pull unused decoders from a
+shared superset. Fresh CMake caches discard old package paths; stale deployed
+payloads are preserved beside their build tree before deployment.
+
+Run one shipping workflow at a time and coordinate dependency installs with
+other work. Logs and plans go to `artifacts/shipping/`. Successful replacements
+preserve prior packages under the output's `.replaced/`; `@previous/` is untouched.
+`SIZE-COMPARISON.md` reports executable and ZIP sizes and changes. Package JSON
+receipts contain exact bytes, SHA-256 hashes and the startup-check result.
+
 Use `BBLITE_MINSIZE=ON`, one backend, MSVC, static CRT and
 `VCPKG_TARGET_TRIPLET=x64-windows-static`. Set `BBLITE_GENERATED_DIR` and
 matching `BBLITE_SDL_DIR`/`BBLITE_DAWN_DIR`, `BBLITE_LABSOUND_DIR`,
@@ -207,8 +228,9 @@ matching `BBLITE_SDL_DIR`/`BBLITE_DAWN_DIR`, `BBLITE_LABSOUND_DIR`,
 Build reached dependencies with `tools/build-sdl-min.ps1`,
 `build-dawn-min.ps1`, `build-labsound.ps1 -StaticRuntime` and
 `build-rmlui.ps1 -StaticRuntime`. Pick the SDL install by what the scene
-reaches: `sdl-min` when it reaches neither `audio:engine` nor `input:gamepad`,
-`sdl-min-audio-gamepad` otherwise (a minimal configure warns when the install
+reaches: `sdl-min`, `sdl-min-audio`, `sdl-min-gamepad` or
+`sdl-min-audio-gamepad`, using `-EnableAudio` for `audio:engine` and
+`-EnableGamepad` for `input:gamepad` (a minimal configure warns when the install
 carries a subsystem the scene never reaches and refuses the reverse); decoded
 audio needs LabSound `-EnableCodecs`; inline SVG needs RmlUi `-EnableSvg`.
 Generated features select codecs/navigation libraries.
@@ -218,8 +240,9 @@ disabled runtime requests fail.
 Validate sprite and audio shapes with MSVC; clang-cl/PCHs can conceal narrowing
 and include issues. Package with
 `npm run package:demo -- -Scene <id> -BuildDirectory <dir>`.
-The packager runs the staged executable for five frames from the package
-directory and refuses a package whose run does not exit cleanly.
+The packager runs the staged executable for five frames with GPU validation
+from the package directory and refuses a package whose run does not exit
+cleanly. It publishes only after the staged run and ZIP creation succeed.
 `native/CMakePresets.json` spells the same recipe (`min-sdl`,
 `min-sdl-audio-gamepad`, `min-dawn`) for a Visual Studio developer prompt.
 `BBLITE_PCH` stays OFF here: the precompile is a serial prefix that costs more
