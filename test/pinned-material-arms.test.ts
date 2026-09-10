@@ -340,7 +340,9 @@ test("a glTF dielectric globally registers scene-material F0", async () => {
     // materials are composed. Its process-global registration therefore
     // exposes a later creation-time F0 even when scene code never calls the
     // setter itself.
-    const subjects = await materialSubjects({
+    const {withMeshPlan} = await import("./gltf-mesh-fixture.js");
+    const subjects = await materialSubjects(await withMeshPlan({
+        nodes: [{mesh: 0}], meshes: [{primitives: [{material: 0}]}],
         materials: [{
             extensions: {
                 KHR_materials_ior: { ior: 1.209 },
@@ -349,7 +351,7 @@ test("a glTF dielectric globally registers scene-material F0", async () => {
                 KHR_materials_specular: { specularFactor: 1 },
             },
         }],
-    });
+    }));
     assert.equal(subjects[0]!.metallicReflectanceRegistered, true);
     assert.equal(subjects[0]!.input["_metallicF0Factor"], undefined);
 

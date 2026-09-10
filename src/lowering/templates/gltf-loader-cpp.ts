@@ -6,7 +6,7 @@ import { compressedTextureFormat } from "../../compressed-texture-format.js";
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
-import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES, GLTF_VARIANT_PLAN } from "../../gltf-document.js";
+import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES, GLTF_VARIANT_PLAN, GLTF_MESH_PLAN } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 import { gltfMaterialProjection } from "../gltf/material-projection.js";
 /**
@@ -129,12 +129,6 @@ export interface GltfLoaderLoweredSegments {
      */
     boneControlLoading: string;
     boneControlEntryPoints: string;
-    /**
-     * The pinned primitive-mesh fallback-name prefix
-     * (`gltf_mesh_` in `<mesh name> || gltf_mesh_<i>`), read from both
-     * the tight and shared-primitive paths, which must agree.
-     */
-    gltfMeshNamePrefix: string;
 }
 
 /** One lowered glTF extension default: the JSON key and the C++ literal. */
@@ -1385,8 +1379,12 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             bool_or(object, "normalized", false),
         });
     }
+    const auto& mesh_plan = required(document, "${GLTF_MESH_PLAN}").as_object();
+    const auto& planned_materials = required(mesh_plan, "materials").as_array();
+    const auto& planned_meshes = required(mesh_plan, "meshes").as_array();
     std::vector<MaterialHandle> materials;
-    materials.reserve(material_json.size());
+    materials.reserve(planned_materials.size());
+${animationPointerMaterials || interactivity ? `    std::vector<MaterialHandle> source_materials(material_json.size());` : ""}
     GltfMaterialImageCache material_image_cache;
     GltfTextureCache material_texture_cache;
     GltfSamplerContext material_sampler_context(texture_json, sampler_json);
@@ -1428,30 +1426,37 @@ ${sourceTextureReads ? `
     };` : ""}
     const std::vector<bool> animated_base_color =
         collect_animated_base_color(document, material_json.size());
-    GltfCoreMaterialCache core_material_cache;
-    GltfBuiltMaterialCache built_material_cache;
     const auto decode_material_image = [](const TextureData& texture) {
         if (!texture.compressed.mips.empty()) throw std::runtime_error("Canvas2D composition of compressed glTF images is unsupported.");
         return pal::decode_image(js::ArrayBuffer(texture.bytes));
     };
-    const auto material_for = [&](std::size_t index) {
-        const auto source_index = index == material_json.size() ? js::Nullable<double>{} : js::Nullable<double>{double(index)};
-        const auto core = gltf_cached_core_material(core_material_cache, source_index, [&](double selected) -> GltfCoreMaterialRef {
-            const auto selected_index = selected == -1.0 ? std::numeric_limits<std::size_t>::max() : gltf_checked_index(selected);
-            return std::make_shared<GltfCoreMaterial>(assemble_gltf_material(document, selected_index, material_image_cache, resolve_material_image));
-        }).get();
-        return gltf_cached_built_material(built_material_cache, core, [&](GltfCoreMaterialRef material) {
-            const auto source_material_index = material->_rawMatDef ? static_cast<std::size_t>(material->_rawMatDef - material_json.data()) : material_json.size();
-            const auto handle = load_material(engine, gltf_material_object(material->_rawMatDef), *material, buffer, container, views,
+    std::vector<GltfCoreMaterial> core_materials;
+    for (const auto& source : required(mesh_plan, "cores").as_array()) {
+        const auto selected = source.as_number();
+        const auto source_index = selected == -1.0 ? std::numeric_limits<std::size_t>::max() : gltf_checked_index(selected);
+        if (selected != -1.0 && source_index >= material_json.size()) throw std::runtime_error("Invalid glTF core material source.");
+        core_materials.push_back(assemble_gltf_material(document, source_index, material_image_cache, resolve_material_image));
+    }
+    for (const auto& core_index : planned_materials) {
+            const auto& material = core_materials.at(unsigned_value(core_index));
+            const auto source_material_index = material._rawMatDef ? static_cast<std::size_t>(material._rawMatDef - material_json.data()) : material_json.size();
+            const auto handle = load_material(engine, gltf_material_object(material._rawMatDef), material, buffer, container, views,
                 image_json, texture_json, sampler_json, extension_image_fetcher,
                 source_material_index < animated_base_color.size() && animated_base_color[source_material_index],
                 material_features, extended_material, material_texture_wrap, sampled_material, &material_texture_cache, &material_sampler_context,
                 decode_material_image);
 ${sourceTextureReads ? `            retain_source_albedo(handle, source_material_index);` : ""}
-            return handle;
-        }).get();
-    };
-    for (std::size_t index = 0; index < material_json.size(); ++index) materials.push_back(material_for(index));
+            materials.push_back(handle);
+    }
+${animationPointerMaterials || interactivity ? `    // Pointer and interactivity indices refer to original glTF definitions.
+    for (const auto& entry : planned_meshes) {
+        const auto& planned = entry.as_object();
+        const auto& node = node_json.at(unsigned_value(required(planned, "node"))).as_object();
+        const auto& mesh = mesh_json.at(unsigned_value(required(node, "mesh"))).as_object();
+        const auto& primitive = required(mesh, "primitives").as_array().at(unsigned_value(required(planned, "primitive"))).as_object();
+        if (const auto* source = optional(primitive, "material"))
+            source_materials.at(unsigned_value(*source)) = materials.at(unsigned_value(required(planned, "material")));
+    }` : ""}
     const auto* variant_plan_value = optional(document, "${GLTF_VARIANT_PLAN}");
     const auto* variant_names = gltf_json_path(document, {"extensions", "KHR_materials_variants", "variants"});
     if (variant_names && !variant_names->as_array().empty() && !variant_plan_value)
@@ -1459,7 +1464,6 @@ ${sourceTextureReads ? `            retain_source_albedo(handle, source_material
     if (variant_plan_value) {
         const auto& plan = variant_plan_value->as_object();
         const auto base_count = unsigned_value(required(plan, "baseCount"));
-        if (base_count == materials.size() + 1) materials.push_back(material_for(material_json.size()));
         if (base_count != materials.size()) throw std::runtime_error("Invalid glTF variant base material count.");
         GltfMaterialImageCache variant_image_cache;
         GltfSamplerContext variant_sampler_context(std::make_shared<const TextureSamplerState>(gltf_variant_sampler_state()));
@@ -1731,19 +1735,12 @@ ${animationPointer ? `    animation_runtime->light_nodes =
         animation_runtime->skins.push_back(
             std::move(runtime_skin));
     }
-    // One record per primitive, named the pinned way:
-    // \`json.meshes[node.mesh].name || ${lowered.gltfMeshNamePrefix}<i>\`
-    // with i the extraction-walk counter — the same node-major,
-    // primitive-minor order as the pin, and unsupported topologies throw
-    // on both sides, so the counters agree.
-    std::size_t gltf_mesh_counter = 0;
-    for (std::size_t node_index = 0; node_index < node_json.size(); ++node_index) {
-        const JsonObject& node = node_json[node_index].as_object();
-        const ts::JsonValue* mesh_value = optional(node, "mesh");
-        if (!mesh_value) continue;
-        const JsonObject& mesh = mesh_json.at(unsigned_value(*mesh_value)).as_object();
-        for (const ts::JsonValue& primitive_value : array_or_empty(mesh, "primitives")) {
-            const JsonObject& primitive = primitive_value.as_object();
+    for (std::size_t gltf_mesh_counter = 0; gltf_mesh_counter < planned_meshes.size(); ++gltf_mesh_counter) {
+            const auto& planned = planned_meshes[gltf_mesh_counter].as_object();
+            const auto node_index = unsigned_value(required(planned, "node"));
+            const auto& node = node_json.at(node_index).as_object();
+            const auto& mesh = mesh_json.at(unsigned_value(required(node, "mesh"))).as_object();
+            const auto& primitive = required(mesh, "primitives").as_array().at(unsigned_value(required(planned, "primitive"))).as_object();
 ${nonTrianglePrimitives
             ? `            // The pinned loader keeps the authored topology and hands it to
             // WebGPU: load-gltf.ts records a _topology index and
@@ -1966,8 +1963,9 @@ ${nonTrianglePrimitives
                 upstream::pinned_mat4_determinant3(matrix);
             const std::size_t material_index =
                 ${materialVariants
-                    ? `variant_material_slot(document, gltf_mesh_counter, unsigned_or(primitive, "material", material_json.size()))`
-                    : `unsigned_or(primitive, "material", material_json.size())`};
+                    ? `variant_material_slot(document, gltf_mesh_counter, unsigned_value(required(planned, "material")))`
+                    : `unsigned_value(required(planned, "material"))`};
+            if (material_index >= materials.size()) throw std::runtime_error("Invalid glTF mesh material slot.");
             const std::string authored_name = string_or(mesh, "name");
             const bool retains_live_wheel_vertices =
                 authored_name.rfind("wheel", 0) == 0;
@@ -1986,18 +1984,8 @@ ${nonTrianglePrimitives
             if (normals) {
                 geometry.local_normals.resize(positions.count);
             }` : ""}
-            // A primitive with no material index takes the pin's default
-            // material -- getMat(undefined) assembles one from an empty
-            // object -- created once and appended after the document's,
-            // which is where the composed variant table keys it.
-            if (
-                material_index == material_json.size() &&
-                materials.size() == material_json.size()) {
-                materials.push_back(material_for(material_index));
-            }
             const bool clockwise_front_face =
                 determinant < 0.0 &&
-                material_index < materials.size() &&
                 materials[material_index].value <
                     engine.materials.size() &&
                 engine.materials[
@@ -2502,11 +2490,7 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                 record.scene_node_name = "gltf_node_" +
                     std::to_string(node_index);
             }
-            record.name = authored_name.empty()
-                ? "${lowered.gltfMeshNamePrefix}" +
-                    std::to_string(gltf_mesh_counter)
-                : authored_name;
-            ++gltf_mesh_counter;
+            record.name = required(planned, "name").as_string();
             record.primitive = PrimitiveKind::gltf;
             record.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
             // src/material/pbr/fragments/refraction-rtt-fragment.ts,
@@ -2532,7 +2516,7 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     matrix[9] * matrix[9] +
                     matrix[10] * matrix[10]),
             });
-            if (material_index < materials.size()) record.material = materials[material_index];
+            record.material = materials[material_index];
             record.authored_clockwise_front_face =
                 clockwise_front_face;
             record.clockwise_front_face =
@@ -2617,7 +2601,6 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
             // mesh._gltfNodeIndex, in the same node-then-primitive walk.
             asset.mesh_nodes.push_back(node_index);
             asset.node_meshes[node_index].push_back(MeshHandle{mesh_record_index});` : ""}
-        }
     }
     if (animated) {
         {
@@ -2972,11 +2955,12 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                             track.kind =
                                 MaterialTrackKind::texture_transform;
                         }
-                        if (material_index >= materials.size()) {
+                        if (material_index >= source_materials.size()) {
                             throw std::runtime_error(
                                 "glTF animation pointer targets a material that does not exist.");
                         }
-                        track.material = materials[material_index].value;
+                        if (source_materials[material_index].value == invalid_handle) continue;
+                        track.material = source_materials[material_index].value;
                         const auto& material_sampler = parsed_sampler;
                         if (
                             gltf_animation_interpolation_name(material_sampler->interpolation) != "LINEAR") {
@@ -4465,7 +4449,7 @@ ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${intera
         for ([[maybe_unused]] const ts::JsonValue& graph : array_or_empty(interactivity_value->as_object(), "graphs")) {
             asset.flow_graphs.push_back(FlowGraphHandle{self, graph_index++});
         }
-        asset.materials = materials;
+        asset.materials = source_materials;
         asset.node_children.resize(node_json.size());
         for (std::size_t index = 0; index < node_json.size(); ++index) {
             for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children")) {

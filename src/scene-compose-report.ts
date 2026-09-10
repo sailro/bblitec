@@ -47,6 +47,7 @@ import {
     materialSubjects,
 } from "./pinned-material-arms.js";
 import { composePinnedPbrVariant } from "./pinned-pbr-variants.js";
+import { packagedGltfMeshPlan } from "./gltf-mesh-plan.js";
 import {
     pinnedSceneArms,
     pinnedSingleLightTypes,
@@ -80,12 +81,10 @@ function sceneGlbDocument(scene: string): JsonObject | undefined {
     return glbDocument(join(directory, glb));
 }
 
-/** Whether the scene declares any glTF material — what decides if a
- *  capture is worth taking for it. */
+/** Whether the asset constructs base glTF materials worth comparing. */
 function sceneHasGltfMaterials(scene: string): boolean {
     const document = sceneGlbDocument(scene);
-    const materials = document?.["materials"];
-    return Array.isArray(materials) && materials.length > 0;
+    return document !== undefined && packagedGltfMeshPlan(document).materials.length > 0;
 }
 
 const normalize = (text: string): string =>
@@ -280,14 +279,15 @@ async function reportScene(
     const materials = Array.isArray(document?.["materials"])
         ? (document["materials"] as JsonObject[])
         : [];
+    const materialCount = document ? packagedGltfMeshPlan(document).materials.length : 0;
     const empty = {
-        materials: materials.length,
+        materials: materialCount,
         matched: 0,
         gaps: 0,
         capturedFragments: 0,
         subjects: [] as ComposeSubjectRow[],
     };
-    if (materials.length === 0) {
+    if (materialCount === 0) {
         console.log(`${scene}: no glTF materials.`);
         return empty;
     }
@@ -301,18 +301,17 @@ async function reportScene(
     // composes. The linear flag is its asset-side derivation: a scene renders
     // linear when any material transmits, because `set-transmission.ts`
     // retargets the frame graph's colour buffer — and the refraction fragment
-    // composes its own image-processing arm then. The appended
-    // default-material subject is generation's concern; the capture
-    // comparison covers the declared materials, as it always has.
+    // composes its own image-processing arm then. This comparison covers
+    // materials constructed by the base loader, including its default.
     const subjects = (
         await materialSubjects(document as JsonObject, {
             linearImageProcessing:
-                gltfLinearImageProcessing(document as JsonObject),
+                await gltfLinearImageProcessing(document as JsonObject),
         })
-    ).filter((subject) => subject.index < materials.length);
+    ).filter((subject) => subject.index < materialCount);
 
     console.log(
-        `${scene}: ${materials.length} material(s), ` +
+        `${scene}: ${materialCount} material(s), ` +
             (captured.size > 0
                 ? `${captured.size} captured PBR fragment(s)`
                 : captureExcluded
@@ -334,9 +333,9 @@ async function reportScene(
             )
             ? [undefined, {}, { _hasSpots: true }]
             : [undefined];
-    for (const { index, name, input: baseInput, uv2Mask, meshFeatures }
+    for (const { sourceIndex, name, input: baseInput, uv2Mask, meshFeatures }
         of subjects) {
-        const material = materials[index]!;
+        const material = sourceIndex === -1 ? {} : materials[sourceIndex]!;
 
         let hit: { file: string; label: string } | undefined;
         let composed = "";
@@ -488,7 +487,7 @@ async function reportScene(
     }
     if (captured.size > 0) {
         console.log(
-            `  ${matched}/${materials.length} compose byte-identically to ` +
+            `  ${matched}/${materialCount} compose byte-identically to ` +
                 "the browser's own fragment",
         );
     }

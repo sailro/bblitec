@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { LoweringContext } from "../context.js";
 import type { GltfMaterialFunction } from "./material-object-lowerer.js";
+import { closedMaterialConstruction } from "./material-construction.js";
 
 /** Separate the variant loader's resource construction from its scheduling AST. */
 export function gltfVariantMaterialSource(context: LoweringContext): {
@@ -20,14 +21,9 @@ export function gltfVariantMaterialSource(context: LoweringContext): {
         ts.isCallExpression(node) && context.expressionMatchesShape(node.expression, "assembleMaterial"));
     if (assemblies.length !== 1 || assemblies[0]!.arguments.length !== 5)
         context.contractError(declaration, "Expected variant material assembly arguments.");
-    const constructions = context.findNodes(pbr, (node): node is ts.CallExpression => ts.isCallExpression(node) &&
-        ts.isArrowFunction(context.unwrapExpression(node.expression)));
-    if (constructions.length !== 1 || constructions[0]!.arguments.length) context.contractError(pbr, "Expected one variant material construction closure.");
-    const construction = context.unwrapExpression(constructions[0]!.expression);
-    if (!ts.isArrowFunction(construction) || !ts.isBlock(construction.body) || construction.parameters.length)
-        context.contractError(pbr, "Expected a closed variant material construction body.");
+    const {call: construction, body} = closedMaterialConstruction(context, pbr);
     const buildFile = ts.createSourceFile(module,
-        `async function gltf_pbr_build_variant(gltfMat, exts, extCtx) ${construction.body.getText(file)}`,
+        `async function gltf_pbr_build_variant(gltfMat, exts, extCtx) ${body.getText(file)}`,
         ts.ScriptTarget.Latest, true);
     const build = buildFile.statements[0];
     if (!build || !ts.isFunctionDeclaration(build)) context.contractError(declaration, "Expected variant material function.");
@@ -45,7 +41,7 @@ export function gltfVariantMaterialSource(context: LoweringContext): {
     // the material constructor is replaced by a recording resource boundary;
     // that same constructor is lowered below for native execution.
     const transformed = ts.transform(pbr.initializer!, [visitorContext => root => {
-        const visit: ts.Visitor = node => node === constructions[0]
+        const visit: ts.Visitor = node => node === construction
             ? ts.factory.createCallExpression(ts.factory.createIdentifier("buildMaterial"), undefined, [ts.factory.createIdentifier("gltfMat")])
             : ts.visitEachChild(node, visit, visitorContext);
         return ts.visitNode(root, visit) as ts.Expression;

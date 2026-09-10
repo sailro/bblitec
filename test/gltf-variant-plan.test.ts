@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
-import { asRecords, gltfVariantNames, instantiatedPrimitiveRecords, GLTF_VARIANT_PLAN, type JsonObject } from "../src/gltf-document.js";
-import { gltfBaseMaterialCount, gltfVariantPlan, packageVariantPlan } from "../src/gltf-variant-plan.js";
+import { gltfVariantNames, GLTF_VARIANT_PLAN, type JsonObject } from "../src/gltf-document.js";
+import { gltfVariantPlan, packageVariantPlan } from "../src/gltf-variant-plan.js";
+import { packagedGltfMeshPlan } from "../src/gltf-mesh-plan.js";
+import { withMeshPlan } from "./gltf-mesh-fixture.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { materialSubjects, gltfRenderables } from "../src/pinned-material-arms.js";
 import { transpileCommonJs } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
 
 const module = "src/loader-gltf/gltf-variants.ts";
-const document = (): JsonObject => ({
+const document = (): Promise<JsonObject> => withMeshPlan({
     materials: [{name: "base"}, {name: "red"}, {name: "white"}, {name: "unselected"}, {name: "unused"}],
     nodes: [{mesh: 1}, {}, {mesh: 0}, {mesh: 1}],
     meshes: [{primitives: [{material: 0, attributes: {}}]}, {primitives: [
@@ -38,9 +40,10 @@ async function sourcePlan(json: JsonObject, context: LoweringContext) {
     transformed.dispose();
     const names = gltfVariantNames(json);
     const materials: number[] = [];
-    const baseCount = gltfBaseMaterialCount(json);
-    const meshes = instantiatedPrimitiveRecords(json).map(primitive => ({material: {index: typeof primitive.material === "number"
-        ? primitive.material : asRecords(json.materials).length}}));
+    const base = packagedGltfMeshPlan(json);
+    const baseCount = base.materials.length;
+    const baseMaterials = base.materials.map((_, index) => ({index}));
+    const meshes = base.meshes.map(mesh => ({material: baseMaterials[mesh.material]!}));
     const leaves = {
         mipmapModule: {generateMipmaps() {}},
         getOrCreateSampler: () => ({}), makeImageFetcher: () => () => undefined,
@@ -79,40 +82,40 @@ for (const [name, context] of [
     ["selection order", doctoredContext("src/loader-gltf/material-variants.ts", "for (const entry of entries)", "for (const entry of [...entries].reverse())")],
     ["selection without source reset", doctoredContext("src/loader-gltf/material-variants.ts", "for (const entry of data.originals)", "for (const entry of [])")],
 ] as const) test(`variant material schedule follows ${name} source`, async () => {
-    assert.deepEqual(await gltfVariantPlan(document(), context), await sourcePlan(document(), context));
+    assert.deepEqual(await gltfVariantPlan((await document()), context), await sourcePlan((await document()), context));
 });
 
 test("variant slots retain separate base identity and every source-built mapping", async () => {
-    const plan = await gltfVariantPlan(document());
-    assert.equal(plan.baseCount, 6);
+    const plan = await gltfVariantPlan((await document()));
+    assert.equal(plan.baseCount, 3);
     assert.deepEqual(plan.materials, [1, 2, 3, 0]);
-    assert.deepEqual(plan.selections.A, [7, 5, 0, 7, 5]);
-    assert.deepEqual(plan.selections.B, [1, 9, 0, 1, 9]);
-    const subjects = await materialSubjects(document());
-    assert.deepEqual(subjects.map(subject => subject.index), Array.from({length: 10}, (_, index) => index));
-    assert.deepEqual(subjects.map(subject => subject.name), ["base", "red", "white", "unselected", "unused", "default material", "red", "white", "unselected", "base"]);
+    assert.deepEqual(plan.selections.A, [4, 1, 2, 4, 1]);
+    assert.deepEqual(plan.selections.B, [0, 6, 2, 0, 6]);
+    const subjects = await materialSubjects((await document()));
+    assert.deepEqual(subjects.map(subject => subject.index), Array.from({length: 7}, (_, index) => index));
+    assert.deepEqual(subjects.map(subject => subject.name), ["red", "default material", "base", "red", "white", "unselected", "base"]);
     for (const name of ["A", "B"]) {
-        const renderables = await gltfRenderables(document(), name);
+        const renderables = await gltfRenderables((await document()), name);
         assert.deepEqual(renderables.map(renderable => renderable.material), plan.selections[name]);
     }
 });
 
 test("variant planning refuses invalid resources and metadata collisions", async () => {
-    const packed = document();
+    const packed = (await document());
     await packageVariantPlan(packed);
-    assert.deepEqual(packed[GLTF_VARIANT_PLAN], await gltfVariantPlan(document()));
+    assert.deepEqual(packed[GLTF_VARIANT_PLAN], await gltfVariantPlan((await document())));
     const cached = await gltfVariantPlan(packed);
     assert.equal(cached.materials, (packed[GLTF_VARIANT_PLAN] as {materials: number[]}).materials);
-    assert.deepEqual(cached, await gltfVariantPlan(document()));
+    assert.deepEqual(cached, await gltfVariantPlan((await document())));
     await assert.rejects(packageVariantPlan(packed), /already carries/);
-    const invalid = document();
+    const invalid = (await document());
     invalid.materials = [];
-    await assert.rejects(gltfVariantPlan(invalid), /invalid glTF material/);
-    await assert.rejects(gltfVariantPlan(document(), doctoredContext(module,
+    await assert.rejects(gltfVariantPlan(invalid), /Invalid or missing packaged/);
+    await assert.rejects(gltfVariantPlan((await document()), doctoredContext(module,
         "assembleMaterial(json, binChunk, matIdx, baseUrl, imageCache)", "assembleMaterial(json, binChunk, matIdx, 'other', imageCache)")), /resource ownership/);
     for (const plan of [null, {}, {...cached, baseCount: 0}, {...cached, materials: [100]},
         {...cached, selections: {}}, {...cached, selections: {A: [0], B: [0]}},
         {...cached, selections: {A: [99, 99, 99, 99, 99], B: [0, 0, 0, 0, 0]}}]) {
-        await assert.rejects(gltfVariantPlan({...document(), [GLTF_VARIANT_PLAN]: plan}), /Invalid packaged/);
+        await assert.rejects(gltfVariantPlan({...(await document()), [GLTF_VARIANT_PLAN]: plan}), /Invalid packaged/);
     }
 });

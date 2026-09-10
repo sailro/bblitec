@@ -6,7 +6,7 @@ import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
 import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
 import { packageMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
-import { packageVariantPlan } from "./gltf-variant-plan.js";
+import { writeGlb } from "./glb-container.js";
 import {
     GLB_BINARY_CHUNK,
     GLB_JSON_CHUNK,
@@ -490,7 +490,6 @@ export async function packageGltf(
     );
     if (sourceTextureReads) await packageSourceAlbedoIdentities(document);
     await packageMeshWalks(document, meshWalks);
-    await packageVariantPlan(document);
     const resourceDirectory = remote || isDataUrl(source)
         ? baseDirectory
         : dirname(resolve(baseDirectory, source));
@@ -790,20 +789,5 @@ export async function packageGltf(
     ];
     document.bufferViews = bufferViews;
 
-    const json = Buffer.from(JSON.stringify(document), "utf8");
-    const jsonLength = Math.ceil(json.length / 4) * 4;
-    const totalLength = 12 + 8 + jsonLength + 8 + binaryLength;
-    const glb = Buffer.alloc(totalLength, 0);
-    glb.writeUInt32LE(0x46546c67, 0);
-    glb.writeUInt32LE(2, 4);
-    glb.writeUInt32LE(totalLength, 8);
-    glb.writeUInt32LE(jsonLength, 12);
-    glb.writeUInt32LE(0x4e4f534a, 16);
-    glb.fill(0x20, 20, 20 + jsonLength);
-    json.copy(glb, 20);
-    const binaryHeader = 20 + jsonLength;
-    glb.writeUInt32LE(binaryLength, binaryHeader);
-    glb.writeUInt32LE(0x004e4942, binaryHeader + 4);
-    Buffer.concat(chunks).copy(glb, binaryHeader + 8);
-    return glb;
+    return writeGlb(document, Buffer.concat(chunks));
 }

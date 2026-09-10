@@ -2770,6 +2770,7 @@ test("composes the pinned lightmap arms the setter's props select", async () => 
 });
 
 test("selects the lightmap's materials from the document's own mesh names", async () => {
+    const {withMeshPlan} = await import("./gltf-mesh-fixture.js");
     const { gltfLightmapMaterials, meshNameSelected } = await import(
         "../src/pinned-material-arms.js"
     );
@@ -2803,7 +2804,7 @@ test("selects the lightmap's materials from the document's own mesh names", asyn
     // carry materials 0, 0 and 1, and every `Cube*` node draws material 2.
     // The renderable walk is node-major, primitive-minor -- the loader's own
     // order -- and each renderable takes its glTF MESH's name.
-    const document = {
+    const document = await withMeshPlan({
         nodes: [
             { name: "level", mesh: 0 },
             { name: "Cube", mesh: 1 },
@@ -2821,7 +2822,7 @@ test("selects the lightmap's materials from the document's own mesh names", asyn
             { name: "Cube.001", primitives: [{ material: 2 }] },
         ],
         materials: [{}, {}, {}],
-    };
+    });
     assert.deepEqual(
         [...(await gltfLightmapMaterials(document, predicate))].sort(),
         [0, 1],
@@ -2831,15 +2832,15 @@ test("selects the lightmap's materials from the document's own mesh names", asyn
     assert.deepEqual(
         [
             ...(await gltfLightmapMaterials(
-                {
+                await withMeshPlan({
                     nodes: [{ mesh: 0 }],
                     meshes: [{ primitives: [{ material: 7 }] }],
-                    materials: [],
-                },
+                    materials: Array.from({length: 8}, () => ({})),
+                }),
                 { kind: "startsWith", value: "gltf_mesh_" },
             )),
         ],
-        [7],
+        [0],
     );
 });
 

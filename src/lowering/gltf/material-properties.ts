@@ -6,7 +6,6 @@ import { gltfCoreMaterialFields } from "./material-assembly.js";
 import { lowerGltfMaterialSetup } from "./material-setup.js";
 import { lowerGltfSamplers } from "./sampler-resolver.js";
 import { lowerGltfExtensionImages } from "./extension-images.js";
-import { lowerGltfMaterialCaches } from "./material-cache.js";
 import { lowerGltfOrmComposition } from "./orm-composition.js";
 
 const setters = [
@@ -122,7 +121,6 @@ GltfPbrValue gltf_pbr_composite_orm(const GltfPbrContext& context, const GltfPbr
 GltfPbrValue gltf_pbr_apply_feature(GltfPbrValue feature, GltfPbrValue material, const GltfPbrContext& context);
 ${lowerGltfExtensionImages(context)}
 ${lowerGltfExtensionImages(context, true)}
-${lowerGltfMaterialCaches(context)}
 ${bodies.join("\n")}
 ${setup.source}
 ${lowerGltfSamplers(context)}

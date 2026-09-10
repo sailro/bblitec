@@ -3,11 +3,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GltfLowerer } from "../src/lowering/gltf/loader.js";
 import { lowerGltfMaterialAssembly } from "../src/lowering/gltf/material-assembly.js";
-import { lowerGltfMaterialCaches } from "../src/lowering/gltf/material-cache.js";
 import { lowerGltfExtensionImages } from "../src/lowering/gltf/extension-images.js";
 import { lowerGltfMaterialTextures } from "../src/lowering/gltf/material-textures.js";
 import { gltfMaterialValueRuntime } from "../src/lowering/gltf/material-value-runtime.js";
@@ -26,8 +24,6 @@ test("glTF material and extension image caches retain identities, null results a
         doctoredContext(loaderModule, "matExts.length ? [] : null", "matExts.length > 1 ? [] : null"),
         doctoredContext(loaderModule, "if (!texInfo || !extFetchImg)", "if (!texInfo || !extFetchImg || sRGB)"),
         doctoredContext(loaderModule, "getCachedTexture(img, sRGB)", "getCachedTexture(img, !sRGB)"),
-        doctoredContext(loaderModule, "const key = (matIdx ?? -1) + 1;", "const key = 0;"),
-        doctoredContext(loaderModule, "if (!cached) {", "if (true) {"),
     ];
     const document = { textures: [{ source: 0 }, { source: 0 }, { source: 1 }, { source: 2 }, { source: 3 }], materials: [
         { pbrMetallicRoughness: { baseColorTexture: { index: 0 } }, normalTexture: { index: 1 }, emissiveTexture: { index: 2 } },
@@ -50,34 +46,14 @@ test("glTF material and extension image caches retain identities, null results a
         const assembly = new Function("exports", "resolveImage", `${transpileCommonJs(assemblySource, materialModule)}\nreturn {assembleMaterial,makeImageFetcher};`)({}, resolveImage) as {
             assembleMaterial(...args: unknown[]): Promise<Core>; makeImageFetcher(...args: unknown[]): (info: object) => Promise<object | null>;
         };
-        const variable = (owner: string, name: string) => {
-            const declaration = context.functionDeclaration(loaderModule, owner).declaration;
-            const found = context.findNodes(declaration, (node): node is ts.VariableDeclaration =>
-                ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
-            assert.equal(found.length, 1); assert.ok(found[0]!.initializer);
-            return found[0]!.initializer.getText();
-        };
-        let assemblies = 0, builds = 0;
-        const getMat = new Function("matCache", "assembleMaterial", "json", "binChunk", "baseUrl", "imageCache",
-            `${transpileCommonJs(`const selected = ${variable("extractAllMeshes", "getMat")};`, loaderModule)}\nreturn selected;`)(
-                [], (...args: unknown[]) => { ++assemblies; return assembly.assembleMaterial(...args); }, document, {}, "", []) as (index?: number) => Promise<Core>;
-        const build = new Function("builtMaterialCache", "matExts", "_needsPbrExt", "buildSampledPbrTextures", "buildDefaultPbrTextures", "assemblePbrProps",
-            "applyGltfOptInPbrFeatures", "engine", "sampler", "_generateMipmaps", "getCachedTexture",
-            `${transpileCommonJs(`const selected = ${variable("uploadMeshes", "buildPbrFromGltfMat")};`, loaderModule)}\nreturn selected;`)(
-                new Map(), [], false, undefined, () => ({}), (core: Core) => {
-                    ++builds; if (core._alphaMode === "BROKEN") throw new Error("material"); return { serial: builds };
-                }, async () => {}, {}, {}, () => {}, () => {}) as (core: Core) => Promise<{ serial: number }>;
-        const identities: Core[] = [], outputs = [];
+        const imageCache: unknown[] = [], outputs = [];
         let coreImage: object | null = null;
         for (const index of requests) {
-            let identity = -1;
             try {
-                const core = await getMat(index ?? undefined);
-                if (!identities.includes(core)) identities.push(core);
-                identity = identities.indexOf(core);
+                const core = await assembly.assembleMaterial(document, {}, index ?? -1, "", imageCache);
                 if (index === 0) coreImage = core._baseColorImage;
-                outputs.push({ identity, serial: (await build(core)).serial, error: "" });
-            } catch (error) { assert.ok(error instanceof Error); outputs.push({ identity, serial: -1, error: error.message }); }
+                outputs.push({alpha: core._alphaMode, error: ""});
+            } catch (error) { assert.ok(error instanceof Error); outputs.push({error: error.message}); }
         }
         const materialReads = [...reads], extensions = [];
         const upload = context.functionDeclaration(loaderModule, "uploadMeshes").declaration.body!.statements;
@@ -108,7 +84,7 @@ test("glTF material and extension image caches retain identities, null results a
             }
             extensions.push({ count, reads: [...reads], uploads, wraps, selected });
         }
-        rows.push({ outputs, assemblies, builds, reads: materialReads, extensions });
+        rows.push({outputs, reads: materialReads, extensions});
     }
     const directory = resolve("artifacts/gltf-material-cache");
     mkdirSync(directory, { recursive: true });
@@ -132,7 +108,6 @@ test("glTF material and extension image caches retain identities, null results a
                 ${cppRecord(lowerGltfMaterialTextures(context), "struct GltfMaterialTexture {")}
                 ${gltfMaterialValueRuntime}
                 ${lowerGltfTextureCache(context)}
-                ${lowerGltfMaterialCaches(context)}
                 ${lowerGltfExtensionImages(context)}
                 void check(const nlohmann::json& cases) {
                     const auto document = ts::JsonValue::from_native(cases.at("document"));
@@ -144,32 +119,17 @@ test("glTF material and extension image caches retain identities, null results a
                         return index == 1 ? nullptr : std::make_shared<GltfMaterialImageSource>(GltfMaterialImageSource{index});
                     };
                     GltfMaterialImageCache image_cache;
-                    GltfCoreMaterialCache core_cache;
-                    GltfBuiltMaterialCache built_cache;
-                    std::vector<GltfCoreMaterialRef> identities;
                     GltfMaterialImage core_image;
-                    unsigned assemblies = 0, builds = 0;
                     for (std::size_t index = 0; index < cases.at("requests").size(); ++index) {
                         const auto& request = cases.at("requests")[index];
                         const auto& wanted = expected.at("outputs")[index];
-                        int identity = -1;
                         try {
-                            const auto core = gltf_cached_core_material(core_cache, request.is_null() ? js::Nullable<double>{} : js::Nullable<double>{request.get<double>()},
-                                [&](double selected) -> GltfCoreMaterialRef { ++assemblies;
-                                    return std::make_shared<GltfCoreMaterial>(assemble_gltf_material(document.as_object(), selected == -1 ? std::numeric_limits<std::size_t>::max() : gltf_checked_index(selected), image_cache, resolve_image));
-                                }).get();
-                            auto found = std::find(identities.begin(), identities.end(), core);
-                            if (found == identities.end()) { identities.push_back(core); found = identities.end() - 1; }
-                            identity = static_cast<int>(std::distance(identities.begin(), found));
-                            if (request == 0) core_image = core->_baseColorImage;
-                            const auto handle = gltf_cached_built_material(built_cache, core, [&](GltfCoreMaterialRef material) {
-                                ++builds; if (material->_alphaMode == "BROKEN") throw std::runtime_error("material"); return MaterialHandle{builds};
-                            }).get();
-                            assert(wanted.at("error") == "" && handle.value == wanted.at("serial"));
+                            const auto core = assemble_gltf_material(document.as_object(), request.is_null() ? std::numeric_limits<std::size_t>::max() : request.get<std::size_t>(), image_cache, resolve_image);
+                            if (request == 0) core_image = core._baseColorImage;
+                            assert(wanted.at("error") == "" && core._alphaMode == wanted.at("alpha").get<std::string>());
                         } catch (const std::runtime_error& error) { assert(wanted.at("error") == error.what()); }
-                        assert(identity == wanted.at("identity"));
                     }
-                    assert(assemblies == expected.at("assemblies") && builds == expected.at("builds") && nlohmann::json(reads) == expected.at("reads"));
+                    assert(nlohmann::json(reads) == expected.at("reads"));
                     for (const auto& row : expected.at("extensions")) {
                         reads.clear(); unsigned uploads = 0, wraps = 0;
                         auto fetch = make_gltf_extension_image_fetcher(document.as_object(), row.at("count").get<double>(), resolve_image);

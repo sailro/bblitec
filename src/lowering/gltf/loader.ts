@@ -37,12 +37,10 @@ import { lowerGltfCamerasCpp } from "./cameras.js";
 import { lowerPunctualLightsCpp } from "./punctual-lights.js";
 import { lowerShPrescaleCpp } from "./sh-prescale.js";
 import {
-    coalescedPropertyDefault,
     findNodes,
     identifierText,
     refuseModule,
     topLevelFunction,
-    unwrapExpression,
 } from "./shared.js";
 import { pinnedHeader } from "../pinned-header.js";
 
@@ -725,7 +723,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 "src/loader-gltf/gltf-animation.ts",
             ),
         );
-        const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(this.context);
         // The refraction fragment's thickness scale the loader pre-bakes
         // into record.baked_world_scale (gltf-loader-cpp.ts): the pinned
         // read must stay the mesh world's longest basis column.
@@ -776,7 +773,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     gltfCameraPoseRefresh: gltfCameras.poseRefresh,
                     boneControlLoading: boneControl.loading,
                     boneControlEntryPoints: boneControl.entryPoints,
-                    gltfMeshNamePrefix,
                 },
                 options,
             ),
@@ -855,54 +851,4 @@ function assertRestPoseSeed(
                 "computeBoneTextureData",
         );
     }
-}
-
-/**
- * The pinned glTF mesh naming: one record per primitive named
- * `json.meshes[json.nodes[m._nodeIndex].mesh].name || gltf_mesh_<i>`,
- * where `i` runs over the extraction walk (nodes in order, primitives in
- * order — the same walk the generated loader performs, and unsupported
- * topologies throw on both sides, so the counters agree). The `||`
- * fallback also covers an authored empty string. Both the tight path
- * (load-gltf.ts) and the shared-primitive path (gltf-share.ts) spell the
- * rule; they must agree for the emitted prefix to serve either.
- */
-export function pinnedGltfMeshNamePrefix(
-    context: LoweringContext,
-): string {
-    const loadGltfFile = context.sourceFile("src/loader-gltf/load-gltf.ts");
-    const shareFile = context.sourceFile("src/loader-gltf/gltf-share.ts");
-    const prefixIn = (file: ts.SourceFile): string | undefined => {
-        const fallback = findNodes(
-            file,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node),
-        )
-            .map((node) =>
-                coalescedPropertyDefault(
-                    node,
-                    ts.SyntaxKind.BarBarToken,
-                )
-            )
-            .find(
-                (candidate) =>
-                    candidate?.key === "name" &&
-                    ts.isTemplateExpression(
-                        unwrapExpression(candidate.fallback),
-                    ),
-            );
-        return fallback
-            ? (unwrapExpression(fallback.fallback) as ts.TemplateExpression)
-                  .head.text
-            : undefined;
-    };
-    const tight = prefixIn(loadGltfFile);
-    const shared = prefixIn(shareFile);
-    if (tight === undefined || tight.length === 0 || tight !== shared) {
-        refuseModule(
-            "loadGltf",
-            "no longer names primitive meshes with one shared fallback prefix",
-        );
-    }
-    return tight;
 }

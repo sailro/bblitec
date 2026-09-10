@@ -1,4 +1,5 @@
-import { asIndex, asObject, asRecords, gltfVariantNames, instantiatedPrimitiveRecords, GLTF_VARIANT_PLAN, type JsonObject } from "./gltf-document.js";
+import { asIndex, asObject, asRecords, areGltfIndices, gltfVariantNames, GLTF_VARIANT_PLAN, type JsonObject } from "./gltf-document.js";
+import { packagedGltfMeshPlan } from "./gltf-mesh-plan.js";
 import { LoweringContext } from "./lowering/context.js";
 import { gltfVariantMaterialSource } from "./lowering/gltf/material-variants.js";
 import { transpileCommonJs } from "./typescript-transpile.js";
@@ -33,27 +34,20 @@ function variantRunners(context: LoweringContext): {schedule: Schedule; select: 
     return {schedule, select};
 }
 
-/** The current base loader's slot count; variant slots form a separate phase. */
-export function gltfBaseMaterialCount(document: JsonObject): number {
-    return asRecords(document.materials).length + Number(asRecords(document.meshes).some(mesh =>
-        asRecords(mesh.primitives).some(primitive => typeof primitive.material !== "number")));
-}
-
 /** Execute the source caches, complete mapping walk and selection over recording handles. */
 export async function gltfVariantPlan(document: JsonObject, context?: LoweringContext): Promise<GltfVariantPlan> {
     const names = gltfVariantNames(document);
-    const baseCount = gltfBaseMaterialCount(document);
+    const base = packagedGltfMeshPlan(document);
+    const baseCount = base.materials.length;
     if (!context && GLTF_VARIANT_PLAN in document) {
         const plan = asObject(document[GLTF_VARIANT_PLAN]);
         const selections = asObject(plan?.selections);
-        const indices = (value: unknown, limit: number): value is number[] => Array.isArray(value) &&
-            value.every(index => asIndex(index) !== undefined && index < limit);
-        if (!plan || plan.baseCount !== baseCount || !indices(plan.materials, asRecords(document.materials).length) || !selections)
+        if (!plan || plan.baseCount !== baseCount || !areGltfIndices(plan.materials, asRecords(document.materials).length) || !selections)
             throw new Error("Invalid packaged glTF variant material metadata.");
         const materials = plan.materials;
-        const meshCount = instantiatedPrimitiveRecords(document).length;
+        const meshCount = base.meshes.length;
         if (Object.keys(selections).length !== new Set(names).size || names.some(name => !Object.hasOwn(selections, name)) ||
-            Object.values(selections).some(slots => !indices(slots, baseCount + materials.length) || slots.length !== meshCount))
+            Object.values(selections).some(slots => !areGltfIndices(slots, baseCount + materials.length) || slots.length !== meshCount))
             throw new Error("Invalid packaged glTF variant selection metadata.");
         return {baseCount, materials, selections: selections as Record<string, number[]>};
     }
@@ -62,7 +56,8 @@ export async function gltfVariantPlan(document: JsonObject, context?: LoweringCo
     if (!names.length) return {baseCount, materials, selections};
     const {schedule, select} = context ? variantRunners(context) : pinnedRunners ??= variantRunners(new LoweringContext());
     const definitions = asRecords(document.materials);
-    const meshes = instantiatedPrimitiveRecords(document).map(primitive => ({material: {index: asIndex(primitive.material) ?? definitions.length}}));
+    const baseMaterials = base.materials.map((_, index) => ({index}));
+    const meshes = base.meshes.map(mesh => ({material: baseMaterials[mesh.material]!}));
     const bin = new DataView(new ArrayBuffer(0));
     const data = await schedule(document, bin, "", names, meshes, (json, bytes, index, base, cache) => {
         if (json !== document || bytes !== bin || base !== "" || !Array.isArray(cache))

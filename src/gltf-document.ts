@@ -45,6 +45,7 @@ export const GAUSSIAN_SPLAT_DOCUMENT_KEY = "__bblitecGaussianSplats";
 export const GLTF_SOURCE_ALBEDO_IDENTITIES = "__bblitecSourceAlbedoIdentities";
 export const GLTF_MESH_WALKS = "__bblitecMeshWalks";
 export const GLTF_VARIANT_PLAN = "__bblitecVariantMaterials";
+export const GLTF_MESH_PLAN = "__bblitecMeshPlan";
 
 /** A parsed JSON object — the shape every glTF document read shares. */
 export type JsonObject = Record<string, unknown>;
@@ -134,6 +135,10 @@ export const asIndex = (value: unknown): number | undefined =>
     typeof value === "number" && Number.isInteger(value) && value >= 0
         ? value
         : undefined;
+
+/** A dense array of indices bounded by a referenced resource table. */
+export const areGltfIndices = (value: unknown, limit: number): value is number[] => Array.isArray(value) &&
+    value.every(index => asIndex(index) !== undefined && index < limit);
 
 export const asString = (value: unknown): string | undefined =>
     typeof value === "string" ? value : undefined;

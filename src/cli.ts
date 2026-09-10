@@ -46,7 +46,7 @@ import {
 } from "./feature-activation.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
-import { resolveGeometryExtensions } from "./compressed-geometry.js";
+import { packageGltfLoadPlan } from "./gltf-load-plan.js";
 import { reachedImageCodecs } from "./image-codecs.js";
 // The dds/hdr/splat/basis packagers and the node-particle bake are imported
 // lazily at their per-kind branches: each top-level-awaits its pinned
@@ -317,7 +317,7 @@ async function materializeAsset(
     )) {
         writeFileSync(
             destination,
-            await resolveGeometryExtensions(
+            await packageGltfLoadPlan(
                 await packageGltf(
                     source, dirname(inputPath), sourceTextureReads,
                     meshWalks.map((walk, index) =>
@@ -415,7 +415,7 @@ async function materializeAsset(
     const bytes = await assetBytes(source, inputPath);
     writeFileSync(destination, asset.kind === "texture" && isKtx1(bytes)
         ? await packageKtx1(bytes)
-        : await resolveGeometryExtensions(bytes, source));
+        : await packageGltfLoadPlan(bytes, source));
 }
 
 function materializedAssetSource(

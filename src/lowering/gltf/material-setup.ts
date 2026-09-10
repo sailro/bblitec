@@ -3,13 +3,14 @@ import { LoweringContext } from "../context.js";
 import { lowerGltfMaterialObjectFunction, type GltfMaterialFunction } from "./material-object-lowerer.js";
 import { lowerGltfDefaultSampler } from "./sampler-mapping.js";
 import { gltfVariantMaterialSource } from "./material-variants.js";
+import { gltfBaseMaterialConstruction } from "./material-construction.js";
 
 /** Document-wide material path selection from the loader's upload setup. */
 export function lowerGltfMaterialSetup(context: LoweringContext, resolveCall: (name: string) => string | undefined): {
     source: string; functions: readonly GltfMaterialFunction[];
 } {
     const module = "src/loader-gltf/load-gltf.ts";
-    const { declaration } = context.functionDeclaration(module, "uploadMeshes");
+    const { declaration, body: constructionBody } = gltfBaseMaterialConstruction(context);
     const statements = declaration.body!.statements;
     const start = statements.findIndex(statement => ts.isVariableStatement(statement) &&
         statement.declarationList.declarations.some(variable => ts.isIdentifier(variable.name) && variable.name.text === "_needsPbrExt"));
@@ -23,19 +24,12 @@ export function lowerGltfMaterialSetup(context: LoweringContext, resolveCall: (n
             node.arguments[0].text === "./gltf-sampler-desc.js").length > 0);
     if (!samplerGate || !ts.isIfStatement(samplerGate))
         context.contractError(declaration, "Expected sampled material path selection.");
-    const builder = context.findNodes(declaration, (node): node is ts.VariableDeclaration =>
-        ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "buildPbrFromGltfMat")[0];
-    const construction = builder && context.findNodes(builder, (node): node is ts.CallExpression =>
-        ts.isCallExpression(node) && ts.isArrowFunction(context.unwrapExpression(node.expression)));
-    if (!construction || construction.length !== 1) context.contractError(declaration, "Expected one material construction closure.");
-    const closure = context.unwrapExpression(construction[0]!.expression);
-    if (!ts.isArrowFunction(closure) || !ts.isBlock(closure.body)) context.contractError(declaration, "Expected a material construction body.");
     const functions = [
         ["gltf_pbr_needs_extended", "json, wrapTex, identityTexWrap",
             `${statements[start]!.getText()}\n${guard.getText()}\nreturn _needsPbrExt;`],
         ["gltf_pbr_needs_sampler", "json", `return ${samplerGate.expression.getText()};`],
         ["gltf_pbr_build_material", "mat, matExts, extCtx, _needsPbrExt, buildSampledPbrTextures",
-            closure.body.statements.map(statement => statement.getText()).join("\n")],
+            constructionBody.statements.map(statement => statement.getText()).join("\n")],
     ] satisfies [string, string, string][];
     const targets = functions.map(([name, parameters, body]): GltfMaterialFunction => {
         const async = name === "gltf_pbr_build_material" ? "async " : "";

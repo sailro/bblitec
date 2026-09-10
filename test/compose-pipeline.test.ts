@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
 import { composeScenePipeline } from "../src/compose-pipeline.js";
@@ -8,6 +8,7 @@ import { emitAssetSpecializations } from "../src/asset-specializer.js";
 import { GeneratedTree } from "../src/generated-tree.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { writeGlbFixture } from "./glb-fixture.js";
+import { packageGltfLoadPlan } from "../src/gltf-load-plan.js";
 import {
     dynamicCasterFeatureSets,
     runtimePbrAssetFeatureSets,
@@ -33,7 +34,8 @@ function writeImportedMeshFixture(outputPath: string, skinned = false): void {
 
 async function composeImportedMesh(outputPath: string, source: string) {
     const result = compileSource(source, {fileName:join(outputPath,"input.ts")});
-    copyFileSync(join(outputPath,"level.glb"),join(outputPath,"assets",result.manifest.assets[0]!.output));
+    writeFileSync(join(outputPath,"assets",result.manifest.assets[0]!.output),
+        await packageGltfLoadPlan(readFileSync(join(outputPath,"level.glb")), "imported mesh fixture"));
     return {result, composed: await composeScenePipeline({result,outputPath,tree:new GeneratedTree(outputPath),
         specializationFeatures:emitAssetSpecializations(outputPath,result.manifest.assets)})};
 }
