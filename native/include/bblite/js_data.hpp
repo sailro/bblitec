@@ -597,8 +597,60 @@ class DataView {
         bool little_endian) const {
         return std::bit_cast<float>(get_uint32(offset, little_endian));
     }
+    [[nodiscard]] double get_float64(
+        std::size_t offset,
+        bool little_endian) const {
+        require(offset, 8);
+        const auto* bytes = buffer_.data() + offset_ + offset;
+        std::uint64_t bits = 0;
+        for (std::size_t index = 0; index < 8; ++index) {
+            const std::size_t position = little_endian ? index : 7 - index;
+            bits |= static_cast<std::uint64_t>(bytes[position]) << (8 * index);
+        }
+        return std::bit_cast<double>(bits);
+    }
+    // The setters store JavaScript's converted integer (ToInt8/ToUint32...)
+    // or the float's bits, in the requested byte order.
+    void set_uint8(std::size_t offset, double value) {
+        require(offset, 1);
+        buffer_.data()[offset_ + offset] = static_cast<std::uint8_t>(modulo_uint32(value));
+    }
+    void set_int8(std::size_t offset, double value) { set_uint8(offset, value); }
+    void set_uint16(std::size_t offset, double value, bool little_endian) {
+        store_bits(offset, 2, modulo_uint32(value), little_endian);
+    }
+    void set_int16(std::size_t offset, double value, bool little_endian) {
+        set_uint16(offset, value, little_endian);
+    }
+    void set_uint32(std::size_t offset, double value, bool little_endian) {
+        store_bits(offset, 4, modulo_uint32(value), little_endian);
+    }
+    void set_int32(std::size_t offset, double value, bool little_endian) {
+        set_uint32(offset, value, little_endian);
+    }
+    void set_float32(std::size_t offset, double value, bool little_endian) {
+        store_bits(offset, 4, std::bit_cast<std::uint32_t>(static_cast<float>(value)), little_endian);
+    }
+    void set_float64(std::size_t offset, double value, bool little_endian) {
+        store_bits(offset, 8, std::bit_cast<std::uint64_t>(value), little_endian);
+    }
 
   private:
+    // JavaScript ToUint32: nonfinite is 0, otherwise truncate and wrap.
+    [[nodiscard]] static std::uint32_t modulo_uint32(double value) {
+        if (!std::isfinite(value)) return 0;
+        const double wrapped = std::fmod(std::trunc(value), 4294967296.0);
+        return static_cast<std::uint32_t>(static_cast<std::int64_t>(
+            wrapped < 0.0 ? wrapped + 4294967296.0 : wrapped));
+    }
+    void store_bits(std::size_t offset, std::size_t width, std::uint64_t bits, bool little_endian) {
+        require(offset, width);
+        auto* bytes = buffer_.data() + offset_ + offset;
+        for (std::size_t index = 0; index < width; ++index) {
+            const std::size_t position = little_endian ? index : width - 1 - index;
+            bytes[position] = static_cast<std::uint8_t>(bits >> (8 * index));
+        }
+    }
     void require(std::size_t offset, std::size_t width) const {
         if (offset > length_ || width > length_ - offset) {
             throw std::runtime_error("DataView read exceeds buffer.");
@@ -1770,6 +1822,87 @@ relative_slice_bounds(
     return value.substr(begin, end - begin);
 }
 
+[[nodiscard]] inline std::string string_trim_start(const std::string& value) {
+    std::size_t begin = 0;
+    while (begin < value.size() && is_ascii_whitespace(value[begin])) {
+        ++begin;
+    }
+    return value.substr(begin);
+}
+
+[[nodiscard]] inline std::string string_trim_end(const std::string& value) {
+    std::size_t end = value.size();
+    while (end > 0 && is_ascii_whitespace(value[end - 1])) {
+        --end;
+    }
+    return value.substr(0, end);
+}
+
+/**
+ * JavaScript `parseFloat`: leading whitespace, an optional sign, decimal
+ * digits with an optional fraction and exponent, or `Infinity`; anything
+ * else in front is NaN and anything after the number is ignored.
+ */
+[[nodiscard]] inline double parse_float(const std::string& value) {
+    std::size_t index = 0;
+    while (index < value.size() && is_ascii_whitespace(value[index])) ++index;
+    const std::size_t start = index;
+    if (index < value.size() && (value[index] == '+' || value[index] == '-')) ++index;
+    if (value.compare(index, 8, "Infinity") == 0) {
+        return value[start] == '-' ? -std::numeric_limits<double>::infinity()
+                                   : std::numeric_limits<double>::infinity();
+    }
+    std::size_t digits = 0;
+    while (index < value.size() && value[index] >= '0' && value[index] <= '9') { ++index; ++digits; }
+    if (index < value.size() && value[index] == '.') {
+        ++index;
+        while (index < value.size() && value[index] >= '0' && value[index] <= '9') { ++index; ++digits; }
+    }
+    if (digits == 0) return std::numeric_limits<double>::quiet_NaN();
+    if (index < value.size() && (value[index] == 'e' || value[index] == 'E')) {
+        std::size_t exponent = index + 1;
+        if (exponent < value.size() && (value[exponent] == '+' || value[exponent] == '-')) ++exponent;
+        if (exponent < value.size() && value[exponent] >= '0' && value[exponent] <= '9') {
+            while (exponent < value.size() && value[exponent] >= '0' && value[exponent] <= '9') ++exponent;
+            index = exponent;
+        }
+    }
+    return std::strtod(value.substr(start, index - start).c_str(), nullptr);
+}
+
+/**
+ * `Number.prototype.toString(radix)`: the integer part by repeated
+ * division and the fraction by repeated multiplication, to the
+ * precision a double carries; radix 10 is the ordinary spelling.
+ */
+[[nodiscard]] inline std::string number_to_string_radix(double value, int radix) {
+    if (radix == 10 || !std::isfinite(value)) return number_to_string(value);
+    if (radix < 2 || radix > 36) throw std::runtime_error("toString() radix must be between 2 and 36");
+    const char* digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+    const bool negative = value < 0.0;
+    double magnitude = std::fabs(value);
+    double integer_part = std::floor(magnitude);
+    double fraction = magnitude - integer_part;
+    std::string integer_digits;
+    if (integer_part == 0.0) integer_digits = "0";
+    while (integer_part >= 1.0) {
+        const double remainder = std::fmod(integer_part, static_cast<double>(radix));
+        integer_digits.insert(integer_digits.begin(), digits[static_cast<int>(remainder)]);
+        integer_part = std::floor(integer_part / radix);
+    }
+    std::string result = negative ? "-" + integer_digits : integer_digits;
+    if (fraction > 0.0) {
+        result += '.';
+        for (int count = 0; fraction > 0.0 && count < 52; ++count) {
+            fraction *= radix;
+            const int digit = static_cast<int>(std::floor(fraction));
+            result += digits[digit];
+            fraction -= digit;
+        }
+    }
+    return result;
+}
+
 [[nodiscard]] inline double string_index_of(
     const std::string& value,
     const std::string& search) {
@@ -2092,6 +2225,27 @@ class StringCodeUnitCursor {
     return prefix;
 }
 
+[[nodiscard]] inline std::string string_pad_end(
+    const std::string& value,
+    double target_length_value,
+    const std::string& fill) {
+    const auto target_length = static_cast<std::size_t>(
+        std::max(0.0, std::trunc(target_length_value)));
+    if (value.size() >= target_length || fill.empty()) return value;
+    const std::size_t needed = target_length - value.size();
+    std::string suffix;
+    suffix.reserve(needed);
+    while (suffix.size() < needed) suffix += fill;
+    suffix.resize(needed);
+    return value + suffix;
+}
+
+/** `String.prototype.charAt`: the code unit at the index, or the empty string. */
+[[nodiscard]] inline std::string string_char_at(const std::string& value, double index) {
+    const auto unit = string_relative_at(value, index < 0.0 ? std::numeric_limits<double>::quiet_NaN() : index);
+    return unit.has_value() && index >= 0.0 ? *unit : std::string{};
+}
+
 // `Record<Union, T>` — one fixed slot per member of a string-literal
 // union. The compiler lays the slots out in the union's own member
 // order, which is the order its enum tags are numbered in, so a tag
@@ -2158,6 +2312,23 @@ template <typename Range>
     return array_join(values, separator, [](const auto& value) -> const auto& {
         return value;
     });
+}
+
+/** `%TypedArray%.prototype.subarray`: a view over the same bytes for a numeric range. */
+template <typename Values>
+[[nodiscard]] inline Values typed_array_subarray(
+    const Values& values,
+    double begin_value,
+    double end_value) {
+    const auto [begin, end] = relative_slice_bounds(
+        values.size(),
+        begin_value,
+        end_value);
+    using Element = typename Values::value_type;
+    return Values(
+        values.buffer(),
+        static_cast<double>(values.byte_offset() + begin * sizeof(Element)),
+        static_cast<double>(end - begin));
 }
 
 /** `%TypedArray%.prototype.slice` copies a numeric range into fresh storage. */

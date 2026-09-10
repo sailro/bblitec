@@ -911,12 +911,12 @@ export function compileDataMethodCall(
     if (
         isTypedArrayType(dataType) &&
         dataType.kind !== "u8array" &&
-        method === "slice"
+        (method === "slice" || method === "subarray")
     ) {
         if (call.arguments.length > 2) {
             lowerer.context.fail(
                 call,
-                "TypedArray.slice expects up to two arguments.",
+                `TypedArray.${method} expects up to two arguments.`,
             );
         }
         const begin = call.arguments[0]
@@ -932,68 +932,21 @@ export function compileDataMethodCall(
               )
             : `static_cast<double>(${narrowed.cpp}.size())`;
         lowerer.context.reachJsData();
+        // `slice` copies the range; `subarray` is a view sharing the
+        // receiver's bytes, so writes through it reach the source.
         return {
             kind: "data",
             cpp:
-                `bbl::js::typed_array_slice(${narrowed.cpp}, ` +
+                `bbl::js::typed_array_${method === "slice" ? "slice" : "subarray"}(${narrowed.cpp}, ` +
                 `${begin}, ${end})`,
             dataType,
         };
     }
-    if (
-        dataType?.kind === "dataview" &&
-        (method === "getInt8" || method === "getUint8")
-    ) {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                `DataView.${method} expects one argument.`,
-            );
+    if (dataType?.kind === "dataview") {
+        const accessor = DATA_VIEW_ACCESSORS.get(method);
+        if (accessor) {
+            return compileDataViewAccessor(lowerer, call, narrowed, method, accessor);
         }
-        const offset = lowerer.context.compileNumber(
-            argumentAt(call, 0),
-            "double",
-        );
-        const nativeMethod = method
-            .replace(/^get/, "get_")
-            .replace(/([a-z])([A-Z])/g, "$1_$2")
-            .toLowerCase();
-        return {
-            kind: "number",
-            cpp:
-                `static_cast<double>(${narrowed.cpp}.${nativeMethod}(` +
-                `bbl::js::array_index(${offset})))`,
-            dataType: { kind: "number" },
-        };
-    }
-    if (
-        dataType?.kind === "dataview" &&
-        ["getInt16", "getUint16", "getInt32", "getUint32", "getFloat32"].includes(method)
-    ) {
-        if (call.arguments.length < 1 || call.arguments.length > 2) {
-            lowerer.context.fail(
-                call,
-                `DataView.${method} expects one or two arguments.`,
-            );
-        }
-        const offset = lowerer.context.compileNumber(
-            argumentAt(call, 0),
-            "double",
-        );
-        const littleEndian = call.arguments[1]
-            ? lowerer.context.compileCondition(call.arguments[1])
-            : "false";
-        const nativeMethod = method
-            .replace(/^get/, "get_")
-            .replace(/([a-z])([A-Z])/g, "$1_$2")
-            .toLowerCase();
-        return {
-            kind: "number",
-            cpp:
-                `static_cast<double>(${narrowed.cpp}.${nativeMethod}(` +
-                `bbl::js::array_index(${offset}), ${littleEndian}))`,
-            dataType: { kind: "number" },
-        };
     }
     if (
         dataType?.kind !== "vector" &&
@@ -2064,19 +2017,100 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
             dataType: { kind: "number" },
         };
     }
-    if (method === "padStart") {
+    if (method === "padStart" || method === "padEnd") {
         if (call.arguments.length < 1 || call.arguments.length > 2) {
-            lowerer.context.fail(call, "String.padStart expects one or two arguments.");
+            lowerer.context.fail(call, `String.${method} expects one or two arguments.`);
         }
         const fill = call.arguments[1]
             ? lowerer.compileForSink(call.arguments[1], { kind: "string" })
             : lowerer.context.cppString(" ");
         return {
             kind: "data",
-            cpp: `bbl::js::string_pad_start(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")}, ${fill})`,
+            cpp: `bbl::js::string_pad_${method === "padStart" ? "start" : "end"}(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")}, ${fill})`,
             dataType: { kind: "string" },
         };
     }
+    if (method === "trimStart" || method === "trimEnd") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, `String.${method} takes no arguments.`);
+        }
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_trim_${method === "trimStart" ? "start" : "end"}(${narrowed.cpp})`,
+            dataType: { kind: "string" },
+        };
+    }
+    if (method === "charAt") {
+        if (call.arguments.length > 1) {
+            lowerer.context.fail(call, "String.charAt expects at most one index.");
+        }
+        const index = call.arguments[0]
+            ? lowerer.context.compileNumber(argumentAt(call, 0), "double")
+            : "0.0";
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_char_at(${narrowed.cpp}, ${index})`,
+            dataType: { kind: "string" },
+        };
+    }
+}
+
+/**
+ * The DataView accessors: each numeric width as a getter and a setter,
+ * spelled natively as `get_<lane>`/`set_<lane>`. Single-byte lanes take
+ * no byte-order argument; the wider ones default to big-endian, as the
+ * DOM does.
+ */
+interface DataViewAccessor {
+    readonly native: string;
+    readonly setter: boolean;
+    readonly wide: boolean;
+}
+
+const DATA_VIEW_ACCESSORS: ReadonlyMap<string, DataViewAccessor> = new EmissionMap(
+    ["Int8", "Uint8", "Int16", "Uint16", "Int32", "Uint32", "Float32", "Float64"].flatMap(
+        (lane): Array<[string, DataViewAccessor]> => {
+            const native = lane.toLowerCase();
+            const wide = !lane.endsWith("8");
+            return [
+                [`get${lane}`, { native: `get_${native}`, setter: false, wide }],
+                [`set${lane}`, { native: `set_${native}`, setter: true, wide }],
+            ];
+        },
+    ),
+);
+
+function compileDataViewAccessor(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    narrowed: Value,
+    method: string,
+    accessor: DataViewAccessor,
+): Value {
+    const fixed = accessor.setter ? 2 : 1;
+    const maximum = fixed + (accessor.wide ? 1 : 0);
+    if (call.arguments.length < fixed || call.arguments.length > maximum) {
+        lowerer.context.fail(
+            call,
+            `DataView.${method} expects ${fixed === maximum ? fixed : `${fixed} or ${maximum}`} arguments.`,
+        );
+    }
+    const offset = `bbl::js::array_index(${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`;
+    const value = accessor.setter
+        ? [lowerer.context.compileNumber(argumentAt(call, 1), "double")]
+        : [];
+    const littleEndian = accessor.wide
+        ? [call.arguments[fixed] ? lowerer.context.compileCondition(call.arguments[fixed]) : "false"]
+        : [];
+    const cpp = `${narrowed.cpp}.${accessor.native}(${[offset, ...value, ...littleEndian].join(", ")})`;
+    if (accessor.setter) {
+        return { kind: "void", cpp };
+    }
+    return {
+        kind: "number",
+        cpp: `static_cast<double>(${cpp})`,
+        dataType: { kind: "number" },
+    };
 }
 
 /** `array.keys()` as a value: the indices 0 through length - 1, in order. */

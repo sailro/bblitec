@@ -4216,6 +4216,43 @@ class Compiler
         }
     }
 
+    /**
+     * `value instanceof LocalClass` is decided at generation: a class
+     * instance is a compile-time record that names its class, and a struct
+     * stored in data names the class it was mapped from. A value that could
+     * be an instance of several classes has no representation yet.
+     */
+    private compileClassInstanceOf(
+        expression: ts.BinaryExpression,
+        className: ts.Identifier,
+    ): string | undefined {
+        const symbol = this.symbols.valueSymbol(className);
+        const declaration = symbol?.valueDeclaration;
+        if (!declaration || !ts.isClassDeclaration(declaration)) {
+            return undefined;
+        }
+        const value = this.compileValue(expression.left);
+        if (value.kind === "record" && value.classDeclaration) {
+            return value.classDeclaration === declaration ? "true" : "false";
+        }
+        if (value.kind === "data" && value.dataType?.kind === "struct") {
+            const classType = this.dataTypes.fromTsType(
+                this.checker.getDeclaredTypeOfSymbol(symbol),
+                expression,
+            );
+            if (classType?.kind === "struct") {
+                return classType.name === value.dataType.name ? "true" : "false";
+            }
+        }
+        if (value.kind === "json-null") {
+            return "false";
+        }
+        this.fail(
+            expression,
+            `'instanceof ${className.text}' is decided for class instances and structs; this value's class is not represented.`,
+        );
+    }
+
     public emitLogicalAssignment(expression: ts.BinaryExpression): boolean {
         return this.dataLowerer.emitLogicalAssignment(expression);
     }
@@ -4839,6 +4876,20 @@ class Compiler
         const enumMember = this.enumMemberValue(expression);
         if (enumMember) {
             return enumMember;
+        }
+        if (ts.isNewExpression(ownerExpression)) {
+            // `new C().member`: the temporary instance is a record like
+            // any other, read once here.
+            const instance = this.compileValue(ownerExpression);
+            if (instance.kind === "record") {
+                const accessor = instance.recordGetters?.[expression.name.text];
+                const member = accessor
+                    ? this.compileRecordGetter(instance, accessor)
+                    : instance.recordProperties?.[expression.name.text];
+                if (member) {
+                    return member;
+                }
+            }
         }
         const staticField = this.classLowerer.resolveStaticField(expression);
         if (staticField?.initializer) {
@@ -6553,6 +6604,8 @@ class Compiler
                     const value = this.compileValue(unwrapped.left);
                     if (value.nativeError) return "true";
                 }
+                const classInstance = this.compileClassInstanceOf(unwrapped, unwrapped.right);
+                if (classInstance !== undefined) return classInstance;
                 // The two buffer views answer `instanceof` beside the
                 // typed arrays; neither table alone names every binary kind.
                 const expected: string | undefined =
@@ -8574,7 +8627,10 @@ class Compiler
      * even when the scope that built it has since been left.
      */
     public withRecordScopes<T>(owner: Value, work: () => T): T {
-        if (!owner.recordScopes && !owner.classDeclaration) {
+        // An object literal's method reads its own record through `this`,
+        // as a class method reads its instance.
+        const ownsMethods = Object.keys(owner.recordMethods ?? {}).length > 0;
+        if (!owner.recordScopes && !owner.classDeclaration && !ownsMethods) {
             return work();
         }
         const saved = [...this.variableScopes];
@@ -8583,7 +8639,7 @@ class Compiler
             this.variableScopes.length = 0;
             this.variableScopes.push(...owner.recordScopes);
         }
-        if (owner.classDeclaration) {
+        if (owner.classDeclaration || ownsMethods) {
             this.defineThis(owner);
         }
         try {

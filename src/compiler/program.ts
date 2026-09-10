@@ -112,6 +112,49 @@ function pinnedInternalDeclarations(): string {
         .join("\n");
 }
 
+/**
+ * The bundler convention `import text from "./shader.wgsl?raw"`: the file's
+ * bytes as a string. The import resolves to a synthesized module beside the
+ * file, spelled with this suffix, whose default export is that string.
+ * The generation record lists the text file itself as the input it read.
+ */
+const RAW_TEXT_MODULE_SUFFIX = ".raw-text-import.ts";
+
+/** The synthesized module a `?raw` specifier resolves to, or undefined for any other specifier. */
+function rawTextImportPath(
+    moduleName: string,
+    containingFile: string,
+): string | undefined {
+    if (!moduleName.endsWith("?raw")) {
+        return undefined;
+    }
+    const relativePath = moduleName.slice(0, -"?raw".length);
+    return resolve(dirname(containingFile), relativePath) + RAW_TEXT_MODULE_SUFFIX;
+}
+
+/** The text file a synthesized raw-text module carries, or undefined for a real path. */
+function rawTextSourcePath(path: string): string | undefined {
+    return path.endsWith(RAW_TEXT_MODULE_SUFFIX)
+        ? path.slice(0, -RAW_TEXT_MODULE_SUFFIX.length)
+        : undefined;
+}
+
+/** The synthesized module's source: the text file's bytes as one default export. */
+function rawTextModuleSource(
+    path: string,
+    host: ts.CompilerHost,
+): string | undefined {
+    const textPath = rawTextSourcePath(path);
+    if (textPath === undefined) {
+        return undefined;
+    }
+    const text = host.readFile(textPath);
+    if (text === undefined) {
+        throw new Error(`Raw text import reads '${textPath}', which does not exist.`);
+    }
+    return `const rawText = ${JSON.stringify(text)};\nexport default rawText;\n`;
+}
+
 export interface CompilerProgram {
     program: ts.Program;
     checker: ts.TypeChecker;
@@ -161,16 +204,28 @@ export function createCompilerProgram(
         ...defaultHost,
         fileExists: (path) =>
             resolve(path) === rootName ||
+            rawTextSourcePath(path) !== undefined ||
             defaultHost.fileExists(path),
         readFile: (path) =>
             resolve(path) === rootName
                 ? source
-                : defaultHost.readFile(path),
+                : rawTextModuleSource(path, defaultHost) ??
+                  defaultHost.readFile(path),
         getSourceFile: (path, languageVersion, onError, shouldCreateNewSourceFile) => {
             if (resolve(path) === rootName) {
                 return ts.createSourceFile(
                     rootName,
                     source,
+                    languageVersion,
+                    true,
+                    ts.ScriptKind.TS,
+                );
+            }
+            const rawText = rawTextModuleSource(path, defaultHost);
+            if (rawText !== undefined) {
+                return ts.createSourceFile(
+                    path,
+                    rawText,
                     languageVersion,
                     true,
                     ts.ScriptKind.TS,
@@ -218,6 +273,16 @@ export function createCompilerProgram(
                         },
                     };
                 }
+                const rawImport = rawTextImportPath(moduleName, containingFile);
+                if (rawImport) {
+                    return {
+                        resolvedModule: {
+                            resolvedFileName: rawImport,
+                            extension: ts.Extension.Ts,
+                            isExternalLibraryImport: false,
+                        },
+                    };
+                }
                 return ts.resolveModuleName(
                     moduleName,
                     containingFile,
@@ -236,7 +301,7 @@ export function createCompilerProgram(
     const nodeModules = `${sep}node_modules${sep}`;
     const localFiles = program
         .getSourceFiles()
-        .map((file) => resolve(file.fileName))
+        .map((file) => resolve(rawTextSourcePath(file.fileName) ?? file.fileName))
         .filter(
             (path) =>
                 !path.includes(nodeModules) &&

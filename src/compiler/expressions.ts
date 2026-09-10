@@ -1002,6 +1002,15 @@ export class ExpressionLowerer {
             this.context.emitExpressionAsStatement(unwrapped);
             return this.context.compileValue(unwrapped.left);
         }
+        // `(a, b)`: the left side runs for its effects and the value is
+        // the right side's.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken
+        ) {
+            this.context.emitExpressionAsStatement(unwrapped.left);
+            return this.compileValue(unwrapped.right);
+        }
         // `(cache[key] ??= [])` in value position: the store happens as a
         // statement and the value is the target read back afterwards,
         // which after `??=` the checker already types as present.
@@ -2228,6 +2237,15 @@ export class ExpressionLowerer {
             }
         }
 
+        if (isParseFloatCallee(callee, this.context)) {
+            this.context.expectArgumentCount(call, 1, 1);
+            const value = this.compileValue(argumentAt(call, 0));
+            if (value.kind !== "string" && !(value.kind === "data" && value.dataType?.kind === "string")) {
+                this.context.fail(argumentAt(call, 0), "Reached parseFloat requires a string value.");
+            }
+            this.context.reachJsData();
+            return { kind: "number", dataType: { kind: "number" }, cpp: `bbl::js::parse_float(${value.cpp})` };
+        }
         if (isNumberParserCallee(callee, this.context, "parseInt")) {
             this.context.expectArgumentCount(call, 1, 2);
             const value = this.compileValue(argumentAt(call, 0));
@@ -2281,6 +2299,13 @@ export class ExpressionLowerer {
             !this.context.lookupOptional(callee)
         ) {
             this.context.expectArgumentCount(call, 1, 1);
+            const argument = this.context.unwrap(argumentAt(call, 0));
+            if (argument.kind === ts.SyntaxKind.NullKeyword) {
+                return { kind: "string", cpp: this.context.cppString("null"), staticString: "null" };
+            }
+            if (ts.isIdentifier(argument) && argument.text === "undefined" && !this.context.lookupOptional(argument)) {
+                return { kind: "string", cpp: this.context.cppString("undefined"), staticString: "undefined" };
+            }
             const value = this.compileValue(argumentAt(call, 0));
             this.context.reachJsData();
             if (value.kind === "number" || value.kind === "boolean") {
@@ -2315,6 +2340,21 @@ export class ExpressionLowerer {
             return this.compileNumberConversion(
                 argumentAt(call, 0),
             );
+        }
+        if (
+            callee.text === "Boolean" &&
+            this.context.isDefaultLibraryIdentifier(callee)
+        ) {
+            // `Boolean(x)` is x's truthiness, which the condition lowering
+            // already spells for every kind.
+            this.context.expectArgumentCount(call, 1, 1);
+            const condition = this.context.compileCondition(argumentAt(call, 0));
+            return {
+                kind: "boolean",
+                cpp: condition,
+                ...(condition === "true" ? { staticBoolean: true } : condition === "false" ? { staticBoolean: false } : {}),
+                dataType: { kind: "boolean" },
+            };
         }
 
         const dynamicModuleAsset =
@@ -3553,11 +3593,14 @@ export class ExpressionLowerer {
         if (callee.name.text === "toString") {
             const owner = this.compileValue(callee.expression);
             if (owner.kind === "number") {
-                this.context.expectArgumentCount(call, 0, 0);
+                this.context.expectArgumentCount(call, 0, 1);
                 this.context.reachJsData();
+                const radix = call.arguments[0];
                 return {
                     kind: "data",
-                    cpp: `bbl::js::number_to_string(${owner.cpp})`,
+                    cpp: radix
+                        ? `bbl::js::number_to_string_radix(${owner.cpp}, static_cast<int>(${this.context.compileNumber(radix, "double")}))`
+                        : `bbl::js::number_to_string(${owner.cpp})`,
                     dataType: { kind: "string" },
                 };
             }
@@ -3757,7 +3800,9 @@ export class ExpressionLowerer {
             ts.isPropertyAccessExpression(receiver) ||
             ts.isElementAccessExpression(receiver) ||
             ts.isConditionalExpression(receiver) ||
-            ts.isCallExpression(receiver)) {
+            ts.isCallExpression(receiver) ||
+            // `new C().method()`: the temporary instance is the receiver.
+            ts.isNewExpression(receiver)) {
             const receiverValue = ts.isIdentifier(receiver)
                 ? this.context.lookupOptional(receiver)
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
