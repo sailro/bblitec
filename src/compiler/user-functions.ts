@@ -29,7 +29,7 @@ import {
 } from "./syntax.js";
 import { firstReturn, forEachReturn } from "./loop-control.js";
 import { FunctionSpecializations, functionDependencies } from "./function-specializations.js";
-import { callTypeArguments } from "./type-arguments.js";
+import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 
 /** The index of a declaration's rest parameter, when it declares one. */
 export function restParameterIndex(declaration: SupportedFunction): number | undefined {
@@ -3023,8 +3023,11 @@ export class UserFunctionLowerer {
                 // Inside a generic body an argument is typed by a type
                 // parameter the checker cannot relate to the callee's
                 // concrete type; the data model, which substitutes what
-                // the enclosing call bound, decides instead.
-                !this.dataModelAgrees(context, argumentType, parameterType, argument)
+                // the enclosing call bound, decides instead. Asked only
+                // then: mapping types allocates struct names, and a probe
+                // that declines here must leave none behind.
+                !(mentionsTypeParameter(this.checker, argumentType) &&
+                    this.dataModelAgrees(context, argumentType, parameterType, argument))
             ) {
                 fail(
                     argument,

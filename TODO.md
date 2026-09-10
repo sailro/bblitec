@@ -8,6 +8,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 - [ ] Remaining core-library forms in data-methods.ts: reverse callbacks, Unicode normalization and locale collation (`normalize`, `localeCompare`), `Array<[K, V]>` pair elements (a mixed tuple has no native element type, so `[...map.entries()]` and pair arrays refuse), `Set.entries()`. M; CottageCore reaches `localeCompare` (26 sites).
 - [ ] Class inheritance, `#private` members, static blocks and mutable static fields written from static methods refuse (classes.ts); a caught error's `name` is always `Error`. M; CottageCore reaches each a few times.
+- [ ] `Object.assign(engineHandle, {...})` still erases silently (object-statics.ts, the shape the browser-instrumentation path always erased); lower it as the property writes it stands for, or refuse. S; camera-mutations and node-geometry tests pin the current shape.
 - [ ] A finally spanning startEngine admits plain writes only (compiler.ts:20545-20567); lower exception completion so a cleanup exception replaces the active one instead of terminating. M; 8 trees reach finally.
 - [ ] Typed WGSL parsing falls back to `rawSource` (shader-ir.ts:982) behind three regex predicates (:1154-1194); 37 regex-over-WGSL sites remain across the shader pipeline. Extend the IR to helper functions, constants and loops (:1320) before removing any. L.
 

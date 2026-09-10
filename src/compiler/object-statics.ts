@@ -278,10 +278,14 @@ function compileObjectAssign(context: ObjectStaticContext, call: ts.CallExpressi
         }
         return target;
     }
-    return context.fail(
-        argumentAt(call, 0),
-        "Object.assign targets a compile-time record, an object literal or a struct.",
-    );
+    // An engine handle has no data fields to store into. The statement
+    // erases exactly as the browser-instrumentation path erased every
+    // `Object.assign` before data targets were lowered; a tracked camera
+    // still refuses through the camera-mutation scan.
+    for (const source of sources) {
+        context.compileValue(source);
+    }
+    return { kind: "void", cpp: "" };
 }
 
 /** Lowers one reached `Object.<name>(...)` from {@link OBJECT_STATICS}. */

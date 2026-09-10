@@ -60,6 +60,44 @@ export function callTypeArguments(
     return bindings;
 }
 
+/**
+ * Whether a type spells a type parameter anywhere in it: bare, as a union or
+ * intersection member, as a reference's argument or as a function type's
+ * parameter or result. Read off the checker's type alone.
+ */
+export function mentionsTypeParameter(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    seen: Set<ts.Type> = new Set(),
+): boolean {
+    if (seen.has(type)) {
+        return false;
+    }
+    seen.add(type);
+    if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) {
+        return true;
+    }
+    if (type.isUnionOrIntersection()) {
+        return type.types.some((member) => mentionsTypeParameter(checker, member, seen));
+    }
+    if ((type.flags & ts.TypeFlags.Object) === 0) {
+        return false;
+    }
+    const reference = type as ts.TypeReference;
+    if (
+        (reference.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
+        checker.getTypeArguments(reference).some((argument) => mentionsTypeParameter(checker, argument, seen))
+    ) {
+        return true;
+    }
+    return type.getCallSignatures().some(
+        (signature) =>
+            signature.getParameters().some((parameter) =>
+                mentionsTypeParameter(checker, checker.getTypeOfSymbol(parameter), seen),
+            ) || mentionsTypeParameter(checker, signature.getReturnType(), seen),
+    );
+}
+
 /** Structural matching of a declared (parameterized) type against an instantiated one. */
 class TypeUnifier {
     private readonly visited = new Set<string>();
