@@ -3807,22 +3807,43 @@ class Compiler
                   )
                 : rawValue;
         const bindings = declaration.name.elements;
+        const restIndex = bindings.findIndex(
+            (element) => !ts.isOmittedExpression(element) && element.dotDotDotToken !== undefined,
+        );
+        const rest = restIndex >= 0 ? bindings[restIndex] : undefined;
+        if (rest !== undefined && restIndex !== bindings.length - 1) {
+            this.fail(rest, "A rest element must be the last binding.");
+        }
+        // `[first, ...rest]`: the rest takes an identifier, bound per arm
+        // below to what follows the named bindings.
+        const restName =
+            rest !== undefined && !ts.isOmittedExpression(rest) && ts.isIdentifier(rest.name)
+                ? rest.name
+                : undefined;
+        if (rest !== undefined && restName === undefined) {
+            this.fail(rest, "A rest binding takes an identifier.");
+        }
         const bindElement = (
             element: ts.ArrayBindingElement,
-            bound: Value,
+            present: Value | undefined,
         ): void => {
             if (ts.isOmittedExpression(element)) {
                 return;
             }
-            if (
-                !ts.isIdentifier(element.name) ||
-                element.initializer ||
-                element.dotDotDotToken
-            ) {
+            if (!ts.isIdentifier(element.name) || element.dotDotDotToken) {
                 this.fail(
                     element,
                     "Tuple destructuring supports plain identifiers.",
                 );
+            }
+            // A default applies exactly when the lane is undefined: past
+            // the end of the tuple, or present as `undefined`.
+            const bound =
+                (!present || present.kind === "json-null") && element.initializer
+                    ? this.compileValue(element.initializer)
+                    : present;
+            if (!bound) {
+                this.fail(element, "The tuple has no element for this binding and it declares no default.");
             }
             let stored = bound;
             if (bound.kind === "record") {
@@ -3852,14 +3873,18 @@ class Compiler
             this.bindLocalValue(element.name, stored);
         };
         if (value.kind === "tuple" && value.tupleElements) {
-            if (bindings.length > value.tupleElements.length) {
-                this.fail(
-                    declaration.name,
-                    `Tuple has ${value.tupleElements.length} elements, destructuring expects ${bindings.length}.`,
-                );
-            }
+            const elements = value.tupleElements;
             bindings.forEach((element, index) => {
-                bindElement(element, value.tupleElements![index]!);
+                if (index === restIndex && restName) {
+                    // The rest is the tuple of what follows.
+                    this.bindLocalValue(restName, {
+                        kind: "tuple",
+                        cpp: "",
+                        tupleElements: elements.slice(index),
+                    });
+                    return;
+                }
+                bindElement(element, elements[index]);
             });
             return;
         }
@@ -3893,7 +3918,34 @@ class Compiler
                 ...value,
                 cpp: temporary,
             };
+            const elementType = value.dataType.element;
             bindings.forEach((element, index) => {
+                if (ts.isOmittedExpression(element)) {
+                    return;
+                }
+                if (index === restIndex && restName) {
+                    // The rest is a fresh array of what follows.
+                    const restType = { kind: "vector", element: elementType } as const;
+                    const restCpp = this.cppIdentifier(restName.text);
+                    this.reachJsData();
+                    this.emit(
+                        `${this.dataTypes.cppType(restType)} ${restCpp}(` +
+                            `${temporary}.begin() + std::min<std::size_t>(${index}, ${temporary}.size()), ${temporary}.end());`,
+                    );
+                    this.defineVariable(restName, this.dataLowerer.leafValue(restCpp, restType));
+                    this.dataLowerer.registerLocal(restCpp, "owned");
+                    return;
+                }
+                if (element.initializer && ts.isIdentifier(element.name)) {
+                    // A default stands in for a lane past the end.
+                    const fallback = this.dataLowerer.compileForSink(element.initializer, elementType);
+                    this.bindCopiedDefault(
+                        element.name,
+                        elementType,
+                        `${temporary}.size() > ${index} ? ${temporary}[${index}] : ${fallback}`,
+                    );
+                    return;
+                }
                 bindElement(
                     element,
                     this.dataLowerer.readVectorBindingElement(
@@ -3909,6 +3961,18 @@ class Compiler
             declaration.initializer,
             "Array destructuring requires a tuple-producing initializer.",
         );
+    }
+
+    /**
+     * A destructuring default as a binding: a copied local of `type`
+     * holding `initializer`, the value the lane or field would have had.
+     */
+    private bindCopiedDefault(name: ts.Identifier, type: DataType, initializer: string): void {
+        const cppName = this.cppIdentifier(name.text);
+        this.reachJsData();
+        this.emit(`${this.dataTypes.cppType(type)} ${cppName} = ${initializer};`);
+        this.defineVariable(name, this.dataLowerer.leafValue(cppName, type));
+        this.dataLowerer.registerLocal(cppName, "copy");
     }
 
     private emitObjectBindingDeclaration(
@@ -3931,28 +3995,49 @@ class Compiler
                       declaration.initializer,
                   )
                 : rawValue;
+        this.bindObjectPattern(declaration.name, value, declaration.initializer);
+    }
+
+    /**
+     * Binds an object pattern from a value: a compile-time record's
+     * properties, or a struct's fields. A destructuring declaration and a
+     * destructured parameter are the same binding over different sources.
+     */
+    public bindObjectPattern(
+        pattern: ts.ObjectBindingPattern,
+        value: Value,
+        source: ts.Node = pattern,
+    ): void {
         if (value.kind === "record") {
-            this.emitRecordBindingDeclaration(declaration.name, value);
+            this.emitRecordBindingDeclaration(pattern, value);
             return;
         }
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             const temporary = this.allocateTemporaryCppName("destructure");
             this.emit({ kind: "declaration", type: "auto&&", name: temporary, initializer: value.cpp });
-            for (const element of declaration.name.elements) {
-                if (element.initializer) {
-                    this.fail(
-                        element,
-                        "Default values in data-struct destructuring are not supported.",
-                    );
-                }
+            for (const element of pattern.elements) {
                 const { name, property } = this.bindingProperty(element);
                 const field = this.dataTypes.structField(
                     value.dataType.name,
                     property,
                     element,
                 );
+                const storedFieldCpp = `${temporary}${this.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
+                if (element.initializer && field.type.kind === "optional") {
+                    // The default stands in for an absent optional field; the
+                    // binding is then a value of the field's inner type.
+                    const fallback = this.dataLowerer.compileForSink(element.initializer, field.type.inner);
+                    this.bindCopiedDefault(
+                        name,
+                        field.type.inner,
+                        `${storedFieldCpp}.has_value() ? *${storedFieldCpp} : ${fallback}`,
+                    );
+                    continue;
+                }
                 const cppName = this.cppIdentifier(name.text);
-                const fieldCpp = `${temporary}${this.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
+                // A default on a required field never applies: the field is
+                // never undefined, so the binding is the field itself.
+                const fieldCpp = storedFieldCpp;
                 const aliases =
                     field.type.kind !== "number" &&
                     field.type.kind !== "boolean" &&
@@ -3994,7 +4079,7 @@ class Compiler
         if (value.kind === "physics-aggregate") {
             const temporary = this.allocateTemporaryCppName("destructure");
             this.emit({ kind: "declaration", type: "const auto", name: temporary, initializer: value.cpp });
-            for (const element of declaration.name.elements) {
+            for (const element of pattern.elements) {
                 if (element.initializer) {
                     this.fail(
                         element,
@@ -4026,13 +4111,13 @@ class Compiler
         }
         if (value.kind !== "render-target-texture") {
             this.fail(
-                declaration.initializer,
+                source,
                 `Object destructuring is not supported for ${value.kind}.`,
             );
         }
         const temporary = this.allocateTemporaryCppName("destructure");
         this.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp });
-        for (const element of declaration.name.elements) {
+        for (const element of pattern.elements) {
             const { name, property } = this.bindingProperty(element);
             const cppName = this.allocateTemporaryCppName(
                 `class_field_${name.text}`,
@@ -4089,9 +4174,29 @@ class Compiler
         pattern: ts.ObjectBindingPattern,
         value: Value,
     ): void {
+        const consumed = new EmissionSet<string>();
         for (const element of pattern.elements) {
+            if (element.dotDotDotToken) {
+                // `{ a, ...rest }`: the rest is the record of the properties
+                // no earlier binding named.
+                if (!ts.isIdentifier(element.name)) {
+                    this.fail(element, "A rest binding takes an identifier.");
+                }
+                const remaining = Object.fromEntries(
+                    Object.entries(value.recordProperties ?? {}).filter(([key]) => !consumed.has(key)),
+                );
+                this.defineVariable(element.name, { kind: "record", cpp: "", recordProperties: remaining });
+                continue;
+            }
             const { name, property } = this.bindingProperty(element);
-            const propertyValue = value.recordProperties?.[property];
+            consumed.add(property);
+            const present = value.recordProperties?.[property];
+            // A default applies exactly when the property is undefined:
+            // absent from the record, or present as `undefined`.
+            const propertyValue =
+                (!present || present.kind === "json-null") && element.initializer
+                    ? this.compileValue(element.initializer)
+                    : present;
             if (!propertyValue) {
                 this.fail(element, `Record has no property '${property}'.`);
             }
@@ -4117,6 +4222,62 @@ class Compiler
                       }),
             });
         }
+    }
+
+    /**
+     * `value instanceof LocalClass` is decided at generation: a class
+     * instance is a compile-time record that names its class, and a struct
+     * stored in data names the class it was mapped from. A value that could
+     * be an instance of several classes has no representation yet.
+     */
+    private compileClassInstanceOf(
+        expression: ts.BinaryExpression,
+        className: ts.Identifier,
+    ): string | undefined {
+        const symbol = this.symbols.valueSymbol(className);
+        const declaration = symbol?.valueDeclaration;
+        if (!declaration || !ts.isClassDeclaration(declaration)) {
+            return undefined;
+        }
+        const value = this.compileValue(expression.left);
+        if (value.kind === "record" && value.classDeclaration) {
+            return value.classDeclaration === declaration ? "true" : "false";
+        }
+        if (value.kind === "data" && value.dataType?.kind === "struct") {
+            const classType = this.dataTypes.fromTsType(
+                this.checker.getDeclaredTypeOfSymbol(symbol),
+                expression,
+            );
+            if (classType?.kind === "struct") {
+                return classType.name === value.dataType.name ? "true" : "false";
+            }
+        }
+        if (
+            value.kind === "json-null" ||
+            value.kind === "number" ||
+            value.kind === "string" ||
+            value.kind === "boolean" ||
+            value.kind === "tuple" ||
+            (value.kind === "data" &&
+                value.dataType !== undefined &&
+                value.dataType.kind !== "struct" &&
+                value.dataType.kind !== "optional")
+        ) {
+            // A scalar, a tuple, a collection: never an instance.
+            return "false";
+        }
+        this.fail(
+            expression,
+            `'instanceof ${className.text}' is decided for class instances and structs; this value's class is not represented.`,
+        );
+    }
+
+    public emitLogicalAssignment(expression: ts.BinaryExpression): void {
+        this.dataLowerer.emitLogicalAssignment(expression);
+    }
+
+    public emitDelete(expression: ts.DeleteExpression): void {
+        this.dataLowerer.emitDelete(expression);
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
@@ -4734,6 +4895,20 @@ class Compiler
         const enumMember = this.enumMemberValue(expression);
         if (enumMember) {
             return enumMember;
+        }
+        if (ts.isNewExpression(ownerExpression)) {
+            // `new C().member`: the temporary instance is a record like
+            // any other, read once here.
+            const instance = this.compileValue(ownerExpression);
+            if (instance.kind === "record") {
+                const accessor = instance.recordGetters?.[expression.name.text];
+                const member = accessor
+                    ? this.compileRecordGetter(instance, accessor)
+                    : instance.recordProperties?.[expression.name.text];
+                if (member) {
+                    return member;
+                }
+            }
         }
         const staticField = this.classLowerer.resolveStaticField(expression);
         if (staticField?.initializer) {
@@ -6435,6 +6610,9 @@ class Compiler
             return `!(${operand})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            if (unwrapped.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+                return this.dataLowerer.compileInOperator(unwrapped);
+            }
             if (
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.InstanceOfKeyword &&
@@ -6445,6 +6623,8 @@ class Compiler
                     const value = this.compileValue(unwrapped.left);
                     if (value.nativeError) return "true";
                 }
+                const classInstance = this.compileClassInstanceOf(unwrapped, unwrapped.right);
+                if (classInstance !== undefined) return classInstance;
                 // The two buffer views answer `instanceof` beside the
                 // typed arrays; neither table alone names every binary kind.
                 const expected: string | undefined =
@@ -8417,7 +8597,19 @@ class Compiler
         if (accessor) {
             return this.compileRecordGetter(owner, accessor);
         }
-        return owner.recordProperties?.[expression.name.text];
+        const property = owner.recordProperties?.[expression.name.text];
+        if (property) {
+            return property;
+        }
+        // A property the record was built without reads as `undefined`
+        // when its type declares it optional: `{ b: 2 } as { a?: number }`
+        // has no `a`, and `r.a ?? 0` is the source's own way of saying so.
+        const declared = this.checker
+            .getTypeAtLocation(expression.expression)
+            .getProperty(expression.name.text);
+        return declared !== undefined && (declared.flags & ts.SymbolFlags.Optional) !== 0
+            ? { kind: "json-null", cpp: "std::nullopt" }
+            : undefined;
     }
 
     public resolveRecordValue(expression: ts.Expression): Value | undefined {
@@ -8453,8 +8645,19 @@ class Compiler
      * method or getter of that record sees the state it closed over
      * even when the scope that built it has since been left.
      */
-    public withRecordScopes<T>(owner: Value, work: () => T): T {
-        if (!owner.recordScopes && !owner.classDeclaration) {
+    public withRecordScopes<T>(
+        owner: Value,
+        work: () => T,
+        // The callable about to run, when the caller holds it: a class
+        // method and an object literal's `method() {}` read their record
+        // through `this`, while an arrow property keeps the `this` it
+        // closed over.
+        method?: ts.Node,
+    ): T {
+        const bindThis =
+            owner.classDeclaration !== undefined ||
+            (method !== undefined && !ts.isArrowFunction(method));
+        if (!owner.recordScopes && !bindThis) {
             return work();
         }
         const saved = [...this.variableScopes];
@@ -8463,7 +8666,7 @@ class Compiler
             this.variableScopes.length = 0;
             this.variableScopes.push(...owner.recordScopes);
         }
-        if (owner.classDeclaration) {
+        if (bindThis) {
             this.defineThis(owner);
         }
         try {

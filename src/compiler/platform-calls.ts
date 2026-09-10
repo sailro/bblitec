@@ -235,6 +235,19 @@ export class PlatformCalls {
             };
         }
         if (
+            callee.name.text === "now" &&
+            call.arguments.length === 0 &&
+            ts.isIdentifier(receiver) &&
+            receiver.text === "Date" &&
+            this.context.isDefaultLibraryIdentifier(receiver)
+        ) {
+            return {
+                kind: "number",
+                cpp: "bbl::js::epoch_milliseconds()",
+                impure: true,
+            };
+        }
+        if (
             callee.name.text === "preventDefault" &&
             call.arguments.length === 0
         ) {

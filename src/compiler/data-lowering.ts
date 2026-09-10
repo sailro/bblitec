@@ -43,6 +43,7 @@ import { isTrsVectorName } from "./assignments.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
+    iteratorMethodCall,
     rootExpression,
     rootIdentifier,
     argumentAt,
@@ -154,6 +155,7 @@ export interface DataLoweringContext
         | "lookupIdentifierValue"
         | "resolveThisField"
         | "resolveRecordMember"
+        | "resolveRecordValue"
         | "enterRuntimeControlFlow"
         | "leaveRuntimeControlFlow"
         | "isInRuntimeControlFlow"
@@ -1442,6 +1444,23 @@ export class DataLowerer {
             const fallback = this.context.compileValue(
                 expression.right,
             );
+            // A scalar element a bounds check found (`xs[0] ?? fallback`
+            // through a span) selects its value or the fallback.
+            if (
+                left.kind === "data" &&
+                left.dataType !== undefined &&
+                (left.dataType.kind === "number" ||
+                    left.dataType.kind === "string" ||
+                    left.dataType.kind === "boolean" ||
+                    left.dataType.kind === "enum") &&
+                fallback.kind !== "json-null"
+            ) {
+                const fallbackCpp = this.compileKnownValueForSink(fallback, left.dataType, expression.right);
+                return this.leafValue(
+                    `(${left.optionalFoundCpp} ? ${left.cpp} : ${fallbackCpp})`,
+                    left.dataType,
+                );
+            }
             if (
                 fallback.kind === "json-null" &&
                 left.dataType !== undefined
@@ -1938,6 +1957,15 @@ export class DataLowerer {
                 `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
                 dataType.element,
             );
+        }
+        // A caught Error is its message string and carries `.message` and
+        // `.name` beside it; nothing else in the data model carries
+        // record properties past its own type.
+        const carried = owner.nativeError
+            ? owner.recordProperties?.[property]
+            : undefined;
+        if (carried) {
+            return carried;
         }
         this.context.fail(
             access,
@@ -3229,6 +3257,76 @@ export class DataLowerer {
         );
     }
 
+    /** An element a range yields as a pair or an index rather than a value. */
+    private pairedElement(
+        element: DataIterationElement,
+    ): element is Extract<DataIterationElement, { kind: "map-entry" | "array-entry" | "array-index" }> {
+        return element.kind === "map-entry" || element.kind === "array-entry" || element.kind === "array-index";
+    }
+
+    /**
+     * `Array.from(iterable, (value, index) => mapped)` over a native
+     * range: one walk that appends each mapped value, evaluating the
+     * mapper once per element in iteration order.
+     */
+    private compileArrayFromMapped(call: ts.CallExpression): Value | undefined {
+        // `Array.from({ length: n }, ...)` is the allocation form below; an
+        // object literal is never a range worth probing.
+        if (ts.isObjectLiteralExpression(this.context.unwrap(argumentAt(call, 0)))) {
+            return undefined;
+        }
+        const range = this.context.probeEmission(() =>
+            this.iterationTarget(argumentAt(call, 0)),
+        );
+        if (!range || this.pairedElement(range.element)) {
+            return undefined;
+        }
+        const resultType = this.dataTypeAt(call);
+        if (resultType?.kind !== "vector") {
+            this.context.fail(call, "Array.from with a mapper requires a concrete array result type.");
+        }
+        const mapper = this.context.unwrap(argumentAt(call, 1));
+        if (!ts.isArrowFunction(mapper) && !ts.isFunctionExpression(mapper) && !ts.isIdentifier(mapper)) {
+            this.context.fail(argumentAt(call, 1), "Array.from's mapper must be a function literal or a local function.");
+        }
+        this.context.reachJsData();
+        const source = this.context.allocateTemporaryCppName("array_from_source");
+        this.context.emit(`auto&& ${source} = ${range.container.cpp};`);
+        const result = this.context.allocateTemporaryCppName("array_from_result");
+        this.context.emit(`${this.context.dataTypes.cppType(resultType)} ${result};`);
+        this.context.emit(`${result}.reserve(${source}.size());`);
+        const index = this.context.allocateTemporaryCppName("array_from_index");
+        this.context.emit(`std::size_t ${index} = 0;`);
+        const item = this.context.allocateTemporaryCppName("array_from_item");
+        const element = range.element;
+        const lines = this.context.captureEmittedLines(() => {
+            this.context.pushScope(this.context.allocateBlockPrefix());
+            try {
+                const value = this.context.compileCallbackWithValues(
+                    mapper,
+                    [
+                        this.leafValue(item, element),
+                        { kind: "number", cpp: `static_cast<double>(${index})`, dataType: { kind: "number" } },
+                    ],
+                    call,
+                );
+                this.context.emit(
+                    `${result}.push_back(${this.compileKnownValueForSink(value, resultType.element, call)});`,
+                );
+                this.context.emit(`++${index};`);
+            } finally {
+                this.context.popScope();
+            }
+        });
+        this.context.emit(`for (auto&& ${item} : ${source}) {`);
+        this.context.increaseIndent();
+        for (const line of lines) this.context.emit(line);
+        this.context.decreaseIndent();
+        this.context.emit("}");
+        this.registerLocal(result, "owned");
+        return { kind: "data", cpp: result, dataType: resultType };
+    }
+
     /**
      * Compiles the reached array-allocation form
      * `Array.from({ length: n }, () => value)`.
@@ -3290,11 +3388,15 @@ export class DataLowerer {
                 "Array.from currently requires an array-like length object and one mapper callback.",
             );
         }
+        const mapped = this.compileArrayFromMapped(call);
+        if (mapped) {
+            return mapped;
+        }
         const source = this.context.unwrap(argumentAt(call, 0));
         if (!ts.isObjectLiteralExpression(source)) {
             this.context.fail(
                 source,
-                "Array.from currently requires an object literal with a length property.",
+                "Array.from with a mapper takes a native array, Set or Map values range, or an object literal with a length property.",
             );
         }
         const lengthProperty = source.properties.find(
@@ -4157,9 +4259,34 @@ export class DataLowerer {
         return (
             this.compileNewArray(expression) ??
             this.compileTypedArrayNew(expression) ??
+            this.compileArrayBufferNew(expression) ??
             this.compileDataViewNew(expression) ??
             this.compileMapOrSetNew(expression)
         );
+    }
+
+    /** `new ArrayBuffer(byteLength)`: zero-filled shared bytes. */
+    private compileArrayBufferNew(
+        expression: ts.NewExpression,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(expression.expression) ||
+            expression.expression.text !== "ArrayBuffer" ||
+            !this.context.isDefaultLibraryIdentifier(expression.expression)
+        ) {
+            return undefined;
+        }
+        const arguments_ = expression.arguments ?? [];
+        if (arguments_.length !== 1) {
+            this.context.fail(expression, "new ArrayBuffer takes one byte length.");
+        }
+        this.context.reachJsData();
+        const length = this.context.compileNumber(arguments_[0]!, "double");
+        return {
+            kind: "data",
+            cpp: `bbl::js::ArrayBuffer(std::vector<std::uint8_t>(bbl::js::array_index(${length})))`,
+            dataType: { kind: "arraybuffer" },
+        };
     }
 
     public compileMapOrSetNew(
@@ -4168,11 +4295,13 @@ export class DataLowerer {
     ): Value | undefined {
         if (
             !ts.isIdentifier(expression.expression) ||
-            !["Map", "Set"].includes(expression.expression.text) ||
+            !["Map", "Set", "WeakMap", "WeakSet"].includes(expression.expression.text) ||
             !this.context.isDefaultLibraryIdentifier(expression.expression)
         ) {
             return undefined;
         }
+        // A weak collection is its strong twin (see the type mapping).
+        const constructedKind = expression.expression.text.endsWith("Map") ? "map" : "set";
         const direct = this.dataTypeAt(expression);
         const contextualType =
             this.context.checker.getContextualType(expression);
@@ -4197,7 +4326,7 @@ export class DataLowerer {
                 `new ${expression.expression.text} requires concrete data type arguments or a contextual container type.`,
             );
         }
-        if (dataType.kind !== expression.expression.text.toLowerCase()) {
+        if (dataType.kind !== constructedKind) {
             this.context.fail(
                 expression,
                 `Constructor ${expression.expression.text} does not match its ${dataType.kind} data type.`,
@@ -5567,8 +5696,19 @@ export class DataLowerer {
             );
         }
         const vectorRebind = kind === "vector";
-        const optionalRebind =
+        // An array, map or set copies its reference, and a reference
+        // struct its handle, so rebinding a nullable local to another one
+        // aliases exactly as JavaScript does.
+        const referenceInner =
             target.dataType.kind === "optional" &&
+            (target.dataType.inner.kind === "vector" ||
+                target.dataType.inner.kind === "map" ||
+                target.dataType.inner.kind === "set" ||
+                (target.dataType.inner.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(target.dataType.inner.name)));
+        const optionalRebind =
+            referenceInner ||
+            (target.dataType.kind === "optional" &&
             (target.dataType.inner.kind === "number" ||
                 target.dataType.inner.kind === "boolean" ||
                 target.dataType.inner.kind === "string" ||
@@ -5591,7 +5731,7 @@ export class DataLowerer {
                 this.context.unwrap(expression.right).kind ===
                     ts.SyntaxKind.NullKeyword ||
                 identifierText(this.context.unwrap(expression.right)) ===
-                    "undefined");
+                    "undefined"));
         if (
             kind !== "number" &&
             kind !== "boolean" &&
@@ -5631,6 +5771,364 @@ export class DataLowerer {
         );
         if (!rebound) this.invalidateStaticElements(target);
         return true;
+    }
+
+    /**
+     * `delete object[key]` removes a dictionary entry; `delete object.field`
+     * clears an optional struct field or drops a compile-time record's
+     * property. Anything else has no native removal to lower to.
+     */
+    public emitDelete(expression: ts.DeleteExpression): void {
+        const target = this.context.unwrap(expression.expression);
+        if (ts.isElementAccessExpression(target)) {
+            const recordOwner = ts.isIdentifier(target.expression)
+                ? this.context.lookupIdentifierValue(target.expression)
+                : undefined;
+            const key = this.context.compileValue(target.argumentExpression);
+            if (recordOwner?.kind === "record") {
+                if (key.staticString === undefined) {
+                    this.context.fail(target.argumentExpression, "Deleting a compile-time record property requires a static key.");
+                }
+                if (this.context.isInRuntimeControlFlow()) {
+                    this.context.fail(expression, "A compile-time record cannot be edited from runtime control flow.");
+                }
+                delete recordOwner.recordProperties?.[key.staticString];
+                return;
+            }
+            const owner = this.compileDataPath(target.expression, "read");
+            const narrowed = owner?.kind === "data"
+                ? this.narrowOptional(owner, target.expression)
+                : undefined;
+            if (narrowed?.dataType?.kind === "map") {
+                this.context.reachJsData();
+                const keyCpp = this.compileKnownValueForSink(key, narrowed.dataType.key, target.argumentExpression);
+                this.context.emit(`static_cast<void>(${narrowed.cpp}.erase(${keyCpp}));`);
+                this.context.invalidateRecordProperties(narrowed);
+                return;
+            }
+        }
+        if (ts.isPropertyAccessExpression(target)) {
+            const recordOwner = this.context.resolveRecordValue(target.expression);
+            if (recordOwner?.kind === "record") {
+                if (this.context.isInRuntimeControlFlow()) {
+                    this.context.fail(expression, "A compile-time record cannot be edited from runtime control flow.");
+                }
+                delete recordOwner.recordProperties?.[target.name.text];
+                return;
+            }
+            const field = this.compileDataPath(target, "write");
+            if (field?.kind === "data" && field.dataType?.kind === "optional") {
+                this.context.reachJsData();
+                this.context.emit(`${field.cpp} = std::nullopt;`);
+                this.invalidateStaticElements(field);
+                return;
+            }
+            if (field) {
+                this.context.fail(
+                    target,
+                    `'${target.name.text}' is a required field of its type; only an optional field can be deleted.`,
+                );
+            }
+        }
+        this.context.fail(
+            expression,
+            "delete is lowered for dictionary entries, optional struct fields and compile-time record properties.",
+        );
+    }
+
+    /** `key in object` as a condition. */
+    public compileInOperator(expression: ts.BinaryExpression): string {
+        const key = this.context.compileValue(expression.left);
+        const owner = this.context.compileValue(expression.right);
+        return this.membershipCpp(owner, expression.right, key, expression.left, "in");
+    }
+
+    /**
+     * Whether `owner` carries `key`, as a condition. A compile-time record
+     * answers from its properties and a dictionary from its native
+     * membership. `in` also asks a struct, which answers from its type: a
+     * required field is always present and an optional one is present when
+     * it holds a value. `Object.hasOwn` declines a struct, whose fields are
+     * its type's rather than the object's own.
+     */
+    public membershipCpp(
+        owner: Value,
+        ownerNode: ts.Expression,
+        key: Value,
+        keyNode: ts.Expression,
+        operator: "in" | "Object.hasOwn",
+    ): string {
+        const label = operator === "in" ? "'in'" : operator;
+        const narrowed = owner.kind === "data"
+            ? this.narrowOptional(owner, ownerNode)
+            : owner;
+        if (narrowed.kind === "record") {
+            if (key.staticString === undefined) {
+                this.context.fail(keyNode, `${label} over a compile-time record requires a static key.`);
+            }
+            const present =
+                Object.hasOwn(narrowed.recordProperties ?? {}, key.staticString) ||
+                Object.hasOwn(narrowed.recordMethods ?? {}, key.staticString) ||
+                Object.hasOwn(narrowed.recordGetters ?? {}, key.staticString);
+            return present ? "true" : "false";
+        }
+        const dataType = narrowed.dataType;
+        if (narrowed.kind === "data" && dataType?.kind === "map") {
+            this.context.reachJsData();
+            const keyCpp = this.compileKnownValueForSink(key, dataType.key, keyNode);
+            return `${narrowed.cpp}.has(${keyCpp})`;
+        }
+        if (operator === "in" && narrowed.kind === "data" && dataType?.kind === "struct") {
+            if (key.staticString === undefined) {
+                this.context.fail(keyNode, "'in' over a struct requires a static key.");
+            }
+            const field = this.context.dataTypes
+                .structFields(dataType.name, ownerNode)
+                .find((candidate) => candidate.sourceName === key.staticString);
+            if (!field) {
+                return "false";
+            }
+            if (field.type.kind !== "optional") {
+                return "true";
+            }
+            const access = this.context.dataTypes.isReferenceStruct(dataType.name) ? "->" : ".";
+            return `${narrowed.cpp}${access}${field.name}.has_value()`;
+        }
+        return this.context.fail(
+            ownerNode,
+            operator === "in"
+                ? "'in' is decided for compile-time records, dictionaries and structs."
+                : "Object.hasOwn is decided for compile-time records and string-keyed dictionaries; a struct's fields are its type's.",
+        );
+    }
+
+    /**
+     * Whether the checker declares `expression` as a string-keyed
+     * dictionary: a `Record<string, T>` alias or an object type carrying a
+     * string index signature. Read off the type alone, so asking costs no
+     * emission and allocates nothing.
+     */
+    public declaredAsDictionary(expression: ts.Expression): boolean {
+        const type = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(expression),
+        );
+        if ((type.flags & ts.TypeFlags.Object) === 0) {
+            return false;
+        }
+        if (type.aliasSymbol?.name === "Record") {
+            const [key] = type.aliasTypeArguments ?? [];
+            return key !== undefined && (key.flags & ts.TypeFlags.String) !== 0;
+        }
+        return this.context.checker.getIndexInfoOfType(type, ts.IndexKind.String) !== undefined;
+    }
+
+    /**
+     * `dictionary[key]` or `dictionary.name` as an assignment target: the
+     * map and the key expression, when the owner is a map. Asked of the
+     * checker first, so a struct field store never pays for a probe that
+     * resolves its owner and discards it.
+     */
+    private dictionaryEntryTarget(
+        left: ts.Expression,
+    ): { owner: Value; dataType: DataType & { kind: "map" }; keyCpp: string } | undefined {
+        if (
+            (!ts.isElementAccessExpression(left) && !ts.isPropertyAccessExpression(left)) ||
+            !this.declaredAsDictionary(left.expression)
+        ) {
+            return undefined;
+        }
+        const owner = this.context.probeEmission(() => {
+            const path = this.compileDataPath(left.expression, "read");
+            const candidate = path?.kind === "data" ? this.narrowOptional(path, left.expression) : undefined;
+            return candidate?.dataType?.kind === "map" ? candidate : undefined;
+        });
+        if (!owner || owner.dataType?.kind !== "map") {
+            return undefined;
+        }
+        const dataType = owner.dataType;
+        if (ts.isPropertyAccessExpression(left)) {
+            if (dataType.key.kind !== "string") return undefined;
+            return { owner, dataType, keyCpp: this.context.cppString(left.name.text) };
+        }
+        const key = this.context.compileValue(left.argumentExpression);
+        return {
+            owner,
+            dataType,
+            keyCpp: this.compileKnownValueForSink(key, dataType.key, left.argumentExpression),
+        };
+    }
+
+    private emitLogicalEntryAssignment(
+        expression: ts.BinaryExpression,
+        entry: { owner: Value; dataType: DataType & { kind: "map" }; keyCpp: string },
+    ): void {
+        this.context.reachJsData();
+        const key = this.context.allocateTemporaryCppName("entry_key");
+        this.context.emit(`const auto ${key} = ${entry.keyCpp};`);
+        const guard = this.logicalAssignmentGuard(expression, `!${entry.owner.cpp}.has(${key})`);
+        this.emitGuardedStore(guard, () => {
+            const value = this.compileForSink(expression.right, entry.dataType.value);
+            this.context.emit(`${entry.owner.cpp}.set(${key}, ${value});`);
+            this.context.invalidateRecordProperties(entry.owner);
+        });
+    }
+
+    /**
+     * The condition under which a logical assignment stores: `nullish`
+     * spells the `??=` test, and the other two read the target's
+     * truthiness. A condition the model settled folds to `true`/`false`.
+     */
+    private logicalAssignmentGuard(expression: ts.BinaryExpression, nullish: string): string {
+        const kind = expression.operatorToken.kind;
+        if (kind === ts.SyntaxKind.QuestionQuestionEqualsToken) {
+            return nullish;
+        }
+        const truthy = this.context.compileCondition(expression.left);
+        if (kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) {
+            return truthy;
+        }
+        return truthy === "true" ? "false" : truthy === "false" ? "true" : `!(${truthy})`;
+    }
+
+    /**
+     * Emits `store`'s lines under `guard`, as the runtime control flow the
+     * plain assignment's bookkeeping treats as a conditional write. A guard
+     * the model settled emits the lines bare (`true`) or nothing (`false`),
+     * so a store that never happens compiles no right side either.
+     */
+    private emitGuardedStore(guard: string, store: () => void): void {
+        if (guard === "false") {
+            return;
+        }
+        this.context.enterRuntimeControlFlow();
+        let lines: string[];
+        try {
+            lines = this.context.captureEmittedLines(store);
+        } finally {
+            this.context.leaveRuntimeControlFlow();
+        }
+        if (guard === "true") {
+            for (const line of lines) this.context.emit(line);
+            return;
+        }
+        this.context.emit(`if (${guard}) {`);
+        this.context.increaseIndent();
+        for (const line of lines) this.context.emit(line);
+        this.context.decreaseIndent();
+        this.context.emit("}");
+    }
+
+    /**
+     * `a ??= b`, `a ||= b` and `a &&= b` over the data model.
+     *
+     * The target is read for the guard and written for the store, which is
+     * JavaScript's own reference-then-assign order for a call-free target;
+     * a target containing a call refuses rather than run it twice. The
+     * right side compiles inside the guarded block, so it is evaluated
+     * only when the store happens, and a target the model proves never
+     * nullish (`??=` on a plain number) emits nothing at all, exactly as
+     * JavaScript never evaluates that right side. The store runs as
+     * runtime control flow, so the plain assignment's bookkeeping treats
+     * it as the conditional write it is.
+     */
+    public emitLogicalAssignment(expression: ts.BinaryExpression): void {
+        const left = this.context.unwrap(expression.left);
+        if (
+            someAnalysisNode(
+                left,
+                (node) => ts.isCallExpression(node) || ts.isNewExpression(node),
+            )
+        ) {
+            this.context.fail(
+                left,
+                "A logical assignment target must not contain a call; bind the call's result to a local first.",
+            );
+        }
+        // A dictionary entry has no native lvalue: its presence is the
+        // guard and the store is `set`.
+        const entry = this.dictionaryEntryTarget(left);
+        if (entry) {
+            this.emitLogicalEntryAssignment(expression, entry);
+            return;
+        }
+        // A plain number, boolean or string local is a native scalar rather
+        // than a data value; it stores the way its plain assignment does.
+        const bound = ts.isIdentifier(left)
+            ? this.context.lookupIdentifierValue(left)
+            : undefined;
+        const target =
+            bound &&
+            (bound.kind === "number" || bound.kind === "boolean" || bound.kind === "string")
+                ? bound
+                : this.compileDataPath(left, ts.isIdentifier(left) ? "read" : "write");
+        const scalarKind =
+            target && (target.kind === "number" || target.kind === "boolean" || target.kind === "string")
+                ? target.kind
+                : undefined;
+        if (
+            !target ||
+            target.freshData ||
+            (!scalarKind && (target.kind !== "data" || !target.dataType))
+        ) {
+            this.context.fail(
+                expression.operatorToken,
+                `'${expression.operatorToken.getText()}' requires a data-model target; ` +
+                    "a compile-time record or an engine handle takes an explicit conditional assignment.",
+            );
+        }
+        if (target.dataStore) {
+            this.context.fail(
+                left,
+                "A logical assignment into a typed-array lane is not lowered; store the selected value explicitly.",
+            );
+        }
+        const targetType = target.dataType;
+        const nullish = expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken;
+        if (nullish && (scalarKind || targetType?.kind !== "optional")) {
+            // A non-nullable target never takes the right side.
+            return;
+        }
+        if (nullish) {
+            this.context.reachJsData();
+        }
+        const guard = this.logicalAssignmentGuard(expression, `!(${target.cpp}).has_value()`);
+        this.emitGuardedStore(guard, () => {
+            const value = scalarKind === "number"
+                ? this.context.compileNumber(expression.right, "double")
+                : scalarKind === "boolean"
+                  ? this.context.compileCondition(expression.right)
+                  : scalarKind === "string"
+                    ? this.compileKnownValueForSink(
+                          this.context.compileValue(expression.right),
+                          { kind: "string" },
+                          expression.right,
+                      )
+                    : this.compileForSink(expression.right, targetType!);
+            this.context.emit(`${target.cpp} = ${value};`);
+            if (scalarKind) {
+                return;
+            }
+            if (ts.isIdentifier(left)) {
+                const rebound = this.context.recordDataAssignmentMetadata(
+                    target,
+                    expression.right,
+                    left,
+                );
+                if (!rebound) this.invalidateStaticElements(target);
+            } else {
+                this.invalidateStaticElements(target);
+                const root = rootIdentifier(left, (chain) =>
+                    this.context.unwrap(chain),
+                );
+                const rootValue = root
+                    ? this.context.lookupIdentifierValue(root)
+                    : undefined;
+                if (rootValue) {
+                    this.invalidateStaticElements(rootValue);
+                    this.context.invalidateRecordProperties(rootValue);
+                }
+            }
+        });
     }
 
     public emitAssignment(
@@ -5903,6 +6401,21 @@ export class DataLowerer {
                     this.context.invalidateRecordProperties(narrowed);
                 }
                 this.context.emit(`${narrowed.cpp}.set(${key}, ${value});`);
+                return true;
+            }
+        }
+        if (ts.isPropertyAccessExpression(left)) {
+            // `dictionary.name = value`: the named member is an entry.
+            const entry = this.dictionaryEntryTarget(left);
+            if (entry) {
+                if (operator !== "=") {
+                    this.context.fail(expression, "Dictionary members support plain assignment only.");
+                }
+                const assigned = this.context.compileValue(expression.right);
+                const value = this.compileKnownValueForSink(assigned, entry.dataType.value, expression.right);
+                this.context.reachJsData();
+                this.context.emit(`${entry.owner.cpp}.set(${entry.keyCpp}, ${value});`);
+                this.context.invalidateRecordProperties(entry.owner);
                 return true;
             }
         }
@@ -6609,7 +7122,15 @@ export class DataLowerer {
                 pinnedHandleKind(this.context.checker.getNonNullableType(this.context.checker.getTypeAtLocation(unwrapped.expression))) === "node-input") {
                 return this.context.compileValue(unwrapped);
             }
-            if (!ts.isOptionalChain(unwrapped)) {
+            // A dictionary lookup (`counts[key] === 2`) is the same
+            // nullable-or-value operand without the chain spelling. The
+            // owner's declared type decides, so no probe runs for the
+            // ordinary comparisons that are not one.
+            const dictionaryLookup =
+                !ts.isOptionalChain(unwrapped) &&
+                (ts.isElementAccessExpression(unwrapped) || ts.isPropertyAccessExpression(unwrapped)) &&
+                this.declaredAsDictionary(unwrapped.expression);
+            if (!ts.isOptionalChain(unwrapped) && !dictionaryLookup) {
                 return undefined;
             }
             const value = this.compileDataPath(
@@ -6875,6 +7396,10 @@ export class DataLowerer {
               template?: Value;
           }
         | undefined {
+        const iterated = knownTuple ? undefined : this.iteratorMethodTarget(expression);
+        if (iterated) {
+            return iterated;
+        }
         const rawValue = knownTuple && !ts.isIdentifier(this.context.unwrap(expression))
             ? this.materializeKnownTuple(expression, knownTuple)
             :
@@ -6943,6 +7468,11 @@ export class DataLowerer {
                     : {}),
             };
         }
+        if (isTypedArrayType(dataType)) {
+            // A typed array iterates its lanes as numbers; the native view
+            // is a range over its element storage.
+            return { container: value, element: { kind: "number" } };
+        }
         if (dataType.kind === "map") {
             return {
                 container: value,
@@ -6971,6 +7501,71 @@ export class DataLowerer {
             return { container: value, element };
         }
         return undefined;
+    }
+
+    /**
+     * `array.entries()`, `array.keys()` and `array.values()` as the range
+     * of a for...of. JavaScript's iterator objects have no native
+     * representation, so the loop iterates the container itself and binds
+     * what the iterator would have yielded: the array walks by index, so
+     * an entry's value is the element in place and a write through it
+     * reaches the array, as the source's does. Map and Set iterator
+     * methods return their container from the method call itself.
+     */
+    private iteratorMethodTarget(
+        expression: ts.Expression,
+    ):
+        | { container: Value; element: DataIterationElement; template?: Value }
+        | undefined {
+        const iterator = iteratorMethodCall(
+            expression,
+            (identifier) => this.context.isDefaultLibraryIdentifier(identifier),
+            (node) => this.context.unwrap(node),
+        );
+        if (!iterator) {
+            return undefined;
+        }
+        const { call, method, receiver } = iterator;
+        // The receiver resolves as a range the way the loop would resolve
+        // it directly, so a constant array, a stored vector and a readonly
+        // parameter all take the same walk. The whole classification runs
+        // inside the probe, so a receiver whose iterator this walk does not
+        // take leaves nothing behind.
+        return this.context.probeEmission(() => {
+            const range = this.iterationTarget(receiver);
+            if (!range) {
+                return undefined;
+            }
+            const container = range.container;
+            const kind = container.dataType?.kind;
+            if (kind === "map") {
+                // The entry iterator yields the map's own [key, value] pairs;
+                // keys() and values() are vectors the method call produces.
+                return method === "entries" ? range : undefined;
+            }
+            if (kind === "set") {
+                if (method === "entries") {
+                    this.context.fail(
+                        call,
+                        "Set.entries() yields [value, value] pairs, which have no native representation; iterate the set itself.",
+                    );
+                }
+                return range;
+            }
+            if ((kind !== "vector" && kind !== "span") || this.pairedElement(range.element)) {
+                return undefined;
+            }
+            const element = range.element;
+            const template = range.template ? { template: range.template } : {};
+            if (method === "values") {
+                return { container, element, ...template };
+            }
+            this.context.reachJsData();
+            const indexCpp = this.context.allocateTemporaryCppName("index");
+            return method === "entries"
+                ? { container, element: { kind: "array-entry", element, indexCpp }, ...template }
+                : { container, element: { kind: "array-index", indexCpp } };
+        });
     }
 
     private runtimeArrayLiteral(
@@ -7036,6 +7631,60 @@ export class DataLowerer {
         const owner = this.context.registerNativeBinding(itemCpp, false, true);
         const defineItem = (identifier: ts.Identifier, value: Value): void =>
             define(identifier, { ...value, nativeCaptures: [owner] });
+        if (element.kind === "array-index") {
+            if (!ts.isIdentifier(name)) {
+                this.context.fail(name, "Array keys iteration binds one identifier.");
+            }
+            defineItem(name, {
+                kind: "number",
+                cpp: `static_cast<double>(${element.indexCpp})`,
+                dataType: { kind: "number" },
+            });
+            return;
+        }
+        if (element.kind === "array-entry") {
+            if (!ts.isArrayBindingPattern(name)) {
+                this.context.fail(
+                    name,
+                    "Array entries iteration requires an [index, value] binding.",
+                );
+            }
+            if (name.elements.length > 2) {
+                this.context.fail(
+                    name,
+                    "Array entry destructuring accepts at most two bindings.",
+                );
+            }
+            const indexOwner = this.context.registerNativeBinding(element.indexCpp, false, true);
+            name.elements.forEach((binding, position) => {
+                if (ts.isOmittedExpression(binding)) return;
+                if (
+                    !ts.isIdentifier(binding.name) ||
+                    binding.initializer ||
+                    binding.dotDotDotToken
+                ) {
+                    this.context.fail(
+                        binding,
+                        "Array entry destructuring supports plain identifiers.",
+                    );
+                }
+                if (position === 0) {
+                    define(binding.name, {
+                        kind: "number",
+                        cpp: `static_cast<double>(${element.indexCpp})`,
+                        dataType: { kind: "number" },
+                        nativeCaptures: [indexOwner],
+                    });
+                    return;
+                }
+                const value: Value = {
+                    ...withNativeMetadata(this.leafValue(itemCpp, element.element), template),
+                    runtimeIteration: true,
+                };
+                defineItem(binding.name, runtimeMeshValue(value));
+            });
+            return;
+        }
         if (element.kind === "map-entry") {
             if (!ts.isArrayBindingPattern(name)) {
                 this.context.fail(

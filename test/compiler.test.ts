@@ -11939,7 +11939,7 @@ test("does not browser-fold ordinary parseFloat calls", () => {
                     box.position.x = parseFloat(numeric as any);
                 }
             `),
-        /Call 'parseFloat' does not resolve/,
+        /parseFloat requires a string value/,
     );
 });
 

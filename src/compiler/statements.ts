@@ -2,7 +2,7 @@ import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { emissionArray, EmissionMap, EmissionSet, EmissionWeakSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { cppIdentifierPattern } from "../cpp-literals.js";
+import { cppIdentifierPattern, doubleLiteral } from "../cpp-literals.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
     isHandleKind,
@@ -23,7 +23,9 @@ import {
 } from "./resource-loops.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { argumentAt, isUpdateExpression, unwrappedIdentifier } from "./syntax.js";
+import { argumentAt, isLogicalAssignmentOperator, isUpdateExpression, iteratorMethodCall, unwrappedIdentifier } from "./syntax.js";
+import { compileErrorConstruction, errorConstructor, errorValue, thrownMessage } from "./error-values.js";
+import { stringConcatPart } from "./expressions.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -85,8 +87,11 @@ export interface StatementLoweringContext
         | "probeEmission"
         | "allocateTemporaryCppName"
         | "bindDataTuple"
+        | "dataLowerer"
         | "emitVariableDeclaration"
         | "emitAssignment"
+        | "emitLogicalAssignment"
+        | "emitDelete"
         | "compileValue"
         | "compileTextMutation"
         | "compileNodeInputMutation"
@@ -1295,11 +1300,19 @@ export class StatementLowerer {
                     catchDeclaration &&
                     ts.isIdentifier(catchDeclaration.name)
                 ) {
-                    context.bindLocalValue(catchDeclaration.name, {
+                    // The caught value is the message the native exception
+                    // carries, and an Error whose `.message` is that string:
+                    // `String(e)` reads the text, `(e as Error).message` and
+                    // `e instanceof Error` read the Error.
+                    const caught: Extract<Value, { kind: "data" }> = {
                         kind: "data",
                         cpp: `std::string(${catchCpp}.what())`,
                         dataType: { kind: "string" },
-                    });
+                    };
+                    context.bindLocalValue(
+                        catchDeclaration.name,
+                        errorValue(caught, "Error", (text) => context.cppString(text), caught),
+                    );
                 }
                 for (const child of statement.catchClause
                     .block.statements) {
@@ -1426,20 +1439,23 @@ export class StatementLowerer {
         statement: ts.ThrowStatement,
     ): void {
         const thrown = context.unwrap(statement.expression);
-        const message =
-            ts.isNewExpression(thrown) &&
-            ts.isIdentifier(thrown.expression) &&
-            thrown.expression.text === "Error" &&
-            context.isDefaultLibraryIdentifier(thrown.expression)
-                ? thrown.arguments?.[0]
-                : undefined;
-        if (!message) {
+        // `throw new Error(message)` builds the Error value for this one
+        // consumer, so its message stays an expression; a held Error value
+        // or a string carries its message as a value.
+        const errorName = ts.isNewExpression(thrown)
+            ? errorConstructor(thrown, (identifier) => context.isDefaultLibraryIdentifier(identifier))
+            : undefined;
+        const value = thrownMessage(
+            ts.isNewExpression(thrown) && errorName !== undefined
+                ? compileErrorConstruction(context, thrown, errorName, "thrown")
+                : context.compileValue(thrown),
+        );
+        if (!value) {
             context.fail(
                 statement,
-                "A scene throws a new Error carrying a static message.",
+                "A scene throws a new Error, a held Error value or a string.",
             );
         }
-        const value = context.compileValue(message);
         if (
             value.staticString === undefined &&
             !(
@@ -1447,10 +1463,7 @@ export class StatementLowerer {
                 value.dataType?.kind === "string"
             )
         ) {
-            context.fail(
-                message,
-                "A thrown Error message must be a string.",
-            );
+            context.fail(thrown, "A thrown Error message must be a string.");
         }
         context.reachThrow();
         context.emit(
@@ -1985,6 +1998,11 @@ export class StatementLowerer {
             return;
         }
         if (
+            this.emitTupleIteratorForOf(
+                context,
+                statement,
+                declaration,
+            ) ||
             this.emitTupleForOf(
                 context,
                 statement,
@@ -2311,6 +2329,76 @@ export class StatementLowerer {
      * element with the binding standing for that value, exactly as the
      * inline static-array-literal unroll below does for its expressions.
      */
+    /**
+     * `for (const [index, value] of tuple.entries())`, `tuple.keys()` and
+     * `tuple.values()` over a compile-time tuple: the loop unrolls once per
+     * element as the plain tuple loop does, with the index a settled
+     * number. A runtime container's iterator methods take the native
+     * range-for instead.
+     */
+    private emitTupleIteratorForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const iterator = iteratorMethodCall(
+            statement.expression,
+            (identifier) => context.isDefaultLibraryIdentifier(identifier),
+            (node) => context.unwrap(node),
+        );
+        if (!iterator) {
+            return false;
+        }
+        const { method, receiver } = iterator;
+        // A compile-time tuple unrolls, as the plain tuple loop does, unless
+        // its elements are plain data a native range represents exactly;
+        // any other receiver takes the runtime loop, which resolves the
+        // iterator method itself. The probe only asks and keeps nothing it
+        // emitted while asking.
+        const elements = context.probeEmission(
+            () => context.handleCollections.tupleElements(receiver),
+            (result) => result !== undefined,
+        );
+        if (!elements) {
+            return this.emitRuntimeForOf(context, statement, declaration);
+        }
+        if (this.preferNativeDataIteration(context, statement, elements.length) &&
+            elements.every((value) => this.plainIterationData(context, value)) &&
+            this.emitRuntimeForOf(context, statement, declaration)) {
+            return true;
+        }
+        if (this.bindsEnclosingLoop(statement.statement)) {
+            context.fail(
+                statement,
+                "break/continue in for...of requires a runtime data container.",
+            );
+        }
+        this.withStaticUnrollProduct(elements.length, () => {
+            for (const [index, element] of elements.entries()) {
+                const indexValue: Value = {
+                    kind: "number",
+                    cpp: doubleLiteral(index),
+                    staticNumber: index,
+                    dataType: { kind: "number" },
+                };
+                const value: Value =
+                    method === "keys"
+                        ? indexValue
+                        : method === "values"
+                          ? element
+                          : { kind: "tuple", cpp: "", tupleElements: [indexValue, element] };
+                const completion = this.emitUnrolledIteration(
+                    context,
+                    statement,
+                    statement.statement,
+                    () => this.bindStaticIterationValue(context, declaration.name, value),
+                );
+                if (completion === "break") break;
+            }
+        });
+        return true;
+    }
+
     private emitTupleForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
@@ -2583,7 +2671,14 @@ export class StatementLowerer {
             return false;
         }
         const count = context.runtimeCollectionCardinality(statement.expression);
-        if (!context.isInParameterizedResourceLoop(statement) &&
+        // `entries()`/`keys()` walk the array by index: the counter is the
+        // loop variable, and an entry's value is the element in place.
+        const indexed =
+            target.element.kind === "array-entry" || target.element.kind === "array-index"
+                ? target.element
+                : undefined;
+        if (!indexed &&
+            !context.isInParameterizedResourceLoop(statement) &&
             count !== undefined &&
             (context.requiresStaticDataIteration(statement.statement) ||
                 (count === 1 && context.requiresStaticIteration(statement.statement))) &&
@@ -2619,7 +2714,9 @@ export class StatementLowerer {
             return true;
         }
         const item =
-            context.allocateTemporaryCppName("item");
+            indexed?.kind === "array-index"
+                ? indexed.indexCpp
+                : context.allocateTemporaryCppName("item");
         const lines = context.captureEmittedLines(() => {
             context.pushScope(
                 context.allocateBlockPrefix(),
@@ -2647,6 +2744,22 @@ export class StatementLowerer {
                 context.popScope();
             }
         });
+        if (indexed) {
+            const indexCpp = indexed.indexCpp;
+            const range = context.allocateTemporaryCppName("range");
+            context.emit(`auto&& ${range} = ${target.container.cpp};`);
+            context.emit(
+                `for (std::size_t ${indexCpp} = 0; ${indexCpp} < ${range}.size(); ++${indexCpp}) {`,
+            );
+            context.increaseIndent();
+            if (indexed.kind === "array-entry") {
+                context.emit(`auto&& ${item} = ${range}[${indexCpp}];`);
+            }
+            for (const line of lines) context.emit(line);
+            context.decreaseIndent();
+            context.emit("}");
+            return true;
+        }
         context.emit(
             `for (auto&& ${item} : ${target.container.cpp}) {`,
         );
@@ -2717,6 +2830,17 @@ export class StatementLowerer {
                 context,
                 operand,
             );
+            return;
+        }
+        if (ts.isDeleteExpression(unwrapped)) {
+            context.emitDelete(unwrapped);
+            return;
+        }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            isLogicalAssignmentOperator(unwrapped.operatorToken.kind)
+        ) {
+            context.emitLogicalAssignment(unwrapped);
             return;
         }
         const assignmentOperator = ts.isBinaryExpression(unwrapped)
@@ -2798,21 +2922,27 @@ export class StatementLowerer {
                     const value = context.compileValue(
                         unwrapped.right,
                     );
-                    if (
-                        value.kind !== "string" &&
-                        !(
-                            value.kind === "data" &&
-                            value.dataType?.kind === "string"
-                        )
-                    ) {
-                        context.fail(
-                            unwrapped.right,
-                            `String assignment requires a string, received ${value.kind}.`,
+                    const isString =
+                        value.kind === "string" ||
+                        (value.kind === "data" && value.dataType?.kind === "string");
+                    if (operator === "+=" && !isString) {
+                        // `text += 1` appends the number's JavaScript
+                        // spelling, as the concatenation operator does.
+                        context.reachJsData();
+                        context.emit(
+                            `bbl::js::concat_append(${target.cpp}, ${stringConcatPart(context, value, unwrapped.right)});`,
+                        );
+                    } else {
+                        if (!isString) {
+                            context.fail(
+                                unwrapped.right,
+                                `String assignment requires a string, received ${value.kind}.`,
+                            );
+                        }
+                        context.emit(
+                            `${target.cpp} ${operator} ${value.cpp};`,
                         );
                     }
-                    context.emit(
-                        `${target.cpp} ${operator} ${value.cpp};`,
-                    );
                 } else if (
                     target.kind === "audio-node" &&
                     operator === "="

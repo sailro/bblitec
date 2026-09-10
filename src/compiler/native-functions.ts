@@ -310,10 +310,14 @@ export class NativeFunctionLowerer {
             // the result (a regex-based name sanitizer is one example).
             return undefined;
         }
+        if (call.arguments.some(ts.isSpreadElement)) {
+            // A spread expands a compile-time tuple at the call site,
+            // which is the inline lowerer's business.
+            return undefined;
+        }
         if (
             call.arguments.length >
-                signature.parameters.length ||
-            call.arguments.some(ts.isSpreadElement)
+                signature.parameters.length
         ) {
             this.context.fail(
                 call,
@@ -874,6 +878,20 @@ export class NativeFunctionLowerer {
             return cached;
         }
         if (this.rejected.has(declaration)) {
+            return undefined;
+        }
+        if (
+            declaration.typeParameters?.length ||
+            declaration.parameters.some(
+                (parameter) =>
+                    parameter.dotDotDotToken !== undefined ||
+                    ts.isObjectBindingPattern(parameter.name),
+            )
+        ) {
+            // A generic body is spelled per instantiation, a rest
+            // parameter packed per call and an object pattern bound from
+            // its argument: each is the inline lowerer's.
+            this.rejected.add(declaration);
             return undefined;
         }
         const checkerSignature =

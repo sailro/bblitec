@@ -1,8 +1,15 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import { writeReceiverMethods } from "./data-methods.js";
 import type { CompilerSymbols } from "./symbols.js";
-import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    mutatingCallTarget,
+    rootIdentifier,
+    unwrapExpression,
+} from "./syntax.js";
 
 /** Statements JavaScript executes while evaluating an imported module. */
 export function isModuleInitializerStatement(
@@ -49,6 +56,90 @@ export function collectReboundSymbols(
         }
     });
     return rebound;
+}
+
+/** The initializers that create a container a later write can reach into. */
+function isContainerInitializer(initializer: ts.Expression): boolean {
+    const current = unwrapExpression(initializer);
+    return (
+        ts.isObjectLiteralExpression(current) ||
+        ts.isArrayLiteralExpression(current) ||
+        (ts.isNewExpression(current) &&
+            ts.isIdentifier(current.expression) &&
+            ["Map", "Set", "WeakMap", "WeakSet", "Array"].includes(
+                current.expression.text,
+            ))
+    );
+}
+
+/** An object literal declaring a method or a function-valued property. */
+function isRecordWithMethods(initializer: ts.Expression): boolean {
+    const current = unwrapExpression(initializer);
+    return (
+        ts.isObjectLiteralExpression(current) &&
+        current.properties.some(
+            (property) =>
+                ts.isMethodDeclaration(property) ||
+                ts.isGetAccessorDeclaration(property) ||
+                ts.isSetAccessorDeclaration(property) ||
+                (ts.isPropertyAssignment(property) &&
+                    (ts.isArrowFunction(property.initializer) ||
+                        ts.isFunctionExpression(property.initializer))),
+        )
+    );
+}
+
+/**
+ * A `const` container the program writes into: storage as much as a
+ * rebound `let`, because its initializer stops describing it at the
+ * first push or field write.
+ */
+function isMutatedContainer(
+    declaration: ts.VariableDeclaration,
+    symbol: ts.Symbol,
+    mutated: ReadonlySet<ts.Symbol>,
+): boolean {
+    return (
+        mutated.has(symbol) &&
+        declaration.initializer !== undefined &&
+        isContainerInitializer(declaration.initializer)
+    );
+}
+
+/**
+ * Every name whose container `sourceFile` writes INTO -- a field store, an
+ * element store, an increment through it, a `delete`, or a mutating
+ * method call on it -- anywhere in the file, callbacks included. Rebinding
+ * the name itself is `collectReboundSymbols`'s question; this one is about
+ * what the name holds.
+ */
+function collectMutatedContainerSymbols(
+    sourceFile: ts.SourceFile,
+    symbols: CompilerSymbols,
+): Set<ts.Symbol> {
+    const mutated = new EmissionSet<ts.Symbol>();
+    const record = (target: ts.Expression): void => {
+        const identifier = rootIdentifier(target);
+        const symbol = identifier && symbols.valueSymbol(identifier);
+        if (symbol) mutated.add(symbol);
+    };
+    const recordThrough = (target: ts.Expression): void => {
+        // A write to the name itself is a rebinding, not a write through it.
+        if (!ts.isIdentifier(target)) record(target);
+    };
+    forEachAnalysisNode(sourceFile, (node) => {
+        if (isAssignmentExpression(node)) {
+            recordThrough(node.left);
+        } else if (isUpdateExpression(node)) {
+            recordThrough(node.operand);
+        } else if (ts.isDeleteExpression(node)) {
+            recordThrough(node.expression);
+        } else {
+            const target = mutatingCallTarget(node, (method) => writeReceiverMethods.has(method));
+            if (target) record(target);
+        }
+    });
+    return mutated;
 }
 
 /**
@@ -206,22 +297,33 @@ class ModuleInitializerPlanner {
             this.symbols,
             true,
         );
+        const mutated = collectMutatedContainerSymbols(
+            this.sourceFile,
+            this.symbols,
+        );
         const result: ts.VariableStatement[] = [];
         for (const statement of this.sourceFile.statements) {
-            if (
-                !ts.isVariableStatement(statement) ||
-                (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
-            ) {
+            if (!ts.isVariableStatement(statement)) {
                 continue;
             }
-            const writes = statement.declarationList.declarations.some(
+            const isConst =
+                (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+            const selected = statement.declarationList.declarations.some(
                 (declaration) => {
                     if (!ts.isIdentifier(declaration.name)) return false;
                     const symbol = this.symbols.valueSymbol(declaration.name);
-                    return symbol !== undefined && rebound.has(symbol);
+                    if (symbol === undefined) return false;
+                    if (!isConst) return rebound.has(symbol);
+                    // A record carrying methods binds here too, so its
+                    // methods have a receiver to run against.
+                    return (
+                        isMutatedContainer(declaration, symbol, mutated) ||
+                        (declaration.initializer !== undefined &&
+                            isRecordWithMethods(declaration.initializer))
+                    );
                 },
             );
-            if (writes) result.push(statement);
+            if (selected) result.push(statement);
         }
         return result;
     }
@@ -252,16 +354,19 @@ class ModuleInitializerPlanner {
         subset: "all" | "mutable" = "all",
     ): Set<ts.Symbol> {
         const result = new EmissionSet<ts.Symbol>();
+        // A `const` container a project file writes into is mutable state
+        // too: an exported registry the entry pushes to, or one the
+        // module's own callable fills.
+        const mutatedContainers =
+            subset === "mutable"
+                ? this.mutatedContainerSymbols()
+                : undefined;
         for (const statement of file.statements) {
-            if (
-                !ts.isVariableStatement(statement) ||
-                (subset === "mutable" &&
-                    (statement.declarationList.flags &
-                        ts.NodeFlags.Const) !==
-                        0)
-            ) {
+            if (!ts.isVariableStatement(statement)) {
                 continue;
             }
+            const isConst =
+                (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
             for (const declaration of statement.declarationList
                 .declarations) {
                 if (!ts.isIdentifier(declaration.name)) {
@@ -270,12 +375,45 @@ class ModuleInitializerPlanner {
                 const symbol = this.symbols.valueSymbol(
                     declaration.name,
                 );
-                if (symbol) {
-                    result.add(symbol);
+                if (!symbol) {
+                    continue;
                 }
+                if (
+                    mutatedContainers &&
+                    isConst &&
+                    !isMutatedContainer(declaration, symbol, mutatedContainers)
+                ) {
+                    continue;
+                }
+                result.add(symbol);
             }
         }
         return result;
+    }
+
+    private mutatedContainerCache: Set<ts.Symbol> | undefined;
+
+    /** Container names any project file writes into, entry included. */
+    private mutatedContainerSymbols(): Set<ts.Symbol> {
+        if (!this.mutatedContainerCache) {
+            const mutated = new EmissionSet<ts.Symbol>();
+            for (const file of this.program.getSourceFiles()) {
+                if (
+                    file.isDeclarationFile ||
+                    this.program.isSourceFileFromExternalLibrary(file)
+                ) {
+                    continue;
+                }
+                for (const symbol of collectMutatedContainerSymbols(
+                    file,
+                    this.symbols,
+                )) {
+                    mutated.add(symbol);
+                }
+            }
+            this.mutatedContainerCache = mutated;
+        }
+        return this.mutatedContainerCache;
     }
 
     private runtimeObservedModuleState(

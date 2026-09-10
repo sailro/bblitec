@@ -11,6 +11,7 @@ import {
     dataTypesEqual,
     declaredInDomLibrary,
     isHandleKind,
+    tupleComponents,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
@@ -23,12 +24,20 @@ import { CompilerSymbols, isDefaultLibraryIdentifier } from "./symbols.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
+    mutatingCallTarget,
     rootIdentifier,
     unwrapExpression,
     argumentAt,
 } from "./syntax.js";
 import { firstReturn, forEachReturn } from "./loop-control.js";
 import { FunctionSpecializations, functionDependencies } from "./function-specializations.js";
+import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
+
+/** The index of a declaration's rest parameter, when it declares one. */
+function restParameterIndex(declaration: SupportedFunction): number | undefined {
+    const index = declaration.parameters.findIndex((parameter) => parameter.dotDotDotToken !== undefined);
+    return index >= 0 ? index : undefined;
+}
 
 type Fail = (node: ts.Node, message: string) => never;
 export type SupportedFunction =
@@ -79,12 +88,8 @@ function writesThroughRoot(
     if (isUpdateExpression(node)) {
         return isTarget(node.operand);
     }
-    return (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        mutatesVia(node.expression.name.text) &&
-        isTarget(node.expression.expression)
-    );
+    const target = mutatingCallTarget(node, mutatesVia);
+    return target !== undefined && isTarget(target);
 }
 
 /** `writesThroughRoot`, for a caller outside this module. */
@@ -597,21 +602,25 @@ export function resolveFunctionDeclaration(
             "Generator functions are not supported.",
         );
     }
-    if (declaration.typeParameters?.length) {
-        fail(
-            declaration.typeParameters[0]!,
-            "Generic user functions are not supported.",
-        );
-    }
     for (const parameter of declaration.parameters) {
         if (
-            (!ts.isIdentifier(parameter.name) &&
-                !ts.isArrayBindingPattern(parameter.name)) ||
-            parameter.dotDotDotToken
+            !ts.isIdentifier(parameter.name) &&
+            !ts.isArrayBindingPattern(parameter.name) &&
+            !ts.isObjectBindingPattern(parameter.name)
         ) {
             fail(
                 parameter,
-                "User-function parameters must be non-rest identifiers or array binding patterns.",
+                "User-function parameters must be identifiers or binding patterns.",
+            );
+        }
+        if (
+            parameter.dotDotDotToken &&
+            (!ts.isIdentifier(parameter.name) ||
+                parameter !== declaration.parameters[declaration.parameters.length - 1])
+        ) {
+            fail(
+                parameter,
+                "A rest parameter is the last parameter and an identifier.",
             );
         }
         if (ts.isArrayBindingPattern(parameter.name)) {
@@ -793,11 +802,13 @@ export interface UserFunctionContext
         | "emitStatement"
         | "statementTerminatesAfterLowering"
         | "bindLocalValue"
+        | "bindObjectPattern"
         | "bindCompileTimeValue"
         | "rebindCompileTimeValue"
         | "bindParameterValue"
         | "materializeEscapingValue"
         | "pinValueToTemporary"
+        | "bindDataTuple"
         | "pushScope"
         | "popScope"
         | "allocateUserFunctionPrefix"
@@ -943,6 +954,12 @@ export class UserFunctionLowerer {
             context.bindParameterValue(parameter.name, value);
             return;
         }
+        if (ts.isObjectBindingPattern(parameter.name)) {
+            // `({ a, b = 1 }: Options)`: the pattern binds from the
+            // argument exactly as a destructuring declaration would.
+            context.bindObjectPattern(parameter.name, value);
+            return;
+        }
         if (value.kind === "tuple" && value.tupleElements) {
             parameter.name.elements.forEach((element, index) => {
                 if (ts.isOmittedExpression(element)) return;
@@ -1025,35 +1042,36 @@ export class UserFunctionLowerer {
             return undefined;
         }
         this.validateCall(
+            context,
             call,
             ir,
             (node, message) => context.fail(node, message),
         );
-        const argumentValues = call.arguments.map((argument) =>
-            this.argumentValue(context, argument),
-        );
+        const argumentValues = this.argumentValues(context, call, ir);
         this.materializeCyclicRecordCallbacks(
             context,
             ir.declaration,
             argumentValues,
         );
-        const recursiveGroup = this.recursiveGroup(ir.declaration);
-        if (recursiveGroup) {
-            return this.lowerRecursiveGroup(
-                context,
-                ir,
-                call,
-                argumentValues,
-                recursiveGroup,
-            );
-        }
-        if (ir.needsLocalNative) {
-            return this.lowerRecursiveGroup(context, ir, call, argumentValues, [
-                ir.declaration,
-            ]);
-        }
-        return inBodyScope(() => this.trySharedCall(context, ir, call, argumentValues) ??
-            this.lower(context, ir, argumentValues, call));
+        return this.withCallTypeArguments(context, call, ir.declaration, () => {
+            const recursiveGroup = this.recursiveGroup(ir.declaration);
+            if (recursiveGroup) {
+                return this.lowerRecursiveGroup(
+                    context,
+                    ir,
+                    call,
+                    argumentValues,
+                    recursiveGroup,
+                );
+            }
+            if (ir.needsLocalNative) {
+                return this.lowerRecursiveGroup(context, ir, call, argumentValues, [
+                    ir.declaration,
+                ]);
+            }
+            return inBodyScope(() => this.trySharedCall(context, ir, call, argumentValues) ??
+                this.lower(context, ir, argumentValues, call));
+        });
     }
 
     private trySharedCall(
@@ -1063,7 +1081,10 @@ export class UserFunctionLowerer {
         argumentValues: readonly Value[],
         pinArguments = true,
     ): Value | undefined {
+        // A generic body is spelled once per instantiation and a rest
+        // parameter's arguments are packed per call, so both stay inline.
         if (!ir.declaration.body || !ir.parameters.every(parameter => ts.isIdentifier(parameter.name)) ||
+            ir.declaration.typeParameters?.length || restParameterIndex(ir.declaration) !== undefined ||
             !context.canShareFunctionBody(ir.declaration.body)) return undefined;
         const signature = this.checker.getSignatureFromDeclaration(ir.declaration);
         const returned = signature && nativeReturnTsType(this.checker,
@@ -1258,6 +1279,7 @@ export class UserFunctionLowerer {
             context.fail(node, message),
         );
         this.validateCall(
+            context,
             call,
             ir,
             (node, message) => context.fail(node, message),
@@ -1265,11 +1287,10 @@ export class UserFunctionLowerer {
         // As in `compile`: the arguments were written at the call site
         // and resolve in the scope there, so only the body runs in the
         // scope the callback closed over.
-        const argumentValues = call.arguments.map((argument) =>
-            this.argumentValue(context, argument),
-        );
-        return inBodyScope(() => this.trySharedCall(context, ir, call, argumentValues) ??
-            this.lower(context, ir, argumentValues, call));
+        const argumentValues = this.argumentValues(context, call, ir);
+        return this.withCallTypeArguments(context, call, ir.declaration, () =>
+            inBodyScope(() => this.trySharedCall(context, ir, call, argumentValues) ??
+                this.lower(context, ir, argumentValues, call)));
     }
 
     /**
@@ -2957,40 +2978,140 @@ export class UserFunctionLowerer {
      * against, so both callers hand them through unchecked.
      */
     private validateCall(
+        context: Pick<UserFunctionContext, "dataTypes">,
         call: ts.CallExpression,
         ir: UserFunctionIr,
         fail: Fail,
     ): void {
-        if (call.arguments.some(ts.isSpreadElement)) {
-            fail(
-                call,
-                "Spread arguments are not supported for user functions.",
-            );
-        }
+        const rest = restParameterIndex(ir.declaration);
         const minimum = ir.parameters.filter(
             ({ declaration }) =>
-                !declaration.initializer && !declaration.questionToken,
+                !declaration.initializer && !declaration.questionToken && !declaration.dotDotDotToken,
         ).length;
-        if (call.arguments.length < minimum) {
+        if (call.arguments.length < minimum && !call.arguments.some(ts.isSpreadElement)) {
             fail(
                 call,
                 `Function '${ir.name}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
             );
         }
+        // A generic declaration's parameters are typed in its own
+        // parameters; the resolved signature spells what this call made
+        // of them.
+        const resolved = ir.declaration.typeParameters?.length
+            ? this.checker.getResolvedSignature(call)
+            : undefined;
         call.arguments.forEach((argument, index) => {
             const parameter = ir.parameters[index];
-            if (!parameter) {
+            if (!parameter || ts.isSpreadElement(argument) || (rest !== undefined && index >= rest)) {
                 return;
             }
+            const resolvedParameter = resolved?.getParameters()[index];
+            const parameterType = resolvedParameter
+                ? this.checker.getTypeOfSymbol(resolvedParameter)
+                : parameter.type;
             const argumentType = this.checker.getTypeAtLocation(argument);
             if (
-                !this.checker.isTypeAssignableTo(argumentType, parameter.type)
+                !this.checker.isTypeAssignableTo(argumentType, parameterType) &&
+                // Inside a generic body an argument is typed by a type
+                // parameter the checker cannot relate to the callee's
+                // concrete type; the data model, which substitutes what
+                // the enclosing call bound, decides instead. Asked only
+                // then: mapping types allocates struct names, and a probe
+                // that declines here must leave none behind.
+                !(mentionsTypeParameter(this.checker, argumentType) &&
+                    this.dataModelAgrees(context, argumentType, parameterType, argument))
             ) {
                 fail(
                     argument,
-                    `Argument ${index + 1} of '${ir.name}' is ${this.checker.typeToString(argumentType)}, not ${this.checker.typeToString(parameter.type)}.`,
+                    `Argument ${index + 1} of '${ir.name}' is ${this.checker.typeToString(argumentType)}, not ${this.checker.typeToString(parameterType)}.`,
                 );
             }
         });
+    }
+
+    /** Whether two checker types map to one data type under the active substitutions. */
+    private dataModelAgrees(
+        context: Pick<UserFunctionContext, "dataTypes">,
+        argumentType: ts.Type,
+        parameterType: ts.Type,
+        node: ts.Node,
+    ): boolean {
+        const argument = context.dataTypes.fromTsType(argumentType, node);
+        const parameter = context.dataTypes.fromTsType(parameterType, node);
+        return argument !== undefined && parameter !== undefined && dataTypesEqual(argument, parameter);
+    }
+
+    /**
+     * The call's arguments as values, with a rest parameter's share packed
+     * into one: the compile-time tuple of the trailing arguments, a spread
+     * tuple expanded into it, or a spread native array passed through when
+     * it is the rest's only source.
+     */
+    private argumentValues(
+        context: UserFunctionContext,
+        call: ts.CallExpression,
+        ir: UserFunctionIr,
+    ): Value[] {
+        const rest = restParameterIndex(ir.declaration);
+        const values: Value[] = [];
+        const expanded: Value[] = [];
+        call.arguments.forEach((argument, index) => {
+            const sink = rest !== undefined && index >= rest ? expanded : values;
+            if (ts.isSpreadElement(argument)) {
+                const spread = this.argumentValue(context, argument.expression);
+                if (spread.kind === "tuple") {
+                    sink.push(...(spread.tupleElements ?? []));
+                    return;
+                }
+                if (spread.kind === "data" && spread.dataType?.kind === "tuple") {
+                    // A numeric tuple's lanes are its arguments, read off
+                    // one bound evaluation of the tuple.
+                    const arity = spread.dataType.arity;
+                    const bound = context.bindDataTuple(spread, arity, "spread_tuple");
+                    sink.push(
+                        ...tupleComponents(bound, arity, "double").map(
+                            (cpp): Value => ({ kind: "number", cpp, dataType: { kind: "number" } }),
+                        ),
+                    );
+                    return;
+                }
+                if (
+                    rest !== undefined &&
+                    index === rest &&
+                    index === call.arguments.length - 1 &&
+                    expanded.length === 0 &&
+                    spread.kind === "data" &&
+                    (spread.dataType?.kind === "vector" || spread.dataType?.kind === "span")
+                ) {
+                    values.push(spread);
+                    return;
+                }
+                context.fail(
+                    argument,
+                    "A spread argument expands a compile-time tuple, or passes one native array as the whole rest parameter.",
+                );
+            }
+            sink.push(this.argumentValue(context, argument));
+        });
+        if (rest !== undefined && values.length === rest) {
+            values.push({ kind: "tuple", cpp: "", tupleElements: expanded });
+        }
+        return values;
+    }
+
+    /** Runs `work` with the type parameters a generic call binds in force. */
+    private withCallTypeArguments<T>(
+        context: UserFunctionContext,
+        call: ts.CallExpression,
+        declaration: SupportedFunction,
+        work: () => T,
+    ): T {
+        const substitution = callTypeArguments(
+            this.checker,
+            call,
+            declaration,
+            (node, message) => context.fail(node, message),
+        );
+        return context.dataTypes.withTypeArguments(substitution, work);
     }
 }

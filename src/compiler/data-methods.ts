@@ -191,7 +191,13 @@ export function isStoringDataCall(node: ts.Node): node is ts.CallExpression | ts
             (node.expression.text === "Map" || node.expression.text === "Set"));
 }
 
-const writeReceiverMethods: ReadonlySet<string> = new EmissionSet([
+/**
+ * The methods that change the container they are called on: every
+ * mutating array method plus the Map/Set writers. A name outside this set
+ * writes nothing through its receiver, so a container only ever read
+ * through `get`, `has`, `map` or `find` stays folded.
+ */
+export const writeReceiverMethods: ReadonlySet<string> = new EmissionSet([
     "pop",
     "shift",
     "push",
@@ -911,12 +917,12 @@ export function compileDataMethodCall(
     if (
         isTypedArrayType(dataType) &&
         dataType.kind !== "u8array" &&
-        method === "slice"
+        (method === "slice" || method === "subarray")
     ) {
         if (call.arguments.length > 2) {
             lowerer.context.fail(
                 call,
-                "TypedArray.slice expects up to two arguments.",
+                `TypedArray.${method} expects up to two arguments.`,
             );
         }
         const begin = call.arguments[0]
@@ -932,68 +938,21 @@ export function compileDataMethodCall(
               )
             : `static_cast<double>(${narrowed.cpp}.size())`;
         lowerer.context.reachJsData();
+        // `slice` copies the range; `subarray` is a view sharing the
+        // receiver's bytes, so writes through it reach the source.
         return {
             kind: "data",
             cpp:
-                `bbl::js::typed_array_slice(${narrowed.cpp}, ` +
+                `bbl::js::typed_array_${method}(${narrowed.cpp}, ` +
                 `${begin}, ${end})`,
             dataType,
         };
     }
-    if (
-        dataType?.kind === "dataview" &&
-        (method === "getInt8" || method === "getUint8")
-    ) {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                `DataView.${method} expects one argument.`,
-            );
+    if (dataType?.kind === "dataview") {
+        const accessor = DATA_VIEW_ACCESSORS.get(method);
+        if (accessor) {
+            return compileDataViewAccessor(lowerer, call, narrowed, method, accessor);
         }
-        const offset = lowerer.context.compileNumber(
-            argumentAt(call, 0),
-            "double",
-        );
-        const nativeMethod = method
-            .replace(/^get/, "get_")
-            .replace(/([a-z])([A-Z])/g, "$1_$2")
-            .toLowerCase();
-        return {
-            kind: "number",
-            cpp:
-                `static_cast<double>(${narrowed.cpp}.${nativeMethod}(` +
-                `bbl::js::array_index(${offset})))`,
-            dataType: { kind: "number" },
-        };
-    }
-    if (
-        dataType?.kind === "dataview" &&
-        ["getInt16", "getUint16", "getInt32", "getUint32", "getFloat32"].includes(method)
-    ) {
-        if (call.arguments.length < 1 || call.arguments.length > 2) {
-            lowerer.context.fail(
-                call,
-                `DataView.${method} expects one or two arguments.`,
-            );
-        }
-        const offset = lowerer.context.compileNumber(
-            argumentAt(call, 0),
-            "double",
-        );
-        const littleEndian = call.arguments[1]
-            ? lowerer.context.compileCondition(call.arguments[1])
-            : "false";
-        const nativeMethod = method
-            .replace(/^get/, "get_")
-            .replace(/([a-z])([A-Z])/g, "$1_$2")
-            .toLowerCase();
-        return {
-            kind: "number",
-            cpp:
-                `static_cast<double>(${narrowed.cpp}.${nativeMethod}(` +
-                `bbl::js::array_index(${offset}), ${littleEndian}))`,
-            dataType: { kind: "number" },
-        };
     }
     if (
         dataType?.kind !== "vector" &&
@@ -1015,6 +974,8 @@ export function compileDataMethodCall(
             "every",
             "map",
             "forEach",
+            "keys",
+            "values",
         ].includes(method)
     ) {
         // A readonly array parameter is a span. Its observing methods
@@ -1737,6 +1698,14 @@ function compileMapDataMethod(lowerer: DataLowerer, call: ts.CallExpression, cal
                 : {}),
         };
     }
+    if (method === "entries") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, "Map.entries expects no arguments.");
+        }
+        // The entry iterator yields the map's own [key, value] pairs in
+        // insertion order, which is what iterating the map yields.
+        return narrowed;
+    }
     if (method === "values" || method === "keys") {
         if (call.arguments.length !== 0) {
             lowerer.context.fail(call, `Map.${method} expects no arguments.`);
@@ -1759,6 +1728,14 @@ function compileMapDataMethod(lowerer: DataLowerer, call: ts.CallExpression, cal
 function compileSetDataMethod(lowerer: DataLowerer, call: ts.CallExpression, callee: ts.PropertyAccessExpression, method: string, narrowed: Value, dataType: DataType & {kind: "set"}): Value | undefined {
     if (method === "forEach")
         return compileCollectionForEach(lowerer, call, narrowed, dataType);
+    if (method === "values" || method === "keys") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, `Set.${method} expects no arguments.`);
+        }
+        // Both iterators yield the set's own members in insertion order,
+        // which is what iterating the set yields.
+        return narrowed;
+    }
     lowerer.context.reachJsData();
     if (method === "clear") {
         if (call.arguments.length !== 0) {
@@ -2046,19 +2023,114 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
             dataType: { kind: "number" },
         };
     }
-    if (method === "padStart") {
+    if (method === "padStart" || method === "padEnd") {
         if (call.arguments.length < 1 || call.arguments.length > 2) {
-            lowerer.context.fail(call, "String.padStart expects one or two arguments.");
+            lowerer.context.fail(call, `String.${method} expects one or two arguments.`);
         }
         const fill = call.arguments[1]
             ? lowerer.compileForSink(call.arguments[1], { kind: "string" })
             : lowerer.context.cppString(" ");
         return {
             kind: "data",
-            cpp: `bbl::js::string_pad_start(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")}, ${fill})`,
+            cpp: `bbl::js::string_pad_${method === "padStart" ? "start" : "end"}(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")}, ${fill})`,
             dataType: { kind: "string" },
         };
     }
+    if (method === "trimStart" || method === "trimEnd") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, `String.${method} takes no arguments.`);
+        }
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_trim_${method === "trimStart" ? "start" : "end"}(${narrowed.cpp})`,
+            dataType: { kind: "string" },
+        };
+    }
+    if (method === "charAt") {
+        if (call.arguments.length > 1) {
+            lowerer.context.fail(call, "String.charAt expects at most one index.");
+        }
+        const index = call.arguments[0]
+            ? lowerer.context.compileNumber(argumentAt(call, 0), "double")
+            : "0.0";
+        return {
+            kind: "data",
+            cpp: `bbl::js::string_char_at(${narrowed.cpp}, ${index})`,
+            dataType: { kind: "string" },
+        };
+    }
+}
+
+/**
+ * The DataView accessors: each numeric width as a getter and a setter,
+ * spelled natively as `get_<lane>`/`set_<lane>`. Single-byte lanes take
+ * no byte-order argument; the wider ones default to big-endian, as the
+ * DOM does.
+ */
+interface DataViewAccessor {
+    readonly native: string;
+    readonly setter: boolean;
+    readonly wide: boolean;
+}
+
+const DATA_VIEW_ACCESSORS: ReadonlyMap<string, DataViewAccessor> = new EmissionMap(
+    ["Int8", "Uint8", "Int16", "Uint16", "Int32", "Uint32", "Float32", "Float64"].flatMap(
+        (lane): Array<[string, DataViewAccessor]> => {
+            const native = lane.toLowerCase();
+            const wide = !lane.endsWith("8");
+            return [
+                [`get${lane}`, { native: `get_${native}`, setter: false, wide }],
+                [`set${lane}`, { native: `set_${native}`, setter: true, wide }],
+            ];
+        },
+    ),
+);
+
+function compileDataViewAccessor(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    narrowed: Value,
+    method: string,
+    accessor: DataViewAccessor,
+): Value {
+    const fixed = accessor.setter ? 2 : 1;
+    const maximum = fixed + (accessor.wide ? 1 : 0);
+    if (call.arguments.length < fixed || call.arguments.length > maximum) {
+        lowerer.context.fail(
+            call,
+            `DataView.${method} expects ${fixed === maximum ? fixed : `${fixed} or ${maximum}`} arguments.`,
+        );
+    }
+    const offset = `bbl::js::array_index(${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`;
+    const value = accessor.setter
+        ? [lowerer.context.compileNumber(argumentAt(call, 1), "double")]
+        : [];
+    const littleEndian = accessor.wide
+        ? [call.arguments[fixed] ? lowerer.context.compileCondition(call.arguments[fixed]) : "false"]
+        : [];
+    const cpp = `${narrowed.cpp}.${accessor.native}(${[offset, ...value, ...littleEndian].join(", ")})`;
+    if (accessor.setter) {
+        return { kind: "void", cpp };
+    }
+    return {
+        kind: "number",
+        cpp: `static_cast<double>(${cpp})`,
+        dataType: { kind: "number" },
+    };
+}
+
+/** `array.keys()` as a value: the indices 0 through length - 1, in order. */
+function compileArrayKeys({ lowerer, call, narrowed }: ArrayMethodState): Value {
+    if (call.arguments.length !== 0) {
+        lowerer.context.fail(call, "Array.keys expects no arguments.");
+    }
+    lowerer.context.reachJsData();
+    return {
+        kind: "data",
+        cpp: `bbl::js::array_keys(${narrowed.cpp})`,
+        dataType: { kind: "vector", element: { kind: "number" } },
+        freshData: true,
+    };
 }
 
 const arrayMethodHandlers = new EmissionMap<string, (state: ArrayMethodState) => Value>([
@@ -2075,6 +2147,10 @@ const arrayMethodHandlers = new EmissionMap<string, (state: ArrayMethodState) =>
     ["map", state => compileArrayMap(state, "map")],
     ["flatMap", state => compileArrayMap(state, "flatMap")],
     ["forEach", compileArrayForEach],
+    // The iterator methods outside a for...of range (which walks the
+    // array itself): keys is a fresh index list, values the array.
+    ["keys", compileArrayKeys],
+    ["values", ({ narrowed }) => narrowed],
     ["push", compileArrayPush],
     ["pop", compileArrayPop],
     ["shift", compileArrayShift],

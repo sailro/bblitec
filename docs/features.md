@@ -33,14 +33,14 @@ Audio, physics, navigation, retained UI and codecs also select their native depe
 
 | Surface | Supported shape |
 | --- | --- |
-| Entry/modules | Local or imported entry helpers, supported top-level statements, named local imports/re-exports and ordered reached initializers. |
-| Control flow | Blocks, conditionals, supported switches and loops, applicable break/continue, throw, bounded catch and finally. |
-| Functions/classes | Data-typed functions, supported recursion, defaults, shared resource helpers, local fields/methods/accessors and demanded shared instances. Definite PBR/glTF calls preserve per-call metadata; unsupported shared return shapes inline. Stored subclass dispatch is unsupported. |
-| Closures | Supported retained API callbacks, timers/RAF, shared outer cells and represented function identity. |
-| Data | Typed/nullable records, arrays, insertion-ordered Map/Set, tuples, destructuring, spreads and bounded static records. |
-| Numeric/string | Reached Math, JavaScript rounding/coercions, deterministic random and supported string operations. |
+| Entry/modules | Local or imported entry helpers, supported top-level statements, named local imports/re-exports, `?raw` text imports and ordered reached initializers. Module-scope `let`s the file rebinds and `const` containers it writes into are native storage; a module record carrying methods binds as a record. |
+| Control flow | Blocks, conditionals, supported switches and loops, applicable break/continue, throw, bounded catch and finally. `throw` takes a library Error constructor, a held Error value or a string; a catch binding reads `message` and answers `instanceof Error`. |
+| Functions/classes | Data-typed functions, generic functions and classes instantiated per call, rest parameters, destructured parameters, tuple spreads, supported recursion, defaults, shared resource helpers, local fields/methods/accessors and demanded shared instances. Definite PBR/glTF calls preserve per-call metadata; unsupported shared return shapes inline. Stored subclass dispatch, class inheritance, `#private` members and static blocks are unsupported. |
+| Closures | Supported retained API callbacks, timers/RAF, shared outer cells and represented function identity. Object-literal methods read their record through `this`. |
+| Data | Typed/nullable records, arrays, insertion-ordered Map/Set (WeakMap/WeakSet hold their keys the same way), string dictionaries, tuples, destructuring with defaults and rest bindings, spreads, `delete`, `in`, `instanceof` over local classes and bounded static records. |
+| Numeric/string | Reached Math, JavaScript rounding/coercions, `Number`/`Boolean`/`String` conversions, `parseFloat`, radix `toString`, `Date.now`, deterministic random and supported string operations. |
 | JSON | Generated stringify codecs and dynamic parsed values with source shape checks; unsupported replacers and cyclic serialization refuse. |
-| Binary data | ArrayBuffer, DataView, reached typed arrays and supported owned-storage methods. |
+| Binary data | ArrayBuffer construction, every DataView getter and setter, reached typed arrays, `subarray` views and supported owned-storage methods. |
 | Browser/UI | Query folding, bounded erasure, live canvas extents, retained DOM/CSS/Canvas2D; see [UI](ui.md). |
 | Workers | Local module workers, isolated module state, typed cloned messages, listeners, errors, close/terminate, timers and bounded promises. |
 | Worker graphics | Transferred OffscreenCanvas, independent engines, source resize, display-paced rendering and a Window host companion. |
@@ -83,10 +83,26 @@ types. Map/Set `forEach` observes insertion order, deletion and appended entries
 and receives the original collection as its third argument.
 
 Strings support string-pattern `replace`/`replaceAll` with string replacements
-and substitution tokens, `substring`, `repeat`, string-argument `concat`, `at`
-and `codePointAt`. These indexed methods and string length use UTF-16 code units;
+and substitution tokens, `substring`, `repeat`, string-argument `concat`, `at`,
+`charAt`, `codePointAt`, `padEnd`, `trimStart` and `trimEnd`. These indexed methods and string length use UTF-16 code units;
 native storage is UTF-8, with WTF-8 for lone surrogates. Regex `replaceAll`,
 replacement callbacks, locale collation and normalization remain unsupported.
+
+`Object.freeze`, `seal` and `preventExtensions` are the identity over their argument.
+`Object.entries`, `assign`, `fromEntries`, `hasOwn` and `is` lower over compile-time
+records, structs and string dictionaries; a dictionary's `entries` are iterated in a
+for...of. Logical assignment (`??=`, `||=`, `&&=`) stores into data-model targets,
+including dictionary entries, and evaluates its right side only when it stores.
+
+Iteration: a for...of walks `array.entries()`/`keys()`/`values()`, `map.entries()`,
+`set.values()`/`keys()`, typed arrays and compile-time tuples; `array.keys()` and
+`Array.from(iterable, mapper)` produce fresh arrays. Iterator objects themselves, generators
+and `Symbol.iterator` have no representation.
+
+Generic functions and methods lower once per instantiation: the type each parameter
+stands for is inferred from the call (or spelled explicitly) and a type parameter
+no argument determines refuses. Discriminated unions accept string, number and
+boolean literal tags.
 
 ## Asset materialization
 

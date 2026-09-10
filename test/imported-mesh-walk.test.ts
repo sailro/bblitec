@@ -115,7 +115,7 @@ test("a guard testing a field that is not the renderable one is refused", () => 
         () => compileWalk(walk),
         (error: unknown) =>
             error instanceof CompileError &&
-            /callback conditions/.test(error.message),
+            /callback conditions|'in' is decided/.test(error.message),
     );
 });
 
@@ -129,7 +129,7 @@ test("a visitor that filters the children it descends into is refused", () => {
         () => compileWalk(walk),
         (error: unknown) =>
             error instanceof CompileError &&
-            /callback conditions/.test(error.message),
+            /callback conditions|'in' is decided/.test(error.message),
     );
 });
 
@@ -157,7 +157,7 @@ test("a visitor that collects something other than the node is refused", () => {
         () => compileWalk(walk),
         (error: unknown) =>
             error instanceof CompileError &&
-            /callback conditions/.test(error.message),
+            /callback conditions|'in' is decided/.test(error.message),
     );
 });
 

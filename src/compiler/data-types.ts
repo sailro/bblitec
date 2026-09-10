@@ -15,6 +15,22 @@ import { classInstanceProperties } from "./class-properties.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
+/**
+ * The value a union member's tag property is declared as, when it is one
+ * literal: a string, a number or a boolean. Each arm of a discriminated
+ * union carries one such literal, and the checker's own narrowing is what
+ * makes the tag decide the arm.
+ */
+function literalTagValue(checker: ts.TypeChecker, type: ts.Type): string | undefined {
+  if ((type.flags & ts.TypeFlags.StringLiteral) !== 0) {
+    return (type as ts.StringLiteralType).value;
+  }
+  if ((type.flags & (ts.TypeFlags.NumberLiteral | ts.TypeFlags.BooleanLiteral)) !== 0) {
+    return checker.typeToString(type);
+  }
+  return undefined;
+}
+
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
   DeviceLostRecoveryHandle: "device-recovery",
@@ -156,8 +172,18 @@ export function opaqueEngineValue(
  * Maps expose a typed key/value entry rather than the all-number tuple used
  * for ordinary numeric tuple values.
  */
+/**
+ * What one for...of step binds: an element, a Map's `[key, value]`, or --
+ * for `array.entries()`/`array.keys()` -- the element beside its index,
+ * or the index alone. The index variants carry the native loop counter
+ * they read, because the loop walks the array by index so an entry's
+ * value is the element in place.
+ */
 export type DataIterationElement =
-  DataType | { kind: "map-entry"; key: DataType; value: DataType };
+  | DataType
+  | { kind: "map-entry"; key: DataType; value: DataType }
+  | { kind: "array-entry"; element: DataType; indexCpp: string }
+  | { kind: "array-index"; indexCpp: string };
 
 export interface DataStructField {
   /** Property spelling in TypeScript/JSON. */
@@ -451,7 +477,14 @@ export class DataTypeRegistry {
    * being inlined. Empty outside a generic receiver.
    */
   private activeTypeArguments: ReadonlyMap<ts.Symbol, ts.Type> | undefined;
-  /** That substitution as one struct-identity key, spelled when it is set. */
+  /**
+   * What generic functions' type parameters stand for while their bodies
+   * are inlined, innermost call last. A frame's binding may itself name an
+   * enclosing frame's parameter (`g<U>` called on `f<T>`'s `T`), which the
+   * lookup follows outward.
+   */
+  private readonly callTypeArguments: ReadonlyMap<ts.Symbol, ts.Type>[] = [];
+  /** Every substitution in force as one struct-identity key, spelled when they change. */
   private activeTypeArgumentKey = "";
   private anonymousStructIndex = 0;
   private anonymousEnumIndex = 0;
@@ -736,7 +769,11 @@ export class DataTypeRegistry {
           ? { kind: "vector", element: storedElement }
           : { kind: "span", element: storedElement };
       }
-      if (symbolName === "Map" || symbolName === "ReadonlyMap") {
+      // A WeakMap or WeakSet holds its object keys by identity exactly as
+      // Map and Set do; the weakness only lets an unreachable key be
+      // collected, which nothing in a program can observe. The cycle
+      // collector reclaims what the program can no longer reach either way.
+      if (symbolName === "Map" || symbolName === "ReadonlyMap" || symbolName === "WeakMap") {
         const [keyType, valueType] = this.checker.getTypeArguments(reference);
         if (!keyType || !valueType) return undefined;
         const key = this.fromStoredTsType(keyType, node);
@@ -748,7 +785,7 @@ export class DataTypeRegistry {
           value: this.markStoredObjectReferences(value),
         };
       }
-      if (symbolName === "Set") {
+      if (symbolName === "Set" || symbolName === "WeakSet") {
         const [elementType] = this.checker.getTypeArguments(reference);
         if (!elementType) return undefined;
         const element = this.fromStoredTsType(elementType, node);
@@ -761,6 +798,12 @@ export class DataTypeRegistry {
             }
           : undefined;
       }
+    }
+    // After the symbol-named lookups above, which cost less than an index
+    // signature query and never describe a dictionary.
+    const dictionary = this.fromIndexSignatureType(type, node);
+    if (dictionary) {
+      return dictionary;
     }
     const functionType = this.fromFunctionType(type, node);
     if (functionType) return functionType;
@@ -1006,9 +1049,7 @@ export class DataTypeRegistry {
           candidate,
           declaration ?? node,
         );
-        return (value.flags & ts.TypeFlags.StringLiteral) !== 0
-          ? (value as ts.StringLiteralType).value
-          : undefined;
+        return literalTagValue(this.checker, value);
       });
       return (
         values.every((value) => value !== undefined) &&
@@ -1102,7 +1143,8 @@ export class DataTypeRegistry {
                 if (!properties.some(property => property.name === propertyName)) return [];
                 const tag = properties.find(property => property.name === discriminant.name)!;
                 const tagType = this.checker.getTypeOfSymbolAtLocation(tag, tag.valueDeclaration ?? tag.declarations?.[0] ?? node);
-                return (tagType.flags & ts.TypeFlags.StringLiteral) !== 0 ? [(tagType as ts.StringLiteralType).value] : [];
+                const tagValue = literalTagValue(this.checker, tagType);
+                return tagValue === undefined ? [] : [tagValue];
               }),
             } }
           : {}),
@@ -1211,14 +1253,59 @@ export class DataTypeRegistry {
     substitution: ReadonlyMap<ts.Symbol, ts.Type> | undefined,
   ): void {
     this.activeTypeArguments = substitution;
-    // The struct-identity key folds the instantiation in, and it is the
-    // same string for the whole window this substitution is in force --
-    // so it is spelled here rather than once per cache lookup.
-    this.activeTypeArgumentKey = substitution
-      ? [...substitution.values()]
-          .map((argument) => this.checker.typeToString(argument))
-          .join(",")
-      : "";
+    this.activeTypeArgumentFrameKey = substitution ? this.frameKey(substitution) : undefined;
+    this.refreshTypeArgumentKey();
+  }
+
+  /** Runs `work` with a generic call's instantiation in force above the receiver's. */
+  public withTypeArguments<T>(
+    substitution: ReadonlyMap<ts.Symbol, ts.Type> | undefined,
+    work: () => T,
+  ): T {
+    if (!substitution) {
+      return work();
+    }
+    this.callTypeArguments.push(substitution);
+    this.callTypeArgumentKeys.push(this.frameKey(substitution));
+    this.refreshTypeArgumentKey();
+    try {
+      return work();
+    } finally {
+      this.callTypeArguments.pop();
+      this.callTypeArgumentKeys.pop();
+      this.refreshTypeArgumentKey();
+    }
+  }
+
+  /** Every substitution in force, the receiver's beneath the calls'. */
+  private typeArgumentFrames(): readonly ReadonlyMap<ts.Symbol, ts.Type>[] {
+    return [
+      ...(this.activeTypeArguments ? [this.activeTypeArguments] : []),
+      ...this.callTypeArguments,
+    ];
+  }
+
+  /** One frame's share of the struct-identity key, spelled once when the frame is pushed. */
+  private frameKey(frame: ReadonlyMap<ts.Symbol, ts.Type>): string {
+    return [...frame.values()]
+      .map((argument) => this.checker.typeToString(argument))
+      .join(",");
+  }
+
+  /** The receiver frame's key, and the call frames' keys beside their stack. */
+  private activeTypeArgumentFrameKey: string | undefined;
+  private readonly callTypeArgumentKeys: string[] = [];
+
+  /**
+   * The struct-identity key folds every instantiation in force in, and it
+   * is the same string for the whole window a substitution is in force --
+   * so it is joined when the frames change rather than per cache lookup.
+   */
+  private refreshTypeArgumentKey(): void {
+    this.activeTypeArgumentKey = [
+      ...(this.activeTypeArgumentFrameKey === undefined ? [] : [this.activeTypeArgumentFrameKey]),
+      ...this.callTypeArgumentKeys,
+    ].join(";");
   }
 
   /** The active substitution, so a receiver can carry it. */
@@ -1248,15 +1335,17 @@ export class DataTypeRegistry {
 
   /** The type a type parameter stands for here, when one is in force. */
   private substituteTypeParameter(type: ts.Type): ts.Type | undefined {
-    if (
-      !this.activeTypeArguments ||
-      (type.flags & ts.TypeFlags.TypeParameter) === 0 ||
-      !type.symbol
-    ) {
+    if ((type.flags & ts.TypeFlags.TypeParameter) === 0 || !type.symbol) {
       return undefined;
     }
-    const argument = this.activeTypeArguments.get(type.symbol);
-    return argument === type ? undefined : argument;
+    const frames = this.typeArgumentFrames();
+    for (let index = frames.length - 1; index >= 0; index -= 1) {
+      const argument = frames[index]!.get(type.symbol);
+      if (argument !== undefined) {
+        return argument === type ? undefined : argument;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1276,7 +1365,7 @@ export class DataTypeRegistry {
     type: ts.Type,
     seen: Set<ts.Type> = new EmissionSet(),
   ): boolean {
-    if (!this.activeTypeArguments || seen.has(type)) {
+    if (this.typeArgumentFrames().length === 0 || seen.has(type)) {
       return false;
     }
     seen.add(type);
@@ -1778,6 +1867,43 @@ export class DataTypeRegistry {
    * happens to declare the same property names stays the struct it
    * already was.
    */
+  /**
+   * An object type whose string index signature types every member --
+   * `{ [id: string]: number }`, or an interface declaring named entries
+   * of that same type beside the signature -- is a dictionary: a
+   * string-keyed map whose declared members are ordinary entries.
+   * (`Record<string, T>` arrives through the alias above.) A member the
+   * signature does not cover keeps the type a struct.
+   */
+  private fromIndexSignatureType(type: ts.Type, node: ts.Node): DataType | undefined {
+    if ((type.flags & ts.TypeFlags.Object) === 0) {
+      return undefined;
+    }
+    const index = this.checker.getIndexInfoOfType(type, ts.IndexKind.String);
+    if (!index) {
+      return undefined;
+    }
+    const uniform = this.checker
+      .getPropertiesOfType(type)
+      .every((property) =>
+        this.checker.isTypeAssignableTo(
+          this.checker.getTypeOfSymbol(property),
+          index.type,
+        ),
+      );
+    if (!uniform) {
+      return undefined;
+    }
+    const value = this.fromStoredTsType(index.type, node);
+    return value
+      ? {
+          kind: "map",
+          key: { kind: "string" },
+          value: this.markStoredObjectReferences(value),
+        }
+      : undefined;
+  }
+
   private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
     const directRecordAlias = type.aliasSymbol?.name === "Record";
     const namedRecordAlias = (type.aliasSymbol?.declarations ?? []).some(
