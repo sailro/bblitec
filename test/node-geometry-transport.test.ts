@@ -175,12 +175,12 @@ int main() {
     }
     assert(pinned_vertex_input("position", false).offset == offsetof(GpuVertex, position));
     assert(pinned_vertex_input("normal", true).offset == offsetof(GpuVertex, normal));
-    for (const double determinant : {1.0, -1.0}) for (const bool clockwise_front_face : {false, true}) {
+    for (const bool source_clockwise : {false, true}) for (const bool clockwise_front_face : {false, true}) {
         const std::vector<std::uint32_t> original{0, 1, 2, 0, 2, 3};
         geometry.indices = original; geometry.source_indices_reversed = false;
-        ${cppFunction(loader, "if (\n                geometry.topology == MeshTopology::triangles &&\n                determinant < 0.0")}
+        ${cppFunction(loader, "if (\n                geometry.topology == MeshTopology::triangles &&\n                source_clockwise")}
         const auto adapted = geometry.indices;
-        assert(geometry.source_indices_reversed == (determinant < 0 && !clockwise_front_face));
+        assert(geometry.source_indices_reversed == (source_clockwise && !clockwise_front_face));
         std::vector<std::uint32_t> scratch;
         const auto source = node_source_indices(geometry, scratch);
         assert(std::equal(source.begin(), source.end(), original.begin(), original.end()));

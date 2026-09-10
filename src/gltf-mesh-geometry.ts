@@ -34,7 +34,7 @@ export class GltfGeometryPacker {
     public readonly accessors: JsonObject[];
     public readonly bufferViews: JsonObject[];
     private readonly binary: BinaryBuilder;
-    private readonly buffers = new Map<RecordedBuffer, {offset: number; views: Map<number, number>}>();
+    private readonly buffers = new Map<object, {offset: number; views: Map<number, number>}>();
 
     public constructor(document: JsonObject, bin: DataView) {
         this.accessors = asRecords(document.accessors);
@@ -52,20 +52,33 @@ export class GltfGeometryPacker {
             (layout && (layout._count !== count || layout._componentType !== componentType || layout._componentCount !== components)) ||
             offset + (count ? (count - 1) * stride + components * bytes : 0) > buffer.size)
             throw new Error("Unsupported recorded glTF vertex/index buffer layout.");
-        let packed = this.buffers.get(buffer);
-        if (!packed) {
-            packed = {offset: this.binary.append(new Uint8Array(buffer.bytes)), views: new Map()};
-            this.buffers.set(buffer, packed);
-        }
-        const viewStride = layout ? stride : 0;
-        let view = packed.views.get(viewStride);
-        if (view === undefined) {
-            view = this.bufferViews.length;
-            this.bufferViews.push({buffer: 0, byteOffset: packed.offset, byteLength: buffer.size, ...(layout ? {byteStride: stride} : {})});
-            packed.views.set(viewStride, view);
-        }
+        const view = this.bufferView(buffer, new Uint8Array(buffer.bytes), layout ? stride : 0);
         const index = this.accessors.length;
         this.accessors.push({bufferView: view, byteOffset: offset, count, componentType, type: components === 1 ? "SCALAR" : `VEC${components}`});
+        return index;
+    }
+
+    private bufferView(identity: object, bytes: Uint8Array, stride = 0): number {
+        let packed = this.buffers.get(identity);
+        if (!packed) {
+            packed = {offset: this.binary.append(bytes), views: new Map()};
+            this.buffers.set(identity, packed);
+        }
+        let view = packed.views.get(stride);
+        if (view === undefined) {
+            view = this.bufferViews.length;
+            this.bufferViews.push({buffer: 0, byteOffset: packed.offset, byteLength: bytes.byteLength, ...(stride ? {byteStride: stride} : {})});
+            packed.views.set(stride, view);
+        }
+        return view;
+    }
+
+    /** CPU construction results use the same binary transport as recorded uploads. */
+    public float32(data: Float32Array, components: 1 | 2 | 3 | 4): number {
+        if (data.length % components !== 0) throw new Error("Incomplete glTF construction elements.");
+        const view = this.bufferView(data, new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        const index = this.accessors.length;
+        this.accessors.push({bufferView: view, count: data.length / components, componentType: 5126, type: components === 1 ? "SCALAR" : `VEC${components}`});
         return index;
     }
 

@@ -44,7 +44,7 @@ test("carries STEP and the non-triangle topologies into the glTF loader", () => 
     assert.match(exotic.source, /MeshTopology::line_strip/);
     assert.match(
         exotic.source,
-        /has no WebGPU topology and is not supported/,
+        /Unsupported prepared glTF topology/,
     );
     // A point or a line has no fragment quad for the pinned flat-normal
     // derivative to read, so a primitive without NORMAL refuses.

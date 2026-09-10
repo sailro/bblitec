@@ -24,7 +24,7 @@ test("base scheduling preserves reached order, both caches, default identity and
     const plan = await gltfMeshPlan(document, bin);
     assert.deepEqual(plan.cores, [1, -1, 0]);
     assert.deepEqual(plan.materials, [0, 1, 2]);
-    assert.deepEqual(plan.meshes, [
+    assert.deepEqual(plan.meshes.map(({setup: _setup, ...mesh}) => mesh), [
         {node: 0, primitive: 0, material: 0, geometry: 0, name: "gltf_mesh_0", flatNormal: true},
         {node: 0, primitive: 1, material: 1, geometry: 1, name: "gltf_mesh_1", flatNormal: true},
         {node: 2, primitive: 0, material: 2, geometry: 2, name: "first", flatNormal: true},
@@ -64,11 +64,13 @@ test("source extraction guards and upload names control the emitted schedule", a
     assert.deepEqual(filtered.meshes.map(mesh => mesh.node), [2, 3, 3]);
     const unique = fixture();
     unique.document.nodes = [{mesh: 0}];
+    unique.document.scenes = [{nodes: [0]}];
     const renamed = await gltfMeshPlan(unique.document, unique.bin, doctoredContext(module,
         'const meshName = json.meshes[json.nodes[m._nodeIndex].mesh].name || `gltf_mesh_${i}`;',
         'const meshName = "from-source";'));
     assert.equal(renamed.meshes[0]!.name, "from-source");
     unique.document.nodes = [{mesh: 0}, {mesh: 1}];
+    unique.document.scenes = [{nodes: [0, 1]}];
     const reversed = await gltfMeshPlan(unique.document, unique.bin, doctoredContext(module,
         "return Promise.all(\n        meshDatas.map", "return Promise.all(\n        [...meshDatas].reverse().map"));
     assert.deepEqual(reversed.meshes.map(mesh => [mesh.node, mesh.primitive]), [[1, 1], [1, 0], [0, 0]]);

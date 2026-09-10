@@ -1480,10 +1480,14 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
 
     const auto parents = build_gltf_parents(document);
     validate_gltf_parents(parents);
-    GltfWorldCache world_cache(node_json.size());
-    std::vector<Matrix> world(node_json.size());
+    std::optional<GltfWorldCache> world_cache;
+    std::vector<Matrix> world;
     const auto compute_world = [&](std::size_t index) -> const Matrix& {
-        world[index] = gltf_document_world(compute_gltf_node_world(document, index, parents, world_cache));
+        if (!world_cache) {
+            world_cache.emplace(node_json.size());
+            world.resize(node_json.size());
+        }
+        world.at(index) = gltf_document_world(compute_gltf_node_world(document, index, parents, *world_cache));
         return world.at(index);
     };
 ${nodeVisibility ? `
@@ -1726,41 +1730,19 @@ ${animationBlending || animationMask || boneControl ? `
             const auto node_index = unsigned_value(required(planned, "node"));
             const auto& node = node_json.at(node_index).as_object();
             const auto& mesh = mesh_json.at(unsigned_value(required(node, "mesh"))).as_object();
-            const auto& primitive = required(mesh, "primitives").as_array().at(unsigned_value(required(planned, "primitive"))).as_object();
+            const auto& setup = required(planned, "setup").as_object();
+            const std::string topology = required(setup, "topology").as_string();
+            const bool source_clockwise = required(setup, "clockwise").as_boolean();
 ${nonTrianglePrimitives
-            ? `            // The pinned loader keeps the authored topology and hands it to
-            // WebGPU: load-gltf.ts records a _topology index and
-            // gltf-feature-primitive.ts turns it into a GPUPrimitiveState.
-            // A triangle strip is the one non-default mode that describes
-            // the same triangles a triangle list can, so it is expanded
-            // below into the list every rasterizer expands it into; points,
-            // lines and line strips reach the pipeline as themselves.
-            //
-            // LINE_LOOP (2) and TRIANGLE_FAN (6) are the two modes WebGPU has
-            // no topology for. Upstream leaves them as a triangle list --
-            // matching BJS, which cannot render them -- which draws a
-            // different shape rather than the authored one, so they refuse
-            // here instead of being mirrored.
-            const std::size_t primitive_mode =
-                unsigned_or(primitive, "mode", 4);
+            ? `            // Convert the source WebGPU topology to native transport.
             MeshTopology primitive_topology = MeshTopology::triangles;
-            switch (primitive_mode) {
-                case 0: primitive_topology = MeshTopology::points; break;
-                case 1: primitive_topology = MeshTopology::lines; break;
-                case 3: primitive_topology = MeshTopology::line_strip; break;
-                // TRIANGLES draws itself; TRIANGLE_STRIP expands below into
-                // the triangle list it describes.
-                case 4:
-                case 5: break;
-                default:
-                    throw std::runtime_error(
-                        "glTF primitive mode " +
-                        std::to_string(primitive_mode) +
-                        " has no WebGPU topology and is not supported.");
-            }`
-            : `            if (unsigned_or(primitive, "mode", 4) != 4) {
-                throw std::runtime_error("Only triangle-list glTF primitives are supported.");
-            }`}
+            if (topology == "point-list") primitive_topology = MeshTopology::points;
+            else if (topology == "line-list") primitive_topology = MeshTopology::lines;
+            else if (topology == "line-strip") primitive_topology = MeshTopology::line_strip;
+            else if (topology != "triangle-list" && topology != "triangle-strip")
+                throw std::runtime_error("Unsupported prepared glTF topology.");`
+            : `            if (topology != "triangle-list")
+                throw std::runtime_error("Only triangle-list glTF primitives are supported.");`}
             const auto& planned_geometry = planned_geometries.at(unsigned_value(required(planned, "geometry"))).as_object();
             const JsonObject& attributes = required(planned_geometry, "attributes").as_object();
             const auto* planned_skin = optional(planned, "skin");
@@ -1801,137 +1783,47 @@ ${nonTrianglePrimitives
                 if (morph_positions.size() != morph_normals.size() || morph_positions.size() != morph_default_weights.size())
                     throw std::runtime_error("Invalid glTF morph storage counts.");
             }
-            // The node's own world in the native convention, for every mesh:
-            // the thin-instance arm composes through it, and a geometry
-            // LOCAL_POSITION variant pairs it with the vertex's local lanes.
-            Matrix instance_parent_matrix =
-                native_matrix(compute_world(node_index));
+            const auto setup_accessor = [&](const char* name, const char* type, std::size_t count) -> const AccessorInfo& {
+                const auto& value = accessors.at(unsigned_value(required(setup, name)));
+                if (value.type != type || value.component_type != 5126 || value.count != count)
+                    throw std::runtime_error("Invalid glTF mesh placement storage.");
+                return value;
+            };
+            const auto read_matrix = [&](const AccessorInfo& value, std::size_t index) {
+                Matrix matrix{};
+                for (std::size_t lane = 0; lane < matrix.size(); ++lane)
+                    matrix[lane] = read_component(buffer, container, views, value, index * 4 + lane / 4, lane % 4);
+                return matrix;
+            };
+            const auto& source_world = setup_accessor("world", "VEC4", 4);
+            Matrix mesh_world = read_matrix(source_world, 0);
+            // The source hierarchy includes its RH-to-LH root. Vertex baking
+            // applies that mirror separately, so recover the unmirrored world.
+            for (std::size_t column = 0; column < 4; ++column) mesh_world[column * 4] = -mesh_world[column * 4];
+            const Matrix instance_parent_matrix = native_matrix(mesh_world);
             std::vector<Matrix> instance_matrices;
-            if (const ts::JsonValue* extensions_value =
-                    optional(node, "extensions")) {
-                const ts::JsonValue* instancing_value =
-                    optional(
-                        extensions_value->as_object(),
-                        "EXT_mesh_gpu_instancing");
-                if (instancing_value) {
-                    if (animated || !morph_positions.empty()) {
-                        throw std::runtime_error(
-                            "Animated or morphed GPU instances are not supported.");
-                    }
-                    const JsonObject& instance_attributes =
-                        required(
-                            instancing_value->as_object(),
-                            "attributes")
-                            .as_object();
-                    const auto accessor =
-                        [&](const char* name)
-                        -> const AccessorInfo* {
-                        const ts::JsonValue* value =
-                            optional(
-                                instance_attributes,
-                                name);
-                        return value
-                            ? &accessors.at(
-                                  unsigned_value(*value))
-                            : nullptr;
-                    };
-                    const AccessorInfo* translations =
-                        accessor("TRANSLATION");
-                    const AccessorInfo* rotations =
-                        accessor("ROTATION");
-                    const AccessorInfo* scales =
-                        accessor("SCALE");
-                    std::size_t instance_count = 0;
-                    for (const AccessorInfo* value :
-                         {translations, rotations, scales}) {
-                        if (!value) continue;
-                        if (
-                            instance_count != 0 &&
-                            value->count != instance_count) {
-                            throw std::runtime_error(
-                                "GPU instance accessor counts differ.");
-                        }
-                        instance_count = value->count;
-                    }
-                    const Matrix& node_world =
-                        compute_world(node_index);
-                    instance_parent_matrix =
-                        native_matrix(node_world);
-                    for (
-                        std::size_t instance = 0;
-                        instance < instance_count;
-                        ++instance) {
-                        const Vec3 translation = translations
-                            ? Vec3{
-                                  read_component(
-                                      buffer, container, views,
-                                      *translations, instance, 0),
-                                  read_component(
-                                      buffer, container, views,
-                                      *translations, instance, 1),
-                                  read_component(
-                                      buffer, container, views,
-                                      *translations, instance, 2),
-                              }
-                            : Vec3{};
-                        const Vec4 rotation = rotations
-                            ? Vec4{
-                                  read_component(
-                                      buffer, container, views,
-                                      *rotations, instance, 0),
-                                  read_component(
-                                      buffer, container, views,
-                                      *rotations, instance, 1),
-                                  read_component(
-                                      buffer, container, views,
-                                      *rotations, instance, 2),
-                                  read_component(
-                                      buffer, container, views,
-                                      *rotations, instance, 3),
-                              }
-                            : Vec4{0.0f, 0.0f, 0.0f, 1.0f};
-                        const Vec3 scale = scales
-                            ? Vec3{
-                                  read_component(
-                                      buffer, container, views,
-                                      *scales, instance, 0),
-                                  read_component(
-                                      buffer, container, views,
-                                      *scales, instance, 1),
-                                  read_component(
-                                      buffer, container, views,
-                                      *scales, instance, 2),
-                              }
-                            : Vec3{1.0f, 1.0f, 1.0f};
-                        instance_matrices.push_back(
-                            native_matrix(
-                                trs_matrix(
-                                    translation,
-                                    rotation,
-                                    scale)));
-                    }
-                }
+            if (const auto* instance_value = optional(setup, "instances")) {
+                if (animated || planned_skin || planned_morph)
+                    throw std::runtime_error("Animated or deformed GPU instances are not supported.");
+                const auto& instances = instance_value->as_object();
+                const auto count = unsigned_value(required(instances, "count"));
+                const auto& matrices = accessors.at(unsigned_value(required(instances, "matrices")));
+                if (matrices.type != "VEC4" || matrices.component_type != 5126 || matrices.count != count * 4)
+                    throw std::runtime_error("Invalid glTF instance matrix storage.");
+                instance_matrices.reserve(count);
+                for (std::size_t instance = 0; instance < count; ++instance)
+                    instance_matrices.push_back(native_matrix(read_matrix(matrices, instance)));
             }
             ModelGeometry geometry;${nonTrianglePrimitives
             ? `
             geometry.topology = primitive_topology;`
             : ""}
             geometry.vertices.resize(positions.count);
-            geometry.bounds_min = Vec3{
-                std::numeric_limits<float>::max(),
-                std::numeric_limits<float>::max(),
-                std::numeric_limits<float>::max(),
-            };
-            geometry.bounds_max = Vec3{
-                std::numeric_limits<float>::lowest(),
-                std::numeric_limits<float>::lowest(),
-                std::numeric_limits<float>::lowest(),
-            };
             const bool instanced =
                 !instance_matrices.empty();
             const Matrix matrix = instanced
                 ? identity_matrix()
-                : compute_world(node_index);
+                : mesh_world;
             // The pin's own mat4Determinant3, from the shared emission --
             // double, expanded along the same cofactor column as the
             // run-time mirrored-mesh watcher, so the load-time and
@@ -1962,7 +1854,7 @@ ${nonTrianglePrimitives
                 geometry.local_normals.resize(positions.count);
             }` : ""}
             const bool clockwise_front_face =
-                determinant < 0.0 &&
+                source_clockwise &&
                 materials[material_index].value <
                     engine.materials.size() &&
                 engine.materials[
@@ -2073,12 +1965,6 @@ ${nonTrianglePrimitives
                         read_component(buffer, container, views, *weights, index, 3),
                     };
                 }
-                geometry.bounds_min.x = std::min(geometry.bounds_min.x, vertex.position.x);
-                geometry.bounds_min.y = std::min(geometry.bounds_min.y, vertex.position.y);
-                geometry.bounds_min.z = std::min(geometry.bounds_min.z, vertex.position.z);
-                geometry.bounds_max.x = std::max(geometry.bounds_max.x, vertex.position.x);
-                geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
-                geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
                 geometry.vertices[index] = vertex;
                 if (retains_local_vertices) {
                     ModelVertex local_vertex = vertex;
@@ -2116,7 +2002,7 @@ ${nonTrianglePrimitives
                 }
             }${nonTrianglePrimitives
             ? `
-            if (primitive_mode == 5) {
+            if (topology == "triangle-strip") {
                 // Walk the strip into the triangle list it stands for:
                 // primitive i is (i, i+1, i+2) with odd i swapped, the
                 // expansion every WebGPU/Vulkan/D3D rasterizer performs, so
@@ -2182,7 +2068,7 @@ ${nonTrianglePrimitives
             }
             if (
                 geometry.topology == MeshTopology::triangles &&
-                determinant < 0.0 &&
+                source_clockwise &&
                 !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
@@ -2278,94 +2164,28 @@ ${nonTrianglePrimitives
             if (animated) {
                 geometry.bind_vertices = geometry.vertices;
             }
-            if (instanced) {
-                geometry.bounds_min = Vec3{
-                    std::numeric_limits<float>::max(),
-                    std::numeric_limits<float>::max(),
-                    std::numeric_limits<float>::max(),
+            const auto& local_bounds = setup_accessor("bounds", "VEC3", 2);
+            const auto& world_bounds = setup_accessor("worldBounds", "VEC3", 2);
+            const auto read_bound = [&](const AccessorInfo& value, std::size_t index) {
+                return Vec3{
+                    read_component(buffer, container, views, value, index, 0),
+                    read_component(buffer, container, views, value, index, 1),
+                    read_component(buffer, container, views, value, index, 2),
                 };
-                geometry.bounds_max = Vec3{
-                    std::numeric_limits<float>::lowest(),
-                    std::numeric_limits<float>::lowest(),
-                    std::numeric_limits<float>::lowest(),
-                };
-                for (const Matrix& instance :
-                     instance_matrices) {
-                    const Matrix world_instance =
-                        upstream::matrix_product(
-                            instance_parent_matrix,
-                            instance);
-                    for (const ModelVertex& vertex :
-                         geometry.vertices) {
-                        const Vec3 position =
-                            upstream::transform_position(
-                                world_instance,
-                                vertex.position);
-                        geometry.bounds_min.x = std::min(
-                            geometry.bounds_min.x,
-                            position.x);
-                        geometry.bounds_min.y = std::min(
-                            geometry.bounds_min.y,
-                            position.y);
-                        geometry.bounds_min.z = std::min(
-                            geometry.bounds_min.z,
-                            position.z);
-                        geometry.bounds_max.x = std::max(
-                            geometry.bounds_max.x,
-                            position.x);
-                        geometry.bounds_max.y = std::max(
-                            geometry.bounds_max.y,
-                            position.y);
-                        geometry.bounds_max.z = std::max(
-                            geometry.bounds_max.z,
-                            position.z);
-                    }
-                }
+            };
+            const Vec3 world_min = read_bound(world_bounds, 0);
+            const Vec3 world_max = read_bound(world_bounds, 1);
+            if (animated) {
+                const Vec3 local_min = read_bound(local_bounds, 0);
+                const Vec3 local_max = read_bound(local_bounds, 1);
+                geometry.bounds_min = Vec3{-local_max.x, local_min.y, local_min.z};
+                geometry.bounds_max = Vec3{-local_min.x, local_max.y, local_max.z};
+            } else {
+                geometry.bounds_min = world_min;
+                geometry.bounds_max = world_max;
             }
-${animatedWorldBounds ? `            // A static primitive bakes its node matrix into its vertices, so
-            // the box just accumulated is already the world one. An animated
-            // primitive keeps local vertices and receives that matrix per
-            // frame, so its world box is the local box through the node
-            // matrix -- the transform the pinned expandWorldAabbForMesh
-            // applies while framing the default camera.
-            geometry.world_bounds_min = geometry.bounds_min;
-            geometry.world_bounds_max = geometry.bounds_max;
-            // An instanced primitive already had its box rebuilt from the
-            // instance matrices, which carry the node matrix, so applying
-            // that matrix again here would double it.
-            if (animated && !instanced) {
-                const Matrix& node_world = compute_world(node_index);
-                bool has_world_bounds = false;
-                for (const Vec3& corner : std::array<Vec3, 8>{
-                         Vec3{geometry.bounds_min.x, geometry.bounds_min.y, geometry.bounds_min.z},
-                         Vec3{geometry.bounds_min.x, geometry.bounds_min.y, geometry.bounds_max.z},
-                         Vec3{geometry.bounds_min.x, geometry.bounds_max.y, geometry.bounds_min.z},
-                         Vec3{geometry.bounds_min.x, geometry.bounds_max.y, geometry.bounds_max.z},
-                         Vec3{geometry.bounds_max.x, geometry.bounds_min.y, geometry.bounds_min.z},
-                         Vec3{geometry.bounds_max.x, geometry.bounds_min.y, geometry.bounds_max.z},
-                         Vec3{geometry.bounds_max.x, geometry.bounds_max.y, geometry.bounds_min.z},
-                         Vec3{geometry.bounds_max.x, geometry.bounds_max.y, geometry.bounds_max.z},
-                     }) {
-                    // The stored vertices already carry the mirror the
-                    // native convention applies, so undo it before the node
-                    // matrix and re-apply it after.
-                    const Vec3 world_corner = transform_point(
-                        node_world,
-                        Vec3{-corner.x, corner.y, corner.z});
-                    if (!has_world_bounds) {
-                        geometry.world_bounds_min = world_corner;
-                        geometry.world_bounds_max = world_corner;
-                        has_world_bounds = true;
-                        continue;
-                    }
-                    geometry.world_bounds_min.x = std::min(geometry.world_bounds_min.x, world_corner.x);
-                    geometry.world_bounds_min.y = std::min(geometry.world_bounds_min.y, world_corner.y);
-                    geometry.world_bounds_min.z = std::min(geometry.world_bounds_min.z, world_corner.z);
-                    geometry.world_bounds_max.x = std::max(geometry.world_bounds_max.x, world_corner.x);
-                    geometry.world_bounds_max.y = std::max(geometry.world_bounds_max.y, world_corner.y);
-                    geometry.world_bounds_max.z = std::max(geometry.world_bounds_max.z, world_corner.z);
-                }
-            }
+${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
+            geometry.world_bounds_max = world_max;
 ` : ""}            engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
             record.scene_node_name = string_or(node, "name");

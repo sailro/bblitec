@@ -8,27 +8,36 @@ import { createRecordingDevice } from "./recording-device.js";
 import { transpileForBrowser } from "./typescript-transpile.js";
 import { GltfGeometryPacker, type GltfMeshGeometry, type GltfRecordedGeometry } from "./gltf-mesh-geometry.js";
 import { packageMeshDeformation, readMeshDeformation, type GltfMeshDeformation, type RecordedMeshDeformation } from "./gltf-mesh-deformation.js";
+import { packageMeshSetup, readMeshSetup, type GltfMeshSetup, type RecordedMeshSetup, type SourceWorldBounds } from "./gltf-mesh-setup.js";
 
 export interface GltfMeshPlan {
     /** Source material indices in assembly order; -1 denotes the implicit default. */
     cores: number[];
     /** Core record indices in native material construction order. */
     materials: number[];
-    meshes: Array<{node: number; primitive: number; material: number; geometry: number; name: string; flatNormal: boolean} & GltfMeshDeformation>;
+    meshes: Array<{node: number; primitive: number; material: number; geometry: number; name: string; flatNormal: boolean; setup: GltfMeshSetup} & GltfMeshDeformation>;
     geometries: GltfMeshGeometry[];
 }
 type CoreMaterial = object;
 type Material = object;
 interface MeshData { _nodeIndex: number; _primitive: JsonObject; _vertexCount: number }
-interface Mesh extends RecordedMeshDeformation { material: Material; name: string; _gpu: GltfRecordedGeometry; _flatNormal?: boolean }
+interface Mesh extends RecordedMeshDeformation, RecordedMeshSetup { material: Material; name: string; _gpu: GltfRecordedGeometry; _flatNormal?: boolean }
 interface UploadContext {
     _engine: {_device: object}; _json: JsonObject; _binChunk: DataView; _baseUrl: string;
     _matExts: unknown[]; _wrapTex: unknown; recordMaterial(material: CoreMaterial): Promise<Material>;
     _parentMap: Map<number, number>; _worldMatrixCache: Map<number, Float32Array>;
+    _nodeMap?: readonly (object | undefined)[];
 }
-interface MeshFeature { applyMesh?(data: MeshData, mesh: Mesh, context: UploadContext): void | Promise<void> }
+interface MeshFeature {
+    applyMesh?(data: MeshData, mesh: Mesh, context: UploadContext): void | Promise<void>;
+    applyAsset?(meshes: Mesh[], root: object, context: UploadContext): Promise<object>;
+}
 interface SourceLoader {
+    __instanceFeature: MeshFeature;
+    __worldBounds: SourceWorldBounds;
+    __attachMeshParents(scene: undefined, entity: object): void;
     __prepareMeshes(json: JsonObject): Promise<{features: MeshFeature[]; parentMap: Map<number, number>; worldMatrixCache: Map<number, Float32Array>}>;
+    buildNodeHierarchy(json: JsonObject, meshes: Mesh[], data: MeshData[]): {root: object; nodeMap: readonly (object | undefined)[]};
     extractAllMeshes(json: JsonObject, bin: DataView, base: string, parents: Map<number, number>, world: Map<number, Float32Array>, decoded: Map<unknown, unknown>,
         recordCore: (json: JsonObject, bin: DataView, index: number, base: string, cache: unknown[]) => Promise<CoreMaterial>): Promise<MeshData[]>;
     uploadMeshes(data: MeshData[], features: MeshFeature[],
@@ -54,8 +63,16 @@ async function recordingLoader(context: LoweringContext): Promise<SourceLoader> 
     const morph = sourceModule("src/loader-gltf/gltf-feature-morph.ts", new Map([
         ["../morph/create-morph-targets.js", sourceModule("src/morph/create-morph-targets.ts")],
     ]));
+    const instances = sourceModule("src/loader-gltf/gltf-feature-gpu-instancing.ts", new Map([
+        ["../mesh/thin-instance.js", sourceModule("src/mesh/thin-instance.ts")],
+        ["../mesh/enable-thin-instance-world-bounds.js", sourceModule("src/mesh/enable-thin-instance-world-bounds.ts")],
+    ]));
+    const primitive = sourceModule("src/loader-gltf/gltf-feature-primitive.ts", new Map([
+        ["../material/pbr/pbr-primitive-topology.js", sourceModule("src/material/pbr/pbr-primitive-topology.ts")],
+    ]));
     const registry = sourceModule("src/loader-gltf/gltf-feature-registry.ts", new Map([
         ["./gltf-feature-skeleton.js", skeleton], ["./gltf-feature-morph.js", morph],
+        ["./gltf-feature-gpu-instancing.js", instances], ["./gltf-feature-primitive.js", primitive],
     ]));
     const module = "src/loader-gltf/load-gltf.ts";
     const {file, call, material, uploadContext} = gltfBaseMaterialConstruction(context);
@@ -89,9 +106,19 @@ async function recordingLoader(context: LoweringContext): Promise<SourceLoader> 
         statement.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === "activeBin"));
     if (binaryStart < 2) context.contractError(load, "Expected the glTF feature-discovery boundary before activeBin.");
     const preparation = transpileForBrowser(`async function __prepareMeshes(json) {\n${statements.slice(1, binaryStart).map(statement => statement.getText(file)).join("\n")}\nreturn {features, parentMap, worldMatrixCache};\n}`, module);
+    // Hierarchy construction populates children; scene attachment establishes
+    // parents. Execute that complete suffix before observing world matrices.
+    const attach = context.functionDeclaration("src/scene/scene-core.ts", "addToScene").declaration;
+    const attachStatements = attach.body!.statements;
+    const childrenStart = attachStatements.findIndex(statement => ts.isVariableStatement(statement) &&
+        statement.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === "kids"));
+    if (childrenStart < 0) context.contractError(attach, "Expected scene child-attachment statements.");
+    const attachment = transpileForBrowser(`function __attachMeshParents(${attach.parameters.map(parameter => parameter.getText()).join(", ")}) {\nconst addToScene = __attachMeshParents;\n${attachStatements.slice(childrenStart).map(statement => statement.getText()).join("\n")}\n}`, "src/scene/scene-core.ts");
     // Core material records are opaque to extraction. Their actual assembler
     // and the replaced PBR constructor both execute in the generated loader.
-    return await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation, ["extractAllMeshes", "uploadMeshes", "__prepareMeshes"],
+    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};`;
+    return await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation + "\n" + attachment + "\n" + setupImports,
+        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__attachMeshParents", "__instanceFeature", "__worldBounds"],
         new Map([["./gltf-feature-registry.js", registry]]))) as SourceLoader;
 }
 
@@ -140,6 +167,15 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context?: Low
             throw new Error("glTF mesh planning changed its mesh data ownership.");
         associations.set(mesh, input);
     }}], uploadContext);
+    const {root, nodeMap} = loader.buildNodeHierarchy(document, meshes, data);
+    uploadContext._nodeMap = nodeMap;
+    // Other per-asset hooks retain their native adapters until their bindings
+    // are represented. Registry membership owns this hook's activation.
+    if (features.includes(loader.__instanceFeature)) {
+        const fragment = await loader.__instanceFeature.applyAsset!(meshes, root, uploadContext);
+        if (Object.keys(fragment).length) throw new Error("Unrepresented glTF instance asset fragment.");
+    }
+    loader.__attachMeshParents(undefined, root);
     const nodes = asRecords(document.nodes), definitions = asRecords(document.meshes);
     const primitiveIndices = definitions.map(definition => new Map(asRecords(definition.primitives).map((primitive, index) => [primitive, index])));
     if (meshes.length !== data.length) throw new Error("glTF mesh planning changed its extraction cardinality.");
@@ -164,6 +200,7 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context?: Low
             geometryRecords.push(packer.geometry(mesh._gpu, input._vertexCount));
         }
         return {node: input._nodeIndex, primitive, material, geometry, name: mesh.name, flatNormal: mesh._flatNormal === true,
+            setup: packageMeshSetup(mesh, loader.__worldBounds, packer),
             ...packageMeshDeformation(mesh, input._vertexCount, asIndex(node?.skin), packer)};
     });
     return {plan: {cores, materials, meshes: plannedMeshes, geometries: geometryRecords}, packer};
@@ -201,6 +238,7 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
             definition === undefined || !primitives[definition]?.[primitive])
             throw new Error("Invalid packaged glTF mesh resource.");
         return {node, primitive, material, geometry, name: mesh.name, flatNormal: mesh.flatNormal,
+            setup: readMeshSetup(mesh.setup, accessorCount),
             ...readMeshDeformation(mesh, accessorCount, skinCount)};
     });
     return {cores: plan.cores, materials: plan.materials, meshes, geometries};

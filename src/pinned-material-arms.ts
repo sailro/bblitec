@@ -1473,7 +1473,7 @@ export async function gltfRenderables(
             features: await pinnedMeshFeaturesFromPrimitive(primitive, {
                 skinned: entry.skin !== undefined,
                 morphed: entry.morph !== undefined,
-                instanced: asObject(node.extensions)?.EXT_mesh_gpu_instancing !== undefined,
+                instanced: entry.setup.instances !== undefined,
                 geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal},
             }),
         });

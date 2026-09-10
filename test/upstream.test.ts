@@ -904,7 +904,7 @@ test("generates GLB framing validation from upstream constants", () => {
     );
     assert.match(
         adapter.source,
-        /determinant < 0\.0 &&\s*!clockwise_front_face/,
+        /source_clockwise &&\s*!clockwise_front_face/,
     );
     assert.match(adapter.source, /geometry\.flat_normals = true/);
     assert.match(adapter.source, /vertex\.local_position = local_position/);
@@ -931,10 +931,6 @@ test("generates GLB framing validation from upstream constants", () => {
         /gltf-ibl-brdf-lut\.rgba16f/,
     );
     assert.match(adapter.source, /brdf_lut_rgba16f = true/);
-    assert.match(
-        adapter.source,
-        /EXT_mesh_gpu_instancing/,
-    );
     assert.match(
         adapter.source,
         /record\.instance_matrices/,
@@ -1004,15 +1000,6 @@ test("generates GLB framing validation from upstream constants", () => {
         /AnimatedMeshBinding binding = \*found;/,
     );
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
-});
-
-test("generated animated world bounds do not shadow the node-world cache", () => {
-    const source = new GltfLowerer(new LoweringContext())
-        .lowerLoaderAdapter({ animatedWorldBounds: true })
-        .source;
-    assert.match(source, /std::vector<Matrix> world\(node_json\.size\(\)\)/);
-    assert.match(source, /const Vec3 world_corner = transform_point\(/);
-    assert.doesNotMatch(source, /const Vec3 world = transform_point\(/);
 });
 
 test("emits the opt-in bone-control chunk only when it is reached", () => {

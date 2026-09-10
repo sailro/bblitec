@@ -197,6 +197,8 @@ Skin inverse bind matrices require contiguous, unnormalized FLOAT MAT4 accessors
 Animation samplers require contiguous accessor storage and complete elements.
 Mesh order, names and base/variant material scheduling execute from the pinned loader during packaging.
 Native vertex/index streams and flat-normal flags consume its recorded geometry uploads.
+Initial mesh placement, local/world bounds, instance matrices and primitive topology/winding
+consume the pinned hierarchy, scene attachment and feature-hook results.
 Skin/morph attachment, joint influences, target deltas and initial morph weights come from
 the pinned feature hooks and GPU constructors; weights are packaged per mesh.
 Unused base declarations allocate no render material; variant materials retain separate identities.
