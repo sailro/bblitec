@@ -9,10 +9,11 @@
 // the repository's own evaluator module, so there is one evaluator and one
 // bake cache rather than a second copy of either. A repeat compile replays
 // from that cache and never launches anything.
+import { EmissionMap } from "./emission-transaction.js";
 import { runGenerationChild } from "./generation-child.js";
 
 /** One evaluation per (module, export, arguments) within a compile. */
-const resultsByKey = new Map<string, unknown>();
+const resultsByKey = new EmissionMap<string, unknown>();
 
 export function runModuleJsonSync(
     modulePath: string,

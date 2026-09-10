@@ -1,16 +1,17 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { compressedTextureFormat } from "./compressed-texture-format.js";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { CompileAsset } from "./compiler.js";
 import {
     GAUSSIAN_SPLATTING_EXTENSION,
     GAUSSIAN_SPLAT_DOCUMENT_KEY,
+    GLTF_MESH_PLAN,
     asObject,
     asRecords,
     primitiveRecords,
     asString,
     asStrings,
-    gltfInteractivity,
     parseGlbJson,
     selectedVariantIndex,
     variantMaterialIndex,
@@ -21,6 +22,8 @@ import {
     UpstreamSourceStore,
 } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
+import {packagedGltfTransmissionPlan, selectedGltfTransmission} from "./gltf-transmission-plan.js";
+import {packagedFlowGraphPrograms} from "./pinned-flow-graph.js";
 
 interface GltfSpecialization {
     asset: string;
@@ -44,7 +47,8 @@ interface GltfSpecialization {
          */
         pointOrLinePrimitives: boolean;
         animationPointerMaterials: boolean;
-        transmissiveMaterial: boolean;
+        /** Null until asynchronous material construction has packaged its selection. */
+        transmissiveMaterial: boolean | null;
         specularReflectance: boolean;
         extras: boolean;
         eightInfluenceSkinning: boolean;
@@ -52,8 +56,8 @@ interface GltfSpecialization {
         gaussianSplats: boolean;
         /** Packaging transcoded this asset's KHR_texture_basisu images. */
         compressedImages: boolean;
-        /** The document carries the `KHR_interactivity` extension, the pin's feature predicate. */
-        interactivity: boolean;
+        /** Null until the source feature has published its surviving graphs. */
+        interactivity: boolean | null;
     };
 }
 
@@ -224,12 +228,8 @@ const supportedExtensions = new Set<string>([
     // Resolved by the same module through the pin's own hooks; a survivor is
     // refused by name beside the sparse one, below.
     GAUSSIAN_SPLATTING_EXTENSION,
-    // Resolved at packaging (gltf-packager.ts): every redirected KTX2 image
-    // is transcoded by the pin's own loader and written back as the KTX1
-    // container the generated loader parses, the texture takes an ordinary
-    // `source`, and the packaged document drops the extension. Listed for the
-    // same reason as the geometry extensions above -- a direct
-    // `specializeGltf` call over a pre-packaging asset still sees it.
+    // Packaging replaces each redirected KTX2 image with the pin's GPU blocks
+    // and mip list. Direct specialization can still see the source extension.
     "KHR_texture_basisu",
 ]);
 
@@ -602,18 +602,8 @@ export function specializeGltf(
                 )?.startsWith("/materials/"),
             ),
     );
-    // Babylon Lite turns scene transmission on from the asset rather than from
-    // scene code: `registerPbrTransmission` accepts a mesh whose material is
-    // `_transmissive` with a refraction intensity above zero, and the dielectric
-    // loader sets both from `transmissionFactor`. A declared extension with a
-    // zero factor leaves the intensity at zero and reaches nothing, which is why
-    // the predicate reads the factor rather than the extension.
-    const transmissiveMaterial = asRecords(document.materials).some(
-        (material) =>
-            (asObject(
-                asObject(material.extensions)?.["KHR_materials_transmission"],
-            )?.transmissionFactor as number | undefined ?? 0) > 0,
-    );
+    const transmission = packagedGltfTransmissionPlan(document);
+    const transmissiveMaterial = transmission ? selectedGltfTransmission(transmission, selectedVariantName) : null;
     // The specular half of the pinned `needsReflectance` — which also fires
     // on `ior !== 1.5` alone; that arm is folded exactly by the generated
     // loader's reflectance fold and `applyDielectric`, so this predicate
@@ -668,7 +658,7 @@ export function specializeGltf(
             eightInfluenceSkinning,
             gaussianSplats: hasGaussianSplats(document),
             compressedImages: hasCompressedImages(document),
-            interactivity: gltfInteractivity(document) !== undefined,
+            interactivity: GLTF_MESH_PLAN in document ? packagedFlowGraphPrograms(document).length > 0 : null,
         },
     };
 }
@@ -696,36 +686,20 @@ export function gltfHasGaussianSplats(path: string): boolean {
     return hasGaussianSplats(parseGlbJson(path));
 }
 
-/**
- * Whether packaging left transcoded KTX1 containers on this document.
- *
- * `KHR_texture_basisu` is resolved at generation like the geometry
- * extensions are, so what the loader ships against is the container rather
- * than the extension — which packaging drops. `texture:compressed` selects
- * the generated `parseKtx1` translation unit and only the runtime feature
- * list can do that, so an asset carrying one joins the feature after
- * materialization, exactly as its punctual lights join `light:*`.
- */
+/** Packaged mip lists reach the compressed-texture reader after materialization. */
 export function gltfHasCompressedImages(path: string): boolean {
     return hasCompressedImages(parseGlbJson(path));
 }
 
 function hasCompressedImages(document: JsonRecord): boolean {
     return asRecords(document.images).some(
-        (image) => image.mimeType === "image/ktx",
+        (image) => image.mimeType === compressedTextureFormat.mimeType,
     );
 }
 
 export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
-    /**
-     * Whether the loader records a live world box beside each primitive's
-     * local one: an animated primitive keeps local vertices and receives its
-     * node matrix per frame, so default framing must size the box where the
-     * geometry actually is. Decided by asset animations alone — a morph
-     * target moves vertices, not the node box the pinned
-     * `expandWorldAabbForMesh` composes.
-     */
+    /** Deformed primitives retain local vertices and a separate world box for framing. */
     animatedWorldBounds: boolean;
     morphStorage: boolean;
     /**
@@ -742,7 +716,6 @@ export interface AssetSpecializationFeatures {
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
     materialSpecular: boolean;
-    materialExtensionPayload: boolean;
     imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
@@ -783,7 +756,6 @@ export function emitAssetSpecializations(
             animationPointerMaterials: false,
             assetTransmission: false,
             materialSpecular: false,
-            materialExtensionPayload: false,
             imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
@@ -802,6 +774,10 @@ export function emitAssetSpecializations(
             asset.output,
             asset.selectedVariant,
         );
+        if (specialization.features.transmissiveMaterial === null)
+            throw new Error(`Asset '${asset.output}' requires packaged source transmission selection before specialization emission.`);
+        if (specialization.features.interactivity === null)
+            throw new Error(`Asset '${asset.output}' requires packaged source interactivity selection before specialization emission.`);
         return {
             ...specialization,
             renderItems: specialization.renderItems.map((item) => {
@@ -823,21 +799,13 @@ export function emitAssetSpecializations(
             specialization.extensionsUsed.includes(extension),
         );
     return {
-        // Animation presence, and deliberately not upstream's skeleton
-        // predicate: upstream recomputes node world matrices live, so its
-        // skeleton module keys on skins with JOINTS_0
-        // (gltf-feature-registry.ts) — but this port bakes static node
-        // matrices into vertices, and ANY animated mesh needs the
-        // deformation path's palette-as-world transport to receive its
-        // matrix per frame (bone_matrices[0] as the final world, even with
-        // no skin). Skinned-but-unanimated assets stay out on purpose: the
-        // static-skin experiment diverged from the pinned output and was
-        // not retained (docs/fidelity.md).
+        // Initial skin/morph state needs the same local-vertex transport as
+        // animated nodes, even when no clip exists to update it afterward.
         gpuDeformation: specializations.some(
-            (specialization) => specialization.features.animations,
+            ({features}) => features.animations || features.skins || features.morphTargets,
         ),
         animatedWorldBounds: specializations.some(
-            (specialization) => specialization.features.animations,
+            ({features}) => features.animations || features.skins || features.morphTargets,
         ),
         // Babylon Lite has one morph mechanism -- the uncapped storage-buffer
         // path -- and the composed morph variants read it, so any morph
@@ -881,8 +849,6 @@ export function emitAssetSpecializations(
         ),
         imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),
-        materialExtensionPayload: usesExtension("KHR_materials_anisotropy") ||
-            usesExtension("KHR_materials_diffuse_transmission"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
         punctualLights: usesExtension("KHR_lights_punctual"),
         eightInfluenceSkinning: specializations.some(

@@ -1,18 +1,15 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import {lowerGltfVatBinding} from "./gltf/vat-binding.js";
 
 const VAT_MODULE = "src/vat/vat-baker.ts";
 
 /**
  * Vertex animation textures (`src/vat/vat-baker.ts`).
  *
- * The bake is the pin's own loop and is not re-derived: for each clip it
- * seeks the group frame by frame and copies the posed bone palette into one
- * texture row. Upstream reads that palette off the clip's `SkeletonBinding`
- * (`group._gltfMixer[2][0].boneMatrices`); here `go_to_frame` applies the
- * pose and `MeshRecord::bone_matrices` holds the identical product, because
- * the live skeleton path uploads exactly those floats as its own palette
- * texture. That is what makes VAT(frame N) the live pose at frame N.
+ * Each clip is sought through source goToFrameCpu and its shared skeleton
+ * binding's CPU palette is folded into native mesh coordinates for VAT.
+ * CPU evaluation leaves the live uploaded bone palette unchanged.
  *
  * The playback half is the 32-byte settings block: `params` selects the row
  * range and the phase, `clock` accumulates seconds, and the vertex stage
@@ -124,6 +121,7 @@ export class VatLowerer {
                 "bakeVat, prepareVatMany, attachVat, and the VatHandle writers",
             )}
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -135,6 +133,8 @@ namespace {
 constexpr float kVatDefaultFrameRate = ${
                 this.context.floatLiteral(defaultFrameRate)
             };
+
+${lowerGltfVatBinding(this.context)}
 
 MeshRecord& vat_mesh(Engine& engine, std::uint32_t mesh) {
     if (mesh >= engine.meshes.size()) {
@@ -177,10 +177,7 @@ VatBake bake_vat(
     MeshHandle mesh,
     const std::vector<AnimationGroupHandle>& groups) {
     MeshRecord& record = vat_mesh(engine, mesh.value);
-    if (!record.skinned) {
-        throw std::runtime_error(
-            "bakeVat: the mesh has no skeleton to bake.");
-    }
+    gltf_vat_require_skeleton(record.skinned && !record.has_vat, record.name);
     VatBakeRecord bake;
     // Every clip contributes a contiguous row block, clip 0 first, in the
     // order the container hands them over -- the pin's own layout, which
@@ -198,6 +195,19 @@ VatBake bake_vat(
             throw std::runtime_error("bakeVat clip has no asset.");
         }
         const AssetRecord& asset = engine.assets[clip_record.asset];
+        const bool has_binding = gltf_vat_binding_of(
+            record.skinned && !record.has_vat,
+            static_cast<bool>(asset.animation_has_skeleton),
+            [&]() { return asset.animation_has_skeleton(mesh); });
+        const auto palette = has_binding && asset.animation_bone_palette
+            ? asset.animation_bone_palette(mesh)
+            : std::vector<std::array<float, 16>>{};
+        gltf_vat_require_binding(has_binding,
+            static_cast<double>(palette.size()),
+            static_cast<double>(record.bone_matrices.size()), record.name, clip_record.name);
+        if (!asset.animation_cpu_go_to_frame || !asset.animation_bone_palette) {
+            throw std::runtime_error("CPU-only animation evaluation is unavailable for this animation controller");
+        }
         const float duration = asset.clip_duration
             ? asset.clip_duration(clip_record.clip)
             : 0.0f;
@@ -212,9 +222,6 @@ VatBake bake_vat(
         total_frames += frames;
     }
     bake.frame_count = std::max(1u, total_frames);
-    // The bone count is the palette the pose pass writes this record: the
-    // live path uploads it as a (bones * 4) x 1 texture, and the bake
-    // stacks the same row once per frame.
     // Refused before the seek, not after: a default-constructed handle is
     // index 0, so seeking one would either throw group_record's own
     // "Invalid animation group handle" -- naming the wrong thing -- or,
@@ -225,7 +232,6 @@ VatBake bake_vat(
             "bakeVat: the container published no animation groups, so "
             "there is no clip to bake.");
     }
-    go_to_frame(engine, groups[0], 0.0f, true);
     bake.bone_count =
         static_cast<std::uint32_t>(record.bone_matrices.size());
     if (bake.bone_count == 0) {
@@ -239,36 +245,20 @@ VatBake bake_vat(
         0.0f);
     std::size_t row = 0;
     for (std::size_t index = 0; index < groups.size(); ++index) {
+        const AnimationGroupRecord& clip_record = engine.animation_groups[groups[index].value];
+        const AssetRecord& asset = engine.assets[clip_record.asset];
         const std::uint32_t frames = frames_per_clip[index];
         for (std::uint32_t frame = 0; frame < frames; ++frame) {
-            go_to_frame(
-                engine,
-                groups[index],
-                static_cast<float>(frame),
-                true);
-            if (record.bone_matrices.size() != bake.bone_count) {
-                throw std::runtime_error(
-                    "bakeVat: the mesh has inconsistent bone counts "
-                    "across the clips being baked.");
-            }
+            asset.animation_cpu_go_to_frame(clip_record.clip, static_cast<double>(frame));
+            const auto matrices = asset.animation_bone_palette(mesh);
             for (std::size_t bone = 0; bone < bake.bone_count; ++bone) {
                 std::copy_n(
-                    record.bone_matrices[bone].data(),
+                    matrices.at(bone).data(),
                     16,
                     bake.data.data() + row * floats_per_frame + bone * 16);
             }
             ++row;
         }
-        // prepareVatMany refuses three things per clip. Two are
-        // reproduced: no palette at all (above) and a palette whose size
-        // disagrees with the first clip's, which is the pin's
-        // "inconsistent bone counts". The third, bindingOf returning
-        // nothing -- a clip that drives no bone of THIS skeleton -- has no
-        // counterpart here, because go_to_frame leaves the palette holding
-        // the previous clip's pose rather than reporting that it wrote
-        // nothing, and a stale palette is indistinguishable from a
-        // deliberate one at this seam. A file whose clips each drive a
-        // different skeleton would bake the wrong pose rather than refuse.
         // stopAnimation after each clip: the bake replaces live playback.
         stop_animation(engine, groups[index]);
     }

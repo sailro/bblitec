@@ -20,11 +20,13 @@
  */
 import type { LoweringContext } from "./context.js";
 import {
+    vec3MemberBindings,
     lowerPinnedFunction,
     lowerObjectComponents,
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 const normalizeModule = "src/math/normalize-vec3.ts";
 const normalizeObjectModule =
@@ -99,9 +101,7 @@ export function pinnedNormalizeVec3Header(context: LoweringContext): string {
             inline: true,
             calls: mathCalls,
             memberBindings: new Map([
-                ["v.x", { cpp: "v.x", type: "scalar" as const }],
-                ["v.y", { cpp: "v.y", type: "scalar" as const }],
-                ["v.z", { cpp: "v.z", type: "scalar" as const }],
+                ...vec3MemberBindings("v"),
             ]),
             returns: "double",
         },
@@ -131,9 +131,7 @@ export function pinnedNormalizeVec3Header(context: LoweringContext): string {
                 ],
             ]),
             memberBindings: new Map([
-                ["v.x", { cpp: "v.x", type: "scalar" as const }],
-                ["v.y", { cpp: "v.y", type: "scalar" as const }],
-                ["v.z", { cpp: "v.z", type: "scalar" as const }],
+                ...vec3MemberBindings("v"),
             ]),
             returns: {
                 type: "bbl::Vec3d",
@@ -154,22 +152,11 @@ export function pinnedNormalizeVec3Header(context: LoweringContext): string {
             },
         },
     );
-    return `#pragma once
-
-#include <bblite/runtime.hpp>
-#include <bblite/js_data.hpp>
-
-#include <array>
-#include <cmath>
-
-namespace bbl::upstream {
-
+    return pinnedHeader(["<bblite/runtime.hpp>","<bblite/js_data.hpp>","","<array>","<cmath>"], `
 ${normalize}
 
 ${length}
 
 ${normalizeObject}
-
-} // namespace bbl::upstream
-`;
+`);
 }

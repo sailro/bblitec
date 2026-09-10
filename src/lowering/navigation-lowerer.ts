@@ -38,6 +38,7 @@ import ts from "typescript";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 /**
  * `recastConfigDefaults` from the installed `@recast-navigation/core`,
@@ -578,15 +579,7 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
         return {
             modulePath,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/pal_navigation.hpp>
-#include <bblite/runtime.hpp>
-
-#include <vector>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/pal_navigation.hpp>","<bblite/runtime.hpp>","","<vector>"], `
 bbl::pal::NavigationHandle create_navigation_plugin();
 void create_nav_mesh(
     Engine& engine,
@@ -629,9 +622,7 @@ double add_agent(
 Vec3d get_agent_position(
     bbl::pal::NavCrowdHandle crowd,
     double index);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(modulePath, symbolName, "createNavigationPluginAsync, createDebugNavMeshGeometry, raycast")}
 #include <bblite/upstream/navigation.hpp>
 // The merge composes each caster's own world through the one emitted

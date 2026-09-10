@@ -220,6 +220,10 @@ test("pure CSG and CSG2 plans build and materialize in hoisted finally guards", 
                 createMeshFromCsg${version}(engine, solid, "cleanup");
             }
         `);
+        const payloads = [...result.assetPayloads.values()].filter(value => value.startsWith("data:application/x-bblite-mesh;base64,"));
+        assert.equal(payloads.length, 1);
+        const payload = payloads[0]!;
+        const bytes = Buffer.from(payload.slice(payload.indexOf(",") + 1), "base64");
         runNativeProgram(`csg${version}-plan`, `
 #define main generated_scene_main
 ${result.cpp}
@@ -227,6 +231,13 @@ ${result.cpp}
 #include <cassert>
 namespace { unsigned boxes = 0; unsigned materialized = 0; }
 namespace bbl {
+std::string asset_path(const std::string& path) { return path; }
+namespace pal {
+std::vector<std::uint8_t> read_binary_file(const std::string& path) {
+    assert(path == ${JSON.stringify(result.manifest.assets[0]!.output)});
+    return {${[...bytes].join(",")}};
+}
+}
 Engine create_engine(EngineOptions) { return {}; }
 MeshHandle create_box(Engine&, BoxOptions) { ++boxes; return {}; }
 MeshHandle create_mesh_from_data(Engine&, const std::string& name,

@@ -149,6 +149,7 @@ interface GltfSpecialization {
 }
 
 export interface ParityArguments {
+    attribute?: true;
     sceneId?: string;
     executable?: string;
     actual?: string;
@@ -183,6 +184,7 @@ export function withoutVariable(
 export const PARITY_FLAGS: FlagSpec = {
     value: ["--exe", "--actual", "--backend", "--seek", "--without"],
     boolean: [
+        "--attribute",
         "--recapture-reference",
         "--no-fail",
         "--differential",
@@ -210,6 +212,7 @@ export function parseParityArguments(rest: string[]): ParityArguments {
     }
     const without = withoutValue as "ground" | "background" | undefined;
     const result: ParityArguments = {
+        ...(parsed.flags.has("--attribute") ? { attribute: true as const } : {}),
         ...(sceneId !== undefined ? { sceneId } : {}),
         ...(executable !== undefined ? { executable } : {}),
         ...(actual !== undefined ? { actual } : {}),
@@ -242,9 +245,12 @@ export function parseParityArguments(rest: string[]): ParityArguments {
         ];
         if (dropped.length > 0) {
             throw new Error(
-                `parity: --differential measures both GPU backends and accepts only --gpu-debug beside it; drop ${dropped.join(", ")} or run a plain parity for them.`,
+                `parity: --differential measures both GPU backends and accepts --gpu-debug and --attribute beside it; drop ${dropped.join(", ")} or run a plain parity for them.`,
             );
         }
+    }
+    if (result.attribute && (result.actual !== undefined || result.executable !== undefined || result.without !== undefined)) {
+        throw new Error("parity: --attribute captures an instrumented twin; --actual, --exe and --without cannot supply its attribution buffers.");
     }
     if (result.without !== undefined) {
         // The suppression flags are read by the native GPU frame options,
@@ -323,19 +329,20 @@ export function parseMemoryArguments(
     };
 }
 
-/** One `[mem][frame]` line, with the fields the verdict reads. */
+/** One `[mem][frame]` sample used by the memory report. */
 export interface MemorySample {
     frame: number;
     workingSetMb: number;
     meshRecords: number;
     sceneMeshes: number;
     geometryMb: number;
+    gcNodes: number;
+    gcAllocations: number;
 }
 
 /**
- * The `[mem][frame]` lines of a run, in order. A line missing one of the
- * fields the verdict reads is dropped rather than defaulted, so nothing
- * unmeasured can pass.
+ * Complete `[mem][frame]` samples in frame order. Missing or invalid report
+ * fields discard the sample.
  */
 export function parseMemoryProfile(stderr: string): MemorySample[] {
     const samples: MemorySample[] = [];
@@ -355,16 +362,20 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
         const meshRecords = read("mesh_records");
         const sceneMeshes = read("scene_meshes");
         const geometryMb = read("geometry_mb");
+        const gcNodes = read("gc_nodes");
+        const gcAllocations = read("gc_allocations");
         if (
             frame === undefined || !Number.isInteger(frame) ||
             workingSetMb === undefined || workingSetMb === 0 ||
             meshRecords === undefined ||
             sceneMeshes === undefined ||
-            geometryMb === undefined
+            geometryMb === undefined ||
+            gcNodes === undefined || !Number.isInteger(gcNodes) ||
+            gcAllocations === undefined || !Number.isInteger(gcAllocations)
         ) {
             continue;
         }
-        samples.push({ frame, workingSetMb, meshRecords, sceneMeshes, geometryMb });
+        samples.push({ frame, workingSetMb, meshRecords, sceneMeshes, geometryMb, gcNodes, gcAllocations });
     }
     return samples;
 }
@@ -380,10 +391,8 @@ export interface MemorySummary {
 }
 
 /**
- * The verdict of one run: after the warm-up third, does the working set
- * settle? A streaming scene retires mesh records by design (the slots
- * stay allocated, a few hundred bytes each), so that count is reported
- * rather than judged; the growth threshold is what fails the run.
+ * Working-set growth after the warm-up third gates the run. Mesh records,
+ * scene entries and GC counters are reported separately.
  * Undefined when the run printed too few lines to judge (a loop without
  * the line, or a run shorter than three samples).
  */
@@ -423,7 +432,9 @@ export function formatMemorySummary(
         `${id}: ${verdict} -- working set ${sign}${growthMb.toFixed(1)} MB after warm-up ` +
         `(${settled.workingSetMb.toFixed(1)} -> ${last.workingSetMb.toFixed(1)} MB, ` +
         `frames ${settled.frame}..${last.frame}), geometry ${last.geometryMb.toFixed(1)} MB, ` +
-        `${last.meshRecords - last.sceneMeshes} retired mesh record(s)`
+        `${last.meshRecords} mesh records, ${last.sceneMeshes} scene mesh entries, ` +
+        `GC nodes ${settled.gcNodes} -> ${last.gcNodes}, ` +
+        `${last.gcAllocations - settled.gcAllocations} GC allocations after warm-up`
     );
 }
 
@@ -579,6 +590,7 @@ function percentage(count: number, total: number): number {
 
 export async function runSceneParity(
     inputArguments: string[],
+    sceneOverride?: SceneDefinition,
 ): Promise<void> {
     const arguments_ = parseParityArguments(inputArguments);
     if (arguments_.differential) {
@@ -587,10 +599,13 @@ export async function runSceneParity(
         );
     }
     if (arguments_.gpuDebug) enableGpuDebug();
+    if (arguments_.attribute && !sceneOverride) {
+        throw new Error("Build attribution through 'scene -- parity <id> --attribute'.");
+    }
     if (arguments_.sceneId === undefined) {
         throw new Error("parity requires a scene id or source path.");
     }
-    const scene = resolveScene(arguments_.sceneId);
+    const scene = sceneOverride ?? resolveScene(arguments_.sceneId);
     const config = scene.parity;
     if (!config) throw new Error(`Scene '${scene.id}' has no parity definition.`);
     const backend = resolveBackend(arguments_.backend, "parity");
@@ -734,6 +749,11 @@ export async function runSceneParity(
         );
     }
 
+    if (arguments_.attribute) {
+        for (const buffer of [idBufferPath, clusterBufferPath]) {
+            if (!buffer || !existsSync(buffer)) throw new Error(`The instrumented renderer did not produce attribution buffer '${buffer ?? "unconfigured"}'.`);
+        }
+    }
     const actualDimensions = imageDimensions(actual);
     const referenceDimensions = imageDimensions(reference);
     if (
@@ -1139,8 +1159,9 @@ export interface DifferentialReportSummary {
 // combined report beside the per-backend ones.
 export async function runSceneParityDifferential(
     sceneIdOrSource: string,
+    sceneOverride?: SceneDefinition,
 ): Promise<void> {
-    const scene = resolveScene(sceneIdOrSource);
+    const scene = sceneOverride ?? resolveScene(sceneIdOrSource);
     const config = scene.parity;
     if (!config) {
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
@@ -1155,11 +1176,12 @@ export async function runSceneParityDifferential(
     const sdlImage = parityNativeImagePath(outputDirectory, "gpu");
     const dawnImage = parityNativeImagePath(outputDirectory, "dawn");
     const sceneTarget = paritySceneTarget(scene);
+    const captureArguments = [sceneTarget, ...(sceneOverride ? ["--attribute"] : [])];
     await withEnvironment("BBLITE_GPU_BACKEND", undefined, () =>
-        runSceneParity([sceneTarget]),
+        runSceneParity(captureArguments, scene),
     );
     await withEnvironment("BBLITE_GPU_BACKEND", "dawn", () =>
-        runSceneParity([sceneTarget]),
+        runSceneParity(captureArguments, scene),
     );
     const backendDelta = compareImages(sdlImage, dawnImage);
     const readBackendReport = (suffix: string): ParityReportSummary =>

@@ -16,7 +16,6 @@ import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { composeDefaultTextPipelines, textPipelineHeader } from "../src/pinned-text-pipeline-cpp.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
-import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 
 const directory = resolve("artifacts/test-text-entities");
 mkdirSync(directory, { recursive: true });
@@ -25,7 +24,7 @@ writeFileSync(resolve(directory, "Roboto-Regular.ttf"), readAssetBytesSync(resol
 const source = (body: string) => `import { createEngine,loadFont,createDefaultTextData,createTextRenderable,
     disposeTextRenderable,disposeDefaultTextData,addTextRenderable,createSceneContext,setAlphaToCoverage,getAlphaToCoverage,
     createFreeCamera,attachFreeControl,onBeforeRender,registerScene,disposeScene,unregisterScene,rebuildSceneRenderables,
-    createTextLayer,createTextRenderer,registerTextRenderer,updateTextData,
+    createTextLayer,createTextRenderer,registerTextRenderer,updateTextData,createStandardMaterial,
     type TextLayer,type TextRenderable,type DefaultTextData } from "@babylonjs/lite";
 async function main(){const engine=await createEngine({});const font=await loadFont("./Roboto-Regular.ttf");${body}}`;
 const compile = (body: string) => compileSource(source(body), { fileName });
@@ -178,13 +177,17 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
     ] as const) assert.throws(() => compile(body), diagnostic);
 });
 
-test("text projection refuses mixed draw and custom task families in either feature order", () => {
-    for (const feature of ["material:standard", "material:no-color-view", "loader:splat", "particle:node",
-        "sprite:billboard", "renderer:sprite", "renderer:frame-graph", "renderer:post-process",
-        "background:ground", "camera:geospatial", "platform:workers"]) {
-        for (const features of [["core", "text:renderable", feature], ["core", feature, "text:renderable"]])
-            assert.throws(() => emitUpstreamGenerated(resolve(directory, "refused"), features), /merged draw ordering or camera\/task transport/);
-    }
+test("text projection leaves draw admission to attached scene records", () => {
+    const input = resolve(directory, "unattached.ts");
+    writeFileSync(input, source(`${setup} createStandardMaterial();
+        const scene=createSceneContext(engine);
+        scene.camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});
+        addTextRenderable(scene,r);await registerScene(scene);`));
+    const output = resolve(directory, "unattached");
+    execFileSync(process.execPath, ["dist/src/cli.js", input, "--out", output], {stdio:"pipe"});
+    const manifest = JSON.parse(readFileSync(resolve(output, "manifest.json"), "utf8")) as {features:string[]};
+    assert.ok(manifest.features.includes("text:renderable"));
+    assert.ok(manifest.features.includes("material:standard"));
 });
 
 test("text owner classification preserves existing splat components and imported root bulk transforms", () => {

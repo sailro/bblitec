@@ -8,6 +8,34 @@
 
 namespace bbl::pal {
 
+template<class Pair, class Snapshot, class Blur>
+void sync_ui_backdrop_targets(Pair& pair, const UiBackdrop& backdrop, bool has_snapshot, bool has_blur,
+    Snapshot&& snapshot, Blur&& blur) {
+    if (!has_snapshot || pair.source_width != backdrop.width || pair.source_height != backdrop.height) {
+        snapshot(backdrop.width, backdrop.height);
+        pair.source_width = backdrop.width;
+        pair.source_height = backdrop.height;
+    }
+    if (!has_blur || pair.blur_width != backdrop.blur_width || pair.blur_height != backdrop.blur_height) {
+        blur(backdrop.blur_width, backdrop.blur_height);
+        pair.blur_width = backdrop.blur_width;
+        pair.blur_height = backdrop.blur_height;
+    }
+}
+
+enum class UiBackdropSurface : std::size_t { target, snapshot, first, second };
+struct UiBackdropDraw {
+    UiBackdropSurface output, input;
+    std::uint32_t first, count;
+};
+inline std::array<UiBackdropDraw, 4> ui_backdrop_draw_plan(const UiBackdrop& backdrop) {
+    using Surface = UiBackdropSurface;
+    return {{{Surface::first, Surface::snapshot, backdrop.sample_index, UiBackdrop::sample_index_count},
+        {Surface::second, Surface::first, backdrop.horizontal_index(), backdrop.kernel_index_count},
+        {Surface::first, Surface::second, backdrop.vertical_index(), backdrop.kernel_index_count},
+        {Surface::target, Surface::first, backdrop.composite_index(), backdrop.composite_index_count}}};
+}
+
 using UiClipPoint = std::array<float, 2>;
 using UiClipTriangle = std::array<UiClipPoint, 3>;
 

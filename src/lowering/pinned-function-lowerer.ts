@@ -1,31 +1,62 @@
 /**
- * Translates one pinned function declaration to a whole C++ function.
- *
- * This is the skeleton every "lower a pinned function whole" site shares:
- * fetch the declaration, check the parameter list against an ordered spec,
- * bind each parameter, run the shared `PinnedNumericLowerer` over the body,
- * and assemble provenance + signature + body. The first two lowerings to
- * take this shape (`inverseImageProcessedChannel` and the projection matrix
- * writers) each hand-rolled it one commit apart and immediately diverged in
- * contract strength — one asserted every parameter's type annotation, the
- * other only the target's — which is exactly the drift the shared skeleton
- * exists to prevent, since TODO's re-derivation backlog will mint many more
- * of these.
- *
- * The parameter spec is exhaustive both ways and ordered: a pinned
- * parameter the spec does not name, a spec entry the pin no longer takes,
- * a reordered list, or a retyped annotation each fail generation as a named
- * contract error instead of binding positionally or failing later in C++.
+ * Translates pinned functions with ordered parameter contracts, explicit
+ * storage bindings and source-validated specializations. Arithmetic and
+ * statement semantics belong to PinnedNumericLowerer.
  */
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringContext } from "./context.js";
+import { CPP_ELEMENT, CPP_RECORD, CPP_SCALAR, cppFixedArray, cppVector } from "./cpp-types.js";
 import {
     absentBinding,
     type PinnedBinding,
     PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
+
+/** Scalar member bindings for a pinned Vec3 and its native storage. */
+export function vec3MemberBindings(
+    pinned: string,
+    cpp: string | ((axis: "x" | "y" | "z", index: number) => string) = pinned,
+): [string, PinnedBinding][] {
+    return (["x", "y", "z"] as const).map((axis, index) => [
+        `${pinned}.${axis}`,
+        { cpp: typeof cpp === "string" ? `${cpp}.${axis}` : cpp(axis, index), type: "scalar" },
+    ]);
+}
+
+/** Native storage replacing one validated top-level pinned initializer. */
+export interface PinnedLocalStorage {
+    pinned: string;
+    initializer: string;
+    binding: PinnedBinding;
+    declaration?: string;
+}
+
+/** Select one top-level source guard while retaining the surrounding statements. */
+export interface PinnedFunctionArm {
+    condition: string;
+    arm: "then" | "else";
+}
+
+function functionStatements(
+    context: LoweringContext,
+    declaration: ts.FunctionDeclaration,
+    selected: PinnedFunctionArm | undefined,
+): readonly ts.Statement[] {
+    const statements = declaration.body!.statements;
+    if (!selected) return statements;
+    const guards = statements.filter((statement): statement is ts.IfStatement =>
+        ts.isIfStatement(statement) && context.expressionMatchesShape(statement.expression, selected.condition));
+    const guard = guards[0];
+    if (guards.length !== 1 || !guard || !ts.isBlock(guard.thenStatement) ||
+        !guard.elseStatement || !ts.isBlock(guard.elseStatement)) {
+        return context.contractError(declaration,
+            `Expected one pinned '${selected.condition}' guard with two block arms.`);
+    }
+    const arm = selected.arm === "then" ? guard.thenStatement : guard.elseStatement;
+    return statements.flatMap(statement => statement === guard ? [...arm.statements] : [statement]);
+}
 
 /** One pinned parameter: its pinned name, its annotation, its C++ name. */
 export interface PinnedFunctionParameter {
@@ -116,6 +147,10 @@ export interface PinnedFunctionParameter {
     absent?: true;
     /** Compile-time parameter binding; no native argument is emitted. */
     specialized?: true;
+    /** Require the pinned parameter to retain this numeric default. */
+    defaultValue?: number;
+    /** Require an optional parameter even when this specialization supplies it. */
+    optional?: true;
 }
 
 const parameterKinds: Readonly<
@@ -130,30 +165,30 @@ const parameterKinds: Readonly<
 > = {
     number: {
         annotation: "number", bindingType: "scalar",
-        declare: (cpp) => `double ${cpp}`,
+        declare: (cpp) => `${CPP_SCALAR.number} ${cpp}`,
     },
     index: {
         annotation: "number", bindingType: "index",
-        declare: (cpp) => `std::int64_t ${cpp}`,
+        declare: (cpp) => `${CPP_ELEMENT.i64} ${cpp}`,
     },
     boolean: {
         annotation: "boolean", bindingType: "bool",
-        declare: (cpp) => `bool ${cpp}`,
+        declare: (cpp) => `${CPP_SCALAR.boolean} ${cpp}`,
     },
     mat4: {
         annotation: "Mat4Storage",
         bindingType: "f32",
-        declare: (cpp) => `std::array<float, 16>& ${cpp}`,
+        declare: (cpp) => `${cppFixedArray("f32", 16)}& ${cpp}`,
     },
     mat4F64: {
         annotation: "Mat4Storage",
         bindingType: "f64-buffer",
-        declare: (cpp) => `std::array<double, 16>& ${cpp}`,
+        declare: (cpp) => `${cppFixedArray("f64", 16)}& ${cpp}`,
     },
     matrix: {
         annotation: "Float32Array",
         bindingType: "f32",
-        declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
+        declare: (cpp) => `const ${cppFixedArray("f32", 16)}& ${cpp}`,
     },
     // `Mat4` is the pin's own alias for the same storage, and
     // `ArrayLike<number>` is how `mat4Determinant3` spells "a matrix or a
@@ -164,12 +199,12 @@ const parameterKinds: Readonly<
     mat4Const: {
         annotation: "Mat4",
         bindingType: "f32",
-        declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
+        declare: (cpp) => `const ${cppFixedArray("f32", 16)}& ${cpp}`,
     },
     numberArray: {
         annotation: "ArrayLike<number>",
         bindingType: "f32",
-        declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
+        declare: (cpp) => `const ${cppFixedArray("f32", 16)}& ${cpp}`,
     },
     // A plain `number[]` the body only reads, at the pin's own double
     // width: a growable vector by default, or the fixed length a caller
@@ -178,7 +213,7 @@ const parameterKinds: Readonly<
     numberList: {
         annotation: "number[]",
         bindingType: "f64-buffer",
-        declare: (cpp) => `const std::vector<double>& ${cpp}`,
+        declare: (cpp) => `const ${cppVector("f64")}& ${cpp}`,
     },
     // A typed buffer the body indexes and stores through, sized by its
     // caller rather than fixed at sixteen. The store's width is the kind's:
@@ -187,19 +222,19 @@ const parameterKinds: Readonly<
     u32Buffer: {
         annotation: "Uint32Array",
         bindingType: "u32",
-        declare: (cpp) => `std::vector<std::uint32_t>& ${cpp}`,
+        declare: (cpp) => `${cppVector("u32")}& ${cpp}`,
     },
     f32Buffer: {
         annotation: "Float32Array",
         bindingType: "f32",
-        declare: (cpp) => `std::vector<float>& ${cpp}`,
+        declare: (cpp) => `${cppVector("f32")}& ${cpp}`,
     },
     // The pin's `{x, y, z}` record: `v.x` resolves through the translator's
     // own record shape, so no caller lists the members.
     vec3: {
-        annotation: "Vec3",
+        annotation: CPP_RECORD.vec3.annotation,
         bindingType: "vec3",
-        declare: (cpp) => `const bbl::Vec3d& ${cpp}`,
+        declare: (cpp) => `const bbl::${CPP_RECORD.vec3.storage}& ${cpp}`,
     },
     // A record the body reads named members off. The caller supplies both
     // the annotation and the C++ type, because it owns the native record the
@@ -383,98 +418,33 @@ export function lowerMat4InvertCpp(
 ): string {
     const module = "src/math/mat4-invert.ts";
     const symbol = "mat4Invert";
-    const { file, declaration } = context.functionDeclaration(
-        module,
-        symbol,
-    );
-    if (
-        declaration.parameters.length !== 1 ||
-        !ts.isIdentifier(declaration.parameters[0]!.name) ||
-        declaration.parameters[0]!.name.text !== "input" ||
-        declaration.parameters[0]!.type?.getText(file) !== "Mat4"
-    ) {
-        context.contractError(
-            declaration,
-            "Expected pinned mat4Invert to take (input: Mat4).",
-        );
-    }
-    const outDeclaration = declaration.body!.statements
-        .filter(ts.isVariableStatement)
-        .flatMap((statement) => [
-            ...statement.declarationList.declarations,
-        ])
-        .find(
-            (candidate) =>
-                ts.isIdentifier(candidate.name) &&
-                candidate.name.text === "out",
-        );
-    const outInitializer = outDeclaration?.initializer
-        ? context.unwrapExpression(outDeclaration.initializer)
-        : undefined;
-    if (
-        !outInitializer ||
-        !ts.isCallExpression(outInitializer) ||
-        !ts.isIdentifier(outInitializer.expression) ||
-        outInitializer.expression.text !== "allocateMat4" ||
-        outInitializer.arguments.length !== 0
-    ) {
-        context.contractError(
-            outDeclaration ?? declaration,
-            "Expected pinned mat4Invert to allocate `out` with allocateMat4().",
-        );
-    }
-    const lowerer = new PinnedNumericLowerer(file, {
-        // `out` is supplied as caller storage so the translator skips the
-        // pin's const OBJECT binding while preserving writes to its typed
-        // array contents. The storage is f32 because allocateMat4() is.
-        bindings: new Map([
-            ["input", { cpp: "input", type: "f32" as const }],
-            ["m", { cpp: "input", type: "f32" as const }],
-            ["out", { cpp: "out", type: "f32" as const }],
-        ]),
-        calls: new Map([
-            [
-                "Math.abs",
-                (args: readonly string[]) => {
-                    if (args.length !== 1) {
-                        return context.contractError(
-                            declaration,
-                            "Expected pinned mat4Invert Math.abs to take one argument.",
-                        );
-                    }
-                    return `std::abs(${args[0]})`;
-                },
-            ],
-        ]),
-        returnValue: (expression) => {
-            const returned = expression
-                ? context.unwrapExpression(expression)
-                : undefined;
-            if (returned?.kind === ts.SyntaxKind.NullKeyword) {
-                return "std::nullopt";
+    const at = context.functionDeclaration(module, symbol).declaration;
+    return lowerPinnedFunction(context, module, symbol, [
+        { pinned: "input", kind: "mat4Const", cpp: "input" },
+    ], {
+        ...options,
+        cppName: options.cppName ?? "mat4_invert",
+        localStorage: [
+            { pinned: "m", initializer: "input", binding: { cpp: "input", type: "f32" } },
+            { pinned: "out", initializer: "allocateMat4()", binding: { cpp: "out", type: "f32" },
+                declaration: "std::array<float, 16> out{};" },
+        ],
+        calls: new Map([["Math.abs", (args) => {
+            if (args.length !== 1) {
+                return context.contractError(at, "Expected pinned mat4Invert Math.abs to take one argument.");
             }
-            if (
-                returned &&
-                ts.isIdentifier(returned) &&
-                returned.text === "out"
-            ) {
-                return "out";
-            }
-            return context.contractError(
-                returned ?? declaration,
-                "Expected pinned mat4Invert to return null or out.",
-            );
+            return "std::abs(" + args[0] + ")";
+        }]]),
+        returns: {
+            type: "std::optional<std::array<float, 16>>",
+            value: (_lowerer, expression) => {
+                const returned = expression ? context.unwrapExpression(expression) : undefined;
+                if (returned?.kind === ts.SyntaxKind.NullKeyword) return "std::nullopt";
+                if (returned && ts.isIdentifier(returned) && returned.text === "out") return "out";
+                return context.contractError(returned ?? at, "Expected pinned mat4Invert to return null or out.");
+            },
         },
     });
-    const body = declaration.body!.statements
-        .flatMap((statement) => lowerer.statement(statement, "    "))
-        .join("\n");
-    return `// ${context.provenance(module, symbol)}
-${options.inline ? "inline " : ""}std::optional<std::array<float, 16>> ${options.cppName ?? "mat4_invert"}(
-    const std::array<float, 16>& input) {
-    std::array<float, 16> out{};
-${body}
-}`;
 }
 
 /** A pinned function of scalars (and at most a Mat4Storage target), as C++. */
@@ -533,6 +503,9 @@ export function lowerPinnedFunction(
          * native record the member lands on.
          */
         memberBindings?: ReadonlyMap<string, PinnedBinding>;
+        localStorage?: readonly PinnedLocalStorage[];
+        armOf?: PinnedFunctionArm;
+        forOf?: PinnedNumericScope["forOf"];
         /**
          * Parameters the EMISSION needs that the pin does not name, ahead
          * of its own: state a pinned body reaches through a closure and a
@@ -540,6 +513,7 @@ export function lowerPinnedFunction(
          * body cannot read them -- only the `calls` the caller bound can.
          */
         leadingParameters?: readonly string[];
+        trailingParameters?: readonly string[];
         /** See `PinnedNumericScope.indexedCall`. */
         indexedCall?: PinnedNumericScope["indexedCall"];
         /** See `PinnedNumericScope.callShapes`. */
@@ -634,6 +608,14 @@ export function lowerPinnedFunctionParts(
                     `'${spec.pinned}: ${annotation}'.`,
             );
         }
+        if (spec.optional && !parameter.questionToken) {
+            context.contractError(parameter, `Expected pinned '${spec.pinned}' to stay optional.`);
+        }
+        if (spec.defaultValue !== undefined && (!defaulted ||
+            context.numericValue(defaulted, file) !== spec.defaultValue)) {
+            context.contractError(parameter,
+                `Expected pinned '${spec.pinned}' to default to ${spec.defaultValue}.`);
+        }
         if (spec.absent) {
             if (!parameter.questionToken) {
                 context.contractError(
@@ -682,8 +664,25 @@ export function lowerPinnedFunctionParts(
             );
         }
     });
+    signature.push(...(options.trailingParameters ?? []));
     for (const [text, binding] of options.memberBindings ?? []) {
         bindings.set(text, binding);
+    }
+    const statements = functionStatements(context, declaration, options.armOf);
+    const storageDeclarations: string[] = [];
+    for (const storage of options.localStorage ?? []) {
+        const locals = statements.filter(ts.isVariableStatement)
+            .flatMap(statement => [...statement.declarationList.declarations])
+            .filter(local => ts.isIdentifier(local.name) && local.name.text === storage.pinned);
+        const local = locals[0];
+        if (locals.length !== 1 || !local?.initializer || bindings.has(storage.pinned)) {
+            context.contractError(local ?? declaration,
+                `Expected one unbound pinned local '${storage.pinned}' with an initializer.`);
+        }
+        context.assertExpressionShape(local.initializer, storage.initializer,
+            `Pinned ${symbolName} '${storage.pinned}' storage initializer`);
+        bindings.set(storage.pinned, storage.binding);
+        if (storage.declaration) storageDeclarations.push(`    ${storage.declaration}`);
     }
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
@@ -704,6 +703,7 @@ export function lowerPinnedFunctionParts(
         ...(options.recordLiteral
             ? { recordLiteral: options.recordLiteral }
             : {}),
+        ...(options.forOf ? { forOf: options.forOf } : {}),
         ...(options.returns === "void"
             ? {}
             : {
@@ -725,9 +725,7 @@ export function lowerPinnedFunctionParts(
                   },
               }),
     });
-    const body = lowerer
-        .statements(declaration.body!.statements, "    ")
-        .join("\n");
+    const body = [...storageDeclarations, ...lowerer.statements(statements, "    ")].join("\n");
     const returnType = typeof options.returns === "string"
         ? options.returns
         : options.returns.type;

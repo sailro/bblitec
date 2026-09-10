@@ -8,6 +8,8 @@ import {
     specializeGltf,
 } from "../src/asset-specializer.js";
 import { writeGlbFixture } from "./glb-fixture.js";
+import {packageGltfMeshPlan} from "../src/gltf-mesh-plan.js";
+import {packageGltfTransmissionPlan} from "../src/pinned-material-arms.js";
 
 function writeGlb(path: string, document: Record<string, unknown>): void {
     writeGlbFixture(path, document, Buffer.alloc(4));
@@ -90,12 +92,17 @@ test("specializes glTF dynamic feature imports without any-typed JSON", () => {
     }
 });
 
-test("accepts the pin-implemented material extensions and records the loader facts", () => {
+test("accepts the pin-implemented material extensions and records the loader facts", async () => {
     const scratch = resolve("artifacts", "test", "asset-specializer");
     rmSync(scratch, { recursive: true, force: true });
     mkdirSync(join(scratch, "assets"), { recursive: true });
+    const writePackaged = async (name: string, document: Record<string, unknown>): Promise<void> => {
+        const binary = await packageGltfMeshPlan(document, new DataView(new ArrayBuffer(4)));
+        await packageGltfTransmissionPlan(document);
+        writeGlbFixture(join(scratch, "assets", name), document, binary);
+    };
     try {
-        writeGlb(join(scratch, "assets", "extensions.glb"), {
+        await writePackaged("extensions.glb", {
             extensionsUsed: [
                 "KHR_materials_clearcoat",
                 "KHR_materials_sheen",
@@ -120,7 +127,7 @@ test("accepts the pin-implemented material extensions and records the loader fac
         assert.equal(features.punctualLights, false);
         assert.equal(features.assetTransmission, false);
 
-        writeGlb(join(scratch, "assets", "dispersive.glb"), {
+        await writePackaged("dispersive.glb", {
             extensionsUsed: [
                 "KHR_materials_dispersion",
                 "KHR_materials_transmission",
@@ -146,15 +153,14 @@ test("accepts the pin-implemented material extensions and records the loader fac
                 kind: "gltf",
             },
         ]);
-        // The transmissive material is the one fact of that document the
-        // record keeps: it turns the renderer's transmission on.
-        assert.equal(dispersive.assetTransmission, true);
+        // No source mesh uses this material, so it enables no scene transmission.
+        assert.equal(dispersive.assetTransmission, false);
 
         // The workflow replacement: `specializeGltf` accepts it rather than
         // refusing. Whether a variant binds the spec-gloss pair is read off
         // the composition, where the pin sets PBR_HAS_SPEC_GLOSS only for a
         // material carrying the texture.
-        writeGlb(join(scratch, "assets", "spec-gloss.glb"), {
+        await writePackaged("spec-gloss.glb", {
             extensionsUsed: ["KHR_materials_pbrSpecularGlossiness"],
             materials: [{ name: "SpecGloss" }],
             meshes: [],
@@ -170,7 +176,7 @@ test("accepts the pin-implemented material extensions and records the loader fac
             ])
         );
 
-        writeGlb(join(scratch, "assets", "plain.glb"), {
+        await writePackaged("plain.glb", {
             materials: [{ name: "Plain" }],
             meshes: [],
             nodes: [],

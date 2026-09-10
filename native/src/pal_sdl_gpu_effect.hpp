@@ -41,7 +41,7 @@
 namespace bbl::pal {
 
 /** One `EffectWrapper` as GPU state, for one target signature. */
-struct EffectPass {
+struct EffectResources {
     OwnedSdlPipeline pipeline;
     /** The 1x1 texels `setEffectTexture` stored, in declared binding order. */
     std::vector<SDL_GPUTextureSamplerBinding> textures;
@@ -57,6 +57,9 @@ struct EffectPass {
     std::uint32_t uniform_bytes = 0;
 };
 
+inline void release_effect_resources(SDL_GPUDevice*, EffectResources&) noexcept;
+using EffectPass = OwnedGpuRecord<EffectResources, std::remove_pointer_t<SDL_GPUDevice*>, release_effect_resources>;
+
 /**
  * The 1x1 texture `createSolidTexture2D` built: the texel the record already
  * carries, in an `rgba8unorm` with no mip chain and no sRGB view, paired with
@@ -64,19 +67,20 @@ struct EffectPass {
  * a single texel is every sampler. Nothing here rounds -- the pin's own
  * rounding happened once, in the lowered `create_solid_texture`.
  */
-inline SDL_GPUTextureSamplerBinding upload_solid_texture(
+inline void append_solid_texture(
     SDL_GPUDevice* device,
+    std::vector<SDL_GPUTextureSamplerBinding>& textures,
     const SolidTexture& texture) {
-    return SDL_GPUTextureSamplerBinding{
-        upload_2d_texture(
+    auto& binding = textures.emplace_back();
+    binding.texture = upload_2d_texture(
             device,
             texture.texel.data(),
             texture.texel.size(),
             1,
             1,
             SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            "SDL_CreateGPUTexture effect solid"),
-        create_texture_sampler(device, TextureSamplerState{})};
+            "SDL_CreateGPUTexture effect solid");
+    binding.sampler = create_texture_sampler(device, TextureSamplerState{});
 }
 
 /**
@@ -96,7 +100,7 @@ inline EffectPass create_effect_pass(
         engine.effect_wrappers.at(handle.value);
     const upstream::EffectVariantEntry& entry =
         upstream::effect_variants.at(wrapper.variant);
-    EffectPass pass;
+    EffectPass pass{device};
     // What the compiled stage kept, from the sidecar the shader step wrote
     // beside it -- the same authority the composed material families bind
     // through. Counting the descriptor's own rows instead would over-count a
@@ -163,18 +167,21 @@ inline EffectPass create_effect_pass(
     // not survive to the compiled stage. The lookup and its not-set
     // refusal are the shared `effect_texture_for_binding`.
     for (const std::string& name : slots.textures) {
-        pass.textures.push_back(
-            upload_solid_texture(
+        append_solid_texture(
                 device,
-                effect_texture_for_binding(wrapper, name)));
+                pass.textures,
+                effect_texture_for_binding(wrapper, name));
     }
     return pass;
 }
 
-inline void release_effect_pass(SDL_GPUDevice* device, EffectPass& pass) {
+inline void release_effect_resources([[maybe_unused]] SDL_GPUDevice* device, EffectResources& pass) noexcept {
     release_sprite_fragment_textures(device, pass.textures);
     pass.pipeline.reset();
+    pass = EffectResources{};
 }
+
+inline void release_effect_pass(SDL_GPUDevice*, EffectPass& pass) { pass.reset(); }
 
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */
 inline void record_effect_pass(

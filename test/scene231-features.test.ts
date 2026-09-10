@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -84,7 +85,7 @@ test("live Standard UV offsets match the pinned writer, including inversion", { 
     const output = resolve("artifacts/scene231-contracts/uv-headers");
     mkdirSync(join(output, "bblite/upstream"), { recursive: true });
     writeFileSync(join(output, "bblite/upstream/pinned_variant_bindings.hpp"), pinnedSharedVariantDecls(context, "test"));
-    writeFileSync(join(output, "standard.hpp"), pinnedStandardVariantsHeader(context, "test", [variant], true));
+    writeFileSync(join(output, "standard.hpp"), inlineCpp(pinnedStandardVariantsHeader(context, "test", [variant], true)));
     const { enableStandardUvOffset } = await importPinnedModule<{ enableStandardUvOffset(): void }>("material/standard/enable-standard-mesh-features.js");
     const { writeStandardUvTransformData } = await importPinnedModule<{
         writeStandardUvTransformData(out: Float32Array, material: { uvScale: number[]; uvOffset: number[] }, inverted: boolean): void;

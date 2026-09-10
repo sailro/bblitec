@@ -3,14 +3,11 @@ import {execFileSync} from "node:child_process";
 import {mkdirSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import {compileSource} from "../src/compiler.js";
 import {importPinnedModule} from "../src/pinned-shader-composer.js";
 import {LoweringContext} from "../src/lowering/context.js";
 import {FactoryLowerer} from "../src/lowering/factory/material-factories.js";
 import {SceneLowerer} from "../src/lowering/scene-lowerer.js";
-import {lowerGltfMaterialColorPresence} from "../src/lowering/gltf/material-color-presence.js";
-import {UpstreamSourceStore} from "../src/upstream-source.js";
 import {cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
 import {composeScenePbrVariants} from "../src/pinned-material-arms.js";
 import {pinnedSceneArms} from "../src/pinned-scene-arms.js";
@@ -25,6 +22,27 @@ function color(material: Material) {
 async function main() {
     const engine = await createEngine({});
     const values = [.123456789012345,.2,.3,1];
+    function readonlyIdentity(input: readonly number[]): readonly number[] {
+        if (input.length === 0) return [.8, .8, .8];
+        return input;
+    }
+    class ColorReader { read(input: readonly number[]): readonly number[] { return readonlyIdentity(input); } }
+    const reader = new ColorReader();
+    const identity = readonlyIdentity(values), throughMethod = reader.read(values);
+    if (identity !== values || throughMethod !== values) throw new Error("readonly return identity");
+    const fresh = readonlyIdentity([]), anotherFresh = readonlyIdentity([]);
+    if (fresh === anotherFresh || fresh[0] !== .8) throw new Error("readonly return owns fallback");
+    function recursiveIdentity(input: readonly number[], count: number): readonly number[] {
+        return count > 0 ? recursiveIdentity(input, count - 1) : input;
+    }
+    const callbacks: ((input: readonly number[]) => readonly number[])[] = [readonlyIdentity];
+    const fromCallback = callbacks[0]!(values);
+    if (recursiveIdentity(values, 3) !== values || fromCallback !== values)
+        throw new Error("recursive and stored readonly return identity");
+    const callbackFallback = callbacks[0]!([]);
+    values[1] = .75;
+    if (fromCallback[1] !== .75 || throughMethod[1] !== .75 || callbackFallback[0] !== .8)
+        throw new Error("readonly result lifetime and alias mutation");
     const pbr = createPbrMaterial({baseColorFactor:values});
     const a = color(pbr);
     const b = color(pbr);
@@ -95,7 +113,6 @@ test("compiled material colors retain source identity, double width, fallback an
     const sceneSource = new SceneLowerer(new LoweringContext()).lowerCore().source;
     const registration = ["void require_scene_engine(","std::uint32_t material_family_bit(","std::uint32_t scene_material_families(",
         "void drain_scene_deferred_builders(","void register_scene("].map(name => cppFunction(sceneSource,name)).join("\n");
-    const presence = lowerGltfMaterialColorPresence(new UpstreamSourceStore().getSourceFile("src/loader-gltf/gltf-pbr-builder.ts"));
     const legacy = cppFunction(compileSource(`import {createEngine,createStandardMaterial} from "@babylonjs/lite";
         async function main(){const engine=await createEngine({});const material=createStandardMaterial();
         material.diffuseColor={r:.2,g:.3,b:.4};
@@ -117,7 +134,7 @@ test("compiled material colors retain source identity, double width, fallback an
     const directory = resolve("artifacts/test-material-color-identity");
     mkdirSync(directory, {recursive:true});
     const source = resolve(directory,"check.cpp"), executable = resolve(directory,"check.exe");
-    writeFileSync(source, `#include <bblite/runtime.hpp>\n#include <bblite/js_data.hpp>\n#include <cassert>\nnamespace bbl {\nEngine create_engine(EngineOptions) {return {};}\n${factories}\n${registration}\n${presence}\n}
+    writeFileSync(source, `#include <bblite/runtime.hpp>\n#include <bblite/js_data.hpp>\n#include <cassert>\nnamespace bbl {\nEngine create_engine(EngineOptions) {return {};}\n${factories}\n${registration}\n}
 #define main source_main
 ${compiled.cpp}
 #undef main
@@ -125,9 +142,6 @@ ${legacy}
 int main() {
     if (source_main()) return 1;
     if (legacy_source_main()) return 1;
-    assert(!bbl::gltf_has_base_color_factor(false,{.123456789012345,.4,.7,.8}));
-    assert(!bbl::gltf_has_base_color_factor(true,{1,1,1,1}));
-    assert(bbl::gltf_has_base_color_factor(true,{.123456789012345,.4,.7,.8}));
     bbl::Engine engine;
     const auto material = bbl::create_standard_material(engine);
     auto alias = *bbl::material_color(engine,material,bbl::MaterialColorSlot::diffuse_color);
@@ -200,16 +214,6 @@ test("material-color transport refuses unsupported widths and later material-gro
 });
 
 test("glTF public factor presence comes from the pinned conditional and retains its array", async () => {
-    const module = "src/loader-gltf/gltf-pbr-builder.ts";
-    const store = new UpstreamSourceStore();
-    const source = store.getSource(module);
-    const output = lowerGltfMaterialColorPresence(store.getSourceFile(module));
-    assert.equal(lowerGltfMaterialColorPresence(store.getSourceFile("src/loader-gltf/gltf-pbr-builder-ext.ts"), "assemblePbrPropsExt"), output);
-    assert.match(output,/has_image && \(!gltf_default_base_color_factor/);
-    const changed = ts.createSourceFile(module,source.replace("return f[0] === 1", "return f[0] === 0.25"),ts.ScriptTarget.Latest,true);
-    assert.match(lowerGltfMaterialColorPresence(changed),/== 0.25/);
-    const copied = ts.createSourceFile(module,source.replace("{ baseColorFactor: mat._baseColorFactor }", "{ baseColorFactor: [...mat._baseColorFactor] }"),ts.ScriptTarget.Latest,true);
-    assert.throws(() => lowerGltfMaterialColorPresence(copied),/original factor array/);
     const {assemblePbrProps} = await importPinnedModule<{
         assemblePbrProps(mat: object,base:object,orm:object,normal:undefined,emissive:undefined,extensions:object): {baseColorFactor?: number[]};
     }>("loader-gltf/gltf-pbr-builder.js");

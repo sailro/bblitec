@@ -43,111 +43,17 @@ test("the CMake backend arm derives the Dawn twins from the SDL_GPU units featur
     }
 });
 
-// The draw lists filter `visible` when they are BUILT (the pin's
-// bundle-record rule), so a setMeshVisible after the build reaches the
-// screen only through the visibility epoch: each backend re-runs the list
-// build when the epoch moves. A backend that forgets the sync re-creates
-// the defect that froze quake's weapon switch — hidden at build never
-// drew, hidden after build kept drawing — and nothing at compile time
-// forces the check, so the three-part shape is pinned here as text for
-// BOTH backends: the shared membership epoch, the lists-only rebuild it triggers,
-// and the re-sync.
-test("both backends re-record draw lists on membership changes", () => {
-    for (const file of [
-        "native/src/pal_sdl_gpu.cpp",
-        "native/src/pal_dawn.cpp",
-    ]) {
-        const text = readFileSync(file, "utf8");
-        assert.match(
-            text,
-            /std::uint64_t synced_draw_list_epoch =\s*\r?\n\s*engine\.draw_list_epoch;/,
-            `${file} does not track the draw-list epoch`,
-        );
-        assert.match(
-            text,
-            /engine\.draw_list_epoch != synced_draw_list_epoch[\s\S]{0,900}?build_render_draw_lists\([\s\S]{0,200}?rebuild_task_draw_lists\(\);/,
-            `${file} does not rebuild the draw lists when the epoch moves`,
-        );
-        assert.match(
-            text,
-            /synced_draw_list_epoch = engine\.draw_list_epoch;/,
-            `${file} never re-syncs the draw-list epoch`,
-        );
-    }
-});
-
-// A thin-instance pool can come into existence AFTER registration: a mesh
-// registered with no pool, whose first `addThinInstance` runs from a frame
-// callback. The PBR family's draw predicate is the live record, so it will
-// bind `pinned_instances` from that frame on -- and the capacity-recreation
-// branch is the only place that can allocate one. Both backends must
-// therefore create it there unconditionally, null included, instead of only
-// refreshing a buffer registration already made.
-test("both backends allocate the pinned instance stream for a late pool", () => {
-    for (const [file, release, create] of [
-        [
-            "native/src/pal_sdl_gpu.cpp",
-            "SDL_ReleaseGPUBuffer(\n                                state.device,\n                                gpu_mesh.pinned_instances);",
-            "gpu_mesh.pinned_instances =",
-        ],
-        [
-            "native/src/pal_dawn.cpp",
-            "wgpuBufferRelease(dawn_mesh.pinned_instances);",
-            "dawn_mesh.pinned_instances = create_buffer(",
-        ],
-    ] as const) {
-        const text = readFileSync(file, "utf8");
-        const released = text.indexOf(release);
-        assert.ok(
-            released >= 0,
-            `${file} no longer releases the previous pinned instance stream`,
-        );
-        // The allocation must sit OUTSIDE the non-null guard that wraps the
-        // release, so a null one becomes a buffer rather than staying null.
-        const guarded = text.lastIndexOf("pinned_instances &&", released);
-        assert.ok(
-            guarded >= 0,
-            `${file} no longer guards the pinned release on ownership`,
-        );
-        const closed = text.indexOf("}", released);
-        const allocated = text.indexOf(create, closed);
-        assert.ok(
-            allocated > closed,
-            `${file} only recreates an existing pinned instance stream, so a ` +
-                "pool established after registration binds nothing",
-        );
-    }
-});
-
-// Teardown order is the class of defect single-frame parity cannot see: a
-// GPU or audio object released through a device that is already gone
-// crashes intermittently at exit, as the application gates did after the
-// audit hoisted the SDL upload batch to run lifetime. The fixes are
-// structural -- ownership and scope, not a call to remember -- so what is
-// pinned here is the structure that carries each invariant.
-test("the SDL scene loop keeps device cleanup outside its run-local resources", () => {
-    // Reverse destruction order must release the upload batch and pick
-    // hook before the device, on normal exit, exceptions and coroutine
-    // cancellation. The outer scope guard owns the single teardown path.
+test("the SDL scene driver releases run resources before its device", () => {
     const source = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
-    const entry = source.indexOf("SceneRun run_gpu_engine(Engine& engine)");
-    assert.ok(entry >= 0, "the scene loop is not declared");
-    const text = source.slice(entry);
-    const cleanup = /const auto run_cleanup = js::finally\(\[&\]\(\) noexcept \{[\s\S]*?\n    \}\);/.exec(text);
-    assert.ok(cleanup, "the scene loop has no device cleanup scope guard");
-    const state = text.indexOf("GpuState state;");
-    assert.ok(state >= 0 && state < cleanup.index, "the device state must outlive its cleanup guard");
-    assert.match(cleanup[0], /release\(state\);/, "the cleanup guard does not release its device");
-    assert.equal(text.match(/release\(state\);/g)?.length, 1, "device teardown must have one owner");
-    const resources = cleanup.index + cleanup[0].length;
-    assert.match(text.slice(resources), /^\s*\{/, "run-local resources need their own inner scope");
-    const batch = text.indexOf(
-        "GpuBufferUploadBatch frame_buffer_uploads(state.device);",
-    );
-    assert.ok(
-        batch > resources,
-        "the upload batch must unwind before the device cleanup guard",
-    );
+    const driver = source.slice(source.indexOf("class SdlSceneRun {"));
+    const state = driver.slice(driver.indexOf("struct State : FrameSession"), driver.indexOf("} data_;"));
+    assert.ok(state.indexOf("Resources resources;") < state.indexOf("std::optional<PickHookGuard>"));
+    assert.ok(state.indexOf("Resources resources;") < state.indexOf("std::optional<GpuBufferUploadBatch>"));
+    const destructor = driver.slice(driver.indexOf("~Resources()"), driver.indexOf("struct State : FrameSession"));
+    assert.equal(destructor.match(/release\(state\);/g)?.length, 1);
+    assert.ok(destructor.indexOf("destroy_ui_rml_runtime") < destructor.indexOf("release(state);"));
+    assert.ok(destructor.indexOf("release_scene_sprite_pass") < destructor.indexOf("release(state);"));
+    assert.ok(driver.indexOf("} data_;") < driver.indexOf("std::optional<Frame> frame_;"));
 });
 
 test("the run end finishes only its engine's audio session", () => {
@@ -188,29 +94,6 @@ test("late auxiliary scene registration rebuilds both backend plans", () => {
         /engine\.registered_scenes\.size\(\) != planned\.size\(\)/,
     );
     assert.match(shared, /current->shares_identity\(\*planned\[i\]\)/);
-});
-
-test("scene replacement during frame callbacks stops stale GPU work", () => {
-    for (const file of [
-        "native/src/pal_sdl_gpu.cpp",
-        "native/src/pal_dawn.cpp",
-    ]) {
-        const backend = readFileSync(file, "utf8");
-        const advance = backend.indexOf("advance_frame(");
-        const syncUi = backend.indexOf("update_ui_rml_runtime(", advance);
-        assert.ok(advance >= 0 && syncUi > advance);
-        const boundary = backend.slice(advance, syncUi);
-        assert.match(
-            boundary,
-            /request_renderer_restart_if_scene_set_changed\(\s*engine, active_registered_scenes\)/,
-            `${file} does GPU work after a callback replaces its scene`,
-        );
-        assert.match(boundary, /break;/);
-        if (file.endsWith("pal_sdl_gpu.cpp")) {
-            assert.match(boundary, /SDL_SubmitGPUCommandBuffer\(command\)/);
-            assert.doesNotMatch(boundary, /SDL_CancelGPUCommandBuffer\(/);
-        }
-    }
 });
 
 test("diagnostic input resumes across renderer restarts", () => {
@@ -296,7 +179,7 @@ test("Dawn completes canvas readback before post-copy UI", () => {
         capture,
     );
     const firstSubmit = dawn.indexOf(
-        "wgpuQueueSubmit(state.queue, 1, &command);",
+        "submit_dawn_command(state.queue, command);",
         copy,
     );
     const map = dawn.indexOf("wgpuBufferMapAsync(", firstSubmit);

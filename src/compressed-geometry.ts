@@ -1,3 +1,4 @@
+import { BinaryBuilder } from "./glb-binary-builder.js";
 // Compressed and quantized glTF geometry, resolved at generation time.
 //
 // `KHR_draco_mesh_compression` and `EXT_meshopt_compression` are decoded by
@@ -27,14 +28,12 @@ import {
     GAUSSIAN_SPLATTING_EXTENSION,
     GAUSSIAN_SPLAT_DOCUMENT_KEY,
     isGaussianSplatPrimitive,
-    GLB_BINARY_CHUNK as BINARY_CHUNK,
-    GLB_JSON_CHUNK as JSON_CHUNK,
-    GLB_MAGIC,
     asObject,
     type JsonRecord,
 } from "./gltf-document.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { readUpstreamPin } from "./upstream-source.js";
+import { readGlb, writeGlb, type GlbChunks } from "./glb-container.js";
 
 const DRACO_EXTENSION = "KHR_draco_mesh_compression";
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
@@ -55,11 +54,6 @@ const ACCESSOR_TYPES: Record<number, string> = {
     3: "VEC3",
     4: "VEC4",
 };
-
-interface GlbChunks {
-    json: JsonRecord;
-    binary: Buffer;
-}
 
 // Cast-only on purpose, unlike gltf-document's filtering asRecords: the
 // chunk rewriter trusts documents it just parsed or built itself.
@@ -101,54 +95,6 @@ function declaredExtensions(json: JsonRecord): string[] {
     return Array.isArray(json.extensionsUsed)
         ? (json.extensionsUsed as string[])
         : [];
-}
-
-/** Splits a GLB into its JSON and binary chunks, or undefined if not a GLB. */
-function readGlb(bytes: Uint8Array): GlbChunks | undefined {
-    const buffer = Buffer.from(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength,
-    );
-    if (buffer.length < 12 || buffer.readUInt32LE(0) !== GLB_MAGIC) {
-        return undefined;
-    }
-    let offset = 12;
-    let json: JsonRecord | undefined;
-    let binary = Buffer.alloc(0);
-    while (offset + 8 <= buffer.length) {
-        const length = buffer.readUInt32LE(offset);
-        const type = buffer.readUInt32LE(offset + 4);
-        const data = buffer.subarray(offset + 8, offset + 8 + length);
-        if (type === JSON_CHUNK) {
-            json = JSON.parse(data.toString("utf8")) as JsonRecord;
-        } else if (type === BINARY_CHUNK) {
-            binary = Buffer.from(data);
-        }
-        offset += 8 + length;
-    }
-    return json ? { json, binary } : undefined;
-}
-
-/** The inverse of `readGlb`, with the chunk padding the format requires. */
-function writeGlb(json: JsonRecord, binary: Buffer): Uint8Array {
-    const jsonBytes = Buffer.from(JSON.stringify(json), "utf8");
-    const jsonLength = Math.ceil(jsonBytes.length / 4) * 4;
-    const binaryLength = Math.ceil(binary.length / 4) * 4;
-    const total = 12 + 8 + jsonLength + 8 + binaryLength;
-    const glb = Buffer.alloc(total, 0);
-    glb.writeUInt32LE(GLB_MAGIC, 0);
-    glb.writeUInt32LE(2, 4);
-    glb.writeUInt32LE(total, 8);
-    glb.writeUInt32LE(jsonLength, 12);
-    glb.writeUInt32LE(JSON_CHUNK, 16);
-    glb.fill(0x20, 20, 20 + jsonLength);
-    jsonBytes.copy(glb, 20);
-    const binaryHeader = 20 + jsonLength;
-    glb.writeUInt32LE(binaryLength, binaryHeader);
-    glb.writeUInt32LE(BINARY_CHUNK, binaryHeader + 4);
-    binary.copy(glb, binaryHeader + 8);
-    return glb;
 }
 
 /**
@@ -473,44 +419,6 @@ function binaryChunkView(glb: GlbChunks): DataView {
         glb.binary.byteOffset,
         glb.binary.byteLength,
     );
-}
-
-/** Appends bytes to the binary chunk at the 4-byte alignment glTF wants. */
-class BinaryBuilder {
-    private readonly parts: Buffer[] = [];
-    private length = 0;
-
-    public constructor(initial: Buffer) {
-        this.parts.push(initial);
-        this.length = initial.length;
-    }
-
-    /**
-     * The bytes are held as a view rather than copied: every caller appends
-     * a buffer it has just produced and does not touch again, and one of
-     * them is an 11 MB splat row buffer.
-     */
-    public append(bytes: ArrayBufferView): number {
-        const padding = (4 - (this.length % 4)) % 4;
-        if (padding) {
-            this.parts.push(Buffer.alloc(padding));
-            this.length += padding;
-        }
-        const offset = this.length;
-        this.parts.push(
-            Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-        );
-        this.length += bytes.byteLength;
-        return offset;
-    }
-
-    public build(): Buffer {
-        return Buffer.concat(this.parts);
-    }
-
-    public get byteLength(): number {
-        return this.length;
-    }
 }
 
 /** Appends one tightly-packed view over freshly appended bytes. */
@@ -913,12 +821,6 @@ async function convertGaussianSplats(
     glb: GlbChunks,
     label: string,
 ): Promise<boolean> {
-    if (
-        !declaredExtensions(glb.json).includes(GAUSSIAN_SPLATTING_EXTENSION)
-    ) {
-        return false;
-    }
-    refuseDracoGaussianSplats(glb.json, label);
     const { extractGltfGaussianSplats } = await import(
         "./splat-packager.js"
     );
@@ -926,7 +828,10 @@ async function convertGaussianSplats(
         glb.json,
         binaryChunkView(glb),
         label,
+        undefined,
+        () => refuseDracoGaussianSplats(glb.json, label),
     );
+    if (splats === undefined) return false;
     dropExtension(glb.json, GAUSSIAN_SPLATTING_EXTENSION);
     if (splats.length === 0) {
         // A document declaring the extension with no GS primitive in it: the
@@ -1015,11 +920,16 @@ export async function resolveGeometryExtensions(
 ): Promise<Uint8Array> {
     const glb = readGlb(bytes);
     if (!glb) return bytes;
+    return await resolveGlbGeometry(glb, label) ? writeGlb(glb.json, glb.binary) : bytes;
+}
+
+/** Resolve geometry in an already parsed container, retaining its updated BIN bytes. */
+export async function resolveGlbGeometry(glb: GlbChunks, label: string): Promise<boolean> {
     let rewrote = false;
     for (const pass of pinnedPreParsePasses) {
         rewrote = (await runPinnedPreParse(pass, glb, label)) || rewrote;
     }
     rewrote = (await convertGaussianSplats(glb, label)) || rewrote;
     rewrote = (await decodeDracoGlb(glb, label)) || rewrote;
-    return rewrote ? writeGlb(glb.json, glb.binary) : bytes;
+    return rewrote;
 }

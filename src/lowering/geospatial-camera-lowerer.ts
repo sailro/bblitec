@@ -28,6 +28,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const CAMERA = "src/camera/geospatial-camera.ts";
 const LIMITS = "src/camera/geospatial-limits.ts";
@@ -651,15 +652,13 @@ export class GeospatialCameraLowerer {
             "wm.markLocalDirty",
             () => `camera.target = ${target}`,
         );
-        const lowerer = new PinnedNumericLowerer(file, {
+
+        const body = lowerPinnedBody(file, apply.body.statements, {
             bindings,
             calls,
             recordLiteral: this.recordLiteral,
             vec3Literal: this.vec3Literal,
         });
-        const body = lowerer
-            .statements(apply.body.statements, "    ")
-            .join("\n");
         return (
             `// ${this.context.provenance(
                 CAMERA,

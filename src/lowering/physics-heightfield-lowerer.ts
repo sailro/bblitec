@@ -1,14 +1,16 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls, pinnedRoundCall } from "./pinned-operators.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 export const physicsHeightfieldModule = "src/physics/havok-heightfield.ts";
 
 /** Grid extraction and Havok buffer order belong to the pinned source. */
 export function lowerPhysicsHeightfield(context: LoweringContext): { header: string; source: string } {
     const { file, declaration } = context.functionDeclaration(physicsHeightfieldModule, "optionsFromGroundMesh");
-    const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings: new Map<string, PinnedBinding>([
             ["mesh._cpuPositions", { cpp: "positions", type: "f32" }],
             ["mesh.worldMatrix", { cpp: "world_matrix", type: "f32" }],
@@ -41,13 +43,12 @@ export function lowerPhysicsHeightfield(context: LoweringContext): { header: str
             }
             return undefined;
         },
-        returnValue: expression => {
+        returnValue: (expression, lowerer) => {
             if (!expression || !ts.isObjectLiteralExpression(expression)) context.contractError(declaration, "Expected resolved heightfield inputs.");
             context.assertExpressionShape(expression, "{ numX: samples, numZ: samples, sizeX: extendX * 2, sizeZ: extendZ * 2, data: matrix }", "resolved ground heightfield fields");
             return `HeightfieldInputs{${["numX", "numZ", "sizeX", "sizeZ", "data"].map(name => lowerer.expression(context.propertyInitializer(expression, name))).join(", ")}}`;
         },
     });
-    const body = lowerer.statements(declaration.body!.statements, "    ").join("\n");
     const factory = context.functionDeclaration(physicsHeightfieldModule, "createHeightFieldShape").declaration;
     context.assertStatementShapes(factory, factory.body!.statements, `
         const { _hknp: hknp } = world;
@@ -67,14 +68,14 @@ export function lowerPhysicsHeightfield(context: LoweringContext): { header: str
         hknp._free(bufferBegin);
         return { _hkShape: hkShape, _type: PhysicsShapeType.HEIGHTFIELD };
     `, "heightfield resolution, Float32 conversion, orientation, scales and opaque constructor");
-    const factoryLowerer = new PinnedNumericLowerer(file, {
+
+    const remap = lowerPinnedBody(file, factory.body!.statements.slice(6, 9), {
         bindings: new Map<string, PinnedBinding>([
             ...["numX", "numZ", "sizeX", "sizeZ"].map(name => [name, { cpp: `resolved.${name}`, type: "scalar" as const }] as const),
             ["data", { cpp: "resolved.data", type: "f32" }],
             ["heightBuffer", { cpp: "heights", type: "f32", mutable: true }],
         ]), calls: pinnedNumericMathCalls(),
     });
-    const remap = factoryLowerer.statements(factory.body!.statements.slice(6, 9), "    ").join("\n");
     return {
         header: "PhysicsShape create_physics_heightfield_from_ground(PhysicsWorldHandle world, MeshHandle mesh);\n",
         source: `

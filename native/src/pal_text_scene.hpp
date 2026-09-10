@@ -7,6 +7,32 @@
 
 namespace bbl::pal {
 
+/** Validate the scene that actually owns the retained text bindings. */
+inline void validate_text_scene(const Scene& scene) {
+    if (scene.state->text_renderables.empty()) return;
+    if (!scene.state->default_render_task || !scene.tasks.empty()) {
+        throw std::runtime_error("Text scene bindings require the default render pass.");
+    }
+    if (!scene.meshes.empty() || !scene.splat_meshes.empty() ||
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+        !scene.billboard_systems.empty() || !scene.depth_hosted_sprite_layers.empty() ||
+#endif
+        scene.environment.has_skybox || scene.environment.has_image_skybox ||
+        scene.environment.has_solid_skybox || scene.environment.has_ground) {
+        throw std::runtime_error("Text scene bindings require merged ordering for the attached non-text renderables.");
+    }
+    if (!scene.engine || scene.camera.value >= scene.engine->cameras.size()) {
+        throw std::runtime_error("Text scene bindings require an explicit camera.");
+    }
+    const auto& camera = handle_at(scene.engine->cameras, scene.camera);
+    if (camera.kind == CameraKind::geospatial || camera.orthographic) {
+        throw std::runtime_error("Text scene bindings require a perspective FreeCamera or ArcRotate camera.");
+    }
+#if BBLITE_FLOATING_ORIGIN
+    throw std::runtime_error("Text scene bindings require eye-relative matrix transport.");
+#endif
+}
+
 struct TextSceneBinding {
     TextRenderable renderable;
     TextData data;
@@ -20,6 +46,7 @@ struct TextScenePass {
 
     template<class Pipeline, class Ops>
     void bind(const Scene& scene, const void* device, const TextTargetSignature& target, Pipeline&& pipeline, Ops& ops) {
+        validate_text_scene(scene);
         for (const auto& renderable : scene.state->text_renderables) {
             if (!target.color_format) throw std::runtime_error("Text binding requires a color target.");
             const bool depth_write = !renderable->ignore_depth;

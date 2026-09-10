@@ -78,7 +78,6 @@ import {
 } from "./pinned-shadow-slots.js";
 import {
     babylonLights,
-    reachedDiffuseUv2,
 } from "./babylon-asset-features.js";
 import { refuseGeneration } from "./generation-refusal.js";
 
@@ -641,15 +640,15 @@ export async function composeScenePipeline({
         sceneMeshAttributeValues.size > 0
             ? [...sceneMeshAttributeValues]
             : [await proceduralRenderableFeatures()];
-    const gltfMaterialCounts = gltfAssets.map((asset) => {
+    const gltfMaterialCounts = await Promise.all(gltfAssets.map(async (asset) => {
         const cached = gltfMaterialCountsByAsset.get(asset);
         if (cached !== undefined) return cached;
-        const count = gltfMaterialCount(
+        const count = await gltfMaterialCount(
             resolve(outputPath, "assets", asset.output),
         );
         gltfMaterialCountsByAsset.set(asset, count);
         return count;
-    });
+    }));
     const gltfMaterialPrefix = [0];
     for (const count of gltfMaterialCounts) {
         gltfMaterialPrefix.push(gltfMaterialPrefix.at(-1)! + count);
@@ -1017,10 +1016,8 @@ export async function composeScenePipeline({
         standardComposition = await composeSceneStandardVariants(
             {
                 babylonAssets,
-                diffuseUv2: reachedDiffuseUv2(
-                    outputPath,
-                    result.manifest.assets,
-                ),
+                babylonTextureModes: new Map(result.manifest.assets.filter(asset => asset.kind === "babylon")
+                    .map(asset => [resolve(outputPath, "assets", asset.output), asset.babylonTextureModes ?? [true]])),
                 fog: result.manifest.features.includes("renderer:fog"),
                 vertexColors: result.manifest.features.includes(
                     "material:standard-vertex-colors",

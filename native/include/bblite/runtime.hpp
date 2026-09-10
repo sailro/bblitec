@@ -1,4 +1,5 @@
 #pragma once
+#include <bblite/checked_handles.hpp>
 
 #include <bblite/js_callback.hpp>
 #include <bblite/snapshot_list.hpp>
@@ -28,6 +29,10 @@
 
 namespace bbl {
 
+struct Engine;
+struct ShadowGeneratorRecord;
+struct PropertyAnimationManagerRecord;
+
 namespace pal { class AudioSession; class OffscreenRun; }
 
 namespace js {
@@ -38,6 +43,8 @@ class TypedArray;
 using F32Array = TypedArray<float>;
 template <typename T>
 class Nullable;
+template <typename K, typename V>
+class Map;
 template <std::size_t N>
 class Tuple;
 class U8Array;
@@ -537,56 +544,9 @@ struct BillboardSpriteHandle {
 };
 
 /** Which sprite family a frame animation drives. */
-enum class SpriteAnimationTargetKind : std::uint8_t {
-    sprite_2d,
-    billboard,
-};
-
-/**
- * The sprite a frame animation drives.
- *
- * Upstream this is a closure triple -- `setFrame`, `remove`, `isAlive` --
- * built by whichever family's adapter created it, which is how the animation
- * core stays ignorant of both. A closure is not a thing this port carries, so
- * the same decoupling is a tagged handle: the kind chooses the family and the
- * three operations dispatch on it in one place.
- */
-struct SpriteAnimationTarget {
-    SpriteAnimationTargetKind kind = SpriteAnimationTargetKind::sprite_2d;
-    /** `sprite_2d`: the layer and the sprite's stable id within it. */
-    Sprite2DLayerHandle layer{};
-    std::uint32_t sprite_id = 0;
-    /** `billboard`: the system and the sprite's stable id inside it. */
-    BillboardSpriteHandle billboard{};
-};
-
-/** One frame-range animation, field for field as the pin declares it. */
-struct SpriteFrameAnimation {
-    SpriteAnimationTarget target{};
-    double from = 0.0;
-    double to = 0.0;
-    double current = 0.0;
-    bool loop = false;
-    double delay_ms = 1.0;
-    double accumulated_ms = 0.0;
-    bool animation_started = true;
-    bool remove_when_finished = false;
-};
-
-/**
- * A set of frame animations advanced in lockstep.
- *
- * The pin's `fixedDeltaMs` override is absent because its own option is:
- * `createSpriteAnimationManager` takes no options here, so every step is
- * the caller's own delta and a field for the override would have no writer.
- */
-struct SpriteAnimationManagerRecord {
-    std::vector<SpriteFrameAnimation> animations;
-};
-
-struct SpriteAnimationManagerHandle {
-    std::uint32_t value = invalid_handle;
-};
+#if !defined(BBLITE_HAS_SPRITE_ANIMATION) || BBLITE_HAS_SPRITE_ANIMATION
+#include <bblite/runtime/sprite-animation.hpp>
+#endif
 
 struct EffectWrapperHandle {
     std::uint32_t value = invalid_handle;
@@ -696,195 +656,9 @@ struct BoundingBoxGizmoHandle {
  * and the name, which is all the reached slice reads, is resolved once at
  * pick time rather than re-derived at every read.
  */
-enum class PickedNodeKind : std::uint8_t {
-    none,
-    mesh,
-    splat_mesh,
-    // A billboard sprite is not a node at all: the pin leaves
-    // `pickedMesh` null for it and hangs a `_spritePick` payload on the
-    // info instead, which is what `pickBillboardSprite` reads back.
-    billboard_sprite,
-};
-
-/**
- * The pin's `Ray`, which only a DETAILED pick produces
- * (`gpu-picker.ts`: `info.ray = detailed ? pickRay : null`). The pin's
- * `createPickingRay` is what fills it, and the detailed CPU solve reads
- * its direction to decide whether a surface normal faces the pick.
- */
-struct PickRay {
-    std::array<double, 3> origin{};
-    std::array<double, 3> direction{};
-    double length = 0.0;
-};
-
-/**
- * What the detailed pass read out of its third attachment, before the
- * pin's CPU solve runs over it.
- *
- * Transport between the backend's one-pixel pass and the generated
- * continuation: the backend owns the readback and the space its vertex
- * stream was in, and `populateDetailedMeshInfo` -- which is Babylon
- * behaviour and therefore generated -- owns everything derived from it.
- */
-struct PickDetailReadback {
-    /** `@builtin(primitive_index)` of the winning fragment, -1 on a miss. */
-    double primitive_index = -1.0;
-    /** The interpolated vertex position, in the space the pass drew. */
-    std::array<double, 3> point{};
-    /**
-     * The winning mesh's DRAW-TIME world, which upstream snapshots with
-     * `copyDetailedWorldMatrix` before the asynchronous readback for the
-     * same reason it is carried here: the scene may move the mesh between
-     * the pick and the read.
-     */
-    std::array<float, 16> world{};
-    /**
-     * Whether `point` arrived in WORLD space rather than the mesh's own.
-     *
-     * The pin's pick vertex stage forwards the raw local position, and so
-     * does this port's -- but an ordinary mesh's vertex buffer is baked to
-     * world here (`transformed_vertices`, the contract in
-     * `fidelity.md`'s picking section), so the varying comes back world-
-     * space and the continuation maps it back through `world` before the
-     * pin's rest-space solve. A mesh whose transform travels as a matrix
-     * instead needs no map, and clears this.
-     */
-    bool world_baked = false;
-};
-
-/**
- * The pin's `PickingInfo`, at the slice this port resolves.
- *
- * WHAT WAS HIT, the basic pipeline's reconstructed world point, and the
- * detailed pipeline's own members -- the exact primitive, its barycentric
- * weights and the four normals `populateDetailedMeshInfo` derives.
- * `subMeshId` and `thinInstanceIndex` belong to pipelines this port does
- * not reach and remain outside this record.
- */
-struct Engine;
-struct PickingInfoState {
-    Engine* engine = nullptr;
-    std::weak_ptr<const int> engine_lifetime;
-    bool hit = false;
-    /**
-     * WHICH node was hit. Upstream `pickedMesh` is a live reference and
-     * `.name` reads it at the moment the scene asks, so the identity is
-     * what the pick resolves and the name is read through it -- a scene
-     * that picks, renames the node and then reads would otherwise get the
-     * name the node had at pick time.
-     */
-    PickedNodeKind picked_kind = PickedNodeKind::none;
-    std::uint32_t picked_index = invalid_handle;
-    /**
-     * The read-back id's offset inside the range its candidate owns --
-     * upstream's `pickId - r.base`, the local id it hands the resolving
-     * contributor. A mesh or a cloud owns one id and reads zero here; a
-     * billboard system owns `count` of them (`pick-contributor.ts`:
-     * "nextId - baseId is the id count this contributor owns"), so this
-     * is the sprite's own slot within the system `picked_index` names.
-     */
-    std::uint32_t picked_range_offset = 0;
-    std::optional<std::array<double, 3>> picked_point{};
-    /**
-     * `createEmptyPickingInfo`'s own detailed defaults: `faceId` is -1
-     * ("no primitive"), the weights are zero and every normal is null.
-     * A basic pick leaves all of them, which is exactly what upstream's
-     * empty record carries when `populateDetailedMeshInfo` never runs.
-     */
-    double face_id = -1.0;
-    double bu = 0.0;
-    double bv = 0.0;
-    std::optional<PickRay> ray{};
-    std::optional<std::array<double, 3>> picked_normal{};
-    std::optional<std::array<double, 3>> picked_normal_world{};
-    std::optional<std::array<double, 3>> picked_face_normal{};
-    std::optional<std::array<double, 3>> picked_face_normal_world{};
-    /** The pin's `_normalsInvalid`: a custom vertex world adjustment left
-     *  the primitive and weights valid while invalidating CPU normals. */
-    bool normals_invalid = false;
-    /** The third attachment's readback, on the pick that had one. */
-    std::optional<PickDetailReadback> detail{};
-};
-
-/** Copies retain the same JavaScript result; each default construction is fresh.
- * Numeric/point payloads remain readable after engine teardown, while queries
- * through a picked mesh require the original engine wrapper to remain alive. */
-struct PickingInfo {
-    std::shared_ptr<PickingInfoState> state;
-    bool& hit;
-    PickedNodeKind& picked_kind;
-    std::uint32_t& picked_index;
-    std::uint32_t& picked_range_offset;
-    std::optional<std::array<double, 3>>& picked_point;
-    double& face_id;
-    double& bu;
-    double& bv;
-    std::optional<PickRay>& ray;
-    std::optional<std::array<double, 3>>& picked_normal;
-    std::optional<std::array<double, 3>>& picked_normal_world;
-    std::optional<std::array<double, 3>>& picked_face_normal;
-    std::optional<std::array<double, 3>>& picked_face_normal_world;
-    bool& normals_invalid;
-    std::optional<PickDetailReadback>& detail;
-
-    PickingInfo() : PickingInfo(std::make_shared<PickingInfoState>()) {}
-    // Copying binds references into a shared state and copies its owner,
-    // neither of which can throw; the assignment operators below rely on
-    // that, since they destroy and re-place this object.
-    PickingInfo(const PickingInfo& other) noexcept : PickingInfo(other.state) {}
-    PickingInfo(PickingInfo&& other) noexcept : PickingInfo(std::move(other.state)) {}
-    PickingInfo& operator=(const PickingInfo& other) {
-        if (this != &other) {
-            this->~PickingInfo();
-            new (this) PickingInfo(other);
-        }
-        return *this;
-    }
-    PickingInfo& operator=(PickingInfo&& other) noexcept {
-        if (this != &other) {
-            this->~PickingInfo();
-            new (this) PickingInfo(std::move(other));
-        }
-        return *this;
-    }
-    [[nodiscard]] bool operator==(const PickingInfo& other) const noexcept {
-        return state == other.state;
-    }
-    void bind_engine(Engine& engine);
-
-private:
-    explicit PickingInfo(std::shared_ptr<PickingInfoState> shared)
-        : state(std::move(shared)),
-          hit(state->hit),
-          picked_kind(state->picked_kind),
-          picked_index(state->picked_index),
-          picked_range_offset(state->picked_range_offset),
-          picked_point(state->picked_point),
-          face_id(state->face_id),
-          bu(state->bu),
-          bv(state->bv),
-          ray(state->ray),
-          picked_normal(state->picked_normal),
-          picked_normal_world(state->picked_normal_world),
-          picked_face_normal(state->picked_face_normal),
-          picked_face_normal_world(state->picked_face_normal_world),
-          normals_invalid(state->normals_invalid),
-          detail(state->detail) {}
-};
-// The destroy-then-place assignment operators above are only sound while a
-// copy cannot throw between the destruction and the placement.
-static_assert(std::is_nothrow_copy_constructible_v<PickingInfo>);
-static_assert(std::is_nothrow_move_constructible_v<PickingInfo>);
-
-[[nodiscard]] inline Engine& picking_engine(const PickingInfo& info) {
-    if (!info.state->engine || info.state->engine_lifetime.expired()) {
-        throw std::runtime_error(
-            "PickingInfo mesh queries require the original live engine; "
-            "queries after engine destruction or relocation are unsupported.");
-    }
-    return *info.state->engine;
-}
+#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#include <bblite/runtime/picking-records.hpp>
+#endif
 
 /**
  * The picker's own state. The GPU resources it owns live with the renderer
@@ -900,6 +674,7 @@ struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
 struct NodeMaterialInputsState;
 struct NodeMaterialGroupState;
+#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
 struct GpuPickerRecord {
     std::weak_ptr<SceneState> scene;
     bool disposed = false;
@@ -912,6 +687,7 @@ struct GpuPickerRecord {
     bool detailed = false;
 };
 
+#endif
 /** One light in a clustered container, at the pin's own resolved defaults. */
 struct ClusteredLight {
     std::array<double, 3> position{};
@@ -1049,57 +825,6 @@ enum class MaterialAlphaMode {
  * what the port enumerates and a component is carried beside it — the same
  * split the pin makes, rather than one enumerator per spelled path.
  */
-enum class PropertyAnimationPath {
-    position,
-    scaling,
-    rotation_quaternion,
-    camera_alpha,
-    record_scalar,
-};
-
-/**
- * Which part of its lane a track writes. `whole_lane` is the path that
- * names the lane itself, which `createPropertyWriter` stores through the
- * value's own `set`; the rest name one component, in the pin's own
- * `"xyzw"` order.
- */
-enum class PropertyAnimationComponent {
-    whole_lane,
-    x,
-    y,
-    z,
-    w,
-};
-
-/**
- * What a property clip is bound to. Upstream resolves a dotted path
- * against whatever object the caller passed, so the target and the path
- * travel together. Mesh and camera handles use their native lane writers;
- * data objects and accessor records retain scalar callback writers.
- */
-enum class PropertyAnimationTargetKind {
-    mesh,
-    camera,
-    callback,
-};
-
-struct PropertyAnimationTarget {
-    PropertyAnimationTargetKind kind =
-        PropertyAnimationTargetKind::mesh;
-    std::uint32_t index = 0;
-    js::Callback<void(float)> write_scalar;
-    // A plain-data writer retains this owner through its managed closure.
-    // The mixer keys the pin's resolved (object, property) pair.
-    const void* object_identity = nullptr;
-    std::string property{};
-    void gc_trace(const js::TraceVisitor& visitor) const { visitor(write_scalar); }
-};
-
-enum class PropertyAnimationInterpolation {
-    linear,
-    step,
-};
-
 enum class GeometryTextureType {
     irradiance,
     world_position,
@@ -1805,7 +1530,7 @@ struct TextureUvTransform {
 struct CompressedMipLevel {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    std::vector<std::uint8_t> bytes;
+    std::span<const std::uint8_t> bytes;
 };
 
 /**
@@ -1828,6 +1553,8 @@ struct CompressedTexture {
     std::uint32_t block_width = 0;
     std::uint32_t block_height = 0;
     std::uint32_t block_bytes = 0;
+    // Mip spans share the immutable container across texture/material copies.
+    std::shared_ptr<const std::vector<std::uint8_t>> storage;
     std::vector<CompressedMipLevel> mips;
 };
 
@@ -1928,9 +1655,7 @@ struct TextureData {
     // 127 of 128, which is that property evaluating false over `.babylon`
     // textures.
     bool uv_invert_y = false;
-    // A KTX container's or a transcoder's own blocks. Filled instead of
-    // `bytes` rather than beside it: the blocks are what uploads, so
-    // keeping the container file as well would carry the payload twice.
+    // GPU blocks viewed directly in their shared container storage.
     CompressedTexture compressed{};
 
     /**
@@ -1955,6 +1680,21 @@ struct FileTexture {
     /** JavaScript Texture2D object identity for array search and aliases. */
     std::uint64_t identity = 0;
 };
+
+/** Texture2D's per-device URL/options cache, projected onto native samplers. */
+inline std::string file_texture_cache_key(
+    const std::string& path, const TextureSamplerState& sampler,
+    bool invert_y, bool srgb, bool premultiply_alpha) {
+    std::string key = path;
+    key.push_back('\0');
+    for (const auto value : {static_cast<unsigned>(sampler.min_filter), static_cast<unsigned>(sampler.mag_filter),
+        static_cast<unsigned>(sampler.mipmap_mode), static_cast<unsigned>(sampler.address_u),
+        static_cast<unsigned>(sampler.address_v), static_cast<unsigned>(sampler.max_lod != 0),
+        static_cast<unsigned>(invert_y), static_cast<unsigned>(srgb), static_cast<unsigned>(premultiply_alpha)}) {
+        key.push_back(static_cast<char>(value));
+    }
+    return key;
+}
 
 /**
  * A texture built from bytes the caller supplied (`pixels-texture.ts`).
@@ -2439,6 +2179,7 @@ struct MeshRecord {
     // dangle. Loader-built instancing (glTF EXT_mesh_gpu_instancing)
     // leaves it null and never bumps the version.
     bool thin_instanced = false;
+    bool source_runtime_thin_builder = false;
     std::uint32_t instance_count = 0;
     std::uint64_t instance_version = 0;
     std::vector<float>* instance_source = nullptr;
@@ -2507,44 +2248,10 @@ inline void apply_mesh_bound_overrides(
 // ---------------------------------------------------------------------------
 
 /** shared/sprite-atlas.ts `SpriteFrame`: UVs in [0,1], size in pixels. */
-struct SpriteFrame {
-    Vec2 uv_min{};
-    Vec2 uv_max{};
-    Vec2 source_size_px{};
-    Vec2 pivot{0.5f, 0.5f};
-};
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#include <bblite/runtime/sprite-atlas-records.hpp>
+#endif
 
-struct SpriteAtlasRecord {
-    // Decoded at load, because `createGridSpriteAtlas` partitions the
-    // texture it was handed and so needs its size before any frame exists.
-    std::vector<std::uint8_t> rgba;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::vector<SpriteFrame> frames;
-    bool premultiplied_alpha = false;
-    // `loadTexture2D`'s own `mipMaps`, as the loader that built this atlas
-    // passed it: `loadSpriteAtlas` turns the chain off, and the atlas a
-    // particle graph's texture block builds leaves it on. The PALs upload
-    // the chain this says rather than inferring one from the sampler.
-    bool mip_maps = false;
-    TextureSamplerState sampler{};
-    bool has_render_texture = false;
-    SpriteRenderTextureHandle render_texture{};
-};
-
-struct SpriteRenderTextureRecord {
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    bool disposed = false;
-};
-
-/**
- * A WebGPU `GPUCompareFunction`, as this runtime's own enumerator.
- *
- * The pin writes the WebGPU spelling; `pinned-depth-state.ts` maps it here
- * and fails generation on a spelling with no enumerator, so a backend
- * translates an enum rather than re-typing the pin's string.
- */
 enum class DepthCompare {
     never,
     less,
@@ -2557,79 +2264,10 @@ enum class DepthCompare {
 };
 
 /** blend-descriptors.ts / sprite-blend.ts, as the pure data they are. */
-enum class SpriteBlendFactor {
-    zero,
-    one,
-    src_alpha,
-    one_minus_src_alpha,
-    dst,
-    dst_alpha,
-};
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#include <bblite/runtime/sprite-blend.hpp>
+#endif
 
-struct SpriteBlendComponent {
-    SpriteBlendFactor src = SpriteBlendFactor::one;
-    SpriteBlendFactor dst = SpriteBlendFactor::zero;
-};
-
-/**
- * billboard-blend.ts `_depthMode`: which depth path a mode selects.
- * `transparent` blends without writing depth and is sorted far to near;
- * `cutout` discards below the alpha cutoff, writes depth, and draws with the
- * opaque meshes instead, so the GPU resolves overlap and no sort is needed.
- */
-enum class BillboardDepthMode {
-    transparent,
-    cutout,
-};
-
-struct SpriteBlendDescriptor {
-    // `_descriptor` absent upstream means no colour blend at all.
-    bool enabled = true;
-    // Only the billboard family declares one; the 2D descriptors leave it
-    // at the transparent default, which is the path they all take.
-    BillboardDepthMode depth_mode = BillboardDepthMode::transparent;
-    SpriteBlendComponent color{};
-    SpriteBlendComponent alpha{};
-    // `_premultipliedOpacity`: per-layer opacity scales RGB as well as A.
-    bool premultiplied_opacity = false;
-    // `_particlePasses`: the exact Babylon.js particle blends, and the one
-    // field only `particle-blend.ts` ever sets. Zero is every public
-    // descriptor; one is Multiply, which draws the pin's own private
-    // fragment; two is MultiplyAdd, which draws that pass and then a stock
-    // Add pass over the same instances. The count rides the descriptor
-    // because that is where upstream puts it -- the registrar forks on
-    // `blendMode._particlePasses`, never on the numeric mode.
-    int particle_passes = 0;
-};
-
-/** sprite-2d.ts `Sprite2DView`. Identity is a pixel-perfect HUD. */
-struct Sprite2DView {
-    Vec2 position_px{};
-    float zoom = 1.0f;
-    float rotation = 0.0f;
-};
-
-/** sprite-2d.ts `depth`: which render path owns this layer. */
-enum class Sprite2DDepthMode {
-    none,
-    test,
-    test_write,
-};
-
-/**
- * A Gaussian-splat cloud, as `loadSplat` leaves it.
- *
- * The four RGBA32F payloads and the centres are what
- * `upstream::build_splat_geometry` produced from the packaged row buffer;
- * the backends upload the payloads once and re-run the sort whenever the
- * view-depth transform drifts, which is `postSplatSortIfDirty`'s rule.
- *
- * The pin's own transform state rides here too: a splat mesh is a scene node
- * with position/rotation/scaling, and the world matrix multiplies into the
- * depth transform. No reached scene moves one, so the world stays identity
- * and the field exists to keep the depth kernel written the way the pin
- * writes it rather than folded away.
- */
 struct SplatMeshRecord {
     /**
      * A cloud is a SceneNode upstream, so it carries the same name a mesh
@@ -2679,202 +2317,10 @@ struct SplatMeshRecord {
     std::vector<std::vector<std::uint8_t>> sh_textures;
 };
 
-struct Sprite2DLayerRecord {
-    SpriteAtlasHandle atlas{};
-    SpriteBlendDescriptor blend{};
-    float opacity = 1.0f;
-    bool visible = true;
-    float order = 0.0f;
-    Sprite2DDepthMode depth_mode = Sprite2DDepthMode::none;
-    float layer_z = 0.5f;
-    Sprite2DView view{};
-    Vec2 pivot{0.5f, 0.5f};
-    std::uint32_t count = 0;
-    std::uint32_t capacity = 0;
-    // 13 for pure 2D, 14 when the layer carries the depth slot.
-    std::uint32_t instance_floats_per_sprite = 13;
-    std::vector<float> instance_data;
-    // The CPU-only shadow holding each sprite's true size regardless of
-    // visibility, which is what makes hiding a free degenerate quad.
-    std::vector<float> saved_size;
-    // sprite-2d-uvscroll.ts: the first setSprite2DUvOffset widens the layout
-    // by two floats per sprite and stashes the attribute the pipeline pushes.
-    // A layer that never scrolls keeps the narrow layout and ships none of it.
-    bool uv_scroll = false;
-    // sprite-2d-handle.ts: a stable id per sprite over a moving index, so a
-    // name a scene holds survives the swap a removal performs. Upstream
-    // builds this lazily on the first `addSprite2D`; here it is a plain
-    // member, because the map's own empty state already costs a layer that
-    // never takes a handle nothing but its inline bytes.
-    std::uint32_t next_sprite_id = 1;
-    std::unordered_map<std::uint32_t, std::uint32_t> sprite_id_to_index;
-    std::vector<std::uint32_t> sprite_index_to_id;
-    // sprite-custom-shader.ts: a layer built with a descriptor draws the
-    // composed program and binds the fx block beside its layer block. The
-    // pin reaches both through a hook that is null until a descriptor
-    // exists, so the flag is the same "is there one" question.
-    std::uint32_t custom_shader = 0;
-    // custom-shader-core.ts: the descriptor's extra textures, in the order
-    // they bind after the atlas. Empty unless a custom shader named any.
-    std::vector<PixelsTexture> custom_textures;
-    // Shader identifiers for custom_textures, in the same order. SDL's
-    // compacted shader sidecar uses these to bind only the resources kept.
-    std::vector<std::string> custom_texture_names;
-    // The `fx.params` vec4, zero until setSprite2DShaderParams writes it.
-    Vec4 shader_params{};
-    // render/alpha-to-coverage.ts: enabled only on a multisampled,
-    // depth-writing scene-hosted pipeline.
-    bool alpha_to_coverage = false;
-    // Instance mutations accumulate one half-open dirty sprite range. The
-    // active backend clears it after the matching version reaches the GPU;
-    // a buffer replacement widens it back to the full active range.
-    std::uint32_t dirty_sprite_begin = invalid_handle;
-    std::uint32_t dirty_sprite_end = 0;
-    std::uint64_t version = 0;
-    // Version of the range most recently consumed by a PAL pass. A second
-    // pass whose upload stamp predates it must refresh the active prefix;
-    // a later count-only version bump needs no instance transfer.
-    std::uint64_t dirty_sprite_reset_version = 0;
-    // Fixed pipeline state moves independently from instance bytes. Runtime
-    // UV-scroll widening and alpha-to-coverage changes bump this stamp so an
-    // already-created PAL pass can rebuild/reselect the compatible pipeline.
-    std::uint64_t pipeline_version = 0;
-    // sprite-2d-y-sort.ts `layer._ySortState`: the optional GPU-order
-    // permutation and its packed staging buffer. Null until a scene calls
-    // `enableSprite2DYSort`, and deliberately OPAQUE here -- upstream keeps
-    // the state's fields private to its own optional module and lets the
-    // always-loaded mutation, upload and picker paths know only the hook
-    // contract below, so the layout lives in the generated Y-sort module
-    // and nothing that never enables it links a line of it.
-    std::shared_ptr<void> y_sort;
-};
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#include <bblite/runtime/sprite-records.hpp>
+#endif
 
-/**
- * The rows one instance upload copies, already in the order the GPU reads.
- *
- * `data` is the base of the buffer the copy reads from -- the layer's own
- * canonical instance floats, or the Y-sort module's packed staging buffer --
- * and the half-open `[begin, end)` are slots in THAT buffer, so the two
- * backends' write calls differ in nothing but the API they call.
- */
-struct SpriteInstanceUpload {
-    const float* data = nullptr;
-    std::uint32_t begin = 0;
-    std::uint32_t end = 0;
-};
-
-/**
- * sprite-2d-y-sort-hook.ts: the one lazily-registered null hook the optional
- * Y-sort module installs the first time a layer enables it.
- *
- * Upstream's mutation, upload and picking modules reach the extension only
- * through this record, which is why enabling is the opt-in trigger rather
- * than any second detector: an engine whose scene never called
- * `enableSprite2DYSort` finds every field empty and takes the canonical
- * logical-order path, exactly as the pin's `_getSprite2DYSortHook()?.` does.
- */
-struct Sprite2DYSortHook {
-    /** `uploadSorted`'s staging half: pack the rows this copy uploads. */
-    std::function<SpriteInstanceUpload(
-        Sprite2DLayerRecord&,
-        std::uint32_t,
-        std::uint32_t)>
-        stage;
-    /** `getDrawOrder`: draw slot -> logical slot, or null when disabled. */
-    std::function<const std::uint32_t*(const Sprite2DLayerRecord&)>
-        draw_order;
-};
-
-/**
- * A world-space billboard system: an atlas, a packed instance buffer, and
- * the per-system uniforms. Unlike a 2D layer it carries no view of its own —
- * it draws inside the scene's pass against the scene camera and depth
- * buffer, which is what makes it occlude and be occluded by geometry.
- */
-enum class BillboardOrientation {
-    facing,
-    axis_locked,
-};
-
-struct BillboardSystemRecord {
-    SpriteAtlasHandle atlas{};
-    BillboardOrientation orientation = BillboardOrientation::facing;
-    BillboardDepthMode depth_mode = BillboardDepthMode::transparent;
-    // setAlphaToCoverage: immutable pipeline state, so it is read when the
-    // pass is built rather than per frame.
-    bool alpha_to_coverage = false;
-    SpriteBlendDescriptor blend{};
-    float opacity = 1.0f;
-    bool visible = true;
-    // Zero for a facing system: the facing basis reads the camera instead.
-    Vec3 axis{};
-    float alpha_cutoff = 0.0f;
-    std::uint32_t count = 0;
-    // Incremented whenever the active packed instance rows change. Count is
-    // not a sufficient upload stamp: a dynamic system may clear and refill
-    // the same number of sprites with different positions or atlas frames.
-    std::uint64_t instance_version = 0;
-    std::uint32_t capacity = 0;
-    std::uint32_t instance_floats_per_sprite = 16;
-    std::vector<float> instance_data;
-    // billboard-sprite-handle.ts: stable ids survive packed-index removal.
-    std::uint32_t next_handle_id = 1u;
-    std::unordered_map<std::uint32_t, std::uint32_t> handle_id_to_index;
-    std::vector<std::uint32_t> index_to_handle_id;
-    // The mode-4 second pass's blend; see BillboardSystemOptions.
-    SpriteBlendDescriptor add_pass_blend;
-    // billboard-custom-shader.ts: the same opt-in the 2D layer carries --
-    // a system built with a descriptor draws the composed program and
-    // binds the fx block beside its system block.
-    std::uint32_t custom_shader = 0;
-    // custom-shader-core.ts: the descriptor's extra textures, in the order
-    // they bind after the atlas. Empty unless a custom shader named any.
-    std::vector<PixelsTexture> custom_textures;
-    std::vector<std::string> custom_texture_names;
-    // The `fx.params` vec4, zero until setBillboardShaderParams writes it.
-    Vec4 shader_params{};
-};
-
-struct SpriteRendererRecord {
-    std::vector<Sprite2DLayerHandle> layers;
-    Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
-    bool clear = true;
-    // `disposeSpriteRenderer` is idempotent upstream and every entry point
-    // it owns checks this first, so the flag is the pin's own state rather
-    // than a native lifetime device.
-    bool disposed = false;
-    // Bumped whenever the layer list itself changes (add / remove / dispose).
-    // Each backend builds one `SpriteLayerGpu` per layer, indexed positionally
-    // against this vector, so a changed list has to rebuild that pass -- the
-    // same version-compare shape `render_topology_version` already gives a
-    // scene whose mesh set moved.
-    std::uint64_t layers_version = 0;
-    bool has_target = false;
-    SpriteRenderTextureHandle target{};
-    // sprite-renderer.ts `_beforeUpdate`: the hooks `spriteRendererUpdate`
-    // runs, with the frame's delta, before it asserts its layers and
-    // uploads them. Both the pure-2D node-particle bridges and application
-    // code push onto this list, so it is the renderer's own per-frame step
-    // rather than the scene's. The delta is the browser's double: the
-    // particle bridge divides it by the pin's frame period.
-    std::vector<std::function<void(double)>> before_update;
-    // The list the frame is iterating. A hook may push another, and
-    // upstream iterates the array it entered with, so the run reads a copy
-    // -- kept here rather than made fresh each frame, which reuses the
-    // capacity after the first one.
-    std::vector<std::function<void(double)>> before_update_running;
-};
-
-/**
- * A texture an effect samples, under the binding name it was set by.
- *
- * `setEffectTexture` stores the handle on the slot the name owns
- * (`effect-renderer.ts` `findTextureSlot`), so the name travels here for the
- * same reason it does for a node material: which binding a name lands on is
- * the descriptor's answer, and the two are joined where the pin joins them.
- * The reached slice binds a `createSolidTexture2D` 1x1 texel, which is why
- * the slot holds a colour rather than image bytes.
- */
 struct EffectTextureSlot {
     std::string name;
     SolidTexture texture{};
@@ -2917,198 +2363,9 @@ struct EffectRendererOptions {
     Color4 clear_color{};
 };
 
-struct PropertyAnimationKey {
-    float time = 0.0f;
-    std::array<float, 4> value{};
-};
-
-struct PropertyAnimationTrack {
-    PropertyAnimationPath path = PropertyAnimationPath::position;
-    PropertyAnimationComponent component =
-        PropertyAnimationComponent::whole_lane;
-    PropertyAnimationInterpolation interpolation =
-        PropertyAnimationInterpolation::linear;
-    /**
-     * `createPropertyAnimationClip`'s own rotation-channel derivation,
-     * which is what `evaluateSampler` slerps on — the path decides it
-     * there too, but the flag is what the evaluator reads.
-     */
-    bool quaternion = false;
-    std::vector<PropertyAnimationKey> keys;
-};
-
-struct PropertyAnimationClip {
-    std::string name;
-    std::vector<PropertyAnimationTrack> tracks;
-    float duration = 0.0f;
-    float frame_rate = 60.0f;
-};
-
-struct PropertyAnimationGroupRecord {
-    std::vector<PropertyAnimationTarget> targets;
-    PropertyAnimationClip clip;
-    float from_time = 0.0f;
-    float to_time = 0.0f;
-    float current_time = 0.0f;
-    float speed_ratio = 1.0f;
-    bool loop = true;
-    bool playing = true;
-    /** `AnimationGroup.weight`: the mixer's contribution, default 1. */
-    float weight = 1.0f;
-    void gc_trace(const js::TraceVisitor& visitor) const { visitor(targets); }
-};
-
-using PropertyAnimationGroup =
-    std::shared_ptr<PropertyAnimationGroupRecord>;
-
-/** A property or glTF group whose public weight a fade job updates. */
-enum class AnimationWeightFadeTargetKind {
-    property,
-    gltf,
-};
-
-struct AnimationWeightFadeTarget {
-    AnimationWeightFadeTargetKind kind =
-        AnimationWeightFadeTargetKind::property;
-    PropertyAnimationGroup property_group;
-    AnimationGroupHandle gltf_group{};
-    void gc_trace(const js::TraceVisitor& visitor) const { visitor(property_group); }
-
-    static AnimationWeightFadeTarget from_property(
-        PropertyAnimationGroup group) {
-        AnimationWeightFadeTarget target;
-        target.property_group = std::move(group);
-        return target;
-    }
-
-    static AnimationWeightFadeTarget from_gltf(
-        AnimationGroupHandle group) {
-        AnimationWeightFadeTarget target;
-        target.kind = AnimationWeightFadeTargetKind::gltf;
-        target.gltf_group = group;
-        return target;
-    }
-};
-
-/**
- * One manager-owned weight tween. The fade scheduler is a pre-update
- * phase, separate from the category mixer which consumes the resulting
- * weights; enabling a property or glTF mixer therefore remains explicit.
- */
-struct PropertyAnimationWeightFade {
-    AnimationWeightFadeTarget target;
-    float from = 0.0f;
-    float to = 0.0f;
-    float duration_ms = 0.0f;
-    float elapsed_ms = 0.0f;
-    void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); }
-};
-
-/**
- * One blended property, the pin's own weighted-mixer bucket. Upstream
- * keys it by the (object, property name) pair each runtime track
- * resolved; a lowered track names the same pair as its target, its lane
- * and the component of it the path selected — `position` lands on the
- * mesh while `position.x` lands on the position vector, so the two are
- * distinct pairs there and distinct keys here. How wide the bucket is
- * follows from the same triple, which is why the pin's mismatched-arity
- * throw has nothing to catch on this side.
- */
-struct PropertyAnimationBucket {
-    PropertyAnimationTarget target{};
-    PropertyAnimationPath property =
-        PropertyAnimationPath::position;
-    PropertyAnimationComponent component =
-        PropertyAnimationComponent::whole_lane;
-    std::array<float, 4> values{};
-    /** The track's own rotation-channel flag, as the pin's bucket keeps it. */
-    bool quaternion = false;
-    bool contested = false;
-    bool active = false;
-    bool has_reference = false;
-    std::array<float, 4> reference{
-        0.0f, 0.0f, 0.0f, 1.0f};
-    void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); }
-};
-
-/**
- * One clip a manager blends this tick, as the weighted glTF mixer reads
- * it: which clip of the owning asset, and at what weight. The clip state
- * lives inside the asset's own animation runtime, so the manager hands
- * the list across rather than reaching into it.
- */
-struct BlendedClip {
-    std::size_t clip = 0;
-    float weight = 1.0f;
-};
-
-/**
- * Which handler a manager's animation-group category has installed.
- * `setAnimationTaskCategoryHandler` keeps one slot, so the second opt-in
- * replaces the first rather than composing with it.
- */
-enum class AnimationCategoryHandler {
-    none,
-    property_mixer,
-    gltf_mixer,
-};
-
-struct Engine;
-struct PropertyAnimationManagerRecord;
-using AnimationManagerPreUpdate = std::function<void(
-    Engine&,
-    PropertyAnimationManagerRecord&,
-    float)>;
-
-struct PropertyAnimationManagerRecord {
-    /** The engine inferred from the first attached group or scene. */
-    Engine* engine = nullptr;
-    std::vector<PropertyAnimationGroup> groups;
-    /** Scheduled by crossFadeAnimationGroups, advanced before the mixer. */
-    std::vector<PropertyAnimationWeightFade> weight_fades;
-    /** The pin's one stable pre-update slot and the hook it preserves. */
-    AnimationManagerPreUpdate pre_update;
-    AnimationManagerPreUpdate prior_weight_fade_pre_update;
-    /**
-     * The glTF groups `addAnimationGroups` attached, in attach order.
-     * Upstream keeps them in the manager's own `_animationGroups` list and
-     * ticks each through its controller; the clips themselves live in the
-     * owning asset's runtime, so the handle is what travels here.
-     */
-    std::vector<AnimationGroupHandle> gltf_groups;
-    bool started = false;
-    double fixed_delta_ms = 0.0;
-    double last_time_ms = 0.0;
-    js::Callback<void(double)> on_update;
-    std::size_t animation_frame_request = 0;
-    /** Installed by `enablePropertyAnimationBlending` / `enableAnimationBlending`. */
-    AnimationCategoryHandler category_handler =
-        AnimationCategoryHandler::none;
-    /** The mixers' per-manager scratch, upstream's `scratchByManager`. */
-    std::vector<PropertyAnimationBucket> buckets;
-    std::vector<BlendedClip> blend_scratch;
-    void gc_trace(const js::TraceVisitor& visitor) const {
-        visitor(groups);
-        visitor(weight_fades);
-        visitor(buckets);
-        visitor(on_update);
-    }
-};
-
-using PropertyAnimationManager =
-    std::shared_ptr<PropertyAnimationManagerRecord>;
-
-struct PropertyAnimationManagerOptions {
-    double fixed_delta_ms = 0.0;
-    js::Callback<void(double)> on_update;
-};
-
-struct PropertyAnimationGroupOptions {
-    float from_time = 0.0f;
-    float to_time = 0.0f;
-    float speed_ratio = 1.0f;
-    bool loop = true;
-};
+#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#include <bblite/runtime/animation-records.hpp>
+#endif
 
 // KHR_texture_transform is per texture slot upstream: gltf-ext-uv-transform.ts
 // attaches uScale/vScale/uOffset/vOffset/uAng to each texture wrapper, and each
@@ -3150,6 +2407,13 @@ struct MaterialRecord {
     // Texture2D producer arm and identity, separately from upload data.
     std::optional<StoredTexture> source_albedo_texture{};
     bool source_colors_registered = false;
+    bool source_pbr_group_builder = false;
+    // Standard/shader singleton keys and per-node builder closure identities.
+    std::uint64_t source_group_builder = 0;
+    bool source_gamma_albedo = false;
+    // Source control reads retain number precision separately from GPU floats.
+    bool source_transmissive = false;
+    std::optional<double> source_refraction_intensity;
     // Babylon keeps the material-wide alpha separate from the PBR base-color
     // factor. The fragment multiplies both when the factor field is composed.
     float alpha = 1.0f;
@@ -3363,8 +2627,10 @@ struct MaterialRecord {
     std::vector<float> shader_uniform_values;
     /** Storage slots in the shader's declared order. */
     std::vector<StorageBufferHandle> shader_storage_buffers;
+#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
     /** CSM receiver textures keyed by shader sampler slot. */
     std::vector<ShadowGeneratorHandle> shader_csm_textures;
+#endif
     /** Optional shader material used only by this material's shadow pass. */
     MaterialHandle shadow_caster_material{};
     Color3 grid_main_color{0.0f, 0.0f, 0.0f};
@@ -3415,6 +2681,9 @@ struct MaterialRecord {
     // pbr-template-ext pair for occlusionTexture.texCoord == 1).
     TextureData occlusion_texture;
     bool occlusion_texture_uv2 = false;
+    /** Replacing an admitted texture slot detaches existing animation captures. */
+    std::uint64_t orm_texture_generation = 0;
+    std::uint64_t occlusion_texture_generation = 0;
     // Texture-less base color baked to the pinned 8-bit sRGB texel
     // (uploadBaseColorFactorTexture); the hardware decode of these
     // bytes is the browser's effective base color.
@@ -3431,12 +2700,6 @@ struct MaterialRecord {
     // scene did not ask sRGB for, which is how a gamma-albedo material feeds
     // the decode to its own fragment instead.
     bool base_color_srgb = true;
-    // Set by the loader's whiteFallback path: an animated base colour factor
-    // on an image-less material bakes a white texel and keeps the live factor
-    // in the record for the pointer writer. The pin seeds `mat.alpha` from
-    // the factor it ASSEMBLES with -- the white one -- so the pinned
-    // materialAlpha lane holds 1 whatever the animated alpha does.
-    bool animated_base_color = false;
     // Texture-less metallic/roughness baked to the pinned 8-bit texel
     // (uploadOrmFactorTexture writes [255, roughness, metallic, 255]) with the
     // uniform factors left at one. Keeping the factor in the texel rather than
@@ -3464,6 +2727,13 @@ struct MaterialRecord {
     // 2 only for coordinatesMode === 2 (planar), load-babylon.ts.
     float reflection_coord_mode = 1.0f;
 };
+
+inline std::uint32_t material_family_bit(const MaterialRecord& record) {
+    if (record.grid_material) return material_family_grid;
+    if (record.shader_material) return material_family_shader;
+    if (record.standard_material) return material_family_standard;
+    return material_family_pbr;
+}
 
 // The pin reads `mat.alpha < 1` live when it builds renderables, and the
 // PBR transmission extension forces blending regardless of alpha, so the
@@ -3668,6 +2938,7 @@ struct AnimationGroupRecord {
     std::size_t clip = 0;
     /** `AnimationGroup.weight`: what the weighted mixer contributes it at. */
     float weight = 1.0f;
+    std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
 };
 
 /**
@@ -3754,11 +3025,19 @@ struct FlowGraphHandle {
     std::uint32_t index = 0;
 };
 
+struct AssetMeshWalks {
+    // Absent for producers whose entity list is already their mesh storage.
+    std::optional<std::vector<std::size_t>> scene;
+    std::vector<std::vector<std::size_t>> collectors;
+};
+
+struct GltfAnimationRuntimeState;
+
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
-    // Source traversal permutations, separate from loader-order storage.
+    // Source traversals, separate from loader-order storage.
     // A cloned root shares the indices and maps them to its own mesh handles.
-    std::shared_ptr<const std::vector<std::vector<std::size_t>>> source_mesh_walks{};
+    std::shared_ptr<const AssetMeshWalks> source_mesh_walks{};
     std::vector<LightHandle> lights;
     /**
      * The cameras the `_camera` loader feature instantiated, one per
@@ -3778,28 +3057,17 @@ struct AssetRecord {
     bool has_clear_color = false;
     std::function<void(float)> animation_tick;
     std::function<void(float)> animation_seek;
+    std::shared_ptr<GltfAnimationRuntimeState> source_animation;
+    std::function<void(std::size_t, double, bool)> animation_tick_group;
+    js::Callback<void(float)> before_render_hook;
     /**
      * Registers a cloned mesh with the source asset's animation runtime.
      * Babylon Lite clones retain the same skeleton/morph resources, so a
      * hierarchy clone continues to receive the original controller's pose.
      */
     std::function<void(MeshHandle, MeshHandle)> clone_mesh_animation;
-    /**
-     * The weighted pass over the clips a manager attached, present only
-     * when the scene reached `enableAnimationBlending`. Returns whether
-     * it drove the tick — false hands it back to the per-clip advance,
-     * which is the pin's own category-handler contract.
-     */
-    std::function<bool(const std::vector<BlendedClip>&, float)>
-        animation_blend;
-    /**
-     * Advances exactly the clips a manager owns and re-evaluates the
-     * asset, where `animation_tick` advances every clip the file holds
-     * from one master clock. A manager-driven scene takes this one.
-     */
-    std::function<void(const std::vector<BlendedClip>&, float)>
-        animation_tick_clips;
-    std::function<void(Scene&)> scene_setup;
+    js::Callback<void(Scene&)> scene_setup;
+    std::map<std::weak_ptr<SceneState>, js::Callback<void()>, std::owner_less<std::weak_ptr<SceneState>>> scene_cleanups;
     /**
      * `KHR_interactivity`'s view of the file, filled only when the asset
      * carries graphs: `mesh._gltfNodeIndex` per entry of `meshes`, each
@@ -3852,6 +3120,12 @@ struct AssetRecord {
      * this is the reader for it, beside the writers above.
      */
     std::function<float(std::size_t)> clip_duration;
+    /** VAT binding lookup over the group's shared glTF skeleton bindings. */
+    std::function<bool(MeshHandle)> animation_has_skeleton;
+    /** Source goToFrameCpu, which seeks without publishing GPU palettes. */
+    std::function<void(std::size_t, double)> animation_cpu_go_to_frame;
+    /** Shared CPU bone palette folded into this mesh's native VAT coordinates. */
+    std::function<std::vector<std::array<float, 16>>(MeshHandle)> animation_bone_palette;
     /** Sets one clip's loopAnimation, which the weighted mixer reads. */
     std::function<void(std::size_t, bool)> set_clip_loop;
     /** Sets one clip's speedRatio, which its own advance scales by. */
@@ -3891,6 +3165,45 @@ struct AssetRecord {
     std::function<void()> bake_skeletons;
 };
 
+inline std::vector<std::size_t> asset_mesh_indices(std::size_t count, const std::vector<double>& entries) {
+    std::vector<std::size_t> indices;
+    indices.reserve(entries.size());
+    for (const auto number : entries) {
+        if (!(number >= 0 && number < static_cast<double>(count)) || std::floor(number) != number)
+            throw std::runtime_error("Invalid source mesh walk index.");
+        indices.push_back(static_cast<std::size_t>(number));
+    }
+    return indices;
+}
+
+/** Scene registration can select a subset and can visit the same mesh again. */
+inline void install_asset_scene_meshes(AssetRecord& asset, const std::vector<double>& entries) {
+    auto indices = asset_mesh_indices(asset.meshes.size(), entries);
+    auto walks = std::make_shared<AssetMeshWalks>();
+    if (asset.source_mesh_walks) walks->collectors = asset.source_mesh_walks->collectors;
+    walks->scene = std::move(indices);
+    asset.source_mesh_walks = std::move(walks);
+}
+
+/** Install validated permutations over a loader's native mesh collection. */
+inline void install_asset_mesh_walks(AssetRecord& asset, const std::vector<std::vector<double>>& rows) {
+    auto walks = std::make_shared<AssetMeshWalks>();
+    if (asset.source_mesh_walks) walks->scene = asset.source_mesh_walks->scene;
+    walks->collectors.reserve(rows.size());
+    for (const auto& entries : rows) {
+        auto& walk = walks->collectors.emplace_back();
+        if (entries.empty()) continue;
+        if (entries.size() != asset.meshes.size()) throw std::runtime_error("Invalid source mesh walk size.");
+        std::vector<bool> seen(asset.meshes.size());
+        walk = asset_mesh_indices(asset.meshes.size(), entries);
+        for (const auto index : walk) {
+            if (seen[index]) throw std::runtime_error("Repeated source mesh walk index.");
+            seen[index] = true;
+        }
+    }
+    asset.source_mesh_walks = std::move(walks);
+}
+
 struct HierarchyInstancePoolBinding {
     MeshHandle mesh{};
     std::array<float, 16> mesh_world{};
@@ -3916,132 +3229,9 @@ struct HierarchyInstancePoolRecord {
  * their light-space matrix is fitted with, which is why every consumer that
  * asks about a generator's RESOURCES tests for the ESM arm alone.
  */
-enum class ShadowFilter {
-    pcf_spot,
-    /**
-     * `createPcfDirectionalShadowGenerator`: the spot generator's own GPU
-     * state over the ESM's caster-fitted orthographic volume, which is
-     * exactly how the pin assembles it -- `renderPcfShadowMap` with
-     * `computeDirectionalLightMatrix` as its matrix builder.
-     */
-    pcf_directional,
-    /**
-     * `createCsmDirectionalShadowGenerator`, whose own `_shadowType: "csm"`
-     * is what sends both receiver families down their cascaded arm. Its map
-     * is a layered `depth32float` array rather than the 2D one the two PCF
-     * families share, and its receiver block is the 320-byte cascade one.
-     */
-    csm_directional,
-    esm_directional,
-};
-
-/**
- * One fitted cascade, as `_computeCsmCascades` returns it.
- *
- * The receiver samples with `transform` and the cascade's own caster pass
- * renders through `caster_view_projection` — the PCF family's unbiased /
- * biased split, applied per cascade.
- */
-struct ShadowCascade {
-    /** The cascade's light-space view, from the pinned light basis. */
-    std::array<float, 16> view{};
-    /** `cascadeTransforms[i]`: ortho * view, texel-snapped, unbiased. */
-    std::array<float, 16> transform{};
-    /** That transform with the pin's clip-space bias. */
-    std::array<float, 16> caster_view_projection{};
-    /** `viewFrustumZ[i]`: the split distance in camera view space. */
-    double view_frustum_z = 0.0;
-    /** `frustumLengths[i]`: this slice's own length. */
-    double frustum_length = 0.0;
-};
-
-/**
- * One `ShadowGenerator`, as the three pinned factories build it.
- *
- * The pin keeps the GPU objects on the generator (a `depth32float` map, a
- * comparison sampler, the params UBO and the receiver UBO); those are the
- * PAL's, so the record carries only the values that decide them plus the
- * two matrices the refresh rebuilds — the unbiased one the receiver samples
- * with, and the biased one the caster pass renders through.
- */
-struct ShadowGeneratorRecord {
-    ShadowFilter filter = ShadowFilter::pcf_spot;
-    std::uint32_t map_size = 512;
-    double bias = 0.0;
-    double darkness = 0.0;
-    double near_plane = 1.0;
-    double far_plane = 10000.0;
-    /** `sg._lightMatrix` — unbiased, what the receiver samples with. */
-    std::array<float, 16> light_matrix{};
-    /** The shadow camera's view, from the pinned light-space basis. */
-    std::array<float, 16> caster_view{};
-    /** That camera's view-projection, with the pinned clip-space bias. */
-    std::array<float, 16> caster_view_projection{};
-    /** The `ShadowTask` inputs `setShadowTaskCasterMeshes` registered. */
-    std::vector<MeshHandle> caster_meshes;
-    /**
-     * Bumped by every `set_shadow_task_caster_meshes`. The pin rebuilds a
-     * generator's task state when the caster ARRAY it is handed is a new
-     * one (`existing._casterMeshes === casterMeshes` in the ensure hooks),
-     * and a fresh state's `_last*Version` sentinels force the next render;
-     * this counter is that identity change, read by the render gate.
-     */
-    std::uint64_t caster_list_version = 0;
-    // enableMorphTargetShadows: bound each caster by its morph-expanded
-    // AABB rather than its unmorphed geometry box. Off unless the scene
-    // asks, exactly as upstream installs no provider unless it is called.
-    bool morph_shadow_bounds = false;
-    /**
-     * `sg._config._forceRefreshEveryFrame`: when set, the pinned render
-     * gate never skips (`renderEsmShadowMap` / `renderPcfShadowMap` /
-     * `renderCsmShadowMap` each test it first).
-     */
-    bool force_refresh_every_frame = false;
-    /**
-     * The render target this generator's map lives in, which is what every
-     * receiver lookup resolves through. A cascaded generator's cascades are
-     * layers of this one target.
-     */
-    RenderTargetHandle map_target{};
-    /**
-     * Every caster pass the task state built: one for a single-map
-     * generator, one per cascade layer for a cascaded one.
-     */
-    std::vector<TaskHandle> caster_tasks;
-    /** Source/view pairs retained while a dynamic caster list is filtered. */
-    std::vector<MaterialHandle> caster_material_sources;
-    std::vector<MaterialHandle> caster_material_views;
-    /** ESM only: one of the two lanes its receiver block packs. */
-    double depth_scale = 0.0;
-    /** ESM and CSM: the soft fade at the edge of the fitted volume. */
-    double frustum_edge_falloff = 0.0;
-    /** ESM only: the ortho volume the caster fit projects into. */
-    double ortho_min_z = 1.0;
-    double ortho_max_z = 10000.0;
-    /**
-     * CSM only: the cascade configuration, and the fit it produces.
-     *
-     * `csm_cascades` is refilled by `update_csm_cascades` on every frame
-     * the pinned render gate finds due, and is what both the caster passes
-     * and the receiver's 320-byte block are read from. An unset
-     * `csm_shadow_max_z` is the pin's own `?? null`, resolved against the
-     * active camera's far plane where the split is computed.
-     */
-    std::uint32_t csm_num_cascades = 4;
-    double csm_lambda = 0.5;
-    double csm_cascade_blend_percentage = 0.1;
-    std::optional<double> csm_shadow_max_z{};
-    std::vector<ShadowCascade> csm_cascades;
-    /** Subscribers to the exact packed CSM receiver block for this frame. */
-    std::shared_ptr<
-        PlatformEventListeners<void(const js::F32Array&)>>
-        csm_receiver_callbacks;
-    /**
-     * ESM only: this generator's ordinal among the ESM ones, which is the
-     * row generation emitted its recorded resources under.
-     */
-    std::uint32_t esm_index = 0;
-};
+#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#include <bblite/runtime/shadow-records.hpp>
+#endif
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
 enum class UiStyleSelectorKind : std::uint8_t {
@@ -4277,146 +3467,9 @@ struct BrowserFileRecord {
 };
 #endif
 
-// `UtilityLayerRecord` holds a Scene by value, and Scene is defined after
-// Engine; the engine keeps them behind unique_ptr, whose element type may
-// be incomplete here and is complete wherever the engine is destroyed.
-struct UtilityLayerRecord;
-
-/**
- * `CameraGizmo` (src/gizmo/camera-gizmo.ts), display only.
- *
- * The root follows the attached camera's world translation and rotation
- * every frame; the body node carries the distance scaling separately
- * because the frustum edges are built in literal world units.
- */
-struct CameraGizmoRecord {
-    /** The layer that built it, which its per-frame follow reads back. */
-    UtilityLayerHandle layer{};
-    TransformNodeHandle root{};
-    MaterialHandle material{};
-    MaterialHandle frustum_material{};
-    CameraHandle attached_camera{};
-    TransformNodeHandle body_outer{};
-    bool frustum_built = false;
-};
-
-/**
- * `LightGizmo` (src/gizmo/light-gizmo.ts), display only.
- *
- * Which of the position and direction arms the per-frame follow takes is
- * the light TYPE's answer upstream -- a HemisphericLight declares no
- * `position` and a PointLight no `direction` -- so the generated follow
- * asks the record's kind exactly where the pin asks `if (pos)`/`if (dir)`.
- */
-struct LightGizmoRecord {
-    /** The layer that built it, which its per-frame follow reads back. */
-    UtilityLayerHandle layer{};
-    TransformNodeHandle root{};
-    MaterialHandle material{};
-    LightHandle attached_light{};
-    bool built = false;
-    /** The light TYPE the widget below `root` was built for. */
-    LightKind built_kind = LightKind::hemispheric;
-};
-
-/**
- * One editing widget (`src/gizmo/axis-drag-gizmo.ts` and its three
- * siblings), as its follow reads it.
- *
- * `attachFollowTarget` copies the attached node's world translation onto
- * the root every frame and scales the root by the gizmo's projected depth
- * along the utility camera's forward axis times the widget's own scale
- * ratio -- which is the pinned `1 / 3` each factory passes, read from the
- * pin rather than restated. The layer and the material a pinned gizmo
- * object also holds are consumed where they are built and never read
- * back, so neither is stored, and neither is the pin's `drag.enabled` --
- * nothing reads it while pointer drag is unreached, and the scene that
- * reaches it will add it back with a reader.
- *
- * The four fields after those are the pin's LOCAL-COORDINATE arm, which a
- * composite scene reaches at load: every widget keeps its own
- * `useLocalCoordinates` flag and the local-frame axis it was built on,
- * and the follow re-orients the root from the attached node's world
- * matrix while the flag is set. `orientation` is which of the pin's two
- * re-orientations the widget uses -- the three that take a shortest-arc
- * `lookAtQuat` of the transformed axis, and the scale widget, whose cube
- * is not roll-symmetric and which therefore composes the node's world
- * rotation onto the orientation baked at creation.
- */
-enum class GizmoLocalOrientation : std::uint8_t {
-    look_at_world_axis,
-    compose_baked_rotation,
-};
-
-struct PointerDragDispatcher;
-
-struct EditGizmoRecord {
-    TransformNodeHandle root{};
-    MeshHandle attached_node{};
-    double scale_ratio = 1.0;
-    bool use_local_coordinates = false;
-    Vec3d local_axis{0.0, 0.0, 1.0};
-    std::array<double, 4> baked_rotation{0.0, 0.0, 0.0, 1.0};
-    GizmoLocalOrientation orientation =
-        GizmoLocalOrientation::look_at_world_axis;
-    bool enabled = true;
-    bool dragging = false;
-    bool hovering = false;
-    bool plane_drag = false;
-    bool rotation_drag = false;
-    MaterialHandle colored_material{};
-    MaterialHandle hover_material{};
-    std::vector<MeshHandle> visible_meshes;
-    std::function<void()> dispose_pointer = []() {};
-};
-
-/**
- * One corner of the bounding-box cage: the pin's `buildCornerHandle`
- * returns three thin boxes meeting at the corner, and its `place`
- * callback moves all three from one corner point through the offsets it
- * baked at creation. So the three handles and those offsets travel
- * together, exactly as the closure carries them upstream.
- */
-struct BoundingBoxCorner {
-    MeshHandle anchor{};
-    MeshHandle y_arm{};
-    MeshHandle z_arm{};
-    Vec3d offsets{};
-};
-
-/**
- * `BoundingBoxGizmo` (src/gizmo/bounding-box-gizmo.ts), display only.
- *
- * The cage is the only widget in the family whose per-frame work reads
- * the attached subtree rather than one node's world translation: every
- * frame it recomputes the attached node's world rotation, the bounds of
- * its descendant meshes in the rotation-removed frame, and lays all of
- * its handles out from the two. Each group is a vector because its LENGTH
- * is the pinned build loop's own bound, read from that loop rather than
- * fixed here.
- *
- * The pinned gizmo's remaining members belong to the pointer drag, which
- * this port does not reach (`display-only-editing-gizmo`): the hover
- * material nothing assigns outside a drag callback, the disposer list,
- * and the local bounding diagonal only the rotation drag divides by.
- */
-struct BoundingBoxGizmoRecord {
-    /** The layer that built it, which its per-frame refresh reads back. */
-    UtilityLayerHandle layer{};
-    TransformNodeHandle root{};
-    MaterialHandle material{};
-    MaterialHandle body_material{};
-    std::vector<MeshHandle> edges;
-    std::vector<BoundingBoxCorner> corners;
-    std::vector<MeshHandle> rotators;
-    std::vector<MeshHandle> faces;
-    MeshHandle body{};
-    /** The pin's `faceBoxSize`, which the layout insets the body by. */
-    double face_box_size = 0.0;
-    /** `attachedNode`, which the pin starts null and this port unset. */
-    bool attached = false;
-    TransformNodeHandle attached_node{};
-};
+#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#include <bblite/runtime/gizmo-records.hpp>
+#endif
 
 struct AnimationFrameRequestState {
     std::size_t id;
@@ -4495,7 +3548,10 @@ struct DeviceRecoveryRegistration {
     std::function<void(const std::string&)> on_failed;
 };
 
+using MeshMaterialSceneOwners = std::vector<std::weak_ptr<SceneState>>;
+
 struct Engine {
+    std::unordered_map<std::uint32_t, std::shared_ptr<MeshMaterialSceneOwners>> mesh_material_scenes;
     struct DeviceRecoveryState;
     std::shared_ptr<DeviceRecoveryState> device_recovery;
     std::uint64_t device_generation = 1;
@@ -4536,6 +3592,8 @@ struct Engine {
      * drains cannot run recursively in the same frame.
      */
     std::vector<std::function<void()>> deferred_callbacks;
+    std::vector<std::function<void()>> material_continuations;
+    void (*drain_material_jobs)(Engine&) = nullptr;
     /**
      * Entry-code continuations waiting for a render boundary. A measured
      * capture cannot precede code after `await startEngine`, and a frame
@@ -4618,6 +3676,7 @@ struct Engine {
     std::vector<UiStyleRule> ui_host_style_rules;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
     std::uint64_t ui_revision = 0;
+    std::uint64_t ui_style_revision = 0;
 #endif
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
     /** Per-engine Blob URL registry; revoked slots are cleared and recycled. */
@@ -4664,7 +3723,9 @@ struct Engine {
      * registering scenes attach one seeker per manager, the way an asset
      * added to a scene contributes its own.
      */
+#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
     std::vector<PropertyAnimationManager> animation_managers;
+#endif
     std::vector<MeshRecord> meshes;
     // Every source event that changes draw-list membership: the pin's
     // setMeshVisible epoch (only when a flag actually changes), and a
@@ -4723,12 +3784,18 @@ struct Engine {
     double input_replay_pointer_x = 0.0;
     double input_replay_pointer_y = 0.0;
     std::vector<FrameGraphContext*> registered_frame_graph_contexts;
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
+#endif
+#if !defined(BBLITE_HAS_SPRITE_ANIMATION) || BBLITE_HAS_SPRITE_ANIMATION
     std::vector<SpriteAnimationManagerRecord> sprite_animation_managers;
+#endif
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
     std::vector<SpriteRenderTextureRecord> sprite_render_textures;
+#endif
     std::vector<SplatMeshRecord> splat_meshes;
     /**
      * The clustered light fields this engine holds.
@@ -4740,19 +3807,25 @@ struct Engine {
     std::vector<ClusteredLightContainer> clustered_light_containers;
     std::vector<EffectWrapperRecord> effect_wrappers;
     std::vector<EffectRendererRecord> effect_renderers;
+#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorRecord> shadow_generators;
+#endif
+#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
     std::vector<GpuPickerRecord> gpu_pickers;
+#endif
     /**
      * The utility layers this engine holds. Pointer-stable because
      * `registerScene` publishes the address of the scene inside one, and
      * every gizmo follow callback captures it.
      */
+#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
     std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
     std::vector<CameraGizmoRecord> camera_gizmos;
     std::vector<LightGizmoRecord> light_gizmos;
     std::vector<EditGizmoRecord> edit_gizmos;
     std::weak_ptr<PointerDragDispatcher> canvas_pointer_dispatcher;
     std::vector<BoundingBoxGizmoRecord> bounding_box_gizmos;
+#endif
     /**
      * The live renderer's pick pass.
      *
@@ -4769,11 +3842,15 @@ struct Engine {
      * candidate collector asks it per mesh and both backends skip their
      * pick sources under it (`pickAsyncImpl`). Null is an unfiltered pick.
      */
+#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
     using PickFilter = std::function<bool(MeshHandle)>;
     std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
+#endif
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
+#endif
     std::vector<std::shared_ptr<TextRendererState>> registered_text_renderers;
     // The same list for the effect half; an effect renderer is its own
     // rendering context on the engine exactly as a sprite renderer is.
@@ -4785,9 +3862,21 @@ struct Engine {
      * lazily from inside the enabler, so importing (or here, generating)
      * the extension without using it installs nothing.
      */
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
     Sprite2DYSortHook sprite_y_sort_hook;
+#endif
     std::uint64_t next_file_texture_identity = 1;
+    std::unordered_map<std::string, FileTexture> file_texture_cache;
 };
+
+inline bool has_sprite_renderers(const Engine& engine) {
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+    return !engine.registered_sprite_renderers.empty();
+#else
+    static_cast<void>(engine);
+    return false;
+#endif
+}
 
 struct Engine::DeviceRecoveryState {
     std::vector<std::shared_ptr<DeviceRecoveryRegistration>> registrations;
@@ -4842,7 +3931,7 @@ inline std::vector<MeshHandle> asset_mesh_walk(
     if (!record.source_mesh_walks) {
         throw std::runtime_error("Source mesh walk metadata is missing.");
     }
-    const auto& indices = record.source_mesh_walks->at(walk_index);
+    const auto& indices = record.source_mesh_walks->collectors.at(walk_index);
     if (indices.size() != record.meshes.size()) {
         throw std::runtime_error("Source mesh walk does not cover the loaded mesh set.");
     }
@@ -4881,11 +3970,13 @@ inline void cancel_animation_frame(Engine& engine, std::size_t id) {
     std::erase_if(engine.post_render_animation_frame_once_callbacks, matches);
 }
 
+#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
 inline void PickingInfo::bind_engine(Engine& engine) {
     state->engine = &engine;
     state->engine_lifetime = engine.lifetime.token();
 }
 
+#endif
 /** Copy a typed-array view into an engine-owned GPU storage record. */
 template <typename Data>
 [[nodiscard]] inline StorageBufferHandle create_storage_buffer(
@@ -4949,6 +4040,7 @@ inline void dispose_storage_buffer(
 }
 
 /** Subscribe to the bytes produced by the CSM receiver's own packer. */
+#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
 template <typename Callback>
 [[nodiscard]] inline auto on_csm_receiver_update(
     Engine& engine,
@@ -4970,6 +4062,7 @@ template <typename Callback>
         }
     };
 }
+#endif
 
 /** SDL-backed browser Gamepad surface (implemented by pal_sdl.cpp). */
 js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine);
@@ -5126,6 +4219,7 @@ inline void set_material_diffuse_color(
  * empty on every layer that never enabled the extension, which is the pin's
  * own `?.drawOrder(layer)` and needs no second detector.
  */
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
 [[nodiscard]] inline std::optional<Sprite2DPickResult> pick_sprite_2d(
     const Engine& engine,
     const std::vector<Sprite2DLayerHandle>& layers,
@@ -5178,6 +4272,8 @@ inline void set_material_diffuse_color(
     }
     return std::nullopt;
 }
+
+#endif
 
 inline MaterialHandle remember_scene_material(
     Engine& engine,
@@ -5275,8 +4371,32 @@ struct SceneDeferredBuilder {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
 };
 
+/** A source builder function owns one mesh-list identity per scene. */
+using SourceMaterialDrawGuard = bool (*)(MaterialHandle, MaterialHandle, bool);
+struct SourceMaterialDraw {
+    MeshHandle mesh;
+    MaterialHandle material;
+    SourceMaterialDrawGuard guard = nullptr;
+};
+using SourceMaterialOutput = std::shared_ptr<SourceMaterialDraw>;
+using SourceMaterialOutputs = std::vector<SourceMaterialOutput>;
+
+struct SourceMaterialGroupState {
+    SourceMaterialOutputs outputs;
+    std::vector<MeshHandle> meshes;
+    bool rebuild_ready = false;
+    bool gamma_invalidates = false;
+};
+using SourceMaterialGroups = js::Map<std::uint64_t, std::shared_ptr<SourceMaterialGroupState>>;
+
 /** The mutable state shared by every native copy of one SceneContext. */
+using PbrTransmissionTransaction = std::array<js::Callback<void()>, 2>;
+
 struct SceneState {
+    bool source_material_publication = false;
+    SourceMaterialOutputs material_outputs;
+    bool material_runtime_installed = false;
+    std::exception_ptr material_runtime_error;
     Engine* engine = nullptr;
     bool default_render_task = true;
     bool default_render_task_created = false;
@@ -5298,12 +4418,18 @@ struct SceneState {
     std::vector<LightHandle> lights;
     std::vector<TaskHandle> tasks;
     /** Shadow generators retired only after a replacement rebuild succeeds. */
+#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle> pending_shadow_retirements;
+#endif
     std::vector<AnimationGroupHandle> animation_groups;
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
     std::vector<BillboardSystemHandle> billboard_systems;
+#endif
     // sprite-scene.ts: depth-enabled 2D layers are scene renderables and
     // therefore share this scene's colour, multisample and depth targets.
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
     std::vector<Sprite2DLayerHandle> depth_hosted_sprite_layers;
+#endif
     // `loadSplat` registers the renderable on the scene it is handed, the
     // way `attachGaussianSplattingMesh` pushes into `_renderables`.
     std::vector<SplatMeshHandle> splat_meshes;
@@ -5329,7 +4455,8 @@ struct SceneState {
      * the bridge, and the bridge's own teardown while it is installed.
      */
     std::vector<std::shared_ptr<FlowGraphRuntime>> flow_graphs;
-    bool flow_graph_coordinator = false;
+    js::Callback<void(float)> flow_graph_tick;
+    js::Callback<void()> flow_graph_dispose;
     bool flow_graph_pointer_refresh = false;
     std::function<void()> flow_graph_pointer_cleanup;
     std::vector<js::Callback<void(float)>> animation_seekers;
@@ -5338,11 +4465,21 @@ struct SceneState {
      * engine's animation managers. Registration is idempotent upstream,
      * so the contribution is too.
      */
+#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
     bool seeks_animation_managers = false;
+#endif
     /** The same, for the baked meshes this scene's registration reaches. */
     bool seeks_vat = false;
     std::vector<SceneDeferredBuilder> deferred_builders;
     std::vector<std::shared_ptr<NodeMaterialGroupState>> node_material_groups;
+    std::shared_ptr<SourceMaterialGroupState> pbr_material_group;
+    std::shared_ptr<SourceMaterialGroups> source_material_groups;
+    std::vector<MeshHandle> pbr_material_swap_queue;
+    bool material_groups_built = false;
+    bool material_group_rebuild_pending = false;
+    void (*process_material_groups)(Scene&) = nullptr;
+    void (*enqueue_material_group)(Scene&, MeshHandle) = nullptr;
+    void (*complete_material_group)(Scene&, MaterialHandle) = nullptr;
     EnvironmentState environment;
     /** `createSceneContext`: fog is null and _envTextures is absent. */
     std::uint64_t fog_identity = 0;
@@ -5354,6 +4491,7 @@ struct SceneState {
     bool topology_rebuild_pending = false;
     std::uint32_t material_family_mask = 0;
     bool transmission_enabled = false;
+    js::Callback<bool(PbrTransmissionTransaction)> pbr_transmission_transaction;
     float fog_mode = 0.0f;
     float fog_density = 0.0f;
     float fog_start = 0.0f;
@@ -5399,16 +4537,22 @@ struct Scene {
     std::vector<MeshHandle>& meshes;
     std::vector<LightHandle>& lights;
     std::vector<TaskHandle>& tasks;
+#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle>& pending_shadow_retirements;
+#endif
     std::vector<AnimationGroupHandle>& animation_groups;
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
     std::vector<BillboardSystemHandle>& billboard_systems;
     std::vector<Sprite2DLayerHandle>& depth_hosted_sprite_layers;
+#endif
     std::vector<SplatMeshHandle>& splat_meshes;
     ClusteredLightContainerHandle& clustered_lights;
     SnapshotList<js::Callback<void(float)>>& before_render;
     std::vector<js::Callback<void()>>& disposables;
     std::vector<js::Callback<void(float)>>& animation_seekers;
+#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
     bool& seeks_animation_managers;
+#endif
     bool& seeks_vat;
     std::vector<SceneDeferredBuilder>& deferred_builders;
     EnvironmentState& environment;
@@ -5476,16 +4620,22 @@ private:
           meshes(state->meshes),
           lights(state->lights),
           tasks(state->tasks),
+#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
           pending_shadow_retirements(state->pending_shadow_retirements),
+#endif
           animation_groups(state->animation_groups),
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
           billboard_systems(state->billboard_systems),
           depth_hosted_sprite_layers(state->depth_hosted_sprite_layers),
+#endif
           splat_meshes(state->splat_meshes),
           clustered_lights(state->clustered_lights),
           before_render(state->before_render),
           disposables(state->disposables),
           animation_seekers(state->animation_seekers),
+#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
           seeks_animation_managers(state->seeks_animation_managers),
+#endif
           seeks_vat(state->seeks_vat),
           deferred_builders(state->deferred_builders),
           environment(state->environment),
@@ -5528,47 +4678,10 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
  * scene beneath them. Held by pointer-stable storage because the scene's
  * address is what `registerScene` publishes.
  */
-struct UtilityLayerRecord {
-    Scene scene;
-    std::shared_ptr<Scene> main_scene;
-};
+#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#include <bblite/runtime/gizmo-scene.hpp>
+#endif
 
-/** One source canvas's gizmo dispatcher; proxies own independent instances. */
-struct PointerDragDispatcher {
-    Engine* engine = nullptr;
-    UtilityLayerHandle layer{};
-    GpuPickerHandle picker{};
-    std::vector<PointerDragHandle> drags;
-    PointerDragHandle active{};
-    PointerDragHandle hovered{};
-    Vec3d plane_normal{};
-    Vec3d plane_point{};
-    Vec3d last_point{};
-    Vec3d start_point{};
-    bool pick_pending = false;
-    js::Callback<void()> cleanup;
-    void gc_trace(const js::TraceVisitor& visitor) const { visitor(cleanup); }
-};
-void pointer_drag_hover(Engine& engine, PointerDragHandle drag, bool hovered);
-
-inline bool pointer_drag_state(
-    const std::shared_ptr<PointerDragDispatcher>& state, unsigned int query) {
-    if (!state) return false;
-    if (query == 1u) return state->pick_pending;
-    return state->active.value != invalid_handle ||
-        (query == 2u && state->hovered.value != invalid_handle);
-}
-
-std::shared_ptr<PointerDragDispatcher> create_pointer_drag_dispatcher(
-    Engine&, UtilityLayerHandle, bool host_canvas);
-js::Callback<void()> register_pointer_drag(
-    const std::shared_ptr<PointerDragDispatcher>&, PointerDragHandle);
-js::Callback<void(js::BorrowedEvent)> pointer_drag_listener(
-    const std::shared_ptr<PointerDragDispatcher>&, unsigned int event);
-void set_pointer_drag_cleanup(
-    const std::shared_ptr<PointerDragDispatcher>&, js::Callback<void()>);
-
-/** A scene-less rendering context that owns only an ordered task graph. */
 struct FrameGraphContext {
     Engine* engine = nullptr;
     std::vector<TaskHandle> tasks;
@@ -6017,6 +5130,7 @@ void update_line_system(
     const std::vector<std::vector<Vec3>>& lines,
     const std::vector<std::vector<Vec4>>& colors);
 AssetHandle load_gltf(Engine& engine, const std::string& path);
+AssetHandle load_gltf(Engine& engine, const std::string& path, bool load_cameras);
 // The opt-in bone-control surface (`src/skeleton/bone-control.ts`), defined
 // by a generated glTF loader compiled with it. `getBoneByName` answers from
 // the skeleton's own name map -- the first joint carrying the name, in joint
@@ -6049,7 +5163,7 @@ void update_scene_skeleton_bone_matrices(
     Engine& engine,
     SceneSkeletonHandle skeleton,
     const std::vector<float>& bone_data);
-AssetHandle load_babylon(Engine& engine, const std::string& path);
+AssetHandle load_babylon(Engine& engine, const std::string& path, bool load_camera = true, bool load_textures = true);
 std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, EnvironmentOptions options);
 std::shared_ptr<LocalCubemapRecord> load_local_cubemap(
     const std::string& path, std::vector<std::shared_ptr<const EnvironmentState>> environments);
@@ -6155,11 +5269,13 @@ void set_shader_storage_buffer(
     MaterialHandle material,
     std::uint32_t slot,
     StorageBufferHandle buffer);
+#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(
     Engine& engine,
     MaterialHandle material,
     std::uint32_t slot,
     ShadowGeneratorHandle generator);
+#endif
 void set_shadow_caster_material(
     Engine& engine,
     MaterialHandle material,
@@ -6718,6 +5834,7 @@ struct PcfDirectionalShadowOptions {
  * block read them. `stabilizeCascades` and `worldSpaceBias` are the two
  * arms this port does not build and refuse by name at generation.
  */
+#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
 struct CsmDirectionalShadowOptions {
     // No initialisers, for the reason above: every field is written from
     // the factory's own `??`.
@@ -6733,6 +5850,7 @@ struct CsmDirectionalShadowOptions {
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
     bool force_refresh_every_frame;
 };
+#endif
 
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(
     Engine& engine,
@@ -6746,10 +5864,12 @@ ShadowGeneratorHandle create_pcf_directional_shadow_generator(
     Engine& engine,
     LightHandle light,
     PcfDirectionalShadowOptions options);
+#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
 ShadowGeneratorHandle create_csm_directional_shadow_generator(
     Engine& engine,
     LightHandle light,
     CsmDirectionalShadowOptions options);
+#endif
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,
@@ -6888,69 +6008,20 @@ void on_visibility_change(
     std::function<void(bool)> callback,
     bool once = false);
 void off_visibility_change(Engine& engine, std::size_t identity);
-PropertyAnimationManager create_animation_manager(
-    PropertyAnimationManagerOptions options = {});
-PropertyAnimationClip create_property_animation_clip(
-    std::string name,
-    std::vector<PropertyAnimationTrack> tracks,
-    float frame_rate);
-PropertyAnimationGroup create_property_animation_group(
-    PropertyAnimationManager manager,
-    Engine& engine,
-    std::vector<PropertyAnimationTarget> targets,
-    PropertyAnimationClip clip,
-    PropertyAnimationGroupOptions options);
-void set_animation_weight(
-    PropertyAnimationGroup group,
-    float weight);
+#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#include <bblite/runtime/animation-api.hpp>
+#endif
 void set_animation_weight(
     Engine& engine,
     AnimationGroupHandle group,
     float weight);
-void enable_animation_blending(
-    PropertyAnimationManager manager);
-void enable_property_animation_blending(
-    PropertyAnimationManager manager);
-void cross_fade_animation_groups(
-    PropertyAnimationManager manager,
-    Engine& engine,
-    AnimationWeightFadeTarget from_group,
-    AnimationWeightFadeTarget to_group,
-    float duration_ms,
-    float to_weight);
-void start_animation_manager(
-    PropertyAnimationManager manager,
-    Engine& engine);
-void stop_animation_manager(PropertyAnimationManager manager);
-PropertyAnimationManager create_animation_manager(
-    Engine& engine,
-    PropertyAnimationManagerOptions options = {});
-void add_animation_groups(
-    PropertyAnimationManager manager,
-    Engine& engine,
-    const std::vector<AnimationGroupHandle>& groups);
-void update_animation_manager(
-    PropertyAnimationManager manager,
-    Engine& engine,
-    double delta_ms);
-void seek_animation_manager(
-    PropertyAnimationManager manager,
-    Engine& engine,
-    float time);
-void go_to_frame(
-    PropertyAnimationGroup group,
-    Engine& engine,
-    float frame);
 void go_to_frame(
     Engine& engine,
     AnimationGroupHandle group,
     float frame,
     bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
-void play_animation(PropertyAnimationGroup group);
-void pause_animation(PropertyAnimationGroup group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
-void stop_animation(PropertyAnimationGroup group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
 // src/vat/vat-baker.ts: the baked vertex-animation surface. Emitted only
 // for a scene that reached mesh:vat, which is the pin's own opt-in --
@@ -7025,151 +6096,9 @@ void set_camera_limits(
     std::uint32_t present_mask,
     const std::array<double, 6>& limits);
 void attach_free_control(Engine& engine, CameraHandle camera);
-struct LoadSpriteAtlasOptions {
-    float grid_width_px = 0.0f;
-    float grid_height_px = 0.0f;
-    TextureFilter sampling = TextureFilter::linear;
-    bool premultiplied_alpha = false;
-    bool premultiply_on_load = false;
-    // `...options.textureOptions` spreads over the atlas defaults, so a
-    // caller's address mode replaces the clamp the loader stamps. A tiling
-    // scroll wants repeat on both axes.
-    TextureAddressMode address_u = TextureAddressMode::clamp;
-    TextureAddressMode address_v = TextureAddressMode::clamp;
-};
-
-struct GridSpriteAtlasOptions {
-    double cell_width_px = 0.0;
-    double cell_height_px = 0.0;
-    bool has_columns = false;
-    double columns = 0.0;
-    bool has_rows = false;
-    double rows = 0.0;
-    double margin_px = 0.0;
-    double spacing_px = 0.0;
-    Vec2 pivot{0.5f, 0.5f};
-    bool premultiplied_alpha = false;
-};
-
-/** Normalized runtime input to the in-memory sprite-atlas shelf packer. */
-struct SpriteAtlasFramePixelsView {
-    const std::uint8_t* pixels = nullptr;
-    std::size_t byte_length = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint32_t src_x = 0;
-    std::uint32_t src_y = 0;
-    std::uint32_t src_stride_bytes = 0;
-    Vec2 pivot{0.5f, 0.5f};
-};
-
-struct SpriteAtlasPackOptions {
-    std::uint32_t padding_px = 1;
-    std::uint32_t max_width_px = 1024;
-    TextureFilter sampling = TextureFilter::nearest;
-    bool premultiplied_alpha = false;
-    bool has_capacity = false;
-    std::uint32_t capacity_width = 0;
-    std::uint32_t capacity_height = 0;
-};
-
-struct Sprite2DLayerOptions {
-    float capacity = 16.0f;
-    SpriteBlendDescriptor blend_mode{};
-    float opacity = 1.0f;
-    bool visible = true;
-    float order = 0.0f;
-    Sprite2DDepthMode depth_mode = Sprite2DDepthMode::none;
-    float layer_z = 0.5f;
-    Vec2 pivot{0.5f, 0.5f};
-    std::uint32_t custom_shader = 0;
-    std::vector<PixelsTexture> custom_textures;
-    std::vector<std::string> custom_texture_names;
-};
-
-/**
- * Per-sprite init record (`Sprite2DProps`). Every optional field carries a
- * `has_` companion because the pinned writer distinguishes "absent" from a
- * value: an absent `sizePx` falls back to the frame, an absent `flipX`
- * preserves the orientation already baked into the UVs.
- */
-/**
- * createFacingBillboardSystem's options. Every generated construction is a
- * full designated-initializer literal (the pin's defaults are emitted by
- * generation and anchored against the pinned defaults table), so the
- * members carry no initializers of their own — a partially-built options
- * struct would be a generation bug, not a fallback.
- */
-struct BillboardSystemOptions {
-    double capacity;
-    SpriteBlendDescriptor blend;
-    float opacity;
-    bool visible;
-    float alpha_cutoff;
-    bool has_alpha_cutoff;
-    std::uint32_t custom_shader;
-    std::vector<PixelsTexture> custom_textures;
-    std::vector<std::string> custom_texture_names;
-    // particle-billboard-renderable.ts: the mode-4 wrapper's SECOND pass.
-    // The pin builds it as `{...system, blendMode: createParticleBlend(2),
-    // _customShader: undefined}` when the renderable is built; here the
-    // generated builder fills it by name, so no backend resolves a blend of
-    // its own. Read only when `blend.particle_passes == 2`.
-    SpriteBlendDescriptor add_pass_blend{};
-};
-
-/** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */
-struct BillboardSpriteProps {
-    Vec3 position{};
-    Vec2 size_world{};
-    bool has_size_world = false;
-    float frame = 0.0f;
-    bool has_frame = false;
-    float rotation = 0.0f;
-    bool has_rotation = false;
-    Vec2 pivot{};
-    bool has_pivot = false;
-    Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
-    bool has_color = false;
-    bool flip_x = false;
-    bool has_flip_x = false;
-    bool flip_y = false;
-    bool has_flip_y = false;
-    bool visible = true;
-    bool has_visible = false;
-    // Required by add, optional for updateBillboardSprite.
-    bool has_position = false;
-};
-
-struct Sprite2DProps {
-    Vec2 position_px{};
-    // `addSprite2DIndex` throws without `positionPx`; `updateSprite2DIndex`
-    // takes a `Partial<Sprite2DProps>`, where an omitted position preserves
-    // the slot's own. Both arms write this explicitly.
-    bool has_position_px = false;
-    Vec2 size_px{};
-    bool has_size_px = false;
-    float frame = 0.0f;
-    bool has_frame = false;
-    float rotation = 0.0f;
-    bool has_rotation = false;
-    Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
-    bool has_color = false;
-    bool flip_x = false;
-    bool has_flip_x = false;
-    bool flip_y = false;
-    bool has_flip_y = false;
-    bool visible = true;
-    bool has_visible = false;
-    float z = 0.0f;
-    bool has_z = false;
-};
-
-struct SpriteRendererOptions {
-    std::vector<Sprite2DLayerHandle> layers;
-    bool clear = true;
-    Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
-};
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#include <bblite/runtime/sprite-options.hpp>
+#endif
 
 // `attachParsedSplat`'s two halves, which the pin keeps apart and this port
 // needs apart for the same reason it does: a cloud is BUILT against the
@@ -7198,112 +6127,9 @@ SplatMeshHandle load_sog(Scene& scene, const std::string& path);
 void bake_current_transform_into_vertices(
     Engine& engine,
     SplatMeshHandle splat);
-SpriteAtlasHandle load_sprite_atlas(
-    Engine& engine,
-    const std::string& path,
-    LoadSpriteAtlasOptions options);
-SpriteAtlasHandle create_grid_sprite_atlas(
-    Engine& engine,
-    const FileTexture& texture,
-    GridSpriteAtlasOptions options);
-SpriteAtlasHandle create_grid_sprite_atlas(
-    Engine& engine,
-    const PixelsTexture& texture,
-    GridSpriteAtlasOptions options);
-SpriteAtlasHandle create_grid_sprite_atlas(
-    Engine& engine,
-    SpriteRenderTextureHandle texture,
-    GridSpriteAtlasOptions options);
-SpriteRenderTextureHandle create_sprite_render_texture(
-    Engine& engine,
-    double width,
-    double height);
-void dispose_sprite_render_texture(
-    Engine& engine,
-    SpriteRenderTextureHandle texture);
-void set_sprite_renderer_target(
-    Engine& engine,
-    SpriteRendererHandle renderer,
-    SpriteRenderTextureHandle target,
-    bool has_target);
-SpriteAtlasHandle create_sprite_atlas_from_frames(
-    Engine& engine,
-    const std::vector<SpriteAtlasFramePixelsView>& sources,
-    SpriteAtlasPackOptions options);
-Sprite2DLayerHandle create_sprite_2d_layer(
-    Engine& engine,
-    SpriteAtlasHandle atlas,
-    Sprite2DLayerOptions options);
-BillboardSystemHandle create_billboard_system(
-    Engine& engine,
-    SpriteAtlasHandle atlas,
-    BillboardOrientation orientation,
-    Vec3 axis,
-    BillboardSystemOptions options);
-
-double add_billboard_sprite_index(
-    Engine& engine,
-    BillboardSystemHandle system,
-    BillboardSpriteProps props);
-
-BillboardSpriteHandle add_billboard_sprite(
-    Engine& engine,
-    BillboardSystemHandle system,
-    BillboardSpriteProps props);
-
-void update_billboard_sprite(
-    Engine& engine,
-    BillboardSpriteHandle handle,
-    BillboardSpriteProps props);
-
-void set_billboard_sprite_frame(
-    Engine& engine,
-    BillboardSpriteHandle handle,
-    double frame);
-bool billboard_sprite_alive(
-    const Engine& engine,
-    BillboardSpriteHandle handle);
-void remove_billboard_sprite(
-    Engine& engine,
-    BillboardSpriteHandle handle);
-
-void clear_billboard_sprites(
-    Engine& engine,
-    BillboardSystemHandle system);
-
-void add_billboard_system(
-    Scene& scene,
-    BillboardSystemHandle system);
-
-void set_billboard_alpha_to_coverage(
-    Engine& engine,
-    BillboardSystemHandle system,
-    bool enabled);
-
-void add_depth_hosted_sprite_layer(
-    Scene& scene,
-    Sprite2DLayerHandle layer);
-
-void set_sprite_2d_alpha_to_coverage(
-    Engine& engine,
-    Sprite2DLayerHandle layer,
-    bool enabled);
-
-void set_sprite_2d_uv_offset(
-    Engine& engine,
-    Sprite2DLayerHandle layer,
-    double index,
-    Vec2 uv_offset);
-
-void set_sprite_2d_shader_params(
-    Engine& engine,
-    Sprite2DLayerHandle layer,
-    Vec4 params);
-
-void set_billboard_shader_params(
-    Engine& engine,
-    BillboardSystemHandle system,
-    Vec4 params);
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#include <bblite/runtime/sprite-api.hpp>
+#endif
 
 /**
  * The sampler overrides `createTexture2DFromPixels` accepts.
@@ -7343,6 +6169,7 @@ PixelsTexture create_texture_2d_from_pixels(
     double height,
     PixelsTextureOptions options = {});
 
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
 double add_sprite_2d_index(
     Engine& engine,
     Sprite2DLayerHandle layer,
@@ -7400,6 +6227,8 @@ bool sprite_2d_id_alive(
     const Engine& engine,
     Sprite2DLayerHandle layer,
     std::uint32_t sprite_id);
+#endif
+
 EffectWrapperHandle create_effect_wrapper(
     Engine& engine,
     std::uint32_t variant);
@@ -7422,6 +6251,7 @@ void register_effect_renderer(
 TaskHandle create_effect_render_task(
     Engine& engine,
     EffectTaskOptions options);
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
 SpriteRendererHandle create_sprite_renderer(
     Engine& engine,
     SpriteRendererOptions options);
@@ -7458,6 +6288,8 @@ void mark_sprite_2d_dirty(
     std::uint32_t lo,
     std::uint32_t hi);
 
+#endif
+
 void register_scene(Scene& scene);
 void unregister_scene(Scene& scene);
 void dispose_scene(Scene& scene);
@@ -7474,6 +6306,11 @@ void register_frame_graph_context(FrameGraphContext& context);
  */
 void register_scene_with_shadow_support(Scene& scene);
 void enable_scene_transmission(Scene& scene);
+void run_pbr_scene_hooks(Scene& scene, const std::vector<MeshHandle>& meshes);
+std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
+    bool (*builder)(Scene&, const std::vector<MeshHandle>&));
+void set_mesh_material(Engine& engine, MeshHandle mesh, MaterialHandle material);
+void set_pbr_gamma_albedo(Engine& engine, MaterialHandle material);
 void load_image_skybox(
     Scene& scene,
     std::array<std::string, 6> face_paths,
@@ -7558,6 +6395,7 @@ void set_mesh_visible(
     const Engine& engine,
     MeshHandle mesh);
 
+#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
 /** `createGpuPicker(scene)`. */
 GpuPickerHandle create_gpu_picker(Scene& scene);
 /** `PickingInfo.pickedMesh.name`, read where the scene asks for it. */
@@ -7603,6 +6441,7 @@ PickingInfo gpu_pick(
     double x,
     double y,
     const Engine::PickFilter& filter);
+#endif
 /**
  * `KHR_interactivity` (the generated flow-graph unit). The loader chains
  * `attach_flow_graphs` onto an interactive asset's scene setup, and
@@ -7621,6 +6460,7 @@ void enable_flow_graph_pointer_picking(Scene& scene);
 bool gltf_node_visible(const Engine& engine, AssetHandle asset, std::size_t node);
 void set_gltf_node_visible(Engine& engine, AssetHandle asset, std::size_t node, bool visible);
 TextureTransform& gltf_base_color_transform(Engine& engine, AssetHandle asset, std::size_t material);
+#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
 /**
  * `enableDetailedPicking(picker)`. Emitted with the detailed half; every
  * later pick on this picker draws the third attachment.
@@ -7652,6 +6492,7 @@ PickingInfo pick_billboard_sprite(
 [[nodiscard]] double picked_distance(
     const Scene& scene,
     const PickingInfo& info);
+#endif
 /**
  * Run and clear everything `setTimeout` queued. Called by the frame
  * conductor after the frame's own callbacks, which is where the browser
@@ -7667,9 +6508,11 @@ void run_interval_callbacks(Engine& engine);
 
 } // namespace bbl
 
+#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
 template <>
 struct std::hash<bbl::PickingInfo> {
     [[nodiscard]] std::size_t operator()(const bbl::PickingInfo& info) const noexcept {
         return std::hash<const void*>{}(info.state.get());
     }
 };
+#endif

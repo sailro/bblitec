@@ -1,7 +1,10 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
-import { PinnedNumericLowerer, type PinnedBinding, type PinnedNumericScope } from "./pinned-numeric-lowerer.js";
+import { type PinnedBinding, type PinnedNumericScope } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import {
+    lowerPinnedBody,
+} from "./pinned-body-lowerer.js";
 
 const module = "src/text/text-renderer.ts";
 const scalar = (cpp: string): PinnedBinding => ({cpp,type:"scalar"});
@@ -23,13 +26,13 @@ export class TextRendererLowerer {
 
     private matrix(): string {
         const {file,declaration}=this.context.functionDeclaration(module,"buildLayerMvp");
-        const lowerer=new PinnedNumericLowerer(file,{bindings:new Map([
-            ...this.layerBindings(),["targetW",scalar("width")],["targetH",scalar("height")],
-            ["out",{cpp:"out",type:"f32",mutable:true}],
-        ]),calls:new Map([...pinnedNumericMathCalls(),["out.fill",args=>`out.fill(static_cast<float>(${args[0]}))`]])});
+
         return `// ${this.context.provenance(module,"buildLayerMvp")}
 inline void build_text_layer_mvp(const TextLayerState& layer, double width, double height, std::array<float,16>& out) {
-${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
+${lowerPinnedBody(file, declaration.body!.statements, {bindings:new Map([
+            ...this.layerBindings(),["targetW",scalar("width")],["targetH",scalar("height")],
+            ["out",{cpp:"out",type:"f32",mutable:true}],
+        ]),calls:new Map([...pinnedNumericMathCalls(),["out.fill",args=>`out.fill(static_cast<float>(${args[0]}))`]])})}
 }`;
     }
 
@@ -60,8 +63,7 @@ ${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
         c.assertFunctionBodyShape(c.functionDeclaration(module,"registerTextRenderer").declaration,
             "{registerRenderingContext(tr._surface,tr);}","Text renderer context registration");
         const position=c.functionDeclaration(module,"setTextLayerPosition");
-        const lowerer=new PinnedNumericLowerer(position.file,{bindings:new Map([...this.layerBindings(),
-            ["layer._version",scalar("layer.version")],["x",scalar("x")],["y",scalar("y")]]),calls:new Map()});
+
         return `inline TextLayer create_text_layer(TextData data,const TextLayerOptions& options={}) {
     auto layer=std::make_shared<TextLayerState>();
     static_cast<TextLayerOptions&>(*layer)=options;layer->data=std::move(data);return layer;
@@ -72,7 +74,8 @@ inline void text_write_position_px(TextLayerState& layer,int axis,double value) 
     else throw std::out_of_range("Text layer position component");
 }
 inline void set_text_layer_position(TextLayerState& layer,double x,double y) {
-${lowerer.statements(position.declaration.body!.statements,"    ").join("\n")}
+${lowerPinnedBody(position.file, position.declaration.body!.statements, {bindings:new Map([...this.layerBindings(),
+            ["layer._version",scalar("layer.version")],["x",scalar("x")],["y",scalar("y")]]),calls:new Map()})}
 }
 inline TextRenderer create_text_renderer(Engine& engine,const TextRendererOptions& options) {
     auto renderer=std::make_shared<TextRendererState>();renderer->engine=&engine;
@@ -103,8 +106,10 @@ inline std::shared_ptr<TextLayerGpuState> find_text_layer_gpu(const TextRenderer
             ["lg",{...opaque("lg"),absentCpp:"!lg"}],["layer",opaque("layer")],
             ["layer.data._instanceCount",scalar("static_cast<double>(layer->data->instance_count)")],
         ]);
-        const lowerer=new PinnedNumericLowerer(file,{bindings,calls:new Map([...pinnedNumericMathCalls(),
-            ["rr._layerGpu.set",()=>"rr.layer_gpu[layer]=lg"]]),returnValue:expression=>expression?lowerer.expression(expression):"",
+
+        return `template<class Ops> std::shared_ptr<TextLayerGpuState> ensure_text_layer_gpu(TextRendererState& rr,const TextLayer& layer,const void* device_identity,Ops& ops) {
+${lowerPinnedBody(file, declaration.body!.statements, {bindings,calls:new Map([...pinnedNumericMathCalls(),
+            ["rr._layerGpu.set",()=>"rr.layer_gpu[layer]=lg"]]),returnValue:(expression, lowerer) =>expression?lowerer.expression(expression):"",
             statement:(node,lowerer,indent)=>{
                 if(ts.isVariableStatement(node) && node.declarationList.declarations.length===1) {
                     const variable=node.declarationList.declarations[0]!;
@@ -146,9 +151,7 @@ inline std::shared_ptr<TextLayerGpuState> find_text_layer_gpu(const TextRenderer
                     c.contractError(property,"Unrepresented text layer GPU field.");
                 }
                 return lines;
-            }});
-        return `template<class Ops> std::shared_ptr<TextLayerGpuState> ensure_text_layer_gpu(TextRendererState& rr,const TextLayer& layer,const void* device_identity,Ops& ops) {
-${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
+            }})}
 }`;
     }
 
@@ -158,7 +161,9 @@ ${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
         const dataFile=c.sourceFile("src/text/text-data.ts");
         const bindings=new Map([...this.gpuBindings(),["needed",scalar("needed")],
             ["TEXT_INSTANCE_BYTES",scalar(String(c.numericValue(c.variableInitializer(dataFile,"TEXT_INSTANCE_BYTES"),dataFile)))]]);
-        const lowerer=new PinnedNumericLowerer(file,{bindings,
+
+        return `template<class Ops> void ensure_text_layer_capacity(TextLayerGpuState& gpu,double needed,Ops& ops) {
+${lowerPinnedBody(file, declaration.body!.statements, {bindings,
             calls:new Map([["lg._instanceBuf.destroy",()=>"if (gpu.destroy_instances) gpu.destroy_instances()"]]),
             statement:(node,lowerer,indent)=>{
                 if(!ts.isExpressionStatement(node) || !ts.isBinaryExpression(node.expression))return undefined;
@@ -176,9 +181,7 @@ ${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
                     return [`${indent}ops.create_renderable_buffer(gpu,TextBufferKind::instances,text_resource_size(${lowerer.expression(c.propertyInitializer(object,"size"))}));`];
                 }
                 return undefined;
-            }});
-        return `template<class Ops> void ensure_text_layer_capacity(TextLayerGpuState& gpu,double needed,Ops& ops) {
-${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
+            }})}
 }`;
     }
 
@@ -226,13 +229,13 @@ ${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
             }
             return undefined;
         };
-        const lowerer=new PinnedNumericLowerer(file,{bindings,statement,booleanAnd:true,booleanOr:true,
-            calls:new Map([...pinnedNumericMathCalls(),["buildLayerMvp",args=>`build_text_layer_mvp(${args.join(",")})`]])});
+
         return `// ${c.provenance(module,"uploadLayer","uniform suffix follows resource synchronization")}
 inline void upload_text_layer_uniforms(const TextLayerState& layer, TextLayerGpuState& gpu,
     double width, double height, const TextUniformWrite& write) {
     thread_local std::array<float,16> mvp;
-${lowerer.statements(statements.slice(boundary),"    ").join("\n")}
+${lowerPinnedBody(file, statements.slice(boundary), {bindings,statement,booleanAnd:true,booleanOr:true,
+            calls:new Map([...pinnedNumericMathCalls(),["buildLayerMvp",args=>`build_text_layer_mvp(${args.join(",")})`]])})}
 }`;
     }
 
@@ -256,7 +259,10 @@ ${lowerer.statements(statements.slice(boundary),"    ").join("\n")}
             ["data._dirtyStart",scalar("static_cast<double>(data.dirty_start)")],["data._dirtyEnd",scalar("static_cast<double>(data.dirty_end)")],
             ["TEXT_INSTANCE_BYTES",scalar(String(c.numericValue(c.variableInitializer(dataFile,"TEXT_INSTANCE_BYTES"),dataFile)))],
         ]);
-        const lowerer=new PinnedNumericLowerer(file,{bindings,booleanAnd:true,booleanOr:true,
+
+        return `// ${c.provenance(module,"uploadLayer","resource prefix precedes uniform synchronization")}
+template<class Ops> void upload_text_layer_resources(TextLayerGpuState& gpu,const std::shared_ptr<void>& layout,Ops& ops) {
+${lowerPinnedBody(file, statements.slice(0,boundary), {bindings,booleanAnd:true,booleanOr:true,
             calls:new Map([
                 ["ensureStyleGpu",()=>"ensure_text_style_gpu(data,gpu,ops)"],
                 ["ensureInstanceCapacity",(args:readonly string[])=>`ensure_text_layer_capacity(gpu,${args[2]},ops)`],
@@ -319,10 +325,7 @@ ${lowerer.statements(statements.slice(boundary),"    ").join("\n")}
                     return [`${indent}ops.write_renderable_buffer(gpu,TextBufferKind::instances,text_resource_size(${lowerer.expression(expression.arguments[1]!)}),view);`];
                 }
                 return undefined;
-            }});
-        return `// ${c.provenance(module,"uploadLayer","resource prefix precedes uniform synchronization")}
-template<class Ops> void upload_text_layer_resources(TextLayerGpuState& gpu,const std::shared_ptr<void>& layout,Ops& ops) {
-${lowerer.statements(statements.slice(0,boundary),"    ").join("\n")}
+            }})}
 }`;
     }
 
@@ -330,9 +333,14 @@ ${lowerer.statements(statements.slice(0,boundary),"    ").join("\n")}
         const c:LoweringContext=this.context;
         const {file,declaration}=c.functionDeclaration(module,"textRendererUpdate");
         const compare=c.functionDeclaration(module,"compareLayers");
-        const comparison=new PinnedNumericLowerer(compare.file,{bindings:new Map([
-            ["a.order",scalar("a->order")],["b.order",scalar("b->order")]]),calls:new Map(),returnValue:e=>e?comparison.expression(e):""});
-        const lowerer=new PinnedNumericLowerer(file,{bindings:new Map<string,PinnedBinding>([
+
+
+        return `inline double compare_text_layers(const TextLayer& a,const TextLayer& b) {
+${lowerPinnedBody(compare.file, compare.declaration.body!.statements, {bindings:new Map([
+            ["a.order",scalar("a->order")],["b.order",scalar("b->order")]]),calls:new Map(),returnValue:(e, comparison) =>e?comparison.expression(e):""})}
+}
+template<class Ops> void update_text_renderer(TextRendererState& rr,double width,double height,const void* device_identity,Ops& ops) {
+${lowerPinnedBody(file, declaration.body!.statements, {bindings:new Map<string,PinnedBinding>([
             ["rr._disposed",{cpp:"rr.disposed",type:"bool"}],
             ["rr._targetWidth",scalar("rr.target_width")],["rr._targetHeight",scalar("rr.target_height")],
             ["size.width",scalar("width")],["size.height",scalar("height")],
@@ -368,12 +376,7 @@ ${lowerer.statements(statements.slice(0,boundary),"    ").join("\n")}
                 }
             }
             return undefined;
-        }});
-        return `inline double compare_text_layers(const TextLayer& a,const TextLayer& b) {
-${comparison.statements(compare.declaration.body!.statements,"    ").join("\n")}
-}
-template<class Ops> void update_text_renderer(TextRendererState& rr,double width,double height,const void* device_identity,Ops& ops) {
-${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
+        }})}
 }`;
     }
 
@@ -394,7 +397,20 @@ ${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
             ["visibleBundles.length",scalar("static_cast<double>(rr.visible_bundles.size())")],
             ["visibleBundles",opaque("rr.visible_bundles")],
         ]);
-        const lowerer=new PinnedNumericLowerer(file,{bindings,booleanOr:true,returnValue:e=>e?lowerer.expression(e):"",expression:node=>{
+
+        return `template<class Ops> void replay_text_bundles(const std::vector<std::shared_ptr<void>>& bundles,Ops& ops) {
+    for(const auto& opaque:bundles)for(const auto& command:std::static_pointer_cast<TextCommandBundle>(opaque)->commands){
+        switch(command.op){
+            case TextBundleOp::pipeline:ops.set_pipeline(command.resource);break;
+            case TextBundleOp::quad:ops.set_quad_vertex_buffer(command.resource);break;
+            case TextBundleOp::instances:ops.set_instance_buffer(command.resource);break;
+            case TextBundleOp::group:ops.set_bind_group(command.resource);break;
+            case TextBundleOp::draw:ops.draw(command.draw[0],command.draw[1],command.draw[2],command.draw[3]);break;
+        }
+    }
+}
+template<class Ops> double record_text_renderer(TextRendererState& rr,Ops& ops) {
+${lowerPinnedBody(file, declaration.body!.statements, {bindings,booleanOr:true,returnValue:(e, lowerer) =>e?lowerer.expression(e):"",expression:node=>{
             if(ts.isBinaryExpression(node)&&node.operatorToken.kind===ts.SyntaxKind.EqualsEqualsToken&&c.propertyPath(node.left)?.join(".")==="lg._renderBundle"){
                 c.assertExpressionShape(node,"lg._renderBundle==null","Text bundle absence check");return "!lg->render_bundle";
             }
@@ -450,20 +466,7 @@ ${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
             if(path==="pass.executeBundles")c.assertExpressionShape(expression,"pass.executeBundles(visibleBundles)","Text bundle execution list");
             if(path==="pass.end")c.assertExpressionShape(expression,"pass.end()","Text render pass end");
             return undefined;
-        }});
-        return `template<class Ops> void replay_text_bundles(const std::vector<std::shared_ptr<void>>& bundles,Ops& ops) {
-    for(const auto& opaque:bundles)for(const auto& command:std::static_pointer_cast<TextCommandBundle>(opaque)->commands){
-        switch(command.op){
-            case TextBundleOp::pipeline:ops.set_pipeline(command.resource);break;
-            case TextBundleOp::quad:ops.set_quad_vertex_buffer(command.resource);break;
-            case TextBundleOp::instances:ops.set_instance_buffer(command.resource);break;
-            case TextBundleOp::group:ops.set_bind_group(command.resource);break;
-            case TextBundleOp::draw:ops.draw(command.draw[0],command.draw[1],command.draw[2],command.draw[3]);break;
-        }
-    }
-}
-template<class Ops> double record_text_renderer(TextRendererState& rr,Ops& ops) {
-${lowerer.statements(declaration.body!.statements,"    ").join("\n")}
+        }})}
 }`;
     }
 

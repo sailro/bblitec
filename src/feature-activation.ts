@@ -33,6 +33,7 @@ import {
 } from "./shadow-capabilities.js";
 import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
 import { refuseGeneration } from "./generation-refusal.js";
+import { imageCodecs } from "./image-codec-manifest.js";
 import {
     nodeGeometryVariants,
     nodeVariantsUseMorphStorage,
@@ -1040,6 +1041,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "and decodes it through BaseAudioContext.decodeAudioData",
         consumers: CMAKE,
     },
+    "audio:decode-wav": { provenance: "WAVE container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
+    "audio:decode-wv": { provenance: "WavPack container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
+    "audio:decode-mpc": { provenance: "Musepack container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
+    "audio:decode-flac": { provenance: "FLAC container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
+    "audio:decode-mp3": { provenance: "MP3 container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
+    "audio:decode-opus": { provenance: "Opus container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
+    "audio:decode-ogg": { provenance: "Vorbis container bytes or unproven encoded input reach decodeAudioData", consumers: CMAKE },
     "audio:oscillator": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createOscillator()",
@@ -2311,43 +2319,17 @@ const codecProvenance =
     "and packaging ships its runtime (docs/features.md)";
 
 function codecRows(inputs: FeatureActivationInputs): FeatureActivationRow[] {
-    const reached = (codec: string): boolean =>
-        inputs.imageCodecs.includes(codec);
-    return [
-        row(
-            "png",
-            "codec",
-            reached("png"),
-            reached("png")
-                ? "a materialized PNG image or .env RGBD container needs PNG decoding"
-                : "no materialized asset needs PNG decoding",
+    return imageCodecs.map(({ codec, mimeType }) => {
+        const reached = inputs.imageCodecs.includes(codec);
+        return row(
+            codec, "codec", reached,
+            reached
+                ? `a materialized asset needs ${mimeType} decoding`
+                : `no materialized asset needs ${mimeType} decoding`,
             codecProvenance,
             ["features.cmake", "vcpkg manifest"],
-        ),
-        row(
-            "jpeg",
-            "codec",
-            reached("jpeg"),
-            reached("jpeg")
-                ? "a materialized asset carries image/jpeg content"
-                : "no materialized asset carries JPEG content",
-            codecProvenance,
-            ["features.cmake", "vcpkg manifest"],
-        ),
-        row(
-            "webp",
-            "codec",
-            reached("webp"),
-            reached("webp")
-                ? "a materialized asset carries image/webp content"
-                : "no materialized asset carries WebP content",
-            `${codecProvenance}; the EXT_texture_webp source override is ` +
-                "read by the pinned core parser " +
-                "(src/loader-gltf/gltf-parser.ts) and mirrored by the " +
-                "generated loader's texture_image_index",
-            ["features.cmake", "vcpkg manifest"],
-        ),
-    ];
+        );
+    });
 }
 
 function emitOptionRows(
@@ -2475,16 +2457,6 @@ function emitOptionRows(
                 "the generated loader's reflectance fold and " +
                 "applyDielectric, so it deliberately does not activate this",
             ["loader flag", "renderer plan"],
-        ),
-        row(
-            "materialExtensionPayload",
-            "emit-option",
-            emit.materialExtensionPayload,
-            emit.materialExtensionPayload
-                ? "an asset uses anisotropy or diffuse transmission"
-                : "no asset uses anisotropy or diffuse transmission",
-            "src/loader-gltf/gltf-ext-anisotropy.ts and gltf-ext-diffuse-transmission.ts; packaging executes the pinned material mapper and retains its merged initialization",
-            ["loader flag", "fidelity.json"],
         ),
         row(
             "textureTransform",

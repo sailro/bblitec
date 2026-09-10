@@ -1,3 +1,5 @@
+import type { LoweringServices } from "./lowering-services.js";
+/** Public node inputs retain their source slot; graphs alone are deduplicated. */
 /** Public node inputs retain their source slot; graphs alone are deduplicated. */
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind, type DataType } from "./data-types.js";
@@ -6,21 +8,22 @@ import type { Value } from "./types.js";
 
 const textureType: DataType = { kind: "optional", inner: { kind: "handle", handle: "texture" } };
 
-interface NodeInputContext {
-    readonly checker: ts.TypeChecker;
-    unwrap(expression: ts.Expression): ts.Expression;
-    compileValue(expression: ts.Expression): Value;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    allocateTemporaryCppName(label: string): string;
-    emit(line: string): void;
-    dataLowerer: { compileForSink(expression: ts.Expression, type: DataType): string };
-    fail(node: ts.Node, message: string): never;
-    reachFeature(feature: "material:node-inputs", node: ts.Node): void;
-    reachJsData(): void;
-    assertNodeInputMutable(node: ts.Node): void;
-    noteNodeInputAdmissionFailure(node: ts.Node, message: string): void;
-    isDefaultLibraryIdentifier(node: ts.Identifier): boolean;
-}
+interface NodeInputContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "unwrap"
+        | "compileValue"
+        | "lookupOptional"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "dataLowerer"
+        | "fail"
+        | "reachFeature"
+        | "reachJsData"
+        | "assertNodeInputMutable"
+        | "noteNodeInputAdmissionFailure"
+        | "isDefaultLibraryIdentifier"
+    > {}
 
 export function readNodeInputProperty(context: NodeInputContext, owner: Value, name: string, site: ts.Node): Value | undefined {
     if (owner.kind === "material" && name === "inputs") {
@@ -79,7 +82,7 @@ export function compileNodeInputMutation(context: NodeInputContext, expression: 
     context.reachFeature("material:node-inputs", node);
     context.reachJsData();
     const owner = context.allocateTemporaryCppName("node_input");
-    context.emit(`const bbl::NodeInputHandle ${owner} = ${context.dataLowerer.compileForSink(left.expression, { kind: "handle", handle: "node-input" })};`);
+    context.emit({ kind: "declaration", type: "const bbl::NodeInputHandle", name: owner, initializer: context.dataLowerer.compileForSink(left.expression, { kind: "handle", handle: "node-input" }) });
     const texture = context.dataLowerer.compileForSink(assignment.right, textureType);
     return { kind: "data", cpp: `bbl::set_node_input_texture(${owner}, ${texture})`, dataType: textureType, freshData: true };
 }

@@ -64,3 +64,21 @@ test("keeps separate roots for repeated loads of one glTF source", () => {
     );
     assert.doesNotMatch(result.cpp, /bbl::set_asset_root_position_component\(/);
 });
+
+test("runtime glTF selections retain loader kind and every possible root mutation", () => {
+    const prefix = `
+        import { createEngine, createTransformNode, loadGltf, setParent } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const first = await loadGltf(engine, "first.glb");
+            const second = await loadGltf(engine, "second.glb");
+            const selected = Math.random() > 0.5 ? first : second;
+            const root = selected.entities[0]!;
+    `;
+    const result = compileSource(prefix + "root.position.x = 1; } void main();");
+    assert.match(result.cpp, /bbl::set_asset_root_position_component/);
+    for (const mutation of [
+        "setParent(first.entities[0]!, createTransformNode('parent')); root.position.x = 1;",
+        "setParent(root, createTransformNode('parent')); second.entities[0]!.position.x = 1;",
+    ]) assert.throws(() => compileSource(prefix + mutation + "} void main();"), /Writing an imported root after setParent is not lowered/);
+});

@@ -12,6 +12,7 @@
  * way `LoweringContext.assertSuppliedOptions` refuses one for a pinned body,
  * because the factory would take its default for it silently.
  */
+import { EmissionMap, EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
 import { LoweringContext } from "../../lowering/context.js";
 import { sharedUpstreamStore } from "../../upstream-source.js";
@@ -49,7 +50,7 @@ function pinnedSource(): LoweringContext {
     return shared;
 }
 
-const memberCache = new Map<string, ReadonlyMap<string, DeclaredMember>>();
+const memberCache = new EmissionMap<string, ReadonlyMap<string, DeclaredMember>>();
 
 /** The declared option names of a factory's config, own and inherited. */
 export function pinnedOptionNames(factory: PinnedFactory): readonly string[] {
@@ -93,13 +94,13 @@ function configMembers(
             `Expected ${factory.factory} to take its config interface first.`,
         );
     }
-    const members = new Map<string, DeclaredMember>();
+    const members = new EmissionMap<string, DeclaredMember>();
     collectInterfaceMembers(
         source,
         factory.module,
         config.typeName.text,
         members,
-        new Set(),
+        new EmissionSet(),
     );
     memberCache.set(cacheKey, members);
     return members;

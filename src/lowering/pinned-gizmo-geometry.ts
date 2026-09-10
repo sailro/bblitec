@@ -1,8 +1,11 @@
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
-import { lowerObjectComponents, lowerPinnedFunction, lowerTupleComponents } from "./pinned-function-lowerer.js";
+
 import { PinnedNumericLowerer, type PinnedBinding, type PinnedNumericScope } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import type { RenderedCpp } from "./pinned-numeric-expression.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { lowerObjectComponents, lowerPinnedFunction, lowerTupleComponents } from "./pinned-function-lowerer.js";
 
 const CAMERA = "src/gizmo/camera-gizmo.ts";
 const LIGHT = "src/gizmo/light-gizmo.ts";
@@ -70,7 +73,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
         super(source, geometryScope);
     }
 
-    public override expression(expression: ts.Expression): string {
+    protected override expressionDomain(expression: ts.Expression): string | RenderedCpp | undefined {
         const node = this.context.unwrapExpression(expression);
         if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
             node.expression.name.text === "push") {
@@ -106,7 +109,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
                 this.context, this, node, this.record.members,
             ).join(", ")}}`;
         }
-        return super.expression(expression);
+        return super.expressionDomain(expression);
     }
 
     public listResult(expression: ts.Expression | undefined, shape: "record" | "edge", at: ts.Node): string {
@@ -508,8 +511,8 @@ function scaleBody(
         }
         return `result = Vec3d{${args.join(", ")}}`;
     }]]);
-    const lowerer = new PinnedNumericLowerer(context.sourceFile(modulePath), scope);
-    return statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n");
+
+    return lowerPinnedBody(context.sourceFile(modulePath), statements, scope);
 }
 
 /** The live-record seam supplies matrices/presence; the callbacks supply all scaling arithmetic. */

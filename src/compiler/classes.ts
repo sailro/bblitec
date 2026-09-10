@@ -1,17 +1,21 @@
+import { valueForKind } from "./types.js";
+import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import type {
     DataStructField,
     DataType,
-    DataTypeRegistry,
 } from "./data-types.js";
 import { passesByReference } from "./data-types.js";
 import type { Value } from "./types.js";
 import { sameCompiledValue } from "./types.js";
 import { parameterIsReadOnly } from "./user-functions.js";
 import { firstReturn } from "./loop-control.js";
+import { FunctionSpecializations, functionDependencies } from "./function-specializations.js";
+import { classInstanceProperties } from "./class-properties.js";
 
-const successfulConstructorResourceKinds = new Set([
+const successfulConstructorResourceKinds = new EmissionSet([
     "audio-context",
     "audio-engine",
     "audio-node",
@@ -25,19 +29,15 @@ interface StoredClassField extends DataStructField {
 }
 
 /** A class body's own instance property declarations, named plainly. */
-type InstanceProperty = ts.PropertyDeclaration & { name: ts.Identifier };
+type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & { name: ts.Identifier };
 
 /** The instance property declarations a class body writes, in order. */
 function instanceProperties(
     declaration: ts.ClassDeclaration,
 ): InstanceProperty[] {
-    return declaration.members.filter(
+    return classInstanceProperties(declaration).filter(
         (member): member is InstanceProperty =>
-            ts.isPropertyDeclaration(member) &&
-            ts.isIdentifier(member.name) &&
-            (ts.getCombinedModifierFlags(member) &
-                ts.ModifierFlags.Static) ===
-                0,
+            ts.isIdentifier(member.name),
     );
 }
 
@@ -65,77 +65,44 @@ function accessorsOf(declaration: ts.ClassDeclaration): {
     return { getters, setters };
 }
 
-interface ClassLoweringContext {
-    readonly checker: ts.TypeChecker;
-    readonly dataTypes: DataTypeRegistry;
-    readonly nativeFunctions: {
-        tryCompileMethodCall(
-            call: ts.CallExpression,
-            method: ts.MethodDeclaration,
-            classDeclaration: ts.ClassDeclaration,
-            instance: Value,
-        ): Value | undefined;
-    };
-    compileValue(expression: ts.Expression): Value;
-    emitStatement(statement: ts.Statement): void;
-    bindParameterValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void;
-    bindClassParameterValue(
-        identifier: ts.Identifier,
-        argument: ts.Expression,
-    ): void;
-    compileClassParameterValue(
-        identifier: ts.Identifier,
-        argument: ts.Expression,
-    ): Value;
-    bindClassField(
-        name: ts.Identifier,
-        initializer: ts.Expression,
-        declared?: DataType,
-    ): void;
-    bindNullableClassField(
-        name: ts.Identifier,
-    ): Value | undefined;
-    bindUninitializedClassDataField(
-        name: ts.Identifier,
-        declared?: DataType,
-    ): Value | undefined;
-    bindOptionalResourceValue(
-        name: ts.Identifier,
-    ): Value | undefined;
-    pushScope(cppPrefix: string): void;
-    popScope(): void;
-    allocateUserFunctionPrefix(): string;
-    allocateTemporaryCppName(label: string): string;
-    reachJsData(): void;
-    emit(line: string): void;
-    increaseIndent(): void;
-    decreaseIndent(): void;
-    beginNativeFunctionBody(
-        returnType: DataType | undefined,
-    ): void;
-    endNativeFunctionBody(): void;
-    dataValue(cpp: string, dataType: DataType): Value;
-    compileForDataSink(
-        expression: ts.Expression,
-        dataType: DataType,
-    ): string;
-    assignOptionalResourceValue(
-        target: Value,
-        value: Value,
-        node: ts.Node,
-    ): void;
-    defineThis(instance: Value | undefined): void;
-    activeThis(): Value | undefined;
-    registerClassInstance(
-        instance: Value,
-        declaration: ts.ClassDeclaration,
-    ): void;
-    unwrap(expression: ts.Expression): ts.Expression;
-    fail(node: ts.Node, message: string): never;
-}
+interface ClassLoweringContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "dataTypes"
+        | "nativeFunctions"
+        | "functionEmissionScope"
+        | "canShareFunctionBody"
+        | "compileSharedMethod"
+        | "registerNativeBinding"
+        | "lookupIdentifierValue"
+        | "compileValue"
+        | "emitStatement"
+        | "bindParameterValue"
+        | "bindClassParameterValue"
+        | "compileClassParameterValue"
+        | "bindClassField"
+        | "bindNullableClassField"
+        | "bindUninitializedClassDataField"
+        | "bindOptionalResourceValue"
+        | "pushScope"
+        | "popScope"
+        | "allocateUserFunctionPrefix"
+        | "allocateTemporaryCppName"
+        | "reachJsData"
+        | "emit"
+        | "increaseIndent"
+        | "decreaseIndent"
+        | "beginNativeFunctionBody"
+        | "endNativeFunctionBody"
+        | "dataValue"
+        | "compileForDataSink"
+        | "assignOptionalResourceValue"
+        | "defineThis"
+        | "activeThis"
+        | "registerClassInstance"
+        | "unwrap"
+        | "fail"
+    > {}
 
 /**
  * Lowers the reached class subset: a class is a compile-time record of
@@ -159,7 +126,8 @@ interface ClassLoweringContext {
  * rather than a silently different program.
  */
 export class ClassLowerer {
-    private readonly recursiveMethods = new Map<
+    private readonly emittedRecursiveMethods = new FunctionSpecializations<string>();
+    private readonly recursiveMethods = new EmissionMap<
         ts.MethodDeclaration,
         boolean
     >();
@@ -167,11 +135,11 @@ export class ClassLowerer {
      * Per shared class, the fields its layout hoisted and the value each
      * one was proven to hold at every construction.
      */
-    private readonly hoistedClassFields = new Map<
+    private readonly hoistedClassFields = new EmissionMap<
         string,
         Map<string, Value>
     >();
-    private readonly activeRecursiveMethods = new Map<
+    private readonly activeRecursiveMethods = new EmissionMap<
         ts.MethodDeclaration,
         {
             instance: Value;
@@ -339,8 +307,10 @@ export class ClassLowerer {
         ) {
             return undefined;
         }
-        const fieldByParameter = new Map<string, string>();
-        const constructorFieldWrites = new Set<ts.Statement>();
+        const fieldByParameter = new EmissionMap<string, string>();
+        const parameterNames = constructorDeclaration.parameters.map(parameter => parameter.name);
+        if (!parameterNames.every(ts.isIdentifier)) return undefined;
+        const constructorFieldWrites = new EmissionSet<ts.Statement>();
         for (const statement of constructorDeclaration.body?.statements ?? []) {
             if (!ts.isExpressionStatement(statement)) continue;
             const expression = this.context.unwrap(statement.expression);
@@ -360,10 +330,10 @@ export class ClassLowerer {
             constructorFieldWrites.add(statement);
         }
         if (
-            constructorDeclaration.parameters.some(
-                (parameter) =>
+            parameterNames.some(
+                (name) =>
                     !fieldByParameter.has(
-                        (parameter.name as ts.Identifier).text,
+                        name.text,
                     ),
             )
         ) {
@@ -377,10 +347,10 @@ export class ClassLowerer {
             this.bindParameters(method, call.arguments, undefined, true);
             const instance = this.construct(fallback!, owner);
             const fields = instance.recordProperties!;
-            const targets = constructorDeclaration.parameters.map(
+            const targets = parameterNames.map(
                 (parameter) => {
                     const field = fieldByParameter.get(
-                        (parameter.name as ts.Identifier).text,
+                        parameter.text,
                     )!;
                     return fields[field] ??
                         this.context.fail(
@@ -435,7 +405,7 @@ export class ClassLowerer {
                 const previousThis = this.context.activeThis();
                 this.context.defineThis(instance);
                 try {
-                    constructorDeclaration.parameters.forEach(
+                    parameterNames.forEach(
                         (parameter, index) => {
                             const value = values[index]!;
                             const target = targets[index]!;
@@ -444,7 +414,7 @@ export class ClassLowerer {
                                     value.kind,
                                 );
                             this.context.bindParameterValue(
-                                parameter.name as ts.Identifier,
+                                parameter,
                                 resourceValue
                                     ? {
                                           ...value,
@@ -596,6 +566,7 @@ export class ClassLowerer {
             // Field declarations with initializers bind first, so the
             // constructor body can already read them.
             for (const member of instanceProperties(declaration)) {
+                if (ts.isParameter(member)) continue;
                 const stored = fields[member.name.text];
                 // A slot the layout already allocated inside the shared
                 // object is storage; its declaration initializer is a
@@ -766,18 +737,18 @@ export class ClassLowerer {
         string,
         { index: number; assignment: ts.BinaryExpression }
     > {
-        const hoisted = new Map<
+        const hoisted = new EmissionMap<
             string,
             { index: number; assignment: ts.BinaryExpression }
         >();
-        const parameterIndex = new Map<string, number>();
+        const parameterIndex = new EmissionMap<string, number>();
         constructorDeclaration.parameters.forEach((parameter, index) => {
             if (ts.isIdentifier(parameter.name)) {
                 parameterIndex.set(parameter.name.text, index);
             }
         });
-        const stored = new Set(layout.map((field) => field.source));
-        const declared = new Set(
+        const stored = new EmissionSet(layout.map((field) => field.source));
+        const declared = new EmissionSet(
             instanceProperties(declaration).map(
                 (member) => member.name.text,
             ),
@@ -825,6 +796,7 @@ export class ClassLowerer {
         value.nativeLvalue = true;
         value.borrowedData = true;
         value.classStoredField = true;
+        value.nativeCaptures = [this.context.registerNativeBinding(instanceCpp, false, true)];
         return value;
     }
 
@@ -845,7 +817,7 @@ export class ClassLowerer {
         fields: Record<string, Value>,
         node: ts.Node,
     ): void {
-        const hoisted = new Map<string, Value>();
+        const hoisted = new EmissionMap<string, Value>();
         for (const [name, value] of Object.entries(fields)) {
             if (value.classStoredField) continue;
             hoisted.set(name, value);
@@ -936,16 +908,16 @@ export class ClassLowerer {
             binding.declaration,
             binding.type,
         );
-        return {
+        return valueForKind("record", {
             ...value,
             cpp: instanceCpp,
-            kind: "record",
+
             recordProperties: fields,
             recordGetters: getters,
             recordSetters: setters,
             classDeclaration: binding.declaration,
             ...(typeArguments ? { classTypeArguments: typeArguments } : {}),
-        };
+        });
     }
 
     /** Evaluate explicit class-call arguments while the caller owns `this`. */
@@ -975,8 +947,7 @@ export class ClassLowerer {
     }
 
     /**
-     * Inlines a method call on a constructed instance, binding `this`
-     * to the instance record for the duration of the body.
+     * Compiles a method with `this` bound to its constructed instance.
      */
     public compileMethodCall(
         instance: Value,
@@ -1053,18 +1024,21 @@ export class ClassLowerer {
         const returnsVoid =
             !effectiveReturn ||
             (effectiveReturn.flags & ts.TypeFlags.Void) !== 0;
+        const sharedBody = method.parameters.every(parameter => {
+            const type = this.context.dataTypes.fromTsType(this.context.checker.getTypeAtLocation(parameter), parameter);
+            return ts.isIdentifier(parameter.name) && !parameter.dotDotDotToken &&
+                (!type || !this.context.dataTypes.carriesFunction(type));
+        }) && this.context.canShareFunctionBody(method.body);
         const mappedReturnType = returnsVoid
             ? undefined
-            : this.context.dataTypes.fromTsType(
-                  effectiveReturn,
-                  method,
-              );
+            : sharedBody ? this.context.dataTypes.fromSharedReturnType(effectiveReturn, method)
+              : this.context.dataTypes.fromTsType(effectiveReturn, method);
         const returnType =
             mappedReturnType?.kind === "struct"
                 ? this.context.dataTypes.markStoredObjectReferences(
                       mappedReturnType,
                   )
-                : mappedReturnType;
+                : mappedReturnType ? this.context.dataTypes.ownReturnedArray(mappedReturnType) : undefined;
         if (!returnsVoid && !returnType) {
             const finalStatement = method.body.statements.at(-1);
             if (
@@ -1128,19 +1102,24 @@ export class ClassLowerer {
             }
         }
         if (this.methodRecurses(declaration, method)) {
-            return this.compileRecursiveMethod(
-                instance,
-                methodName,
-                call,
-                method,
-                returnType,
-            );
+            return this.compileRecursiveMethod(instance, methodName, call, method, returnType);
         }
+        const shared = sharedBody && (!returnType || !this.context.dataTypes.carriesFunction(returnType));
         const argumentValues = this.compileClassArguments(
             method,
             call.arguments,
             "method",
         );
+        if (shared) {
+            const previousThis = this.context.activeThis();
+            this.context.defineThis(instance);
+            try {
+                const result = this.context.compileSharedMethod(method, call, argumentValues);
+                if (result) return result;
+            } finally {
+                this.context.defineThis(previousThis);
+            }
+        }
         this.context.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
@@ -1259,17 +1238,20 @@ export class ClassLowerer {
                     `Recursive method '${methodName}' requires non-rest identifier parameters.`,
                 );
             }
-            const type = this.context.dataTypes.fromTsType(
+            let type = this.context.dataTypes.fromTsType(
                 this.context.checker.getTypeAtLocation(parameter),
                 parameter,
             );
+            if (type && this.context.dataTypes.returnsArray(returnType)) {
+                type = this.context.dataTypes.ownReturnedArray(type);
+            }
             if (!type || this.context.dataTypes.carriesHandle(type)) {
                 this.context.fail(
                     parameter,
                     `Recursive method '${methodName}' parameters must contain only plain data.`,
                 );
             }
-            return { declaration: parameter, type };
+            return { declaration: parameter, identifier: parameter.name, type };
         });
         if (
             returnType &&
@@ -1281,18 +1263,24 @@ export class ClassLowerer {
             );
         }
 
+        const specialization = this.emittedRecursiveMethods.key(this.context.functionEmissionScope(), [
+            instance, functionDependencies(this.context, [method]),
+        ]);
+        const previous = this.emittedRecursiveMethods.get(method, specialization);
+        if (previous) return this.compileRecursiveInvocation(call, previous, parameters, returnType);
         const prefix = this.context.allocateUserFunctionPrefix();
         const cppName = `${prefix}recursive_method`;
+        const self = `${prefix}recursive_self`;
         const returnCpp = returnType
             ? this.context.dataTypes.cppType(returnType)
             : "void";
         const cppParameters = parameters.map(
-            ({ declaration, type }, index) => {
+            ({ declaration, identifier, type }, index) => {
                 const cppType = this.context.dataTypes.cppType(type);
                 const readOnly = parameterIsReadOnly(
                     this.context.checker,
                     method,
-                    declaration.name as ts.Identifier,
+                    identifier,
                 );
                 const typeCpp = passesByReference(
                     this.context.dataTypes,
@@ -1304,16 +1292,14 @@ export class ClassLowerer {
                     name: `${prefix}arg_${index}`,
                     typeCpp,
                     declaration,
+                    identifier,
                     type,
                     readOnly,
                 };
             },
         );
         this.context.emit(
-            `std::function<${returnCpp}(${cppParameters.map(({ typeCpp }) => typeCpp).join(", ")})> ${cppName};`,
-        );
-        this.context.emit(
-            `${cppName} = [&](${cppParameters.map(({ name, typeCpp }) => `${typeCpp} ${name}`).join(", ")}) -> ${returnCpp} {`,
+            `auto ${cppName} = bbl::js::make_recursive_group([&]([[maybe_unused]] auto& ${self}${cppParameters.length ? ", " : ""}${cppParameters.map(({ name, typeCpp }) => `${typeCpp} ${name}`).join(", ")}) -> ${returnCpp} {`,
         );
         this.context.increaseIndent();
         this.context.pushScope(prefix);
@@ -1321,7 +1307,7 @@ export class ClassLowerer {
         this.context.defineThis(instance);
         this.activeRecursiveMethods.set(method, {
             instance,
-            cppName,
+            cppName: `${self}.template call<0>`,
             parameters,
             returnType,
         });
@@ -1329,7 +1315,7 @@ export class ClassLowerer {
         try {
             for (const parameter of cppParameters) {
                 this.context.bindParameterValue(
-                    parameter.declaration.name as ts.Identifier,
+                    parameter.identifier,
                     {
                         ...this.context.dataValue(
                             parameter.name,
@@ -1351,10 +1337,11 @@ export class ClassLowerer {
             this.context.popScope();
             this.context.decreaseIndent();
         }
-        this.context.emit("};");
+        this.context.emit("});");
+        this.emittedRecursiveMethods.set(method, specialization, `${cppName}.template call<0>`);
         return this.compileRecursiveInvocation(
             call,
-            cppName,
+            `${cppName}.template call<0>`,
             parameters,
             returnType,
         );
@@ -1407,7 +1394,7 @@ export class ClassLowerer {
     ): boolean {
         const cached = this.recursiveMethods.get(method);
         if (cached !== undefined) return cached;
-        const methods = new Map<string, ts.MethodDeclaration>();
+        const methods = new EmissionMap<string, ts.MethodDeclaration>();
         for (const member of declaration.members) {
             if (
                 ts.isMethodDeclaration(member) &&
@@ -1418,7 +1405,7 @@ export class ClassLowerer {
             }
         }
         const callees = (candidate: ts.MethodDeclaration): ts.MethodDeclaration[] => {
-            const found = new Set<ts.MethodDeclaration>();
+            const found = new EmissionSet<ts.MethodDeclaration>();
             const visit = (node: ts.Node): void => {
                 if (node !== candidate && ts.isFunctionLike(node)) return;
                 if (
@@ -1435,7 +1422,7 @@ export class ClassLowerer {
             visit(candidate.body!);
             return [...found];
         };
-        const explored = new Set<ts.MethodDeclaration>();
+        const explored = new EmissionSet<ts.MethodDeclaration>();
         const reachesStart = (candidate: ts.MethodDeclaration): boolean => {
             if (explored.has(candidate)) return false;
             explored.add(candidate);
@@ -1495,14 +1482,13 @@ export class ClassLowerer {
             }
             if (
                 ts.isPropertyAssignment(property) &&
-                ts.isIdentifier(property.name) &&
-                ts.isIdentifier(this.context.unwrap(property.initializer))
+                ts.isIdentifier(property.name)
             ) {
+                const identifier = this.context.unwrap(property.initializer);
+                if (!ts.isIdentifier(identifier)) return undefined;
                 descriptors.push({
                     name: property.name.text,
-                    identifier: this.context.unwrap(
-                        property.initializer,
-                    ) as ts.Identifier,
+                    identifier,
                 });
                 continue;
             }
@@ -1614,7 +1600,7 @@ export class ClassLowerer {
     ): Set<ts.Symbol> {
         const cached = this.spreadSymbolsByDeclaration.get(declaration);
         if (cached) return cached;
-        const symbols = new Set<ts.Symbol>();
+        const symbols = new EmissionSet<ts.Symbol>();
         const visit = (node: ts.Node): void => {
             if (ts.isFunctionLike(node)) return;
             if (ts.isSpreadAssignment(node)) {
@@ -1634,7 +1620,7 @@ export class ClassLowerer {
         return symbols;
     }
 
-    private readonly spreadSymbolsByDeclaration = new WeakMap<
+    private readonly spreadSymbolsByDeclaration = new EmissionWeakMap<
         ts.Node,
         Set<ts.Symbol>
     >();
@@ -1707,8 +1693,7 @@ export class ClassLowerer {
                             declaration,
                         )
                     ) {
-                        parameterProperties[parameter.name.text] =
-                            this.context.compileValue(parameter.name);
+                        this.initializeParameterProperty(parameter.name, parameterProperties);
                     }
                     return;
                 }
@@ -1754,15 +1739,18 @@ export class ClassLowerer {
                     declaration,
                 )
             ) {
-                // TypeScript initializes a parameter-property before the
-                // constructor body. Expose that implicit field on the same
-                // compile-time instance record as an explicit declaration.
-                parameterProperties[parameter.name.text] =
-                    this.context.compileValue(
-                        parameter.name,
-                    );
+                this.initializeParameterProperty(parameter.name, parameterProperties);
             }
         });
+    }
+
+    private initializeParameterProperty(name: ts.Identifier, properties: Record<string, Value>): void {
+        const stored = properties[name.text];
+        if (stored?.classStoredField) {
+            this.context.emit(`${stored.cpp} = ${this.context.compileForDataSink(name, stored.dataType!)};`);
+        } else {
+            properties[name.text] = this.context.compileValue(name);
+        }
     }
 
     private rejectUnsupportedMembers(

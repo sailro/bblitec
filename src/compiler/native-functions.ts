@@ -1,15 +1,17 @@
+import { someAnalysisNode, findAnalysisNodeWithState } from "./analysis-walk.js";
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { arrayReturnStorage } from "./array-return-storage.js";
 import {
     cppIdentifier,
     cppIdentifierPattern,
 } from "../cpp-literals.js";
-import type { DataLowerer } from "./data-lowering.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
 import {
     dataTypesEqual,
     passesByReference,
     type DataType,
-    type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import {
@@ -19,54 +21,38 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 
-export interface NativeFunctionContext {
-    readonly checker: ts.TypeChecker;
-    readonly dataTypes: DataTypeRegistry;
-    readonly dataLowerer: DataLowerer;
-    sourceFiles(): readonly ts.SourceFile[];
-    lookupIdentifierValue(
-        identifier: ts.Identifier,
-    ): Value | undefined;
-    compileValue(expression: ts.Expression): Value;
-    useNativeValue(value: Value): void;
-    invalidateStaticElements(value: Value): void;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileCondition(expression: ts.Expression): string;
-    emitStatement(statement: ts.Statement): void;
-    statementTerminatesAfterLowering(statement: ts.Statement): boolean;
-    defineVariable(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void;
-    pushScope(cppPrefix: string): void;
-    popScope(): void;
-    allocateUserFunctionPrefix(): string;
-    cppLocalName(sourceName: string): string;
-    captureEmittedLines(
-        emitBody: () => void,
-    ): string[];
-    registerNativeFunction(
-        prototype: string,
-        definitionLines: string[],
-    ): void;
-    beginNativeFunctionBody(
-        returnType: DataType | undefined,
-    ): void;
-    endNativeFunctionBody(): void;
-    reachJsData(): void;
-    unwrap(expression: ts.Expression): ts.Expression;
-    emit(line: string): void;
-    defineThis(instance: Value | undefined): void;
-    activeThis(): Value | undefined;
-    registerClassInstance(
-        instance: Value,
-        declaration: ts.ClassDeclaration,
-    ): void;
-    fail(node: ts.Node, message: string): never;
-}
+export interface NativeFunctionContext
+    extends Pick<LoweringServices,
+        | "canReplaySharedCallEffects"
+        | "checker"
+        | "dataTypes"
+        | "dataLowerer"
+        | "sourceFiles"
+        | "lookupIdentifierValue"
+        | "compileValue"
+        | "useNativeValue"
+        | "invalidateStaticElements"
+        | "compileNumber"
+        | "compileCondition"
+        | "emitStatement"
+        | "statementTerminatesAfterLowering"
+        | "defineVariable"
+        | "pushScope"
+        | "popScope"
+        | "allocateUserFunctionPrefix"
+        | "cppLocalName"
+        | "captureEmittedLines"
+        | "registerNativeFunction"
+        | "beginNativeFunctionBody"
+        | "endNativeFunctionBody"
+        | "reachJsData"
+        | "unwrap"
+        | "emit"
+        | "defineThis"
+        | "activeThis"
+        | "registerClassInstance"
+        | "fail"
+    > {}
 
 interface DataFunctionParameter {
     name: ts.Identifier;
@@ -135,7 +121,7 @@ function valueIsPlainLeaf(
         string,
         unknown
     >;
-    const keys = new Set([
+    const keys = new EmissionSet([
         ...Object.keys(actualRecord),
         ...Object.keys(expectedRecord),
     ]);
@@ -237,28 +223,28 @@ export function captureDataFunctionBody(
  * native. Handle-touching helpers stay on the inline lowerer.
  */
 export class NativeFunctionLowerer {
-    private readonly generationTimeFetchCache = new Map<
+    private readonly generationTimeFetchCache = new EmissionMap<
         EligibleMember,
         boolean
     >();
-    private readonly signatures = new Map<
+    private readonly signatures = new EmissionMap<
         SupportedFunction,
         NativeFunctionSignature
     >();
-    private readonly methodSignatures = new Map<
+    private readonly methodSignatures = new EmissionMap<
         ts.MethodDeclaration,
         NativeMethodSignature
     >();
     private readonly rejectedMethods =
-        new Set<ts.MethodDeclaration>();
+        new EmissionSet<ts.MethodDeclaration>();
     private readonly emitted =
-        new Set<SupportedFunction>();
+        new EmissionSet<SupportedFunction>();
     private readonly active =
-        new Set<SupportedFunction>();
+        new EmissionSet<SupportedFunction>();
     private readonly rejected =
-        new Set<SupportedFunction>();
-    private readonly usedNames = new Set<string>();
-    private readonly referenceStorageCache = new Map<string, boolean>();
+        new EmissionSet<SupportedFunction>();
+    private readonly usedNames = new EmissionSet<string>();
+    private readonly referenceStorageCache = new EmissionMap<string, boolean>();
 
     public constructor(
         private readonly context: NativeFunctionContext,
@@ -532,7 +518,7 @@ export class NativeFunctionLowerer {
         }
         const result = `bbl_method_${this.context.allocateUserFunctionPrefix()}result`;
         this.context.emit(
-            `[[maybe_unused]] const auto ${result} = ${callCpp};`,
+            { kind: "declaration", type: "const auto", name: result, initializer: callCpp, attributes: "[[maybe_unused]] " },
         );
         return {
             ...this.context.dataLowerer.leafValue(
@@ -777,6 +763,7 @@ export class NativeFunctionLowerer {
                 checkerSignature,
             );
         let returnType: DataType | undefined;
+        let arrayStorage: ReturnType<typeof arrayReturnStorage>;
         if (
             (returnTsType.flags & ts.TypeFlags.Void) ===
             0
@@ -785,6 +772,11 @@ export class NativeFunctionLowerer {
                 returnTsType,
                 declaration,
             );
+            if (mapped && this.context.dataTypes.returnsArray(mapped)) {
+                arrayStorage = arrayReturnStorage(this.context.checker, declaration,
+                    root => this.context.dataLowerer.materializeStaticTable(root)?.dataType?.kind === "table");
+                if (arrayStorage !== "static") mapped = this.context.dataTypes.ownReturnedArray(mapped);
+            }
             if (
                 mapped?.kind === "struct" &&
                 !options.markAllStructReturns &&
@@ -825,6 +817,11 @@ export class NativeFunctionLowerer {
                     parameterTsType,
                     parameter,
                 );
+            const freshMatchingArray = arrayStorage === "fresh" && parameterType?.kind === "span" &&
+                returnType?.kind === "vector" && dataTypesEqual(parameterType.element, returnType.element);
+            if (parameterType && this.context.dataTypes.returnsArray(returnType) && arrayStorage !== "static" && !freshMatchingArray) {
+                parameterType = this.context.dataTypes.ownReturnedArray(parameterType);
+            }
             if (
                 parameterType?.kind === "struct" &&
                 this.typeRequiresReferenceStorage(
@@ -884,6 +881,10 @@ export class NativeFunctionLowerer {
                 declaration,
             );
         if (!checkerSignature) {
+            return undefined;
+        }
+        if (declaration.body && this.context.canReplaySharedCallEffects(declaration.body)) {
+            this.rejected.add(declaration);
             return undefined;
         }
         if (this.capturesEnclosingBindings(declaration)) {
@@ -1014,6 +1015,7 @@ export class NativeFunctionLowerer {
             ...closure.methods,
             ...closure.getters,
         ]) {
+            if (member.body && this.context.canReplaySharedCallEffects(member.body)) return reject();
             if (
                 member !== method &&
                 !this.methodIsStructurallyEligible(member)
@@ -1024,7 +1026,7 @@ export class NativeFunctionLowerer {
                 this.capturesEnclosingBindings(
                     member,
                     member,
-                    new Set<EligibleMember>(),
+                    new EmissionSet<EligibleMember>(),
                     true,
                 ) ||
                 this.containsGenerationTimeFetch(member) ||
@@ -1109,7 +1111,7 @@ export class NativeFunctionLowerer {
         // The field channels use `this_<field>` source names; a source
         // parameter spelled the same way would collide in the emitted
         // parameter list.
-        const channelNames = new Set(
+        const channelNames = new EmissionSet(
             fields.map((field) => `this_${field.name}`),
         );
         if (
@@ -1211,7 +1213,7 @@ export class NativeFunctionLowerer {
         initializer: ts.Expression,
         method: ts.MethodDeclaration,
     ): boolean {
-        const parameterSymbols = new Set(
+        const parameterSymbols = new EmissionSet(
             method.parameters
                 .map((parameter) =>
                     ts.isIdentifier(parameter.name)
@@ -1225,12 +1227,9 @@ export class NativeFunctionLowerer {
                         symbol !== undefined,
                 ),
         );
-        let references = false;
-        const visit = (node: ts.Node): void => {
-            if (references) return;
+        return someAnalysisNode(initializer, (node) => {
             if (node.kind === ts.SyntaxKind.ThisKeyword) {
-                references = true;
-                return;
+                return true;
             }
             if (ts.isIdentifier(node)) {
                 const symbol =
@@ -1238,14 +1237,11 @@ export class NativeFunctionLowerer {
                         node,
                     );
                 if (symbol && parameterSymbols.has(symbol)) {
-                    references = true;
-                    return;
+                    return true;
                 }
             }
-            ts.forEachChild(node, visit);
-        };
-        visit(initializer);
-        return references;
+            return false;
+        });
     }
 
     /**
@@ -1259,7 +1255,7 @@ export class NativeFunctionLowerer {
         method: ts.MethodDeclaration,
         classDeclaration: ts.ClassDeclaration,
     ): MethodClosure | undefined {
-        const membersByName = new Map<
+        const membersByName = new EmissionMap<
             string,
             | { kind: "method"; member: ts.MethodDeclaration }
             | {
@@ -1300,10 +1296,10 @@ export class NativeFunctionLowerer {
                 });
             }
         }
-        const methods = new Set<ts.MethodDeclaration>();
+        const methods = new EmissionSet<ts.MethodDeclaration>();
         const getters =
-            new Set<ts.GetAccessorDeclaration>();
-        const fieldNames = new Set<string>();
+            new EmissionSet<ts.GetAccessorDeclaration>();
+        const fieldNames = new EmissionSet<string>();
         const pending: EligibleMember[] = [method];
         methods.add(method);
         let sound = true;
@@ -1332,28 +1328,10 @@ export class NativeFunctionLowerer {
                         .isDeclarationFile,
             );
         };
-        const visit = (
-            node: ts.Node,
-            dynamicThis: boolean,
-        ): void => {
-            if (!sound) return;
-            if (
-                ts.isFunctionExpression(node) ||
-                ts.isFunctionDeclaration(node) ||
-                ts.isClassDeclaration(node) ||
-                ts.isClassExpression(node)
-            ) {
-                // A nested function or class rebinds `this`; treat any
-                // use of it below as outside the parameterizable shapes.
-                ts.forEachChild(node, (child) =>
-                    visit(child, true),
-                );
-                return;
-            }
+        const invalid = (root: ts.Node) => findAnalysisNodeWithState(root, false, (node, dynamicThis) => {
             if (node.kind === ts.SyntaxKind.ThisKeyword) {
                 if (dynamicThis) {
-                    sound = false;
-                    return;
+                    return true;
                 }
                 const access = node.parent;
                 if (
@@ -1362,15 +1340,13 @@ export class NativeFunctionLowerer {
                     access.questionDotToken !== undefined ||
                     !ts.isIdentifier(access.name)
                 ) {
-                    sound = false;
-                    return;
+                    return true;
                 }
                 const entry = membersByName.get(
                     access.name.text,
                 );
                 if (!entry) {
-                    sound = false;
-                    return;
+                    return true;
                 }
                 if (entry.kind === "method") {
                     const invocation = access.parent;
@@ -1380,32 +1356,30 @@ export class NativeFunctionLowerer {
                         invocation.questionDotToken !==
                             undefined
                     ) {
-                        sound = false;
-                        return;
+                        return true;
                     }
                     if (!methods.has(entry.member)) {
                         methods.add(entry.member);
                         pending.push(entry.member);
                     }
-                    return;
+                    return false;
                 }
                 if (entry.kind === "getter") {
                     if (!getters.has(entry.member)) {
                         getters.add(entry.member);
                         pending.push(entry.member);
                     }
-                    return;
+                    return false;
                 }
                 fieldNames.add(access.name.text);
-                return;
+                return false;
             }
             if (ts.isNewExpression(node)) {
                 if (localClassConstruction(node)) {
                     // Constructing a local class runs its constructor at
                     // the emission site; the closure checks do not cover
                     // that body, so it stays on the inline path.
-                    sound = false;
-                    return;
+                    return true;
                 }
             }
             if (ts.isCallExpression(node)) {
@@ -1432,22 +1406,20 @@ export class NativeFunctionLowerer {
                         // A method call on another instance needs that
                         // instance's compile-time record, which a
                         // namespace-scope body does not carry.
-                        sound = false;
-                        return;
+                        return true;
                     }
                 }
             }
-            ts.forEachChild(node, (child) =>
-                visit(child, dynamicThis),
-            );
-        };
+            return false;
+        }, (node, dynamicThis) => dynamicThis || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) ||
+            ts.isClassDeclaration(node) || ts.isClassExpression(node));
         while (sound && pending.length > 0) {
             const member = pending.pop()!;
             if (!member.body) {
                 sound = false;
                 break;
             }
-            visit(member.body, false);
+            sound = invalid(member.body) === undefined;
         }
         if (!sound) {
             return undefined;
@@ -1569,15 +1541,14 @@ export class NativeFunctionLowerer {
 
     private containsGenerationTimeFetch(
         declaration: EligibleMember,
-        active = new Set<EligibleMember>(),
+        active = new EmissionSet<EligibleMember>(),
     ): boolean {
         const cached = this.generationTimeFetchCache.get(declaration);
         if (cached !== undefined) return cached;
         if (active.has(declaration)) return false;
         active.add(declaration);
-        let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
+
+        const found = someAnalysisNode(declaration.body ?? declaration, (node) => {
             if (ts.isCallExpression(node)) {
                 if (
                     ts.isIdentifier(node.expression) &&
@@ -1587,8 +1558,7 @@ export class NativeFunctionLowerer {
                         node.expression,
                     )
                 ) {
-                    found = true;
-                    return;
+                    return true;
                 }
                 const called = this.context.checker
                     .getResolvedSignature(node)
@@ -1597,13 +1567,12 @@ export class NativeFunctionLowerer {
                     isSupportedFunction(called) &&
                     this.containsGenerationTimeFetch(called, active)
                 ) {
-                    found = true;
-                    return;
+                    return true;
                 }
             }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration.body ?? declaration);
+            return false;
+        });
+
         active.delete(declaration);
         this.generationTimeFetchCache.set(declaration, found);
         return found;
@@ -1612,7 +1581,7 @@ export class NativeFunctionLowerer {
     private containsRetainedCallbackRegistration(
         declaration: EligibleMember,
     ): boolean {
-        const immediateCallbackMethods = new Set([
+        const immediateCallbackMethods = new EmissionSet([
             "every",
             "filter",
             "find",
@@ -1640,9 +1609,7 @@ export class NativeFunctionLowerer {
                 ? this.context.checker.getSymbolAtLocation(name)
                 : undefined;
             if (!name || !symbol) return false;
-            let direct = true;
-            const inspect = (node: ts.Node): void => {
-                if (!direct) return;
+            return !someAnalysisNode(declaration, (node) => {
                 if (
                     ts.isIdentifier(node) &&
                     node !== name &&
@@ -1653,18 +1620,14 @@ export class NativeFunctionLowerer {
                         !ts.isCallExpression(parent) ||
                         this.context.unwrap(parent.expression) !== node
                     ) {
-                        direct = false;
-                        return;
+                        return true;
                     }
                 }
-                ts.forEachChild(node, inspect);
-            };
-            inspect(declaration);
-            return direct;
+                return false;
+            });
         };
-        let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
+
+        const found = someAnalysisNode(declaration, (node) => {
             if (
                 node !== declaration &&
                 (ts.isArrowFunction(node) ||
@@ -1689,8 +1652,7 @@ export class NativeFunctionLowerer {
                     !immediateMethodArgument &&
                     !onlyCalledDirectly(node)
                 ) {
-                    found = true;
-                    return;
+                    return true;
                 }
             }
             if (
@@ -1699,33 +1661,30 @@ export class NativeFunctionLowerer {
                 node.expression.name.text === "addEventListener" &&
                 node.arguments.length >= 2
             ) {
-                found = true;
-                return;
+                return true;
             }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
+            return false;
+        });
+
         return found;
     }
 
     private containsShaderMaterialCreation(
         declaration: EligibleMember,
     ): boolean {
-        const shaderFactories = new Set([
+        const shaderFactories = new EmissionSet([
             "createShaderMaterial",
             "createSprite2DCustomShader",
             "createBillboardCustomShader",
         ]);
-        let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
+
+        const found = someAnalysisNode(declaration.body ?? declaration, (node) => {
             if (ts.isCallExpression(node)) {
                 if (
                     ts.isIdentifier(node.expression) &&
                     shaderFactories.has(node.expression.text)
                 ) {
-                    found = true;
-                    return;
+                    return true;
                 }
                 const called = this.context.checker
                     .getResolvedSignature(node)
@@ -1736,13 +1695,12 @@ export class NativeFunctionLowerer {
                     called.name &&
                     shaderFactories.has(called.name.text)
                 ) {
-                    found = true;
-                    return;
+                    return true;
                 }
             }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration.body ?? declaration);
+            return false;
+        });
+
         return found;
     }
 
@@ -1750,9 +1708,8 @@ export class NativeFunctionLowerer {
     private containsEntryEngineOperation(
         declaration: EligibleMember,
     ): boolean {
-        let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
+
+        const found = someAnalysisNode(declaration.body ?? declaration, (node) => {
             if (ts.isCallExpression(node)) {
                 const callee = this.context.unwrap(node.expression);
                 // `requestAnimationFrame` joins `setTimeout` for the same
@@ -1772,13 +1729,12 @@ export class NativeFunctionLowerer {
                     name === "setTimeout" ||
                     name === "requestAnimationFrame"
                 ) {
-                    found = true;
-                    return;
+                    return true;
                 }
             }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration.body ?? declaration);
+            return false;
+        });
+
         return found;
     }
 
@@ -1804,9 +1760,7 @@ export class NativeFunctionLowerer {
                     this.context.checker.isTypeAssignableTo(target, normalized))
             );
         };
-        let stored = false;
-        const visit = (node: ts.Node): void => {
-            if (stored) return;
+        const stored = this.context.sourceFiles().some(source => !source.isDeclarationFile && someAnalysisNode(source, (node) => {
             let storedTypeNode: ts.TypeNode | undefined;
             if (ts.isArrayTypeNode(node)) {
                 storedTypeNode = node.elementType;
@@ -1843,15 +1797,10 @@ export class NativeFunctionLowerer {
                     ),
                 )
             ) {
-                stored = true;
-                return;
+                return true;
             }
-            ts.forEachChild(node, visit);
-        };
-        for (const source of this.context.sourceFiles()) {
-            if (!source.isDeclarationFile) visit(source);
-            if (stored) break;
-        }
+            return false;
+        }));
         this.referenceStorageCache.set(structName, stored);
         return stored;
     }
@@ -1865,12 +1814,11 @@ export class NativeFunctionLowerer {
     private capturesEnclosingBindings(
         declaration: EligibleMember,
         root: EligibleMember = declaration,
-        active = new Set<EligibleMember>(),
+        active = new EmissionSet<EligibleMember>(),
         skipMemberNames = false,
     ): boolean {
         if (active.has(declaration)) return false;
         active.add(declaration);
-        let captured = false;
         const classify = (
             bindingDeclaration: ts.Node,
         ): "internal" | "module" | "captured" => {
@@ -1893,23 +1841,7 @@ export class NativeFunctionLowerer {
             }
             return "module";
         };
-        const visit = (node: ts.Node): void => {
-            if (captured) {
-                return;
-            }
-            if (
-                skipMemberNames &&
-                ts.isPropertyAccessExpression(node)
-            ) {
-                // A member access reads a value only through its object
-                // side; the name is not a scope read. The method arm
-                // must skip names because a class field's property
-                // symbol is scope-bound while its constructor runs, and
-                // `this.field` resolves through the instance record, not
-                // that binding.
-                visit(node.expression);
-                return;
-            }
+        const captured = declaration.body !== undefined && someAnalysisNode(declaration.body, (node) => {
             if (ts.isIdentifier(node)) {
                 const symbol =
                     this.context.checker.getSymbolAtLocation(
@@ -1932,8 +1864,7 @@ export class NativeFunctionLowerer {
                         bindingDeclaration,
                     );
                     if (shape === "captured") {
-                        captured = true;
-                        return;
+                        return true;
                     }
                     if (shape === "module") {
                         // Entry-file top-level bindings live as locals
@@ -1951,8 +1882,7 @@ export class NativeFunctionLowerer {
                                 bindingDeclaration.initializer,
                             )
                         ) {
-                            captured = true;
-                            return;
+                            return true;
                         }
                         if (
                             bound &&
@@ -1962,8 +1892,7 @@ export class NativeFunctionLowerer {
                             bound.kind !== "browser" &&
                             bound.kind !== "callback"
                         ) {
-                            captured = true;
-                            return;
+                            return true;
                         }
                     }
                 }
@@ -1981,15 +1910,11 @@ export class NativeFunctionLowerer {
                         skipMemberNames,
                     )
                 ) {
-                    captured = true;
-                    return;
+                    return true;
                 }
             }
-            ts.forEachChild(node, visit);
-        };
-        if (declaration.body) {
-            visit(declaration.body);
-        }
+            return false;
+        }, skipMemberNames ? { memberNames: "skip" } : {});
         active.delete(declaration);
         return captured;
     }

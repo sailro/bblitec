@@ -113,6 +113,7 @@ function sharedGenerationInputs(repositoryRoot: string): string | undefined {
               `pins ${contentFingerprint([
                   resolve(repositoryRoot, "package-lock.json"),
                   resolve(repositoryRoot, "upstream"),
+                  resolve(repositoryRoot, "native/vcpkg.json"),
               ])}`,
               `CHROME_PATH=${process.env.CHROME_PATH ?? ""}`,
               `BBLITE_BAKE_CACHE=${process.env.BBLITE_BAKE_CACHE ?? ""}`,

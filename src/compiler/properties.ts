@@ -1,3 +1,21 @@
+import { valueForKind } from "./types.js";
+import type { LoweringServices } from "./lowering-services.js";
+// Property reads on the compiled surface.
+//
+// Every read here answers the same question -- given a handle and a
+// property name, which native expression names the value -- and the
+// answers differed by about three tokens each while the ceremony around
+// them was copied verbatim: resolve the owning engine, index the record
+// collection, carry `engineCpp` forward so a later read can resolve the
+// engine again. The table below states the three tokens; `readProperty`
+// holds the ceremony once.
+//
+// Reads that are not a field lookup stay in the compiler: `this.x`
+// resolves through the instance record, a record read runs its getter, a
+// tuple length and an engine's MSAA sample count come from compile-time
+// metadata rather than from a native field, and `camera.target`
+// synthesizes a three-component record. Those differ in what they *do*,
+// not in which field they name.
 // Property reads on the compiled surface.
 //
 // Every read here answers the same question -- given a handle and a
@@ -1076,15 +1094,15 @@ export function cameraRecordField(property: string): string | undefined {
  * The compiler surface `readProperty` needs. Kept to what a field lookup
  * uses, so the table cannot grow a dependency on statement lowering.
  */
-export interface PropertyContext {
-  requireEngine(value: Value, node: ts.Node): string;
-  reachFeature(feature: Feature, site: ts.Node): void;
-  reachJsData(): void;
-  noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
-  fail(node: ts.Node, message: string): never;
-  /** Whether generation has seen a thin-instance pool set on this mesh. */
-  meshHasThinInstancePool(owner: Value): boolean;
-}
+export interface PropertyContext
+    extends Pick<LoweringServices,
+        | "requireEngine"
+        | "reachFeature"
+        | "reachJsData"
+        | "noteMaterialColorRead"
+        | "fail"
+        | "meshHasThinInstancePool"
+    > {}
 
 /**
  * Resolves a declared property read, or returns undefined when no rule
@@ -1149,8 +1167,8 @@ export function readProperty(
       : owner.shadowGeneratorIndex;
   const dataType = rule.dataType?.kind === "optional" && rule.knownPresent?.(owner)
     ? rule.dataType.inner : rule.dataType;
-  const read = (cpp: string): Value => ({
-    kind: rule.value,
+  const read = (cpp: string): Value => (valueForKind(rule.value, {
+
     cpp: dataType !== rule.dataType ? `(*${cpp})` : cpp,
     ...(dataType ? {dataType} : {}),
     ...(rule.textureStorage
@@ -1216,7 +1234,7 @@ export function readProperty(
             : {}),
         }
       : {}),
-  });
+  }));
   if (rule.record || rule.field) {
     return read(
       nativeLocation(

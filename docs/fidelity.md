@@ -40,6 +40,11 @@ The harness-ready gate shares this storage. Recovery global disposal hooks remai
 resume through engine frame boundaries. `drawCallCount` measures native GPU draw commands, including
 transport passes; browser context accounting can differ.
 
+Uncaught source exceptions in ordinary engine callbacks propagate through the PAL to the generated
+entry handler, which reports the error and exits with status 1. A local source catch still handles
+its own exception. Realm tasks use their installed error handler; without one, they rethrow.
+This differs from a browser reporting a callback exception and continuing its event loop.
+
 ## Shader contract
 
 PBR/Standard use pinned composers; node materials use the pinned graph compiler;
@@ -52,12 +57,24 @@ Its deformation path uses four influences with a 64-matrix palette and supported
 attribute/storage morph transport. `shared-material-vertex-transport` records
 these differences from ordinary color material composition.
 
+Lifted utility shaders also adapt stage inputs: the texture skybox computes its affine fog
+distance in the fragment from interpolated world position, which can change floating-point rounding.
+The HDR background reconstructs `positionUVW` as world position minus the background centre;
+this represents the admitted translated cube. SDL's single-sample image-processing wrapper samples
+at texel centres instead of the pin's integer load. The single-sample transmission grab replaces
+the multisample average with a mip-zero load while retaining the pinned manual bilinear filter.
+
 ### Numeric width
 
 Preserve JavaScript double precision until the source's Float32 allocation or
 store. Matrix layout, multiplication order, coordinate transforms and rounding
 are part of the contract. Numeric equality and byte equality differ for signed
 zero; record which comparison a control establishes.
+
+Packaged glTF light worlds retain the source Float32 matrices. Light scalars and colors enter
+native float records; ranges above float maximum clamp to that maximum. Spot cone angles retain
+double precision, and their uniform cosine comes from the source writer's Float32 store.
+Imported glTF cameras retain double scalar/vector fields and source Float32 parent/fixup matrices.
 
 ### The reference pose
 
@@ -84,6 +101,11 @@ Background geometry, cube orientation, mip policy, encoding and samplers follow
 the reached pinned path. Image processing and scene-color capture are separate
 passes; keep their source order.
 
+glTF image-based lighting packages the source uniform writer's Float32 harmonics and ordered
+scene writes. Encoded RGBD faces use the shared source-derived native decoder; the BRDF LUT uses
+the existing 256-square RGBA16F bake. Other kernels/layouts and setup reads of unknown prior
+environment state refuse. Unwritten rotation and image-processing fields remain live scene state.
+
 Local cubemap probe sets execute the pin's setters, probe-grid producer, uniform writer and copy
 planner at generation; the composed fragment stays unchanged. SDL's large-uniform storage substitution
 is recorded in `static-local-cubemap-packets`.
@@ -96,6 +118,15 @@ merging. Native animation targets retain independent texture slots; the pin
 does not resolve metallic-roughness texture-transform pointers.
 
 Public color/texture presence and identity differ from render fallbacks.
+
+glTF scene setup composes Gaussian splat, environment and interactivity callbacks
+in source registry order. Activation consumes source feature results; native
+storage transports resolved resources, scene ownership and cleanup. Repeated
+attachment creates fresh splat clouds. Transmission uses the source hook registry
+and each material group's current meshes at build. Native shaders precompose the
+source transaction's linear-capable variants. Deferred publication retains source
+group/output identities and captured-material draw guards; native continuations
+and GPU resource operations provide the platform transport.
 
 ### Deformation and instancing
 
@@ -121,9 +152,20 @@ Borrowed buffers without an owning lifetime refuse.
 
 ### Animation and hierarchy
 
-Property/glTF tracks have separate target/interpolation contracts. Preserve
-mutation and render-list invalidation boundaries. Autonomous managers issue ordered
-cancellable native frame requests.
+Source glTF parsing determines whether animation data is accepted, resolves targets
+and preserves channel order. Per-clip controllers retain source-selected skeleton,
+morph and node bindings. Pose evaluation and manager traversal preserve source
+write order, masks, engine-presence guards and weighted/additive phases.
+
+Native adapters retain source Float32 stores and shared deformation resources.
+Material pointer writers preserve double-valued public arrays and captured object
+identities. Supported ORM/occlusion replacement leaves an existing writer attached
+to its original wrapper; its later writes do not publish into the replacement.
+CPU-only VAT seeks update source palette storage without uploading temporary poses.
+
+Container attachment retains fresh callback identities per add. Property/glTF
+tracks keep their separate target/interpolation contracts and mutation boundaries.
+Autonomous managers issue ordered cancellable native frame requests.
 
 ### Frame graph and post-process passes
 

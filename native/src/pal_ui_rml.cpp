@@ -140,11 +140,16 @@ UiElementRecord& ui_element(Engine& engine, UiElementHandle handle) {
     if (handle.value >= engine.ui_elements.size()) {
         throw std::runtime_error("Native UI element handle is out of range.");
     }
-    return engine.ui_elements[handle.value];
+    return handle_at(engine.ui_elements, handle);
 }
 
 void mark_ui_changed(Engine& engine) {
     ++engine.ui_revision;
+}
+
+void mark_ui_changed(Engine& engine, const UiElementRecord& record) {
+    mark_ui_changed(engine);
+    if (record.tag == "style") ++engine.ui_style_revision;
 }
 
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
@@ -250,7 +255,7 @@ void ui_set_text(
     if (record.text == text && record.inner_rml.empty()) return;
     record.text = std::move(text);
     record.inner_rml.clear();
-    mark_ui_changed(engine);
+    mark_ui_changed(engine, record);
 }
 
 void ui_set_inner_rml(
@@ -261,7 +266,7 @@ void ui_set_inner_rml(
     if (record.inner_rml == markup && record.text.empty()) return;
     record.inner_rml = std::move(markup);
     record.text.clear();
-    mark_ui_changed(engine);
+    mark_ui_changed(engine, record);
 }
 
 UiElementHandle ui_query_markup(
@@ -365,7 +370,7 @@ UiElementHandle ui_query_markup(
     const UiElementHandle handle{
         static_cast<std::uint32_t>(engine.ui_elements.size())};
     engine.ui_elements.push_back(std::move(record));
-    engine.ui_elements[owner.value].markup_children.push_back(handle);
+    handle_at(engine.ui_elements, owner).markup_children.push_back(handle);
     mark_ui_changed(engine);
     return handle;
 }
@@ -538,7 +543,7 @@ void ui_clear_style_rules(
     }
     if (owner.style_rules.empty()) return;
     owner.style_rules.clear();
-    mark_ui_changed(engine);
+    mark_ui_changed(engine, owner);
 }
 
 void ui_add_id_style(
@@ -588,7 +593,7 @@ void ui_add_style_rule(
         std::move(style),
         max_width,
         hover});
-    mark_ui_changed(engine);
+    mark_ui_changed(engine, owner);
 }
 
 void ui_add_host_style_rule(
@@ -616,6 +621,7 @@ void ui_add_host_style_rule(
         hover,
         focus_visible,
         active});
+    ++engine.ui_style_revision;
     mark_ui_changed(engine);
 }
 
@@ -694,12 +700,12 @@ UiElementHandle ui_append_to_root(
             engine.ui_root_children.erase(existing);
         }
         engine.ui_root_children.push_back(child);
-        mark_ui_changed(engine);
+        mark_ui_changed(engine, record);
         return child;
     }
     record.attached_to_root = true;
     engine.ui_root_children.push_back(child);
-    mark_ui_changed(engine);
+    mark_ui_changed(engine, record);
     return child;
 }
 
@@ -720,7 +726,7 @@ void ui_replace_children(Engine& engine, UiElementHandle parent) {
     record.children.clear();
     record.text.clear();
     record.inner_rml.clear();
-    mark_ui_changed(engine);
+    mark_ui_changed(engine, record);
 }
 
 void ui_remove(Engine& engine, UiElementHandle element) {
@@ -754,7 +760,7 @@ void ui_remove(Engine& engine, UiElementHandle element) {
             engine.ui_root_children.end());
         record.attached_to_root = false;
     }
-    mark_ui_changed(engine);
+    mark_ui_changed(engine, record);
 }
 
 void ui_on_click(
@@ -789,10 +795,10 @@ void ui_click(Engine& engine, UiElementHandle element) {
 namespace {
 bool ui_focusable(Engine& engine, UiElementHandle element) {
     if (element.value >= engine.ui_elements.size()) return false;
-    const auto& target = engine.ui_elements[element.value];
+    const auto& target = handle_at(engine.ui_elements, element);
     if (target.attributes.contains("disabled")) return false;
     for (auto cursor = element; cursor.value < engine.ui_elements.size();) {
-        const auto& record = engine.ui_elements[cursor.value];
+        const auto& record = handle_at(engine.ui_elements, cursor);
         if (ui_get_style_property(engine, cursor, "display") == "none") return false;
         if (record.attached_to_root) return true;
         cursor = record.markup_owner.value != invalid_handle ? record.markup_owner : record.parent;
@@ -1725,7 +1731,7 @@ bool ui_style_rule_matches(
     UiElementHandle handle,
     const UiStyleRule& rule) {
     if (handle.value >= engine.ui_elements.size()) return false;
-    const UiElementRecord& record = engine.ui_elements[handle.value];
+    const UiElementRecord& record = handle_at(engine.ui_elements, handle);
     switch (rule.selector) {
     case UiStyleSelectorKind::Class:
         return ui_record_has_class(record, rule.primary);
@@ -1754,9 +1760,9 @@ bool ui_style_rule_matches(
     for (
         UiElementHandle ancestor = record.parent;
         ancestor.value != invalid_handle;
-        ancestor = engine.ui_elements[ancestor.value].parent) {
+        ancestor = handle_at(engine.ui_elements, ancestor).parent) {
         const UiElementRecord& ancestor_record =
-            engine.ui_elements[ancestor.value];
+            handle_at(engine.ui_elements, ancestor);
         if (
             rule.selector == UiStyleSelectorKind::ClassDescendantTag &&
             ui_record_has_class(ancestor_record, rule.primary)) {
@@ -3249,7 +3255,7 @@ struct UiRmlRuntime {
     void for_each_active_style_element(Callback&& callback) const {
         for (const UiElementHandle handle : engine.ui_root_children) {
             if (handle.value >= engine.ui_elements.size()) continue;
-            const UiElementRecord& record = engine.ui_elements[handle.value];
+            const UiElementRecord& record = handle_at(engine.ui_elements, handle);
             if (record.tag == "style" && record.attached_to_root) {
                 callback(record);
             }
@@ -3286,13 +3292,13 @@ struct UiRmlRuntime {
             const std::size_t rule_order = source_order++;
             const bool hovered =
                 handle.value < projected_elements.size() &&
-                projected_elements[handle.value].element &&
-                projected_elements[handle.value].element->
+                handle_at(projected_elements, handle).element &&
+                handle_at(projected_elements, handle).element->
                     IsPseudoClassSet("hover");
             if (
                 (rule.hover && !hovered) ||
-                (rule.active && !(handle.value < projected_elements.size() && projected_elements[handle.value].element &&
-                    projected_elements[handle.value].element->IsPseudoClassSet("active"))) ||
+                (rule.active && !(handle.value < projected_elements.size() && handle_at(projected_elements, handle).element &&
+                    handle_at(projected_elements, handle).element->IsPseudoClassSet("active"))) ||
                 (rule.focus_visible && (!engine.ui_focus_visible || engine.ui_focused_element != handle)) ||
                 !style_rule_media_matches(rule) ||
                 !ui_style_rule_matches(engine, handle, rule)) {
@@ -3304,6 +3310,8 @@ struct UiRmlRuntime {
     }
 
     void sync_style_sheet() {
+        if (projected_style_revision == engine.ui_style_revision &&
+            document->GetStyleSheetContainer()) return;
         // Browser user-agent defaults belong below author rules. Keeping them
         // in this sheet rather than on each element also lets :hover and media
         // rules participate in the ordinary RmlUi cascade.
@@ -3333,6 +3341,7 @@ struct UiRmlRuntime {
         if (
             source == projected_style_sheet_source &&
             document->GetStyleSheetContainer()) {
+            projected_style_revision = engine.ui_style_revision;
             return;
         }
         projected_style_sheet_source = source;
@@ -3350,6 +3359,7 @@ struct UiRmlRuntime {
                 "RmlUi could not create the retained UI stylesheet.");
         }
         document->SetStyleSheetContainer(std::move(style_sheet));
+        projected_style_revision = engine.ui_style_revision;
     }
 
     std::string resolved_style_attribute(
@@ -3654,7 +3664,7 @@ struct UiRmlRuntime {
                 ui_element(engine, child).tag == "style") {
                 continue;
             }
-            Rml::Element* element = projected_elements[child.value].element;
+            Rml::Element* element = handle_at(projected_elements, child).element;
             if (element && element->GetParentNode() == &parent) {
                 children.push_back(parent.RemoveChild(element));
             }
@@ -3705,7 +3715,7 @@ struct UiRmlRuntime {
         for (const UiElementHandle child :
              ui_element(engine, owner).markup_children) {
             if (child.value < projected_elements.size()) {
-                projected_elements[child.value] = {};
+                handle_at(projected_elements, child) = {};
             }
         }
     }
@@ -3726,7 +3736,7 @@ struct UiRmlRuntime {
                     "RmlUi could not bind lowered static markup node " +
                     std::to_string(record.markup_node_id) + ".");
             }
-            ProjectedUiElement& projected = projected_elements[child.value];
+            ProjectedUiElement& projected = handle_at(projected_elements, child);
             projected = {};
             projected.element = raw;
             update_element(child);
@@ -3743,7 +3753,7 @@ struct UiRmlRuntime {
                 "RmlUi could not create element tag '" + record.tag + "'.");
         }
         Rml::Element* raw = element.get();
-        ProjectedUiElement& projected = projected_elements[handle.value];
+        ProjectedUiElement& projected = handle_at(projected_elements, handle);
         projected = {};
         projected.element = raw;
         for (const auto& [name, source_value] : record.attributes) {
@@ -3849,31 +3859,31 @@ struct UiRmlRuntime {
         std::vector<bool>& reachable) const {
         if (
             handle.value >= reachable.size() ||
-            reachable[handle.value]) {
+            handle_at(reachable, handle)) {
             return;
         }
-        reachable[handle.value] = true;
+        handle_at(reachable, handle) = true;
         for (const UiElementHandle child :
-             engine.ui_elements[handle.value].markup_children) {
+             handle_at(engine.ui_elements, handle).markup_children) {
             mark_reachable(child, reachable);
         }
         for (const UiElementHandle child :
-             engine.ui_elements[handle.value].children) {
+             handle_at(engine.ui_elements, handle).children) {
             mark_reachable(child, reachable);
         }
     }
 
     void clear_projected_subtree(UiElementHandle handle) {
         if (handle.value >= projected_elements.size()) return;
-        if (projected_elements[handle.value].element) {
+        if (handle_at(projected_elements, handle).element) {
             invalidate_gradient_text();
         }
         clear_markup_descendants(handle);
         for (const UiElementHandle child :
-             engine.ui_elements[handle.value].children) {
+             handle_at(engine.ui_elements, handle).children) {
             clear_projected_subtree(child);
         }
-        projected_elements[handle.value] = {};
+        handle_at(projected_elements, handle) = {};
     }
 
     void sync_projected_root_order() {
@@ -3881,8 +3891,8 @@ struct UiRmlRuntime {
         for (const UiElementHandle handle : engine.ui_root_children) {
             if (
                 handle.value < engine.ui_elements.size() &&
-                engine.ui_elements[handle.value].attached_to_root &&
-                engine.ui_elements[handle.value].tag != "style") {
+                handle_at(engine.ui_elements, handle).attached_to_root &&
+                handle_at(engine.ui_elements, handle).tag != "style") {
                 desired.push_back(handle.value);
             }
         }
@@ -3903,7 +3913,7 @@ struct UiRmlRuntime {
     }
 
     void update_element(UiElementHandle handle) {
-        ProjectedUiElement& projected = projected_elements[handle.value];
+        ProjectedUiElement& projected = handle_at(projected_elements, handle);
         UiElementRecord& record = ui_element(engine, handle);
         Rml::Element& raw = *projected.element;
         const auto attribute_changed = [&](std::string_view name) {
@@ -4095,7 +4105,7 @@ struct UiRmlRuntime {
             : raw;
         for (const UiElementHandle child : record.children) {
             if (ui_element(engine, child).tag == "style") continue;
-            if (!projected_elements[child.value].element) {
+            if (!handle_at(projected_elements, child).element) {
                 append_element(children_parent, child);
             } else {
                 update_element(child);
@@ -4105,7 +4115,7 @@ struct UiRmlRuntime {
             if (
                 child.value != handle.value &&
                 child.value < projected_elements.size() &&
-                projected_elements[child.value].element) {
+                handle_at(projected_elements, child).element) {
                 update_element(child);
             }
         }
@@ -4118,7 +4128,7 @@ struct UiRmlRuntime {
         for (const UiElementHandle handle : engine.ui_root_children) {
             if (
                 handle.value < engine.ui_elements.size() &&
-                engine.ui_elements[handle.value].attached_to_root) {
+                handle_at(engine.ui_elements, handle).attached_to_root) {
                 mark_reachable(handle, reachable);
             }
         }
@@ -4137,7 +4147,7 @@ struct UiRmlRuntime {
             if (
                 parent.value != invalid_handle &&
                 parent.value < reachable.size() &&
-                !reachable[parent.value]) {
+                !handle_at(reachable, parent)) {
                 continue;
             }
             Rml::Element* raw = projected_elements[index].element;
@@ -4243,7 +4253,7 @@ struct UiRmlRuntime {
         const auto focused = ui_active_element(engine);
         if (projected_focus_revision == engine.ui_focus_revision && projected_focused == focused) return false;
         if (focused.value < projected_elements.size()) {
-            if (auto* element = projected_elements[focused.value].element) element->Focus(engine.ui_focus_visible);
+            if (auto* element = handle_at(projected_elements, focused).element) element->Focus(engine.ui_focus_visible);
         } else if (auto* element = context->GetFocusElement()) {
             element->Blur();
         }
@@ -4359,11 +4369,11 @@ struct UiRmlRuntime {
                  engine.ui_elements[index].children) {
                 if (
                     child_handle.value >= projected_elements.size() ||
-                    !projected_elements[child_handle.value].element) {
+                    !handle_at(projected_elements, child_handle).element) {
                     continue;
                 }
                 Rml::Element* child =
-                    projected_elements[child_handle.value].element;
+                    handle_at(projected_elements, child_handle).element;
                 const Rml::Style::ComputedValues& computed =
                     child->GetComputedValues();
                 if (
@@ -4372,11 +4382,11 @@ struct UiRmlRuntime {
                     computed.position() != Rml::Style::Position::Absolute &&
                     computed.position() != Rml::Style::Position::Fixed) {
                     std::string child_style =
-                        projected_elements[child_handle.value].resolved_style;
+                        handle_at(projected_elements, child_handle).resolved_style;
                     std::string width =
                         take_css_declaration(child_style, "width");
                     const UiElementRecord& child_record =
-                        engine.ui_elements[child_handle.value];
+                        handle_at(engine.ui_elements, child_handle);
                     if (const auto dynamic_width =
                             child_record.style_properties.find("width");
                         dynamic_width != child_record.style_properties.end()) {
@@ -4408,14 +4418,14 @@ struct UiRmlRuntime {
             float inline_run_width = 0.0f;
 
             for (const UiElementHandle child_handle :
-                 engine.ui_elements[parent.handle.value].children) {
+                 handle_at(engine.ui_elements, parent.handle).children) {
                 if (
                     child_handle.value >= projected_elements.size() ||
-                    !projected_elements[child_handle.value].element) {
+                    !handle_at(projected_elements, child_handle).element) {
                     continue;
                 }
                 Rml::Element* child =
-                    projected_elements[child_handle.value].element;
+                    handle_at(projected_elements, child_handle).element;
                 const Rml::Style::ComputedValues& computed =
                     child->GetComputedValues();
                 if (
@@ -4428,7 +4438,7 @@ struct UiRmlRuntime {
                 float content_width =
                     box.GetSize(Rml::BoxArea::Content).x;
                 const UiElementRecord& child_record =
-                    engine.ui_elements[child_handle.value];
+                    handle_at(engine.ui_elements, child_handle);
                 if (
                     !child_record.text.empty() &&
                     child_record.children.empty()) {
@@ -4461,7 +4471,7 @@ struct UiRmlRuntime {
             max_content_width = std::max(max_content_width, inline_run_width);
             parent.element->SetProperty(
                 "width", std::to_string(max_content_width) + "px");
-            projected_elements[parent.handle.value].intrinsic_width_applied =
+            handle_at(projected_elements, parent.handle).intrinsic_width_applied =
                 true;
 
             for (const IntrinsicChild& child : parent.children) {
@@ -4511,7 +4521,7 @@ struct UiRmlRuntime {
                         continue;
                     }
                     const UiElementRecord& source =
-                        engine.ui_elements[draw.source.value];
+                        handle_at(engine.ui_elements, draw.source);
                     if (!source.canvas) continue;
                     mesh = canvas_blit_mesh(draw, scale_x, scale_y);
                     texture = render_interface.retained_canvas_texture(
@@ -4888,6 +4898,7 @@ struct UiRmlRuntime {
     std::unique_ptr<Win32UiFontEngine> platform_fonts;
 #endif
     std::string projected_style_sheet_source;
+    std::uint64_t projected_style_revision = 0;
     float density_ratio = 0.0f;
     std::uint32_t viewport_width = 0;
     std::uint32_t viewport_height = 0;

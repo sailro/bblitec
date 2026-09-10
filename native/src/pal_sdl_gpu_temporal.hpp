@@ -2,6 +2,7 @@
 
 #include <bblite/runtime.hpp>
 #include <SDL3/SDL_gpu.h>
+#include "pal_sdl_gpu_commands.hpp"
 
 #include <array>
 #include <cstring>
@@ -91,11 +92,11 @@ inline void encode_sdl_prepared_draw(
 }
 
 inline void encode_sdl_prepared_scene(SDL_GPUCommandBuffer* command, const PreparedSdlScenePass& scene) {
-    auto* pass = SDL_BeginGPURenderPass(command, &scene.target, 1, scene.depth ? &*scene.depth : nullptr);
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &scene.target, 1, scene.depth ? &*scene.depth : nullptr)};
     if (scene.viewport) SDL_SetGPUViewport(pass, &*scene.viewport);
     if (scene.scissor) SDL_SetGPUScissor(pass, &*scene.scissor);
     for (const auto& draw : scene.draws) encode_sdl_prepared_draw(command, pass, draw);
-    SDL_EndGPURenderPass(pass);
+    pass.end();
 }
 
 } // namespace bbl::pal

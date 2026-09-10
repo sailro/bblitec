@@ -16,6 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "image-codecs.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
 if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
     throw (
@@ -26,7 +28,7 @@ if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
 if (-not $BuildDirectory) {
     $BuildDirectory = "native\build-$Scene-min-sdl"
 }
-$buildPath = Join-Path $root $BuildDirectory
+$buildPath = Resolve-RepositoryPath $BuildDirectory
 $upstreamPin = Get-Content (
     Join-Path $root "upstream\babylon-lite.json"
 ) -Raw | ConvertFrom-Json
@@ -79,40 +81,21 @@ if (-not [string]::Equals(
 )) {
     throw "Build directory $BuildDirectory was configured against $generatedDirectory, not $expectedGenerated. Reconfigure the mini tree for the packaged scene."
 }
-# Image codecs the generation reached (BBLITE_IMAGE_CODECS in the
-# scene's features.cmake). Generated directories predating codec
-# tree-shaking carry no list and keep the historical png+jpeg set.
-# The physics/navigation/ui flags mirror the runtime-feature tokens
-# native/CMakeLists.txt keys its vcpkg manifest features on, so the
-# notice set below follows exactly what the build linked.
-$jpegReached = $true
-$pngReached = $true
-$webpReached = $false
-$audioReached = $false
-$audioDecoded = $false
-$physicsReached = $false
-$navigationReached = $false
-$uiReached = $false
-$uiSvgReached = $false
-$textLayoutReached = $false
+# Package notices follow the generated features and optional capture capabilities.
 $audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
 $visualCapture = $cache["BBLITE_VISUAL_CAPTURE"] -ne "OFF"
 $featuresPath = Join-Path $generatedDirectory "features.cmake"
-if (Test-Path $featuresPath) {
-    $featuresText = Get-Content $featuresPath -Raw
-    $audioReached = $featuresText -match '"audio:engine"'
-    $audioDecoded = $featuresText -match '"audio:decoded-buffer"'
-    $physicsReached = $featuresText -match '"physics:world"'
-    $navigationReached = $featuresText -match '"navigation:recast"'
-    $uiReached = $featuresText -match '"ui:rml"'
-    $uiSvgReached = $featuresText -match '"ui:inline-svg"'
-    $textLayoutReached = $featuresText -match '"text:layout"'
-    if ($featuresText -match "BBLITE_IMAGE_CODECS") {
-        $pngReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"png"'
-        $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
-        $webpReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"webp"'
-    }
-}
+$featuresText = Get-Content -LiteralPath $featuresPath -Raw
+$imageCodecLicenses = Get-ImageCodecLicenses `
+    -ManifestPath (Join-Path $root "native\vcpkg.json") `
+    -FeaturesText $featuresText -VisualCapture $visualCapture
+$audioReached = $featuresText -match '"audio:engine"'
+$audioDecoded = $featuresText -match '"audio:decoded-buffer"'
+$physicsReached = $featuresText -match '"physics:world"'
+$navigationReached = $featuresText -match '"navigation:recast"'
+$uiReached = $featuresText -match '"ui:rml"'
+$uiSvgReached = $featuresText -match '"ui:inline-svg"'
+$textLayoutReached = $featuresText -match '"text:layout"'
 
 $executable = @(
     (Join-Path $buildPath "bblite_native.exe"),
@@ -180,16 +163,14 @@ $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
     [System.IO.Path]::GetFullPath((Join-Path $root $OutputRoot))
 }
 $packageName = "bblitec-$Scene-$backendToken-windows-x64"
-$packageDirectory = Join-Path $outputRootPath $packageName
-$archivePath = Join-Path $outputRootPath "$packageName.zip"
+$outputPlan = New-PackageOutput $outputRootPath $packageName
+$packageDirectory = Join-Path $outputPlan.Staging $packageName
+$archivePath = Join-Path $outputPlan.Staging "$packageName.zip"
 $exeName = "bblitec-$Scene.exe"
-
-if (Test-Path $packageDirectory) {
-    Remove-Item $packageDirectory -Recurse -Force
-}
-if (Test-Path $archivePath) {
-    Remove-Item $archivePath -Force
-}
+$previousExe = Join-Path (Join-Path $outputRootPath $packageName) $exeName
+$previousZip = Join-Path $outputRootPath "$packageName.zip"
+$previousExeBytes = if (Test-Path -LiteralPath $previousExe) { (Get-Item -LiteralPath $previousExe).Length } else { $null }
+$previousZipBytes = if (Test-Path -LiteralPath $previousZip) { (Get-Item -LiteralPath $previousZip).Length } else { $null }
 
 $assets = Join-Path $packageDirectory "assets"
 $shaders = Join-Path $packageDirectory "shaders"
@@ -251,18 +232,8 @@ $licensePackages = @{
     "SDL3.txt" = "sdl3"
     "nlohmann-json.txt" = "nlohmann-json"
 }
-if ($pngReached -or $jpegReached -or $webpReached -or $visualCapture) {
-    $licensePackages["SDL3_image.txt"] = "sdl3-image"
-}
-if ($pngReached -or $visualCapture) {
-    $licensePackages["libpng.txt"] = "libpng"
-    $licensePackages["zlib.txt"] = "zlib"
-}
-if ($jpegReached) {
-    $licensePackages["libjpeg-turbo.txt"] = "libjpeg-turbo"
-}
-if ($webpReached) {
-    $licensePackages["libwebp.txt"] = "libwebp"
+foreach ($license in $imageCodecLicenses.GetEnumerator()) {
+    $licensePackages[$license.Key] = $license.Value
 }
 if ($physicsReached) {
     $licensePackages["bullet3.txt"] = "bullet3"
@@ -512,7 +483,16 @@ $smokeStart = [System.Diagnostics.ProcessStartInfo]::new()
 $smokeStart.FileName = Join-Path $packageDirectory $exeName
 $smokeStart.WorkingDirectory = $packageDirectory
 $smokeStart.UseShellExecute = $false
+$smokeStart.CreateNoWindow = $true
+foreach ($name in @($smokeStart.Environment.Keys | Where-Object { $_ -like 'BBLITE_*' })) {
+    [void]$smokeStart.Environment.Remove($name)
+}
 $smokeStart.Environment["BBLITE_MAX_FRAMES"] = "$smokeFrames"
+$smokeStart.Environment["BBLITE_GPU_DEBUG"] = "1"
+$smokeStart.Environment["BBLITE_TEST_PASS"] = "1"
+$smokeStart.Environment["BBLITE_LOCAL_STORAGE_ROOT"] = Join-Path $outputPlan.Staging "smoke-storage"
+$smokeStart.Environment["SDL_GPU_DRIVER"] = "direct3d12"
+$smokeStart.Environment["SDL_ASSERT"] = "abort"
 $smoke = [System.Diagnostics.Process]::Start($smokeStart)
 if (-not $smoke.WaitForExit(120000)) {
     $smoke.Kill()
@@ -524,4 +504,17 @@ if ($smoke.ExitCode -ne 0) {
 Write-Output "Smoke run: $exeName rendered $smokeFrames frames and exited 0."
 
 Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
-Write-Output "Created $archivePath ($backend payload)"
+$receipt = [ordered]@{
+    scene = $Scene; backend = $backend; buildDirectory = $buildPath
+    exeBytes = (Get-Item -LiteralPath (Join-Path $packageDirectory $exeName)).Length
+    zipBytes = (Get-Item -LiteralPath $archivePath).Length
+    unpackedBytes = (Get-ChildItem -LiteralPath $packageDirectory -File -Recurse | Measure-Object Length -Sum).Sum
+    exeSha256 = (Get-FileHash -LiteralPath (Join-Path $packageDirectory $exeName) -Algorithm SHA256).Hash
+    zipSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+    previousExeBytes = $previousExeBytes; previousZipBytes = $previousZipBytes
+    smokeFrames = $smokeFrames; smokeExit = $smoke.ExitCode
+}
+$receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputPlan.Staging "$packageName.json") -Encoding utf8
+Publish-PackageOutput $outputPlan
+$smoke.Dispose()
+Write-Output "Created $(Join-Path $outputRootPath "$packageName.zip") ($backend payload)"

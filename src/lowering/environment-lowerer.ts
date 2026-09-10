@@ -6,6 +6,7 @@ import {
     COLOR_CHANNEL_HELPERS_CPP,
     lowerShPrescaleCpp,
 } from "./gltf-lowerer.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 /** The DDS background composite, reached without the `.env` loader. */
 const DDS_BACKGROUND_MODULE =
@@ -164,16 +165,7 @@ void load_image_skybox(
         return {
             modulePath,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/runtime.hpp>
-
-#include <array>
-#include <cstdint>
-#include <vector>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>","<cstdint>","<vector>"], `
 struct ParsedEnvironment {
     std::array<Color3, 9> spherical_harmonics{};
     std::uint32_t width = 0;
@@ -182,9 +174,7 @@ struct ParsedEnvironment {
 };
 
 ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(
                 modulePath,
                 symbolName,

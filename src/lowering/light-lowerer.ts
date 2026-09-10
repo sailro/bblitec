@@ -1,13 +1,14 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
-    PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import {
     pinnedMathSpelling,
     pinnedNumericMathCalls,
 } from "./pinned-operators.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 interface HemisphericDefaults {
     diffuseColor: [number, number, number];
@@ -82,6 +83,17 @@ void set_${kind}_light_${vector}(
      * the shape `refresh_spot_light_matrix` already takes for the vector
      * writes — so the pinned factor reaches the output in one place.
      */
+    public lowerSpotAngleSetter(): string {
+        const {file,declaration}=this.context.functionDeclaration("src/light/spot-light.ts","createSpotLight");
+        const expression=this.context.unwrapExpression(this.context.variableInitializer(declaration,"_cosHalfAngle"));
+        if(!ts.isCallExpression(expression)||this.context.propertyPath(expression.expression)?.join(".")!=="Math.cos"||expression.arguments.length!==1)
+            this.context.contractError(expression,"Expected source spot cone cosine.");
+        const product=this.context.unwrapExpression(expression.arguments[0]!);
+        if(!ts.isBinaryExpression(product)||product.operatorToken.kind!==ts.SyntaxKind.AsteriskToken||!ts.isIdentifier(product.left)||product.left.text!=="angle")
+            this.context.contractError(product,"Expected source spot cone angle scaling.");
+        return this.spotConeSetter(declaration,this.context.numericValue(product.right,file));
+    }
+
     private spotConeSetter(
         declaration: ts.FunctionDeclaration,
         coneHalfFactor: number,
@@ -210,7 +222,8 @@ void refresh_spot_light_cone(LightRecord& light, double angle) {
             outBinding,
         );
         bindings.set("out4 as unknown as Mat4Storage", outBinding);
-        const lowerer = new PinnedNumericLowerer(file, {
+
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
             calls: pinnedNumericMathCalls(),
             returnValue: (expression): string => {
@@ -230,18 +243,10 @@ void refresh_spot_light_cone(LightRecord& light, double angle) {
                 return "out";
             },
         });
-        const body = declaration.body!.statements
-            .flatMap((statement) => lowerer.statement(statement, "    "))
-            .join("\n");
         return {
             modulePath,
             symbolName,
-            header: `#pragma once
-
-#include <array>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<array>"], `
 std::array<float, 16>& local_matrix_from_direction(
     float dx_f32,
     float dy_f32,
@@ -250,9 +255,7 @@ std::array<float, 16>& local_matrix_from_direction(
     float py_f32,
     float pz_f32,
     std::array<float, 16>& out);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/js_data.hpp>
 #include <bblite/upstream/light_matrix.hpp>

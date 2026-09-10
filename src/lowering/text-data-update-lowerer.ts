@@ -1,8 +1,9 @@
 import { LoweringContext } from "./context.js";
 import ts from "typescript";
-import { PinnedNumericLowerer, type PinnedBinding, type PinnedNumericScope } from "./pinned-numeric-lowerer.js";
+import { type PinnedBinding, type PinnedNumericScope } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { defaultTextDataContracts } from "./text-data-update-contracts.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const module = "src/text/text-data.ts";
 const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
@@ -91,7 +92,8 @@ export class TextDataUpdateLowerer {
             }
             return undefined;
         };
-        const lowerer = new PinnedNumericLowerer(file, { bindings, calls:new Map([...pinnedNumericMathCalls(),
+
+        return `    // ${c.provenance(module,name)}\n` + lowerPinnedBody(file, declaration.body!.statements, { bindings, calls:new Map([...pinnedNumericMathCalls(),
             ["Math.fround",(args:readonly string[])=>`static_cast<double>(static_cast<float>(${args[0]}))`],
             ["popFreeSlot",()=>"pop_free_slot(data)"],
             ["growGroup",args=>`grow_group(data,${args[2]})`],
@@ -117,7 +119,6 @@ export class TextDataUpdateLowerer {
             arrayCopy:(receiver,source,offset)=>`std::copy(${source}.begin(), ${source}.end(), ${receiver}.begin() + size(${offset}));`,
             booleanAnd:true, booleanOr:true, statement,
         });
-        return `    // ${c.provenance(module,name)}\n` + declaration.body!.statements.flatMap(s => lowerer.statement(s,"    ")).join("\n");
     }
 
     public header(): string {

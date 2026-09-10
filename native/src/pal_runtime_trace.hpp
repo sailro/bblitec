@@ -114,7 +114,7 @@ inline void trace_scene_topology(
         if (handle.value < engine.meshes.size()) {
             std::cerr
                 << " last-mesh=\""
-                << engine.meshes[handle.value].name
+                << handle_at(engine.meshes, handle).name
                 << '\"';
         }
     }
@@ -143,7 +143,9 @@ inline void trace_dynamic_frame(
 
     std::cerr
         << "[bblite trace] dynamic frame=" << frame
-        << " delta-ms=" << delta_ms
+        << " delta-ms=" << delta_ms;
+#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+    std::cerr
         << " billboard-systems=" << engine.billboard_systems.size();
     for (std::size_t index = 0;
          index < engine.billboard_systems.size();
@@ -164,18 +166,23 @@ inline void trace_dynamic_frame(
             << ",instance-version=" << system.instance_version
             << ",checksum=" << checksum << '}';
     }
+#else
+    std::cerr << " billboard-systems=0";
+#endif
     for (std::size_t index = 0; index < engine.storage_buffers.size(); ++index) {
         const auto& buffer = engine.storage_buffers[index];
         if (buffer.disposed) continue;
         std::cerr << " storage[" << index << "]={label=" << buffer.label
             << ",version=" << buffer.version << ",bytes=" << buffer.bytes.size() << '}';
     }
+#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
     for (const auto& drag : engine.edit_gizmos) {
         if (!drag.dragging || drag.attached_node.value >= engine.meshes.size()) continue;
-        const auto& node = engine.meshes[drag.attached_node.value];
+        const auto& node = handle_at(engine.meshes, drag.attached_node);
         std::cerr << " drag={node=" << node.name << ",position=("
             << node.position.x << ',' << node.position.y << ',' << node.position.z << ")}";
     }
+#endif
     std::cerr << '\n';
 }
 

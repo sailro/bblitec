@@ -2913,10 +2913,12 @@ PhysicsMassProperties physics_shape_build_mass_properties(
     PhysicsMassProperties properties = shape_entry.mass_properties;
     btVector3 inertia(0, 0, 0);
     if (shape_entry.has_exact_mass_properties) {
+        // Bullet's principal-axis calculation returns inertia per unit mass.
+        // Havok applies the mass scalar internally; Bullet expects absolute inertia.
         inertia = btVector3(
             static_cast<btScalar>(properties.inertia[0]),
             static_cast<btScalar>(properties.inertia[1]),
-            static_cast<btScalar>(properties.inertia[2]));
+            static_cast<btScalar>(properties.inertia[2])) * static_cast<btScalar>(mass);
     } else {
         if (shape_entry.moving_mesh) {
             shape_entry.moving_mesh->calculateLocalInertia(
@@ -2925,9 +2927,6 @@ PhysicsMassProperties physics_shape_build_mass_properties(
             shape_entry.shape->calculateLocalInertia(
                 static_cast<btScalar>(mass), inertia);
         }
-        properties.mass = mass;
-        properties.inertia = {
-            inertia.x(), inertia.y(), inertia.z()};
         const btVector3 center = shape_entry.node_from_body.getOrigin();
         const btQuaternion orientation =
             shape_entry.node_from_body.getRotation();
@@ -2937,6 +2936,8 @@ PhysicsMassProperties physics_shape_build_mass_properties(
             orientation.x(), orientation.y(), orientation.z(),
             orientation.w()};
     }
+    properties.mass = mass;
+    properties.inertia = {inertia.x(), inertia.y(), inertia.z()};
     static const bool cpu_profile = [] {
         const char* value = std::getenv("BBLITE_CPU_PROFILE");
         return value && value[0] == '1' && value[1] == '\0';

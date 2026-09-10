@@ -1,4 +1,5 @@
 #include <bblite/js_data.hpp>
+#define BBLITE_SHADOWS_CSM 1
 #include <bblite/runtime.hpp>
 
 #include <cassert>

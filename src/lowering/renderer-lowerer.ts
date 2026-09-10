@@ -1085,6 +1085,8 @@ struct RenderItem {
     MeshHandle mesh{};
     std::uint32_t geometry = invalid_handle;
     MaterialHandle material{};
+    SourceMaterialDrawGuard material_guard = nullptr;
+    bool material_override = false;
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     RenderBucket bucket = RenderBucket::opaque;
     RenderCullMode cull_mode = RenderCullMode::back;
@@ -1475,6 +1477,8 @@ bool pick_candidate(const MeshRecord& mesh);
 // bump), which is what makes an epoch write land the same frame while a
 // bare field write waits for the next rebuild.
 bool mesh_draws(const MeshRecord& mesh);
+bool render_item_material_draws(const RenderItem& item, const Engine& engine);
+bool render_item_draws_now(const RenderItem& item, const Engine& engine);
 // src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
 // includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does
 // not. One definition, because both the Standard slot writer and the pinned
@@ -1801,6 +1805,7 @@ void append_draw(
     if (!mesh_draws(engine.meshes[item.mesh.value])) {
         return;
     }
+    if (!engine.meshes[item.mesh.value].thin_instance_gpu_culling && !render_item_material_draws(item, engine)) return;
     list.commands.push_back(command);
 }
 
@@ -1969,10 +1974,12 @@ ${options.nodeGeometryViews
         const std::uint32_t item_index =
             static_cast<std::uint32_t>(
                 std::distance(items.begin(), found));
+        auto overridden = bind_render_item(*found, engine, entry.material);
+        overridden.material_override = true;
         append_draw(
             result,
             item_index,
-            bind_render_item(*found, engine, entry.material),
+            overridden,
             engine);
     }
     order_draw_lists(result);
@@ -2060,7 +2067,7 @@ void sort_transparent_draws(
         });
     transparent.commands.clear();
     for (const RenderDrawCommand& command : commands) {
-        if (mesh_draws(engine.meshes.at(command.item.mesh.value))) {
+        if (mesh_draws(engine.meshes.at(command.item.mesh.value)) && render_item_material_draws(command.item, engine)) {
             transparent.commands.push_back(command);
         }
     }
@@ -2099,13 +2106,13 @@ ${options.meshProfiles ? `            mesh.composition_feature_row = next_row < 
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
     RenderPlan result;
     result.items.reserve(scene.meshes.size());
-    for (const MeshHandle handle : scene.meshes) {
+    const auto append_item = [&](MeshHandle handle, MaterialHandle material, SourceMaterialDrawGuard guard) {
         if (handle.value >= engine.meshes.size()) {
-            continue;
+            return;
         }
         const MeshRecord& mesh = engine.meshes[handle.value];
         if (mesh.geometry >= engine.geometries.size()) {
-            continue;
+            return;
         }
         RenderItem item;
         item.mesh = handle;
@@ -2114,11 +2121,19 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
             mesh.clockwise_front_face;
         item.topology = engine.geometries[mesh.geometry].topology;
         RenderItem bound =
-            bind_render_item(item, engine, mesh.material);
+            bind_render_item(item, engine, material);
+        bound.material_guard = guard;
         bound.order = mesh.has_render_order
             ? mesh.render_order
             : default_render_order(bound);
         result.items.push_back(bound);
+    };
+    if (scene.state->source_material_publication) {
+        for (const auto& output : scene.state->material_outputs) append_item(output->mesh, output->material, output->guard);
+    } else {
+        for (const auto handle : scene.meshes) {
+            if (handle.value < engine.meshes.size()) append_item(handle, engine.meshes[handle.value].material, nullptr);
+        }
     }
     result.draw_lists =
         build_render_draw_lists(result.items, engine);
@@ -2397,6 +2412,18 @@ bool pick_candidate(const MeshRecord& mesh) {
         return mesh.visible &&
             (!mesh.thin_instanced || mesh.instance_count != 0);
     }
+
+bool render_item_material_draws(const RenderItem& item, const Engine& engine) {
+    return !item.material_guard || item.material_guard(engine.meshes.at(item.mesh.value).material, item.material, item.material_override);
+}
+
+bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
+    if (!item.material_guard || item.material_override) return true;
+    // Ordinary opaque commands replay the source bundle. Direct and transparent
+    // bindings evaluate their captured-material guard on every source draw.
+    return (item.bucket != RenderBucket::alpha_blend && !item.transmissive &&
+        !engine.meshes.at(item.mesh.value).thin_instance_gpu_culling) || render_item_material_draws(item, engine);
+}
 
 // src/render/lights-ubo.ts affectsMesh.
 bool light_affects_mesh(

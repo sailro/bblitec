@@ -1,7 +1,9 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
+
 import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
 
 const modulePath = "src/physics/havok.ts";
 
@@ -89,16 +91,16 @@ export function lowerPhysicsMesh(context: LoweringContext): { helpers: string; s
     const lanes = (statement.expression as ts.CallExpression).arguments.map(node => `static_cast<float>(${numeric.expression(node)})`);
     const scale = context.functionDeclaration("src/math/mat4-scale.ts", "mat4Scale");
     context.assertExpressionShape(context.variableInitializer(scale.declaration, "out"), "allocateMat4() as unknown as Mat4Storage", "Physics root scale allocation");
-    const scaleNumeric = new PinnedNumericLowerer(scale.file, {
+
+    const scaleBody = lowerPinnedBody(scale.file, scale.declaration.body!.statements, {
         bindings: new Map([...bindings].filter(([key]) => key !== "m").concat([["out", { cpp: "out", type: "f32", mutable: true }]])),
         calls: new Map(),
-        returnValue: expression => {
+        returnValue: (expression) => {
             if (!expression) context.contractError(scale.declaration, "Physics scale return changed.");
             context.assertExpressionShape(expression, "out as unknown as Mat4", "Physics scale result");
             return "out";
         },
     });
-    const scaleBody = scale.declaration.body!.statements.flatMap(node => scaleNumeric.statement(node, "    ")).join("\n");
     return {
         helpers: `
 ${lowerMat4InvertCpp(context)}

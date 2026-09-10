@@ -1,26 +1,10 @@
-// The compressed-texture loader: a KTX1 container parsed at load, and the
-// pinned GL-format table it resolves against.
-//
-// `.ktx` is the `.env` case rather than the `.hdr` case. The file already
-// carries GPU blocks and its own mip chain, so there is no browser work to
-// reproduce and nothing for generation to compute: what the pin does at
-// page load — validate the header, slice the mip chain, look the format up
-// — the generated loader does at startup, exactly as the environment
-// container parser does. What generation DOES settle is which file to
-// fetch, because `loadKtxTexture2D` picks its suffix from the device's
-// compressed-format features and the native runtime has no network to fetch
-// a second candidate with.
-//
-// The format table is the pin's own. `compressed-formats.ts` builds it with
-// one `add(gl, gpuFormat, feature, blockW, blockH, blockBytes)` call per
-// entry, and the rows this port emits are the block-compressed ones both
-// backends bind — D3D12 is what a WebGPU adapter reports
-// `texture-compression-bc` on, and ETC2/ASTC are absent there. Emitting
-// only those rows is the same tree shaking the rest of generation performs,
-// and it puts the refusal at the pin's own `if (!format) throw` rather than
-// at an upload that cannot name what it was handed.
+
+// Generation executes the pinned KTX parser and packages its mip descriptors.
+// The native reader views those blocks; format and sampler rules come from the pin.
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { compressedTextureFormat as layout } from "../compressed-texture-format.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 const KTX_MODULE = "src/texture/ktx-loader.ts";
 const FORMATS_MODULE = "src/texture/compressed-formats.ts";
@@ -534,8 +518,7 @@ export class CompressedTextureLowerer {
 
     public lower(): LoweredSource {
         const rows = this.formatRows();
-        const magic = this.magicBytes();
-        const header = this.headerLayout();
+        const magic = [...layout.magic].map(character => character.charCodeAt(0));
         // The pinned upload's own two sampler rules, asserted where it
         // states them: the mip filter follows the chain the container
         // carried, and anisotropy follows every filter in that chain being
@@ -555,10 +538,6 @@ export class CompressedTextureLowerer {
             'minF === "linear" && magF === "linear" && mipF === "linear"',
             "KTX sampler all-linear test",
         );
-        // The pin writes its own constants in hex; an emitted `0x4030201`
-        // is the same number and a worse quotation of it.
-        const hex32 = (value: number): string =>
-            `0x${value.toString(16).padStart(8, "0")}u`;
         const rowLiterals = rows
             .map(
                 (row) =>
@@ -570,17 +549,7 @@ export class CompressedTextureLowerer {
         return {
             modulePath: KTX_MODULE,
             symbolName: "loadKtxTexture2D",
-            header: `#pragma once
-
-#include <bblite/runtime.hpp>
-
-#include <array>
-#include <cstdint>
-#include <string_view>
-#include <vector>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/runtime.hpp>","","<array>","<cstdint>","<string_view>","<vector>"], `
 /**
  * One row of the pinned GL-internal-format table
  * (src/texture/compressed-formats.ts), block-compression rows only.
@@ -602,11 +571,9 @@ ${rowLiterals}
 const CompressedFormatInfo* compressed_format_for_gl(
     std::uint32_t gl_internal_format);
 
-/** parseKtx1: the container's blocks, mip by mip. */
-CompressedTexture parse_ktx1(const std::vector<std::uint8_t>& bytes);
-
-} // namespace bbl::upstream
-`,
+/** Views of the mip list recorded by the pinned parser at generation. */
+CompressedTexture read_compressed_texture(std::vector<std::uint8_t> container);
+`),
             source: `// ${this.context.provenance(
                 KTX_MODULE,
                 "parseKtx1",
@@ -623,7 +590,7 @@ CompressedTexture parse_ktx1(const std::vector<std::uint8_t>& bytes);
 namespace bbl::upstream {
 namespace {
 
-constexpr std::array<std::uint8_t, ${magic.length}> ktx_magic{
+constexpr std::array<std::uint8_t, ${magic.length}> package_magic{
 ${magic
     .map((byte) => `    0x${byte.toString(16).padStart(2, "0")},`)
     .join("\n")}
@@ -661,99 +628,39 @@ const CompressedFormatInfo* compressed_format_for_gl(
     return nullptr;
 }
 
-CompressedTexture parse_ktx1(const std::vector<std::uint8_t>& bytes) {
-    if (bytes.size() < ${header.headerSize}) {
-        throw std::runtime_error("KTX: file too small");
-    }
-    for (std::size_t index = 0; index < ktx_magic.size(); ++index) {
-        if (bytes[index] != ktx_magic[index]) {
-            throw std::runtime_error("KTX: invalid magic");
-        }
-    }
-    if (read_u32(bytes, ${header.endianness.offset}) != ${hex32(
-      header.endianness.expected,
-  )}) {
-        throw std::runtime_error("KTX: unsupported endianness");
-    }
-    if (read_u32(bytes, ${header.glType.offset}) != ${header.glType.expected}u) {
-        throw std::runtime_error(
-            "KTX: not a compressed texture (glType != 0)");
-    }
-    if (read_u32(bytes, ${header.glFormat.offset}) != ${header.glFormat.expected}u) {
-        throw std::runtime_error(
-            "KTX: not a compressed texture (glFormat != 0)");
-    }
-    const std::uint32_t gl_internal_format =
-        read_u32(bytes, ${header.glInternalFormat});
-    const CompressedFormatInfo* format =
-        compressed_format_for_gl(gl_internal_format);
-    if (!format) {
-        // The pin's own refusal, over the rows this build compiled: the
-        // block-compression table, which is what a D3D12 device reports.
-        throw std::runtime_error(
-            "KTX: unknown glInternalFormat " + hex(gl_internal_format));
-    }
+CompressedTexture read_compressed_texture(std::vector<std::uint8_t> container) {
     CompressedTexture texture;
+    texture.storage = std::make_shared<const std::vector<std::uint8_t>>(std::move(container));
+    const auto& bytes = *texture.storage;
+    if (bytes.size() < ${layout.headerBytes} ||
+        !std::equal(package_magic.begin(), package_magic.end(), bytes.begin())) {
+        throw std::runtime_error("Compressed texture: invalid packaged header");
+    }
+    const auto gl_format = read_u32(bytes, ${layout.glFormat});
+    const auto* format = compressed_format_for_gl(gl_format);
+    if (!format) throw std::runtime_error("Compressed texture: unknown format " + hex(gl_format));
     texture.format = format->gpu_format;
     texture.block_width = format->block_width;
     texture.block_height = format->block_height;
     texture.block_bytes = format->block_bytes;
-    texture.width = read_u32(bytes, ${header.width});
-    texture.height = read_u32(bytes, ${header.height});
-    const std::uint32_t pixel_depth = read_u32(bytes, ${header.pixelDepth});
-    const std::uint32_t array_elements =
-        read_u32(bytes, ${header.arrayElements});
-    const std::uint32_t faces = read_u32(bytes, ${header.faces});
-    const std::uint32_t levels =
-        std::max(read_u32(bytes, ${header.mipLevels}), 1u);
-    const std::uint32_t key_value_bytes =
-        read_u32(bytes, ${header.keyValueBytes});
-    if (pixel_depth > 0) {
-        throw std::runtime_error("KTX: 3D textures not supported");
+    texture.width = read_u32(bytes, ${layout.width});
+    texture.height = read_u32(bytes, ${layout.height});
+    const auto levels = read_u32(bytes, ${layout.mipCount});
+    if (!levels || levels > (bytes.size() - ${layout.headerBytes}) / ${layout.mipBytes}) {
+        throw std::runtime_error("Compressed texture: invalid mip table");
     }
-    if (array_elements > 0) {
-        throw std::runtime_error("KTX: texture arrays not supported");
-    }
-    if (faces != 1) {
-        throw std::runtime_error(
-            "KTX: cubemaps not supported (use loadCubeTexture)");
-    }
-    std::size_t offset =
-        ${header.headerSize} + static_cast<std::size_t>(key_value_bytes);
-    if (offset > bytes.size()) {
-        throw std::runtime_error("KTX: key/value data overflows buffer");
-    }
-    std::uint32_t mip_width = texture.width;
-    std::uint32_t mip_height = texture.height;
+    const std::size_t table_end = ${layout.headerBytes} + static_cast<std::size_t>(levels) * ${layout.mipBytes};
+    texture.mips.reserve(levels);
     for (std::uint32_t level = 0; level < levels; ++level) {
-        if (offset + 4 > bytes.size()) {
-            throw std::runtime_error(
-                "KTX: truncated at mip " + std::to_string(level) +
-                " size field");
+        const std::size_t entry = ${layout.headerBytes} + static_cast<std::size_t>(level) * ${layout.mipBytes};
+        const auto offset = read_u32(bytes, entry + ${layout.mipOffset});
+        const auto length = read_u32(bytes, entry + ${layout.mipLength});
+        if (offset < table_end || offset > bytes.size() || length > bytes.size() - offset) {
+            throw std::runtime_error("Compressed texture: mip data exceeds payload");
         }
-        const std::uint32_t image_size = read_u32(bytes, offset);
-        offset += 4;
-        if (offset + image_size > bytes.size()) {
-            throw std::runtime_error(
-                "KTX: mip " + std::to_string(level) +
-                " data overflows buffer");
-        }
-        CompressedMipLevel mip;
-        mip.width = mip_width;
-        mip.height = mip_height;
-        mip.bytes.assign(
-            bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-            bytes.begin() +
-                static_cast<std::ptrdiff_t>(offset + image_size));
-        texture.mips.push_back(std::move(mip));
-        offset += image_size;
-        // The pin's own four-byte alignment between levels.
-        offset = (offset + 3) & ~static_cast<std::size_t>(3);
-        mip_width = std::max(1u, mip_width >> 1);
-        mip_height = std::max(1u, mip_height >> 1);
-    }
-    if (texture.mips.empty()) {
-        throw std::runtime_error("KTX: no mip levels found");
+        texture.mips.push_back({read_u32(bytes, entry + ${layout.mipWidth}),
+            read_u32(bytes, entry + ${layout.mipHeight}),
+            std::span<const std::uint8_t>(bytes).subspan(offset, length)});
     }
     return texture;
 }
@@ -774,7 +681,7 @@ FileTexture load_compressed_texture(
     bool invert_y) {
     FileTexture texture;
     texture.data.compressed =
-        upstream::parse_ktx1(pal::read_binary_file(path));
+        upstream::read_compressed_texture(pal::read_binary_file(path));
     const bool chain = texture.data.compressed.mips.size() > 1;
     texture.data.sampler = TextureSamplerState{
         TextureFilter::linear,

@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.24)
+get_filename_component(BBLITE_NATIVE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../native" ABSOLUTE)
+set(BBLITE_MINSIZE ON)
+set(BBLITE_VISUAL_CAPTURE OFF)
+include("${BBLITE_GENERATED_DIR}/features.cmake")
+include("${BBLITE_NATIVE_ROOT}/dependency-features.cmake")
+list(REMOVE_DUPLICATES VCPKG_MANIFEST_FEATURES)
+list(SORT VCPKG_MANIFEST_FEATURES)
+file(WRITE "${BBLITE_PROFILE_OUTPUT}"
+    "features=${VCPKG_MANIFEST_FEATURES}\ncodecs=${BBLITE_IMAGE_CODECS}\nruntime=${BBLITE_RUNTIME_FEATURES}\n")

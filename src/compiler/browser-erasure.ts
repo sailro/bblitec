@@ -1,3 +1,16 @@
+import { emissionArray, EmissionSet, EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+// Browser-only expression erasure.
+//
+// A pinned scene reaches browser objects -- console, document, window,
+// performance, URLSearchParams -- that have no native counterpart, so
+// the compiler erases those expressions instead of lowering them. This
+// module answers the three questions that erasure turns on: whether an
+// expression is browser-only, what value it evaluates to at compile
+// time (window.location.search is always empty, so a query flag reads
+// as unset and a condition over it folds to the branch the native
+// scene keeps), and whether a call is browser instrumentation that is
+// erased outright.
 // Browser-only expression erasure.
 //
 // A pinned scene reaches browser objects -- console, document, window,
@@ -54,7 +67,7 @@ export function isNumberParserCallee(
     );
 }
 
-const NATIVE_DOM_BRIDGE_KINDS = new Set<Value["kind"]>([
+const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "audio-engine",
     "audio-buffer",
     "audio-context",
@@ -76,40 +89,27 @@ const NATIVE_DOM_BRIDGE_KINDS = new Set<Value["kind"]>([
     "offscreen-canvas",
 ]);
 
-export interface BrowserErasureContext {
-    isNativeWorkerExpression(expression: ts.Expression): boolean;
-    unwrap(expression: ts.Expression): ts.Expression;
-    canvasSizeProperty(
-        expression: ts.Expression,
-    ): "width" | "height" | undefined;
-    isCanvasElement(expression: ts.Expression): boolean;
-    lookupOptional(
-        identifier: ts.Identifier,
-    ): Value | undefined;
-    resolveThisField(name: string): Value | undefined;
-    isDefaultLibraryIdentifier(
-        identifier: ts.Identifier,
-    ): boolean;
-    isBrowserDomValue(expression: ts.Expression): boolean;
-    isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
-    isNativeUiHelperCall(call: ts.CallExpression): boolean;
-    isNativeHostUiLookup(call: ts.CallExpression): boolean;
-    isBrowserOnlyNullableClassFactoryCall(
-        call: ts.CallExpression,
-    ): boolean;
-    isNativeUiValueExpression(expression: ts.Expression): boolean;
-    isNativeBrowserFileExpression(expression: ts.Expression): boolean;
-    /** Runtime visibility callback parameter, while compiling its body. */
-    platformDocumentHidden(): string | undefined;
-    /** The query string the reference pose is captured at. */
-    referenceSearch(): string;
-    constantInitializer(
-        identifier: ts.Identifier,
-    ): ts.Expression | undefined;
-    moduleFunctionDeclaration(
-        identifier: ts.Identifier,
-    ): ts.FunctionDeclaration | undefined;
-}
+export interface BrowserErasureContext
+    extends Pick<LoweringServices,
+        | "isNativeWorkerExpression"
+        | "unwrap"
+        | "canvasSizeProperty"
+        | "isCanvasElement"
+        | "lookupOptional"
+        | "resolveThisField"
+        | "isDefaultLibraryIdentifier"
+        | "isBrowserDomValue"
+        | "isBrowserOnlyLocalCall"
+        | "isNativeUiHelperCall"
+        | "isNativeHostUiLookup"
+        | "isBrowserOnlyNullableClassFactoryCall"
+        | "isNativeUiValueExpression"
+        | "isNativeBrowserFileExpression"
+        | "platformDocumentHidden"
+        | "referenceSearch"
+        | "constantInitializer"
+        | "moduleFunctionDeclaration"
+    > {}
 
 /**
  * What walking a helper body produced: a value it returned, or the fact
@@ -173,7 +173,7 @@ export class BrowserErasure {
     private readonly helperBodies: {
         body: ts.Block;
         bindings: Map<string, NonNullable<Value["browserValue"]>>;
-    }[] = [];
+    }[] = emissionArray([]);
 
     /**
      * What each helper body answered, once. A zero-argument module helper
@@ -181,7 +181,7 @@ export class BrowserErasure {
      * `isBrowserOnlyExpression` asks about the same call many times while
      * an expression is lowered.
      */
-    private readonly helperResults = new Map<
+    private readonly helperResults = new EmissionMap<
         ts.FunctionDeclaration,
         Value["browserValue"] | undefined
     >();
@@ -919,7 +919,7 @@ export class BrowserErasure {
                       )
                     : left;
             }
-            const numeric = new Map<
+            const numeric = new EmissionMap<
                 ts.SyntaxKind,
                 (a: number, b: number) => number
             >([
@@ -1313,7 +1313,7 @@ export class BrowserErasure {
         if (this.helperResults.has(declaration)) {
             return this.helperResults.get(declaration);
         }
-        this.helperBodies.push({ body, bindings: new Map() });
+        this.helperBodies.push({ body, bindings: new EmissionMap() });
         let result: Value["browserValue"] | undefined;
         try {
             if (this.readsBrowserState(body)) {

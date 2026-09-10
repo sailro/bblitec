@@ -24,11 +24,8 @@ import {
     pinnedDefaultForDiscard,
     type PinnedMaterialDefault,
 } from "./pinned-material-defaults.js";
-import {
-    PINNED_BOOLEAN_OPERATORS,
-    PINNED_MATH_FUNCTIONS,
-    pinnedRemainderCall,
-} from "./pinned-operators.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 
 export interface UboFieldSlot {
     /** The composer's field name. */
@@ -736,35 +733,34 @@ function vectorMember(
     return member;
 }
 
+const numericWriters = new WeakMap<WriterState, PinnedNumericLowerer>();
+const writerMathCalls = pinnedNumericMathCalls("deduced");
+
 function emitExpression(state: WriterState, expression: ts.Expression): string {
+    let lowerer = numericWriters.get(state);
+    if (!lowerer) {
+        lowerer = new PinnedNumericLowerer(state.file, {
+            bindings: new Map(), calls: writerMathCalls, booleanOr: true, booleanAnd: true,
+            foldConditions: false,
+            expressionSpelling: {
+                parentheses: "source",
+                numeric: node => /[.e]/i.test(node.text) ? node.text + "f" : node.text + ".0f",
+            },
+            expression: node => emitRecordExpression(state, node),
+        });
+        numericWriters.set(state, lowerer);
+    }
+    return lowerer.expression(expression);
+}
+
+function emitRecordExpression(state: WriterState, expression: ts.Expression): string | undefined {
     const node = expression;
-    if (ts.isParenthesizedExpression(node)) {
-        return `(${emitExpression(state, node.expression)})`;
-    }
-    if (ts.isNonNullExpression(node)) {
-        return emitExpression(state, node.expression);
-    }
     if (ts.isArrayLiteralExpression(node)) {
         return `{${
             node.elements
                 .map((element) => emitExpression(state, element))
                 .join(", ")
         }}`;
-    }
-    if (ts.isNumericLiteral(node)) {
-        const text = node.text;
-        return /[.e]/i.test(text) ? `${text}f` : `${text}.0f`;
-    }
-    // A writer comparing one of our own booleans against a literal — the
-    // pin's `usePhysicalLightFalloff === false ? 0 : 1`. The operand already
-    // lowered to a native `bool`, so the literal is C++'s own.
-    if (node.kind === ts.SyntaxKind.TrueKeyword) return "true";
-    if (node.kind === ts.SyntaxKind.FalseKeyword) return "false";
-    if (
-        ts.isPrefixUnaryExpression(node) &&
-        node.operator === ts.SyntaxKind.MinusToken
-    ) {
-        return `-${emitExpression(state, node.operand)}`;
     }
     // `cc.intensity ?? 1` — the record always carries a value, so the fallback
     // the pin applies to an absent JavaScript property is unreachable and the
@@ -787,26 +783,6 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         // from before throwing it away.
         assertDiscardedPinnedDefault(state, node);
         return emitExpression(state, node.left);
-    }
-    if (ts.isBinaryExpression(node)) {
-        if (node.operatorToken.kind === ts.SyntaxKind.PercentToken) {
-            return pinnedRemainderCall(
-                emitExpression(state, node.left),
-                emitExpression(state, node.right),
-            );
-        }
-        // A writer's `||` is a boolean guard, so it lowers to C++'s own.
-        const operator = PINNED_BOOLEAN_OPERATORS.get(
-            node.operatorToken.kind,
-        );
-        if (!operator) {
-            throw new Error(
-                `Unsupported operator in pinned ${state.request.symbolName}: ` +
-                    `${node.getText(state.file)}.`,
-            );
-        }
-        return `${emitExpression(state, node.left)} ${operator} ` +
-            `${emitExpression(state, node.right)}`;
     }
     // `sh.texture ? 1 : 0` and `mrc ? mrc[0] : 1`. The first is a real
     // presence test and lowers as one; the second guards a JavaScript property
@@ -832,9 +808,6 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         if (guardsVectorLocal) {
             return emitExpression(state, node.whenTrue);
         }
-        return `(${emitExpression(state, condition)} ? ${
-            emitExpression(state, node.whenTrue)
-        } : ${emitExpression(state, node.whenFalse)})`;
     }
     if (ts.isIdentifier(node)) {
         if (state.locals.has(node.text)) return node.text;
@@ -847,26 +820,6 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
             `Pinned ${state.request.symbolName} reads '${node.text}', which is ` +
                 "neither a lowered local nor a named source.",
         );
-    }
-    if (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Math"
-    ) {
-        const name = node.expression.name.getText();
-        const mapped = PINNED_MATH_FUNCTIONS[name];
-        if (!mapped) {
-            throw new Error(
-                `Pinned ${state.request.symbolName} calls Math.${name}, which ` +
-                    "has no lowering.",
-            );
-        }
-        return `${mapped}(${
-            node.arguments
-                .map((argument) => emitExpression(state, argument))
-                .join(", ")
-        })`;
     }
     if (
         ts.isElementAccessExpression(node) &&
@@ -952,10 +905,7 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         }
         return source;
     }
-    throw new Error(
-        `Unsupported expression in pinned ${state.request.symbolName}: ` +
-            `${node.getText(state.file)}.`,
-    );
+    return undefined;
 }
 
 /**

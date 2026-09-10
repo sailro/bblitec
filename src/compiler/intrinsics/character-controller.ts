@@ -1,14 +1,20 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import { validateObjectProperties } from "../option-helpers.js";
 import type { PhysicsIntrinsicContext } from "./physics.js";
 
-interface CharacterIntrinsicContext extends PhysicsIntrinsicContext {
-    compilePhysicsCharacterCallback(expression: ts.Expression): string;
-}
+interface CharacterOptionsContext extends Pick<LoweringServices,
+    "expectObjectLiteral" | "objectProperty" | "compileNumber" | "fail" | "propertyName"
+> {}
 
-function options(context: PhysicsIntrinsicContext, expression: ts.Expression): string {
+export interface CharacterIntrinsicContext extends CharacterOptionsContext, Pick<LoweringServices,
+    "allocateTemporaryCppName" | "emit" | "expectArgumentCount" |
+    "compilePhysicsCharacterCallback" | "compileVec3" | "compileBoolean"
+> {}
+
+function options(context: CharacterOptionsContext, expression: ts.Expression): string {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(context, object, ["capsuleHeight", "capsuleRadius"], "Character options must describe the capsule height and radius.");
     const field = (name: string): string => {
@@ -18,14 +24,14 @@ function options(context: PhysicsIntrinsicContext, expression: ts.Expression): s
     return `bbl::character::options(${field("capsuleHeight")}, ${field("capsuleRadius")})`;
 }
 
-export function characterVectorValue(cpp: string): Value {
+export function characterVectorValue(cpp: string): Value<"record"> {
     return { kind: "record", cpp: "", recordProperties: Object.fromEntries(["x", "y", "z"].map(axis => [axis, { kind: "number", cpp: `${cpp}->${axis}` } satisfies Value])) };
 }
 
 /** Preserve the Vec3 reference returned by the pin before another expression can rebind its controller. */
-function retainCharacterVector(context: PhysicsIntrinsicContext, cpp: string): Value {
+function retainCharacterVector(context: Pick<LoweringServices, "allocateTemporaryCppName" | "emit">, cpp: string): Value {
     const owner = context.allocateTemporaryCppName("character_vector");
-    context.emit(`[[maybe_unused]] const auto ${owner} = ${cpp};`);
+    context.emit({ kind: "declaration", type: "const auto", name: owner, initializer: cpp, attributes: "[[maybe_unused]] " });
     return { ...characterVectorValue(owner), retainedNativeRecord: true };
 }
 

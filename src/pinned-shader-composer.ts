@@ -304,7 +304,17 @@ export function pinnedModuleUrl(
     extraExports: readonly string[] = [],
     redirects: ReadonlyMap<string, string> = new Map(),
 ): string {
-    const anchored = anchorPinnedSpecifiers(join(pinnedLibraryRoot(), relativePath), redirects);
+    return pinnedModuleTextUrl(relativePath, readPinnedLibraryModule(relativePath), extraExports, redirects);
+}
+
+/** Anchor a transformed pinned module against its original import directory. */
+export function pinnedModuleTextUrl(
+    relativePath: string,
+    source: string,
+    extraExports: readonly string[] = [],
+    redirects: ReadonlyMap<string, string> = new Map(),
+): string {
+    const anchored = anchorSpecifiersInText(source, join(pinnedLibraryRoot(), relativePath), redirects);
     return javascriptModuleUrl(anchored +
         (extraExports.length ? `\nexport { ${extraExports.join(", ")} };\n` : ""));
 }
@@ -466,7 +476,7 @@ function anchorSpecifiersInText(
     shims: ReadonlyMap<string, string> = new Map(),
 ): string {
     return text.replace(
-        /(from\s*|import\()(["'])(\.\.?\/[^"']+)\2/g,
+        /(from\s*|import\(\s*|import\s*)(["'])(\.\.?\/[^"']+)\2/g,
         (_match, keyword: string, quote: string, specifier: string) =>
             `${keyword}${quote}${
                 shims.get(specifier) ??

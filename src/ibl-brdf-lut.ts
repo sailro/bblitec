@@ -44,7 +44,7 @@ export function getIblBrdfLutProvenance() {
 // The chunk file name carries a content hash, so it is resolved through
 // the import in ibl-env-assembly.js — the same module whose
 // generateBrdfLut dispatch this harness mirrors — rather than hard-coded.
-function loadPinnedBrdfLutShader(): string {
+export function loadPinnedBrdfLutShader(): string {
     const packageRoot = resolve(
         findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
         "node_modules",

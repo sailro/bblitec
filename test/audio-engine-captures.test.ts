@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+
+const tools = optionalNativeFixtureTools(false);
 
 function checkMainBusStorage(declarations: string): void {
     const result = compileSource(`
@@ -16,36 +22,50 @@ function checkMainBusStorage(declarations: string): void {
             actions.add(() => { void controls.start(); });
             actions.add(() => { controls.connect(); });
             actions.add(() => { controls.reset(); });
-            for (const action of actions) action();
+            for (let run = 0; run < 2; run++) {
+                for (const action of actions) action();
+                controls.connect();
+            }
         }
         void main();
     `);
 
-    const storage = result.cpp.match(
-        /auto (\w+) = bbl::js::make_gc_shared<bbl::pal::AudioNodeHandle>\(bbl::pal::AudioNodeHandle\{\}\);/,
-    )?.[1];
-    assert.ok(storage, "the mutable engine owns stable main-bus storage");
-    assert.equal(
-        result.cpp.match(new RegExp(`std::tuple\\{[^}\\n]*\\b${storage}\\b`, "g"))?.length,
-        3,
-        "all sibling callbacks retain the same main-bus cell",
-    );
-    assert.doesNotMatch(result.cpp, new RegExp(`std::ref\\(${storage}\\)`));
-    assert.match(result.cpp, new RegExp(
-        `\\(\\*${storage}\\) = v_bblite_audio_engine_\\d+_main_bus;`,
-    ));
-    assert.match(result.cpp, new RegExp(
-        `bbl::pal::audio_connect\\(\\w+, \\(\\*${storage}\\)\\);`,
-    ));
-    assert.match(result.cpp, new RegExp(
-        `\\(\\*${storage}\\) = bbl::pal::AudioNodeHandle\\{\\};`,
-    ));
-    assert.doesNotMatch(result.cpp,
-        /std::tuple\{[^}\n]*v_bblite_audio_engine_\d+_main_bus/,
-        "producer-local main buses never escape into sibling capture environments");
+    const output = resolve("artifacts/audio-engine-captures-check");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "program.hpp"), result.cpp);
+    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
+    writeFileSync(file, `
+        #define main generated_main
+        #include "program.hpp"
+        #undef main
+        #include <cassert>
+        namespace {
+            unsigned int contexts = 0, nodes = 0;
+            std::vector<std::pair<unsigned int, unsigned int>> edges;
+        }
+        namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+        namespace bbl::pal {
+            AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>&) { return {++contexts}; }
+            AudioNodeHandle audio_create_gain(AudioContextHandle context) {
+                assert(context.value == contexts);
+                return {++nodes, {}};
+            }
+            AudioNodeHandle audio_destination(AudioContextHandle context) { return {100 + context.value, {}}; }
+            void audio_connect(AudioNodeHandle source, AudioNodeHandle target) { edges.emplace_back(source.value, target.value); }
+        }
+        int main() {
+            assert(generated_main() == 0);
+            const std::vector<std::pair<unsigned int, unsigned int>> expected{
+                {1, 101}, {2, 1}, {4, 2}, {3, 4}, {5, 102}, {6, 5}, {8, 6}, {7, 8}};
+            assert(contexts == 2 && nodes == 8 && edges == expected);
+        }
+    `);
+    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include", file]);
+    assert.equal(execFileSync(executable, { encoding: "utf8" }).trim(), "");
 }
 
-test("keeps an assigned audio engine's main bus in its factory closure storage", () => {
+test("keeps an assigned audio engine's main bus in its factory closure storage", { skip: !tools }, () => {
     checkMainBusStorage(`
         function createControls() {
             let audio: AudioEngine | null = null;
@@ -63,7 +83,7 @@ test("keeps an assigned audio engine's main bus in its factory closure storage",
     `);
 });
 
-test("keeps an assigned audio engine's main bus in its class field storage", () => {
+test("keeps an assigned audio engine's main bus in its class field storage", { skip: !tools }, () => {
     checkMainBusStorage(`
         class Controls {
             private audio: AudioEngine | null = null;

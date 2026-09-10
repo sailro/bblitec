@@ -1,33 +1,26 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { handleCppType, type DataType } from "../data-types.js";
+import { handleCppType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { handleFoundCpp } from "../properties.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface SkeletonIntrinsicContext
-    extends IntrinsicCallContext {
-    allocateTemporaryCppName(label: string): string;
-    emit(line: string): void;
-    cppString(value: string): string;
-    compileStringLiteral(expression: ts.Expression): string;
-    compileCondition(expression: ts.Expression): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    // The typed-array sink in its general form rather than the mesh
-    // family's `compileTypedArrayArgument`, whose kind union does not
-    // carry the u16 joint stream `createSkeleton` takes.
-    compileForDataSink(
-        expression: ts.Expression,
-        dataType: DataType,
-    ): string;
-    requireEngine(value: Value, node: ts.Node): string;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    gltfAlreadyLoaded(): boolean;
-    fail(node: ts.Node, message: string): never;
-}
+    extends IntrinsicCallContext,
+    Pick<LoweringServices,
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "cppString"
+        | "compileStringLiteral"
+        | "compileCondition"
+        | "compileNumber"
+        | "compileForDataSink"
+        | "requireEngine"
+        | "expectSameEngine"
+        | "gltfAlreadyLoaded"
+        | "fail"
+    > {}
 
 /**
  * The bone palette, read WITHOUT marking the caller's array escaped.

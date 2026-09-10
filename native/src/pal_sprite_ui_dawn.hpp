@@ -93,10 +93,9 @@ fn fs_texture(input: VertexOutput) -> @location(0) vec4<f32> {
     WGPUShaderModuleDescriptor descriptor{};
     descriptor.nextInChain = &wgsl.chain;
     descriptor.label = string_view("bblite-sprite-ui");
-    WGPUShaderModule module =
-        wgpuDeviceCreateShaderModule(device, &descriptor);
+    DawnShaderModule module{wgpuDeviceCreateShaderModule(device, &descriptor)};
     if (!module) dawn_error("wgpuDeviceCreateShaderModule sprite UI");
-    return module;
+    return module.release();
 }
 
 inline WGPURenderPipeline create_sprite_ui_dawn_pipeline(
@@ -152,10 +151,9 @@ inline WGPURenderPipeline create_sprite_ui_dawn_pipeline(
     descriptor.primitive.cullMode = WGPUCullMode_None;
     descriptor.multisample.count = 1;
     descriptor.multisample.mask = ~0u;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(device, &descriptor)};
     if (!pipeline) dawn_error("wgpuDeviceCreateRenderPipeline sprite UI");
-    return pipeline;
+    return pipeline.release();
 }
 
 inline WGPUBuffer create_sprite_ui_dawn_buffer(
@@ -165,9 +163,9 @@ inline WGPUBuffer create_sprite_ui_dawn_buffer(
     WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     descriptor.usage = usage | WGPUBufferUsage_CopyDst;
     descriptor.size = (size + 3) & ~3ull;
-    WGPUBuffer buffer = wgpuDeviceCreateBuffer(device, &descriptor);
+    DawnBuffer buffer{wgpuDeviceCreateBuffer(device, &descriptor)};
     if (!buffer) dawn_error("wgpuDeviceCreateBuffer sprite UI");
-    return buffer;
+    return buffer.release();
 }
 
 inline WGPUBindGroup create_sprite_ui_dawn_texture_group(
@@ -186,10 +184,9 @@ inline WGPUBindGroup create_sprite_ui_dawn_texture_group(
     descriptor.layout = ui.texture_layout;
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    WGPUBindGroup group =
-        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    DawnBindGroup group{wgpuDeviceCreateBindGroup(state.device, &descriptor)};
     if (!group) dawn_error("wgpuDeviceCreateBindGroup sprite UI texture");
-    return group;
+    return group.release();
 }
 
 inline void create_sprite_ui_dawn_resources(
@@ -246,8 +243,8 @@ inline void create_sprite_ui_dawn_resources(
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     color_layout_descriptor.bindGroupLayoutCount = 1;
     color_layout_descriptor.bindGroupLayouts = &ui.screen_layout;
-    WGPUPipelineLayout color_layout = wgpuDeviceCreatePipelineLayout(
-        state.device, &color_layout_descriptor);
+    DawnPipelineLayout color_layout{wgpuDeviceCreatePipelineLayout(
+        state.device, &color_layout_descriptor)};
     if (!color_layout) dawn_error("sprite UI color pipeline layout");
     ui.color_pipeline = create_sprite_ui_dawn_pipeline(
         state.device,
@@ -261,7 +258,7 @@ inline void create_sprite_ui_dawn_resources(
         "fs_texture",
         state.surface_format,
         ui.texture_pipeline_layout);
-    wgpuPipelineLayoutRelease(color_layout);
+    color_layout.reset();
     wgpuShaderModuleRelease(module);
 
     WGPUSamplerDescriptor sampler = WGPU_SAMPLER_DESCRIPTOR_INIT;
@@ -391,7 +388,7 @@ inline void render_sprite_ui_dawn_frame(
             source.rgba->size(),
             source.width,
             source.height);
-        texture.view = wgpuTextureCreateView(texture.texture, nullptr);
+        texture.view = create_dawn_texture_view(texture.texture, nullptr);
         if (!texture.view) dawn_error("wgpuTextureCreateView sprite UI");
         texture.group = create_sprite_ui_dawn_texture_group(
             state, ui, texture.view, ui.sampler);
@@ -413,8 +410,7 @@ inline void render_sprite_ui_dawn_frame(
         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     descriptor.colorAttachmentCount = 1;
     descriptor.colorAttachments = &attachment;
-    WGPURenderPassEncoder pass =
-        wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
     wgpuRenderPassEncoderSetBindGroup(
         pass, 0, ui.screen_group, 0, nullptr);
     wgpuRenderPassEncoderSetVertexBuffer(
@@ -459,7 +455,7 @@ inline void render_sprite_ui_dawn_frame(
             pass, draw.index_count, 1, draw.first_index, 0, 0);
     }
     wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
+    pass.reset();
     if (segment < frame.backdrops.size()) {
         render_ui_backdrop_dawn(state.device, encoder, target_texture, target,
             state.surface_format, ui.vertices, ui.indices, ui.sampler,

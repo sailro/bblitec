@@ -1504,13 +1504,47 @@ using NumberTextBuffer = std::array<char, 64>;
             return std::string_view(entry.text.data(), entry.length);
         }
     }
+    NumberTextBuffer shortest;
     const auto converted = std::to_chars(
-        buffer.data(), buffer.data() + buffer.size(), value,
+        shortest.data(), shortest.data() + shortest.size(), value,
         std::chars_format::general);
     assert(converted.ec == std::errc{});
-    return std::string_view(
-        buffer.data(),
-        static_cast<std::size_t>(converted.ptr - buffer.data()));
+    const auto exponent_start = std::find(shortest.data(), converted.ptr, 'e');
+    char* output = buffer.data();
+    if (exponent_start == converted.ptr) {
+        output = std::copy(shortest.data(), converted.ptr, output);
+    } else {
+        int exponent = 0;
+        const char* exponent_digits = exponent_start + 1;
+        if (*exponent_digits == '+') ++exponent_digits;
+        [[maybe_unused]] const auto parsed = std::from_chars(exponent_digits, converted.ptr, exponent);
+        assert(parsed.ec == std::errc{} && parsed.ptr == converted.ptr);
+        if (exponent >= -6 && exponent < 21) {
+            // JavaScript uses fixed notation in [1e-6, 1e21).
+            const char* digits = shortest.data();
+            if (*digits == '-') { *output++ = *digits++; }
+            int point = exponent + 1;
+            if (point <= 0) {
+                *output++ = '0';
+                *output++ = '.';
+                for (int zero = point; zero < 0; ++zero) *output++ = '0';
+            }
+            for (; digits != exponent_start; ++digits) {
+                if (*digits == '.') continue;
+                if (point == 0 && exponent >= 0) *output++ = '.';
+                *output++ = *digits;
+                --point;
+            }
+            while (point-- > 0) *output++ = '0';
+        } else {
+            output = std::copy(shortest.data(), exponent_start + 1, output);
+            if (exponent >= 0) *output++ = '+';
+            const auto written = std::to_chars(output, buffer.data() + buffer.size(), exponent);
+            assert(written.ec == std::errc{});
+            output = written.ptr;
+        }
+    }
+    return std::string_view(buffer.data(), static_cast<std::size_t>(output - buffer.data()));
 }
 
 [[nodiscard]] inline std::string number_to_string(double value) {
@@ -2469,6 +2503,11 @@ template <typename T>
     return values.load(static_cast<std::size_t>(index));
 }
 template <typename T>
+[[nodiscard]] inline T array_index_checked(Array<T>&& values, double index, const char* site) {
+    if (!array_has_index(values, index)) throw_index_error(site, "read", index, values.size());
+    return values[static_cast<std::size_t>(index)];
+}
+template <typename T>
 [[nodiscard]] inline T array_index_checked(TypedArray<T>& values, double index, const char* site) {
     return array_index_checked(std::as_const(values), index, site);
 }
@@ -2530,6 +2569,16 @@ template <typename T>
 
 [[nodiscard]] inline bool number_truthy(double value) {
     return value != 0.0 && !std::isnan(value);
+}
+
+// Test the contained value without evaluating an optional-producing call twice.
+template <typename T>
+[[nodiscard]] bool nullable_truthy(const Nullable<T>& value) {
+    if (!value.has_value()) return false;
+    if constexpr (std::is_same_v<T, std::string>) return !value.value().empty();
+    else if constexpr (std::is_arithmetic_v<T>) {
+        return number_truthy(static_cast<double>(value.value()));
+    } else return true; // Present JavaScript objects are truthy, including empty containers.
 }
 
 // JavaScript typed arrays reached by the compiled subset.

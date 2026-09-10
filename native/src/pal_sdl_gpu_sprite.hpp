@@ -39,7 +39,7 @@
 
 namespace bbl::pal {
 /** Per-layer GPU state, matching the pinned `LayerGpu`. */
-struct SpriteLayerGpu {
+struct SpriteLayerResources {
     // Which layer this belongs to. The pin keys `sr._layerGpu` by the layer
     // object for the same reason: a membership change must move an entry,
     // not rebuild it -- `elapsed_ms` below is a per-layer clock that a
@@ -74,8 +74,11 @@ struct SpriteLayerGpu {
     double elapsed_ms = 0.0;
 };
 
+inline void release_sprite_layer_resources(SDL_GPUDevice*, SpriteLayerResources&) noexcept;
+using SpriteLayerGpu = OwnedGpuRecord<SpriteLayerResources, std::remove_pointer_t<SDL_GPUDevice*>, release_sprite_layer_resources>;
+
 /** One pass-owned atlas texture/sampler pair, borrowed by every layer. */
-struct SpriteAtlasGpu {
+struct SpriteAtlasGpuResources {
     SpriteAtlasHandle atlas{};
     SDL_GPUTexture* texture = nullptr;
     SDL_GPUSampler* sampler = nullptr;
@@ -83,9 +86,12 @@ struct SpriteAtlasGpu {
     // to this cache. The sampler is always cache-owned.
     bool owns_texture = false;
 };
+inline void release_sprite_atlas_gpu_resources(SDL_GPUDevice*, SpriteAtlasGpuResources&) noexcept;
+using SpriteAtlasGpu = OwnedGpuRecord<SpriteAtlasGpuResources, std::remove_pointer_t<SDL_GPUDevice*>, release_sprite_atlas_gpu_resources>;
+
 
 /** One registered `SpriteRenderer`, as GPU resources. */
-struct SpritePass {
+struct SpritePassResources {
     SDL_GPUBuffer* index_buffer = nullptr;
     std::vector<SpriteLayerGpu> layers;
     std::vector<SpriteAtlasGpu> atlases;
@@ -98,9 +104,12 @@ struct SpritePass {
     // through every frame.
     SDL_GPUTextureFormat target_format = SDL_GPU_TEXTUREFORMAT_INVALID;
 };
+inline void release_sprite_pass_resources(SDL_GPUDevice*, SpritePassResources&) noexcept;
+using SpritePass = OwnedGpuRecord<SpritePassResources, std::remove_pointer_t<SDL_GPUDevice*>, release_sprite_pass_resources>;
+
 
 /** Sprite layers attached to the scene's depth-hosted renderable lane. */
-struct SceneSpritePass {
+struct SceneSpritePassResources {
     SDL_GPUBuffer* index_buffer = nullptr;
     std::vector<SpriteLayerGpu> layers;
     std::vector<SpriteAtlasGpu> atlases;
@@ -109,6 +118,9 @@ struct SceneSpritePass {
     SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
 };
+inline void release_scene_sprite_pass_resources(SDL_GPUDevice*, SceneSpritePassResources&) noexcept;
+using SceneSpritePass = OwnedGpuRecord<SceneSpritePassResources, std::remove_pointer_t<SDL_GPUDevice*>, release_scene_sprite_pass_resources>;
+
 
 inline SDL_GPUBlendFactor sprite_blend_factor(SpriteBlendFactor factor) {
     switch (factor) {
@@ -318,15 +330,16 @@ inline SpriteAtlasGpu& sprite_atlas_gpu(
         });
     if (found != cache.end()) return *found;
 
-    const SpriteAtlasRecord& atlas = engine.sprite_atlases[handle.value];
-    SpriteAtlasGpu gpu;
+    const SpriteAtlasRecord& atlas = handle_at(engine.sprite_atlases, handle);
+    SpriteAtlasGpu gpu{device};
     gpu.atlas = handle;
     // The chain is the record's own `mip_maps`: off for `loadSpriteAtlas`,
     // on for the atlas a node-particle texture block builds through
     // `loadTexture2D`, whose trilinear sampler the layer binds -- so a
     // minified sprite samples the same level the browser samples.
+    gpu.owns_texture = !atlas.has_render_texture;
     gpu.texture = atlas.has_render_texture
-        ? render_textures[atlas.render_texture.value]
+        ? handle_at(render_textures, atlas.render_texture)
         : upload_2d_texture(
             device,
             atlas.rgba.data(),
@@ -337,19 +350,19 @@ inline SpriteAtlasGpu& sprite_atlas_gpu(
             "sprite atlas",
             atlas_mip_levels(atlas));
     gpu.sampler = create_texture_sampler(device, atlas.sampler);
-    gpu.owns_texture = !atlas.has_render_texture;
-    cache.push_back(gpu);
+    cache.push_back(std::move(gpu));
     return cache.back();
 }
 
-inline void release_sprite_atlas_gpu(
-    SDL_GPUDevice* device,
-    SpriteAtlasGpu& atlas) {
+inline void release_sprite_atlas_gpu_resources([[maybe_unused]] SDL_GPUDevice* device, SpriteAtlasGpuResources& atlas) noexcept {
     if (atlas.owns_texture && atlas.texture) {
         SDL_ReleaseGPUTexture(device, atlas.texture);
     }
     if (atlas.sampler) SDL_ReleaseGPUSampler(device, atlas.sampler);
+    atlas = SpriteAtlasGpuResources{};
 }
+
+inline void release_sprite_atlas_gpu(SDL_GPUDevice*, SpriteAtlasGpu& atlas) { atlas.reset(); }
 
 inline void release_sprite_atlas_cache(
     SDL_GPUDevice* device,
@@ -376,8 +389,8 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1,
     SDL_GPUGraphicsPipeline* shared_pipeline = nullptr) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[handle.value];
-    SpriteLayerGpu gpu;
+        handle_at(engine.sprite_layers, handle);
+    SpriteLayerGpu gpu{device};
     gpu.layer = handle;
     const std::string fragment_name =
         sprite_fragment_shader_name(layer.custom_shader);
@@ -416,10 +429,10 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
         layer.atlas,
         render_textures,
         atlas_cache);
-    gpu.textures = sprite_fragment_textures(
+    gpu.textures.push_back({atlas_gpu.texture, atlas_gpu.sampler});
+    append_sprite_fragment_textures(
         device,
-        atlas_gpu.texture,
-        atlas_gpu.sampler,
+        gpu.textures,
         layer.custom_textures,
         "sprite custom texture");
     gpu.bound_textures = select_sprite_fragment_textures(
@@ -436,9 +449,7 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
 }
 
 /** Release one layer's GPU objects. */
-inline void release_sprite_layer_gpu(
-    SDL_GPUDevice* device,
-    SpriteLayerGpu& layer) {
+inline void release_sprite_layer_resources([[maybe_unused]] SDL_GPUDevice* device, SpriteLayerResources& layer) noexcept {
     layer.owned_pipeline.reset();
     if (layer.instances) SDL_ReleaseGPUBuffer(device, layer.instances);
     // The pass-level atlas cache owns both entries in slot zero. Extras
@@ -448,7 +459,10 @@ inline void release_sprite_layer_gpu(
         layer.textures[0].sampler = nullptr;
     }
     release_sprite_fragment_textures(device, layer.textures);
+    layer = SpriteLayerResources{};
 }
+
+inline void release_sprite_layer_gpu(SDL_GPUDevice*, SpriteLayerGpu& layer) { layer.reset(); }
 
 /** Release only the per-layer GPU objects, keeping the shared index buffer. */
 inline void release_sprite_pass_layers(
@@ -476,53 +490,15 @@ inline void release_sprite_pass_layers(
  * driver's own resize path relies on when it releases the colour target.)
  */
 inline void rebuild_sprite_pass_layers(
-    SDL_GPUDevice* device,
-    Engine& engine,
-    SpritePass& pass,
+    SDL_GPUDevice* device, Engine& engine, SpritePass& pass,
     const std::vector<SDL_GPUTexture*>& render_textures) {
-    const SpriteRendererRecord& renderer =
-        engine.sprite_renderers[pass.renderer.value];
-    std::vector<SpriteLayerGpu> next;
-    next.reserve(renderer.layers.size());
-    for (const Sprite2DLayerHandle& handle : renderer.layers) {
-        const auto found = std::find_if(
-            pass.layers.begin(),
-            pass.layers.end(),
-            [&](const SpriteLayerGpu& candidate) {
-                return candidate.layer.value == handle.value;
-            });
-        if (found != pass.layers.end()) {
-            next.push_back(std::move(*found));
-            pass.layers.erase(found);
-            continue;
-        }
-        next.push_back(build_sprite_layer_gpu(
-            device,
-            engine,
-            handle,
-            render_textures,
-            pass.atlases,
-            pass.target_format));
-    }
-    // Whatever is left was dropped from the list.
-    release_sprite_pass_layers(device, pass);
-    pass.layers = std::move(next);
-    for (auto atlas = pass.atlases.begin(); atlas != pass.atlases.end();) {
-        const bool used = std::any_of(
-            renderer.layers.begin(),
-            renderer.layers.end(),
-            [&](const Sprite2DLayerHandle handle) {
-                return engine.sprite_layers[handle.value].atlas.value ==
-                    atlas->atlas.value;
-            });
-        if (used) {
-            ++atlas;
-        } else {
-            release_sprite_atlas_gpu(device, *atlas);
-            atlas = pass.atlases.erase(atlas);
-        }
-    }
-    pass.layers_version = renderer.layers_version;
+    reconcile_sprite_membership(engine, pass,
+        [&](Sprite2DLayerHandle handle) {
+            return build_sprite_layer_gpu(device, engine, handle, render_textures, pass.atlases, pass.target_format);
+        },
+        [&](SpriteLayerGpu& layer) { release_sprite_layer_gpu(device, layer); },
+        [](const SpriteAtlasGpu& atlas) { return atlas.atlas; },
+        [&](SpriteAtlasGpu& atlas) { release_sprite_atlas_gpu(device, atlas); });
 }
 
 /**
@@ -536,7 +512,7 @@ inline void sync_sprite_pass_layers(
     SpritePass& pass,
     const std::vector<SDL_GPUTexture*>& render_textures) {
     const SpriteRendererRecord& renderer =
-        engine.sprite_renderers[pass.renderer.value];
+        handle_at(engine.sprite_renderers, pass.renderer);
     if (renderer.layers_version == pass.layers_version) return;
     rebuild_sprite_pass_layers(device, engine, pass, render_textures);
 }
@@ -569,7 +545,7 @@ inline void sync_sprite_pass_pipelines(
     SpritePass& pass) {
     for (SpriteLayerGpu& gpu : pass.layers) {
         const Sprite2DLayerRecord& layer =
-            engine.sprite_layers[gpu.layer.value];
+            handle_at(engine.sprite_layers, gpu.layer);
         if (gpu.pipeline_version == layer.pipeline_version) continue;
         rebuild_sprite_layer_pipeline(
             device,
@@ -588,11 +564,11 @@ inline SpritePass create_sprite_pass(
     const std::vector<SDL_GPUTexture*>& render_textures,
     SDL_GPUTextureFormat target_format) {
     const SpriteRendererRecord& renderer =
-        engine.sprite_renderers[renderer_handle.value];
+        handle_at(engine.sprite_renderers, renderer_handle);
     if (renderer.layers.empty()) {
         throw std::runtime_error("SpriteRenderer has no layers.");
     }
-    SpritePass pass;
+    SpritePass pass{device};
     pass.renderer = renderer_handle;
 
     // The shared two-triangle quad every sprite instance draws.
@@ -621,7 +597,7 @@ inline void upload_sprite_layer_gpu(
     SpriteLayerGpu& gpu,
     double delta_ms,
     GpuBufferUploadBatch& buffer_uploads) {
-    Sprite2DLayerRecord& layer = engine.sprite_layers[handle.value];
+    Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
     // sprite-renderable.ts uploadLayer returns here before FX, texture,
     // instance or UBO work. A hidden custom layer pauses its clock.
     if (!layer.visible || layer.count == 0) return;
@@ -707,7 +683,7 @@ inline void upload_sprite_pass(
     GpuBufferUploadBatch& buffer_uploads) {
     sync_sprite_pass_pipelines(device, engine, pass);
     const SpriteRendererRecord& renderer =
-        engine.sprite_renderers[pass.renderer.value];
+        handle_at(engine.sprite_renderers, pass.renderer);
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
         upload_sprite_layer_gpu(
             device,
@@ -771,7 +747,7 @@ inline void record_sprite_pass(
     std::uint32_t width,
     std::uint32_t height) {
     const SpriteRendererRecord& renderer =
-        engine.sprite_renderers[pass.renderer.value];
+        handle_at(engine.sprite_renderers, pass.renderer);
 
     const SDL_GPUBufferBinding index_binding{pass.index_buffer, 0};
     SDL_BindGPUIndexBuffer(
@@ -802,7 +778,7 @@ inline SceneSpritePass create_scene_sprite_pass(
     SDL_GPUTextureFormat target_format,
     SDL_GPUTextureFormat depth_format,
     SDL_GPUSampleCount sample_count) {
-    SceneSpritePass pass;
+    SceneSpritePass pass{device};
     pass.handles = handles;
     pass.target_format = target_format;
     pass.depth_format = depth_format;
@@ -816,7 +792,7 @@ inline SceneSpritePass create_scene_sprite_pass(
         quad_indices.size() * sizeof(std::uint16_t));
     pass.layers.reserve(handles.size());
     for (const Sprite2DLayerHandle handle : handles) {
-        if (engine.sprite_layers[handle.value].depth_mode ==
+        if (handle_at(engine.sprite_layers, handle).depth_mode ==
             Sprite2DDepthMode::none) {
             throw std::runtime_error(
                 "A scene-attached Sprite2D layer must have depth enabled.");
@@ -825,7 +801,7 @@ inline SceneSpritePass create_scene_sprite_pass(
         for (std::size_t previous = 0; previous < pass.layers.size(); ++previous) {
             if (sprite_scene_pipeline_compatible(
                     engine.sprite_layers[pass.handles[previous].value],
-                    engine.sprite_layers[handle.value])) {
+                    handle_at(engine.sprite_layers, handle))) {
                 shared_pipeline = pass.layers[previous].pipeline;
                 break;
             }
@@ -936,9 +912,7 @@ inline void record_scene_sprite_pass(
     }
 }
 
-inline void release_scene_sprite_pass(
-    SDL_GPUDevice* device,
-    SceneSpritePass& pass) {
+inline void release_scene_sprite_pass_resources([[maybe_unused]] SDL_GPUDevice* device, SceneSpritePassResources& pass) noexcept {
     for (SpriteLayerGpu& layer : pass.layers) {
         release_sprite_layer_gpu(device, layer);
     }
@@ -948,17 +922,22 @@ inline void release_scene_sprite_pass(
         SDL_ReleaseGPUBuffer(device, pass.index_buffer);
         pass.index_buffer = nullptr;
     }
+    pass = SceneSpritePassResources{};
 }
 
-inline void release_sprite_pass(
-    SDL_GPUDevice* device,
-    SpritePass& pass) {
-    release_sprite_pass_layers(device, pass);
+inline void release_scene_sprite_pass(SDL_GPUDevice*, SceneSpritePass& pass) { pass.reset(); }
+
+inline void release_sprite_pass_resources([[maybe_unused]] SDL_GPUDevice* device, SpritePassResources& pass) noexcept {
+    for (SpriteLayerGpu& layer : pass.layers) layer.reset();
+    pass.layers.clear();
     release_sprite_atlas_cache(device, pass.atlases);
     if (pass.index_buffer) {
         SDL_ReleaseGPUBuffer(device, pass.index_buffer);
         pass.index_buffer = nullptr;
     }
+    pass = SpritePassResources{};
 }
+
+inline void release_sprite_pass(SDL_GPUDevice*, SpritePass& pass) { pass.reset(); }
 
 } // namespace bbl::pal

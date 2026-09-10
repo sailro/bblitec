@@ -199,4 +199,6 @@ test("preserves the sRGB format for raw-pixel shader textures", () => {
         { fileName: "examples/options.ts" },
     );
     assert.match(result.cpp, /PixelsTextureOptions\{[^\n]*true\}/);
+    assert.deepEqual(result.manifest.spriteCustomShaders.map(shader => ({ family: shader.family, textures: shader.extraTextures })),
+        [{ family: "sprite", textures: ["palette"] }]);
 });

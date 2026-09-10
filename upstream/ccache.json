@@ -1,0 +1,7 @@
+{
+  "version": "4.14",
+  "repository": "https://github.com/ccache/ccache",
+  "url": "https://github.com/ccache/ccache/releases/download/v4.14/ccache-4.14-windows-x86_64.zip",
+  "sha256": "2568347a697e103ca1b073981c704ad76fb2507d066c38dba038dd73399d968f",
+  "directory": "ccache-4.14-windows-x86_64"
+}

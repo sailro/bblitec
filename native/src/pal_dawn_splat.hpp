@@ -86,7 +86,7 @@ inline constexpr std::size_t dawn_splat_binding_count =
     dawn_splat_first_texture_binding + splat_texture_count;
 
 /** One cloud's GPU state. */
-struct DawnSplatPass {
+struct DawnSplatPassResources {
     SplatMeshHandle mesh{};
     std::uint32_t vertex_count = 0;
     std::uint64_t data_version = 0;
@@ -114,6 +114,9 @@ struct DawnSplatPass {
     std::vector<float> order_floats;
     std::array<float, 4> depth_transform{};
 };
+inline void release_dawn_splat_pass_resources(WGPUDevice, DawnSplatPassResources&) noexcept;
+using DawnSplatPass = OwnedGpuRecord<DawnSplatPassResources, std::remove_pointer_t<WGPUDevice>, release_dawn_splat_pass_resources>;
+
 
 /** Queue the pin's complete 16-byte texels into an existing data texture. */
 inline void write_dawn_splat_texture(
@@ -155,10 +158,10 @@ inline WGPUTexture upload_dawn_splat_texture(
     descriptor.usage =
         WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     descriptor.size = WGPUExtent3D{width, height, 1};
-    WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
     if (!texture) dawn_error("wgpuDeviceCreateTexture splat data");
     write_dawn_splat_texture(queue, texture, texels, byte_size, width, height);
-    return texture;
+    return texture.release();
 }
 
 /**
@@ -197,10 +200,9 @@ inline WGPUBindGroupLayout create_dawn_splat_layout(WGPUDevice device) {
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    WGPUBindGroupLayout layout =
-        wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
     if (!layout) dawn_error("splat bind group layout");
-    return layout;
+    return layout.release();
 }
 
 /**
@@ -227,8 +229,8 @@ inline WGPURenderPipeline create_dawn_splat_pipeline(
     WGPUTextureFormat color_format,
     WGPUTextureFormat depth_format,
     std::uint32_t samples) {
-    WGPUShaderModule vertex = load_wgsl_module(device, "splat.vert");
-    WGPUShaderModule fragment = load_wgsl_module(device, "splat.frag");
+    DawnShaderModule vertex{load_wgsl_module(device, "splat.vert")};
+    DawnShaderModule fragment{load_wgsl_module(device, "splat.frag")};
 
     const std::array<WGPUBindGroupLayout, 2> groups{
         frame_layout, splat_layout};
@@ -236,8 +238,8 @@ inline WGPURenderPipeline create_dawn_splat_pipeline(
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout_descriptor.bindGroupLayoutCount = groups.size();
     layout_descriptor.bindGroupLayouts = groups.data();
-    WGPUPipelineLayout pipeline_layout =
-        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+    DawnPipelineLayout pipeline_layout{
+        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor)};
     if (!pipeline_layout) dawn_error("splat pipeline layout");
 
     // Two streams, as the pinned descriptor declares them: the unit quad per
@@ -300,13 +302,9 @@ inline WGPURenderPipeline create_dawn_splat_pipeline(
     descriptor.depthStencil = &depth;
     descriptor.multisample.count = samples;
 
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(device, &descriptor);
-    wgpuPipelineLayoutRelease(pipeline_layout);
-    wgpuShaderModuleRelease(vertex);
-    wgpuShaderModuleRelease(fragment);
+    DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(device, &descriptor)};
     if (!pipeline) dawn_error("splat render pipeline");
-    return pipeline;
+    return pipeline.release();
 }
 
 /** The resources one cloud owns for its lifetime. */
@@ -320,8 +318,8 @@ inline DawnSplatPass create_dawn_splat_pass(
     // the SH payloads and then releases them.
     Engine& engine,
     SplatMeshHandle handle) {
-    SplatMeshRecord& record = engine.splat_meshes[handle.value];
-    DawnSplatPass pass;
+    SplatMeshRecord& record = handle_at(engine.splat_meshes, handle);
+    DawnSplatPass pass{device};
     pass.mesh = handle;
     pass.vertex_count = record.vertex_count;
 
@@ -345,7 +343,7 @@ inline DawnSplatPass create_dawn_splat_pass(
     const auto view_of = [&](std::size_t slot) {
         WGPUTextureViewDescriptor view = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
         pass.views[slot] =
-            wgpuTextureCreateView(pass.textures[slot], &view);
+            create_dawn_texture_view(pass.textures[slot], &view);
         if (!pass.views[slot]) dawn_error("splat data texture view");
     };
     for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
@@ -405,10 +403,10 @@ inline DawnSplatPass create_dawn_splat_pass(
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.usage = usage | WGPUBufferUsage_CopyDst;
         descriptor.size = (bytes + 3ull) & ~3ull;
-        WGPUBuffer created = wgpuDeviceCreateBuffer(device, &descriptor);
+        DawnBuffer created{wgpuDeviceCreateBuffer(device, &descriptor)};
         if (!created) dawn_error("splat buffer");
         if (data) wgpuQueueWriteBuffer(queue, created, 0, data, bytes);
-        return created;
+        return created.release();
     };
     pass.quad = buffer(
         WGPUBufferUsage_Vertex,
@@ -493,7 +491,7 @@ inline void upload_dawn_splat_pass(
     [[maybe_unused]] const std::array<float, 4>& camera_position,
     double width,
     double height) {
-    const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
+    const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     sync_dawn_splat_data(queue, record, pass);
     const std::array<float, 16> world = upstream::build_splat_world(record);
 
@@ -564,7 +562,7 @@ inline void record_dawn_splat_pass(
         0);
 }
 
-inline void release_dawn_splat_pass(DawnSplatPass& pass) {
+inline void release_dawn_splat_pass_resources([[maybe_unused]] WGPUDevice device, DawnSplatPassResources& pass) noexcept {
     if (pass.frame_layout) wgpuBindGroupLayoutRelease(pass.frame_layout);
     pass.frame_layout = nullptr;
     if (pass.group) wgpuBindGroupRelease(pass.group);
@@ -588,6 +586,9 @@ inline void release_dawn_splat_pass(DawnSplatPass& pass) {
     pass.layout = nullptr;
     pass.pipeline = nullptr;
     pass.sampler = nullptr;
+    pass = DawnSplatPassResources{};
 }
+
+inline void release_dawn_splat_pass(DawnSplatPass& pass) { pass.reset(); }
 
 } // namespace bbl::pal

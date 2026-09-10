@@ -1,3 +1,4 @@
+import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 /**
  * Emits `upstream/effect_variants.hpp` — the C++ side of one `EffectWrapper`.
  *
@@ -14,7 +15,8 @@ import { effectStageStems } from "./lowering/effect-lowerer.js";
 export function pinnedEffectVariantsHeader(
     provenance: string,
     effects: readonly EffectManifest[],
-): string {
+): CppModule {
+    const cpp = new CppDefinitions();
     if (effects.length === 0) {
         throw new Error("An effect scene composed no wrappers.");
     }
@@ -38,7 +40,7 @@ export function pinnedEffectVariantsHeader(
                 `${first}, ${effect.bindings.length}},`,
         );
     }
-    return `#pragma once
+    return cpp.finish(`#pragma once
 
 // ${provenance}
 
@@ -77,11 +79,7 @@ struct EffectVariantBinding {
     std::uint32_t texture;
 };
 
-inline constexpr std::array<
-    EffectVariantBinding,
-    ${bindingRows.length}> effect_variant_bindings{{
-${bindingRows.join("\n") || "    // No reached effect declares one."}
-}};
+${cpp.table("EffectVariantBinding", "effect_variant_bindings", bindingRows.length, `${bindingRows.join("\n") || "    // No reached effect declares one."}`)}
 
 struct EffectVariantEntry {
     /** The deployed stem of each stage; both name one module. */
@@ -94,12 +92,8 @@ struct EffectVariantEntry {
     std::size_t binding_count;
 };
 
-inline constexpr std::array<
-    EffectVariantEntry,
-    ${effects.length}> effect_variants{{
-${entries.join("\n")}
-}};
+${cpp.table("EffectVariantEntry", "effect_variants", effects.length, `${entries.join("\n")}`)}
 
 } // namespace bbl::upstream
-`;
+`);
 }

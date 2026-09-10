@@ -22,6 +22,7 @@
 #include "pal_dawn_shared.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
+#include "pal_frame_session.hpp"
 
 namespace bbl::pal {
 
@@ -30,7 +31,9 @@ namespace bbl::pal {
 
 namespace {
 
-struct Target {
+struct State;
+
+struct TargetResources {
     WGPUTexture color = nullptr;
     WGPUTextureView view = nullptr;
     WGPUTexture sampled = nullptr;
@@ -40,8 +43,16 @@ struct Target {
     WGPUTextureFormat format = WGPUTextureFormat_Undefined;
 };
 
+void release_target_resources(State*, TargetResources& target) noexcept {
+    if (target.sampled_view && target.sampled_view != target.view) wgpuTextureViewRelease(target.sampled_view);
+    if (target.sampled && target.sampled != target.color) wgpuTextureRelease(target.sampled);
+    if (target.view) wgpuTextureViewRelease(target.view);
+    if (target.color) wgpuTextureRelease(target.color);
+}
+using Target = OwnedGpuRecord<TargetResources, State, &release_target_resources>;
+
 #if BBLITE_HAS_POST_PROCESS
-struct PostProcessProgram {
+struct PostProcessProgramResources {
     std::uint32_t module = 0;
     WGPUTextureFormat format = WGPUTextureFormat_Undefined;
     std::uint32_t samples = 1;
@@ -55,11 +66,25 @@ struct PostProcessProgram {
     WGPURenderPipeline pipeline = nullptr;
 };
 
-struct PostProcessPass {
+void release_program_resources(State*, PostProcessProgramResources& program) noexcept {
+    if (program.pipeline) wgpuRenderPipelineRelease(program.pipeline);
+    if (program.pipeline_layout) wgpuPipelineLayoutRelease(program.pipeline_layout);
+    if (program.group_layout) wgpuBindGroupLayoutRelease(program.group_layout);
+    if (program.shader) wgpuShaderModuleRelease(program.shader);
+}
+using PostProcessProgram = OwnedGpuRecord<PostProcessProgramResources, State, &release_program_resources>;
+
+struct PostProcessPassResources {
     std::size_t program = npos;
     WGPUBindGroup group = nullptr;
     WGPUBuffer uniforms = nullptr;
 };
+
+void release_pass_resources(State*, PostProcessPassResources& pass) noexcept {
+    if (pass.group) wgpuBindGroupRelease(pass.group);
+    if (pass.uniforms) wgpuBufferRelease(pass.uniforms);
+}
+using PostProcessPass = OwnedGpuRecord<PostProcessPassResources, State, &release_pass_resources>;
 #endif
 
 struct State : DawnDevice {
@@ -112,10 +137,9 @@ WGPUTexture create_texture(
     descriptor.size = {width, height, 1};
     descriptor.format = format;
     descriptor.sampleCount = samples;
-    WGPUTexture texture =
-        wgpuDeviceCreateTexture(state.device, &descriptor);
+    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
     if (!texture) dawn_error("frame-graph texture creation failed.");
-    return texture;
+    return texture.release();
 }
 
 void release_graph(State& state) {
@@ -125,35 +149,9 @@ void release_graph(State& state) {
     }
     state.effects.clear();
 #endif
-    for (Target& target : state.targets) {
-        if (target.sampled_view && target.sampled_view != target.view) {
-            wgpuTextureViewRelease(target.sampled_view);
-        }
-        if (target.sampled && target.sampled != target.color) {
-            wgpuTextureRelease(target.sampled);
-        }
-        if (target.view) wgpuTextureViewRelease(target.view);
-        if (target.color) wgpuTextureRelease(target.color);
-    }
     state.targets.clear();
 #if BBLITE_HAS_POST_PROCESS
-    for (std::vector<PostProcessPass>& task : state.post_processes) {
-        for (PostProcessPass& pass : task) {
-            if (pass.group) wgpuBindGroupRelease(pass.group);
-            if (pass.uniforms) wgpuBufferRelease(pass.uniforms);
-        }
-    }
     state.post_processes.clear();
-    for (PostProcessProgram& program : state.programs) {
-        if (program.pipeline) wgpuRenderPipelineRelease(program.pipeline);
-        if (program.pipeline_layout) {
-            wgpuPipelineLayoutRelease(program.pipeline_layout);
-        }
-        if (program.group_layout) {
-            wgpuBindGroupLayoutRelease(program.group_layout);
-        }
-        if (program.shader) wgpuShaderModuleRelease(program.shader);
-    }
     state.programs.clear();
 #endif
     state.width = 0;
@@ -166,13 +164,7 @@ void release(State& state) {
     if (state.linear_sampler) wgpuSamplerRelease(state.linear_sampler);
     if (state.nearest_sampler) wgpuSamplerRelease(state.nearest_sampler);
 #endif
-    if (state.queue) wgpuQueueRelease(state.queue);
-    if (state.device) wgpuDeviceRelease(state.device);
-    if (state.adapter) wgpuAdapterRelease(state.adapter);
-    if (state.surface) wgpuSurfaceRelease(state.surface);
-    if (state.instance) wgpuInstanceRelease(state.instance);
-    if (state.window) release_run_window(state.window);
-    quit_run_sdl();
+    state.release();
 }
 
 void build_graph(
@@ -185,6 +177,8 @@ void build_graph(
         state.width == width && state.height == height) {
         return;
     }
+    const auto target_plans = plan_render_targets(engine, width, height, state.surface_format,
+        [](TextureFormatClass format) { return texture_format(format); });
     release_graph(state);
     state.width = width;
     state.height = height;
@@ -192,24 +186,12 @@ void build_graph(
     for (std::size_t index = 0; index < engine.render_targets.size(); ++index) {
         const RenderTargetRecord& record = engine.render_targets[index];
         Target& target = state.targets[index];
-        target.width = record.width > 0 ? record.width : width;
-        target.height = record.height > 0 ? record.height : height;
-        if (record.scale_source.value != invalid_handle) {
-            const Target& source = state.targets.at(record.scale_source.value);
-            const ScaledExtents scaled =
-                scaled_target_extents(record, source.width, source.height);
-            target.width = scaled.width;
-            target.height = scaled.height;
-        }
-        if (record.swapchain) {
-            target.format = state.surface_format;
-            continue;
-        }
-        target.format = record.has_format
-            ? texture_format(record.format)
-            : record.scale_source.value != invalid_handle
-                ? state.targets.at(record.scale_source.value).format
-                : state.surface_format;
+        target = Target{state};
+        const auto& planned = target_plans[index];
+        target.width = planned.width;
+        target.height = planned.height;
+        target.format = planned.color_format;
+        if (record.swapchain) continue;
         if (!record.has_color) {
             throw std::runtime_error(
                 "Standalone frame graphs currently require color targets.");
@@ -226,7 +208,7 @@ void build_graph(
                     WGPUTextureUsage_TextureBinding |
                     WGPUTextureUsage_CopySrc
                 : WGPUTextureUsage_RenderAttachment);
-        target.view = wgpuTextureCreateView(target.color, nullptr);
+        target.view = create_dawn_texture_view(target.color, nullptr);
         if (samples == 1) {
             target.sampled = target.color;
             target.sampled_view = target.view;
@@ -241,7 +223,7 @@ void build_graph(
                     WGPUTextureUsage_TextureBinding |
                     WGPUTextureUsage_CopySrc);
             target.sampled_view =
-                wgpuTextureCreateView(target.sampled, nullptr);
+                create_dawn_texture_view(target.sampled, nullptr);
         }
     }
 #if BBLITE_HAS_EFFECT_TASK
@@ -253,6 +235,7 @@ void build_graph(
         const FrameTaskRecord& task = engine.frame_tasks[index];
         if (task.kind == FrameTaskKind::post_process) {
             state.post_processes[index].resize(task.post_process.passes.size());
+            for (auto& pass : state.post_processes[index]) pass = PostProcessPass{state};
         }
     }
 #endif
@@ -285,7 +268,7 @@ PostProcessProgram build_post_process_program(
     std::uint32_t alpha_mode,
     std::size_t extras,
     std::uint32_t uniform_size) {
-    PostProcessProgram program;
+    PostProcessProgram program{state};
     program.module = info.module_index;
     program.format = format;
     program.samples = samples;
@@ -495,8 +478,7 @@ void record_post_process(
         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     descriptor.colorAttachmentCount = 1;
     descriptor.colorAttachments = &attachment;
-    WGPURenderPassEncoder render_pass =
-        wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    DawnRenderPass render_pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
     if (pass.has_viewport) {
         const PixelViewport rect = upstream::resolve_post_process_viewport(
             pass.viewport, output_width, output_height);
@@ -519,33 +501,39 @@ void record_post_process(
     wgpuRenderPassEncoderSetBindGroup(render_pass, 0, gpu.group, 0, nullptr);
     wgpuRenderPassEncoderDraw(render_pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(render_pass);
-    wgpuRenderPassEncoderRelease(render_pass);
+    render_pass.reset();
 }
 #endif
 
 } // namespace
 
-bool run_frame_graph_dawn_engine(Engine& engine) {
-    const FrameOptions options = read_frame_options();
-    reject_unsupported_frame_options(
-        options,
-        "Dawn frame graph",
-        /*supports_single_sample=*/true,
-        /*supports_copy_task=*/false);
-    if (engine.registered_frame_graph_contexts.empty()) {
-        throw std::runtime_error(
-            "Frame-graph renderer requires a registered context.");
-    }
-    FrameGraphContext& context =
-        *engine.registered_frame_graph_contexts.front();
+namespace {
+class DawnFrameGraphRun : public FrameSession {
     State state;
-    state.samples = options.single_sample
-        ? 1u
-        : upstream::preferred_sample_count();
-    try {
-        DawnDeviceOptions device_options;
-        device_options.hidden_test_pass = options.test_pass;
-        device_options.immediate_present = options.benchmark_requested;
+    FrameGraphContext* context = nullptr;
+    std::uint32_t width = 0, height = 0;
+    DawnCommandEncoder encoder;
+    DawnTexture surface;
+    DawnTextureView surface_view;
+    WGPUSurfaceTexture surface_texture{};
+public:
+    static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
+    explicit DawnFrameGraphRun(Engine& target) : FrameSession(target) {}
+    ~DawnFrameGraphRun() {
+        encoder.reset();
+        surface_view.reset();
+        surface.reset();
+        release(state);
+    }
+    void setup() {
+        reject_unsupported_frame_options(frame_options, "Dawn frame graph", true, false);
+        if (engine.registered_frame_graph_contexts.empty() || !engine.registered_frame_graph_contexts.front())
+            throw std::runtime_error("Frame-graph renderer requires a registered context.");
+        context = engine.registered_frame_graph_contexts.front();
+        state.samples = frame_options.single_sample
+            ? 1u
+            : upstream::preferred_sample_count();
+        const DeviceOptions device_options = frame_device_options(frame_options);
         create_dawn_device(engine.options, device_options, state);
         sync_engine_canvas_size(state.window, engine);
         resize_dawn_surface(state, engine.options);
@@ -564,155 +552,161 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
             dawn_error("frame-graph sampler creation failed.");
         }
 #endif
-        std::uint32_t width = state.surface_width;
-        std::uint32_t height = state.surface_height;
+        width = state.surface_width;
+        height = state.surface_height;
         if (width == 0 || height == 0) {
             dawn_error("frame-graph surface has a zero extent.");
         }
         build_graph(state, engine, width, height);
-
-        const long limit = options.frame_budget();
-        CaptureGate captures(options, limit, &engine);
-        FrameClock clock;
-        bool running = true;
-        long frame = 0;
-        PlatformInputReplay input_replay;
-        while (captures.keep_running(running, frame)) {
-            poll_platform_events(engine, running, options.test_pass);
-            input_replay.dispatch(frame, state.window, engine);
-            sync_engine_canvas_size(state.window, engine);
-            if (resize_dawn_surface(state, engine.options)) {
-                width = state.surface_width;
-                height = state.surface_height;
-                build_graph(state, engine, width, height);
-            }
-            (void)advance_frame(
-                engine,
-                context,
-                clock,
-                options.frame_delta_ms);
-            WGPUSurfaceTexture surface_texture{};
-            wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
-            if (!surface_texture.texture) continue;
-            WGPUTextureView surface_view =
-                wgpuTextureCreateView(surface_texture.texture, nullptr);
-            WGPUCommandEncoder encoder =
-                wgpuDeviceCreateCommandEncoder(state.device, nullptr);
-            for (const TaskHandle handle : context.tasks) {
-                FrameTaskRecord& task = engine.frame_tasks.at(handle.value);
+    }
+    FramePreparation prepare() {
+        poll_platform_events(engine, running, frame_options.test_pass);
+        input_replay.dispatch(frame, state.window, engine);
+        sync_engine_canvas_size(state.window, engine);
+        if (resize_dawn_surface(state, engine.options)) {
+            width = state.surface_width;
+            height = state.surface_height;
+            build_graph(state, engine, width, height);
+        }
+        return FramePreparation::ready;
+    }
+    FramePreparation update() {
+        (void)advance_frame(
+            engine,
+            *context,
+            frame_clock,
+            frame_options.frame_delta_ms);
+        return FramePreparation::ready;
+    }
+    bool acquire() {
+        surface_texture = {};
+        wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
+        surface = surface_texture.texture;
+        if (!surface_texture.texture) return false;
+        surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
+        return true;
+    }
+    void synchronize() {
+        // Tasks synchronize their resources in dependency order during encoding.
+    }
+    void encode() {
+        encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+        for (const TaskHandle handle : context->tasks) {
+            FrameTaskRecord& task = engine.frame_tasks.at(handle.value);
 #if BBLITE_HAS_EFFECT_TASK
-                if (task.kind == FrameTaskKind::effect) {
-                    DawnEffectPass& pass = state.effects.at(handle.value);
-                    const RenderTargetRecord& record =
-                        engine.render_targets.at(task.effect.target.value);
-                    const Target& output = state.targets.at(task.effect.target.value);
-                    if (!pass.pipeline) {
-                        pass = create_dawn_effect_pass(
-                            state,
-                            engine,
-                            task.effect.effect,
-                            output.format,
-                            record.swapchain
-                                ? 1u
-                                : target_samples(state, record.samples));
-                    }
-                    upload_dawn_effect_pass(
-                        state.queue,
+            if (task.kind == FrameTaskKind::effect) {
+                DawnEffectPass& pass = state.effects.at(handle.value);
+                const RenderTargetRecord& record =
+                    engine.render_targets.at(task.effect.target.value);
+                const Target& output = state.targets.at(task.effect.target.value);
+                if (!pass.pipeline) {
+                    pass = create_dawn_effect_pass(
+                        state,
                         engine,
-                        pass,
-                        task.effect.effect);
-                    WGPURenderPassColorAttachment attachment =
-                        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-                    attachment.view = record.swapchain ? surface_view : output.view;
-                    if (!record.swapchain && target_samples(state, record.samples) > 1) {
-                        attachment.resolveTarget = output.sampled_view;
-                    }
-                    attachment.loadOp = task.effect.clear
-                        ? WGPULoadOp_Clear
-                        : WGPULoadOp_Load;
-                    attachment.storeOp = WGPUStoreOp_Store;
-                    attachment.clearValue = WGPUColor{
-                        task.effect.clear_color.r,
-                        task.effect.clear_color.g,
-                        task.effect.clear_color.b,
-                        task.effect.clear_color.a};
-                    WGPURenderPassDescriptor descriptor =
-                        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-                    descriptor.colorAttachmentCount = 1;
-                    descriptor.colorAttachments = &attachment;
-                    WGPURenderPassEncoder render_pass =
-                        wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
-                    record_dawn_effect_pass(render_pass, pass);
-                    wgpuRenderPassEncoderEnd(render_pass);
-                    wgpuRenderPassEncoderRelease(render_pass);
-                } else
+                        task.effect.effect,
+                        output.format,
+                        record.swapchain
+                            ? 1u
+                            : target_samples(state, record.samples));
+                }
+                upload_dawn_effect_pass(
+                    state.queue,
+                    engine,
+                    pass,
+                    task.effect.effect);
+                WGPURenderPassColorAttachment attachment =
+                    WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                attachment.view = record.swapchain ? surface_view : output.view;
+                if (!record.swapchain && target_samples(state, record.samples) > 1) {
+                    attachment.resolveTarget = output.sampled_view;
+                }
+                attachment.loadOp = task.effect.clear
+                    ? WGPULoadOp_Clear
+                    : WGPULoadOp_Load;
+                attachment.storeOp = WGPUStoreOp_Store;
+                attachment.clearValue = WGPUColor{
+                    task.effect.clear_color.r,
+                    task.effect.clear_color.g,
+                    task.effect.clear_color.b,
+                    task.effect.clear_color.a};
+                WGPURenderPassDescriptor descriptor =
+                    WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+                descriptor.colorAttachmentCount = 1;
+                descriptor.colorAttachments = &attachment;
+                DawnRenderPass render_pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
+                record_dawn_effect_pass(render_pass, pass);
+                wgpuRenderPassEncoderEnd(render_pass);
+                render_pass.reset();
+            } else
 #endif
 #if BBLITE_HAS_POST_PROCESS
-                if (task.kind == FrameTaskKind::post_process) {
-                    for (std::size_t index = 0;
-                         index < task.post_process.passes.size();
-                         ++index) {
-                        record_post_process(
-                            state,
-                            engine,
-                            handle,
-                            index,
-                            encoder,
-                            surface_view,
-                            width,
-                            height);
-                    }
-                } else
-#endif
-                {
-                    throw std::runtime_error(
-                        "Standalone frame graphs support effect and post-process tasks.");
+            if (task.kind == FrameTaskKind::post_process) {
+                for (std::size_t index = 0;
+                     index < task.post_process.passes.size();
+                     ++index) {
+                    record_post_process(
+                        state,
+                        engine,
+                        handle,
+                        index,
+                        encoder,
+                        surface_view,
+                        width,
+                        height);
                 }
+            } else
+#endif
+            {
+                throw std::runtime_error(
+                    "Standalone frame graphs support effect and post-process tasks.");
             }
-            const bool capture_frame =
-                frame >= options.screenshot_frame &&
-                !captures.screenshot_saved &&
-                !options.screenshot_path.empty();
-            captures.maybe_write_standalone_render_capture(
-                "dawn", engine, width, height, frame);
-            DawnSurfaceCapture capture{};
-            if (capture_frame) {
-                capture = begin_dawn_surface_capture(
-                    state.device,
-                    encoder,
-                    surface_texture.texture,
-                    width,
-                    height);
-            }
-            WGPUCommandBuffer command =
-                wgpuCommandEncoderFinish(encoder, nullptr);
-            wgpuQueueSubmit(state.queue, 1, &command);
-            wgpuCommandBufferRelease(command);
-            wgpuCommandEncoderRelease(encoder);
-            if (capture_frame) {
-                finish_dawn_surface_capture(
-                    state,
-                    capture,
-                    width,
-                    height,
-                    options.screenshot_path);
-                captures.screenshot_saved = true;
-            }
-            if (capture.readback) wgpuBufferRelease(capture.readback);
-            wgpuSurfacePresent(state.surface);
-            wgpuTextureViewRelease(surface_view);
-            wgpuTextureRelease(surface_texture.texture);
-            if (!state.uncaptured_error.empty()) {
-                dawn_error(state.uncaptured_error);
-            }
-            finish_frame(engine);
-            ++frame;
         }
-    } catch (...) {
-        release(state);
-        throw;
     }
-    release(state);
+    void present() {
+        const bool capture_frame =
+            frame >= frame_options.screenshot_frame &&
+            !captures.screenshot_saved &&
+            !frame_options.screenshot_path.empty();
+        captures.maybe_write_standalone_render_capture(
+            "dawn", engine, width, height, frame);
+        DawnSurfaceCapture capture{};
+        if (capture_frame) {
+            capture = begin_dawn_surface_capture(
+                state.device,
+                encoder,
+                surface_texture.texture,
+                width,
+                height);
+        }
+        DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
+        submit_dawn_command(state.queue, command);
+        command.reset();
+        encoder.reset();
+        if (capture_frame) {
+            finish_dawn_surface_capture(
+                state,
+                capture,
+                width,
+                height,
+                frame_options.screenshot_path);
+            captures.screenshot_saved = true;
+        }
+        capture.readback.reset();
+        wgpuSurfacePresent(state.surface);
+        surface_view.reset();
+        surface.reset();
+        if (!state.uncaptured_error.empty()) {
+            dawn_error(state.uncaptured_error);
+        }
+    }
+    void complete() { finish_frame(engine); ++frame; }
+};
+} // namespace
+
+bool run_frame_graph_dawn_engine(Engine& engine) {
+    DawnFrameGraphRun renderer(engine);
+    renderer.setup();
+    while (conduct_frame(renderer) != FrameOutcome::stopped) {}
     return true;
 }
 

@@ -4,6 +4,7 @@ import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
+    csmShadowHeader,
     pinnedShadowHeader,
     shadowFactorySource,
 } from "../src/lowering/shadow-lowerer.js";
@@ -102,7 +103,7 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
     // task loops read.
     assert.match(
         shared,
-        /const bool due = upstream::shadow_refresh_due\(\s*engine,\s*generator,\s*light_record,\s*eye,\s*csm_fit \? &camera_key : nullptr,\s*gate\);\s*gate\.due = due;/,
+        /const bool due = upstream::shadow_refresh_due\(\s*engine,\s*generator,\s*light_record,\s*eye,\s*csm_camera,\s*gate\);\s*gate\.due = due;/,
     );
     // Every fit runs only on a due frame; the caster fold is hoisted once
     // ahead of the family switch, and the spot arm alone skips it.
@@ -123,7 +124,7 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
     // provably the uploaded ones.
     assert.match(
         shared,
-        /\} else if \(refresh\.uploaded\[handle\.value\]\) \{[\s\S]{0,300}return;\s*\}/,
+        /\} else if \(handle_at\(refresh\.uploaded, handle\)\) \{[\s\S]{0,300}return;\s*\}/,
     );
     // Both backends' shadow arms skip their pass on a gated frame, and a
     // frame-graph texture recreation clears the rendered sentinels.
@@ -155,7 +156,8 @@ test("fits CSM casters to every active non-degenerate thin instance", () => {
     assert.match(shared, /caster\.instance = instance;\s*caster\.has_instance = true;\s*casters\.push_back\(caster\);/);
     assert.doesNotMatch(shared, /A thin-instanced mesh is a caster/);
 
-    const header = pinnedShadowHeader(new LoweringContext());
+    const context = new LoweringContext();
+    const header = pinnedShadowHeader(context, ["shadow:csm"]) + csmShadowHeader(context);
     assert.match(header, /std::array<float, 16> instance\{\};\s*bool has_instance = false;/);
     assert.match(header, /inline bool csm_instance_contributes\(/);
     assert.match(

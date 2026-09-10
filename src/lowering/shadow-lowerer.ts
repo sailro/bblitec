@@ -25,7 +25,9 @@ import {
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import {
+    vec3MemberBindings,
     lowerPinnedFunction,
+    type PinnedFunctionParameter,
     lowerMat4InvertCpp,
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
@@ -35,6 +37,7 @@ import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
 import { pinnedCsmFunctions } from "./pinned-csm.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
@@ -239,105 +242,11 @@ function matrixLiteral(
     return `std::array<float, 16>{\n        ${lowered.join(",\n        ")}}`;
 }
 
-/**
- * `_computeSpotLightMatrix`, whole.
- *
- * The pin reads the light through `light.direction` / `light.position` /
- * `light.angle`, so those three paths bind to the native light record's own
- * lanes by their full pinned text; the floating-origin offsets it also takes
- * are bound to their pinned defaults' value, since no reached scene enables
- * large-world rendering. The returned object literal becomes the struct
- * below, field by field from the pin's own initializers.
- */
-/**
- * Assert one pinned signature, parameter by parameter.
- *
- * Both light-matrix lowerers below take the same shape -- named parameters,
- * an annotation on the ones this port binds, and three floating-origin
- * offsets that must still default to zero for the emitted signature to be
- * allowed to drop them. Stating it once means a pin that moves either
- * signature is answered in one place rather than in two that have already
- * been observed to drift.
- */
-function assertPinnedSignature(
-    context: LoweringContext,
-    file: ts.SourceFile,
-    declaration: ts.FunctionDeclaration,
-    symbol: string,
-    expected: readonly (readonly [string, string])[],
-): void {
-    if (declaration.parameters.length !== expected.length) {
-        context.contractError(
-            declaration,
-            `Expected pinned ${symbol} to take (` +
-                `${expected.map(([name]) => name).join(", ")}).`,
-        );
-    }
-    declaration.parameters.forEach((parameter, index) => {
-        const [pinned, annotation] = expected[index]!;
-        if (
-            !ts.isIdentifier(parameter.name) ||
-            parameter.name.text !== pinned
-        ) {
-            context.contractError(
-                parameter,
-                `Expected pinned ${symbol} parameter ${index} to be ` +
-                    `'${pinned}'.`,
-            );
-        }
-        if (annotation && parameter.type?.getText(file) !== annotation) {
-            context.contractError(
-                parameter,
-                `Expected pinned ${symbol} parameter '${pinned}' to be ` +
-                    `annotated '${annotation}'.`,
-            );
-        }
-        // An unannotated parameter is one of the floating-origin offsets.
-        // No reached scene enables large-world rendering, so the emitted
-        // signature drops them -- but only while the pin still defaults
-        // them to the value that makes dropping them exact.
-        if (!annotation) {
-            const initializer = parameter.initializer;
-            if (
-                !initializer ||
-                context.numericValue(initializer, file) !== 0
-            ) {
-                context.contractError(
-                    parameter,
-                    `Expected pinned ${symbol} '${pinned}' to default to 0.`,
-                );
-            }
-        }
-    });
-}
-
 function lowerComputeSpotLightMatrix(context: LoweringContext): string {
-    const { file, declaration } = context.functionDeclaration(
-        spotModule,
-        "_computeSpotLightMatrix",
-    );
-    const expected: readonly (readonly [string, string])[] = [
-        ["light", "SpotLight"],
-        ["near", "number"],
-        ["far", "number"],
-        ["offX", ""],
-        ["offY", ""],
-        ["offZ", ""],
-    ];
-    assertPinnedSignature(
-        context,
-        file,
-        declaration,
-        "_computeSpotLightMatrix",
-        expected,
-    );
+    const { declaration } = context.functionDeclaration(spotModule, "_computeSpotLightMatrix");
     const bindings = new Map<string, PinnedBinding>([
-        ["light.direction.x", { cpp: "light.direction.x", type: "scalar" }],
-        ["light.direction.y", { cpp: "light.direction.y", type: "scalar" }],
-        ["light.direction.z", { cpp: "light.direction.z", type: "scalar" }],
-        ["light.position.x", { cpp: "light.position.x", type: "scalar" }],
-        ["light.position.y", { cpp: "light.position.y", type: "scalar" }],
-        ["light.position.z", { cpp: "light.position.z", type: "scalar" }],
+        ...vec3MemberBindings("light.direction"),
+        ...vec3MemberBindings("light.position"),
         // `angle` is the full cone angle the pinned factory stored; the
         // native record keeps its cosine for shading and the angle itself
         // for this projection.
@@ -347,8 +256,16 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
         ["far", { cpp: "far_plane", type: "scalar" }],
         ...eyeOffsetBindings,
     ]);
-    const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
-        bindings,
+    return lowerPinnedFunction(context, spotModule, "_computeSpotLightMatrix", [
+        { pinned: "light", kind: "record", annotation: "SpotLight", cpp: "light", cppType: "LightRecord" },
+        { pinned: "near", kind: "number", cpp: "near_plane" },
+        { pinned: "far", kind: "number", cpp: "far_plane" },
+        ...eyeOffsetBindings.map(([pinned, binding]): PinnedFunctionParameter => ({
+            pinned, kind: "number", cpp: binding.cpp, binding, specialized: true, defaultValue: 0,
+        })),
+    ], {
+        cppName: "compute_spot_light_matrix", inline: true, trailingParameters: ["Vec3d eye"],
+        memberBindings: bindings,
         calls: new Map([
             ...mathCalls,
             [
@@ -363,7 +280,7 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
             ],
         ]),
         matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
-        returnValue: (expression): string => {
+        returns: { type: "ShadowLightMatrix", value: (lowerer, expression): string => {
             const returned = expression
                 ? context.unwrapExpression(expression)
                 : undefined;
@@ -390,22 +307,8 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
                 `        ${values[1]},\n        ${values[2]},\n` +
                 `        ${values[3]}}`
             );
-        },
+        } },
     });
-    const body = declaration.body!.statements
-        .flatMap((statement) => lowerer.statement(statement, "    "))
-        .join("\n");
-    // `view` and `proj` come out of the translator as `std::array<float,16>`
-    // and `std::vector<float>` respectively; the multiply takes the fixed
-    // form, so the call site narrows the allocated one.
-    return `// ${context.provenance(spotModule, "_computeSpotLightMatrix")}
-inline ShadowLightMatrix compute_spot_light_matrix(
-    const LightRecord& light,
-    double near_plane,
-    double far_plane,
-    Vec3d eye) {
-${body}
-}`;
 }
 
 /**
@@ -418,42 +321,26 @@ ${body}
  * caster carrier and its member spellings are supplied here while the
  * arithmetic stays the pin's.
  */
-function lowerComputeDirectionalLightMatrix(
-    context: LoweringContext,
-): string {
-    const { file, declaration } = context.functionDeclaration(
-        baseModule,
-        "computeDirectionalLightMatrix",
-    );
-    const expected: readonly (readonly [string, string])[] = [
-        ["light", "DirectionalLight"],
-        ["casterMeshes", "readonly Mesh[]"],
-        ["orthoMinZ", "number"],
-        ["orthoMaxZ", "number"],
-        ["offX", ""],
-        ["offY", ""],
-        ["offZ", ""],
-    ];
-    assertPinnedSignature(
-        context,
-        file,
-        declaration,
-        "computeDirectionalLightMatrix",
-        expected,
-    );
+function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
+    const { declaration } = context.functionDeclaration(baseModule, "computeDirectionalLightMatrix");
     const bindings = new Map<string, PinnedBinding>([
-        ["light.direction.x", { cpp: "light.direction.x", type: "scalar" }],
-        ["light.direction.y", { cpp: "light.direction.y", type: "scalar" }],
-        ["light.direction.z", { cpp: "light.direction.z", type: "scalar" }],
-        ["light.position.x", { cpp: "light.position.x", type: "scalar" }],
-        ["light.position.y", { cpp: "light.position.y", type: "scalar" }],
-        ["light.position.z", { cpp: "light.position.z", type: "scalar" }],
+        ...vec3MemberBindings("light.direction"),
+        ...vec3MemberBindings("light.position"),
         ["orthoMinZ", { cpp: "ortho_min_z", type: "scalar" }],
         ["orthoMaxZ", { cpp: "ortho_max_z", type: "scalar" }],
         ...eyeOffsetBindings,
     ]);
-    const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
-        bindings,
+    return lowerPinnedFunction(context, baseModule, "computeDirectionalLightMatrix", [
+        { pinned: "light", kind: "record", annotation: "DirectionalLight", cpp: "light", cppType: "LightRecord" },
+        { pinned: "casterMeshes", kind: "record", annotation: "readonly Mesh[]", cpp: "casters", cppType: "std::vector<ShadowCaster>" },
+        { pinned: "orthoMinZ", kind: "number", cpp: "ortho_min_z" },
+        { pinned: "orthoMaxZ", kind: "number", cpp: "ortho_max_z" },
+        ...eyeOffsetBindings.map(([pinned, binding]): PinnedFunctionParameter => ({
+            pinned, kind: "number", cpp: binding.cpp, binding, specialized: true, defaultValue: 0,
+        })),
+    ], {
+        cppName: "compute_directional_light_matrix", inline: true, trailingParameters: ["Vec3d eye"],
+        memberBindings: bindings,
         calls: new Map([
             ...mathCalls,
             [
@@ -473,11 +360,6 @@ function lowerComputeDirectionalLightMatrix(
             ],
         ]),
         matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
-        // The caster walk. Each element exposes the three things the fold
-        // reads; the PAL fills them because a mesh's world matrix is its to
-        // compose. `boundMin`/`boundMax` bind to the present arm, which is
-        // the specialization the carrier makes true -- see
-        // `shadow_caster_bounds_fallback` for the absent one.
         forOf: (iterated, element) => {
             if (iterated !== "casterMeshes") return undefined;
             return {
@@ -499,7 +381,7 @@ function lowerComputeDirectionalLightMatrix(
             };
         },
         booleanOr: true,
-        returnValue: (expression): string => {
+        returns: { type: "ShadowLightMatrix", value: (lowerer, expression): string => {
             const returned = expression
                 ? context.unwrapExpression(expression)
                 : undefined;
@@ -525,23 +407,8 @@ function lowerComputeDirectionalLightMatrix(
 ` +
                 `        ${values[3]}}`
             );
-        },
+        } },
     });
-    const body = declaration.body!.statements
-        .flatMap((statement) => lowerer.statement(statement, "    "))
-        .join("\n");
-    return `// ${context.provenance(
-        baseModule,
-        "computeDirectionalLightMatrix",
-    )}
-inline ShadowLightMatrix compute_directional_light_matrix(
-    const LightRecord& light,
-    const std::vector<ShadowCaster>& casters,
-    double ortho_min_z,
-    double ortho_max_z,
-    Vec3d eye) {
-${body}
-}`;
 }
 
 /**
@@ -1520,14 +1387,13 @@ inline constexpr std::size_t shadow_params_block_bytes =
 }
 
 /** The generated header carrying the pinned shadow family. */
-export function pinnedShadowHeader(context: LoweringContext): string {
+export function pinnedShadowHeader(context: LoweringContext, features: readonly string[] = []): string {
     assertShadowUboLayout(context);
     assertShadowRenderGateContracts(context);
     const target = assertPcfResourceContracts(context);
     const defaults = pcfSpotDefaults(context);
     const esm = esmDefaults(context);
     const pcfDirectional = pcfDirectionalDefaults(context);
-    const csm = csmDefaults(context);
     const mat4Invert = lowerMat4InvertCpp(context, { inline: true });
     const casterFallback = esmCasterBoundsFallback(context);
     // `computeAabb`'s local arm, the per-target delta range the morph
@@ -1596,27 +1462,6 @@ inline constexpr double pcf_directional_default_ortho_max_z = ${
         context.doubleLiteral(pcfDirectional.orthoMaxZ)
     };
 
-/** Defaults read from createCsmDirectionalShadowGenerator's own config. */
-inline constexpr std::uint32_t csm_default_map_size = ${csm.mapSize}u;
-inline constexpr std::uint32_t csm_default_num_cascades = ${csm.numCascades}u;
-/**
- * The factory's \`Math.min(cfg.numCascades ?? N, MAX)\` clamp.
- *
- * The receiver block declares \`array<mat4x4<f32>, MAX>\` whatever a scene
- * asks for, so this bound -- not the default above -- is what the cascade
- * arrays and the 320-byte block are sized by.
- */
-inline constexpr std::uint32_t csm_max_cascades = ${csm.maxCascades}u;
-inline constexpr double csm_default_lambda = ${context.doubleLiteral(csm.lambda)};
-inline constexpr double csm_default_cascade_blend_percentage = ${
-        context.doubleLiteral(csm.cascadeBlendPercentage)
-    };
-inline constexpr double csm_default_bias = ${context.doubleLiteral(csm.bias)};
-inline constexpr double csm_default_darkness = ${context.doubleLiteral(csm.darkness)};
-inline constexpr double csm_default_frustum_edge_falloff = ${
-        context.doubleLiteral(csm.frustumEdgeFalloff)
-    };
-
 /**
  * The pin's own shadow target, which is its ONE exception to this port's
  * depth convention: \`createShadowRenderTarget\` names standard-Z where
@@ -1642,48 +1487,10 @@ struct ShadowInfoUniforms {
 };
 static_assert(sizeof(ShadowInfoUniforms) == 96);
 
-/**
- * The CASCADED receiver's own block (\`csmInfo_NUniforms\`), which is a
- * different declaration and a different size.
- *
- * \`createCsmDirectionalShadowGenerator\` allocates it as
- * \`new Float32Array(80)\` and \`_writeCsmUbo\` fills it; the field order
- * here receives the bytes from that AST-lowered writer.
- */
-struct CsmInfoUniforms {
-    std::array<std::array<float, 16>, csm_max_cascades> cascadeTransforms{};
-    std::array<float, 4> viewFrustumZ{};
-    std::array<float, 4> frustumLengths{};
-    std::array<float, 4> shadowsInfo{};
-    std::array<float, 4> csmParams{};
-};
-static_assert(sizeof(CsmInfoUniforms) == 320);
-
-/**
- * What one generator publishes to its receivers: the bytes of ITS OWN
- * block, and how many there are.
- *
- * A single-map receiver's block is 96 bytes and a cascaded one's is 320,
- * and which one a row binds is the GENERATOR's answer rather than the
- * row's -- \`createShadowFragment\` picks a receiver's declaration from its
- * light's own filter, so a size fixed at the binding site would be right
- * for one family and wrong for the other. Both PALs read the size from
- * here.
- *
- * It is the CASCADE block's size unconditionally, not this scene's widest.
- * That costs a PCF- or ESM-only scene 224 bytes per generator in
- * \`ShadowRefreshState::blocks\` and in each backend's own generator
- * record, and 224 bytes per generator per frame in the memcmp that
- * decides whether to re-upload. Sizing it to the reached families needs
- * the same \`BBLITE_SHADOWS_CSM\` define that would gate the cascaded
- * third of this header out of those scenes, because
- * \`pinnedShadowHeader\` is not handed the feature list; both are one
- * entry in [TODO](../../TODO.md)'s shadow-family item. Stating the cost
- * here rather than in the doc's aspiration is what makes that entry
- * worth acting on.
- */
+${features.includes("shadow:csm") ? csmShadowUniforms(context) : ""}
+/** The largest receiver block among the reached shadow families. */
 inline constexpr std::size_t shadow_receiver_block_bytes =
-    sizeof(CsmInfoUniforms);
+    ${features.includes("shadow:csm") ? "sizeof(CsmInfoUniforms)" : "sizeof(ShadowInfoUniforms)"};
 
 struct ShadowReceiverBlock {
     alignas(16) std::array<std::byte, shadow_receiver_block_bytes> bytes{};
@@ -1751,30 +1558,13 @@ struct ShadowCaster {
      * transforms a bound corner through this matrix and only then through
      * mesh.world; retaining both preserves that exact two-step arithmetic.
      */
+#if BBLITE_SHADOWS_CSM
     std::array<float, 16> instance{};
     bool has_instance = false;
+#endif
     std::array<float, 3> bounds_min{};
     std::array<float, 3> bounds_max{};
 };
-
-${pinnedCsmFunctions(context)}
-
-/** The source options accepted by the native generator's public factory. */
-inline CsmConfig csm_config(const ShadowGeneratorRecord& generator) {
-    return {
-        static_cast<double>(generator.csm_num_cascades),
-        generator.csm_lambda,
-        generator.csm_cascade_blend_percentage,
-        ${csm.stabilizeCascades},
-        generator.csm_shadow_max_z,
-        generator.bias,
-        std::nullopt,
-        generator.darkness,
-        generator.frustum_edge_falloff,
-        static_cast<double>(generator.map_size),
-        generator.force_refresh_every_frame,
-    };
-}
 
 /**
  * One caster's \`mesh.worldMatrix\`, composed by the pin's own writer.
@@ -1952,47 +1742,17 @@ inline ShadowInfoUniforms shadow_info_block(
 ${shadowBlockArms(context)}
 }
 
-template <auto Member>
-struct CsmCascadeColumn {
-    const std::vector<ShadowCascade>& cascades;
-    std::size_t size() const { return cascades.size(); }
-    decltype(auto) operator[](std::size_t index) const {
-        return (cascades[index].*Member);
-    }
-};
-
-struct CsmReceiverColumns {
-    CsmCascadeColumn<&ShadowCascade::transform> _transforms;
-    CsmCascadeColumn<&ShadowCascade::view_frustum_z> _viewFrustumZ;
-    CsmCascadeColumn<&ShadowCascade::frustum_length> _frustumLengths;
-};
-
-// ${context.provenance(csmHooksModule, "_writeCsmUbo")}
-/**
- * The CASCADED receiver's block, in \`_writeCsmUbo\`'s own float order.
- *
- * The pin fills its 80 floats: the N cascade transforms at 16-float
- * strides, the split distances at 64 and the slice lengths at 68, then the
- * four \`shadowsInfo\` lanes and the two \`csmParams\` the cascade select and
- * the cross-fade read. A slot past the cascade count is never read -- the
- * WGSL loop bound is \`csmParams.x\` -- and stays the zero \`out.fill(0)\`
- * leaves.
- */
-inline CsmInfoUniforms csm_info_block(
-    const ShadowGeneratorRecord& generator) {
-    const CsmReceiverColumns columns{
-        {generator.csm_cascades}, {generator.csm_cascades}, {generator.csm_cascades}};
-    std::array<float, 80> packed{};
-    csm_write_ubo(packed, columns, csm_config(generator));
-    return std::bit_cast<CsmInfoUniforms>(packed);
-}
+#if BBLITE_SHADOWS_CSM
+inline ShadowReceiverBlock csm_receiver_block(const ShadowGeneratorRecord& generator);
+#endif
 
 /** Whichever block this generator's receivers bind. */
 inline ShadowReceiverBlock shadow_receiver_block(
     const ShadowGeneratorRecord& generator) {
-    return generator.filter == ShadowFilter::csm_directional
-        ? shadow_receiver_bytes(csm_info_block(generator))
-        : shadow_receiver_bytes(shadow_info_block(generator));
+#if BBLITE_SHADOWS_CSM
+    if (generator.filter == ShadowFilter::csm_directional) return csm_receiver_block(generator);
+#endif
+    return shadow_receiver_bytes(shadow_info_block(generator));
 }
 
 // ${context.provenance(
@@ -2049,9 +1809,11 @@ struct ShadowRefreshGate {
     Vec3 last_light_position{};
     Vec3 last_light_direction{};
     Vec3d last_fo_offset{};
+#if BBLITE_SHADOWS_CSM
     std::array<float, 16> last_camera_view_projection{};
     double last_camera_near = 0.0;
     double last_camera_far = 0.0;
+#endif
     bool rendered = false;
     /** This frame's verdict, written beside the gate test by the shared
      *  \`refresh_shadow_generators\` walk and read by each backend's task
@@ -2067,11 +1829,14 @@ struct ShadowRefreshGate {
  * camera view-projection (the aspect is folded into its projection) and
  * the near/far pair the split formula reads directly.
  */
+struct CsmCameraKey;
+#if BBLITE_SHADOWS_CSM
 struct CsmCameraKey {
     std::array<float, 16> view_projection{};
     double near_plane = 0.0;
     double far_plane = 0.0;
 };
+#endif
 
 /**
  * The pinned render gate: whether this generator's map must re-render.
@@ -2109,7 +1874,7 @@ inline bool shadow_refresh_due(
     const ShadowGeneratorRecord& generator,
     const LightRecord& light,
     Vec3d eye,
-    const CsmCameraKey* csm_camera,
+    [[maybe_unused]] const CsmCameraKey* csm_camera,
     ShadowRefreshGate& gate) {
     // The pin evaluates \`_forceRefreshEveryFrame\` first in its own
     // \`&&\` chain, so nothing else is read on a forced frame; returning
@@ -2118,6 +1883,7 @@ inline bool shadow_refresh_due(
     if (generator.force_refresh_every_frame) return true;
     const std::uint64_t caster_version = shadow_caster_version_sum(
         engine, generator.caster_meshes, generator.morph_shadow_bounds);
+#if BBLITE_SHADOWS_CSM
     const bool camera_unchanged = csm_camera == nullptr
         ? eye.x == gate.last_fo_offset.x &&
             eye.y == gate.last_fo_offset.y &&
@@ -2126,6 +1892,11 @@ inline bool shadow_refresh_due(
                 gate.last_camera_view_projection &&
             csm_camera->near_plane == gate.last_camera_near &&
             csm_camera->far_plane == gate.last_camera_far;
+#else
+    const bool camera_unchanged =
+        eye.x == gate.last_fo_offset.x && eye.y == gate.last_fo_offset.y &&
+        eye.z == gate.last_fo_offset.z;
+#endif
     if (
         gate.rendered &&
         caster_version == gate.last_caster_version &&
@@ -2145,11 +1916,13 @@ inline bool shadow_refresh_due(
     gate.last_light_position = light.position;
     gate.last_light_direction = light.direction;
     gate.last_fo_offset = eye;
+#if BBLITE_SHADOWS_CSM
     if (csm_camera != nullptr) {
         gate.last_camera_view_projection = csm_camera->view_projection;
         gate.last_camera_near = csm_camera->near_plane;
         gate.last_camera_far = csm_camera->far_plane;
     }
+#endif
     return true;
 }
 
@@ -2236,37 +2009,8 @@ inline void update_pcf_directional_shadow(
         bias_view_projection(generator.light_matrix, generator.bias);
 }
 
-/** Native camera/caster carriers around the pinned cascade computation. */
-inline void update_csm_cascades(
-    ShadowGeneratorRecord& generator,
-    const LightRecord& light,
-    const CameraRecord& camera,
-    double aspect,
-    const std::vector<ShadowCaster>& casters) {
-    const std::size_t count = generator.csm_num_cascades;
-    CsmCascadeScratch scratch(count);
-    const CsmConfig cfg = csm_config(generator);
-    const CsmCascades& cascades = csm_compute_cascades(
-        aspect, camera, light, cfg, casters, scratch,
-        [](const CameraRecord& fitted_camera, double fitted_aspect) {
-            return build_view_projection(fitted_camera, fitted_aspect);
-        });
-    generator.csm_cascades.resize(count);
-
-    for (std::size_t index = 0; index < count; ++index) {
-        ShadowCascade& fitted = generator.csm_cascades[index];
-        fitted.transform = cascades._transforms[index];
-        fitted.view = cascades._views[index];
-        fitted.view_frustum_z = cascades._viewFrustumZ[index];
-        fitted.frustum_length = cascades._frustumLengths[index];
-        fitted.caster_view_projection = fitted.transform;
-        csm_bias_view_projection(
-            fitted.caster_view_projection, csm_caster_clip_bias(cfg, cascades, index));
-    }
-}
-
 } // namespace bbl::upstream
-`;
+${features.includes("shadow:csm") ? "#include <bblite/upstream/csm_shadow.hpp>\n" : ""}`;
 }
 
 /**
@@ -2816,4 +2560,139 @@ void register_scene_with_shadow_support(Scene& scene) {
 } // namespace bbl
 `,
     };
+}
+
+/** The reached cascade fitting and receiver family. */
+export function csmShadowHeader(context: LoweringContext): string {
+    const csm = csmDefaults(context);
+    return pinnedHeader(["<bblite/upstream/pinned_shadow.hpp>"], `
+/** Defaults read from createCsmDirectionalShadowGenerator's own config. */
+inline constexpr std::uint32_t csm_default_map_size = ${csm.mapSize}u;
+inline constexpr std::uint32_t csm_default_num_cascades = ${csm.numCascades}u;
+inline constexpr double csm_default_lambda = ${context.doubleLiteral(csm.lambda)};
+inline constexpr double csm_default_cascade_blend_percentage = ${
+        context.doubleLiteral(csm.cascadeBlendPercentage)
+    };
+inline constexpr double csm_default_bias = ${context.doubleLiteral(csm.bias)};
+inline constexpr double csm_default_darkness = ${context.doubleLiteral(csm.darkness)};
+inline constexpr double csm_default_frustum_edge_falloff = ${
+        context.doubleLiteral(csm.frustumEdgeFalloff)
+    };
+
+${pinnedCsmFunctions(context)}
+
+/** The source options accepted by the native generator's public factory. */
+inline CsmConfig csm_config(const ShadowGeneratorRecord& generator) {
+    return {
+        static_cast<double>(generator.csm_num_cascades),
+        generator.csm_lambda,
+        generator.csm_cascade_blend_percentage,
+        ${csm.stabilizeCascades},
+        generator.csm_shadow_max_z,
+        generator.bias,
+        std::nullopt,
+        generator.darkness,
+        generator.frustum_edge_falloff,
+        static_cast<double>(generator.map_size),
+        generator.force_refresh_every_frame,
+    };
+}
+
+template <auto Member>
+struct CsmCascadeColumn {
+    const std::vector<ShadowCascade>& cascades;
+    std::size_t size() const { return cascades.size(); }
+    decltype(auto) operator[](std::size_t index) const {
+        return (cascades[index].*Member);
+    }
+};
+
+struct CsmReceiverColumns {
+    CsmCascadeColumn<&ShadowCascade::transform> _transforms;
+    CsmCascadeColumn<&ShadowCascade::view_frustum_z> _viewFrustumZ;
+    CsmCascadeColumn<&ShadowCascade::frustum_length> _frustumLengths;
+};
+
+// ${context.provenance(csmHooksModule, "_writeCsmUbo")}
+/**
+ * The CASCADED receiver's block, in \`_writeCsmUbo\`'s own float order.
+ *
+ * The pin fills its 80 floats: the N cascade transforms at 16-float
+ * strides, the split distances at 64 and the slice lengths at 68, then the
+ * four \`shadowsInfo\` lanes and the two \`csmParams\` the cascade select and
+ * the cross-fade read. A slot past the cascade count is never read -- the
+ * WGSL loop bound is \`csmParams.x\` -- and stays the zero \`out.fill(0)\`
+ * leaves.
+ */
+inline CsmInfoUniforms csm_info_block(
+    const ShadowGeneratorRecord& generator) {
+    const CsmReceiverColumns columns{
+        {generator.csm_cascades}, {generator.csm_cascades}, {generator.csm_cascades}};
+    std::array<float, 80> packed{};
+    csm_write_ubo(packed, columns, csm_config(generator));
+    return std::bit_cast<CsmInfoUniforms>(packed);
+}
+
+inline ShadowReceiverBlock csm_receiver_block(const ShadowGeneratorRecord& generator) {
+    return shadow_receiver_bytes(csm_info_block(generator));
+}
+
+/** Native camera/caster carriers around the pinned cascade computation. */
+inline void update_csm_cascades(
+    ShadowGeneratorRecord& generator,
+    const LightRecord& light,
+    const CameraRecord& camera,
+    double aspect,
+    const std::vector<ShadowCaster>& casters) {
+    const std::size_t count = generator.csm_num_cascades;
+    CsmCascadeScratch scratch(count);
+    const CsmConfig cfg = csm_config(generator);
+    const CsmCascades& cascades = csm_compute_cascades(
+        aspect, camera, light, cfg, casters, scratch,
+        [](const CameraRecord& fitted_camera, double fitted_aspect) {
+            return build_view_projection(fitted_camera, fitted_aspect);
+        });
+    generator.csm_cascades.resize(count);
+
+    for (std::size_t index = 0; index < count; ++index) {
+        ShadowCascade& fitted = generator.csm_cascades[index];
+        fitted.transform = cascades._transforms[index];
+        fitted.view = cascades._views[index];
+        fitted.view_frustum_z = cascades._viewFrustumZ[index];
+        fitted.frustum_length = cascades._frustumLengths[index];
+        fitted.caster_view_projection = fitted.transform;
+        csm_bias_view_projection(
+            fitted.caster_view_projection, csm_caster_clip_bias(cfg, cascades, index));
+    }
+}
+`, { compactPragma: true });
+}
+
+function csmShadowUniforms(context: LoweringContext): string {
+    const csm = csmDefaults(context);
+    return `/**
+ * The factory's \`Math.min(cfg.numCascades ?? N, MAX)\` clamp.
+ *
+ * The receiver block declares \`array<mat4x4<f32>, MAX>\` whatever a scene
+ * asks for; this bound sizes the cascade arrays and receiver block.
+ */
+inline constexpr std::uint32_t csm_max_cascades = ${csm.maxCascades}u;
+/**
+ * The CASCADED receiver's own block (\`csmInfo_NUniforms\`), which is a
+ * different declaration and a different size.
+ *
+ * \`createCsmDirectionalShadowGenerator\` allocates it as
+ * \`new Float32Array(80)\` and \`_writeCsmUbo\` fills it; the field order
+ * here receives the bytes from that AST-lowered writer.
+ */
+struct CsmInfoUniforms {
+    std::array<std::array<float, 16>, csm_max_cascades> cascadeTransforms{};
+    std::array<float, 4> viewFrustumZ{};
+    std::array<float, 4> frustumLengths{};
+    std::array<float, 4> shadowsInfo{};
+    std::array<float, 4> csmParams{};
+};
+static_assert(sizeof(CsmInfoUniforms) == 320);
+
+`;
 }

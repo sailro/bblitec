@@ -1,3 +1,25 @@
+import type { LoweringServices } from "../lowering-services.js";
+/**
+ * The clustered light field's scene surface.
+ *
+ * `light/clustered.ts` holds a container as plain data — arrays of point and
+ * spot records with a tile/slice configuration — and
+ * `addClusteredLightContainer` builds its GPU state from them: three data
+ * textures, a params block, and a per-frame `refresh` that re-bins every
+ * light against the live camera.
+ *
+ * All of that is run time here, and measurably so: both reached scenes fill
+ * a thousand lights from a seeded PRNG inside a counted loop, which lowers to
+ * a native `for` rather than an unrolled table, so the container is a native
+ * record filled by the emitted code exactly as the pin fills it.
+ *
+ * **One fact is compile-time, and it is the one that decides composition.**
+ * `createClusteredSpotLight` calls `_enableClusteredSpotSupport`, which
+ * installs the stride-3 data layout and registers the spot extension; that
+ * extension's `detect` then takes a material over from the point one, so a
+ * container that ever held a spot composes a different fragment. The pin
+ * reaches that at the spot factory, and so does this.
+ */
 /**
  * The clustered light field's scene surface.
  *
@@ -25,31 +47,18 @@ import type { ClusteredContainerState, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
 
-export interface ClusteredLightIntrinsicContext extends IntrinsicCallContext {
-    fail(node: ts.Node, message: string): never;
-    propertyName(name: ts.PropertyName): string | undefined;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        literal: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    requireDefaultEngine(node: ts.Node): string;
-    /** Records that this scene composes the clustered fragment. */
-    reachClusteredContainer(
-        state: ClusteredContainerState,
-        node: ts.Node,
-    ): void;
-}
+export interface ClusteredLightIntrinsicContext
+    extends IntrinsicCallContext,
+    Pick<LoweringServices,
+        | "fail"
+        | "propertyName"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "compileVec3"
+        | "compileNumber"
+        | "requireDefaultEngine"
+        | "reachClusteredContainer"
+    > {}
 
 /**
  * The two factories a large counted loop may call without being unrolled.

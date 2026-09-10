@@ -6,6 +6,7 @@ import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lower
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { PINNED_DECOMPOSE_ROTATION } from "./pinned-mat4-decompose.js";
 import { assertRotationPointerContract } from "./rotation-pointer-contract.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const MATH = "src/gizmo/gizmo-math.ts";
 const ROTATION = "src/gizmo/plane-rotation-gizmo.ts";
@@ -58,7 +59,9 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
     if (begin < 0 || end <= begin) context.contractError(callback, "Missing plane rotation quaternion update.");
     calls.set("worldRotationToLocal", args => `drag_local_rotation(engine, ${args.join(", ")})`);
     calls.set("rq.set", args => `set_mesh_rotation_quaternion(engine, handle, Vec4{${args.map(arg => `static_cast<float>(${arg})`).join(", ")}}, true)`);
-    const lowerer = new PinnedNumericLowerer(factory.file, {
+
+    const translated = lowerPinnedBody(factory.file, body.slice(begin, end + 1).filter(statement => !(ts.isVariableStatement(statement) &&
+        statement.declarationList.declarations[0]?.name.getText(factory.file) === "rq")), {
         calls, fixedTupleCalls: tupleCalls, vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
         bindings: new Map<string, PinnedBinding>([
             ["wm", { cpp: "wm", type: "f32" }], ["node", { cpp: "node", type: "scalar" }],
@@ -69,9 +72,6 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
             ...["x", "y", "z", "w"].map(lane => [`rq.${lane}`, { cpp: `static_cast<double>(node.rotation_quaternion.${lane})`, type: "scalar" }] as [string, PinnedBinding]),
         ]),
     });
-    const translated = body.slice(begin, end + 1).filter(statement => !(ts.isVariableStatement(statement) &&
-        statement.declarationList.declarations[0]?.name.getText(factory.file) === "rq"))
-        .flatMap(statement => lowerer.statement(statement, "    ")).join("\n");
     const localBody = localStatements.slice(parentQuaternion).flatMap(statement => {
         if (ts.isVariableStatement(statement) && statement.declarationList.declarations[0]?.name.getText(worldLocal.file) === "invPq") {
             const expression = statement.declarationList.declarations[0].initializer!;

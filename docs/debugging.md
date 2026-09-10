@@ -3,6 +3,10 @@
 Locate rendering differences with source and captured data. A small MAD alone
 does not explain a residual. Keep corpus inputs and goldens unchanged.
 
+Set `BBLITE_CHECKED_HANDLES=1` before a scene build to check native record
+indices. Invalid handles report the index, record count and C++ source location.
+Direct CMake builds use `-DBBLITE_CHECKED_HANDLES=ON`; the default is off.
+
 ## The ladder
 
 Commands follow `npm run scene --`; `diagnose <id>` combines differential
@@ -11,6 +15,7 @@ parity, paired captures and asset composition.
 | Need | Command |
 | --- | --- |
 | Check both renderers and payload | `parity <id> --differential` |
+| Attribute scene draws and triangle clusters | `parity <id> --attribute [--differential]` |
 | Compare draws, uniforms, palettes, shaders | `diff <id> [--backend dawn]` |
 | Record browser uploads/draws | `capture <id>` |
 | Decode candidate uniform layouts | `uniforms <id> --size N [--module <substring>]` |
@@ -26,7 +31,9 @@ source, module, query, pose, UI and [build identity](development.md#build-identi
 `--seek <t>` requires an intentional reference recapture (`--recapture-reference`)
 for gated comparisons.
 `--no-fail`, suppressed features and changed poses are diagnostic-only.
-`--differential` accepts only `--gpu-debug` alongside it.
+`--differential` accepts `--gpu-debug` and `--attribute` alongside it.
+`--attribute` builds an instrumented scene-renderer twin, copies its reference
+and writes separate reports under `artifacts/parity-attribution/<id>/`.
 
 If both backends differ alike, inspect shared inputs/behavior. Otherwise inspect
 translation, uploads, slots and backend state. Repeat browser captures too.
@@ -118,6 +125,7 @@ same); `UiWheelUp|UiWheelDown` queue SDL wheel packets at the canvas centre and
 applications. Override with `--frames`, `--max-growth-mb`, `--backend` and one
 replay source. Missing samples fail as unmeasured; scene-less loops lack samples.
 Working-set stability does not establish object/GPU resource reclamation.
+The report includes live GC nodes and allocations after warm-up; these counts do not affect the working-set gate.
 
 ## Artifacts
 

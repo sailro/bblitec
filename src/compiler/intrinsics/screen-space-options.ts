@@ -8,6 +8,7 @@
 // forwarded whole to the pin's own factory, which clamps them at composition
 // (`pinned-screen-space.ts`) -- so a default or a range the pin changes is
 // the pin's answer, not this file's.
+import { EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
 import { handleCppType } from "../data-types.js";
 import { screenSpaceFacts } from "../../pinned-screen-space.js";
@@ -27,7 +28,7 @@ export interface CompiledScreenSpaceTask {
 }
 
 /** The config members the task reads as handles rather than settings. */
-const HANDLE_OPTIONS = new Set([
+const HANDLE_OPTIONS = new EmissionSet([
     "name",
     "sourceTexture",
     "depthTexture",

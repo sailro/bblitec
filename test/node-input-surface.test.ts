@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 import assert from "node:assert/strict";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -8,6 +9,7 @@ import { executeModuleGraph } from "../src/executed-module-graph.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
 import { pinnedNodeVariantsHeader, nodeVariantStageStems } from "../src/pinned-node-material-cpp.js";
 import { materialTextureSlotsHeader, pinnedSharedVariantDecls } from "../src/pinned-pbr-variant-cpp.js";
@@ -158,15 +160,16 @@ test("generated compiler and node factory preserve retained slots and deferred b
     const factory = new FactoryLowerer(context);
     const graph = await executeModuleGraph({ modulePath: "corpus/babylon-lite/lab/lite/src/shared/scene149-nme.ts", exportName: "SCENE149_NME_JSON" });
     const composed = await composeNodeMaterial(graph, "input lifecycle", { pinnedBlockLoader: "geometry" });
-    writeFileSync(join(includes, "node_variants.hpp"), pinnedNodeVariantsHeader("input lifecycle", [{ index: 0, ...nodeVariantStageStems(0), composed }], []));
+    writeFileSync(join(includes, "node_variants.hpp"), inlineCpp(pinnedNodeVariantsHeader("input lifecycle", [{ index: 0, ...nodeVariantStageStems(0), composed }], [])));
     writeFileSync(join(includes, "pinned_variant_bindings.hpp"), pinnedSharedVariantDecls(context, "input lifecycle"));
-    writeFileSync(join(includes, "material_texture_slots.hpp"), materialTextureSlotsHeader({ transmission: false, clearcoat: false, sheen: false, iridescence: false,
+    writeFileSync(join(includes, "material_texture_slots.hpp"), inlineCpp(materialTextureSlotsHeader({ transmission: false, clearcoat: false, sheen: false, iridescence: false,
         lightmap: false, metallicReflectanceMap: false, reflectanceMap: false, specularGlossiness: false, occlusionUv2: false, standardBump: false,
-        standardReflection: false, clusteredLights: false, vat: false, vatInstances: false }, [], "input lifecycle"));
+        standardReflection: false, clusteredLights: false, vat: false, vatInstances: false }, [], "input lifecycle")));
     writeFileSync(join(output, "node_factory.hpp"), factory.lowerNodeMaterialFactory().source);
     const solid = factory.lowerFileTextureFactory().source;
     const scene = new SceneLowerer(context).lowerCore({ nodeMaterials: true }).source;
     writeFileSync(join(output, "lifecycle.hpp"), `namespace bbl {\n` + [
+        lowerMeshMaterialSetter(context),
         cppFunction(solid, "SolidTexture create_solid_texture("), cppFunction(solid, "FileTexture solid_texture_file("),
         ...["void require_scene_engine(", "std::uint32_t material_family_bit(", "std::uint32_t scene_material_families(",
             "Scene create_scene_context(Engine&", "void add_to_scene(Scene& scene, MeshHandle", "void drain_scene_deferred_builders(",

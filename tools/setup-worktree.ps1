@@ -60,6 +60,7 @@ $junctions = @(
     "artifacts\tools",
     "artifacts\shader-cache",
     "artifacts\bake-cache",
+    "artifacts\native-cache",
     "tools\shader-compiler\vcpkg_installed"
 )
 

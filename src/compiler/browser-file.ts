@@ -1,43 +1,39 @@
+import { EmissionMap, EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 
 import { browserGlobalNamed } from "./browser-erasure.js";
-import type { Feature, Value, ValueKind } from "./types.js";
+import type { Value } from "./types.js";
 
 /**
  * The bounded browser file surface is a host service, like Web Storage.  This
  * module owns its value shapes so Blob/object-URL/File handling does not become
  * another branch in the Babylon intrinsic registry.
  */
-interface BrowserFileContext {
-    readonly checker: ts.TypeChecker;
-    unwrap(expression: ts.Expression): ts.Expression;
-    resolveStaticExpression(expression: ts.Expression): ts.Expression;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    propertyName(name: ts.PropertyName): string | undefined;
-    compileValue(expression: ts.Expression): Value;
-    compileStringLiteral(expression: ts.Expression): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    cppString(value: string): string;
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    requireEngine(value: Value, node: ts.Node): string;
-    requireDefaultEngine(node: ts.Node): string;
-    reachFeature(feature: Feature, site?: ts.Node): void;
-    reachJsData(): void;
-    fail(node: ts.Node, message: string): never;
-}
+interface BrowserFileContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "unwrap"
+        | "resolveStaticExpression"
+        | "lookupOptional"
+        | "isDefaultLibraryIdentifier"
+        | "propertyName"
+        | "compileValue"
+        | "compileStringLiteral"
+        | "compileNumber"
+        | "cppString"
+        | "expectArgumentCount"
+        | "expectKind"
+        | "expectSameEngine"
+        | "requireEngine"
+        | "requireDefaultEngine"
+        | "reachFeature"
+        | "reachJsData"
+        | "fail"
+    > {}
 
-const knownAcceptMimeExtensions = new Map<string, readonly string[]>([
+const knownAcceptMimeExtensions = new EmissionMap<string, readonly string[]>([
     ["application/json", ["json"]],
     ["text/json", ["json"]],
     ["text/plain", ["txt"]],
@@ -409,7 +405,7 @@ export function validateFileAccept(
     if (value.length === 0) return "";
     const tokens = value.split(",").map((token) => token.trim());
     const canonical: string[] = [];
-    const extensions = new Set<string>();
+    const extensions = new EmissionSet<string>();
     for (const token of tokens) {
         if (token.length === 0) {
             context.fail(
@@ -450,7 +446,7 @@ export function validateFileAccept(
             "File input accept must contain a safe extension or a supported MIME type.",
         );
     }
-    return [...new Set(canonical)].join(",");
+    return [...new EmissionSet(canonical)].join(",");
 }
 
 /**

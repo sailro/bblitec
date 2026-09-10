@@ -1,3 +1,13 @@
+import { EmissionMap, EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+// Asset registration: from a scene URL to a packaged local file.
+//
+// A reached asset URL registers once per (kind, source) pair and maps
+// to a deterministic hashed output name beside the executable; bundled
+// root-relative paths resolve against the pinned upstream tree, and a
+// drawn sprite atlas registers the module that draws it rather than a
+// URL. The intrinsic lowerers in asset.ts and sprite.ts call these
+// through their contexts.
 // Asset registration: from a scene URL to a packaged local file.
 //
 // A reached asset URL registers once per (kind, source) pair and maps
@@ -24,26 +34,22 @@ import {
     staticJsonValue,
     type StaticJsonContext,
 } from "./option-helpers.js";
-import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompileAsset,
     Feature,
-    ResolvedCompileOptions,
-    Value,
 } from "./types.js";
 
-export interface AssetRegistryContext {
-    readonly assets: Map<string, CompileAsset>;
-    readonly assetPayloads: Map<string, string>;
-    readonly symbols: CompilerSymbols;
-    readonly options: ResolvedCompileOptions;
-    unwrap(expression: ts.Expression): ts.Expression;
-    compileStringLiteral(
-        expression: ts.Expression,
-    ): string;
-    cppString(value: string): string;
-    fail(node: ts.Node, message: string): never;
-}
+export interface AssetRegistryContext
+    extends Pick<LoweringServices,
+        | "assets"
+        | "assetPayloads"
+        | "symbols"
+        | "options"
+        | "unwrap"
+        | "compileStringLiteral"
+        | "cppString"
+        | "fail"
+    > {}
 
 function basenameWithoutExtension(name: string): string {
     const dot = name.lastIndexOf(".");
@@ -129,7 +135,7 @@ const SPLAT_CONTAINER_ROWS: readonly SplatContainer[] = [
 export const SPLAT_CONTAINERS: ReadonlyMap<
     CompileAsset["kind"],
     SplatContainer
-> = new Map(SPLAT_CONTAINER_ROWS.map((row) => [row.kind, row]));
+> = new EmissionMap(SPLAT_CONTAINER_ROWS.map((row) => [row.kind, row]));
 
 /**
  * The row one pinned loader's own name selects.
@@ -154,7 +160,7 @@ export function splatContainerByLoader(
  * extension and be missed by all, which is why the set is the container
  * table plus the plain rows rather than a second hand-kept list.
  */
-export const SPLAT_ASSET_KINDS: ReadonlySet<CompileAsset["kind"]> = new Set([
+export const SPLAT_ASSET_KINDS: ReadonlySet<CompileAsset["kind"]> = new EmissionSet([
     "splat",
     ...SPLAT_CONTAINERS.keys(),
 ]);
@@ -326,8 +332,7 @@ export function assetRecord(
             // scene fetched.
             : SPLAT_ASSET_KINDS.has(kind)
                 ? `${basenameWithoutExtension(sourceName)}.splat`
-            // A transcoded Basis texture packages as the KTX1 container the
-            // runtime's one compressed-texture reader takes.
+            // Basis keeps its .ktx asset name for the packaged mip payload.
             : kind === "basis"
                 ? `${basenameWithoutExtension(sourceName)}.ktx`
             : sourceName;
@@ -390,11 +395,12 @@ function executedModuleReference(
 }
 
 /** What `executedModuleReference` reads; the asset registry is a superset. */
-export interface ExecutedModuleReferenceContext {
-    readonly symbols: CompilerSymbols;
-    readonly options: ResolvedCompileOptions;
-    unwrap(expression: ts.Expression): ts.Expression;
-}
+export interface ExecutedModuleReferenceContext
+    extends Pick<LoweringServices,
+        | "symbols"
+        | "options"
+        | "unwrap"
+    > {}
 
 /**
  * The asset a zero-argument scene-module call produces, registered under
@@ -573,10 +579,12 @@ function hash(value: string): string {
  * not, because the pin's own graph loader is what would have to run.
  */
 interface StaticGraphDocumentContext
-    extends ExecutedModuleReferenceContext, StaticJsonContext {
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    fail(node: ts.Node, message: string): never;
-}
+    extends ExecutedModuleReferenceContext,
+    StaticJsonContext,
+    Pick<LoweringServices,
+        | "lookupOptional"
+        | "fail"
+    > {}
 
 type StaticGraphDocument =
     | { kind: "literal"; graph: Record<string, unknown> }

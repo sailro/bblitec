@@ -1,3 +1,5 @@
+import { someAnalysisNode } from "./analysis-walk.js";
+import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import type { Value } from "./types.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
@@ -74,7 +76,7 @@ type BindDataTuple = (
     arity: number,
 ) => string;
 
-const bitwiseFunctions = new Map<ts.SyntaxKind, string>([
+const bitwiseFunctions = new EmissionMap<ts.SyntaxKind, string>([
     [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
     [ts.SyntaxKind.BarToken, "bitwise_or"],
     [ts.SyntaxKind.CaretToken, "bitwise_xor"],
@@ -137,6 +139,7 @@ export class StaticEvaluator {
     public compileVec3(
         expression: ts.Expression,
         precision: "float" | "double" = "float",
+        value?: Value,
     ): string {
         const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
         // A vector written once as a module constant and passed by name is
@@ -153,12 +156,7 @@ export class StaticEvaluator {
         // non-record result leaves the literal branches below to run,
         // which is what keeps the domain error the message a scene
         // passing something else deserves.
-        const resolved =
-            ts.isIdentifier(unwrapped) ||
-            ts.isElementAccessExpression(unwrapped) ||
-            ts.isPropertyAccessExpression(unwrapped)
-                ? this.resolveValue(unwrapped)
-                : undefined;
+        const resolved = value ?? this.vectorValue(expression, unwrapped);
         if (resolved?.kind === "record") {
             return this.vec3FromRecord(resolved, unwrapped, precision);
         }
@@ -166,11 +164,11 @@ export class StaticEvaluator {
         // scene 166 draws each component from a PRNG -- is a data tuple
         // rather than a compile-time one, so its lanes are read by index at
         // the sink's own width rather than folded.
-        const dataTuple = this.dataTupleComponents(unwrapped, precision);
+        const dataTuple = this.dataTupleComponents(unwrapped, resolved, precision);
         if (dataTuple) {
             return `${type}{${dataTuple.join(", ")}}`;
         }
-        const tuple = this.tupleElements(unwrapped, 3);
+        const tuple = this.tupleElements(unwrapped, 3, resolved);
         if (tuple) {
             return `${type}{${tuple
                 .map((value) =>
@@ -284,7 +282,8 @@ export class StaticEvaluator {
         const unwrapped = this.unwrap(
             this.resolveStaticExpression(expression),
         );
-        const tuple = this.tupleElements(unwrapped, 3);
+        const resolved = this.vectorValue(expression, unwrapped);
+        const tuple = this.tupleElements(unwrapped, 3, resolved);
         if (tuple) {
             return `bbl::Color3{${tuple
                 .map((value) =>
@@ -292,7 +291,7 @@ export class StaticEvaluator {
                 )
                 .join(", ")}}`;
         }
-        const data = this.dataTupleComponents(unwrapped);
+        const data = this.dataTupleComponents(unwrapped, resolved);
         if (data) {
             return `bbl::Color3{${data.join(", ")}}`;
         }
@@ -1272,10 +1271,10 @@ export class StaticEvaluator {
     private isWrittenThrough(
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const name = ts.isIdentifier(declaration.name)
-            ? declaration.name.text
+        const symbol = ts.isIdentifier(declaration.name)
+            ? this.checker.getSymbolAtLocation(declaration.name)
             : undefined;
-        if (name === undefined) {
+        if (symbol === undefined) {
             return true;
         }
         let scope: ts.Node = declaration;
@@ -1283,16 +1282,13 @@ export class StaticEvaluator {
             scope = scope.parent;
         }
         const namesBinding = (node: ts.Node): boolean =>
-            ts.isIdentifier(node) && node.text === name;
+            ts.isIdentifier(node) && this.checker.getSymbolAtLocation(node) === symbol;
         const throughBinding = (node: ts.Node): boolean =>
             (ts.isPropertyAccessExpression(node) ||
                 ts.isElementAccessExpression(node)) &&
             namesBinding(node.expression);
-        let written = false;
-        const visit = (node: ts.Node): void => {
-            if (written) {
-                return;
-            }
+
+        const written = someAnalysisNode(scope, (node) => {
             const parent = node.parent;
             if (throughBinding(node)) {
                 const assigned =
@@ -1305,8 +1301,7 @@ export class StaticEvaluator {
                     ts.isCallExpression(parent) &&
                     parent.expression === node;
                 if (assigned || stepped || deleted || called) {
-                    written = true;
-                    return;
+                    return true;
                 }
             }
             if (
@@ -1314,12 +1309,11 @@ export class StaticEvaluator {
                 node.arguments.some(namesBinding) &&
                 this.callReachesABody(node)
             ) {
-                written = true;
-                return;
+                return true;
             }
-            ts.forEachChild(node, visit);
-        };
-        ts.forEachChild(scope, visit);
+            return false;
+        });
+
         return written;
     }
 
@@ -1341,7 +1335,7 @@ export class StaticEvaluator {
 
     public resolveStaticExpression(
         expression: ts.Expression,
-        resolving: ReadonlySet<ts.Symbol> = new Set(),
+        resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
     ): ts.Expression {
         const unwrapped = this.unwrap(expression);
         if (
@@ -1383,25 +1377,26 @@ export class StaticEvaluator {
         }
         return this.resolveStaticExpression(
             initializer,
-            new Set([...resolving, symbol]),
+            new EmissionSet([...resolving, symbol]),
         );
     }
 
     private tupleElements(
         expression: ts.Expression,
         length: number,
+        resolved?: Value,
     ): Value[] | undefined {
         // An identifier binds, or resolves through a module-level
         // initializer; an element or property access reaches an entry of
         // a static table, which is how an indexed color table feeds a
         // Color3 sink. A non-tuple result leaves the caller's remaining
         // literal branches to run.
-        const value =
+        const value = resolved ?? (
             ts.isIdentifier(expression) ||
             ts.isElementAccessExpression(expression) ||
             ts.isPropertyAccessExpression(expression)
                 ? this.resolveValue(expression)
-                : undefined;
+                : undefined);
         if (value?.kind !== "tuple") {
             return undefined;
         }
@@ -1463,42 +1458,27 @@ export class StaticEvaluator {
         return values;
     }
 
-    /**
-     * The components of a plain-data numeric tuple, as native expressions.
-     *
-     * A colour table written with an explicit `[number, number, number][]`
-     * annotation is data rather than a compile-time table, so its element
-     * arrives as a `bbl::js::Tuple<3>`. The components round at the sink,
-     * which is where the pin's own `Float32Array` store rounds them.
-     *
-     * A scene-local helper *returning* that annotation lands here too, and
-     * it is the one source that is not free to repeat: `tupleComponents`
-     * indexes its base once per component, and the inliner has just
-     * emitted the call's body where the call sits. So a call is bound to a
-     * native local first, which is the same rule `setCallComponents`
-     * (`statements.ts`) already applies to a spread of one.
-     */
+    private vectorValue(expression: ts.Expression, unwrapped: ts.Expression): Value | undefined {
+        if (!ts.isCallExpression(unwrapped) && !ts.isIdentifier(unwrapped) &&
+            !ts.isElementAccessExpression(unwrapped) && !ts.isPropertyAccessExpression(unwrapped)) {
+            return undefined;
+        }
+        return this.narrowOptional(this.resolveValue(unwrapped), expression);
+    }
+
+    /** Read a numeric tuple once; round its components at the vector sink. */
     private dataTupleComponents(
         expression: ts.Expression,
+        value: Value | undefined,
         precision: "float" | "double" = "float",
     ): string[] | undefined {
         // Both readers (a Vector3 and a Color3) take a three-component tuple.
         const length = 3;
-        const call = ts.isCallExpression(expression);
-        if (
-            !call &&
-            !ts.isIdentifier(expression) &&
-            !ts.isElementAccessExpression(expression) &&
-            !ts.isPropertyAccessExpression(expression)
-        ) {
-            return undefined;
-        }
-        const value = this.resolveValue(expression);
-        if (!isDataTuple(value, length)) {
+        if (!value || !isDataTuple(value, length)) {
             return undefined;
         }
         return tupleComponents(
-            call ? this.bindDataTuple(value, length) : value.cpp,
+            ts.isIdentifier(expression) ? value.cpp : this.bindDataTuple(value, length),
             length,
             precision,
         );

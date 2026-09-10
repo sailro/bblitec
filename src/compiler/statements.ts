@@ -1,3 +1,6 @@
+import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
+import { emissionArray, EmissionMap, EmissionSet, EmissionWeakSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
@@ -5,16 +8,10 @@ import {
     isHandleKind,
     isDataTuple,
     tupleComponents,
-    type DataIterationElement,
     type DataType,
-    type DataTypeRegistry,
 } from "./data-types.js";
 import type {
-    CompileAsset,
-    CompiledNodeParticles,
-    Feature,
     Value,
-    ValueKind,
 } from "./types.js";
 import { lightSetter } from "./assignments.js";
 import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
@@ -23,10 +20,7 @@ import {
     staticIndexLoopIterations,
     loopBoundMayChange,
     walkReachedLoopNodes,
-    type ParameterizedResourceLoop,
-    type ResourceLoop,
 } from "./resource-loops.js";
-import type { CompilerSymbols } from "./symbols.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { argumentAt, isUpdateExpression, unwrappedIdentifier } from "./syntax.js";
@@ -34,251 +28,128 @@ import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
+// The handle-collection concept owns the collection targets, the loop
+// frame, and the recursive imported-mesh walk proof; the emitters here are
+// the statement layer over the same resolutions.
 import {
     emitHandleCollectionLoop,
     isRecursiveImportedMeshWalk,
-    type HandleCollections,
     type HandleCollectionTarget,
 } from "./handle-collections.js";
 
-export interface StatementLoweringContext {
-    resolveRecordValue(expression: ts.Expression): Value | undefined;
-    noteCameraVectorSet(vector: NonNullable<Value["cameraVector"]>, site: ts.Node): void;
-    workerCheckpointCpp(): string | undefined;
-    workerAbortCpp(): string | undefined;
-    readonly checker: ts.TypeChecker;
-    readonly symbols: CompilerSymbols;
-    readonly dataTypes: DataTypeRegistry;
-    /** The scene node-particle program; a buffer guard lands on it. */
-    readonly reachedNodeParticles: CompiledNodeParticles;
-    /** The handle-collection concept: every collection operation. */
-    readonly handleCollections: HandleCollections;
-    /** Whether a `new` expression constructs a reached local class. */
-    constructsLocalClass(expression: ts.NewExpression): boolean;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    resolveStaticExpression(expression: ts.Expression): ts.Expression;
-    /** Marks that a scene threw, so the generated main includes <stdexcept>. */
-    reachThrow(): void;
-    reachFeature(feature: Feature, site: ts.Node): void;
-    reachJsData(): void;
-    cppString(value: string): string;
-    emitDataAssignment(
-        expression: ts.BinaryExpression,
-    ): boolean;
-    bindPendingLet(identifier: ts.Identifier, value: Value): void;
-    emitOptionalResourceAssignment(
-        expression: ts.BinaryExpression,
-        target: Value,
-    ): boolean;
-    assignOptionalResourceValue(
-        target: Value,
-        value: Value,
-        node: ts.Node,
-    ): void;
-    emitDataPostfix(
-        expression: ts.PostfixUnaryExpression,
-    ): boolean;
-    dataIterationTarget(
-        expression: ts.Expression,
-        knownTuple?: Value,
-    ):
-        | {
-              container: Value;
-              element: DataIterationElement;
-              template?: Value;
-          }
-        | undefined;
-    assetEntitiesIterationTarget(
-        expression: ts.Expression,
-    ): Value | undefined;
-    assetFlattenedMeshesIterationTarget(
-        expression: ts.Expression,
-    ):
-        | { target: HandleCollectionTarget; asset: CompileAsset }
-        | undefined;
-    assetRootChildrenIterationTarget(
-        expression: ts.Expression,
-    ): HandleCollectionTarget | undefined;
-    isFoldedFlattenLoop(statement: ts.Statement): boolean;
-    handleCollectionIterationTarget(
-        expression: ts.Expression,
-    ): HandleCollectionTarget | undefined;
-    bindDataIterationVariable(
-        name: ts.BindingName,
-        itemCpp: string,
-        element: DataIterationElement,
-        template?: Value,
-    ): void;
-    activeNativeReturnType():
-        | DataType
-        | "void"
-        | undefined;
-    activeInlineWrapper(): boolean;
-    trackResourceLoopEarlyReturn(condition: ts.Expression): void;
-    isRuntimeResourceConstruction(): boolean;
-    emitNativeReturn(
-        statement: ts.ReturnStatement,
-    ): void;
-    /** The dirty entry appropriate to startup code or a live callback. */
-    meshTransformDirtyEntry():
-        | "mark_mesh_dirty"
-        | "mark_mesh_runtime_transform";
-    captureEmittedLines(emitBody: () => void): string[];
-    emitFinallyGuard(cleanup: readonly string[]): string;
-    emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean;
-    nativeBindingCheckpoint(): number;
-    captureHoistedLines(emitBody: () => void, beforeBody: number, site: ts.Node): string[];
-    /**
-     * Runs a shape probe, keeping what it emitted only when it answers.
-     * A probe that resolves a call compiles it, so one that declines has
-     * to take its emission with it.
-     */
-    probeEmission<T>(
-        probe: () => T,
-        answered: (result: T) => boolean,
-    ): T;
-    allocateTemporaryCppName(label: string): string;
-    bindDataTuple(
-        value: Value,
-        arity: number,
-        label?: string,
-    ): string;
-    emitVariableDeclaration(
-        declaration: ts.VariableDeclaration,
-    ): void;
-    emitAssignment(expression: ts.BinaryExpression): void;
-    compileValue(expression: ts.Expression): Value;
-    compileTextMutation(expression: ts.Expression): Value | undefined;
-    compileNodeInputMutation(expression: ts.Expression): Value | undefined;
-    checkNodeGeometryMutation(expression: ts.Expression): void;
-    emitDiscardedValue(value: Value): void;
-    emitAwaitExpression(expression: ts.Expression): boolean;
-    compileCondition(expression: ts.Expression): string;
-    isBrowserOnlyExpression(expression: ts.Expression): boolean;
-    isDeferredCallbackCall(call: ts.CallExpression): boolean;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileEnumSwitchLabel(
-        expression: ts.Expression,
-        dataType: DataType & { kind: "enum" },
-    ): string | undefined;
-    expectStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression;
-    probeStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression | undefined;
-    constArrayLiteral(expression: ts.Expression): ts.ArrayLiteralExpression | undefined;
-    bindLocalValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void;
-    bindCompileTimeValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void;
-    lookup(identifier: ts.Identifier): Value;
-    expectKind(
-        value: Value,
-        kind: ValueKind,
-        node: ts.Node,
-    ): void;
-    expectSameEngine(
-        left: Value,
-        right: Value,
-        node: ts.Node,
-    ): void;
-    requireEngine(value: Value, node: ts.Node): string;
-    assertAssetRootWritable(root: Value, node: ts.Node): void;
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    unwrap(expression: ts.Expression): ts.Expression;
-    isFrameYield(expression: ts.Expression): boolean;
-    /**
-     * A frame yield lowered AFTER `startEngine` sits inside the hoisted
-     * continuation, so "the frame's own work has already run" only stays
-     * true if the statements after it wait for the NEXT frame boundary.
-     * Emits the marker `hoistEngineContinuation` turns into a nested
-     * re-queue; before the loop exists it emits nothing and the yield
-     * stays erased.
-     */
-    emitFrameYieldRequeue(expression: ts.Expression): void;
-    emitFramePollAwait(call: ts.CallExpression): boolean;
-    isBoundedNestedFrameYield(
-        expression: ts.Expression,
-    ): boolean;
-    frameDrainCondition(
-        expression: ts.Expression,
-    ): ts.Expression | undefined;
-    /**
-     * The latch `await <binding>` waits on when the binding is a promise
-     * a scene callback resolves, and undefined for every other await.
-     */
-    promiseLatchCondition(
-        expression: ts.Expression,
-    ): string | undefined;
-    /**
-     * Emits the marker `hoistEngineContinuation` turns into a re-queue
-     * that repeats until the latch is set, which is what an await on a
-     * callback-resolved promise means at a frame boundary.
-     */
-    emitStartContinuationGate(
-        expression: ts.Expression,
-        latch: string,
-    ): void;
-    requireDefaultEngine(node: ts.Node): string;
-    isBrowserInstrumentationCall(
-        call: ts.CallExpression,
-    ): boolean;
-    emitPlatformEventListener(call: ts.CallExpression): boolean;
-    eraseBrowserInstrumentation(position: number): void;
-    /** Whether a loop body reaches pinned scene construction at generation. */
-    requiresStaticIteration(statement: ts.Statement): boolean;
-    requiresStaticDataIteration(statement: ts.Statement): boolean;
-    emitNativeDataIteration<T>(statement: ts.Statement, emitBody: () => T): T;
-    knownCollectionCardinality(expression: ts.Expression): number | undefined;
-    runtimeCollectionCardinality(expression: ts.Expression): number | undefined;
-    parameterizedResourceLoop(statement: ResourceLoop, knownIterations?: number): ParameterizedResourceLoop | undefined;
-    emitParameterizedResourceLoop(
-        statement: ResourceLoop,
-        iterations: number,
-        emitBody: () => void,
-    ): void;
-    isInParameterizedResourceLoop(statement?: ts.IterationStatement): boolean;
-    snapshotAliasState(): Map<string, string>;
-    restoreAliasState(snapshot: Map<string, string>): void;
-    enterRuntimeControlFlow(): void;
-    leaveRuntimeControlFlow(): void;
-    isInRuntimeControlFlow(): boolean;
-    enterRuntimeIteration(): void;
-    leaveRuntimeIteration(): void;
-    enterStaticIteration(statement: ts.IterationStatement): void;
-    leaveStaticIteration(): void;
-    emit(line: string): void;
-    rebindVariable(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void;
-    increaseIndent(): void;
-    decreaseIndent(): void;
-    pushScope(cppPrefix: string, propagateRebindings?: boolean): void;
-    popScope(): void;
-    allocateBlockPrefix(): string;
-    fail(node: ts.Node, message: string): never;
-}
+export interface StatementLoweringContext
+    extends Pick<LoweringServices,
+        | "resolveRecordValue"
+        | "noteCameraVectorSet"
+        | "workerCheckpointCpp"
+        | "workerAbortCpp"
+        | "checker"
+        | "symbols"
+        | "dataTypes"
+        | "reachedNodeParticles"
+        | "handleCollections"
+        | "constructsLocalClass"
+        | "lookupOptional"
+        | "resolveStaticExpression"
+        | "reachThrow"
+        | "reachFeature"
+        | "reachJsData"
+        | "cppString"
+        | "emitDataAssignment"
+        | "bindPendingLet"
+        | "emitOptionalResourceAssignment"
+        | "assignOptionalResourceValue"
+        | "emitDataPostfix"
+        | "dataIterationTarget"
+        | "assetEntitiesIterationTarget"
+        | "assetFlattenedMeshesIterationTarget"
+        | "assetRootChildrenIterationTarget"
+        | "isFoldedFlattenLoop"
+        | "handleCollectionIterationTarget"
+        | "bindDataIterationVariable"
+        | "activeNativeReturnType"
+        | "prefersNativeDataIteration"
+        | "activeInlineWrapper"
+        | "trackResourceLoopEarlyReturn"
+        | "isRuntimeResourceConstruction"
+        | "emitNativeReturn"
+        | "meshTransformDirtyEntry"
+        | "captureEmittedLines"
+        | "canShareFunctionBody"
+        | "pinValueToTemporary"
+        | "useNativeValue"
+        | "emitFinallyGuard"
+        | "emitEngineFinally"
+        | "nativeBindingCheckpoint"
+        | "captureHoistedLines"
+        | "probeEmission"
+        | "allocateTemporaryCppName"
+        | "bindDataTuple"
+        | "emitVariableDeclaration"
+        | "emitAssignment"
+        | "compileValue"
+        | "compileTextMutation"
+        | "compileNodeInputMutation"
+        | "checkNodeGeometryMutation"
+        | "emitDiscardedValue"
+        | "emitAwaitExpression"
+        | "compileCondition"
+        | "isBrowserOnlyExpression"
+        | "isDeferredCallbackCall"
+        | "isDefaultLibraryIdentifier"
+        | "compileNumber"
+        | "compileEnumSwitchLabel"
+        | "expectStaticArrayLiteral"
+        | "probeStaticArrayLiteral"
+        | "constArrayLiteral"
+        | "bindLocalValue"
+        | "bindCompileTimeValue"
+        | "lookup"
+        | "expectKind"
+        | "expectSameEngine"
+        | "requireEngine"
+        | "assertAssetRootWritable"
+        | "expectArgumentCount"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "unwrap"
+        | "isFrameYield"
+        | "emitFrameYieldRequeue"
+        | "emitFramePollAwait"
+        | "isBoundedNestedFrameYield"
+        | "frameDrainCondition"
+        | "promiseLatchCondition"
+        | "emitStartContinuationGate"
+        | "requireDefaultEngine"
+        | "isBrowserInstrumentationCall"
+        | "emitPlatformEventListener"
+        | "eraseBrowserInstrumentation"
+        | "requiresStaticIteration"
+        | "requiresStaticDataIteration"
+        | "emitNativeDataIteration"
+        | "knownCollectionCardinality"
+        | "runtimeCollectionCardinality"
+        | "parameterizedResourceLoop"
+        | "emitParameterizedResourceLoop"
+        | "isInParameterizedResourceLoop"
+        | "snapshotAliasState"
+        | "restoreAliasState"
+        | "enterRuntimeControlFlow"
+        | "leaveRuntimeControlFlow"
+        | "isInRuntimeControlFlow"
+        | "enterRuntimeIteration"
+        | "leaveRuntimeIteration"
+        | "enterStaticIteration"
+        | "leaveStaticIteration"
+        | "emit"
+        | "rebindVariable"
+        | "increaseIndent"
+        | "decreaseIndent"
+        | "pushScope"
+        | "popScope"
+        | "allocateBlockPrefix"
+        | "fail"
+    > {}
 
 /**
  * Whether a frame yield sits inside a loop this lowering did not write out,
@@ -335,9 +206,8 @@ function containsFrameYield(
     context: StatementLoweringContext,
     statement: ts.Statement,
 ): boolean {
-    let found = false;
-    const visit = (node: ts.Node): void => {
-        if (found) return;
+
+    const found = someAnalysisNode(statement, (node) => {
         if (
             ts.isExpressionStatement(node) &&
             ts.isAwaitExpression(node.expression)
@@ -347,13 +217,12 @@ function containsFrameYield(
                 context.isFrameYield(awaited) ||
                 context.isBoundedNestedFrameYield(awaited)
             ) {
-                found = true;
-                return;
+                return true;
             }
         }
-        ts.forEachChild(node, visit);
-    };
-    visit(statement);
+        return false;
+    });
+
     return found;
 }
 
@@ -364,47 +233,6 @@ function bodyStatements(
     return ts.isBlock(statement.statement)
         ? statement.statement.statements
         : [statement.statement];
-}
-
-function isCppWordCharacter(character: string | undefined): boolean {
-    return character !== undefined && /[A-Za-z0-9_]/.test(character);
-}
-
-/**
- * Every stand-alone occurrence of one iteration's handle spelling in an
- * emitted line, replaced by the placeholder.
- *
- * "Stand-alone" is the identifier-boundary rule: a match whose word-shaped
- * edge touches another word character is part of a longer name —
- * `v_sphere1` inside `v_sphere17` — and is left alone. The replacement is
- * over the line's exact bytes, which is what makes the later uniformity
- * comparison a proof: two iterations are the same emission exactly when
- * their lines are equal after this substitution.
- */
-function replaceHandleToken(line: string, token: string): string {
-    let result = "";
-    let from = 0;
-    for (;;) {
-        const found = line.indexOf(token, from);
-        if (found === -1) {
-            return result + line.slice(from);
-        }
-        const boundaryBefore = !(
-            isCppWordCharacter(line[found - 1]) &&
-            isCppWordCharacter(token[0])
-        );
-        const boundaryAfter = !(
-            isCppWordCharacter(line[found + token.length]) &&
-            isCppWordCharacter(token[token.length - 1])
-        );
-        if (boundaryBefore && boundaryAfter) {
-            result += line.slice(from, found) + HANDLE_TOKEN_PLACEHOLDER;
-            from = found + token.length;
-        } else {
-            result += line.slice(from, found + 1);
-            from = found + 1;
-        }
-    }
 }
 
 // Small counted loops unroll because that keeps generation-known values
@@ -423,10 +251,7 @@ const MAX_DATA_STATIC_INDEX_NEST_PRODUCT = 1024;
 // The residual static paths also have a compilation-wide hard limit, owned by
 // StaticExpansionBudget; the product is only an optimization threshold.
 const MAX_STATIC_UNROLL_PRODUCT = 256;
-// Stands for the folded iteration's own handle spelling inside captured
-// lines while they are compared and re-emitted. U+0001 cannot appear in
-// emitted C++, so a replacement can never collide with scene text.
-const HANDLE_TOKEN_PLACEHOLDER = "\u0001";
+const MIN_FOLD_ITERATIONS = 4;
 const BITWISE_ASSIGNMENT_HELPERS: Readonly<Record<string, string>> = {
     "%=": "remainder_js",
     "&=": "bitwise_and",
@@ -436,7 +261,7 @@ const BITWISE_ASSIGNMENT_HELPERS: Readonly<Record<string, string>> = {
     ">>=": "shift_right",
     ">>>=": "shift_right_unsigned",
 };
-const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
+const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new EmissionMap([
     [ts.SyntaxKind.EqualsToken, "="],
     [ts.SyntaxKind.PlusEqualsToken, "+="],
     [ts.SyntaxKind.MinusEqualsToken, "-="],
@@ -452,19 +277,19 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
 ]);
 
 export class StatementLowerer {
-    private readonly loweredTerminators = new WeakSet<ts.Statement>();
-    private readonly labels: Array<{ source: string; target: string }> = [];
+    private readonly loweredTerminators = new EmissionWeakSet<ts.Statement>();
+    private readonly labels: Array<{ source: string; target: string }> = emissionArray([]);
     /** Source loops whose current iteration is being emitted statically. */
     private readonly staticIterationCompletions: Array<{
         iteration: ts.IterationStatement;
         completion: "normal" | "break" | "continue";
-    }> = [];
+    }> = emissionArray([]);
     /**
      * The running product of enclosing static unroll counts. Each unroller
      * pushes its own count multiplied in, so a nested loop reads the number
      * of times its body will be emitted rather than only its own count.
      */
-    private readonly staticUnrollProducts: number[] = [];
+    private readonly staticUnrollProducts: number[] = emissionArray([]);
 
     /** How many times a body emitted here appears in the output. */
     private staticUnrollProduct(): number {
@@ -498,13 +323,18 @@ export class StatementLowerer {
         );
     }
 
+    private shouldFoldStaticIterations(iterations: number): boolean {
+        return iterations >= MIN_FOLD_ITERATIONS || this.exceedsStaticUnrollBudget(iterations);
+    }
+
     private preferNativeDataIteration(
         context: StatementLoweringContext,
         statement: ts.IterationStatement,
         iterations: number,
     ): boolean {
         if (iterations < 2 || context.requiresStaticDataIteration(statement.statement)) return false;
-        if (iterations > MAX_STATIC_INDEX_ITERATIONS || this.exceedsStaticUnrollBudget(iterations)) return true;
+        if (context.prefersNativeDataIteration()) return true;
+        if (this.shouldFoldStaticIterations(iterations)) return true;
         const allowance = MAX_STATIC_UNROLL_PRODUCT / (iterations * this.staticUnrollProduct());
         let nodes = 0;
         walkReachedLoopNodes(context, statement.statement, () => ++nodes <= allowance);
@@ -527,54 +357,6 @@ export class StatementLowerer {
         return value.kind === "data" && value.dataType !== undefined &&
             !context.dataTypes.carriesHandle(value.dataType) &&
             !context.dataTypes.carriesFunction(value.dataType);
-    }
-
-    /** Re-emits captured unrolled iterations exactly as they were emitted. */
-    private emitCapturedIterations(
-        context: StatementLoweringContext,
-        captures: readonly (readonly string[])[],
-    ): void {
-        for (const lines of captures) {
-            for (const line of lines) {
-                context.emit(line);
-            }
-        }
-    }
-
-    /** Whether every capture matches the template's lines byte for byte. */
-    private capturesAreIdentical(
-        captures: readonly (readonly string[])[],
-        template: readonly string[],
-    ): boolean {
-        return (
-            template.length > 0 &&
-            captures.every(
-                (lines) =>
-                    lines.length === template.length &&
-                    lines.every(
-                        (line, at) => line === template[at],
-                    ),
-            )
-        );
-    }
-
-    /** Emits one native repeat loop around a proven-uniform template. */
-    private emitRepeatedTemplate(
-        context: StatementLoweringContext,
-        count: number,
-        templateLines: readonly string[],
-    ): void {
-        const counter =
-            context.allocateTemporaryCppName("repeat_index");
-        context.emit(
-            `for (int ${counter} = 0; ${counter} < ${count}; ++${counter}) {`,
-        );
-        context.increaseIndent();
-        for (const line of templateLines) {
-            context.emit(line);
-        }
-        context.decreaseIndent();
-        context.emit("}");
     }
 
     /** Compile one body whose effects occur only on a native runtime path. */
@@ -645,20 +427,18 @@ export class StatementLowerer {
 
     /** Whether a subtree can continue one of the active static loops. */
     private containsStaticIterationContinue(statement: ts.Statement): boolean {
-        let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
+
+        const found = someAnalysisNode(statement, (node) => {
             if (
                 ts.isContinueStatement(node) &&
                 !node.label &&
                 this.continueTargetsStaticIteration(node)
             ) {
-                found = true;
-                return;
+                return true;
             }
-            ts.forEachChild(node, visit);
-        };
-        visit(statement);
+            return false;
+        });
+
         return found;
     }
 
@@ -850,7 +630,7 @@ export class StatementLowerer {
         body: ts.Statement,
         bindings: ReadonlySet<ts.Symbol>,
     ): boolean {
-        const constant = (expression: ts.Expression, seen = new Set<ts.Symbol>()): boolean => {
+        const constant = (expression: ts.Expression, seen = new EmissionSet<ts.Symbol>()): boolean => {
             const node = context.unwrap(expression);
             if (ts.isIdentifier(node)) {
                 const symbol = context.symbols.valueSymbol(node);
@@ -861,7 +641,7 @@ export class StatementLowerer {
                 if (value?.staticNumber !== undefined || value?.staticString !== undefined ||
                     value?.staticBoolean !== undefined) return true;
                 const resolved = context.resolveStaticExpression(node);
-                return resolved !== node && constant(resolved, new Set([...seen, symbol]));
+                return resolved !== node && constant(resolved, new EmissionSet([...seen, symbol]));
             }
             if (ts.isLiteralExpression(node) || node.kind === ts.SyntaxKind.TrueKeyword ||
                 node.kind === ts.SyntaxKind.FalseKeyword || node.kind === ts.SyntaxKind.NullKeyword) return true;
@@ -872,19 +652,14 @@ export class StatementLowerer {
                 !isUpdateExpression(node) &&
                 constant(node.operand, seen);
         };
-        let settled = true;
-        const visit = (node: ts.Node): void => {
-            if (!settled || ts.isFunctionLike(node) || ts.isIterationStatement(node, false)) return;
-            if ((ts.isBreakStatement(node) || ts.isContinueStatement(node)) && node.label) settled = false;
+        return !someAnalysisNode(body, (node) => {
+            if ((ts.isBreakStatement(node) || ts.isContinueStatement(node)) && node.label) return true;
             if (ts.isIfStatement(node) &&
                 (this.bindsEnclosingLoop(node.thenStatement) ||
                     (node.elseStatement && this.bindsEnclosingLoop(node.elseStatement))) &&
-                !constant(node.expression)) settled = false;
-            if (ts.isSwitchStatement(node)) settled = false;
-            ts.forEachChild(node, visit);
-        };
-        visit(body);
-        return settled;
+                !constant(node.expression)) return true;
+            return ts.isSwitchStatement(node);
+        }, { functions: "skip", loops: "skip" });
     }
 
     /** Whether the enclosing-loop control includes a break, not only continue. */
@@ -905,6 +680,29 @@ export class StatementLowerer {
         const value = context.compileValue(
             statement.expression,
         );
+        if (value.staticString !== undefined) {
+            const staticDiscriminant = context.cppString(value.staticString);
+            const clauses = statement.caseBlock.clauses;
+            let matched = false;
+            for (const clause of clauses) {
+                if (ts.isDefaultClause(clause)) {
+                    if (clause !== clauses.at(-1)) context.fail(clause, "A switch default clause must be last.");
+                    matched = true;
+                } else if (!matched) {
+                    matched = this.compileStaticSwitchString(context, clause.expression) ===
+                        staticDiscriminant;
+                }
+                // Empty labels fall through to the next body. Only the reached
+                // body participates in feature selection and specialization.
+                if (matched && clause.statements.length > 0) {
+                    context.emit("{");
+                    this.emitSwitchBody(context, clause);
+                    context.emit("}");
+                    return;
+                }
+            }
+            return;
+        }
         const stringSwitch =
             value.kind === "string" ||
             (value.kind === "data" &&
@@ -1541,14 +1339,14 @@ export class StatementLowerer {
         if (!declaration || !ts.isIdentifier(declaration.name)) {
             return false;
         }
-        const name = declaration.name.text;
-        let erased = true;
-        const visit = (node: ts.Node): void => {
-            if (!erased) return;
+        const symbol = context.symbols.valueSymbol(declaration.name);
+        if (!symbol) return false;
+
+        const erased = !someAnalysisNode(clause.block, (node) => {
             if (
                 ts.isIdentifier(node) &&
                 node !== declaration.name &&
-                node.text === name
+                context.symbols.valueSymbol(node) === symbol
             ) {
                 let statement: ts.Node = node;
                 while (
@@ -1576,13 +1374,12 @@ export class StatementLowerer {
                             ))
                     )
                 ) {
-                    erased = false;
-                    return;
+                    return true;
                 }
             }
-            ts.forEachChild(node, visit);
-        };
-        visit(clause.block);
+            return false;
+        });
+
         return erased;
     }
 
@@ -1681,7 +1478,8 @@ export class StatementLowerer {
         const plan = context.parameterizedResourceLoop(statement);
         if (
             plan &&
-            (plan.expansion * this.staticUnrollProduct() > MAX_STATIC_UNROLL_PRODUCT ||
+            (this.shouldFoldStaticIterations(plan.iterations) ||
+                plan.expansion * this.staticUnrollProduct() > MAX_STATIC_UNROLL_PRODUCT ||
                 context.isInParameterizedResourceLoop())
         ) {
             context.emitParameterizedResourceLoop(statement, plan.iterations, () =>
@@ -1694,10 +1492,9 @@ export class StatementLowerer {
         const shape = staticIndexLoopShape(context.symbols, statement);
         const indexSymbol = shape && context.symbols.valueSymbol(shape.indexBinding);
         const staticExits = resourceLoop && indexSymbol !== undefined &&
-            this.hasStaticLoopExits(context, statement.statement, new Set([indexSymbol]));
+            this.hasStaticLoopExits(context, statement.statement, new EmissionSet([indexSymbol]));
         if (needsSpecialization) {
-            const checkExits = (node: ts.Node): void => {
-                if (ts.isFunctionLike(node)) return;
+            forEachAnalysisNode(statement.statement, (node) => {
                 if (ts.isReturnStatement(node)) {
                     context.fail(
                         node,
@@ -1711,9 +1508,7 @@ export class StatementLowerer {
                         "A labeled resource-loop exit cannot preserve static composition order.",
                     );
                 }
-                ts.forEachChild(node, checkExits);
-            };
-            checkExits(statement.statement);
+            }, { functions: "skip" });
         }
         if (
             (!this.bindsEnclosingLoop(
@@ -1918,6 +1713,10 @@ export class StatementLowerer {
         let indexMutation: ts.Node | undefined;
         walkReachedLoopNodes(context, statement.statement, (node) => {
             if (indexMutation) return false;
+            // A recursive call has its own loop binding, including its
+            // incrementor. Only this body's lexical region can close over ours.
+            if (node.getSourceFile() !== statement.getSourceFile() ||
+                node.pos < statement.statement.pos || node.end > statement.statement.end) return;
             if (writesThroughTrackedRoot(node, (target) =>
                 ts.isIdentifier(target) &&
                 context.symbols.valueSymbol(target) === indexSymbol,
@@ -2025,76 +1824,6 @@ export class StatementLowerer {
         return exceeded;
     }
 
-    /**
-     * A statically unrolled loop past the nest budget: every iteration
-     * still runs — its generation-time effects are the reason the loop
-     * unrolls at all — but the emitted lines are captured per iteration,
-     * and when every capture is byte-identical the text collapses to one
-     * native repeat loop around a single copy. Identical captures mean
-     * the per-iteration binding never reached the emission (a folded
-     * constant would differ per iteration), so the repeated body has
-     * nothing to parameterize; the loop runs the same statements the
-     * same number of times in the same order.
-     *
-     * Anything short of identical re-emits the captures verbatim — the
-     * unrolled bytes exactly as today — because a body this cannot prove
-     * uniform (scene165's nest folds its indices into per-cell constants)
-     * is precisely the one whose unrolled form is the trusted emission.
-     *
-     * Shared by the static index loop and the static array-literal
-     * `for...of`, whose per-iteration bindings differ but whose fold
-     * proof is the same byte identity.
-     */
-    private emitBudgetedUniformIterations(
-        context: StatementLoweringContext,
-        iterations: number,
-        emitIteration: (at: number) => void,
-    ): void {
-        let template: string[] | undefined;
-        let matchingPrefix = 0;
-        let divergentCaptures: string[][] | undefined;
-        this.withStaticUnrollProduct(iterations, () => {
-            for (let at = 0; at < iterations; at += 1) {
-                const lines = context.captureEmittedLines(() =>
-                    emitIteration(at),
-                );
-                if (divergentCaptures) {
-                    divergentCaptures.push(lines);
-                    continue;
-                }
-                if (!template) {
-                    template = lines;
-                    matchingPrefix = 1;
-                    continue;
-                }
-                const matches =
-                    lines.length === template.length &&
-                    lines.every(
-                        (line, index) => line === template![index],
-                    );
-                if (matches) {
-                    matchingPrefix += 1;
-                    continue;
-                }
-                divergentCaptures = [lines];
-            }
-        });
-        if (!template) return;
-        if (divergentCaptures) {
-            for (let iteration = 0; iteration < matchingPrefix; ++iteration) {
-                for (const line of template) context.emit(line);
-            }
-            this.emitCapturedIterations(context, divergentCaptures);
-            return;
-        }
-        if (template.length === 0) return;
-        this.emitRepeatedTemplate(
-            context,
-            iterations,
-            template,
-        );
-    }
-
     private emitWhile(
         context: StatementLoweringContext,
         statement: ts.WhileStatement,
@@ -2191,7 +1920,8 @@ export class StatementLowerer {
         const plan = context.parameterizedResourceLoop(statement);
         if (
             plan &&
-            (plan.expansion * this.staticUnrollProduct() > MAX_STATIC_UNROLL_PRODUCT ||
+            (this.shouldFoldStaticIterations(plan.iterations) ||
+                plan.expansion * this.staticUnrollProduct() > MAX_STATIC_UNROLL_PRODUCT ||
                 runtimeCardinality !== undefined ||
                 context.isInParameterizedResourceLoop())
         ) {
@@ -2330,6 +2060,9 @@ export class StatementLowerer {
             )) {
             return;
         }
+        if (compiled && this.emitNativeHandleTableForOf(context, statement, declaration, compiled)) {
+            return;
+        }
         const emitElementIteration = (
             element: ts.Expression,
             index: number,
@@ -2347,31 +2080,6 @@ export class StatementLowerer {
                 },
             );
         };
-        // The same budget-triggered fold as the static index loop: past
-        // the nest budget the iterations are captured, and only a fully
-        // uniform body collapses to one native repeat loop — anything
-        // short of identical re-emits the unrolled bytes exactly. A body
-        // reaching pinned scene construction keeps the flat unroll; that
-        // is the AOT boundary the fold must not blur.
-        if (
-            !context.requiresStaticIteration(
-                statement.statement,
-            ) &&
-            this.exceedsStaticUnrollBudget(
-                values.elements.length,
-            )
-        ) {
-            this.emitBudgetedUniformIterations(
-                context,
-                values.elements.length,
-                (at) =>
-                    emitElementIteration(
-                        values.elements[at]!,
-                        at,
-                    ),
-            );
-            return;
-        }
         this.withStaticUnrollProduct(
             values.elements.length,
             () => {
@@ -2391,7 +2099,7 @@ export class StatementLowerer {
             ? context.symbols.valueSymbol(declaration.name)
             : undefined;
         if (!context.requiresStaticDataIteration(statement.statement) &&
-            (!bindingSymbol || !this.hasStaticLoopExits(context, statement.statement, new Set([bindingSymbol])))) {
+            (!bindingSymbol || !this.hasStaticLoopExits(context, statement.statement, new EmissionSet([bindingSymbol])))) {
             return false;
         }
         const expression = context.resolveStaticExpression(statement.expression);
@@ -2665,7 +2373,7 @@ export class StatementLowerer {
             }
         }
         if (
-            this.emitStaticHandleTableForOf(
+            this.emitNativeHandleTableForOf(
                 context,
                 statement,
                 declaration,
@@ -2693,186 +2401,38 @@ export class StatementLowerer {
         return true;
     }
 
-    /**
-     * A `for...of` over a generation-known tuple of engine handles, past
-     * the nest budget: the AOT walk still happens — every iteration is
-     * compiled once with its real element, so handle facts learned in the
-     * body land on the same Value objects, and any generation-time record
-     * the body touches is touched per element exactly as before — but the
-     * emitted lines are captured per iteration instead of streamed. When
-     * every capture is the same bytes modulo that iteration's own handle
-     * spelling, the text collapses to a native table of the handles plus
-     * one loop over it.
-     *
-     * Why the substitution proof is sound: canonicalizing capture k
-     * replaces ALL stand-alone occurrences of element k's spelling, so
-     * equality of the canonical lines means capture k is exactly the
-     * template with the loop binding set to element k — which is what the
-     * emitted loop executes, in the same element order, through a const
-     * by-value binding just like the handle-collection loop's. The table
-     * is built at the statement's own position on every execution, so it
-     * reads the handle variables at the same moment the unrolled
-     * statements read them. A body that rebinds an element's own variable
-     * cannot slip through: the rebinding line either carries that
-     * iteration's token (declined by the placeholder-assignment guard) or
-     * another iteration's spelling (unequal canonical lines). Everything
-     * else — heterogeneous kinds, bodies doing pinned scene construction,
-     * per-iteration folds, locals (their block prefixes differ per
-     * iteration by construction) — fails uniformity and keeps the
-     * unrolled emission byte for byte.
-     */
-    private emitStaticHandleTableForOf(
+    /** Typed handle iteration preserves order and aliases without recompiling the body. */
+    private emitNativeHandleTableForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
         elements: readonly Value[],
     ): boolean {
-        if (!ts.isIdentifier(declaration.name)) {
-            return false;
-        }
-        if (!this.exceedsStaticUnrollBudget(elements.length)) {
-            return false;
-        }
+        if (!ts.isIdentifier(declaration.name) || !this.shouldFoldStaticIterations(elements.length)) return false;
+        const binding = declaration.name;
         const kind = elements[0]!.kind;
-        const cppType =
-            context.handleCollections.staticHandleTableCppType(
-                kind,
-            );
-        // Every element must be spelled as a plain C++ identifier — a
-        // handle local the scene bound before pushing. An element compiled
-        // straight from its creation call carries that CALL as its
-        // spelling, and a table repeating it would re-create the mesh per
-        // execution; an identifier read is effect-free and reads the same
-        // handle the unrolled statements read.
-        if (
-            cppType === undefined ||
-            elements.some(
-                (element) =>
-                    element.kind !== kind ||
-                    !cppIdentifierPattern.test(
-                        element.cpp,
-                    ),
-            )
-        ) {
-            return false;
-        }
-        // A body that binds this loop's own control flow, or that reaches
-        // pinned scene construction, keeps the unrolled arms above: the
-        // first has its own continue/erasure semantics, and the second is
-        // the AOT boundary this fold must not blur even when its text
-        // would prove uniform.
-        if (
-            this.bindsEnclosingLoop(statement.statement) ||
-            context.requiresStaticIteration(statement.statement)
-        ) {
-            return false;
-        }
-        // From here every iteration is consumed exactly once: captured,
-        // then re-emitted either folded or verbatim. Falling back to the
-        // caller's unroll after this point would run the generation-time
-        // effects twice.
-        const captures: string[][] = [];
-        this.withStaticUnrollProduct(elements.length, () => {
-            for (const element of elements) {
-                captures.push(
-                    context.captureEmittedLines(() =>
-                        this.emitUnrolledIteration(
-                            context,
-                            statement,
-                            statement.statement,
-                            () => {
-                                this.bindStaticIterationValue(
-                                    context,
-                                    declaration.name,
-                                    element,
-                                );
-                            },
-                        ),
-                    ),
-                );
-            }
-        });
-        const canonical = captures.map((lines, at) =>
-            lines.map((line) =>
-                replaceHandleToken(line, elements[at]!.cpp),
-            ),
-        );
-        const template = canonical[0]!;
-        const uniform = this.capturesAreIdentical(
-            canonical,
-            template,
-        );
-        // The loop binding is a const copy, so a template line that would
-        // assign through or alias the bound handle itself cannot take the
-        // fold; the unrolled statements wrote the original variable.
-        const assignsElement = new RegExp(
-            `${HANDLE_TOKEN_PLACEHOLDER}\\s*=(?!=)`,
-        );
-        const aliasesElement = new RegExp(
-            `&\\s*${HANDLE_TOKEN_PLACEHOLDER}`,
-        );
-        const unsafe = template.some(
-            (line) =>
-                assignsElement.test(line) ||
-                aliasesElement.test(line),
-        );
-        if (!uniform || unsafe) {
-            this.emitCapturedIterations(context, captures);
-            return true;
-        }
-        if (
-            !template.some((line) =>
-                line.includes(HANDLE_TOKEN_PLACEHOLDER),
-            )
-        ) {
-            // The element never reached the text, so a table would bind an
-            // unreferenced loop variable; a plain repeat loop is the same
-            // statements the same number of times.
-            this.emitRepeatedTemplate(
-                context,
-                elements.length,
-                template,
-            );
-            return true;
-        }
-        const table =
-            context.allocateTemporaryCppName("handle_table");
-        const member = context.allocateTemporaryCppName(
-            "handle_table_member",
-        );
-        context.emit(
-            `const ${cppType} ${table}[${elements.length}] = {`,
-        );
+        if (kind !== "mesh" && kind !== "material" && kind !== "camera" && kind !== "animation-group") return false;
+        const engineCpp = elements[0]!.engineCpp;
+        if (!engineCpp || elements.some(element => element.kind !== kind || element.engineCpp !== engineCpp) ||
+            this.bindsEnclosingLoop(statement.statement) || !context.canShareFunctionBody(statement.statement)) return false;
+        const cppType = context.handleCollections.staticHandleTableCppType(kind)!;
+        const values = elements.map(element => context.pinValueToTemporary(element, "handle_element"));
+        for (const value of values) context.useNativeValue(value);
+        const table = context.allocateTemporaryCppName("handle_table");
+        context.emit("const " + cppType + " " + table + "[" + values.length + "] = {");
         context.increaseIndent();
-        const perLine = 16;
-        for (
-            let from = 0;
-            from < elements.length;
-            from += perLine
-        ) {
-            const row = elements
-                .slice(from, from + perLine)
-                .map((element) => element.cpp)
-                .join(", ");
-            context.emit(`${row},`);
+        for (let index = 0; index < values.length; index += 16) {
+            context.emit(values.slice(index, index + 16).map(value => value.cpp).join(", ") + ",");
         }
         context.decreaseIndent();
         context.emit("};");
-        context.emit(
-            `for (const ${cppType} ${member} : ${table}) {`,
-        );
-        context.increaseIndent();
-        for (const line of template) {
-            context.emit(
-                line.replaceAll(
-                    HANDLE_TOKEN_PLACEHOLDER,
-                    member,
-                ),
-            );
-        }
-        context.decreaseIndent();
-        context.emit("}");
-        return true;
+        return context.emitNativeDataIteration(statement, () => {
+            emitHandleCollectionLoop(context, {
+                containerCpp: table, elementKind: kind, elementCppType: cppType,
+                engineCpp, temporaryLabel: "handle_table_member",
+            }, binding, () => this.emitScopedBody(context, statement.statement));
+            return true;
+        });
     }
 
     /** Binds one statically unrolled element, including tuple patterns. */
@@ -3032,9 +2592,9 @@ export class StatementLowerer {
                 context.fail(statement.expression, "A statically expanded resource iteration requires an unchanged array size.");
             }
             const range = context.allocateTemporaryCppName("resource_range");
-            context.emit(`const auto ${range} = ${target.container.cpp};`);
+            context.emit({ kind: "declaration", type: "const auto", name: range, initializer: target.container.cpp });
             const iterator = context.allocateTemporaryCppName("resource_iterator");
-            context.emit(`auto ${iterator} = ${range}.begin();`);
+            context.emit({ kind: "declaration", type: "auto", name: iterator, initializer: `${range}.begin()` });
             this.withStaticUnrollProduct(count, () => {
                 for (let index = 0; index < count; ++index) {
                     const completed = this.emitUnrolledIteration(
@@ -3043,7 +2603,7 @@ export class StatementLowerer {
                         statement.statement,
                         () => {
                             const member = context.allocateTemporaryCppName("resource_member");
-                            context.emit(`[[maybe_unused]] auto ${member} = *${iterator};`);
+                            context.emit({ kind: "declaration", type: "auto", name: member, initializer: `*${iterator}`, attributes: "[[maybe_unused]] " });
                             context.emit(`++${iterator};`);
                             context.bindDataIterationVariable(
                                 declaration.name, member, target.element, target.template,
@@ -3092,9 +2652,7 @@ export class StatementLowerer {
         );
         context.increaseIndent();
         for (const line of lines) context.emit(line);
-        if (!new RegExp(`\\b${item}\\b`).test(lines.join("\n"))) {
-            context.emit(`static_cast<void>(${item});`);
-        }
+        context.emit(`static_cast<void>(${item});`);
         context.decreaseIndent();
         context.emit("}");
         return true;
@@ -3555,7 +3113,7 @@ export class StatementLowerer {
             const name = context.allocateTemporaryCppName(
                 "destructure_resource",
             );
-            context.emit(`const auto ${name} = ${element.cpp};`);
+            context.emit({ kind: "declaration", type: "const auto", name: name, initializer: element.cpp });
             return { ...element, cpp: name };
         });
         targets.forEach((target, index) => {
@@ -3586,10 +3144,10 @@ export class StatementLowerer {
         if (call.arguments.length !== 3) context.fail(call, "Camera vector.set expects exactly three numeric arguments.");
         context.noteCameraVectorSet(vector, call);
         const handle = context.allocateTemporaryCppName("camera_set_owner");
-        context.emit(`const auto ${handle} = ${vector.owner.cpp};`);
+        context.emit({ kind: "declaration", type: "const auto", name: handle, initializer: vector.owner.cpp });
         const values = call.arguments.map((argument) => {
             const value = context.allocateTemporaryCppName("camera_set_value");
-            context.emit(`const double ${value} = ${context.compileNumber(argument, "double")};`);
+            context.emit({ kind: "declaration", type: "const double", name: value, initializer: context.compileNumber(argument, "double") });
             return value;
         });
         context.emit(`bbl::set_camera_vector(${vector.owner.engineCpp}.cameras[${handle}.value], &bbl::CameraRecord::${vector.field}, bbl::Vec3d{${values.join(", ")}});`);
@@ -3734,7 +3292,7 @@ export class StatementLowerer {
                 targetCpp = context.allocateTemporaryCppName(
                     "scene_node_transform_target",
                 );
-                context.emit(`const auto ${targetCpp} = ${target.cpp};`);
+                context.emit({ kind: "declaration", type: "const auto", name: targetCpp, initializer: target.cpp });
             }
             const vector = `${transform.cppType}{${this.setCallComponents(
                 context,

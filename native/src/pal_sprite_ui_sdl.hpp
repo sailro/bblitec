@@ -255,7 +255,7 @@ inline void ensure_sprite_ui_sdl_buffer(
     if (!buffer) gpu_error("SDL_CreateGPUBuffer sprite UI");
 }
 
-inline SDL_GPUTransferBuffer* upload_sprite_ui_sdl_buffer(
+inline OwnedSdlTransfer upload_sprite_ui_sdl_buffer(
     SDL_GPUDevice* device,
     SDL_GPUCopyPass* copy,
     SDL_GPUBuffer* destination,
@@ -264,14 +264,13 @@ inline SDL_GPUTransferBuffer* upload_sprite_ui_sdl_buffer(
     SDL_GPUTransferBufferCreateInfo transfer_info{};
     transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     transfer_info.size = size;
-    SDL_GPUTransferBuffer* transfer =
-        SDL_CreateGPUTransferBuffer(device, &transfer_info);
-    if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer sprite UI");
-    void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
+    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
+    if (!transfer.get()) gpu_error("SDL_CreateGPUTransferBuffer sprite UI");
+    void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
     if (!mapped) gpu_error("SDL_MapGPUTransferBuffer sprite UI");
     std::memcpy(mapped, data, size);
-    SDL_UnmapGPUTransferBuffer(device, transfer);
-    const SDL_GPUTransferBufferLocation source{transfer, 0};
+    SDL_UnmapGPUTransferBuffer(device, transfer.get());
+    const SDL_GPUTransferBufferLocation source{transfer.get(), 0};
     const SDL_GPUBufferRegion target{destination, 0, size};
     SDL_UploadToGPUBuffer(copy, &source, &target, true);
     return transfer;
@@ -317,9 +316,9 @@ inline void render_sprite_ui_sdl_frame(
         SDL_ReleaseGPUTexture(device, texture->second);
         texture = ui.textures.erase(texture);
     }
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     if (!copy) gpu_error("SDL_BeginGPUCopyPass sprite UI");
-    std::vector<SDL_GPUTransferBuffer*> transfers;
+    std::vector<OwnedSdlTransfer> transfers;
     transfers.push_back(upload_sprite_ui_sdl_buffer(
         device,
         copy,
@@ -345,13 +344,14 @@ inline void render_sprite_ui_sdl_frame(
         texture_info.layer_count_or_depth = 1;
         texture_info.num_levels = 1;
         texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-        SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+        OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(device, &texture_info), {device}};
+        auto* texture = texture_owner.get();
         if (!texture) gpu_error("SDL_CreateGPUTexture sprite UI source");
         SDL_GPUTransferBufferCreateInfo transfer_info{};
         transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         transfer_info.size = static_cast<Uint32>(source_texture.rgba->size());
-        SDL_GPUTransferBuffer* transfer =
-            SDL_CreateGPUTransferBuffer(device, &transfer_info);
+        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
+        auto* transfer = transfer_owner.get();
         if (!transfer) {
             gpu_error("SDL_CreateGPUTransferBuffer sprite UI texture");
         }
@@ -378,13 +378,12 @@ inline void render_sprite_ui_sdl_frame(
             source_texture.height,
             1};
         SDL_UploadToGPUTexture(copy, &source, &destination, false);
-        transfers.push_back(transfer);
+        transfers.push_back(std::move(transfer_owner));
         ui.textures.emplace(source_texture.id, texture);
+        static_cast<void>(texture_owner.release());
     }
-    SDL_EndGPUCopyPass(copy);
-    for (SDL_GPUTransferBuffer* transfer : transfers) {
-        SDL_ReleaseGPUTransferBuffer(device, transfer);
-    }
+    copy.end();
+    transfers.clear();
 
     std::size_t draw_begin = 0;
     for (std::size_t segment = 0; segment <= frame.backdrops.size(); ++segment) {
@@ -394,8 +393,7 @@ inline void render_sprite_ui_sdl_frame(
     color_target.texture = target;
     color_target.load_op = SDL_GPU_LOADOP_LOAD;
     color_target.store_op = SDL_GPU_STOREOP_STORE;
-    SDL_GPURenderPass* pass =
-        SDL_BeginGPURenderPass(command, &color_target, 1, nullptr);
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
     if (!pass) gpu_error("SDL_BeginGPURenderPass sprite UI");
     const SDL_GPUBufferBinding vertex_binding{ui.vertices, 0};
     const SDL_GPUBufferBinding index_binding{ui.indices, 0};
@@ -438,7 +436,7 @@ inline void render_sprite_ui_sdl_frame(
         SDL_DrawGPUIndexedPrimitives(
             pass, draw.index_count, 1, draw.first_index, 0, 0);
     }
-    SDL_EndGPURenderPass(pass);
+    pass.end();
     if (segment < frame.backdrops.size()) {
         render_ui_backdrop_sdl(device, command, target, target_format,
             ui.vertices, ui.indices, ui.sampler, ui.texture_pipeline,

@@ -1,3 +1,4 @@
+import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 /**
  * Emits `upstream/node_variants.hpp` — the C++ side of a composed node graph.
  *
@@ -312,6 +313,7 @@ export function nodeGeometryVariants(
  * which shape they are compiling against.
  */
 function geometryTable(
+    cpp: CppDefinitions,
     rows: readonly string[],
     tasks: number,
     graphs: number,
@@ -326,7 +328,7 @@ function geometryTable(
  * \`shader_variant\` is checked against, which \`node_variants.size()\` stopped
  * being once the views joined.
  */
-inline constexpr std::size_t node_graph_count = ${graphs};
+${cpp.constant("std::size_t", "node_graph_count", graphs)}
 
 /**
  * One geometry-output view of a graph: the module
@@ -361,26 +363,15 @@ struct NodeGeometryVariantEntry {
     std::size_t color_target_count;
 };
 
-inline constexpr std::array<
-    NodeGeometryVariantEntry,
-    ${rows.length}> node_geometry_variants{{
-${rows.join("\n")}
-}};
+${cpp.table("NodeGeometryVariantEntry", "node_geometry_variants", rows.length, `${rows.join("\n")}`)}
 
 /** The \`node_variants\` row one geometry view was emitted into: the views
  *  follow the graphs in the order this table lists them. */
-inline constexpr std::size_t node_geometry_entry(
+inline std::size_t node_geometry_entry(
     std::size_t geometry_variant) {
     return node_graph_count + geometry_variant;
 }
 
-// Which makes the two tables one join, so a build where they grew out of
-// step -- and would resolve a neighbour's module for every geometry draw --
-// fails here rather than at a draw.
-static_assert(
-    node_graph_count + node_geometry_variants.size() ==
-        node_variants.size(),
-    "Every node_variants row past the graphs is one composed geometry view.");
 
 /** No geometry view of this graph was composed for that task. */
 inline constexpr std::size_t node_no_geometry_variant =
@@ -400,9 +391,9 @@ inline constexpr std::size_t node_no_geometry_variant =
  * so a table that stopped being dense refuses instead of resolving a
  * neighbour's view.
  */
-inline constexpr std::size_t node_geometry_tasks = ${tasks};
+${cpp.constant("std::size_t", "node_geometry_tasks", tasks)}
 
-inline constexpr std::size_t node_geometry_variant_for(
+inline std::size_t node_geometry_variant_for(
     std::size_t variant,
     std::size_t geometry_task) {
     if (geometry_task >= node_geometry_tasks) {
@@ -440,7 +431,8 @@ export function pinnedNodeVariantsHeader(
     // the deployed modules, and one computed list is one predicate rather
     // than four that a later edit could desynchronise.
     geometryVariants: readonly NodeGeometryVariantManifestEntry[],
-): string {
+): CppModule {
+    const cpp = new CppDefinitions();
     if (variants.length === 0) {
         throw new Error("A node scene composed no graphs.");
     }
@@ -591,7 +583,7 @@ export function pinnedNodeVariantsHeader(
             `${stringLiteral(resource.samplerName)}, ` +
             `MaterialTextureSource::${resource.source}},`,
     );
-    return `#pragma once
+    return cpp.finish(`#pragma once
 
 // ${provenance}
 
@@ -615,11 +607,7 @@ struct NodeVariantAttribute {
     std::string_view name;
 };
 
-inline constexpr std::array<
-    NodeVariantAttribute,
-    ${attributeRows.length}> node_variant_attributes{{
-${attributeRows.join("\n")}
-}};
+${cpp.table("NodeVariantAttribute", "node_variant_attributes", attributeRows.length, `${attributeRows.join("\n")}`)}
 
 /**
  * One texture pair a graph samples, at the bindings the pin's own pipeline
@@ -643,15 +631,9 @@ struct NodeVariantInput {
     std::string_view type;
 };
 
-inline constexpr std::array<NodeVariantInput, ${inputRows.length}> node_variant_inputs{{
-${inputRows.join("\n")}
-}};
+${cpp.table("NodeVariantInput", "node_variant_inputs", inputRows.length, `${inputRows.join("\n")}`)}
 
-inline constexpr std::array<
-    NodeVariantTexture,
-    ${textureRows.length}> node_variant_textures{{
-${textureRows.join("\n") || "    // No reached graph samples one."}
-}};
+${cpp.table("NodeVariantTexture", "node_variant_textures", textureRows.length, `${textureRows.join("\n") || "    // No reached graph samples one."}`)}
 
 /** A graph whose named inputs produced no uniform block. */
 inline constexpr std::size_t node_no_ubo =
@@ -698,11 +680,7 @@ struct NodeBindingResource {
     MaterialTextureSource source;
 };
 
-inline constexpr std::array<
-    NodeBindingResource,
-    ${envRows.length}> node_binding_resources{{
-${envRows.join("\n") || "    // No reached graph declares one."}
-}};
+${cpp.table("NodeBindingResource", "node_binding_resources", envRows.length, `${envRows.join("\n") || "    // No reached graph declares one."}`)}
 
 /**
  * The receiver rows of every reached graph, in the shared shape.
@@ -713,11 +691,7 @@ ${envRows.join("\n") || "    // No reached graph declares one."}
  * under the same names, so they are reflected out of the composed text and
  * bound through the per-row builders both backends already have.
  */
-inline constexpr std::array<
-    PinnedShadowBinding,
-    ${shadowRows.length}> node_shadow_bindings{{
-${shadowRows.join("\n") || "    // No reached graph receives a shadow."}
-}};
+${cpp.table("PinnedShadowBinding", "node_shadow_bindings", shadowRows.length, `${shadowRows.join("\n") || "    // No reached graph receives a shadow."}`)}
 
 /**
  * The ESM caster module a graph composes when the scene casts from it.
@@ -768,17 +742,13 @@ struct NodeVariantEntry {
     NodeVariantCaster caster;
 };
 
-inline constexpr std::array<
-    NodeVariantEntry,
-    ${entries.length}> node_variants{{
-${entries.join("\n")}
-}};
+${cpp.table("NodeVariantEntry", "node_variants", entries.length, `${entries.join("\n")}`)}
 
 /** The slot source one composed name denotes, or \`no_node_binding_source\`. */
 inline constexpr MaterialTextureSource no_node_binding_source =
     static_cast<MaterialTextureSource>(-1);
 
-inline constexpr MaterialTextureSource node_binding_source(
+inline MaterialTextureSource node_binding_source(
     std::string_view name) {
     for (const NodeBindingResource& row : node_binding_resources) {
         if (name == row.texture_name || name == row.sampler_name) {
@@ -795,6 +765,7 @@ inline constexpr bool has_node_ubo(const NodeVariantEntry& entry) {
 }
 ${
         geometryTable(
+            cpp,
             geometryEntries,
             geometryTaskCount(geometryVariants),
             graphCount,
@@ -803,11 +774,7 @@ ${
 /** Every graph's node UBO, as the floats the pin's own writer places.
  *  The graph's named inputs decide these and no reached scene changes one,
  *  so the block is a constant rather than a per-frame write. */
-inline constexpr std::array<
-    float,
-    ${uniformFloats.length}> node_variant_uniform_floats{{
-${uniformFloats.map((value) => `    ${floatLiteral(value)},`).join("\n")}
-}};
+${cpp.table("float", "node_variant_uniform_floats", uniformFloats.length, `${uniformFloats.map((value) => `    ${floatLiteral(value)},`).join("\n")}`)}
 
 ${
         mirroredStructFromWgsl(
@@ -818,5 +785,5 @@ ${
     }
 
 } // namespace bbl::upstream
-`;
+`);
 }

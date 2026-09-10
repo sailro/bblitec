@@ -8,6 +8,7 @@
 // factory rather than deciding which of them its text reads. A property that
 // does not resolve statically is refused; one that does reaches the composer,
 // so an option the pin starts branching on needs no compiler change.
+import { EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
 import { handleCppType } from "../data-types.js";
 import {
@@ -268,7 +269,7 @@ function compileEffectOptions(
     effect: PostProcessEffect | PostProcessComposite,
     handledSettings: readonly string[],
 ): Record<string, PostProcessOptionValue> {
-    const handled = new Set([
+    const handled = new EmissionSet([
         ...handledSettings,
         ...effect.extraTextures,
         ...(effect.usesCamera ? ["camera"] : []),

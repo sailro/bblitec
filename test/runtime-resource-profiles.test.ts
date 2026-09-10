@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { meshProfileBindingCpp } from "../src/lowering/resource-profiles.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
@@ -359,6 +360,7 @@ namespace bbl::upstream { MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle
 #include <cassert>
 namespace { std::size_t constructions = 0; std::size_t registrations = 0; }
 namespace bbl {
+${lowerMeshMaterialSetter(new LoweringContext())}
 Engine create_engine(EngineOptions) { return {}; }
 Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
 MaterialHandle create_standard_material(Engine& engine) {

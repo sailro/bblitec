@@ -13,10 +13,22 @@
     },
     "png": {
       "description": "PNG texture decoding or optional visual capture",
+      "$bblite-image": {
+        "mimeType": "image/png",
+        "extensions": ["png"],
+        "signatures": [{ "offset": 0, "hex": "89504e470d0a1a0a" }],
+        "licenses": { "libpng.txt": "libpng", "zlib.txt": "zlib" }
+      },
       "dependencies": [{ "name": "sdl3-image", "default-features": false, "features": ["png"] }]
     },
     "jpeg": {
       "description": "JPEG texture decoding for scenes whose materialized assets reach image/jpeg",
+      "$bblite-image": {
+        "mimeType": "image/jpeg",
+        "extensions": ["jpg", "jpeg"],
+        "signatures": [{ "offset": 0, "hex": "ffd8ff" }],
+        "licenses": { "libjpeg-turbo.txt": "libjpeg-turbo" }
+      },
       "dependencies": [
         {
           "name": "sdl3-image",
@@ -64,6 +76,12 @@
     },
     "webp": {
       "description": "WebP texture decoding for scenes whose materialized assets reach image/webp",
+      "$bblite-image": {
+        "mimeType": "image/webp",
+        "extensions": ["webp"],
+        "signatures": [{ "offset": 0, "hex": "52494646" }, { "offset": 8, "hex": "57454250" }],
+        "licenses": { "libwebp.txt": "libwebp" }
+      },
       "dependencies": [
         {
           "name": "sdl3-image",

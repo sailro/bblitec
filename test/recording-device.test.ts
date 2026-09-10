@@ -3,6 +3,7 @@ import test from "node:test";
 import {
     createRecordingDevice,
     RecordedBuffer,
+    RecordedComputePipeline,
     RecordedTexture,
     RecordedTextureView,
     writtenFloats,
@@ -38,6 +39,149 @@ test("a method outside the producer's contract refuses naming both", () => {
     assert.equal("createSampler" in device, false);
     assert.equal("queue" in device, true);
     assert.equal(recorder.textures.length, 0);
+});
+
+test("compute recording preserves uploads and per-dispatch bindings when scratch textures are reused", () => {
+    const { device, encoder, recorder } = createRecordingDevice({
+        producer: "compute-transfers",
+        textureOperations: "recording",
+        device: ["createTexture", "createShaderModule", "createComputePipeline", "createBindGroup"],
+        queue: ["copyExternalImageToTexture"],
+        encoder: ["beginComputePass", "copyTextureToTexture"],
+        computePass: ["setPipeline", "setBindGroup", "dispatchWorkgroups", "end"],
+    });
+    const shader = device.createShaderModule({ code: "source shader" });
+    const constants = { 0: 1 };
+    const descriptor = { layout: "auto", compute: { module: shader, entryPoint: "main", constants } };
+    const pipeline = device.createComputePipeline(descriptor);
+    constants[0] = 0;
+    descriptor.compute.entryPoint = "changed";
+    assert.equal(pipeline.descriptor.compute.entryPoint, "main");
+    assert.deepEqual(pipeline.descriptor.compute.constants, { 0: 1 });
+    assert.equal(pipeline.descriptor.compute.module, shader);
+    assert.equal(recorder.kindOf(pipeline), "computePipeline");
+    assert.equal(pipeline.getBindGroupLayout(0), pipeline.getBindGroupLayout(0));
+    assert.notEqual(pipeline.getBindGroupLayout(0), pipeline.getBindGroupLayout(1));
+
+    const input = device.createTexture({ size: [16, 16], format: "rgba8unorm", usage: 6 });
+    const output = device.createTexture({ size: [16, 16], format: "rgba16float", usage: 9 });
+    const cube = device.createTexture({ size: [16, 16, 6], format: "rgba16float", usage: 6 });
+    const group = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: input.createView() }, { binding: 1, resource: output.createView() }],
+    });
+    const replacement = device.createBindGroup({});
+    const commands = encoder as {
+        beginComputePass(): {
+            setPipeline(value: RecordedComputePipeline): void;
+            setBindGroup(index: number, group: object): void;
+            dispatchWorkgroups(...counts: number[]): void;
+            end(): void;
+        };
+        copyTextureToTexture(source: { texture: RecordedTexture },
+            destination: { texture: RecordedTexture; origin: { z: number } }, size: number[]): void;
+    };
+    const queue = (device as unknown as { queue: {
+        copyExternalImageToTexture(source: unknown, destination: { texture: RecordedTexture }, size: number[]): void;
+    } }).queue;
+    const images = [{ image: 0 }, { image: 1 }];
+    for (let face = 0; face < images.length; face++) {
+        queue.copyExternalImageToTexture({ source: images[face], flipY: false }, { texture: input }, [16, 16]);
+        const pass = commands.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, group);
+        pass.dispatchWorkgroups(2, 2);
+        // Later state changes must not alter the resources an earlier dispatch read.
+        pass.setBindGroup(0, replacement);
+        pass.end();
+        commands.copyTextureToTexture({ texture: output }, { texture: cube, origin: { z: face } }, [16, 16]);
+    }
+    assert.deepEqual(recorder.textureOperations.map(operation => operation.kind),
+        ["upload", "compute", "copy", "upload", "compute", "copy"]);
+    let uploadIndex = 0;
+    let copyIndex = 0;
+    for (const operation of recorder.textureOperations) {
+        if (operation.kind === "upload") {
+            assert.equal(operation.texture, input);
+            assert.equal(operation.upload, input.uploads[uploadIndex]);
+            assert.equal(operation.upload.kind, "external");
+            if (operation.upload.kind === "external")
+                assert.deepEqual(operation.upload.source, { source: images[uploadIndex++], flipY: false });
+        } else if (operation.kind === "compute") {
+            assert.equal(operation.dispatch.pipeline, pipeline);
+            assert.deepEqual([...operation.dispatch.bindGroups], [[0, group]]);
+            assert.deepEqual(operation.dispatch.workgroups, [2, 2]);
+        } else {
+            assert.equal(operation.copy, recorder.textureCopies[copyIndex]);
+            assert.equal(operation.copy.source.texture, output);
+            assert.equal(operation.copy.destination.texture, cube);
+            assert.equal(operation.copy.destination.origin.z, copyIndex++);
+        }
+    }
+    recorder.clear();
+    assert.equal(recorder.textureOperations.length, 0);
+    assert.equal(recorder.textures.length, 0);
+    assert.equal(recorder.textureCopies.length, 0);
+    assert.equal(recorder.bindGroups.length, 0);
+    assert.equal(input.uploads.length, 2);
+    assert.equal(recorder.kindOf(pipeline), "computePipeline");
+});
+
+test("compute passes refuse uncontracted calls, foreign resources and missing pipelines", () => {
+    const { device, encoder, recorder } = createRecordingDevice({
+        producer: "compute-refusals",
+        textureOperations: "recording",
+        device: ["createComputePipeline", "createBindGroup"],
+        encoder: ["beginComputePass"],
+        computePass: ["setPipeline", "setBindGroup", "dispatchWorkgroups"],
+    });
+    const other = createRecordingDevice({ producer: "other", device: ["createComputePipeline", "createBindGroup"] });
+    const descriptor = { layout: "auto", compute: { module: {} } };
+    const pass = (encoder as { beginComputePass(): {
+        setPipeline(pipeline: RecordedComputePipeline): void;
+        setBindGroup(index: number, group: object): void;
+        dispatchWorkgroups(count: number): void;
+        end(): void;
+    } }).beginComputePass();
+    assert.throws(() => pass.dispatchWorkgroups(1), /compute dispatch has no pipeline/);
+    const foreign = other.device.createComputePipeline(descriptor);
+    assert.equal(recorder.kindOf(foreign), undefined);
+    assert.throws(() => pass.setPipeline(foreign), /pipeline this device did not create/);
+    assert.throws(() => pass.setPipeline(new RecordedComputePipeline(descriptor)), /pipeline this device did not create/);
+    assert.throws(() => pass.setBindGroup(0, other.device.createBindGroup({})), /group this device did not create/);
+    assert.throws(() => pass.end(), /compute pass for 'compute-refusals' does not answer 'end'/);
+    pass.setPipeline(device.createComputePipeline(descriptor));
+    pass.dispatchWorkgroups(1);
+    assert.equal(recorder.textureOperations.length, 1);
+});
+
+test("submitted texture recording follows queue order and rejects command-buffer reuse", () => {
+    const {device, recorder} = createRecordingDevice({producer: "submitted-order",
+        device: ["createTexture", "createCommandEncoder"], queue: ["writeTexture", "submit"],
+        encoder: ["copyTextureToTexture", "finish"], textureOperations: "submitted"});
+    const textures = Array.from({length: 3}, () => device.createTexture({size: [1, 1], format: "rgba8unorm", usage: 3}));
+    const commands = [0, 1].map(index => {
+        const encoder = device.createCommandEncoder() as {
+            copyTextureToTexture(source: {texture: RecordedTexture}, destination: {texture: RecordedTexture}, size: number[]): void;
+            finish(): object;
+        };
+        encoder.copyTextureToTexture({texture: textures[index]!}, {texture: textures[index + 1]!}, [1, 1]);
+        const buffer = encoder.finish();
+        assert.throws(() => encoder.finish(), /already finished/);
+        return buffer;
+    });
+    assert.equal(recorder.textureOperations.length, 0);
+    const queue = (device as unknown as {queue: {
+        writeTexture(destination: {texture: RecordedTexture}, data: Uint8Array, layout: object, size: number[]): void;
+        submit(buffers: object[]): void;
+    }}).queue;
+    queue.writeTexture({texture: textures[0]!}, Uint8Array.of(1, 2, 3, 4), {}, [1, 1]);
+    queue.submit([commands[1]!, commands[0]!]);
+    assert.deepEqual(recorder.textureOperations.map(operation => operation.kind), ["upload", "copy", "copy"]);
+    assert.deepEqual(recorder.textureOperations.filter(operation => operation.kind === "copy").map(operation => operation.copy.source.texture),
+        [textures[1], textures[0]]);
+    assert.throws(() => queue.submit([commands[0]!]), /unknown or already submitted/);
+    assert.throws(() => queue.submit([{}]), /unknown or already submitted/);
 });
 
 test("a device without queue methods exposes no queue at all", () => {
@@ -117,6 +261,7 @@ test("textures carry their descriptor in both extent spellings and their uploads
     texels[0] = 9;
     queue.copyExternalImageToTexture({ source: { sourceImage: 3 } }, { texture: cube }, { width: 64, height: 64 });
     assert.deepEqual(recorder.textures, [cube, flat]);
+    assert.equal(recorder.textureOperations.length, 0);
     assert.equal(flat.uploads.length, 1);
     const upload = flat.uploads[0]!;
     assert.equal(upload.kind, "write");

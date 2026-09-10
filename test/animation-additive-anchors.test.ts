@@ -1,16 +1,13 @@
-/**
- * The additive-animation anchors: the generated `setAnimationAdditive`
- * writers and the loader's additive mixer arm are lowered against the
- * pinned `weighted-gltf-mixer.ts`, and these tests prove the anchors are
- * live — the emission carries the pinned shapes, and a doctored pin
- * refuses generation instead of shipping stale C++.
- */
+/** Source-derived additive helpers are integrated with the public group writers. */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { doctoredContext as doctoredModuleContext } from "./doctored-store.js";
+import { lowerGltfWeightedAnimationRuntime } from "../src/lowering/gltf/weighted-animation-runtime.js";
+import { lowerGltfWeightedAnimationPasses } from "../src/lowering/gltf/weighted-animation-passes.js";
+import { lowerGltfAnimationPlayback } from "../src/lowering/gltf/animation-playback.js";
 
 const MIXER_MODULE = "src/animation/weighted-gltf-mixer.ts";
 
@@ -58,62 +55,33 @@ test("the additive group writers carry the pinned conversion and guard", () => {
     );
 });
 
-test("the loader's additive arm mirrors accumulateAdditiveGroup", () => {
-    const adapter = new GltfLowerer(
-        new LoweringContext(),
-    ).lowerLoaderAdapter({
+test("the loader integrates source additive passes, arithmetic and playback", () => {
+    const context = new LoweringContext();
+    const adapter = new GltfLowerer(context).lowerLoaderAdapter({
         animationBlending: true,
         animationAdditive: true,
-        managedGroups: true,
     });
-    // The pass condition and the advance-only arm.
-    assert.match(
-        adapter.source,
-        /if \(clip\.stopped \|\| !clip\.additive\) continue;/,
-    );
-    assert.match(adapter.source, /if \(clip\.additive\) continue;/);
-    // The qualifying skip's additive half.
-    assert.match(
-        adapter.source,
-        /entry\.weight != 1\.0f \|\|\s*animation_runtime->clips\[entry\.clip\]\.additive/,
-    );
-    // Reference-time sampling and the weighted difference.
-    assert.match(
-        adapter.source,
-        /clip\.additive_reference_time\);/,
-    );
-    assert.match(
-        adapter.source,
-        /\(sample\.x - reference\.x\) \* weight/,
-    );
-    // reference^-1 * sample onto the base before the weighted slerp.
-    assert.match(
-        adapter.source,
-        /quat_multiply\(node\.rotation, delta\)/,
-    );
-    // The writer the group operation reaches.
-    assert.match(adapter.source, /asset\.set_clip_additive =/);
-    // The seek freeze holds a paused clip where the scene put it.
-    assert.match(
-        adapter.source,
-        /seek \? \(clip\.stopped \|\| !clip\.playing\)/,
-    );
+    // Native differential fixtures exercise the complete pass order and
+    // Float32 additive arithmetic; these checks keep those bodies connected.
+    for (const body of [lowerGltfWeightedAnimationRuntime(context),
+        lowerGltfWeightedAnimationPasses(context), lowerGltfAnimationPlayback(context, true)])
+        assert.ok(adapter.source.includes(body), "the loader includes the tested source animation body");
+    assert.match(adapter.source, /asset\.set_clip_additive\s*=/);
+    assert.match(adapter.source, /clip\.additive_reference_time\s*=\s*reference_time/);
+    assert.match(adapter.source, /if\(clip\.stopped\|\|!clip\.playing\)continue;/);
 });
 
-test("a doctored additive difference refuses generation", () => {
-    assert.throws(
-        () =>
-            new GltfLowerer(
-                doctoredContext(
-                    "target.trs[base + T_OFF] = target.trs[base + T_OFF]! + (scratch.sample[0]! - scratch.reference[0]!) * weight;",
-                    "target.trs[base + T_OFF] = target.trs[base + T_OFF]! + (scratch.sample[0]! + scratch.reference[0]!) * weight;",
-                ),
-            ).lowerLoaderAdapter({
-                animationBlending: true,
-                animationAdditive: true,
-            }),
-        /additive translation difference/,
+test("a doctored additive difference changes the integrated source body", () => {
+    const context = doctoredContext(
+        "target.trs[base + T_OFF] = target.trs[base + T_OFF]! + (scratch.sample[0]! - scratch.reference[0]!) * weight;",
+        "target.trs[base + T_OFF] = target.trs[base + T_OFF]! + (scratch.sample[0]! + scratch.reference[0]!) * weight;",
     );
+    const original = lowerGltfWeightedAnimationRuntime(new LoweringContext());
+    const changed = lowerGltfWeightedAnimationRuntime(context);
+    assert.notEqual(changed, original);
+    const source = new GltfLowerer(context).lowerLoaderAdapter({animationBlending: true, animationAdditive: true}).source;
+    assert.ok(source.includes(changed));
+    assert.ok(!source.includes(original));
 });
 
 test("a doctored additive reference rate refuses generation", () => {

@@ -7,10 +7,11 @@ import {
 } from "../src/generated-sources.js";
 
 test("reaches only the sources a feature set implies", () => {
-    // Nothing reached still builds the engine and scene core.
+    // Core records and variant tables are present in every generated program.
     assert.deepEqual(reachedGeneratedSources([]), [
         "upstream/src/engine.cpp",
         "upstream/src/scene_core.cpp",
+        "upstream/src/variant_data.cpp",
     ]);
 
     // A free camera reaches the shared arc-rotate math and controls too,
@@ -18,6 +19,7 @@ test("reaches only the sources a feature set implies", () => {
     assert.deepEqual(reachedGeneratedSources(["camera:free"]), [
         "upstream/src/engine.cpp",
         "upstream/src/scene_core.cpp",
+        "upstream/src/variant_data.cpp",
         "upstream/src/camera_arc_rotate.cpp",
         "upstream/src/camera_controls.cpp",
         "upstream/src/camera_free.cpp",
@@ -36,6 +38,9 @@ test("reaches only the sources a feature set implies", () => {
         ),
         ["upstream/src/mesh_factories.cpp"],
     );
+    const babylon = reachedGeneratedSources(["loader:babylon", "light:point", "texture:file"]);
+    for (const source of ["upstream/src/babylon_loader.cpp", "upstream/src/light_point.cpp", "upstream/src/texture_file.cpp"])
+        assert.equal(babylon.filter(candidate => candidate === source).length, 1);
 });
 
 test("keeps the manifest order stable regardless of feature order", () => {
@@ -53,6 +58,7 @@ test("keeps the manifest order stable regardless of feature order", () => {
     assert.deepEqual(forward, [
         "upstream/src/engine.cpp",
         "upstream/src/scene_core.cpp",
+        "upstream/src/variant_data.cpp",
         "upstream/src/camera_arc_rotate.cpp",
         "upstream/src/camera_controls.cpp",
         "upstream/src/renderer_plan.cpp",

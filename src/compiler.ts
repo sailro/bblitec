@@ -1,3 +1,10 @@
+import { assetRootMutationStates, nativeDataMetadata, valueForKind } from "./compiler/types.js";
+import { forEachAnalysisNode, findAnalysisNodeWithState } from "./compiler/analysis-walk.js";
+import { emissionArray, EmissionMap, EmissionSet, EmissionTransaction, EmissionWeakMap, EmissionWeakSet } from "./compiler/emission-transaction.js";
+import type { LoweringServices, NativeFunctionBodyOptions } from "./compiler/lowering-services.js";
+import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
+import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/native-declarations.js";
+import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
 import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
@@ -13,124 +20,65 @@ import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
 import { writesUnobservedCanvasMetadata } from "./compiler/canvas-instrumentation.js";
 import { AsyncLowerer } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
-import {
-    nativeHostUiStyleRules,
-    uiStyleSelectorCppKind,
-    uiStyleSelectorDescriptor,
-    type UiStyleSelectorKind,
-} from "./ui-style-rule.js";
-import {
-    cppIdentifierPattern,
-    doubleLiteral,
-    sanitizeCppIdentifier,
-    stringLiteral,
-} from "./cpp-literals.js";
-import {
-    compileAdaptations,
-    type AdaptationContext,
-} from "./compiler/adaptations.js";
-import {
-    emitPropertyAssignment,
-    emitStructuralPropertyAssignment,
-    type AssignmentContext,
-} from "./compiler/assignments.js";
+import { cppIdentifierPattern, doubleLiteral, sanitizeCppIdentifier, stringLiteral } from "./cpp-literals.js";
+import { CPP_SCALAR } from "./lowering/cpp-types.js";
+import { compileAdaptations } from "./compiler/adaptations.js";
+import { emitPropertyAssignment, emitStructuralPropertyAssignment } from "./compiler/assignments.js";
 import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "./scene-node-transform-descriptor.js";
-import {
-    registerAsset,
-    registerUiImageAsset,
-    probePixelsAsset,
-    registerSpriteAtlasAsset,
-    resolveBundledAsset,
-    type AssetRegistryContext,
-} from "./compiler/assets.js";
-import {
-    compileStaticFetch,
-    compileStaticFetchMethod,
-    staticFetchProperty,
-} from "./compiler/static-fetch.js";
-import {
-    browserGlobalNamed,
-    BrowserErasure,
-    type BrowserErasureContext,
-} from "./compiler/browser-erasure.js";
-import {
-    compileBrowserFileProperty,
-    isNativeBrowserFileExpression,
-    validateFileAccept,
-} from "./compiler/browser-file.js";
+import { probePixelsAsset, registerAsset, registerSpriteAtlasAsset, resolveBundledAsset } from "./compiler/assets.js";
+import { compileStaticFetch, compileStaticFetchMethod, staticFetchProperty } from "./compiler/static-fetch.js";
+import { BrowserErasure, browserGlobalNamed } from "./compiler/browser-erasure.js";
+import { compileBrowserFileProperty, isNativeBrowserFileExpression } from "./compiler/browser-file.js";
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
-import { bakeFetchedCanvasAtlas } from "./compiler/fetched-canvas-atlas.js";
 import {
-    compileEnvironmentOptions,
-    compileDdsEnvironmentOptions,
     compileDdsEnvironmentBackgroundOptions,
+    compileDdsEnvironmentOptions,
+    compileEnvironmentOptions,
     compileHdrEnvironmentOptions,
-    type AssetOptionContext,
 } from "./compiler/intrinsics/asset-options.js";
 import { screenSpaceFacts } from "./pinned-screen-space.js";
 import {
-    compileRenderTargetOptions,
-    type CompiledRenderTargetOptions,
-    compileRenderTaskOptions,
-    compileGeometryTaskOptions,
     compileCopyTaskOptions,
-    compileSceneDefaultRenderTask,
     compileEnginePixelRatioCap,
     compileEnginePrecisionPolicy,
+    compileGeometryTaskOptions,
+    compileRenderTargetOptions,
+    compileRenderTaskOptions,
+    compileSceneDefaultRenderTask,
     geometryEnumMember,
-    type EngineOptionContext,
+    type CompiledRenderTargetOptions,
 } from "./compiler/intrinsics/engine-options.js";
 import {
-    compilePbrMaterialOptions,
-    compileMetallicReflectanceOptions,
-    compileGridMaterialOptions,
-    compileClearCoatOptions,
     compileAnisotropyOptions,
+    compileClearCoatOptions,
+    compileGridMaterialOptions,
+    compileIridescenceOptions,
+    compileMetallicReflectanceOptions,
+    compilePbrMaterialOptions,
+    compileSheenOptions,
+    compileSubsurfaceOptions,
     type CompiledAnisotropyOptions,
     type CompiledClearCoatOptions,
-    compileIridescenceOptions,
     type CompiledIridescenceOptions,
-    compileSheenOptions,
-    type CompiledSheenOptions,
-    compileSubsurfaceOptions,
-    type CompiledSubsurfaceOptions,
-    type CompiledPbrMaterialOptions,
     type CompiledMetallicReflectanceOptions,
-    type MaterialOptionContext,
+    type CompiledPbrMaterialOptions,
+    type CompiledSheenOptions,
+    type CompiledSubsurfaceOptions,
 } from "./compiler/intrinsics/material-options.js";
 import {
     compileBoxOptions,
-    compileGroundOptions,
     compileGroundFromHeightMapOptions,
+    compileGroundOptions,
     compilePlaneOptions,
     compileSphereOptions,
     compileTorusOptions,
-    type MeshOptionContext,
 } from "./compiler/intrinsics/mesh-options.js";
-import {
-    compileRegisteredConstant,
-    compileRegisteredIntrinsic,
-    type IntrinsicContext,
-} from "./compiler/intrinsics/registry.js";
-import {
-    selectedStaticExpression,
-    selectedStaticNumberValue,
-    staticNumberValue,
-    validateObjectProperties,
-} from "./compiler/option-helpers.js";
-import {
-    compilePropertyAnimationClip,
-    compilePropertyAnimationGroupOptions,
-    PropertyAnimationTargetLowerer,
-    type PropertyAnimationContext,
-} from "./compiler/property-animation.js";
-import {
-    compileNodeMaterialOptions,
-    type CompiledNodeMaterialCall,
-    type NodeMaterialContext,
-} from "./compiler/node-material.js";
+import { compileRegisteredConstant, compileRegisteredIntrinsic } from "./compiler/intrinsics/registry.js";
+import { selectedStaticExpression, selectedStaticNumberValue, staticNumberValue, validateObjectProperties } from "./compiler/option-helpers.js";
+import { PropertyAnimationTargetLowerer, compilePropertyAnimationClip, compilePropertyAnimationGroupOptions } from "./compiler/property-animation.js";
+import { compileNodeMaterialOptions, type CompiledNodeMaterialCall } from "./compiler/node-material.js";
 import {
     lineMaterialPermutation,
     reachLineMaterialProgram,
@@ -139,56 +87,38 @@ import {
 } from "./compiler/line-material.js";
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
+import { PinnedShaderText, type ShaderTextBinding, type ShaderTextContext } from "./lowering/pinned-shader-text.js";
 import {
-    PinnedShaderText,
-    type ShaderTextBinding,
-    type ShaderTextContext,
-} from "./lowering/pinned-shader-text.js";
-import {
-    shaderThinInstanceLanes,
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
     reachedShaderProgram,
-    resolveShaderTextureSlot,
     resolveShaderStorageBufferSlot,
+    resolveShaderTextureSlot,
     resolveShaderUniform,
-    type ShaderMaterialContext,
+    shaderThinInstanceLanes,
 } from "./compiler/shader-material.js";
-import {
-    DataLowerer,
-    type DataLoweringContext,
-    isNeverResized,
-} from "./compiler/data-lowering.js";
+import { DataLowerer, isNeverResized } from "./compiler/data-lowering.js";
 import { cameraNumberWrite, isCameraExpression } from "./compiler/camera-writes.js";
 import { noteCameraRecordWrite } from "./compiler/intrinsics/camera.js";
 import {
+    BUFFER_VIEW_KINDS,
     DataTypeRegistry,
-    dataTypesEqual,
+    TYPED_ARRAY_KINDS,
     doubleLiteral as dataDoubleLiteral,
+    declaredInDomLibrary,
+    handleCppType,
     isHandleKind,
     isPinnedType,
     isTypedArrayType,
     opaqueEngineValue,
     passesByReference,
     passesByReferenceKind,
-    BUFFER_VIEW_KINDS,
-    TYPED_ARRAY_KINDS,
-    declaredInDomLibrary,
-    handleCppType,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
 } from "./compiler/data-types.js";
-import {
-    ExpressionLowerer,
-    PURE_NUMBER_FORMATTERS,
-    type ExpressionContext,
-} from "./compiler/expressions.js";
-import {
-    captureDataFunctionBody,
-    NativeFunctionLowerer,
-    type NativeFunctionContext,
-} from "./compiler/native-functions.js";
+import { ExpressionLowerer, PURE_NUMBER_FORMATTERS } from "./compiler/expressions.js";
+import { NativeFunctionLowerer, captureDataFunctionBody } from "./compiler/native-functions.js";
 import {
     collectReboundSymbols,
     isModuleInitializerStatement,
@@ -199,136 +129,124 @@ import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { readPngDimensionsSync } from "./compiler/asset-bytes-sync.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import { nativeReturnTsType } from "./compiler/native-return-type.js";
-import { readProperty, type PropertyContext } from "./compiler/properties.js";
-import type { PromiseLoweringContext } from "./compiler/promises.js";
+import { readProperty } from "./compiler/properties.js";
 import { CompilerSymbols } from "./compiler/symbols.js";
 import { StaticEvaluator } from "./compiler/static-evaluator.js";
+import { StatementLowerer } from "./compiler/statements.js";
+import { HandleCollections, type HandleCollectionTarget } from "./compiler/handle-collections.js";
 import {
-    type StatementLoweringContext,
-    StatementLowerer,
-} from "./compiler/statements.js";
-import {
-    HandleCollections,
-    type HandleCollectionTarget,
-} from "./compiler/handle-collections.js";
-import {
+    UserFunctionLowerer,
     aliasedMutationScan,
-    type AliasedMutationScan,
     callArgumentIsReadOnly,
     isSupportedFunction,
     parameterIsMutated,
-    retainedNativeMutationTarget,
     parameterIsReadOnly,
     recursiveStorageEscapes,
-    writesThroughTrackedRoot,
     resolveFunctionDeclaration,
+    retainedNativeMutationTarget,
     tryResolveFunctionDeclaration,
+    writesThroughTrackedRoot,
+    type AliasedMutationScan,
     type SupportedFunction,
-    type UserFunctionContext,
-    UserFunctionLowerer,
 } from "./compiler/user-functions.js";
 import {
+    argumentAt,
+    identifierText,
     isAssignmentExpression,
     isUpdateExpression,
     objectProperty,
     rootIdentifier,
-    unwrapExpression,
-    argumentAt,
-    identifierText,
     stringLiteralText,
+    unwrapExpression,
     unwrappedIdentifier,
 } from "./compiler/syntax.js";
 import { CompileError } from "./compiler/compile-error.js";
-import {
-    mutatingArrayMethods,
-    isStoringDataCall,
-} from "./compiler/data-methods.js";
-import type {
-    CompileAsset,
-    CompileOptions,
-    CompileResult,
-    CollectionCardinality,
-    DefaultRenderTaskEmission,
-    CompiledNodeMaterial,
-    CompiledNodeParticles,
-    CompiledShaderProgram,
-    Feature,
-    GeometryOutputTaskManifest,
-    GeometryTextureTypeName,
-    LightKind,
-    PostProcessCompositeManifest,
-    PostProcessTaskManifest,
-    ScreenSpaceTaskManifest,
-    ResolvedCompileOptions,
-    NativeHostUiElement,
-    SceneMeshManifest,
-    SceneMeshNamePredicate,
-    ShadowCasterManifest,
-    ShadowGeneratorManifest,
-    ScenePbrClearCoatManifest,
-    ScenePbrAnisotropyManifest,
-    ScenePbrIridescenceManifest,
-    ScenePbrLightmapManifest,
-    ScenePbrMaterialManifest,
-    ScenePbrMetallicReflectanceManifest,
-    ScenePbrSheenManifest,
-    ScenePbrSubsurfaceManifest,
-    SplatFragmentManifest,
-    SpriteCustomShaderManifest,
-    EffectManifest,
-    FrameCallbackSignature,
-    Value,
-    ValueKind,
-    VariableBinding,
-} from "./compiler/types.js";
+import { isStoringDataCall, mutatingArrayMethods } from "./compiler/data-methods.js";
 import type { MaterialPluginManifest } from "./pinned-material-plugins.js";
-export type {
-    CompileAsset,
-    CompileOptions,
-    CompileResult,
-    CompiledShaderProgram,
-    GeometryOutputTaskManifest,
-    GeometryTextureTypeName,
-    PostProcessCompositeManifest,
-    PostProcessTaskManifest,
-    ShaderMaterialVariantName,
-} from "./compiler/types.js";
-import { isCompileTimeOnlyValue, sameCompiledValue } from "./compiler/types.js";
-import { ClosureCaptures, nativeCompanionKeys, renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./compiler/closure-captures.js";
+import {
+    ClosureCaptures,
+    nativeCompanionKeys,
+    renderClosure,
+    type CapturedClosure,
+    type NativeCaptureBinding,
+} from "./compiler/closure-captures.js";
 import {
     parameterizedResourceLoop,
-    requiresStaticLoopIteration,
     requiresStaticDataIteration,
+    canShareFunctionBody,
+    sharedFunctionHasCallEffects,
+    requiresStaticLoopIteration,
     runtimeProfileConstructionIntrinsics,
     walkReachedLoopNodes,
     type ParameterizedResourceLoop,
     type ResourceLoop,
 } from "./compiler/resource-loops.js";
 import { StaticExpansionBudget } from "./compiler/static-expansion.js";
-import type { ClusteredContainerState } from "./compiler/types.js";
+import type {
+    ClusteredContainerState,
+    CollectionCardinality,
+    CompileAsset,
+    CompileOptions,
+    CompileResult,
+    CompiledNodeMaterial,
+    CompiledNodeParticles,
+    CompiledShaderProgram,
+    DefaultRenderTaskEmission,
+    EffectManifest,
+    Feature,
+    FrameCallbackSignature,
+    GeometryOutputTaskManifest,
+    GeometryTextureTypeName,
+    LightKind,
+    PostProcessCompositeManifest,
+    PostProcessTaskManifest,
+    ResolvedCompileOptions,
+    SceneMeshManifest,
+    SceneMeshNamePredicate,
+    ScenePbrAnisotropyManifest,
+    ScenePbrClearCoatManifest,
+    ScenePbrIridescenceManifest,
+    ScenePbrLightmapManifest,
+    ScenePbrMaterialManifest,
+    ScenePbrMetallicReflectanceManifest,
+    ScenePbrSheenManifest,
+    ScenePbrSubsurfaceManifest,
+    ScreenSpaceTaskManifest,
+    ShadowCasterMeshManifest,
+    ShadowGeneratorManifest,
+    SplatFragmentManifest,
+    SpriteCustomShaderManifest,
+    Value,
+    ValueKind,
+    VariableBinding,
+} from "./compiler/types.js";
+import { isCompileTimeOnlyValue, sameCompiledValue } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
-import {
-    assertDeterministicRandomUnreached,
-    isDeterministicRandomRead,
-} from "./compiler/deterministic-random.js";
+import { assertDeterministicRandomUnreached, isDeterministicRandomRead } from "./compiler/deterministic-random.js";
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
 import type { CompiledTextData } from "./pinned-text-data.js";
 import { readFrozenParticleProperty } from "./compiler/particle-buffer.js";
-import { compileCharacterMethod, readCharacterProperty } from "./compiler/intrinsics/character-controller.js";
-import {
-    physicsEventInfoType,
-    physicsEventInfoValue,
-} from "./compiler/intrinsics/physics.js";
+import { readCharacterProperty } from "./compiler/intrinsics/character-controller.js";
+import { physicsEventInfoType, physicsEventInfoValue } from "./compiler/intrinsics/physics.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
-import {
-    featureOrder,
-    featureSources,
-    renderFeaturesCmake,
-    renderMainCpp,
-} from "./compiler/output-projection.js";
-export { renderFeaturesCmake };
+import { featureOrder, featureSources, renderFeaturesCmake, renderMainCpp } from "./compiler/output-projection.js";
 import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
+import { PlatformCalls } from "./compiler/platform-calls.js";
+import { UiProjection } from "./compiler/ui-projection.js";
+
+export type {
+CompileAsset,
+CompileOptions,
+CompileResult,
+CompiledShaderProgram,
+GeometryOutputTaskManifest,
+GeometryTextureTypeName,
+PostProcessCompositeManifest,
+PostProcessTaskManifest,
+ShaderMaterialVariantName
+} from "./compiler/types.js";
+export { renderFeaturesCmake };
 
 /**
  * A canvas size read, and which of the engine's two dimensions answers it.
@@ -341,90 +259,6 @@ import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
 interface CanvasSizeProperty {
     axis: "width" | "height";
     client: boolean;
-}
-
-interface UiGridProjection {
-    columns: number;
-    cellWidth: number;
-    gap: number;
-    width: number;
-    rowCount?: number;
-    rowHeight?: number;
-    /** Absent means CSS's initial `normal`, projected as start alignment. */
-    authoredJustifyContent?: "start" | "center" | "end";
-}
-
-interface LoweredUiStyleRule {
-    // Source-created sheets participate in static grid proofs. Attribute
-    // selectors are currently admitted only in audited host companions.
-    kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
-    primary: string;
-    secondary?: string;
-    tag?: string;
-    hover: boolean;
-    maxWidth?: number;
-    style: string;
-    selector: string;
-    site?: ts.Node;
-    ownerId?: number;
-    grid?: UiGridProjection;
-}
-
-interface UiStaticMarkupNode {
-    id: number;
-    tag: string;
-    classes: ReadonlySet<string>;
-    attributes: ReadonlyMap<string, string>;
-    children: UiStaticMarkupNode[];
-}
-
-interface UiStaticElement {
-    tag: string;
-    /** Every exact class set the element can have at a projected boundary. */
-    classAlternatives: Set<string>[];
-    classMayMutateDynamically: boolean;
-    ids: Set<string>;
-    children: Set<number>;
-    markupChildren: UiStaticMarkupNode[];
-    /** Reachable complete inline declaration lists, not assignment history. */
-    styles: string[];
-    styleShapeKnown: boolean;
-    styleMayMutateDynamically: boolean;
-    mutableClasses: Set<string>;
-    classShapeKnown: boolean;
-    /** False when known child construction sites can occur a runtime number of times. */
-    childCardinalityKnown: boolean;
-    childShapeKnown: boolean;
-}
-
-interface UiValidationState {
-    activeRules: readonly LoweredUiStyleRule[];
-    parentsByChild: ReadonlyMap<number, readonly number[]>;
-    ancestorsById: Map<number, UiStaticElement[]>;
-}
-
-interface UiPendingClassQuery {
-    root: Value;
-    className: string;
-    site: ts.Node;
-}
-
-interface UiUnknownClassMutation {
-    className: string;
-    site: ts.Node;
-}
-
-interface UiUnknownAttributeMutation {
-    attribute: "class" | "id";
-    /** Known construction target; absent when a runtime lookup selected it. */
-    targetId?: number;
-    site: ts.Node;
-}
-
-type PlatformEventTarget = "window" | "document" | "canvas";
-interface PlatformEventDescriptor {
-    channel: string;
-    parameter: "none" | "keyboard" | "mouse" | "visibility";
 }
 interface ResourceConstructionState {
     counters: number[];
@@ -440,60 +274,15 @@ function resourceConstructionStatesEqual(left: ResourceConstructionState, right:
         left.lightIdentities.length === right.lightIdentities.length &&
         left.lightIdentities.every((value, index) => value === right.lightIdentities[index]);
 }
-const PLATFORM_EVENT_DESCRIPTORS: Readonly<
-    Record<
-        PlatformEventTarget,
-        Readonly<Record<string, PlatformEventDescriptor>>
-    >
-> = {
-    window: {
-        resize: { channel: "window_resize", parameter: "none" },
-        keydown: { channel: "key_down", parameter: "keyboard" },
-        keyup: { channel: "key_up", parameter: "keyboard" },
-        pointerdown: { channel: "pointer_down", parameter: "none" },
-        mousedown: { channel: "mouse_down", parameter: "mouse" },
-        mouseup: { channel: "mouse_up", parameter: "mouse" },
-        pointerup: { channel: "mouse_up", parameter: "mouse" },
-        pointermove: { channel: "mouse_move", parameter: "mouse" },
-        mousemove: { channel: "mouse_move", parameter: "mouse" },
-        wheel: { channel: "mouse_wheel", parameter: "mouse" },
-        pointercancel: { channel: "mouse_cancel", parameter: "mouse" },
-    },
-    document: {
-        pointermove: { channel: "mouse_move", parameter: "mouse" },
-        mousemove: { channel: "mouse_move", parameter: "mouse" },
-        pointerlockchange: {
-            channel: "pointer_lock_change",
-            parameter: "none",
-        },
-        visibilitychange: {
-            channel: "visibility_change",
-            parameter: "visibility",
-        },
-    },
-    canvas: {
-        keydown: { channel: "key_down", parameter: "keyboard" },
-        keyup: { channel: "key_up", parameter: "keyboard" },
-        click: { channel: "canvas_click", parameter: "none" },
-        mousedown: { channel: "mouse_down", parameter: "mouse" },
-        mouseup: { channel: "mouse_up", parameter: "mouse" },
-        pointerdown: { channel: "mouse_down", parameter: "mouse" },
-        pointerup: { channel: "mouse_up", parameter: "mouse" },
-        pointermove: { channel: "mouse_move", parameter: "mouse" },
-        mousemove: { channel: "mouse_move", parameter: "mouse" },
-        wheel: { channel: "mouse_wheel", parameter: "mouse" },
-        pointercancel: { channel: "mouse_cancel", parameter: "mouse" },
-    },
-};
 
-const CANVAS_SIZE_AXES = new Map<string, CanvasSizeProperty>([
+const CANVAS_SIZE_AXES = new EmissionMap<string, CanvasSizeProperty>([
     ["width", { axis: "width", client: false }],
     ["height", { axis: "height", client: false }],
     ["clientWidth", { axis: "width", client: true }],
     ["clientHeight", { axis: "height", client: true }],
 ]);
 
-const KEY_EVENT_FIELDS = new Map<string, string>([
+const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
     ["repeat", "repeat"],
     ["shiftKey", "shift_key"],
     ["ctrlKey", "ctrl_key"],
@@ -515,7 +304,7 @@ const KEY_EVENT_FIELDS = new Map<string, string>([
  * A Map, like the two tables above: the key is a type's symbol name, and an
  * object literal would answer `Object.prototype` for one spelled `toString`.
  */
-const NULLABLE_RESOURCE_TYPES = new Map<
+const NULLABLE_RESOURCE_TYPES = new EmissionMap<
     string,
     { kind: ValueKind; cppType: string }
 >([
@@ -590,7 +379,7 @@ const NULLABLE_RESOURCE_TYPES = new Map<
  * null = null` then the guarded row read, the per-instance scene's shape for
  * holding one clip's row block.
  */
-const NULLABLE_VAT_RESOURCE_TYPES = new Map<
+const NULLABLE_VAT_RESOURCE_TYPES = new EmissionMap<
     string,
     { kind: ValueKind; cppType: string }
 >([
@@ -599,14 +388,14 @@ const NULLABLE_VAT_RESOURCE_TYPES = new Map<
 ]);
 
 /** The two DOM types a drawing surface is declared as. */
-const CANVAS_TYPE_NAMES: ReadonlySet<string> = new Set([
+const CANVAS_TYPE_NAMES: ReadonlySet<string> = new EmissionSet([
     "HTMLCanvasElement",
     "OffscreenCanvas",
 ]);
 
 /** The closure key for a callback the program evaluates once, at module scope. */
 const unownedCallbackScope: object = {};
-const CAMERA_MUTATION_OPERATORS = new Map<ts.SyntaxKind, string>([
+const CAMERA_MUTATION_OPERATORS = new EmissionMap<ts.SyntaxKind, string>([
     [ts.SyntaxKind.EqualsToken, "="], [ts.SyntaxKind.PlusEqualsToken, "+"],
     [ts.SyntaxKind.MinusEqualsToken, "-"], [ts.SyntaxKind.AsteriskEqualsToken, "*"],
     [ts.SyntaxKind.SlashEqualsToken, "/"],
@@ -679,26 +468,7 @@ export function compileSource(
 }
 
 class Compiler
-    implements
-        IntrinsicContext,
-        AdaptationContext,
-        AssetOptionContext,
-        AssetRegistryContext,
-        AssignmentContext,
-        BrowserErasureContext,
-        DataLoweringContext,
-        EngineOptionContext,
-        ExpressionContext,
-        MaterialOptionContext,
-        MeshOptionContext,
-        NativeFunctionContext,
-        NodeMaterialContext,
-        PromiseLoweringContext,
-        PropertyAnimationContext,
-        PropertyContext,
-        ShaderMaterialContext,
-        StatementLoweringContext,
-        UserFunctionContext
+    implements LoweringServices
 {
     public readonly symbols: CompilerSymbols;
     public readonly evaluator: StaticEvaluator;
@@ -707,42 +477,48 @@ class Compiler
         new HandleCollections(this);
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
+    private readonly ui = new UiProjection(this);
+    private readonly platform = new PlatformCalls(this, this.ui);
+    public get uiDegradedStyleProperties(): Set<string> { return this.ui.uiDegradedStyleProperties; }
+    public get uiScopedSheetSelectors(): Set<string> { return this.ui.uiScopedSheetSelectors; }
+    public get uiGridSubstitutions(): Set<string> { return this.ui.uiGridSubstitutions; }
     private readonly asyncLowerer = new AsyncLowerer(this);
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
     public readonly classLowerer: ClassLowerer;
     public readonly nativeFunctions: NativeFunctionLowerer;
     private readonly browserErasure: BrowserErasure;
-    private readonly browserUtilitySources = new Map<ts.SourceFile, boolean>();
+    private readonly browserUtilitySources = new EmissionMap<ts.SourceFile, boolean>();
     /** One rebound-name walk per file, shared by every `identifierIsRebound`. */
-    private readonly reboundSymbolsByFile = new Map<
+    private readonly reboundSymbolsByFile = new EmissionMap<
         ts.SourceFile,
         ReadonlySet<ts.Symbol>
     >();
-    private readonly sharedClosureSymbols = new WeakMap<
+    private readonly sharedClosureSymbols = new EmissionWeakMap<
         ts.Node,
         ReadonlySet<ts.Symbol>
     >();
     private staticAssetUrlCandidateCache: readonly string[] | undefined;
     private readonly expressions: ExpressionLowerer;
-    private readonly nativeFunctionPrototypes: string[] = [];
-    private readonly nativeFunctionDefinitions: string[] = [];
-    private readonly staticNativeDeclarations: string[] = [];
+    private readonly nativeFunctionPrototypes: string[] = emissionArray([]);
+    private readonly nativeFunctionDefinitions: string[] = emissionArray([]);
+    private readonly sharedNativeFunctions = new SharedNativeFunctions();
+    private readonly staticNativeDeclarations: string[] = emissionArray([]);
     private readonly returnFrames: Array<
-        | {
+        | ({
               kind: "native";
               type: DataType | "void";
               contextualVoid?: boolean;
-          }
+          } & NativeFunctionBodyOptions)
         | { kind: "inline"; wrapped: boolean }
-    > = [];
-    private readonly resourceLoopReturns = new WeakMap<object, {
+    > = emissionArray([]);
+    private readonly resourceLoopReturns = new EmissionWeakMap<object, {
         condition: ts.Expression;
         checkpoint: ResourceConstructionCheckpoint;
     }>();
-    private readonly resourceConstructionCheckpoints = new Set<ResourceConstructionCheckpoint>();
-    private readonly deferredResourceCaptureDepths = new Set<number>();
-    private readonly collectionCardinalities = new Set<CollectionCardinality>();
+    private readonly resourceConstructionCheckpoints = new EmissionSet<ResourceConstructionCheckpoint>();
+    private readonly deferredResourceCaptureDepths = new EmissionSet<number>();
+    private readonly collectionCardinalities = new EmissionSet<CollectionCardinality>();
     public jsDataReached = false;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     public imageDecodeReached = false;
@@ -755,28 +531,29 @@ class Compiler
      * assets they produce are ordinary data-URL payloads by the time they
      * reach the manifest, so nothing downstream can tell them apart.
      */
-    public readonly browserTextureFunctions = new Set<string>();
+    public readonly browserTextureFunctions = new EmissionSet<string>();
+    public readonly canvasReadbackFunctions = new EmissionSet<string>();
     /** Whether a scene threw one of its own preconditions. */
     public throwReached = false;
-    private readonly staticConstants = new Map<ts.Symbol, ts.Expression>();
-    private readonly sourceCppNames = new Set<string>();
-    private readonly transparentRebindingScopes = new WeakSet<Map<ts.Symbol, VariableBinding>>();
-    public readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>> = [
-        new Map(),
-    ];
-    private readonly cppNamePrefixes: string[] = [""];
-    private readonly features = new Set<Feature>(["core"]);
+    private readonly staticConstants = new EmissionMap<ts.Symbol, ts.Expression>();
+    private readonly sourceCppNames = new EmissionSet<string>();
+    private readonly transparentRebindingScopes = new EmissionWeakSet<Map<ts.Symbol, VariableBinding>>();
+    public readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>> = emissionArray([
+        new EmissionMap(),
+    ]);
+    private readonly cppNamePrefixes: string[] = emissionArray([""]);
+    private readonly features = new EmissionSet<Feature>(["core"]);
     /** The clustered container this scene added, if it added one. */
     private clusteredContainer: ClusteredContainerState | undefined;
-    private readonly featureSites = new Map<Feature, string>();
-    public readonly assets = new Map<string, CompileAsset>();
-    public readonly assetPayloads = new Map<string, string>();
-    public readonly reachedTextData: CompiledTextData[] = [];
+    private readonly featureSites = new EmissionMap<Feature, string>();
+    public readonly assets = new EmissionMap<string, CompileAsset>();
+    public readonly assetPayloads = new EmissionMap<string, string>();
+    public readonly reachedTextData: CompiledTextData[] = emissionArray([]);
     /** The source-keyed record for the most recent `loadGltf` call. */
     private lastGltfContainerAsset: CompileAsset | undefined;
-    public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
-    public readonly reachedNodeMaterials: CompiledNodeMaterial[] = [];
-    public readonly meshWalks: CompiledMeshWalk[] = [];
+    public readonly reachedShaderPrograms: CompiledShaderProgram[] = emissionArray([]);
+    public readonly reachedNodeMaterials: CompiledNodeMaterial[] = emissionArray([]);
+    public readonly meshWalks: CompiledMeshWalk[] = emissionArray([]);
     public readonly reachedNodeParticles: CompiledNodeParticles = {
         sets: [],
         steps: [],
@@ -795,28 +572,33 @@ class Compiler
      * The names are the generated locals', which is what makes the check
      * hold across scopes.
      */
-    public readonly boundPixelsTextures = new Set<string>();
+    public readonly boundPixelsTextures = new EmissionSet<string>();
     /** The pinned tone-mapping export the scene selected, if any. */
     private selectedToneMapping: string | undefined;
-    private readonly reachedEffects_: EffectManifest[] = [];
+    private readonly reachedEffects_: EffectManifest[] = emissionArray([]);
     private thisInstance: Value | undefined;
-    private readonly classInstances = new Map<Value, ts.ClassDeclaration>();
+    private readonly classInstances = new EmissionMap<Value, ts.ClassDeclaration>();
     /**
      * JavaScript identities minted for materialized callbacks, per
      * declaration and per owning object.
      */
-    private readonly callbackIdentities = new Map<
+    private readonly callbackIdentities = new EmissionMap<
         ts.Node,
         Map<object, number>
     >();
     private nextCallbackIdentity = 0;
     private nextNativeBindingSequence = 0;
-    private readonly nativeBindings = new Map<string, NativeCaptureBinding>();
-    private readonly nativeStoredValues = new WeakSet<Value>();
-    private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] = [];
-    private readonly realmEngineCaptures = new Map<string, readonly NativeCaptureBinding[]>();
-    private readonly managedCaptures: ClosureCaptures[] = [];
-    private readonly body: string[] = [];
+    private readonly nativeBindings = new EmissionMap<string, NativeCaptureBinding>();
+    private readonly nativeStoredValues = new EmissionWeakSet<Value>();
+    private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] = emissionArray([]);
+    private readonly realmEngineCaptures = new EmissionMap<string, readonly NativeCaptureBinding[]>();
+    private readonly managedCaptures: ClosureCaptures[] = emissionArray([]);
+    private readonly body: string[] = emissionArray([]);
+    private readonly nativeDeclarations = new EmissionMap<string, NativeDeclaration>();
+    private readonly statementDependencies: Set<NativeCaptureBinding>[] = emissionArray([]);
+    private readonly continuationUses = new EmissionMap<string, Set<number>>();
+    private readonly continuationLocals = new EmissionMap<string, number>();
+    private continuationSequence = 0;
     /**
      * Collision listeners are registered before every startup assignment has
      * necessarily run. Their native bodies are specialized only after the
@@ -830,30 +612,31 @@ class Compiler
         eventName: string;
         node: ts.Node;
         scopes: ReadonlyArray<Map<ts.Symbol, VariableBinding>>;
-    }> = [];
-    public readonly erasedBrowserExpressions = new Set<number>();
-    public readonly erasedBrowserInstrumentation = new Set<number>();
-    public readonly unwrappedAwaitExpressions = new Set<number>();
-    public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
-    public readonly postProcessTasks: PostProcessTaskManifest[] = [];
-    public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
-    private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
-    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text" | "node-input" | "node-geometry" | "material-colors" | "baseColorFactor" | "diffuseColor"; node: ts.Node; message: string }> = [];
-    private readonly materialColorReads: Array<"baseColorFactor" | "diffuseColor"> = [];
+    }> = emissionArray([]);
+    public readonly erasedBrowserExpressions = new EmissionSet<number>();
+    public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
+    public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
+    public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = emissionArray([]);
+    public readonly postProcessTasks: PostProcessTaskManifest[] = emissionArray([]);
+    public readonly postProcessComposites: PostProcessCompositeManifest[] = emissionArray([]);
+    private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = emissionArray([]);
+    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text" | "node-input" | "node-geometry" | "material-colors" | "baseColorFactor" | "diffuseColor"; node: ts.Node; message: string }> = emissionArray([]);
+    private readonly materialColorReads: Array<"baseColorFactor" | "diffuseColor"> = emissionArray([]);
     private temporalSceneRegistration: ts.Node | undefined;
-    private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
+    private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = emissionArray([]);
     private temporalControlAttachment: ts.Node | undefined;
-    public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = [];
+    public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = emissionArray([]);
     private readonly sceneMaterials = new SceneMaterialRecorder();
     public readonly localCubemapState: {maxCandidates?: number} = {};
-    private readonly sceneMaterialGltfAssetsBefore: number[] = [];
-    private readonly sceneMeshes: SceneMeshManifest[] = [];
+    private readonly sceneMaterialGltfAssetsBefore: number[] = emissionArray([]);
+    private readonly sceneMeshes: SceneMeshManifest[] = emissionArray([]);
     private readonly shadowGenerators: Array<
-        ShadowGeneratorManifest & {
+        Omit<ShadowGeneratorManifest, "casters"> & {
+            casters: ShadowCasterMeshManifest[];
             lightIdentity?: NonNullable<Value["lightIdentity"]>;
         }
-    > = [];
-    private readonly shadowReceiverMeshes = new Set<number>();
+    > = emissionArray([]);
+    private readonly shadowReceiverMeshes = new EmissionSet<number>();
     private dynamicShadowReceivers = false;
     /**
      * `mesh.id`, by the handle spelling the write named, and the meshes each
@@ -866,27 +649,27 @@ class Compiler
      * loader folds its own `mesh_records_by_id` — an id names a LIST,
      * because nothing upstream enforces uniqueness.
      */
-    private readonly sceneMeshesById = new Map<string, string[]>();
+    private readonly sceneMeshesById = new EmissionMap<string, string[]>();
     /** The id each mesh handle currently carries, so a rewrite is visible. */
-    private readonly sceneMeshIdByHandle = new Map<string, string>();
+    private readonly sceneMeshIdByHandle = new EmissionMap<string, string>();
     /** Every id an emitted light include set has already resolved against. */
-    private readonly resolvedLightMeshIds = new Set<string>();
+    private readonly resolvedLightMeshIds = new EmissionSet<string>();
     /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
-    private readonly writtenConstArrays = new Map<ts.Symbol, boolean>();
+    private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
     /** The active lights and kinds, kept in one receiver-binding order. */
     private readonly sceneLights: Array<{
         identity: NonNullable<Value["lightIdentity"]>;
         kind: LightKind;
-    }> = [];
+    }> = emissionArray([]);
     /** Scene topology survives value reconstruction through record fields. */
-    private readonly sceneTopologyStates = new Map<
+    private readonly sceneTopologyStates = new EmissionMap<
         string,
         NonNullable<Value["sceneTopologyState"]>
     >();
     private dynamicSceneLights = false;
     private mutableToneMappingEnabled = false;
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
-        [];
+        emissionArray([]);
     /**
      * The splat shader plugins one `loadSplat` call passed, in its order.
      * Undefined until a call records one, so an empty list stays
@@ -903,21 +686,21 @@ class Compiler
      * their materials, and scene 65 does exactly that. Recorded per mesh
      * here and joined to the casters when the manifest is built.
      */
-    private readonly sceneMeshMaterials = new Map<
+    private readonly sceneMeshMaterials = new EmissionMap<
         number,
         { pbrMaterial: number | null; nodeMaterial: number | null }
     >();
     /** Every reachable assignment, rather than only the final assignment the
      *  lazy shadow view needs. This closes each PBR material over the meshes
      *  it can actually draw on. */
-    private readonly scenePbrMaterialMeshes = new Map<number, Set<number>>();
-    private readonly scenePbrMaterialsWithUnknownMesh = new Set<number>();
+    private readonly scenePbrMaterialMeshes = new EmissionMap<number, Set<number>>();
+    private readonly scenePbrMaterialsWithUnknownMesh = new EmissionSet<number>();
     private unknownSceneMaterialAssignment = false;
     private standardMaterialUnknownMesh = false;
-    private readonly runtimeMaterialProfiles = new Set<number>();
+    private readonly runtimeMaterialProfiles = new EmissionSet<number>();
     private runtimeMeshProfileCount = 0;
-    private readonly runtimeShaderProfiles = new Set<number>();
-    private readonly runtimeNodeProfiles = new Set<number>();
+    private readonly runtimeShaderProfiles = new EmissionSet<number>();
+    private readonly runtimeNodeProfiles = new EmissionSet<number>();
     private reachedPlainSpriteLayer = false;
     /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
     private reachedPureSpriteVertex = false;
@@ -926,15 +709,15 @@ class Compiler
     private defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
     private presentationHostCpp: string | undefined;
-    private presentationCanvasValue: Value | undefined;
     /** First statement after the one engine is created. */
     private engineCreationInsertion: number | undefined;
-    private nativeHostUiTagsCache: ReadonlyMap<string, string> | undefined;
     /** Explicit static surface sample count; absence means the pinned default. */
     private engineMsaaSamples: 1 | 4 | undefined;
     /** Bound only while lowering a platform visibility callback body. */
     private platformDocumentHiddenCpp: string | undefined;
     private indentLevel = 2;
+    private readonly emissionBlocks = emissionArray([0]);
+    private nextEmissionBlock = 1;
     private temporaryIndex = 0;
     public defaultRenderTaskAdapted = false;
 
@@ -1049,19 +832,6 @@ class Compiler
             if (unsupported) this.fail(unsupported.node, `TAA requires tracked camera mutations: ${unsupported.reason}.`);
             const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "taa");
             if (admission) this.fail(admission.node, admission.message);
-            for (const feature of ["camera:free", "camera:geospatial", "camera:orthographic", "loader:gltf-cameras"] as const) {
-                if (this.features.has(feature)) this.fail(this.sourceFile,
-                    `TAA camera version transport does not cover '${feature}'.`);
-            }
-            for (const feature of this.features) {
-                if (["material:pbr", "material:grid", "material:node", "material:shader", "material:plugin-index", "material:no-color-view",
-                    "light:clustered", "renderer:transmission", "renderer:effect", "renderer:effect-task",
-                    "renderer:screen-space", "renderer:sprite", "renderer:frame-graph", "ui:rml", "loader:splat",
-                    "sprite:billboard"].includes(feature) || feature.startsWith("background:") || feature.startsWith("shadow:")) {
-                    this.fail(this.sourceFile, `TAA source preparation does not yet cover '${feature}'` +
-                        ` (reached at ${this.featureSites.get(feature)}).`);
-                }
-            }
         }
         if (this.reachedNodeParticles.nativeProvider &&
             !this.reachedNodeParticles.sets.some((set) => set.native)) {
@@ -1088,7 +858,7 @@ class Compiler
         // loop that presents it (NA-26).
         this.refuseMixedStandaloneTextContexts();
         this.refuseUiWithoutPresentation();
-        this.validateUiStaticProjection();
+        this.ui.validateUiStaticProjection();
 
         const features = featureOrder.filter((feature) =>
             this.features.has(feature),
@@ -1105,7 +875,7 @@ class Compiler
         // Two features can name the same PAL translation unit (the sprite
         // and PBR renderers share one), and CMake must list it once.
         const runtimeSources = [
-            ...new Set(features.flatMap((feature) => featureSources[feature])),
+            ...new EmissionSet(features.flatMap((feature) => featureSources[feature])),
         ];
         // The manifest and CMake projection of the same table the upstream
         // lowerer emits from, so a feature's sources are declared once.
@@ -1245,155 +1015,12 @@ class Compiler
      * the immutable TypeScript module cannot observe elements owned by its
      * browser HTML host in a native process.
      */
-    private readonly pendingHostUiLookups: Value[] = [];
+    private readonly pendingHostUiLookups: Value[] = emissionArray([]);
 
     private emitNativeHostUi(): void {
-        const hostUi = this.options.nativeHostUi;
-        if (!hostUi) return;
-        if (this.options.workers) this.reachFeature("platform:window", this.sourceFile);
-        const engine = this.options.workers ? "bbl::pal::window_document_engine()" : this.defaultEngineCpp;
-        if (!engine) {
-            this.failAtFile(
-                "A native host UI companion requires a scene engine.",
-            );
-        }
-        // The reaching "site" is the audited companion file itself: a
-        // companion-only scene has no call in its own source to name, and
-        // leaving the site empty would attribute the activation to the
-        // compiled scene TypeScript. A scene-source reach recorded during
-        // the walk still wins, by `reachFeature`'s first-reach rule.
-        this.reachFeature("ui:rml", `${hostUi.sourcePath} (host UI companion)`);
-        const indent = "    ".repeat(2);
-        const emitted: string[] = [];
-        const ids = new Set<string>();
-        for (const rule of nativeHostUiStyleRules(hostUi)) {
-            if (Compiler.fractionalUiGridTracks(rule.style)) {
-                this.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
-            }
-            const identifier = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-            if (!identifier.test(rule.primary)) {
-                this.failAtFile(
-                    `Native host UI style target '${rule.primary}' is not valid.`,
-                );
-            }
-            const descriptor = uiStyleSelectorDescriptor(rule.kind);
-            if (
-                descriptor.needsSecondary !== Boolean(rule.secondary) ||
-                (rule.secondary !== undefined &&
-                    !identifier.test(rule.secondary))
-            ) {
-                this.failAtFile(
-                    `Native host UI ${rule.kind} rule has invalid secondary target.`,
-                );
-            }
-            if (
-                descriptor.needsTag !== Boolean(rule.tag) ||
-                (rule.tag !== undefined &&
-                    !/^[A-Za-z][A-Za-z0-9-]*$/.test(rule.tag))
-            ) {
-                this.failAtFile(
-                    `Native host UI ${rule.kind} rule has invalid tag target.`,
-                );
-            }
-            if (
-                rule.maxWidth !== undefined &&
-                (!Number.isFinite(rule.maxWidth) || rule.maxWidth <= 0)
-            ) {
-                this.failAtFile(
-                    "Native host UI style maxWidth must be a positive finite number.",
-                );
-            }
-            emitted.push(
-                `${indent}bbl::ui_add_host_style_rule(${engine}, ` +
-                    `bbl::UiStyleSelectorKind::${descriptor.cpp}, ` +
-                    `${this.cppString(rule.primary)}, ` +
-                    `${this.cppString(rule.secondary ?? "")}, ` +
-                    `${this.cppString(rule.tag ?? "")}, ` +
-                    `${rule.hover ? "true" : "false"}, ` +
-                    `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                    `${this.cppString(this.lowerUiAttributeLiteral("style", rule.style))}` +
-                    `${rule.active ? `, ${rule.focusVisible ? "true" : "false"}, true` : rule.focusVisible ? ", true" : ""});`,
-            );
-        }
-
-        const appendElement = (
-            element: NativeHostUiElement,
-            parent?: string,
-        ): string => {
-            const normalizedTag = element.tag.toLowerCase();
-            if (!/^[a-z][a-z0-9-]*$/i.test(element.tag)) {
-                this.failAtFile(
-                    `Native host UI element tag '${element.tag}' is not valid.`,
-                );
-            }
-            if (Compiler.UI_IMPLEMENTATION_TAGS.has(normalizedTag)) {
-                this.failAtFile(
-                    `Native host UI element tag '${element.tag}' is reserved for the retained projection.`,
-                );
-            }
-            const fractionalTracks = Compiler.fractionalUiGridTracks(element.attributes?.style ?? "");
-            if (fractionalTracks && (element.text || element.children?.length !== fractionalTracks.length)) {
-                this.failAtFile("A fractional host grid requires exactly one element child per track.");
-            }
-            const handle = this.allocateTemporaryCppName("host_ui_element");
-            emitted.push(
-                `${indent}const auto ${handle} = ` +
-                    `bbl::ui_create_element(${engine}, ${this.cppString(normalizedTag)});`,
-            );
-            if (element.text !== undefined) {
-                emitted.push(
-                    `${indent}bbl::ui_set_text(${engine}, ${handle}, ` +
-                        `${this.cppString(element.text)});`,
-                );
-            }
-            for (const [name, sourceValue] of Object.entries(
-                element.attributes ?? {},
-            )) {
-                if (name === "id") {
-                    if (ids.has(sourceValue)) {
-                        this.failAtFile(
-                            `Native host UI element id '${sourceValue}' is duplicated.`,
-                        );
-                    }
-                    ids.add(sourceValue);
-                }
-                const value = this.lowerUiAttributeLiteral(name, sourceValue);
-                emitted.push(
-                    `${indent}bbl::ui_set_attribute(${engine}, ${handle}, ` +
-                        `${this.cppString(name)}, ${this.cppString(value)});`,
-                );
-            }
-            for (const child of element.children ?? []) {
-                appendElement(child, handle);
-            }
-            emitted.push(
-                parent
-                    ? `${indent}bbl::ui_append_child(${engine}, ${parent}, ${handle});`
-                    : `${indent}bbl::ui_append_to_root(${engine}, ${handle});`,
-            );
-            return handle;
-        };
-        for (const element of hostUi.elements) {
-            appendElement(element);
-        }
-        if (this.options.workers) emitted.push(`${indent}bbl::pal::update_window_document();`);
+        const emitted = this.ui.compileHostUi();
         const insertion = this.options.workers ? 0 : this.engineCreationInsertion ?? this.body.length;
         this.body.splice(insertion, 0, ...emitted);
-    }
-
-    private nativeHostUiTags(): ReadonlyMap<string, string> {
-        if (this.nativeHostUiTagsCache) return this.nativeHostUiTagsCache;
-        const tags = new Map<string, string>();
-        const visit = (element: NativeHostUiElement): void => {
-            const id = element.attributes?.id;
-            if (id !== undefined) tags.set(id, element.tag.toLowerCase());
-            for (const child of element.children ?? []) visit(child);
-        };
-        for (const element of this.options.nativeHostUi?.elements ?? []) {
-            visit(element);
-        }
-        this.nativeHostUiTagsCache = tags;
-        return tags;
     }
 
     /**
@@ -1401,29 +1028,7 @@ class Compiler
      * audited companion, including explicitly represented canvas elements.
      */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
-        const callee = this.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            callee.name.text !== "getElementById" ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "document" ||
-            !this.isDefaultLibraryIdentifier(callee.expression) ||
-            call.arguments.length !== 1
-        ) {
-            return false;
-        }
-        const id = this.unwrap(argumentAt(call, 0));
-        // A literal, or an inlined helper's parameter bound to one: a
-        // demo's `bindToggle(buttonId, ...)` looks its button up by the
-        // literal every call site passes, which the inlined binding still
-        // carries as a static string.
-        const text =
-            ts.isStringLiteral(id) || ts.isNoSubstitutionTemplateLiteral(id)
-                ? id.text
-                : ts.isIdentifier(id)
-                  ? this.lookupIdentifierValue(id)?.staticString
-                  : undefined;
-        return text !== undefined && this.nativeHostUiTags().has(text);
+        return this.ui.isNativeHostUiLookup(call);
     }
 
     /**
@@ -1436,7 +1041,13 @@ class Compiler
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
-        const visit = (node: ts.Node): void => {
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+            if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+                // The file adapter stores both its input and result as object
+                // references. Fix that representation before earlier literals.
+                const file = this.voxelFileContract(node, node.expression);
+                if (file?.dataType) this.dataTypes.markStoredObjectReferences(file.dataType);
+            }
             const target = retainedNativeMutationTarget(this.symbols, node);
             if (target) {
                 const targetType = this.checker.getTypeAtLocation(target);
@@ -1506,8 +1117,7 @@ class Compiler
                     this.dataTypes.markStoredObjectReferences(dataType);
                 }
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         for (const source of this.sourceFiles()) {
             if (!source.isDeclarationFile) visit(source);
         }
@@ -1550,15 +1160,14 @@ class Compiler
     }
 
     private collectSourceCppNames(): void {
-        const visit = (node: ts.Node): void => {
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
             if (
                 (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
                 ts.isIdentifier(node.name)
             ) {
                 this.sourceCppNames.add(this.cppIdentifier(node.name.text));
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         for (const file of this.program.getSourceFiles()) {
             if (!file.isDeclarationFile) {
                 visit(file);
@@ -1651,7 +1260,7 @@ class Compiler
      * entry, so those are skipped here rather than declared twice.
      */
     private emitEntryModuleState(entry: readonly ts.Statement[]): void {
-        const emitted = new Set<ts.Statement>(entry);
+        const emitted = new EmissionSet<ts.Statement>(entry);
         for (const statement of planEntryModuleState(
             this.program,
             this.sourceFile,
@@ -1829,7 +1438,12 @@ class Compiler
     }
 
     public emitStatement(statement: ts.Statement): void {
-        this.statements.emit(this, statement);
+        this.statementDependencies.push(new EmissionSet());
+        try {
+            this.statements.emit(this, statement);
+        } finally {
+            this.statementDependencies.pop();
+        }
     }
 
     public statementTerminatesAfterLowering(statement: ts.Statement): boolean {
@@ -1896,7 +1510,7 @@ class Compiler
             this.typeIsOrExtendsNamed(
                 members[0]!,
                 "AudioNode",
-                new Set(),
+                new EmissionSet(),
                 declaredInDomLibrary,
             )
         ) {
@@ -1929,7 +1543,7 @@ class Compiler
     private typeIsOrExtendsNamed(
         type: ts.Type,
         name: string,
-        visited = new Set<ts.Type>(),
+        visited = new EmissionSet<ts.Type>(),
         declaredBy: (symbol: ts.Symbol) => boolean = () => true,
     ): boolean {
         if (type.symbol?.name === name && declaredBy(type.symbol)) return true;
@@ -1963,8 +1577,8 @@ class Compiler
         const symbol = this.symbols.valueSymbol(node);
         if (!symbol) return false;
         let found = false;
-        const visit = (candidate: ts.Node): void => {
-            if (found) return;
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (candidate) => {
+            if (found) return "skip";
             if (
                 ts.isBinaryExpression(candidate) &&
                 candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -1978,11 +1592,10 @@ class Compiler
                     : undefined;
                 if (callee && this.symbols.importedName(callee) === intrinsic) {
                     found = true;
-                    return;
+                    return "skip";
                 }
             }
-            ts.forEachChild(candidate, visit);
-        };
+        });
         visit(node.getSourceFile());
         return found;
     }
@@ -2020,7 +1633,7 @@ class Compiler
     }
 
     private textAttachmentReached = false;
-    private reachedRenderContextRegistrations = new Set<string>();
+    private reachedRenderContextRegistrations = new EmissionSet<string>();
     private textCameraMutation: ts.Node | undefined;
 
     public noteTextCameraControl(node: ts.Node, camera: Value, arcRotate: boolean): void {
@@ -2103,22 +1716,26 @@ class Compiler
             owner = owner.parent;
         }
         if (owner.parent) owner = owner.parent;
-        return this.sharedClosureSymbolsFor(owner)?.has(symbol) ?? false;
+        return this.sharedClosureSymbolsFor(owner,
+            this.variableScopes.length !== 1 || this.activeEmissionScope !== 0)?.has(symbol) ?? false;
     }
 
     /** Owners under analysis: a helper reached through its own call adds nothing. */
-    private readonly sharedClosureAnalysisInProgress = new Set<ts.Node>();
+    private readonly sharedClosureAnalysisInProgress = new EmissionSet<ts.Node>();
+    private readonly sharedFrameClosureSymbols = new EmissionWeakMap<ts.Node, ReadonlySet<ts.Symbol>>();
 
     private sharedClosureSymbolsFor(
         owner: ts.Node,
+        includeFrameRegistrations = false,
     ): ReadonlySet<ts.Symbol> | undefined {
-        const cached = this.sharedClosureSymbols.get(owner);
+        const cache = includeFrameRegistrations ? this.sharedFrameClosureSymbols : this.sharedClosureSymbols;
+        const cached = cache.get(owner);
         if (cached) return cached;
         if (this.sharedClosureAnalysisInProgress.has(owner)) return undefined;
         this.sharedClosureAnalysisInProgress.add(owner);
         try {
-            const captured = this.collectSharedClosureSymbols(owner);
-            this.sharedClosureSymbols.set(owner, captured);
+            const captured = this.collectSharedClosureSymbols(owner, includeFrameRegistrations);
+            cache.set(owner, captured);
             return captured;
         } finally {
             this.sharedClosureAnalysisInProgress.delete(owner);
@@ -2127,19 +1744,21 @@ class Compiler
 
     /**
      * The argument a call keeps past its own return: a listener
-     * registration its second, a browser timer its first (the racer's
-     * `setTimeout(tick, 700)`). `requestAnimationFrame` is absent: an
-     * inline entry-level frame callback borrows the entry scope by
-     * reference, one registered inside another callback is a nested root,
-     * and a named loop passed to it is a kept value like any other.
+     * registration its second, a browser timer or RAF its first.
+     * Frame registrations also retain callbacks past a helper/block's end.
      */
     private retainedArgumentIndex(
         call: ts.CallExpression,
+        includeFrameRegistrations: boolean,
     ): number | undefined {
         const callee = this.unwrap(call.expression);
-        if (ts.isIdentifier(callee) &&
-            this.symbols.importedName(callee) === "withNodeParticleEmitterProvider") {
-            return 0;
+        if (ts.isIdentifier(callee)) {
+            switch (this.symbols.importedName(callee)) {
+                case "withNodeParticleEmitterProvider": return 0;
+                case "onBeforeRender":
+                case "onPhysicsAfterStep":
+                case "onCsmReceiverUpdate": return includeFrameRegistrations ? 1 : undefined;
+            }
         }
         if (
             ts.isPropertyAccessExpression(callee) &&
@@ -2149,7 +1768,8 @@ class Compiler
             return 1;
         }
         const global = browserGlobalNamed(this, call.expression)?.text;
-        return (global === "setTimeout" || global === "setInterval") &&
+        return (global === "setTimeout" || global === "setInterval" ||
+            (includeFrameRegistrations && global === "requestAnimationFrame")) &&
             call.arguments.length >= 1
             ? 0
             : undefined;
@@ -2166,8 +1786,9 @@ class Compiler
     private callRetainsArgument(
         call: ts.CallExpression,
         index: number,
+        includeFrameRegistrations: boolean,
     ): boolean {
-        if (this.retainedArgumentIndex(call) === index) return true;
+        if (this.retainedArgumentIndex(call, includeFrameRegistrations) === index) return true;
         const callee = this.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) return false;
         const target = tryResolveFunctionDeclaration(this.checker, callee);
@@ -2177,7 +1798,7 @@ class Compiler
         const symbol = this.symbols.valueSymbol(parameter.name);
         return (
             !!symbol &&
-            (this.sharedClosureSymbolsFor(target)?.has(symbol) ?? false)
+            (this.sharedClosureSymbolsFor(target, includeFrameRegistrations)?.has(symbol) ?? false)
         );
     }
 
@@ -2187,17 +1808,16 @@ class Compiler
     private sourceUsesNativeParticleProvider(): boolean {
         if (this.nativeParticleProviderUse !== undefined) return this.nativeParticleProviderUse;
         let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+            if (found) return "skip";
             if (ts.isCallExpression(node)) {
                 const callee = this.unwrap(node.expression);
                 if (ts.isIdentifier(callee) && this.symbols.importedName(callee) === "withNodeParticleEmitterProvider") {
                     found = true;
-                    return;
+                    return "skip";
                 }
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         for (const file of this.program.getSourceFiles()) {
             if (!file.isDeclarationFile) visit(file);
         }
@@ -2220,14 +1840,14 @@ class Compiler
      */
     private collectSharedClosureSymbols(
         owner: ts.Node,
+        includeFrameRegistrations: boolean,
     ): ReadonlySet<ts.Symbol> {
-        const captured = new Set<ts.Symbol>();
-        const storedLocalFunctions = new Set<ts.Symbol>();
-        const storedLocalFunctionNames = new Set<string>();
-        const localFunctions = new Map<ts.Symbol, ts.FunctionLikeDeclaration>();
-        const localFunctionNames = new Set<string>();
+        const captured = new EmissionSet<ts.Symbol>();
+        const storedLocalFunctions = new EmissionSet<ts.Symbol>();
+        const localFunctions = new EmissionMap<ts.Symbol, ts.FunctionLikeDeclaration>();
+        const localFunctionNames = new EmissionSet<string>();
         const roots: ts.FunctionLikeDeclaration[] = [];
-        const rootSet = new Set<ts.Node>();
+        const rootSet = new EmissionSet<ts.Node>();
         const isClosure = (
             node: ts.Node,
         ): node is ts.ArrowFunction | ts.FunctionExpression =>
@@ -2251,12 +1871,10 @@ class Compiler
                   ? node.parent.name
                   : undefined;
         const storeNamed = (identifier: ts.Identifier): void => {
-            storedLocalFunctionNames.add(identifier.text);
             const symbol = this.symbols.valueSymbol(identifier);
             if (symbol) storedLocalFunctions.add(symbol);
         };
         const isStoredLocal = (identifier: ts.Identifier): boolean => {
-            if (storedLocalFunctionNames.has(identifier.text)) return true;
             const symbol = this.symbols.valueSymbol(identifier);
             return !!symbol && storedLocalFunctions.has(symbol);
         };
@@ -2296,16 +1914,15 @@ class Compiler
         // Local functions and inline roots. `callbackDepth` counts the
         // enclosing callback arguments: below one, every callback argument
         // is a root.
-        const collectRoots = (node: ts.Node, callbackDepth: number): void => {
+        findAnalysisNodeWithState(owner, 0, (node, callbackDepth) => {
             const name = localFunctionName(node);
             if (name) {
                 localFunctionNames.add(name.text);
                 const symbol = this.symbols.valueSymbol(name);
-                if (symbol) {
-                    localFunctions.set(symbol, node as ts.FunctionLikeDeclaration);
+                if (symbol && isSupportedFunction(node)) {
+                    localFunctions.set(symbol, node);
                 }
             }
-            let depth = callbackDepth;
             if (isClosure(node)) {
                 const call = ts.isCallExpression(node.parent) ? node.parent : undefined;
                 const index = call ? call.arguments.indexOf(node) : -1;
@@ -2317,21 +1934,20 @@ class Compiler
                     (call !== undefined &&
                         index >= 0 &&
                         (callbackDepth > 0 ||
-                            this.callRetainsArgument(call, index)))
+                            this.callRetainsArgument(call, index, includeFrameRegistrations)))
                 ) {
                     addRoot(node);
                 }
-                if (index >= 0) depth = callbackDepth + 1;
-            } else if (isRecordMember(node)) {
-                addRoot(node as ts.FunctionLikeDeclaration);
+            } else if (isRecordMember(node) && (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node))) {
+                addRoot(node);
             }
-            ts.forEachChild(node, (child) => collectRoots(child, depth));
-        };
-        ts.forEachChild(owner, (child) => collectRoots(child, 0));
+            return false;
+        }, (node, depth) => isClosure(node) && ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)
+            ? depth + 1 : depth, { includeRoot: false });
         // A local function referenced anywhere but as a direct callee is a
         // value the program keeps: passed by name, assigned, pushed, returned
         // or captured.
-        const collectStoredReferences = (node: ts.Node): void => {
+        forEachAnalysisNode(owner, (node) => {
             if (ts.isShorthandPropertyAssignment(node)) {
                 if (localFunctionNames.has(node.name.text)) storeNamed(node.name);
             } else if (ts.isIdentifier(node) && localFunctionNames.has(node.text)) {
@@ -2349,20 +1965,18 @@ class Compiler
                     if (symbol && localFunctions.has(symbol)) storeNamed(node);
                 }
             }
-            ts.forEachChild(node, collectStoredReferences);
-        };
-        collectStoredReferences(owner);
+        });
         for (const symbol of storedLocalFunctions) {
             const declaration = localFunctions.get(symbol);
             if (declaration) addRoot(declaration);
         }
         // A local function a root calls runs from that stored callback.
-        const visitedRoots = new Set<ts.Node>();
+        const visitedRoots = new EmissionSet<ts.Node>();
         for (let index = 0; index < roots.length; ++index) {
             const root = roots[index]!;
             if (visitedRoots.has(root)) continue;
             visitedRoots.add(root);
-            const collectCallees = (node: ts.Node): void => {
+            forEachAnalysisNode(root, (node) => {
                 if (ts.isIdentifier(node) && localFunctionNames.has(node.text)) {
                     const symbol = this.symbols.valueSymbol(node);
                     const declaration = symbol
@@ -2373,21 +1987,19 @@ class Compiler
                         addRoot(declaration);
                     }
                 }
-                ts.forEachChild(node, collectCallees);
-            };
-            collectCallees(root);
+            });
         }
-        const visit = (node: ts.Node, inside: boolean): void => {
+        const insideStoredClosure = (node: ts.Node, inside: boolean): boolean => {
             const name = localFunctionName(node);
-            const stored =
-                inside || rootSet.has(node) || (!!name && isStoredLocal(name));
-            if (stored && ts.isIdentifier(node)) {
+            return inside || rootSet.has(node) || (!!name && isStoredLocal(name));
+        };
+        findAnalysisNodeWithState(owner, false, (node, inside) => {
+            if (insideStoredClosure(node, inside) && ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
                 if (symbol) captured.add(symbol);
             }
-            ts.forEachChild(node, (child) => visit(child, stored));
-        };
-        ts.forEachChild(owner, (child) => visit(child, false));
+            return false;
+        }, insideStoredClosure, { includeRoot: false });
         return captured;
     }
 
@@ -2406,7 +2018,7 @@ class Compiler
             !this.checker.getSymbolAtLocation(declaration.type.typeName)?.declarations?.length &&
             ts.isIdentifier(declaration.name)) {
             const cpp = this.cppIdentifier(declaration.name.text);
-            this.emit(`bbl::GpuTextureIdentity ${cpp}{};`);
+            this.emit({ kind: "declaration", type: "bbl::GpuTextureIdentity", name: cpp, initializer: "", initialization: "direct" });
             this.defineVariable(declaration.name, { kind: "gpu-texture", cpp, dataType: { kind: "handle", handle: "gpu-texture" }, engineCpp: this.requireDefaultEngine(declaration) });
             return;
         }
@@ -2464,11 +2076,10 @@ class Compiler
             if (resource) {
                 this.emit(
                     sharedClosureStorage
-                        ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${resource.cppType}>>();`
-                        : `std::optional<${resource.cppType}> ${cppName};`,
+                        ? { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<std::optional<${resource.cppType}>>()` }
+                        : { kind: "declaration", type: `std::optional<${resource.cppType}>`, name: cppName, initializer: "", initialization: "default" },
                 );
-                this.defineVariable(declaration.name, {
-                    kind: resource.kind,
+                this.defineVariable(declaration.name, valueForKind(resource.kind, {
                     cpp: sharedClosureStorage
                         ? `(**${cppName})`
                         : `(*${cppName})`,
@@ -2484,7 +2095,7 @@ class Compiler
                     optionalStorageCpp: sharedClosureStorage
                         ? `(*${cppName})`
                         : cppName,
-                });
+                }));
                 return;
             }
             let dataType = this.dataTypes.fromTsType(
@@ -2532,8 +2143,8 @@ class Compiler
             const cppType = this.dataTypes.cppType(dataType);
             this.emit(
                 sharedClosureStorage
-                    ? `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>();`
-                    : `${cppType} ${cppName};`,
+                    ? { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${cppType}>()` }
+                    : { kind: "declaration", type: cppType, name: cppName, initializer: "", initialization: "default" },
             );
             const boundCpp = sharedClosureStorage ? `(*${cppName})` : cppName;
             if (dataType.kind !== "number" && dataType.kind !== "boolean") {
@@ -2595,7 +2206,7 @@ class Compiler
         if (isDeterministicRandomRead(this, declaration.initializer)) {
             const native = this.reachedNodeParticles.sets.some((set) => set.native);
             if (native) {
-                this.emit(`auto ${cppName} = bbl::js::random_function();`);
+                this.emit({ kind: "declaration", type: "auto", name: cppName, initializer: "bbl::js::random_function()" });
                 this.defineVariable(declaration.name, {
                     kind: "callback", cpp: cppName,
                     nativeCallbackParameterTypes: [], nativeCallbackReturnType: { kind: "number" },
@@ -2613,11 +2224,10 @@ class Compiler
         ) {
             this.emit(
                 sharedClosureStorage
-                    ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>();`
-                    : `std::optional<${nullableResource.cppType}> ${cppName};`,
+                    ? { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()` }
+                    : { kind: "declaration", type: `std::optional<${nullableResource.cppType}>`, name: cppName, initializer: "", initialization: "default" },
             );
-            this.defineVariable(declaration.name, {
-                kind: nullableResource.kind,
+            this.defineVariable(declaration.name, valueForKind(nullableResource.kind, {
                 cpp: sharedClosureStorage ? `(**${cppName})` : `(*${cppName})`,
                 ...((nullableResource.kind === "ui-element" ||
                     nullableResource.kind === "pointer-drag") &&
@@ -2631,7 +2241,7 @@ class Compiler
                 optionalStorageCpp: sharedClosureStorage
                     ? `(*${cppName})`
                     : cppName,
-            });
+            }));
             return;
         }
 
@@ -2640,7 +2250,7 @@ class Compiler
             ts.isCallExpression(hostLookup) && this.isNativeHostUiLookup(hostLookup)) {
             const id = this.compileStringLiteral(argumentAt(hostLookup, 0));
             const value: Value = { kind: "ui-element", cpp: cppName, uiHostId: id,
-                uiTag: this.nativeHostUiTags().get(id)!, truthinessCpp: "true" };
+                uiTag: this.ui.nativeHostUiTags().get(id)!, truthinessCpp: "true" };
             this.pendingHostUiLookups.push(value);
             this.defineVariable(declaration.name, value);
             return;
@@ -2714,8 +2324,8 @@ class Compiler
                 value.optionalStorageCpp ?? this.optionalResourceCpp(value);
             this.emit(
                 sharedClosureStorage
-                    ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp});`
-                    : `std::optional<${nullableResource.cppType}> ${cppName} = ${initializerCpp};`,
+                    ? { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp})` }
+                    : { kind: "declaration", type: `std::optional<${nullableResource.cppType}>`, name: cppName, initializer: initializerCpp },
             );
             this.defineVariable(declaration.name, {
                 ...value,
@@ -2740,7 +2350,7 @@ class Compiler
             // `let` declaration takes above, for the same reason: the
             // initializer stops being the value.
             const symbol = this.symbols.valueSymbol(
-                declaration.name as ts.Identifier,
+                declaration.name,
             );
             if (symbol) {
                 this.staticConstants.delete(symbol);
@@ -2807,13 +2417,13 @@ class Compiler
                 narrowed.dataType.inner.kind === "struct" &&
                 narrowed.objectIdentityCpp !== undefined
             ) {
-                this.emit(`auto* ${cppName} = ${narrowed.objectIdentityCpp};`);
+                this.emit({ kind: "declaration", type: "auto*", name: cppName, initializer: narrowed.objectIdentityCpp });
                 this.dataLowerer.registerAlias(
                     cppName,
                     narrowed.objectIdentityCpp,
                 );
                 this.defineVariable(declaration.name, {
-                    ...narrowed,
+                    ...nativeDataMetadata(narrowed),
                     kind: "data",
                     cpp: cppName,
                     optionalFoundCpp: `${cppName} != nullptr`,
@@ -2871,7 +2481,7 @@ class Compiler
                 // from the safe default object used to avoid an invalid
                 // native read on the missing path.
                 this.emit(
-                    `[[maybe_unused]] const bool ${optionalFoundCpp} = ${narrowed.optionalFoundCpp};`,
+                    { kind: "declaration", type: "const bool", name: optionalFoundCpp, initializer: narrowed.optionalFoundCpp!, attributes: "[[maybe_unused]] " },
                 );
             }
             const localType = narrowed.nativeVectorData
@@ -2881,11 +2491,11 @@ class Compiler
                 sharedClosureStorage &&
                 this.identifierIsRebound(declaration.name);
             const boundCpp = sharedDataBinding ? `(*${cppName})` : cppName;
-            this.emit(
-                sharedDataBinding
-                    ? `auto ${cppName} = bbl::js::make_gc_shared<${localType}>(${narrowed.cpp});`
-                    : `${localType}${(aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
-            );
+            this.emit({
+                kind: "declaration", name: cppName,
+                type: sharedDataBinding ? "auto" : `${localType}${(aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""}`,
+                initializer: sharedDataBinding ? `bbl::js::make_gc_shared<${localType}>(${narrowed.cpp})` : narrowed.cpp,
+            });
             if (optionalFoundCpp && referenceStruct) {
                 // Reference-backed records already use an empty shared
                 // pointer as their safe missing value. Test the stored local
@@ -2893,7 +2503,7 @@ class Compiler
                 // branch preparation it may contain) just to learn whether
                 // the result exists.
                 this.emit(
-                    `[[maybe_unused]] const bool ${optionalFoundCpp} = static_cast<bool>(${boundCpp});`,
+                    { kind: "declaration", type: "const bool", name: optionalFoundCpp, initializer: `static_cast<bool>(${boundCpp})`, attributes: "[[maybe_unused]] " },
                 );
             }
             if (aliases && !ownsSharedStorage) {
@@ -2918,7 +2528,7 @@ class Compiler
                           narrowed.dataType.inner,
                       )
                     : undefined;
-            this.defineVariable(declaration.name, {
+            this.defineVariable(declaration.name, valueForKind(optionalHandle?.kind ?? "data", {
                 ...(optionalHandle ?? {
                     kind: "data" as const,
                     cpp: boundCpp,
@@ -2967,13 +2577,7 @@ class Compiler
                           ),
                       }
                     : {}),
-                // A nullable string whose falsiness includes the empty
-                // string keeps that rule through the binding: the local
-                // holds the same two-state value the producer answered.
-                ...(narrowed.nullableStringFalsy
-                    ? { nullableStringFalsy: true as const }
-                    : {}),
-            });
+            }));
             return;
         }
 
@@ -2994,7 +2598,7 @@ class Compiler
         // Compiling the initializer again is observably wrong for calls and
         // other expressions that materialize temporaries.
         const initializerCpp = value.cpp;
-        const maybeUnused = value.kind === "boolean" ? "[[maybe_unused]] " : "";
+        const maybeUnused = value.kind === "number" || value.kind === "boolean" ? "[[maybe_unused]] " : "";
         const sharedPrimitive =
             sharedClosureStorage &&
             this.isSharedClosureScalar(
@@ -3007,11 +2611,11 @@ class Compiler
             value.optionalFoundCpp === "false"
                 ? undefined
                 : this.allocateTemporaryCppName("element_found");
-        this.emit(
-            sharedPrimitive
-                ? `auto ${cppName} = bbl::js::make_gc_shared<${nativeType}>(${initializerCpp});`
-                : `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
-        );
+        this.emit({
+            kind: "declaration", name: cppName, type: sharedPrimitive ? "auto" : nativeType,
+            initializer: sharedPrimitive ? `bbl::js::make_gc_shared<${nativeType}>(${initializerCpp})` : initializerCpp,
+            attributes: sharedPrimitive ? "" : maybeUnused,
+        });
         if (optionalFoundCpp) {
             // A local initialized from any maybe-absent handle snapshots both
             // the handle and whether it was present. Derive presence from the
@@ -3022,7 +2626,7 @@ class Compiler
                     ? value.optionalFoundCpp!.replaceAll(value.cpp, boundCpp)
                     : value.optionalFoundCpp!;
             this.emit(
-                `[[maybe_unused]] const bool ${optionalFoundCpp} = ${presence};`,
+                { kind: "declaration", type: "const bool", name: optionalFoundCpp, initializer: presence, attributes: "[[maybe_unused]] " },
             );
         }
         // Either spelling reads through the emitted variable, so a static
@@ -3078,6 +2682,9 @@ class Compiler
               storageCpp: string;
           }
         | undefined {
+        const name = declaration.name;
+        if (!ts.isIdentifier(name)) return undefined;
+
         if (!declaration.initializer) return undefined;
         const initializer = this.unwrap(declaration.initializer);
         if (!ts.isCallExpression(initializer)) return undefined;
@@ -3091,7 +2698,7 @@ class Compiler
             return undefined;
         }
         const signatures = this.checker
-            .getTypeAtLocation(declaration.name)
+            .getTypeAtLocation(name)
             .getCallSignatures();
         if (signatures.length !== 1) return undefined;
         const signature = signatures[0]!;
@@ -3100,7 +2707,7 @@ class Compiler
         const parameterTypes: DataType[] = [];
         const parameterNames: string[] = [];
         for (const [index, parameter] of signature.getParameters().entries()) {
-            const site = parameter.valueDeclaration ?? declaration.name;
+            const site = parameter.valueDeclaration ?? name;
             if (
                 parameter.valueDeclaration &&
                 ts.isParameter(parameter.valueDeclaration) &&
@@ -3138,7 +2745,7 @@ class Compiler
             true,
         );
         const storageCpp = storage.cpp;
-        this.defineVariable(declaration.name as ts.Identifier, {
+        this.defineVariable(name, {
             ...storage,
             nativeCallbackParameterTypes: parameterTypes,
         });
@@ -3155,6 +2762,9 @@ class Compiler
         },
         value: Value,
     ): void {
+        const name = declaration.name;
+        if (!ts.isIdentifier(name)) this.fail(name, "Function bindings require an identifier.");
+
         if (
             value.kind === "data" &&
             value.dataType?.kind === "function" &&
@@ -3165,7 +2775,7 @@ class Compiler
             // a native std::function. Fill the forward slot from that value;
             // there is no source declaration left to specialize again.
             this.emit(`${forward.storageCpp} = ${value.cpp};`);
-            this.rebindVariable(declaration.name as ts.Identifier, {
+            this.rebindVariable(name, {
                 kind: "callback",
                 cpp: forward.storageCpp,
                 nativeCallbackParameterTypes: forward.parameterTypes,
@@ -3204,7 +2814,7 @@ class Compiler
         this.emit(
             `${forward.storageCpp} = ${renderClosure(compiled, parameters.join(", "))};`,
         );
-        this.rebindVariable(declaration.name as ts.Identifier, {
+        this.rebindVariable(name, {
             kind: "callback",
             cpp: forward.storageCpp,
             nativeCallbackParameterTypes: forward.parameterTypes,
@@ -3223,8 +2833,8 @@ class Compiler
      */
     private expressionHasObservableEvaluation(node: ts.Node): boolean {
         let found = false;
-        const visit = (candidate: ts.Node): void => {
-            if (found) return;
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (candidate) => {
+            if (found) return "skip";
             if (
                 ts.isCallExpression(candidate) ||
                 ts.isNewExpression(candidate) ||
@@ -3232,10 +2842,9 @@ class Compiler
                 ts.isTaggedTemplateExpression(candidate)
             ) {
                 found = true;
-                return;
+                return "skip";
             }
-            ts.forEachChild(candidate, visit);
-        };
+        });
         visit(node);
         return found;
     }
@@ -3249,11 +2858,11 @@ class Compiler
         const symbol = this.symbols.valueSymbol(name);
         if (!symbol) return;
         let recursive = false;
-        const visit = (node: ts.Node): void => {
-            if (recursive) return;
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+            if (recursive) return "skip";
             if (this.options.workers && ts.isIdentifier(node) && this.symbols.valueSymbol(node) === symbol) {
                 recursive = true;
-                return;
+                return "skip";
             }
             if (
                 ts.isCallExpression(node) &&
@@ -3261,13 +2870,12 @@ class Compiler
                 this.symbols.valueSymbol(node.expression) === symbol
             ) {
                 recursive = true;
-                return;
+                return "skip";
             }
             if (!this.options.workers && node !== callback && ts.isFunctionLike(node)) {
-                return;
+                return "skip";
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         visit(callback.body);
         if (!recursive) return;
         if (!ts.isBlock(callback.body)) {
@@ -3354,7 +2962,7 @@ class Compiler
             enclosingBody === undefined ||
             recursiveStorageEscapes(
                 this.checker,
-                new Set<SupportedFunction>([callback]),
+                new EmissionSet<SupportedFunction>([callback]),
                 [enclosingBody],
             );
         if (escapes) {
@@ -3411,7 +3019,7 @@ class Compiler
      */
     private initializerProducesAccessorRecord(
         expression: ts.Expression,
-        seen = new Set<ts.Node>(),
+        seen = new EmissionSet<ts.Node>(),
     ): boolean {
         const unwrapped = this.unwrap(expression);
         if (seen.has(unwrapped)) return false;
@@ -3478,8 +3086,8 @@ class Compiler
                 );
             }
             let found = false;
-            const visit = (node: ts.Node): void => {
-                if (found || ts.isFunctionLike(node)) return;
+            const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+                if (found || ts.isFunctionLike(node)) return "skip";
                 if (
                     ts.isReturnStatement(node) &&
                     node.expression &&
@@ -3489,10 +3097,9 @@ class Compiler
                     )
                 ) {
                     found = true;
-                    return;
+                    return "skip";
                 }
-                ts.forEachChild(node, visit);
-            };
+            });
             declaration.body.statements.forEach(visit);
             return found;
         }
@@ -3504,11 +3111,14 @@ class Compiler
         cppName: string,
         sharedClosureStorage: boolean,
     ): boolean {
+        const name = declaration.name;
+        if (!ts.isIdentifier(name)) return false;
+
         if (!declaration.initializer) {
             return false;
         }
         const annotatedResource = this.nullableResourceKind(
-            declaration.name,
+            name,
             true,
         );
         if (annotatedResource?.kind === "storage-buffer") {
@@ -3519,11 +3129,11 @@ class Compiler
             // a plain-data struct.
             return false;
         }
-        const typeSite = declaration.type ?? declaration.name;
+        const typeSite = declaration.type ?? name;
         let annotated = this.dataTypes.fromTsType(
             declaration.type
                 ? this.checker.getTypeFromTypeNode(declaration.type)
-                : this.checker.getTypeAtLocation(declaration.name),
+                : this.checker.getTypeAtLocation(name),
             typeSite,
         );
         if (
@@ -3546,9 +3156,9 @@ class Compiler
                 declaration.initializer,
             );
             this.emit(
-                `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${initializerCpp});`,
+                { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${cppType}>(${initializerCpp})` },
             );
-            this.defineVariable(declaration.name as ts.Identifier, {
+            this.defineVariable(name, {
                 kind: "data",
                 cpp: `(*${cppName})`,
                 sharedStorageCpp: cppName,
@@ -3558,21 +3168,21 @@ class Compiler
         }
         const inferredMutableArray =
             !declaration.type &&
-            ts.isIdentifier(declaration.name) &&
+            ts.isIdentifier(name) &&
             ts.isArrayLiteralExpression(this.unwrap(declaration.initializer)) &&
-            this.inferredArrayIsMutated(declaration.name);
+            this.inferredArrayIsMutated(name);
         const initializer = this.unwrap(declaration.initializer);
         const annotatedOpenRecordLiteral =
             declaration.type !== undefined &&
             annotated?.kind === "map" &&
             ts.isObjectLiteralExpression(initializer) &&
-            ts.isIdentifier(declaration.name);
+            ts.isIdentifier(name);
         if (
             annotatedOpenRecordLiteral &&
             !this.openRecordContainerIsMutated(
-                declaration.name as ts.Identifier,
+                name,
             ) &&
-            !this.identifierIsRebound(declaration.name as ts.Identifier)
+            !this.identifierIsRebound(name)
         ) {
             // An immutable Record literal stays a compile-time record. A
             // dynamic read materializes the existing namespace-scope Map,
@@ -3592,11 +3202,11 @@ class Compiler
             return false;
         }
         const mutablePlainObject =
-            ts.isIdentifier(declaration.name) &&
+            ts.isIdentifier(name) &&
             inferredPlainObject &&
             (ts.isObjectLiteralExpression(initializer) || ts.isConditionalExpression(initializer)
-                ? this.inferredObjectIsMutated(declaration.name)
-                : this.identifierIsRebound(declaration.name));
+                ? this.inferredObjectIsMutated(name)
+                : this.identifierIsRebound(name));
         const inferredMutableObject = !declaration.type && mutablePlainObject;
         const explicitlyTypedMutableEntryObject =
             declaration.type !== undefined &&
@@ -3664,8 +3274,8 @@ class Compiler
             // here cannot be unconditional.
             return false;
         }
-        if (ts.isIdentifier(declaration.name)) {
-            const symbol = this.symbols.valueSymbol(declaration.name);
+        if (ts.isIdentifier(name)) {
+            const symbol = this.symbols.valueSymbol(name);
             if (symbol) this.staticConstants.delete(symbol);
         }
         const staticHandleElementType =
@@ -3713,24 +3323,24 @@ class Compiler
                     annotated.inner.kind === "struct"
                   ? annotated.inner
                   : undefined;
-        const declarationSymbol = ts.isIdentifier(declaration.name)
-            ? this.symbols.valueSymbol(declaration.name)
+        const declarationSymbol = ts.isIdentifier(name)
+            ? this.symbols.valueSymbol(name)
             : undefined;
         const sharedDataBinding =
             sharedClosureStorage &&
-            ts.isIdentifier(declaration.name) &&
-            this.identifierIsRebound(declaration.name);
+            ts.isIdentifier(name) &&
+            this.identifierIsRebound(name);
         let initializerReferencesBinding = false;
-        const scannedFunctions = new Set<ts.FunctionLikeDeclaration>();
+        const scannedFunctions = new EmissionSet<ts.FunctionLikeDeclaration>();
         if (declarationSymbol) {
-            const visit = (node: ts.Node): void => {
-                if (initializerReferencesBinding) return;
+            const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+                if (initializerReferencesBinding) return "skip";
                 if (
                     ts.isIdentifier(node) &&
                     this.symbols.valueSymbol(node) === declarationSymbol
                 ) {
                     initializerReferencesBinding = true;
-                    return;
+                    return "skip";
                 }
                 if (ts.isCallExpression(node)) {
                     const called =
@@ -3743,11 +3353,10 @@ class Compiler
                     ) {
                         scannedFunctions.add(called);
                         visit(called.body);
-                        if (initializerReferencesBinding) return;
+                        if (initializerReferencesBinding) return "skip";
                     }
                 }
-                ts.forEachChild(node, visit);
-            };
+            });
             visit(initializer);
         }
         const selfReferentialStruct =
@@ -3761,10 +3370,10 @@ class Compiler
             // lowered. Keep the reference in a shared cell so the generated
             // lambda observes the assignment immediately below.
             this.emit(
-                `auto ${cppName} = bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>();`,
+                { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>()` },
             );
             this.defineVariable(
-                declaration.name as ts.Identifier,
+                name,
                 { ...this.dataLowerer.leafValue(`(*${cppName})`, annotated), sharedStorageCpp: cppName },
             );
         }
@@ -3797,7 +3406,7 @@ class Compiler
             );
             if (sharedDataBinding) {
                 this.emit(
-                    `auto ${cppName} = bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(std::move(${targetCpp}));`,
+                    { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(std::move(${targetCpp}))` },
                 );
             } else if (selfReferentialStruct) {
                 this.emit(`(*${cppName}) = std::move(${targetCpp});`);
@@ -3816,16 +3425,16 @@ class Compiler
                       );
             this.emit(
                 sharedDataBinding
-                    ? `auto ${cppName} = bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(${initializerCpp});`
+                    ? { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(${initializerCpp})` }
                     : selfReferentialStruct
                       ? `(*${cppName}) = ${initializerCpp};`
-                      : `${this.dataTypes.cppType(annotated)} ${cppName} = ${initializerCpp};`,
+                      : { kind: "declaration", type: this.dataTypes.cppType(annotated), name: cppName, initializer: initializerCpp },
             );
         }
         if (
             ts.isArrayLiteralExpression(initializer) &&
-            ts.isIdentifier(declaration.name) &&
-            isNeverResized(declaration.name)
+            ts.isIdentifier(name) &&
+            isNeverResized(this.checker, name)
         ) {
             this.dataLowerer.registerFixedLength(
                 boundCpp,
@@ -3873,9 +3482,11 @@ class Compiler
             dataType: annotated,
             // Shared storage does not change a selected object's presence.
             ...(ts.isConditionalExpression(initializer) && initializerSnapshot &&
-                !this.identifierIsRebound(declaration.name as ts.Identifier) &&
-                (initializerSnapshot.kind === "record" || initializerSnapshot.kind === "json-null")
-                ? { optionalFoundCpp: initializerSnapshot.kind === "json-null" ? "false" : "true" }
+                !this.identifierIsRebound(name) &&
+                (initializerSnapshot.kind === "record" || initializerSnapshot.kind === "json-null" ||
+                    initializerSnapshot.optionalFoundCpp === "true" || initializerSnapshot.optionalFoundCpp === "false")
+                ? { optionalFoundCpp: initializerSnapshot.kind === "json-null" ? "false" :
+                    initializerSnapshot.kind === "record" ? "true" : initializerSnapshot.optionalFoundCpp }
                 : {}),
             ...(annotated.kind === "map" &&
             ts.isObjectLiteralExpression(initializer) &&
@@ -3889,9 +3500,9 @@ class Compiler
                 : {}),
         };
         if (selfReferentialStruct) {
-            this.rebindVariable(declaration.name as ts.Identifier, boundValue);
+            this.rebindVariable(name, boundValue);
         } else {
-            this.defineVariable(declaration.name as ts.Identifier, boundValue);
+            this.defineVariable(name, boundValue);
         }
         return true;
     }
@@ -4005,14 +3616,14 @@ class Compiler
             (ts.isElementAccessExpression(expression) ||
                 ts.isPropertyAccessExpression(expression)) &&
             this.unwrappedValueSymbol(expression.expression) === symbol;
-        const visit = (node: ts.Node): void => {
-            if (mutated) return;
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+            if (mutated) return "skip";
             if (
                 isAssignmentExpression(node) &&
                 directlyIndexes(node.left)
             ) {
                 mutated = true;
-                return;
+                return "skip";
             }
             if (
                 (ts.isPrefixUnaryExpression(node) ||
@@ -4020,10 +3631,9 @@ class Compiler
                 directlyIndexes(node.operand)
             ) {
                 mutated = true;
-                return;
+                return "skip";
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         ts.forEachChild(identifier.getSourceFile(), visit);
         return mutated;
     }
@@ -4278,7 +3888,7 @@ class Compiler
         if (value.kind === "data" && value.dataType?.kind === "vector") {
             const temporary =
                 this.allocateTemporaryCppName("destructure_vector");
-            this.emit(`const auto& ${temporary} = ${value.cpp};`);
+            this.emit({ kind: "declaration", type: "const auto&", name: temporary, initializer: value.cpp });
             const storedVector: Value = {
                 ...value,
                 cpp: temporary,
@@ -4327,7 +3937,7 @@ class Compiler
         }
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             const temporary = this.allocateTemporaryCppName("destructure");
-            this.emit(`auto&& ${temporary} = ${value.cpp};`);
+            this.emit({ kind: "declaration", type: "auto&&", name: temporary, initializer: value.cpp });
             for (const element of declaration.name.elements) {
                 if (element.initializer) {
                     this.fail(
@@ -4383,7 +3993,7 @@ class Compiler
         }
         if (value.kind === "physics-aggregate") {
             const temporary = this.allocateTemporaryCppName("destructure");
-            this.emit(`const auto ${temporary} = ${value.cpp};`);
+            this.emit({ kind: "declaration", type: "const auto", name: temporary, initializer: value.cpp });
             for (const element of declaration.name.elements) {
                 if (element.initializer) {
                     this.fail(
@@ -4406,7 +4016,7 @@ class Compiler
                 const cppName = this.allocateTemporaryCppName(
                     `class_field_${name.text}`,
                 );
-                this.emit(`const auto ${cppName} = ${propertyValue.cpp};`);
+                this.emit({ kind: "declaration", type: "const auto", name: cppName, initializer: propertyValue.cpp });
                 this.defineVariable(name, {
                     ...propertyValue,
                     cpp: cppName,
@@ -4421,7 +4031,7 @@ class Compiler
             );
         }
         const temporary = this.allocateTemporaryCppName("destructure");
-        this.emit(`auto ${temporary} = ${value.cpp};`);
+        this.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp });
         for (const element of declaration.name.elements) {
             const { name, property } = this.bindingProperty(element);
             const cppName = this.allocateTemporaryCppName(
@@ -4440,7 +4050,7 @@ class Compiler
                     element,
                     `Unsupported render-target texture property '${property}'.`,
                 );
-            this.emit(`auto ${cppName} = ${propertyValue.cpp};`);
+            this.emit({ kind: "declaration", type: "auto", name: cppName, initializer: propertyValue.cpp });
             this.defineVariable(name, {
                 ...propertyValue,
                 cpp: cppName,
@@ -4495,7 +4105,7 @@ class Compiler
             }
             const cppName = this.cppIdentifier(name.text);
             this.emit(
-                `[[maybe_unused]] double ${cppName} = ${propertyValue.cpp};`,
+                { kind: "declaration", type: "double", name: cppName, initializer: propertyValue.cpp, attributes: "[[maybe_unused]] " },
             );
             this.defineVariable(name, {
                 kind: "number",
@@ -4540,159 +4150,6 @@ class Compiler
         // browser-only writes. Doing the broad erasure here would hide the
         // type information before its native owner can see it.
         emitPropertyAssignment(this, expression);
-    }
-
-    private uiElementValue(expression: ts.Expression): Value | undefined {
-        const owner = this.unwrap(expression);
-        const asElement = (value: Value | undefined): Value | undefined => {
-            if (this.presentationHostCpp &&
-                value?.browserValue?.kind === "object" &&
-                value.browserValue.primaryCanvas) {
-                return Object.assign(value, this.primaryPresentationCanvas(owner));
-            }
-            const storedMetadata = value
-                ? (this.uiElementMetadataByDataStorage.get(value.cpp) ??
-                  (value.optionalStorageCpp
-                      ? this.uiElementMetadataByDataStorage.get(
-                            value.optionalStorageCpp,
-                        )
-                      : undefined))
-                : undefined;
-            const trackedTag = value
-                ? (value.uiTag ?? storedMetadata?.tag)
-                : undefined;
-            const trackedId = value
-                ? (value.uiStaticId ?? storedMetadata?.staticId)
-                : undefined;
-            const withTrackedTag = (element: Value): Value =>
-                (trackedTag !== undefined && element.uiTag === undefined) ||
-                (trackedId !== undefined && element.uiStaticId === undefined)
-                    ? {
-                          ...element,
-                          ...(trackedTag === undefined ||
-                          element.uiTag !== undefined
-                              ? {}
-                              : { uiTag: trackedTag }),
-                          ...(trackedId === undefined ||
-                          element.uiStaticId !== undefined
-                              ? {}
-                              : { uiStaticId: trackedId }),
-                      }
-                    : element;
-            if (value?.kind === "ui-element") {
-                return withTrackedTag(value);
-            }
-            if (value?.kind !== "data" || !value.dataType) {
-                return undefined;
-            }
-            const narrowed = this.dataLowerer.narrowOptional(value, owner);
-            if (narrowed.kind === "ui-element") {
-                return withTrackedTag(narrowed);
-            }
-            if (
-                value.dataType.kind !== "optional" ||
-                value.dataType.inner.kind !== "handle" ||
-                value.dataType.inner.handle !== "ui-element"
-            ) {
-                return undefined;
-            }
-            return withTrackedTag({
-                ...value,
-                kind: "ui-element",
-                cpp: `(*${value.cpp})`,
-                dataType: value.dataType.inner,
-                optionalFoundCpp:
-                    value.optionalFoundCpp ?? `${value.cpp}.has_value()`,
-                ...((value.engineCpp ?? this.defaultEngineCpp)
-                    ? {
-                          engineCpp: value.engineCpp ?? this.defaultEngineCpp!,
-                      }
-                    : {}),
-            });
-        };
-        if (ts.isIdentifier(owner)) {
-            return asElement(this.lookupOptional(owner));
-        }
-        if (
-            ts.isPropertyAccessExpression(owner) &&
-            owner.expression.kind === ts.SyntaxKind.ThisKeyword
-        ) {
-            return asElement(this.resolveThisField(owner.name.text));
-        }
-        if (ts.isPropertyAccessExpression(owner) || ts.isElementAccessExpression(owner)) {
-            // This is also an erasure probe, not permission to lower arbitrary
-            // members (such as Set.add or a captured GPU device's queue).
-            const type = this.dataLowerer.dataTypeAt(owner);
-            const inner = type?.kind === "optional" ? type.inner : type;
-            if (inner?.kind !== "handle" || inner.handle !== "ui-element") {
-                return undefined;
-            }
-        }
-        if (ts.isPropertyAccessExpression(owner)) {
-            const value =
-                this.resolveRecordMember(owner) ??
-                this.dataLowerer.compileDataPath(owner, "read");
-            return asElement(value);
-        }
-        if (ts.isElementAccessExpression(owner)) {
-            return asElement(this.dataLowerer.compileDataPath(owner, "read"));
-        }
-        if (ts.isCallExpression(owner)) {
-            const callee = this.unwrap(owner.expression);
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "getContext"
-            ) {
-                const canvas = this.uiElementValue(callee.expression);
-                if (canvas?.uiCanvas) {
-                    return { ...canvas, uiCanvasContext: true };
-                }
-            }
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "querySelector"
-            ) {
-                return asElement(this.compilePlatformCall(owner));
-            }
-        }
-        return undefined;
-    }
-
-    private uiCreatedElementTag(expression: ts.Expression): string | undefined {
-        const resolvedElement = this.uiElementValue(expression);
-        const direct = resolvedElement?.uiTag;
-        if (direct) return direct;
-        const owner = this.unwrap(expression);
-        if (!ts.isIdentifier(owner)) return undefined;
-        const declaration = this.symbols.valueSymbol(owner)?.valueDeclaration;
-        if (
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !declaration.initializer
-        ) {
-            return undefined;
-        }
-        return this.uiCreationTag(declaration.initializer);
-    }
-
-    private uiCreationTag(expression: ts.Expression): string | undefined {
-        const creation = this.uiCreationCall(expression);
-        const tag = creation
-            ? this.tryUiStaticString(argumentAt(creation, 0))
-            : undefined;
-        return tag?.toLowerCase();
-    }
-
-    private uiCreationCall(
-        expression: ts.Expression,
-    ): ts.CallExpression | undefined {
-        const initializer = this.unwrap(expression);
-        return ts.isCallExpression(initializer) &&
-            ts.isPropertyAccessExpression(initializer.expression) &&
-            initializer.expression.name.text === "createElement" &&
-            initializer.arguments.length === 1
-            ? initializer
-            : undefined;
     }
 
     private recordCollectionAssignment(
@@ -4759,7 +4216,7 @@ class Compiler
         }
         const owner = previous.staticElementsOwner ?? previous;
         if (owner === previous || owner === target) this.invalidateStaticElements(previous, true);
-        for (const value of new Set([target, previous])) {
+        for (const value of new EmissionSet([target, previous])) {
             delete value.staticElements;
             delete value.staticElementsOwner;
             delete value.runtimeElementTemplate;
@@ -4790,9 +4247,9 @@ class Compiler
             state = {
                 kind: kind === "vector" ? "array" : "keyed",
                 count,
-                ...(kind !== "vector" && count === 0 ? { keys: new Set<string | number | boolean>() } : {}),
+                ...(kind !== "vector" && count === 0 ? { keys: new EmissionSet<string | number | boolean>() } : {}),
                 createdIn: [...this.parameterizedResourceIterations],
-                varyingIn: new Set(),
+                varyingIn: new EmissionSet(),
                 ...(!definite || !binding || !fresh ? { untrackedAliases: true as const } : {}),
             };
         }
@@ -4820,17 +4277,17 @@ class Compiler
             return false;
         }
         const tag =
-            this.uiCreationTag(source) ?? this.uiCreatedElementTag(source);
+            this.ui.uiCreationTag(source) ?? this.ui.uiCreatedElementTag(source);
         if (!tag) return false;
-        const creation = this.uiCreationCall(source);
+        const creation = this.ui.uiCreationCall(source);
         const staticId = creation
-            ? this.uiStaticIdsByCreation.get(creation)
+            ? this.ui.uiStaticIdsByCreation.get(creation)
             : undefined;
         const keys = [target.cpp, target.optionalStorageCpp].filter(
             (key): key is string => key !== undefined,
         );
         for (const key of keys) {
-            const existing = this.uiElementMetadataByDataStorage.get(key);
+            const existing = this.ui.uiElementMetadataByDataStorage.get(key);
             if (existing !== undefined && existing.tag !== tag) {
                 this.fail(
                     source,
@@ -4838,7 +4295,7 @@ class Compiler
                 );
             }
             const retainedStaticId = staticId ?? existing?.staticId;
-            this.uiElementMetadataByDataStorage.set(key, {
+            this.ui.uiElementMetadataByDataStorage.set(key, {
                 tag,
                 ...(retainedStaticId === undefined
                     ? {}
@@ -4854,1213 +4311,7 @@ class Compiler
 
     /** Whether an expression is already known to produce retained UI state. */
     public isNativeUiValueExpression(expression: ts.Expression): boolean {
-        if (this.primaryCanvasDataset(expression)) return true;
-        const value = this.unwrap(expression);
-        if (
-            ts.isPropertyAccessExpression(value) &&
-            value.name.text === "activeElement" &&
-            ts.isIdentifier(value.expression) &&
-            value.expression.text === "document" &&
-            this.isDefaultLibraryIdentifier(value.expression)
-        ) return true;
-        if (ts.isElementAccessExpression(value)) {
-            const dataType = this.dataLowerer.dataTypeAt(value);
-            return (
-                dataType?.kind === "handle" && dataType.handle === "ui-element"
-            );
-        }
-        if (ts.isIdentifier(value)) {
-            return this.lookupOptional(value)?.kind === "ui-element";
-        }
-        if (ts.isPropertyAccessExpression(value)) {
-            return this.uiElementValue(value)?.kind === "ui-element";
-        }
-        if (!ts.isCallExpression(value)) return false;
-        if (this.uiElementValue(value)?.kind === "ui-element") {
-            return true;
-        }
-        const callee = this.unwrap(value.expression);
-        const createsElement =
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "createElement" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "document" &&
-            this.isDefaultLibraryIdentifier(callee.expression) &&
-            value.arguments[0] !== undefined &&
-            (ts.isStringLiteral(value.arguments[0]) ||
-                ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
-        return (
-            createsElement ||
-            this.isNativeHostUiLookup(value) ||
-            this.isNativeUiHelperCall(value)
-        );
-    }
-
-    private uiStringCpp(expression: ts.Expression, purpose: string): string {
-        const staticValue = this.tryUiStaticString(expression);
-        if (staticValue !== undefined) {
-            return this.cppString(staticValue);
-        }
-        const value = this.compileValue(expression);
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
-            return value.cpp;
-        }
-        this.fail(
-            expression,
-            `${purpose} requires a string, received ${value.kind}.`,
-        );
-    }
-
-    private tryUiStaticString(expression: ts.Expression): string | undefined {
-        try {
-            return this.evaluator.compileStringLiteral(expression);
-        } catch (error) {
-            if (error instanceof CompileError) return undefined;
-            throw error;
-        }
-    }
-
-    private collectUiStringParts(
-        expression: ts.Expression,
-    ): Array<string | ts.Expression> | undefined {
-        const parts: Array<string | ts.Expression> = [];
-        const collect = (node: ts.Expression): boolean => {
-            const value = this.tryUiStaticString(node);
-            if (value !== undefined) {
-                parts.push(value);
-                return true;
-            }
-            const current = this.unwrap(node);
-            if (ts.isTemplateExpression(current)) {
-                parts.push(current.head.text);
-                for (const span of current.templateSpans) {
-                    parts.push(span.expression, span.literal.text);
-                }
-                return true;
-            }
-            return (
-                ts.isBinaryExpression(current) &&
-                current.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-                collect(current.left) &&
-                collect(current.right)
-            );
-        };
-        return collect(expression) ? parts : undefined;
-    }
-
-    private uiTemplateSubstitutionCpp(
-        expression: ts.Expression,
-        purpose: string,
-        allowStringFallback = false,
-    ): string {
-        const logical = this.unwrap(expression);
-        if (
-            allowStringFallback &&
-            ts.isBinaryExpression(logical) &&
-            logical.operatorToken.kind === ts.SyntaxKind.BarBarToken
-        ) {
-            const left = this.compileValue(logical.left);
-            const right = this.compileValue(logical.right);
-            const isString = (value: Value): boolean =>
-                value.kind === "string" ||
-                (value.kind === "data" && value.dataType?.kind === "string");
-            if (isString(left) && isString(right)) {
-                return (
-                    `(!std::string(${left.cpp}).empty()` +
-                    ` ? std::string(${left.cpp})` +
-                    ` : std::string(${right.cpp}))`
-                );
-            }
-        }
-        const value = this.compileValue(expression);
-        if (value.staticString !== undefined) {
-            return this.cppString(value.staticString);
-        }
-        if (value.staticNumber !== undefined) {
-            return this.cppString(String(value.staticNumber));
-        }
-        if (value.kind === "number") {
-            return `bbl::js::number_to_string(${value.cpp})`;
-        }
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
-            return value.cpp;
-        }
-        this.fail(
-            expression,
-            `${purpose} template substitutions must be strings or numbers.`,
-        );
-    }
-
-    private uiBooleanCpp(expression: ts.Expression, purpose: string): string {
-        const value = this.compileValue(expression);
-        if (
-            value.kind === "boolean" ||
-            (value.kind === "data" && value.dataType?.kind === "boolean")
-        ) {
-            return value.cpp;
-        }
-        this.fail(
-            expression,
-            `${purpose} requires a boolean, received ${value.kind}.`,
-        );
-    }
-
-    private createUiStaticElement(tag: string): number {
-        const id = this.uiElementIds++;
-        this.uiStaticElements.set(id, {
-            tag,
-            classAlternatives: [new Set()],
-            classMayMutateDynamically: false,
-            ids: new Set(),
-            children: new Set(),
-            markupChildren: [],
-            styles: [""],
-            styleShapeKnown: true,
-            styleMayMutateDynamically: false,
-            mutableClasses: new Set(),
-            classShapeKnown: true,
-            childCardinalityKnown: true,
-            childShapeKnown: true,
-        });
-        return id;
-    }
-
-    private uiStaticElement(value: Value): UiStaticElement | undefined {
-        return value.uiStaticId === undefined
-            ? undefined
-            : this.uiStaticElements.get(value.uiStaticId);
-    }
-
-    private uiStringCandidates(
-        expression: ts.Expression,
-        budget = 32,
-    ): string[] | undefined {
-        const exact = this.tryUiStaticString(expression);
-        if (exact !== undefined) return [exact];
-        const value = this.unwrap(expression);
-        if (ts.isConditionalExpression(value)) {
-            const whenTrue = this.uiStringCandidates(value.whenTrue, budget);
-            const whenFalse = this.uiStringCandidates(value.whenFalse, budget);
-            if (!whenTrue || !whenFalse) return undefined;
-            return [...new Set([...whenTrue, ...whenFalse])].slice(0, budget);
-        }
-        if (
-            ts.isBinaryExpression(value) &&
-            value.operatorToken.kind === ts.SyntaxKind.PlusToken
-        ) {
-            const left = this.uiStringCandidates(value.left, budget);
-            const right = this.uiStringCandidates(value.right, budget);
-            if (!left || !right || left.length * right.length > budget) {
-                return undefined;
-            }
-            return left.flatMap((prefix) =>
-                right.map((suffix) => prefix + suffix),
-            );
-        }
-        return undefined;
-    }
-
-    private static uiClassSetKey(classes: ReadonlySet<string>): string {
-        return [...classes].sort().join("\u0000");
-    }
-
-    private setUiClassAlternatives(
-        element: UiStaticElement,
-        alternatives: readonly ReadonlySet<string>[],
-    ): void {
-        const unique = new Map<string, Set<string>>();
-        for (const alternative of alternatives) {
-            const stored = new Set(alternative);
-            unique.set(Compiler.uiClassSetKey(stored), stored);
-        }
-        if (unique.size > 32) {
-            element.classShapeKnown = false;
-            return;
-        }
-        element.classAlternatives = [...unique.values()];
-    }
-
-    private recordUiStaticAttribute(
-        value: Value,
-        name: string,
-        expression: ts.Expression,
-    ): void {
-        const element = this.uiStaticElement(value);
-        const candidates = this.uiStringCandidates(expression);
-        if (!element || !candidates) {
-            this.uiUnknownAttributeMutations.push({
-                attribute: name as "class" | "id",
-                ...(value.uiStaticId === undefined
-                    ? {}
-                    : { targetId: value.uiStaticId }),
-                site: expression,
-            });
-        }
-        if (!element) return;
-        if (name === "class") {
-            if (!candidates) {
-                element.classShapeKnown = false;
-                return;
-            }
-            const alternatives: Set<string>[] = [];
-            for (const candidate of candidates) {
-                const classes = new Set<string>();
-                for (const token of candidate.split(/\s+/).filter(Boolean)) {
-                    if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(token)) {
-                        classes.add(token);
-                    } else {
-                        element.classShapeKnown = false;
-                    }
-                }
-                alternatives.push(classes);
-            }
-            const dynamic = this.uiStaticMutationIsDynamic();
-            if (dynamic) element.classMayMutateDynamically = true;
-            this.setUiClassAlternatives(
-                element,
-                dynamic || element.classMayMutateDynamically
-                    ? [...element.classAlternatives, ...alternatives]
-                    : alternatives,
-            );
-        } else if (name === "id") {
-            if (!candidates) return;
-            for (const candidate of candidates) {
-                if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(candidate)) {
-                    element.ids.add(candidate);
-                }
-            }
-        }
-    }
-
-    private recordUiStaticClass(
-        value: Value,
-        name: string,
-        method: "add" | "remove" | "toggle",
-        enabled: string,
-    ): void {
-        const element = this.uiStaticElement(value);
-        if (!element) return;
-        if (this.uiStaticMutationIsDynamic()) {
-            element.classMayMutateDynamically = true;
-        }
-        element.mutableClasses.add(name);
-        const alternatives: Set<string>[] = [...element.classAlternatives];
-        for (const current of element.classAlternatives) {
-            const mutate = (add: boolean): void => {
-                const next = new Set(current);
-                if (add) next.add(name);
-                else next.delete(name);
-                alternatives.push(next);
-            };
-            if (
-                method === "add" ||
-                (method === "toggle" && enabled === "true")
-            ) {
-                mutate(true);
-            } else if (
-                method === "remove" ||
-                (method === "toggle" && enabled === "false")
-            ) {
-                mutate(false);
-            } else {
-                mutate(true);
-                mutate(false);
-            }
-        }
-        this.setUiClassAlternatives(element, alternatives);
-    }
-
-    private recordUiStaticStyles(
-        element: UiStaticElement,
-        styles: readonly string[],
-    ): void {
-        const wasKnown = element.styleShapeKnown;
-        const currentMutationIsDynamic = this.uiStaticMutationIsDynamic();
-        if (currentMutationIsDynamic) {
-            element.styleMayMutateDynamically = true;
-        }
-        const mayReplaceLater =
-            currentMutationIsDynamic || element.styleMayMutateDynamically;
-        element.styles = mayReplaceLater
-            ? [...new Set([...element.styles, ...styles])]
-            : [...new Set(styles)];
-        element.styleShapeKnown = mayReplaceLater ? wasKnown : true;
-    }
-
-    private recordUiStaticStyle(value: Value, style: string): void {
-        const element = this.uiStaticElement(value);
-        if (!element) return;
-        this.recordUiStaticStyles(element, [style]);
-    }
-
-    private recordUiUnknownStaticStyle(value: Value): void {
-        const element = this.uiStaticElement(value);
-        if (!element) return;
-        if (this.uiStaticMutationIsDynamic()) {
-            element.styleMayMutateDynamically = true;
-        }
-        element.styleShapeKnown = false;
-    }
-
-    private static uiStyleWithProperty(
-        style: string,
-        name: string,
-        value: string,
-    ): string {
-        const declarations: string[] = [];
-        Compiler.forEachUiStyleDeclaration(style, (declaration) => {
-            const colon = declaration.indexOf(":");
-            if (
-                colon < 0 ||
-                declaration.slice(0, colon).trim().toLowerCase() !== name
-            ) {
-                if (declaration.trim()) declarations.push(declaration);
-            }
-        });
-        declarations.push(`${name}:${value}`);
-        return declarations.join(";");
-    }
-
-    private recordUiStaticStyleProperty(
-        value: Value,
-        name: string,
-        expression: ts.Expression,
-    ): void {
-        const element = this.uiStaticElement(value);
-        if (!element) return;
-        const staticValue = this.tryUiStaticString(expression);
-        const updated = element.styles.map((style) =>
-            Compiler.uiStyleWithProperty(
-                style,
-                name,
-                staticValue ?? "__bbl_dynamic_style_value__",
-            ),
-        );
-        const currentMutationIsDynamic = this.uiStaticMutationIsDynamic();
-        if (currentMutationIsDynamic) {
-            element.styleMayMutateDynamically = true;
-        }
-        element.styles =
-            currentMutationIsDynamic || element.styleMayMutateDynamically
-                ? [...new Set([...element.styles, ...updated])]
-                : [...new Set(updated)];
-    }
-
-    private recordUiStaticAppend(parent: Value, child: Value): void {
-        const parentElement = this.uiStaticElement(parent);
-        if (!parentElement) return;
-        if (child.uiStaticId === undefined) {
-            parentElement.childCardinalityKnown = false;
-            parentElement.childShapeKnown = false;
-            return;
-        }
-        if (this.uiStaticMutationIsDynamic()) {
-            parentElement.children.add(child.uiStaticId);
-            parentElement.childCardinalityKnown = false;
-            for (const element of this.uiStaticElements.values()) {
-                if (element.children.has(child.uiStaticId)) {
-                    element.childCardinalityKnown = false;
-                }
-            }
-            return;
-        }
-        for (const element of this.uiStaticElements.values()) {
-            element.children.delete(child.uiStaticId);
-        }
-        parentElement.children.add(child.uiStaticId);
-    }
-
-    private recordUiStaticReplaceChildren(parent: Value): void {
-        const element = this.uiStaticElement(parent);
-        if (!element) return;
-        if (this.uiStaticMutationIsDynamic()) {
-            element.childCardinalityKnown = false;
-            return;
-        }
-        element.children.clear();
-        element.markupChildren = [];
-    }
-
-    private uiStaticMutationIsDynamic(): boolean {
-        return this.runtimeControlFlowDepth > 0 || this.frameCallbackDepth > 0;
-    }
-
-    private recordUiStaticRootAppend(child: Value): void {
-        const id = child.uiStaticId;
-        const element = this.uiStaticElement(child);
-        if (id === undefined || !element || this.uiStaticMutationIsDynamic()) {
-            if (!element || element.tag === "style") {
-                this.uiStaticStyleCascadeKnown = false;
-            }
-            return;
-        }
-        const previous = this.uiStaticRootOrder.indexOf(id);
-        if (previous >= 0) this.uiStaticRootOrder.splice(previous, 1);
-        this.uiStaticRootOrder.push(id);
-    }
-
-    private recordUiStaticRemoval(element: Value): void {
-        const id = element.uiStaticId;
-        const staticElement = this.uiStaticElement(element);
-        if (id === undefined || !staticElement) {
-            if (!staticElement || staticElement.tag === "style") {
-                this.uiStaticStyleCascadeKnown = false;
-            }
-            return;
-        }
-        const dynamic = this.uiStaticMutationIsDynamic();
-        for (const parent of this.uiStaticElements.values()) {
-            if (!parent.children.has(id)) continue;
-            if (dynamic) parent.childCardinalityKnown = false;
-            else parent.children.delete(id);
-        }
-        if (dynamic) {
-            if (staticElement.tag === "style") {
-                this.uiStaticStyleCascadeKnown = false;
-            }
-            return;
-        }
-        const rootIndex = this.uiStaticRootOrder.indexOf(id);
-        if (rootIndex >= 0) this.uiStaticRootOrder.splice(rootIndex, 1);
-    }
-
-    private recordUiStaticMarkup(
-        ownerId: number | undefined,
-        children: UiStaticMarkupNode[],
-    ): void {
-        if (ownerId === undefined) return;
-        const owner = this.uiStaticElements.get(ownerId);
-        if (owner) owner.markupChildren.push(...children);
-    }
-
-    /**
-     * The reviewed retained-UI style surface (AP-3). Every property here was
-     * reached by the pinned applications, the audited host companions, or the
-     * registered corpus scenes, and lowers with browser-equivalent meaning
-     * (directly or through the compatibility rewrites below). A property in
-     * none of the four sets refuses at generation naming itself, so an
-     * unreviewed declaration can never silently drop into the projection.
-     */
-    private static readonly PROJECTED_UI_STYLE_PROPERTIES = new Set<string>([
-        "align-items",
-        "animation",
-        "background",
-        "background-color",
-        "border",
-        "border-color",
-        "border-radius",
-        "box-sizing",
-        "bottom",
-        "color",
-        "cursor",
-        "display",
-        "flex-direction",
-        "font",
-        "font-family",
-        "font-size",
-        "font-weight",
-        "gap",
-        "height",
-        "inset",
-        "justify-content",
-        "left",
-        "letter-spacing",
-        "line-height",
-        "margin",
-        "margin-bottom",
-        "margin-top",
-        "max-height",
-        "max-width",
-        "min-height",
-        "min-width",
-        "opacity",
-        "overflow",
-        "padding",
-        "pointer-events",
-        "position",
-        "right",
-        "resize",
-        "text-align",
-        "text-shadow",
-        "top",
-        "transform",
-        "transition",
-        "white-space",
-        "width",
-        "z-index",
-    ]);
-
-    /**
-     * Reached hints with no rendering semantics in the retained projection:
-     * `will-change`/`touch-action`/`user-select` describe browser scrolling,
-     * selection, and compositor behaviour the native input path does not
-     * have, and `image-rendering` is superseded by the sampling intent the
-     * retained canvas commands already carry per blit.
-     */
-    private static readonly INERT_UI_STYLE_PROPERTIES = new Set<string>([
-        "-webkit-user-select",
-        "image-rendering",
-        "touch-action",
-        "user-select",
-        "will-change",
-    ]);
-
-    /**
-     * Reached properties the projection accepts WITHOUT a native rendering:
-     * box shadows need render layers the backend-neutral recorder does not
-     * expose (`pal_ui_rml.cpp` filters the dynamic writes for the same
-     * reason), backdrop filters would sample the composited scene, and RmlUi
-     * has no numeral variants. Each acceptance is recorded per scene in the
-     * `substituted-ui-runtime` fidelity adaptation.
-     */
-    private static readonly DEGRADED_UI_STYLE_PROPERTIES = new Set<string>([
-        "-webkit-backdrop-filter",
-        "backdrop-filter",
-        "box-shadow",
-        "font-variant-numeric",
-    ]);
-
-    private static insetOutlineBorder(value: string): string | undefined {
-        const match = value.match(
-            /^inset\s+0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+([0-9]+(?:\.[0-9]*)?px)\s+(.+)$/i,
-        );
-        return match ? `${match[1]} ${match[2]!.trim()}` : undefined;
-    }
-
-    private static supportedBackdropFilter(value: string): boolean {
-        return /^(?:none|blur\(\s*(?:\d+(?:\.\d+)?|\.\d+)px\s*\))$/i.test(
-            value.trim(),
-        );
-    }
-
-    /**
-     * Properties consumed by the gradient-text projection (the reached
-     * `background-clip:text` shimmer combination). Outside that combination
-     * nothing lowers them, so they refuse rather than silently dropping.
-     */
-    private static readonly GRADIENT_TEXT_UI_STYLE_PROPERTIES = new Set<string>(
-        [
-            "-webkit-background-clip",
-            "-webkit-text-stroke",
-            "background-clip",
-            "background-size",
-            "filter",
-        ],
-    );
-
-    /** The one gradient-text `filter` form the projection consumes. */
-    private static readonly GRADIENT_TEXT_SHADOW_PATTERN =
-        /\bfilter\s*:\s*drop-shadow\(\s*([^\s]+)\s+([^\s]+)\s+(?:[^\s]+\s+)?(rgba?\([^)]*\)|#[0-9a-f]{3,8})\s*\)/i;
-
-    /** The one gradient-text stroke form the projection consumes. */
-    private static readonly GRADIENT_TEXT_STROKE_PATTERN =
-        /-webkit-text-stroke\s*:\s*([^\s;]+)\s+([^;]+)/i;
-
-    /** The reached CSS-grid combination the block projection lowers. */
-    private static readonly GRID_TEMPLATE_COLUMNS_PATTERN =
-        /\bgrid-template-columns\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i;
-    private static readonly GRID_TEMPLATE_ROWS_PATTERN =
-        /\bgrid-template-rows\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i;
-    private static readonly GRID_GAP_PATTERN =
-        /(?:^|;)\s*gap\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*(?:;|$)/i;
-    private static readonly UI_GRID_CHILD_GEOMETRY_PROPERTIES = [
-        "width",
-        "height",
-        "min-width",
-        "max-width",
-        "min-height",
-        "max-height",
-        "margin",
-        "margin-left",
-        "margin-right",
-        "margin-top",
-        "margin-bottom",
-        "padding",
-        "padding-left",
-        "padding-right",
-        "padding-top",
-        "padding-bottom",
-        "border",
-        "border-width",
-        "border-left-width",
-        "border-right-width",
-        "border-top-width",
-        "border-bottom-width",
-        "box-sizing",
-    ] as const;
-    private static readonly UI_GRID_CHILD_SPACING_PROPERTIES =
-        Compiler.UI_GRID_CHILD_GEOMETRY_PROPERTIES.filter(
-            (property) =>
-                property === "margin" ||
-                property.startsWith("margin-") ||
-                property === "padding" ||
-                property.startsWith("padding-"),
-        );
-    private static readonly UI_GRID_CHILD_BORDER_WIDTH_PROPERTIES =
-        Compiler.UI_GRID_CHILD_GEOMETRY_PROPERTIES.filter(
-            (property) =>
-                property === "border-width" ||
-                /^border-(?:left|right|top|bottom)-width$/.test(property),
-        );
-    private static readonly UI_IMPLEMENTATION_TAGS = new Set([
-        "bbl-grid-children",
-        "bbl-grid-track",
-    ]);
-
-    /** The gradient-text projection trigger both the audit and the
-     *  projection test on one declaration list. */
-    private static readonly GRADIENT_TEXT_CLIP_PATTERN =
-        /(?:-webkit-)?background-clip\s*:\s*text/i;
-
-    /** The gradient-text background half of the same combination; group 1
-     *  is the gradient's argument list for the projection's colour reads. */
-    private static readonly GRADIENT_TEXT_BACKGROUND_PATTERN =
-        /\bbackground\s*:\s*linear-gradient\(([^;]*)\)/i;
-
-    /** The `display:grid` half of the grid-projection pairing. */
-    private static readonly DISPLAY_GRID_PATTERN = /\bdisplay\s*:\s*grid\b/i;
-
-    private static uiLastStyleProperty(
-        declarations: string,
-        property: string,
-    ): string | undefined {
-        let result: string | undefined;
-        Compiler.forEachUiStyleDeclaration(declarations, (declaration) => {
-            const colon = declaration.indexOf(":");
-            if (
-                colon >= 0 &&
-                declaration.slice(0, colon).trim().toLowerCase() === property
-            ) {
-                result = declaration.slice(colon + 1).trim();
-            }
-        });
-        return result;
-    }
-
-    /** The grid projection's pairing rule, stated once for the audit and
-     *  the projection: `display:grid` lowers only beside the reached
-     *  `grid-template-columns:repeat(N, px)` form in the same list. */
-    private static projectsUiGrid(declarations: string): boolean {
-        return (
-            Compiler.DISPLAY_GRID_PATTERN.test(declarations) &&
-            Compiler.GRID_TEMPLATE_COLUMNS_PATTERN.test(declarations)
-        );
-    }
-
-    private static fractionalUiGridTracks(declarations: string): string[] | undefined {
-        if (Compiler.uiLastStyleProperty(declarations, "display") !== "grid") return undefined;
-        const value = Compiler.uiLastStyleProperty(declarations, "grid-template-columns");
-        const tracks = value?.trim().split(/\s+/);
-        return tracks && tracks.length > 1 && tracks.some(track => track.endsWith("fr")) &&
-            tracks.every(track => /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|fr)$/.test(track) && parseFloat(track) > 0)
-            ? tracks : undefined;
-    }
-
-    private static normalizeUiGridJustification(
-        value: string | undefined,
-    ): "start" | "center" | "end" | undefined {
-        const normalized = value?.trim().toLowerCase();
-        if (
-            normalized === undefined ||
-            normalized === "normal" ||
-            normalized === "start" ||
-            normalized === "flex-start" ||
-            normalized === "left"
-        ) {
-            return "start";
-        }
-        if (normalized === "center") return "center";
-        if (
-            normalized === "end" ||
-            normalized === "flex-end" ||
-            normalized === "right"
-        ) {
-            return "end";
-        }
-        return undefined;
-    }
-
-    private static uiGridProjection(
-        declarations: string,
-    ): UiGridProjection | undefined {
-        if (!Compiler.projectsUiGrid(declarations)) return undefined;
-        const columnsValue = Compiler.uiLastStyleProperty(
-            declarations,
-            "grid-template-columns",
-        );
-        const columns = columnsValue
-            ? `grid-template-columns:${columnsValue};`.match(
-                  Compiler.GRID_TEMPLATE_COLUMNS_PATTERN,
-              )
-            : undefined;
-        if (!columns) return undefined;
-        const count = Number(columns[1]);
-        const cellWidth = Number(columns[2]);
-        const gapValue = Compiler.uiLastStyleProperty(declarations, "gap");
-        const gapMatch = gapValue
-            ? `gap:${gapValue};`.match(Compiler.GRID_GAP_PATTERN)
-            : undefined;
-        if (gapValue !== undefined && !gapMatch) return undefined;
-        const gap = Number(gapMatch?.[1] ?? "0");
-        const rowsValue = Compiler.uiLastStyleProperty(
-            declarations,
-            "grid-template-rows",
-        );
-        const rows = rowsValue
-            ? `grid-template-rows:${rowsValue};`.match(
-                  Compiler.GRID_TEMPLATE_ROWS_PATTERN,
-              )
-            : undefined;
-        if (rowsValue !== undefined && !rows) return undefined;
-        const rowCount = rows ? Number(rows[1]) : undefined;
-        const rowHeight = rows ? Number(rows[2]) : undefined;
-        const authoredJustification = Compiler.uiLastStyleProperty(
-            declarations,
-            "justify-content",
-        )
-            ?.trim()
-            .toLowerCase();
-        const justifyContent = Compiler.normalizeUiGridJustification(
-            authoredJustification,
-        );
-        if (
-            !Number.isInteger(count) ||
-            count < 1 ||
-            !Number.isFinite(cellWidth) ||
-            cellWidth <= 0 ||
-            !Number.isFinite(gap) ||
-            gap < 0 ||
-            (rowCount !== undefined &&
-                (!Number.isInteger(rowCount) || rowCount < 1)) ||
-            (rowHeight !== undefined &&
-                (!Number.isFinite(rowHeight) || rowHeight <= 0)) ||
-            justifyContent === undefined
-        ) {
-            return undefined;
-        }
-        return {
-            columns: count,
-            cellWidth,
-            gap,
-            width: count * cellWidth + Math.max(0, count - 1) * gap,
-            ...(authoredJustification === undefined
-                ? {}
-                : { authoredJustifyContent: justifyContent }),
-            ...(rowCount === undefined ? {} : { rowCount }),
-            ...(rowHeight === undefined ? {} : { rowHeight }),
-        };
-    }
-
-    /**
-     * Walks one inline declaration list, calling `visit` for each
-     * declaration split at top-level semicolons only — a `;` inside
-     * parentheses (`url(...)`, a gradient argument) does not end a
-     * declaration. The one segmentation authority for the audit and the
-     * projection.
-     */
-    private static forEachUiStyleDeclaration(
-        value: string,
-        visit: (declaration: string) => void,
-    ): void {
-        let depth = 0;
-        let start = 0;
-        for (let index = 0; index <= value.length; index++) {
-            const character = value[index];
-            if (character === "(") depth++;
-            if (character === ")") depth--;
-            if (index !== value.length && (character !== ";" || depth > 0)) {
-                continue;
-            }
-            visit(value.slice(start, index));
-            start = index + 1;
-        }
-    }
-
-    /** Placeholder for a `;` inside parentheses while the projection's
-     *  declaration-scoped rewrites run; restored on the way out. Never
-     *  appears in authored CSS. */
-    private static readonly UI_MASKED_SEMICOLON = "\u0001";
-
-    /**
-     * The projection's rewrites are declaration-scoped regexes whose
-     * `[^;]*` classes must stop exactly where the audited splitter
-     * stops. Masking every parenthesized `;` makes both parsers segment
-     * by the same walk; on a list with none — every reached sheet — the
-     * text is rebuilt unchanged, byte for byte.
-     */
-    private static maskUiParenthesizedSemicolons(value: string): string {
-        const declarations: string[] = [];
-        Compiler.forEachUiStyleDeclaration(value, (declaration) =>
-            declarations.push(
-                declaration.replaceAll(";", Compiler.UI_MASKED_SEMICOLON),
-            ),
-        );
-        return declarations.join(";");
-    }
-
-    /**
-     * Style properties accepted with a recorded rendering degradation, for
-     * this scene's `substituted-ui-runtime` fidelity adaptation.
-     */
-    public readonly uiDegradedStyleProperties = new Set<string>();
-
-    /**
-     * Reviewed scoped selectors retained in typed form instead of widened to
-     * global rules, recorded in the `substituted-ui-runtime` adaptation.
-     */
-    public readonly uiScopedSheetSelectors = new Set<string>();
-
-    /** Fixed-grid shapes structurally projected through wrapping flex. */
-    public readonly uiGridSubstitutions = new Set<string>();
-    /** True even if a later stylesheet assignment replaces the grid rules. */
-    private uiSawGridDeclaration = false;
-
-    /** Every compiler-validated author rule, retained for static proofs. */
-    private readonly uiStyleRules: LoweredUiStyleRule[] = [];
-
-    /** Construction-site topology used only to prove bounded DOM projections. */
-    private readonly uiStaticElements = new Map<number, UiStaticElement>();
-    /** Static element metadata assigned into nullable UI-handle storage. */
-    private readonly uiElementMetadataByDataStorage = new Map<
-        string,
-        { tag: string; staticId?: number }
-    >();
-    /** Most recently lowered identity for a createElement expression. */
-    private readonly uiStaticIdsByCreation = new WeakMap<
-        ts.CallExpression,
-        number
-    >();
-    private readonly uiPendingClassQueries: UiPendingClassQuery[] = [];
-    private readonly uiUnknownClassMutations: UiUnknownClassMutation[] = [];
-    private readonly uiUnknownAttributeMutations: UiUnknownAttributeMutation[] =
-        [];
-    /** Final direct-document order for statically sequenced root mutations. */
-    private readonly uiStaticRootOrder: number[] = [];
-    private uiValidation: UiValidationState | undefined;
-    /**
-     * False once a stylesheet attachment or contents mutation can execute on
-     * a path generation cannot order. A fixed-grid proof may not guess which
-     * cascade the browser will expose.
-     */
-    private uiStaticStyleCascadeKnown = true;
-    private uiElementIds = 0;
-
-    /**
-     * Logical sizes that reached `scale()` calls map exactly onto a retained
-     * canvas backing store (`scale(c.width / X, c.height / Y)`), which is
-     * what proves a later statically-sized `clearRect(0, 0, X, Y)` covers
-     * the full surface.
-     */
-    private readonly uiCanvasFullClearSizes = new Set<string>();
-
-    /**
-     * Statically-assigned retained-canvas backing sizes, keyed by the
-     * canvas's generation identity (`uiCanvasId` — the element and its
-     * 2D-context views spell different C++ locals but share the id): the
-     * other statically-provable full-surface `clearRect` shape. `pairs`
-     * holds every (width, height) state the static assignments provably
-     * put THAT canvas through, so a width recorded from one canvas never
-     * combines with a height from another into a surface no canvas ever
-     * had.
-     */
-    private readonly uiCanvasStaticSizes = new Map<
-        number,
-        { width?: number; height?: number; pairs: Set<string> }
-    >();
-
-    /** Mints `uiCanvasId` for each created retained canvas element. */
-    private uiCanvasIds = 0;
-
-    private uiStyleRefusal(
-        site: ts.Node | undefined,
-        property: string,
-        reason: string,
-    ): never {
-        const message =
-            `Retained UI style property '${property}' is not lowered: ` +
-            `${reason}. The projected surface is ` +
-            `${[...Compiler.PROJECTED_UI_STYLE_PROPERTIES].join(", ")}; ` +
-            "accepted with a recorded degradation: " +
-            `${[...Compiler.DEGRADED_UI_STYLE_PROPERTIES].join(", ")}; ` +
-            "accepted inert hints: " +
-            `${[...Compiler.INERT_UI_STYLE_PROPERTIES].join(", ")}.`;
-        if (site) this.fail(site, message);
-        this.failAtFile(message);
-    }
-
-    /**
-     * Enforce the reviewed style surface over one static CSS declaration
-     * list (AP-3): a projected property lowers, a reached degraded property
-     * is accepted and recorded for the scene's `substituted-ui-runtime`
-     * adaptation, an inert hint passes through, and anything else refuses at
-     * generation naming the property. Values may be runtime substitutions;
-     * only the static property names are policed here.
-     */
-    private auditUiStyleDeclarations(
-        value: string,
-        site: ts.Node | undefined,
-    ): void {
-        const clipsGradientToText =
-            Compiler.GRADIENT_TEXT_CLIP_PATTERN.test(value);
-        const hasGradientBackground =
-            Compiler.GRADIENT_TEXT_BACKGROUND_PATTERN.test(value);
-        const projectsGrid = Compiler.projectsUiGrid(value);
-        const fractionalTracks = Compiler.fractionalUiGridTracks(value);
-        const gridProjection = Compiler.uiGridProjection(value);
-        const finalDisplay = Compiler.uiLastStyleProperty(value, "display")
-            ?.trim()
-            .toLowerCase();
-        const gridJustification = Compiler.uiLastStyleProperty(
-            value,
-            "justify-content",
-        )
-            ?.trim()
-            .toLowerCase();
-        if (projectsGrid && finalDisplay !== "grid") {
-            this.uiStyleRefusal(
-                site,
-                "display",
-                "conflicting display declarations in one fixed-grid rule are ambiguous; put the reset in a separate cascade rule",
-            );
-        }
-        if (
-            projectsGrid &&
-            gridJustification !== undefined &&
-            !/^(?:normal|start|flex-start|left|center|end|flex-end|right)$/.test(
-                gridJustification,
-            )
-        ) {
-            this.uiStyleRefusal(
-                site,
-                "justify-content",
-                `the fixed-grid substitution supports start, center, and end track alignment, not '${gridJustification}'`,
-            );
-        }
-        if (projectsGrid && !gridProjection) {
-            this.uiStyleRefusal(
-                site,
-                "grid-template-columns",
-                "the fixed-grid substitution requires repeat(a positive integer, a positive px width) and a non-negative px gap",
-            );
-        }
-        if (
-            projectsGrid &&
-            Compiler.uiLastStyleProperty(value, "gap") !== undefined &&
-            !/^([0-9]+(?:\.[0-9]*)?)px$/i.test(
-                Compiler.uiLastStyleProperty(value, "gap")!,
-            )
-        ) {
-            this.uiStyleRefusal(
-                site,
-                "gap",
-                "the fixed-grid substitution requires a static non-negative px gap",
-            );
-        }
-        if (
-            projectsGrid &&
-            Compiler.uiLastStyleProperty(value, "grid-template-rows") !==
-                undefined &&
-            !/^repeat\(\s*\d+\s*,\s*[0-9]+(?:\.[0-9]*)?px\s*\)$/i.test(
-                Compiler.uiLastStyleProperty(value, "grid-template-rows")!,
-            )
-        ) {
-            this.uiStyleRefusal(
-                site,
-                "grid-template-rows",
-                "the optional fixed row template must be repeat(integer, px)",
-            );
-        }
-        Compiler.forEachUiStyleDeclaration(value, (declaration) => {
-            const colon = declaration.indexOf(":");
-            if (colon < 0) {
-                // Empty segments between semicolons; a declaration is only
-                // a declaration once it names a property.
-                return;
-            }
-            const property = declaration.slice(0, colon).trim().toLowerCase();
-            const literalValue = declaration
-                .slice(colon + 1)
-                .trim()
-                .toLowerCase();
-            if (property.length === 0) return;
-            if (property === "box-sizing" && !/^(?:content-box|border-box)$/.test(literalValue)) {
-                this.uiStyleRefusal(site, property, "only content-box and border-box are represented");
-            }
-            if (property === "resize" && literalValue !== "vertical" && literalValue !== "none") this.uiStyleRefusal(site, property, "only vertical or none form-control resizing is represented");
-            if (property === "mix-blend-mode") {
-                if (literalValue !== "difference") {
-                    this.uiStyleRefusal(
-                        site,
-                        property,
-                        "only the reached difference-mode crosshair is accepted as a recorded degradation",
-                    );
-                }
-                this.uiDegradedStyleProperties.add(property);
-                return;
-            }
-            if (
-                property === "box-shadow" &&
-                Compiler.insetOutlineBorder(literalValue) !== undefined
-            ) {
-                return;
-            }
-            if (
-                (property === "backdrop-filter" ||
-                    property === "-webkit-backdrop-filter") &&
-                Compiler.supportedBackdropFilter(literalValue)
-            ) {
-                return;
-            }
-            if (Compiler.DEGRADED_UI_STYLE_PROPERTIES.has(property)) {
-                this.uiDegradedStyleProperties.add(property);
-                return;
-            }
-            if (property === "outline") {
-                if (literalValue === "none") return;
-                if (/^\d+(?:\.\d+)?px solid (?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+)$/.test(literalValue)) return;
-                this.uiStyleRefusal(
-                    site,
-                    property,
-                    "outline requires none or a solid pixel-width color",
-                );
-            }
-            if (property === "outline-offset" && /^\d+(?:\.\d+)?px$/.test(literalValue)) return;
-            if (Compiler.INERT_UI_STYLE_PROPERTIES.has(property)) return;
-            if (Compiler.GRADIENT_TEXT_UI_STYLE_PROPERTIES.has(property)) {
-                if (!clipsGradientToText) {
-                    this.uiStyleRefusal(
-                        site,
-                        property,
-                        "it is consumed only by the gradient-text " +
-                            "projection, which needs background-clip:text " +
-                            "in the same declaration list",
-                    );
-                }
-                if (
-                    (property === "background-clip" ||
-                        property === "-webkit-background-clip") &&
-                    !hasGradientBackground
-                ) {
-                    this.uiStyleRefusal(
-                        site,
-                        property,
-                        "the gradient-text projection needs a " +
-                            "linear-gradient background beside " +
-                            "background-clip:text",
-                    );
-                }
-                if (
-                    property === "filter" &&
-                    !Compiler.GRADIENT_TEXT_SHADOW_PATTERN.test(value)
-                ) {
-                    this.uiStyleRefusal(
-                        site,
-                        property,
-                        "only the gradient-text drop-shadow(x y color) " +
-                            "form is consumed",
-                    );
-                }
-                if (
-                    property === "-webkit-text-stroke" &&
-                    !Compiler.GRADIENT_TEXT_STROKE_PATTERN.test(value)
-                ) {
-                    this.uiStyleRefusal(
-                        site,
-                        property,
-                        "only the gradient-text 'width color' stroke " +
-                            "form is consumed",
-                    );
-                }
-                return;
-            }
-            if (
-                property === "grid-template-columns" ||
-                property === "grid-template-rows"
-            ) {
-                if (property === "grid-template-columns" && fractionalTracks) return;
-                if (
-                    !projectsGrid ||
-                    (property === "grid-template-rows" &&
-                        !/^repeat\(\s*\d+\s*,\s*[0-9]+(?:\.[0-9]*)?px\s*\)$/i.test(
-                            Compiler.uiLastStyleProperty(
-                                value,
-                                "grid-template-rows",
-                            ) ?? "",
-                        ))
-                ) {
-                    this.uiStyleRefusal(
-                        site,
-                        property,
-                        "the grid projection lowers only display:grid " +
-                            "with grid-template-columns:repeat(N, px) in " +
-                            "the same declaration list",
-                    );
-                }
-                return;
-            }
-            if (
-                property === "display" &&
-                /\bgrid\b/.test(literalValue) &&
-                !projectsGrid && !fractionalTracks
-            ) {
-                this.uiStyleRefusal(
-                    site,
-                    property,
-                    "display:grid lowers only with " +
-                        "grid-template-columns:repeat(N, px) in the same " +
-                        "declaration list",
-                );
-            }
-            if (
-                property === "color" &&
-                literalValue === "transparent" &&
-                !clipsGradientToText
-            ) {
-                this.uiStyleRefusal(
-                    site,
-                    property,
-                    "color:transparent is consumed only by the " +
-                        "gradient-text projection",
-                );
-            }
-            if (Compiler.PROJECTED_UI_STYLE_PROPERTIES.has(property)) {
-                return;
-            }
-            this.uiStyleRefusal(
-                site,
-                property,
-                "it is outside the reviewed retained-UI surface",
-            );
-        });
-    }
-
-    /**
-     * The same reviewed-surface enforcement for one `style.<property>`
-     * write or read, where the CSS name is static and the value may be a
-     * runtime string.
-     */
-    private auditUiStylePropertyName(cssName: string, site: ts.Node): void {
-        if (Compiler.DEGRADED_UI_STYLE_PROPERTIES.has(cssName)) {
-            this.uiDegradedStyleProperties.add(cssName);
-            return;
-        }
-        if (
-            Compiler.INERT_UI_STYLE_PROPERTIES.has(cssName) ||
-            Compiler.PROJECTED_UI_STYLE_PROPERTIES.has(cssName)
-        ) {
-            return;
-        }
-        this.uiStyleRefusal(
-            site,
-            cssName,
-            "it is outside the reviewed retained-UI surface",
-        );
+        return this.ui.isNativeUiValueExpression(expression);
     }
 
     /** The text driver records text layers only, so mixed contexts require an explicit boundary. */
@@ -6109,3018 +4360,14 @@ class Compiler
         );
     }
 
-    /**
-     * True when the expression reads a retained canvas's backing size on
-     * the given axis -- directly (`canvas.width`), or through one `const`
-     * alias of such a read (`const w = this._canvas.width`), which are the
-     * reached shapes. The proof is the compiled value itself: a retained
-     * canvas dimension always lowers to `bbl::ui_canvas_<axis>(...)`, so
-     * aliasing of the canvas handle cannot defeat it.
-     */
-    private isUiCanvasSizeRead(
-        expression: ts.Expression,
-        axis: "width" | "height",
-    ): boolean {
-        let target = this.unwrap(expression);
-        if (ts.isIdentifier(target)) {
-            const declaration =
-                this.checker.getSymbolAtLocation(target)?.valueDeclaration;
-            if (
-                declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer &&
-                (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !==
-                    0
-            ) {
-                target = this.unwrap(declaration.initializer);
-            }
-        }
-        if (
-            !ts.isPropertyAccessExpression(target) ||
-            target.name.text !== axis
-        ) {
-            return false;
-        }
-        const value = this.compileValue(target);
-        return (
-            value.kind === "number" &&
-            value.cpp.startsWith(`bbl::ui_canvas_${axis}(`)
-        );
-    }
-
-    /**
-     * A reached `scale(c.width / X, c.height / Y)` maps the logical size
-     * (X, Y) exactly onto the canvas backing store; remember it so a later
-     * statically-sized `clearRect(0, 0, X, Y)` is provably a full-surface
-     * clear (the racer minimap's shape). The record is compilation-global
-     * rather than per-canvas because the retained clear is full-surface
-     * regardless; the check exists to catch an authored partial clear, not
-     * to re-derive canvas identity through aliases it cannot track.
-     */
-    private recordUiCanvasLogicalScale(call: ts.CallExpression): void {
-        if (call.arguments.length !== 2) return;
-        const logical = (
-            argument: ts.Expression,
-            axis: "width" | "height",
-        ): number | undefined => {
-            const expression = this.unwrap(argument);
-            if (
-                !ts.isBinaryExpression(expression) ||
-                expression.operatorToken.kind !== ts.SyntaxKind.SlashToken ||
-                !this.isUiCanvasSizeRead(expression.left, axis)
-            ) {
-                return undefined;
-            }
-            const divisor = this.compileValue(expression.right).staticNumber;
-            return divisor !== undefined && divisor > 0 ? divisor : undefined;
-        };
-        const width = logical(argumentAt(call, 0), "width");
-        const height = logical(argumentAt(call, 1), "height");
-        if (width !== undefined && height !== undefined) {
-            this.uiCanvasFullClearSizes.add(`${width}x${height}`);
-        }
-    }
-
-    /**
-     * The retained Canvas2D clear is full-surface: the PAL drops the whole
-     * draw list and ignores the rect (`docs/ui.md` Limits). Accept only
-     * calls provably equal to the full surface -- origin statically (0, 0)
-     * and extents that read the canvas's own width/height (directly or
-     * through a const alias), or a statically-sized rect a reached
-     * `scale()` maps exactly onto the backing store -- and refuse anything
-     * else at generation, so a partial clear can never silently become a
-     * full one (AP-2).
-     */
-    private expectUiCanvasFullSurfaceClear(
-        call: ts.CallExpression,
-        canvasId: number | undefined,
-    ): void {
-        if (call.arguments.length !== 4) return;
-        const refuse = (shape: string): never =>
-            this.fail(
-                call,
-                "Retained Canvas2D clearRect is lowered only as a " +
-                    `full-surface clear, and ${shape}. Clear (0, 0, ` +
-                    "canvas.width, canvas.height) -- or the logical size " +
-                    "a reached scale() maps onto the backing store.",
-            );
-        for (const index of [0, 1]) {
-            const origin = this.compileValue(
-                argumentAt(call, index),
-            ).staticNumber;
-            if (origin !== 0) {
-                refuse(
-                    `argument ${index + 1} is not statically 0, so the ` +
-                        "rect origin is not provably the surface origin",
-                );
-            }
-        }
-        if (
-            this.isUiCanvasSizeRead(argumentAt(call, 2), "width") &&
-            this.isUiCanvasSizeRead(argumentAt(call, 3), "height")
-        ) {
-            return;
-        }
-        const width = this.compileValue(argumentAt(call, 2)).staticNumber;
-        const height = this.compileValue(argumentAt(call, 3)).staticNumber;
-        if (width !== undefined && height !== undefined) {
-            if (this.uiCanvasFullClearSizes.has(`${width}x${height}`)) {
-                return;
-            }
-            // Only a (width, height) pair the static assignments put THIS
-            // canvas through proves the rect covers its surface; matching
-            // one canvas's width with another's height proves nothing.
-            if (
-                canvasId !== undefined &&
-                this.uiCanvasStaticSizes
-                    .get(canvasId)
-                    ?.pairs.has(`${width}x${height}`)
-            ) {
-                return;
-            }
-            refuse(
-                `the static rect ${width}x${height} is neither a ` +
-                    "backing size statically assigned to this canvas " +
-                    "nor a logical size a reached scale() maps onto one",
-            );
-        }
-        refuse(
-            "the extent arguments are not reads of the canvas's own " +
-                "width and height",
-        );
-    }
-
-    /** CSSStyleDeclaration camelCase to the CSS spelling consumed by RmlUi. */
-    private nativeUiStyleProperty(property: string): string {
-        const cssName = property
-            .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-            .toLowerCase();
-        return cssName === "background" ? "background-color" : cssName;
-    }
-
-    private lowerUiTextShadow(value: string): string | undefined {
-        const shadows: string[] = [];
-        let start = 0;
-        let depth = 0;
-        for (let index = 0; index <= value.length; index++) {
-            const character = value[index];
-            if (character === "(") depth++;
-            if (character === ")") depth--;
-            if (index !== value.length && (character !== "," || depth > 0)) {
-                continue;
-            }
-            shadows.push(value.slice(start, index).trim());
-            start = index + 1;
-        }
-
-        const length = String.raw`[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|rem)?`;
-        const color = String.raw`(?:#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z][a-z0-9-]*)`;
-        const pattern = new RegExp(
-            String.raw`^(?:(${color})\s+)?(${length})\s+(${length})(?:\s+(${length}))?(?:\s+(${color}))?$`,
-            "i",
-        );
-        const effects: string[] = [];
-        for (const shadow of shadows) {
-            const match = shadow.match(pattern);
-            if (!match) return undefined;
-            const shadowColor = match[1] ?? match[5] ?? "currentcolor";
-            const offsetX = match[2]!;
-            const offsetY = match[3]!;
-            const blur = match[4];
-            effects.push(
-                blur && Number.parseFloat(blur) > 0
-                    ? `glow(0px ${blur} ${offsetX} ${offsetY} ${shadowColor})`
-                    : `shadow(${offsetX} ${offsetY} ${shadowColor})`,
-            );
-        }
-        return effects.length > 0 ? effects.join(",") : undefined;
-    }
-
-    private lowerUiAttributeLiteral(
-        name: string,
-        value: string,
-        site?: ts.Node,
-    ): string {
-        if (name !== "style") return value;
-        this.auditUiStyleDeclarations(value, site);
-        // From here every read and rewrite is declaration-scoped by
-        // regex; masking parenthesized semicolons makes those regexes
-        // segment exactly where the audit's splitter did. The mask is
-        // restored on the single return below.
-        value = Compiler.maskUiParenthesizedSemicolons(value);
-        const clipsGradientToText =
-            Compiler.GRADIENT_TEXT_CLIP_PATTERN.test(value);
-        const gradientTextColors = clipsGradientToText
-            ? (value
-                  .match(Compiler.GRADIENT_TEXT_BACKGROUND_PATTERN)?.[1]
-                  ?.match(/#[0-9a-f]{3,8}/gi) ?? [])
-            : [];
-        const gradientTextColor = gradientTextColors[0];
-        const gradientTextDuration = clipsGradientToText
-            ? value.match(
-                  /\banimation\s*:[^;]*?\b([0-9]+(?:\.[0-9]*)?)s\b/i,
-              )?.[1]
-            : undefined;
-        const gradientTextBackgroundScale = clipsGradientToText
-            ? value.match(
-                  /\bbackground-size\s*:\s*([0-9]+(?:\.[0-9]*)?)%/i,
-              )?.[1]
-            : undefined;
-        const gradientTextStroke = clipsGradientToText
-            ? value.match(Compiler.GRADIENT_TEXT_STROKE_PATTERN)
-            : undefined;
-        const gradientTextShadow = clipsGradientToText
-            ? value.match(Compiler.GRADIENT_TEXT_SHADOW_PATTERN)
-            : undefined;
-        const gradientFontEffects: string[] = [];
-        if (gradientTextStroke) {
-            gradientFontEffects.push(
-                `outline(${gradientTextStroke[1]!} ${gradientTextStroke[2]!.trim()})`,
-            );
-        }
-        if (gradientTextShadow) {
-            gradientFontEffects.push(
-                `shadow(${gradientTextShadow[1]!} ${gradientTextShadow[2]!} ${gradientTextShadow[3]!})`,
-            );
-        }
-        const sourceValue = gradientTextColor
-            ? value.replace(/\bbackground\s*:\s*linear-gradient\([^;]*;?/gi, "")
-            : value;
-        // RmlUi 6.4 does not accept calc() for positioned offsets. For the
-        // static inline CSS surface supported here, preserve the browser
-        // equation as a percentage offset plus a same-side pixel margin.
-        let lowered = sourceValue
-            .replace(/\bposition\s*:\s*fixed\b/gi, "position:absolute")
-            .replace(
-                /\bfont\s*:\s*(?:(\d+|normal|bold)\s+)?clamp\(\s*[0-9.]+px\s*,\s*[0-9.]+vw\s*,\s*([0-9.]+)px\s*\)\s+([^;]+)\s*;?/gi,
-                (_match, weight, maximum, family) =>
-                    `${weight ? `font-weight:${weight};` : ""}` +
-                    `font-size:${maximum}px;font-family:${String(family)};`,
-            )
-            .replace(
-                /\bfont\s*:\s*(?:(\d+|normal|bold)\s+)?([0-9]+(?:\.[0-9]*)?)(px|rem)(?:\s*\/\s*([0-9]+(?:\.[0-9]*)?(?:px|rem)?))?\s+([^;]+)\s*;?/gi,
-                (_match, weight, size, unit, lineHeight, family) =>
-                    `${weight ? `font-weight:${weight};` : ""}` +
-                    `font-size:${size}${unit};` +
-                    `${lineHeight ? `line-height:${lineHeight};` : ""}` +
-                    `font-family:${String(family)};`,
-            )
-            .replace(
-                /\bfont\s*:\s*(?:(\d+|normal|bold)\s+)?clamp\(\s*[^,]+,\s*[^,]+,\s*([0-9]+(?:\.[0-9]*)?)(px|rem)\s*\)\s+([^;]+)\s*;?/gi,
-                (_match, weight, maximum, unit, family) =>
-                    `${weight ? `font-weight:${weight};` : ""}` +
-                    `font-size:${maximum}${unit};` +
-                    `font-family:${String(family)};`,
-            )
-            // RmlUi resolves one family name here rather than a browser-style
-            // fallback list. Route generic UI stacks to the system face that
-            // the PAL loads, otherwise retain the first requested family.
-            .replace(/\bfont-family\s*:\s*([^;]+)\s*;?/gi, (_match, family) => {
-                const families = String(family)
-                    .split(",")
-                    .map((candidate) => candidate.trim())
-                    .filter(Boolean);
-                const first = families[0] ?? "sans-serif";
-                if (/^system-ui$/i.test(first)) {
-                    return "font-family:system-ui;";
-                }
-                if (/^sans-serif$/i.test(first)) {
-                    return "font-family:sans-serif;";
-                }
-                if (/^monospace$/i.test(first)) {
-                    return "font-family:monospace;";
-                }
-                return `font-family:${first};`;
-            })
-            .replace(
-                /\binset\s*:\s*0(?:px)?\s*;?/gi,
-                "top:0;right:0;bottom:0;left:0;",
-            )
-            // The reached voxel HUD spells its crosshair as two centred,
-            // non-repeating background gradients. RmlUi gradients cover the
-            // entire decorator box and cannot express CSS background sizing,
-            // so preserve this exact shape as private PAL metadata. The PAL
-            // materializes the vertical and horizontal bars as retained
-            // children while the parent continues to own position/opacity.
-            .replace(
-                /\bbackground\s*:\s*linear-gradient\(\s*(#[0-9a-f]{3,8}|[a-z][a-z0-9-]*)\s*,\s*\1\s*\)\s+center\s*\/\s*2px\s+22px\s+no-repeat\s*,\s*linear-gradient\(\s*\1\s*,\s*\1\s*\)\s+center\s*\/\s*22px\s+2px\s+no-repeat\s*;?/gi,
-                "--bbl-crosshair:$1;",
-            )
-            // RmlUi exposes CSS image gradients through its decorator
-            // property. The shared render recorder implements the resulting
-            // shader callback once for every PAL graphics backend.
-            .replace(
-                /\bbackground\s*:\s*((?:repeating-)?(?:linear|radial|conic)-gradient\([^;]*\))\s*;?/gi,
-                "decorator:$1;",
-            )
-            // A browser background can combine a fallback colour with a
-            // runtime-selected root-relative image. RmlUi exposes the image
-            // through its decorator, while generation packages the closed
-            // source image directory at the same logical paths.
-            .replace(
-                /\bbackground\s*:\s*([^;]*?)\s+url\(\s*["']?__BBLITE_UI_STYLE_(\d+)__["']?\s*\)\s+center\s*\/\s*cover\s*;?/gi,
-                (_match, color, index) =>
-                    `background-color:${String(color).trim()};` +
-                    `decorator:image("__BBLITE_UI_ASSET_${String(index)}__" cover);`,
-            )
-            // RmlUi exposes the colour property explicitly rather than the
-            // browser background shorthand used by the reached HUDs.
-            .replace(/\bbackground\s*:/gi, "background-color:")
-            .replace(/(?:-webkit-)?backdrop-filter\s*:\s*([^;]+)\s*;?/gi, (_match, filter) =>
-                Compiler.supportedBackdropFilter(String(filter))
-                    ? `backdrop-filter:${String(filter).trim()};` : "")
-            .replace(/\boutline-offset\s*:\s*([^;]+)\s*;?/gi, "--bbl-outline-offset:$1;")
-            .replace(/\boutline\s*:\s*([^;]+)\s*;?/gi, "--bbl-outline:$1;")
-            .replace(/\bbox-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
-                const border = Compiler.insetOutlineBorder(
-                    String(shadow).trim(),
-                );
-                return border ? `--bbl-inset-outline:${border};` : "";
-            })
-            .replace(/\bmix-blend-mode\s*:[^;]*;?/gi, "")
-            // RmlUi's border shorthand is `width color`; it deliberately
-            // omits CSS border-style because every non-zero border is solid.
-            // Translate the ordinary browser spelling instead of letting the
-            // entire declaration be rejected by its shorthand parser.
-            .replace(
-                /\bborder\s*:\s*([^;\s]+)\s+solid\s+([^;]+)\s*;?/gi,
-                "border:$1 $2;",
-            )
-            .replace(/\bborder\s*:\s*none\s*;?/gi, "border:0 transparent;")
-            .replace(/\bbackground-size\s*:[^;]*;?/gi, "")
-            .replace(
-                /(^|;)\s*(?:-webkit-)?background-clip\s*:[^;]*(?=;|$)/gi,
-                "$1",
-            )
-            .replace(/-webkit-text-stroke\s*:[^;]*;?/gi, "")
-            .replace(/(^|;)\s*filter\s*:[^;]*/gi, "$1")
-            .replace(/\btext-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
-                const effect = this.lowerUiTextShadow(String(shadow));
-                if (effect === undefined) {
-                    this.uiStyleRefusal(
-                        site,
-                        "text-shadow",
-                        `the shadow list '${String(shadow).trim()}' is ` +
-                            "outside the reviewed '[color] x y [blur] " +
-                            "[color]' form",
-                    );
-                }
-                return `font-effect:${effect};`;
-            })
-            .replace(
-                /(^|;)\s*color\s*:\s*transparent\s*(?=;|$)/gi,
-                `$1color:${gradientTextColor ?? "#fff"}`,
-            )
-            .replace(
-                /\b(left|top|right|bottom)\s*:\s*calc\(\s*([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))%\s*([+-])\s*([0-9]+(?:\.[0-9]*)?|\.[0-9]+)px\s*\)\s*;?/gi,
-                (_match, property, percent, sign, pixels) =>
-                    `${String(property).toLowerCase()}:${percent}%;` +
-                    `margin-${String(property).toLowerCase()}:` +
-                    `${sign === "-" ? "-" : ""}${pixels}px;`,
-            );
-
-        if (gradientTextColors.length > 1) {
-            // RmlUi has no background-clip:text. Preserve the declarative
-            // intent as private PAL metadata so native UI can materialize a
-            // per-glyph gradient and advance the reached shimmer animation.
-            lowered +=
-                `;--bbl-text-gradient:${gradientTextColors.join("|")};` +
-                `--bbl-text-gradient-duration:${gradientTextDuration ?? "0"}s;` +
-                `--bbl-text-gradient-scale:${gradientTextBackgroundScale ?? "100"}%;`;
-            if (gradientFontEffects.length > 0) {
-                lowered += `font-effect:${gradientFontEffects.join(",")};`;
-            }
-        }
-
-        // RmlUi 6.4 has no CSS Grid formatting context. Mark the reached
-        // regular `repeat(N, px)` surface for the PAL to project as a
-        // full-width outer box with a centred wrapping-flex inner box. Keeping
-        // those boxes separate matters: in the browser the Tetris preview's
-        // background spans the panel while only its 4x4 cells are centred.
-        const fractionalTracks = Compiler.fractionalUiGridTracks(lowered);
-        if (fractionalTracks) {
-            lowered = lowered
-                .replace(/\bdisplay\s*:\s*grid\b/gi, "display:flex")
-                .replace(/\bgrid-template-columns\s*:[^;]+;?/gi, "") +
-                `;--bbl-fr-grid-tracks:${fractionalTracks.join(" ")};`;
-        } else if (Compiler.projectsUiGrid(lowered)) {
-            this.uiSawGridDeclaration = true;
-            const grid = Compiler.uiGridProjection(lowered)!;
-            const shrinkToTracks =
-                /\bposition\s*:\s*absolute\b/i.test(lowered) &&
-                !/(?:^|;)\s*width\s*:/i.test(lowered) &&
-                /(?:^|;)\s*left\s*:/i.test(lowered) !==
-                    /(?:^|;)\s*right\s*:/i.test(lowered);
-            lowered =
-                lowered
-                    .replace(/\bdisplay\s*:\s*grid\b/gi, "display:block")
-                    .replace(/\bgrid-template-columns\s*:[^;]+;?/gi, "")
-                    .replace(/\bgrid-template-rows\s*:[^;]+;?/gi, "")
-                    .replace(/\bgap\s*:[^;]+;?/gi, "")
-                    .replace(/\bjustify-content\s*:[^;]+;?/gi, "") +
-                (shrinkToTracks ? `;width:${grid.width}px` : "") +
-                `;--bbl-grid-columns:${grid.columns};` +
-                `--bbl-grid-cell-width:${grid.cellWidth}px;` +
-                `--bbl-grid-width:${grid.width}px;` +
-                `--bbl-grid-gap:${grid.gap}px;` +
-                (grid.authoredJustifyContent === undefined
-                    ? ""
-                    : `--bbl-grid-justify-content:${grid.authoredJustifyContent};`) +
-                (grid.rowHeight === undefined
-                    ? ""
-                    : `--bbl-grid-row-height:${grid.rowHeight}px;`) +
-                (grid.rowCount === undefined
-                    ? ""
-                    : `--bbl-grid-row-count:${grid.rowCount};`);
-        }
-
-        if (/\bposition\s*:\s*absolute\b/i.test(lowered)) {
-            const hasWidth = /(?:^|;)\s*width\s*:/i.test(lowered);
-            const minimum = lowered
-                .match(/(?:^|;)\s*min-width\s*:\s*([^;]+)/i)?.[1]
-                ?.trim();
-            if (!hasWidth && minimum) {
-                // RmlUi cannot complete CSS shrink-to-fit when percentage-
-                // width inline children contribute to an absolute block's
-                // max-content size. Start from the authored minimum and leave
-                // generic measurement metadata for the retained PAL pass.
-                lowered += `;--bbl-intrinsic-min-width:${minimum};`;
-            } else if (
-                !hasWidth &&
-                !minimum &&
-                !/\bdisplay\s*:/i.test(lowered) &&
-                /\bleft\s*:/i.test(lowered) !== /\bright\s*:/i.test(lowered)
-            ) {
-                lowered += ";display:inline-block;";
-            }
-        }
-        if (
-            /\bdisplay\s*:\s*(?:inline-)?flex\b/i.test(lowered) &&
-            /\balign-items\s*:\s*center\b/i.test(lowered) &&
-            /\bjustify-content\s*:\s*center\b/i.test(lowered) &&
-            !/\bline-height\s*:/i.test(lowered)
-        ) {
-            const height = lowered.match(
-                /(?:^|;)\s*height\s*:\s*([0-9]+(?:\.[0-9]*)?px)/i,
-            )?.[1];
-            if (height) {
-                if (/\bdisplay\s*:\s*inline-flex\b/i.test(lowered)) {
-                    // RmlUi does not synthesize the browser's anonymous flex
-                    // item for direct text. An inline centred badge needs no
-                    // flex distribution beyond that text, so an inline block
-                    // with the equivalent line box preserves its layout.
-                    lowered = lowered.replace(
-                        /\bdisplay\s*:\s*inline-flex\b/gi,
-                        "display:inline-block",
-                    );
-                }
-                // RmlUi does not construct an anonymous flex item for a
-                // direct text node. A centred fixed-height browser button
-                // therefore needs the equivalent line box explicitly.
-                lowered += `;line-height:${height};text-align:center;`;
-            }
-        }
-        return lowered.replaceAll(Compiler.UI_MASKED_SEMICOLON, ";");
-    }
-
-    /**
-     * `@keyframes` blocks are not sheet rules: the whole sheet text also
-     * rides `ui_set_text`, and the PAL extracts and projects the keyframes
-     * from there (`pal_ui_rml.cpp` `keyframes_from`), so their interior
-     * percentage blocks must not reach the rule parser. Mirrors the PAL's
-     * brace-depth walk.
-     */
-    private static stripUiKeyframesBlocks(source: string): string {
-        let result = "";
-        let cursor = 0;
-        for (;;) {
-            const at = source.indexOf("@keyframes", cursor);
-            if (at < 0) {
-                result += source.slice(cursor);
-                break;
-            }
-            result += source.slice(cursor, at);
-            const opening = source.indexOf("{", at);
-            if (opening < 0) break;
-            let depth = 0;
-            let end = opening;
-            for (; end < source.length; end++) {
-                if (source[end] === "{") {
-                    depth++;
-                } else if (source[end] === "}" && --depth === 0) {
-                    end++;
-                    break;
-                }
-            }
-            cursor = end;
-            if (depth !== 0) break;
-        }
-        return result;
-    }
-
-    /**
-     * Parse the bounded author-sheet surface into typed retained rules. RmlUi
-     * receives only selectors this parser names, so its selector engine
-     * evaluates hover and max-width state without making arbitrary browser CSS
-     * part of the generated runtime.
-     */
-    private lowerUiStyleSheetLiteral(
-        value: string,
-        site?: ts.Node,
-        ownerId?: number,
-    ): LoweredUiStyleRule[] {
-        if (ownerId !== undefined && this.uiStaticMutationIsDynamic()) {
-            this.uiStaticStyleCascadeKnown = false;
-        }
-        if (ownerId !== undefined) {
-            for (
-                let index = this.uiStyleRules.length - 1;
-                index >= 0;
-                index--
-            ) {
-                if (this.uiStyleRules[index]!.ownerId === ownerId) {
-                    this.uiStyleRules.splice(index, 1);
-                }
-            }
-        }
-        const rules: LoweredUiStyleRule[] = [];
-        const refuseSelector = (selector: string): never => {
-            const message =
-                `Retained stylesheet selector '${selector}' is not ` +
-                "lowered: the reviewed sheet surface is exact '.class' and " +
-                "'#id' rules, '.classA.classB', 'tag.class', statically-proven " +
-                "'.ancestor tag' (optionally ':hover'), '#id .class', " +
-                "'@media (max-width:Npx)', and '@keyframes' blocks.";
-            if (site) this.fail(site, message);
-            this.failAtFile(message);
-        };
-        const source = Compiler.stripUiKeyframesBlocks(
-            value.replace(/\/\*[\s\S]*?\*\//g, ""),
-        );
-
-        const parseBlocks = (
-            text: string,
-            inheritedMaxWidth?: number,
-        ): void => {
-            let cursor = 0;
-            while (cursor < text.length) {
-                while (cursor < text.length && /[\s;]/.test(text[cursor]!)) {
-                    cursor++;
-                }
-                if (cursor >= text.length) break;
-                const opening = text.indexOf("{", cursor);
-                if (opening < 0) {
-                    refuseSelector(text.slice(cursor).trim());
-                }
-                const header = text.slice(cursor, opening).trim();
-                let quote = "";
-                let depth = 1;
-                let end = opening + 1;
-                for (; end < text.length && depth > 0; end++) {
-                    const character = text[end]!;
-                    if (quote) {
-                        if (character === quote && text[end - 1] !== "\\") {
-                            quote = "";
-                        }
-                    } else if (character === "'" || character === '"') {
-                        quote = character;
-                    } else if (character === "{") {
-                        depth++;
-                    } else if (character === "}") {
-                        depth--;
-                    }
-                }
-                if (depth !== 0) refuseSelector(header);
-                const body = text.slice(opening + 1, end - 1);
-                cursor = end;
-
-                if (/^@media\b/i.test(header)) {
-                    if (inheritedMaxWidth !== undefined) {
-                        refuseSelector(header);
-                    }
-                    const media = header.match(
-                        /^@media\s*\(\s*max-width\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*\)$/i,
-                    );
-                    const maxWidth = Number(media?.[1]);
-                    if (!media || !Number.isFinite(maxWidth) || maxWidth < 0) {
-                        refuseSelector(header);
-                    }
-                    parseBlocks(body, maxWidth);
-                    continue;
-                }
-                if (header.startsWith("@")) refuseSelector(header);
-                if (body.includes("{") || body.includes("}")) {
-                    refuseSelector(header);
-                }
-
-                const sourceStyle = body.trim();
-                if (inheritedMaxWidth !== undefined) {
-                    const mediaProperties = new Set([
-                        "bottom",
-                        "font-size",
-                        "height",
-                        "left",
-                        "max-height",
-                        "max-width",
-                        "min-height",
-                        "min-width",
-                        "right",
-                        "top",
-                        "width",
-                    ]);
-                    Compiler.forEachUiStyleDeclaration(
-                        sourceStyle,
-                        (declaration) => {
-                            const colon = declaration.indexOf(":");
-                            if (colon < 0) return;
-                            const property = declaration
-                                .slice(0, colon)
-                                .trim()
-                                .toLowerCase();
-                            if (!mediaProperties.has(property)) {
-                                this.uiStyleRefusal(
-                                    site,
-                                    property,
-                                    "max-width rules are bounded to the reached position, size, and font-size overrides",
-                                );
-                            }
-                        },
-                    );
-                }
-                const grid = Compiler.uiGridProjection(sourceStyle);
-                if (grid && inheritedMaxWidth !== undefined) {
-                    this.uiStyleRefusal(
-                        site,
-                        "display",
-                        "the structural fixed-grid substitution is not accepted inside a media query",
-                    );
-                }
-                const selectors = header
-                    .split(",")
-                    .map((selector) => selector.trim());
-                for (const selector of selectors) {
-                    if (
-                        /^\.([A-Za-z_][A-Za-z0-9_-]*)\s+(?:path|rect)(?::hover)?$/i.test(
-                            selector,
-                        )
-                    ) {
-                        const message =
-                            `Retained stylesheet selector '${selector}' cannot ` +
-                            "target SVG path/rect nodes: LunaSVG receives the " +
-                            "validated SVG contents as image data, not RmlUi elements.";
-                        if (site) this.fail(site, message);
-                        this.failAtFile(message);
-                    }
-                }
-                const style = this.lowerUiAttributeLiteral(
-                    "style",
-                    sourceStyle,
-                    site,
-                );
-                for (const selector of selectors) {
-                    const rule =
-                        Compiler.parseUiSelector(selector, style) ??
-                        refuseSelector(selector);
-                    if (inheritedMaxWidth !== undefined) {
-                        rule.maxWidth = inheritedMaxWidth;
-                    }
-                    if (site) rule.site = site;
-                    if (ownerId !== undefined) rule.ownerId = ownerId;
-                    if (grid) {
-                        if (
-                            rule.hover ||
-                            (rule.kind !== "class" && rule.kind !== "id")
-                        ) {
-                            this.uiStyleRefusal(
-                                site,
-                                "display",
-                                "the structural fixed-grid substitution requires one stable '.class' or '#id' target",
-                            );
-                        }
-                        rule.grid = grid;
-                    }
-                    if (
-                        rule.kind === "class-descendant-tag" ||
-                        rule.kind === "id-descendant-class"
-                    ) {
-                        this.uiScopedSheetSelectors.add(selector);
-                    }
-                    if (!style) continue;
-                    rules.push(rule);
-                    this.uiStyleRules.push(rule);
-                }
-            }
-        };
-        parseBlocks(source);
-        return rules;
-    }
-
-    private uiStaticDescendants(rootId: number): {
-        elements: Set<number>;
-        markup: UiStaticMarkupNode[];
-        complete: boolean;
-    } {
-        const elements = new Set<number>();
-        const markup: UiStaticMarkupNode[] = [];
-        let complete = true;
-        const addMarkup = (node: UiStaticMarkupNode): void => {
-            markup.push(node);
-            for (const child of node.children) addMarkup(child);
-        };
-        const visit = (id: number): void => {
-            const parent = this.uiStaticElements.get(id);
-            if (!parent) {
-                complete = false;
-                return;
-            }
-            complete = complete && parent.childShapeKnown;
-            for (const node of parent.markupChildren) addMarkup(node);
-            for (const childId of parent.children) {
-                if (elements.has(childId)) continue;
-                elements.add(childId);
-                visit(childId);
-            }
-        };
-        visit(rootId);
-        return { elements, markup, complete };
-    }
-
-    private uiRuleMatchesDirectWithClasses(
-        rule: LoweredUiStyleRule,
-        element: UiStaticElement,
-        classes: ReadonlySet<string>,
-    ): boolean {
-        switch (rule.kind) {
-            case "class":
-                return classes.has(rule.primary);
-            case "id":
-                return element.ids.has(rule.primary);
-            case "compound-class":
-                return (
-                    classes.has(rule.primary) && classes.has(rule.secondary!)
-                );
-            case "tag-class":
-                return element.tag === rule.tag && classes.has(rule.primary);
-            case "class-descendant-tag":
-            case "id-descendant-class":
-                return false;
-        }
-    }
-
-    /**
-     * The bounded stylesheet selector grammar, one pattern per kind in the
-     * order they are tried; the first match builds the rule and no match is
-     * the caller's refusal.
-     */
-    private static parseUiSelector(
-        selector: string,
-        style: string,
-    ): LoweredUiStyleRule | undefined {
-        const identifier = "[A-Za-z_][A-Za-z0-9_-]*";
-        const tag = "[a-z][a-z0-9-]*";
-        const forms: readonly (readonly [
-            RegExp,
-            (match: RegExpMatchArray) => LoweredUiStyleRule,
-        ])[] = [
-            [
-                new RegExp(`^#(${identifier})\\s+\\.(${identifier})$`),
-                (match) => ({
-                    kind: "id-descendant-class",
-                    primary: match[1]!,
-                    secondary: match[2]!,
-                    hover: false,
-                    style,
-                    selector,
-                }),
-            ],
-            [
-                new RegExp(`^\\.(${identifier})\\s+(${tag})(:hover)?$`, "i"),
-                (match) => ({
-                    kind: "class-descendant-tag",
-                    primary: match[1]!,
-                    tag: match[2]!.toLowerCase(),
-                    hover: match[3] !== undefined,
-                    style,
-                    selector,
-                }),
-            ],
-            [
-                new RegExp(`^\\.(${identifier})\\.(${identifier})$`),
-                (match) => ({
-                    kind: "compound-class",
-                    primary: match[1]!,
-                    secondary: match[2]!,
-                    hover: false,
-                    style,
-                    selector,
-                }),
-            ],
-            [
-                new RegExp(`^(${tag})\\.(${identifier})$`, "i"),
-                (match) => ({
-                    kind: "tag-class",
-                    primary: match[2]!,
-                    tag: match[1]!.toLowerCase(),
-                    hover: false,
-                    style,
-                    selector,
-                }),
-            ],
-            [
-                new RegExp(`^([.#])(${identifier})$`),
-                (match) => ({
-                    kind: match[1] === "#" ? "id" : "class",
-                    primary: match[2]!,
-                    hover: false,
-                    style,
-                    selector,
-                }),
-            ],
-        ];
-        for (const [pattern, build] of forms) {
-            const match = selector.match(pattern);
-            if (match) return build(match);
-        }
-        return undefined;
-    }
-
-    private uiRuleMatchesDirect(
-        rule: LoweredUiStyleRule,
-        element: UiStaticElement,
-    ): boolean {
-        return element.classAlternatives.some((classes) =>
-            this.uiRuleMatchesDirectWithClasses(rule, element, classes),
-        );
-    }
-
-    private uiStaticElementAlwaysHasClass(
-        element: UiStaticElement,
-        className: string,
-    ): boolean {
-        return (
-            element.classAlternatives.length > 0 &&
-            element.classAlternatives.every((classes) => classes.has(className))
-        );
-    }
-
-    private uiRuleSpecificity(rule: LoweredUiStyleRule): number {
-        const hover = rule.hover ? 1 : 0;
-        switch (rule.kind) {
-            case "class":
-                return (1 + hover) * 0x100;
-            case "id":
-                return 0x10000 + hover * 0x100;
-            case "compound-class":
-                return (2 + hover) * 0x100;
-            case "class-descendant-tag":
-            case "tag-class":
-                return (1 + hover) * 0x100 + 1;
-            case "id-descendant-class":
-                return 0x10000 + (1 + hover) * 0x100;
-        }
-    }
-
-    /**
-     * Scene-created sheets participate only while directly attached to the
-     * document, in that live order. Rule creation/population order is not CSS
-     * source order across sheets.
-     */
-    private uiActiveStyleRulesInCascade(): readonly LoweredUiStyleRule[] {
-        if (this.uiValidation) {
-            return this.uiValidation.activeRules;
-        }
-        const rulesByOwner = new Map<number, LoweredUiStyleRule[]>();
-        for (const rule of this.uiStyleRules) {
-            if (rule.ownerId === undefined) continue;
-            const owned = rulesByOwner.get(rule.ownerId) ?? [];
-            owned.push(rule);
-            rulesByOwner.set(rule.ownerId, owned);
-        }
-        return this.uiStaticRootOrder.flatMap(
-            (ownerId) => rulesByOwner.get(ownerId) ?? [],
-        );
-    }
-
-    private uiStaticAncestors(id: number): UiStaticElement[] {
-        const cached = this.uiValidation?.ancestorsById.get(id);
-        if (cached) return cached;
-        const ancestors: UiStaticElement[] = [];
-        const pending = [id];
-        const visited = new Set<number>(pending);
-        while (pending.length > 0) {
-            const child = pending.pop()!;
-            const parentIds = this.uiValidation?.parentsByChild.get(child);
-            const candidates = parentIds
-                ? parentIds.map(
-                      (candidateId) =>
-                          [
-                              candidateId,
-                              this.uiStaticElements.get(candidateId)!,
-                          ] as const,
-                  )
-                : [...this.uiStaticElements].filter(([, candidate]) =>
-                      candidate.children.has(child),
-                  );
-            for (const [candidateId, candidate] of candidates) {
-                if (visited.has(candidateId)) continue;
-                visited.add(candidateId);
-                ancestors.push(candidate);
-                pending.push(candidateId);
-            }
-        }
-        this.uiValidation?.ancestorsById.set(id, ancestors);
-        return ancestors;
-    }
-
-    private uiRuleMatchesStaticElement(
-        rule: LoweredUiStyleRule,
-        id: number,
-        element: UiStaticElement,
-    ): boolean {
-        return element.classAlternatives.some((classes) =>
-            this.uiRuleMatchesStaticElementWithClasses(
-                rule,
-                id,
-                element,
-                classes,
-            ),
-        );
-    }
-
-    private uiRuleMatchesStaticElementWithClasses(
-        rule: LoweredUiStyleRule,
-        id: number,
-        element: UiStaticElement,
-        classes: ReadonlySet<string>,
-    ): boolean {
-        if (
-            rule.kind !== "class-descendant-tag" &&
-            rule.kind !== "id-descendant-class"
-        ) {
-            return this.uiRuleMatchesDirectWithClasses(rule, element, classes);
-        }
-        const ancestors = this.uiStaticAncestors(id);
-        return rule.kind === "class-descendant-tag"
-            ? element.tag === rule.tag &&
-                  ancestors.some((ancestor) =>
-                      ancestor.classAlternatives.some((ancestorClasses) =>
-                          ancestorClasses.has(rule.primary),
-                      ),
-                  )
-            : classes.has(rule.secondary!) &&
-                  ancestors.some((ancestor) => ancestor.ids.has(rule.primary));
-    }
-
-    private uiRuleDependsOnMutableClass(
-        rule: LoweredUiStyleRule,
-        id: number,
-        element: UiStaticElement,
-    ): boolean {
-        switch (rule.kind) {
-            case "class":
-                return element.mutableClasses.has(rule.primary);
-            case "id":
-                return false;
-            case "compound-class":
-                return (
-                    element.mutableClasses.has(rule.primary) ||
-                    element.mutableClasses.has(rule.secondary!)
-                );
-            case "tag-class":
-                return (
-                    element.tag === rule.tag &&
-                    element.mutableClasses.has(rule.primary)
-                );
-            case "class-descendant-tag":
-                return this.uiStaticAncestors(id).some((ancestor) =>
-                    ancestor.mutableClasses.has(rule.primary),
-                );
-            case "id-descendant-class":
-                return element.mutableClasses.has(rule.secondary!);
-        }
-    }
-
-    private uiRuleMentionsClass(
-        rule: LoweredUiStyleRule,
-        className: string,
-    ): boolean {
-        switch (rule.kind) {
-            case "class":
-            case "class-descendant-tag":
-            case "tag-class":
-                return rule.primary === className;
-            case "compound-class":
-                return (
-                    rule.primary === className || rule.secondary === className
-                );
-            case "id-descendant-class":
-                return rule.secondary === className;
-            case "id":
-                return false;
-        }
-    }
-
-    private uiRuleCouldMatchGridChildAfterUnknownClassMutation(
-        rule: LoweredUiStyleRule,
-        className: string,
-        childId: number,
-        child: UiStaticElement,
-    ): boolean {
-        switch (rule.kind) {
-            case "class":
-                return rule.primary === className;
-            case "id":
-                return false;
-            case "compound-class":
-                return (
-                    (rule.primary === className &&
-                        child.classAlternatives.some((classes) =>
-                            classes.has(rule.secondary!),
-                        )) ||
-                    (rule.secondary === className &&
-                        child.classAlternatives.some((classes) =>
-                            classes.has(rule.primary),
-                        ))
-                );
-            case "class-descendant-tag":
-            case "tag-class":
-                return rule.primary === className && child.tag === rule.tag;
-            case "id-descendant-class":
-                return (
-                    rule.secondary === className &&
-                    this.uiStaticAncestors(childId).some((ancestor) =>
-                        ancestor.ids.has(rule.primary),
-                    )
-                );
-        }
-    }
-
-    private uiUnknownAttributeCouldAffectRule(
-        mutation: UiUnknownAttributeMutation,
-        rule: LoweredUiStyleRule,
-        elementId: number,
-        element: UiStaticElement,
-    ): boolean {
-        const sameTarget =
-            mutation.targetId === undefined || mutation.targetId === elementId;
-        const target =
-            mutation.targetId === undefined
-                ? undefined
-                : this.uiStaticElements.get(mutation.targetId);
-        const targetIsAncestor =
-            mutation.targetId === undefined ||
-            (target !== undefined &&
-                this.uiStaticAncestors(elementId).includes(target));
-        if (mutation.attribute === "class") {
-            switch (rule.kind) {
-                case "class":
-                case "compound-class":
-                    return sameTarget;
-                case "tag-class":
-                    return sameTarget && element.tag === rule.tag;
-                case "class-descendant-tag":
-                    return targetIsAncestor && element.tag === rule.tag;
-                case "id-descendant-class":
-                    return (
-                        sameTarget &&
-                        this.uiStaticAncestors(elementId).some((ancestor) =>
-                            ancestor.ids.has(rule.primary),
-                        )
-                    );
-                case "id":
-                    return false;
-            }
-        }
-        switch (rule.kind) {
-            case "id":
-                return sameTarget;
-            case "id-descendant-class":
-                return (
-                    targetIsAncestor &&
-                    element.classAlternatives.some((classes) =>
-                        classes.has(rule.secondary!),
-                    )
-                );
-            case "class":
-            case "compound-class":
-            case "class-descendant-tag":
-            case "tag-class":
-                return false;
-        }
-    }
-
-    private uiGridChildGeometryProperty(
-        rule: LoweredUiStyleRule,
-        includeExplicitRowFlow = false,
-    ): string | undefined {
-        if (includeExplicitRowFlow) {
-            const display = this.uiStaticStyleProperty(rule.style, "display")
-                ?.trim()
-                .toLowerCase();
-            if (display === "none") return "display";
-            const position = this.uiStaticStyleProperty(rule.style, "position")
-                ?.trim()
-                .toLowerCase();
-            if (position === "absolute" || position === "fixed") {
-                return "position";
-            }
-        }
-        return Compiler.UI_GRID_CHILD_GEOMETRY_PROPERTIES.find(
-            (property) =>
-                this.uiStaticStyleProperty(rule.style, property) !== undefined,
-        );
-    }
-
-    private uiStaticStyleProperty(
-        style: string,
-        property: string,
-    ): string | undefined {
-        return Compiler.uiLastStyleProperty(style, property);
-    }
-
-    private uiStaticElementStylePropertyForState(
-        id: number,
-        property: string,
-        classes: ReadonlySet<string>,
-        inlineStyle: string,
-    ): string | undefined {
-        const element = this.uiStaticElements.get(id);
-        if (!element) return undefined;
-        let result: string | undefined;
-        let specificity = -1;
-        let sourceOrder = -1;
-        const activeRules = this.uiActiveStyleRulesInCascade();
-        for (let index = 0; index < activeRules.length; index++) {
-            const rule = activeRules[index]!;
-            if (
-                rule.hover ||
-                rule.maxWidth !== undefined ||
-                !this.uiRuleMatchesStaticElementWithClasses(
-                    rule,
-                    id,
-                    element,
-                    classes,
-                )
-            ) {
-                continue;
-            }
-            const value = this.uiStaticStyleProperty(rule.style, property);
-            if (value === undefined) continue;
-            const candidateSpecificity = this.uiRuleSpecificity(rule);
-            if (
-                candidateSpecificity > specificity ||
-                (candidateSpecificity === specificity && index > sourceOrder)
-            ) {
-                result = value;
-                specificity = candidateSpecificity;
-                sourceOrder = index;
-            }
-        }
-        result = this.uiStaticStyleProperty(inlineStyle, property) ?? result;
-        return result;
-    }
-
-    private uiStaticElementStylePropertyValues(
-        id: number,
-        property: string,
-    ): Set<string | undefined> {
-        const element = this.uiStaticElements.get(id);
-        if (!element) return new Set([undefined]);
-        const values = new Set<string | undefined>();
-        for (const classes of element.classAlternatives) {
-            for (const style of element.styles) {
-                values.add(
-                    this.uiStaticElementStylePropertyForState(
-                        id,
-                        property,
-                        classes,
-                        style,
-                    ),
-                );
-            }
-        }
-        return values;
-    }
-
-    private uiStaticEffectiveGrid(
-        id: number,
-        classes: ReadonlySet<string>,
-    ):
-        | {
-              grid: UiGridProjection;
-              label: string;
-              site?: ts.Node;
-          }
-        | undefined {
-        const element = this.uiStaticElements.get(id);
-        if (!element) return undefined;
-        interface CascadedValue<T> {
-            value: T;
-            specificity: number;
-            sourceOrder: number;
-        }
-        let display:
-            | CascadedValue<{
-                  value: string;
-                  grid?: UiGridProjection;
-                  label: string;
-                  site?: ts.Node;
-              }>
-            | undefined;
-        let justification: CascadedValue<string> | undefined;
-        const wins = <T>(
-            current: CascadedValue<T> | undefined,
-            specificity: number,
-            sourceOrder: number,
-        ): boolean =>
-            current === undefined ||
-            specificity > current.specificity ||
-            (specificity === current.specificity &&
-                sourceOrder >= current.sourceOrder);
-        const activeRules = this.uiActiveStyleRulesInCascade();
-        const normalizedKeyword = (
-            value: string | undefined,
-        ): string | undefined => value?.trim().toLowerCase();
-        const possibleGrid =
-            activeRules.some(
-                (rule) =>
-                    rule.grid !== undefined &&
-                    this.uiRuleMatchesStaticElementWithClasses(
-                        rule,
-                        id,
-                        element,
-                        classes,
-                    ),
-            ) ||
-            element.styles.some(
-                (style) => this.uiGridFromLoweredStyle(style) !== undefined,
-            );
-        const refuseAlternative = (
-            reason: string,
-            rule?: LoweredUiStyleRule,
-        ): never => {
-            const message =
-                `Retained UI fixed-grid projection on <${element.tag}> ` +
-                `construction site ${id} ${reason}.`;
-            if (rule?.site) this.fail(rule.site, message);
-            this.failAtFile(message);
-        };
-        if (possibleGrid && !element.styleShapeKnown) {
-            refuseAlternative(
-                "has a runtime cssText replacement whose final declarations are unknown",
-            );
-        }
-        if (possibleGrid && element.styles.length > 1) {
-            const signatures = element.styles.map((style) =>
-                JSON.stringify({
-                    display: normalizedKeyword(
-                        this.uiStaticStyleProperty(style, "display"),
-                    ),
-                    grid: this.uiGridFromLoweredStyle(style),
-                    justification: normalizedKeyword(
-                        this.uiStaticStyleProperty(style, "justify-content"),
-                    ),
-                }),
-            );
-            if (new Set(signatures).size > 1) {
-                refuseAlternative(
-                    "depends on mutually exclusive cssText replacement alternatives",
-                );
-            }
-        }
-        const applyCascadeCandidate = (
-            style: string,
-            grid: UiGridProjection | undefined,
-            label: string,
-            specificity: number,
-            sourceOrder: number,
-            site?: ts.Node,
-        ): void => {
-            const displayValue = grid
-                ? "grid"
-                : normalizedKeyword(
-                      this.uiStaticStyleProperty(style, "display"),
-                  );
-            if (
-                displayValue !== undefined &&
-                wins(display, specificity, sourceOrder)
-            ) {
-                display = {
-                    value: {
-                        value: displayValue,
-                        ...(grid ? { grid } : {}),
-                        label,
-                        ...(site ? { site } : {}),
-                    },
-                    specificity,
-                    sourceOrder,
-                };
-            }
-            const justifyValue =
-                grid?.authoredJustifyContent ??
-                normalizedKeyword(
-                    this.uiStaticStyleProperty(style, "justify-content"),
-                );
-            if (
-                justifyValue !== undefined &&
-                wins(justification, specificity, sourceOrder)
-            ) {
-                justification = {
-                    value: justifyValue,
-                    specificity,
-                    sourceOrder,
-                };
-            }
-        };
-        for (let index = 0; index < activeRules.length; index++) {
-            const rule = activeRules[index]!;
-            if (
-                rule.hover ||
-                rule.maxWidth !== undefined ||
-                !this.uiRuleMatchesStaticElementWithClasses(
-                    rule,
-                    id,
-                    element,
-                    classes,
-                )
-            ) {
-                continue;
-            }
-            applyCascadeCandidate(
-                rule.style,
-                rule.grid,
-                rule.selector,
-                this.uiRuleSpecificity(rule),
-                index,
-                rule.site,
-            );
-        }
-
-        const inlineSpecificity = 0x1000000;
-        for (let index = 0; index < element.styles.length; index++) {
-            const style = element.styles[index]!;
-            const sourceOrder = activeRules.length + index;
-            const grid = this.uiGridFromLoweredStyle(style);
-            applyCascadeCandidate(
-                style,
-                grid,
-                `<${element.tag}> construction site ${id}`,
-                inlineSpecificity,
-                sourceOrder,
-            );
-        }
-
-        if (
-            possibleGrid &&
-            (display?.value.value === "__bbl_dynamic_style_value__" ||
-                justification?.value === "__bbl_dynamic_style_value__")
-        ) {
-            const message =
-                `Retained UI fixed-grid projection '${display?.value.label ?? `<${element.tag}> construction site ${id}`}' ` +
-                "has a runtime structural display or alignment override.";
-            if (display?.value.site) this.fail(display.value.site, message);
-            this.failAtFile(message);
-        }
-        if (display?.value.value === "grid" && !display.value.grid) {
-            const message =
-                `Retained UI fixed-grid projection '${display.value.label}' ` +
-                "is activated by a separate display:grid override whose " +
-                "track metadata cannot be proven.";
-            if (display.value.site) this.fail(display.value.site, message);
-            this.failAtFile(message);
-        }
-        if (display?.value.value !== "grid" || !display.value.grid) {
-            return undefined;
-        }
-        const authored = justification?.value.trim().toLowerCase();
-        const normalized = Compiler.normalizeUiGridJustification(authored);
-        if (normalized === undefined) {
-            const message =
-                `Retained UI fixed-grid projection '${display.value.label}' ` +
-                `cannot preserve justify-content '${authored}'.`;
-            if (display.value.site) this.fail(display.value.site, message);
-            this.failAtFile(message);
-        }
-        return {
-            grid: {
-                ...display.value.grid,
-                ...(justification === undefined
-                    ? {}
-                    : { authoredJustifyContent: normalized }),
-            },
-            label: display.value.label,
-            ...(display.value.site ? { site: display.value.site } : {}),
-        };
-    }
-
-    private uiGridFromLoweredStyle(
-        style: string,
-    ): UiGridProjection | undefined {
-        const columns = Number(
-            this.uiStaticStyleProperty(style, "--bbl-grid-columns"),
-        );
-        const cellWidth = Number.parseFloat(
-            this.uiStaticStyleProperty(style, "--bbl-grid-cell-width") ?? "",
-        );
-        const width = Number.parseFloat(
-            this.uiStaticStyleProperty(style, "--bbl-grid-width") ?? "",
-        );
-        const gap = Number.parseFloat(
-            this.uiStaticStyleProperty(style, "--bbl-grid-gap") ?? "",
-        );
-        const row = this.uiStaticStyleProperty(style, "--bbl-grid-row-height");
-        const rowCount = this.uiStaticStyleProperty(
-            style,
-            "--bbl-grid-row-count",
-        );
-        const justification = this.uiStaticStyleProperty(
-            style,
-            "--bbl-grid-justify-content",
-        );
-        if (
-            !Number.isInteger(columns) ||
-            columns < 1 ||
-            !Number.isFinite(cellWidth) ||
-            !Number.isFinite(width) ||
-            !Number.isFinite(gap) ||
-            (row !== undefined && !Number.isFinite(Number.parseFloat(row))) ||
-            (rowCount !== undefined &&
-                (!Number.isInteger(Number(rowCount)) || Number(rowCount) < 1))
-        ) {
-            return undefined;
-        }
-        return {
-            columns,
-            cellWidth,
-            width,
-            gap,
-            ...(justification === undefined
-                ? {}
-                : {
-                      authoredJustifyContent:
-                          justification === "center" || justification === "end"
-                              ? justification
-                              : "start",
-                  }),
-            ...(row === undefined ? {} : { rowHeight: Number.parseFloat(row) }),
-            ...(rowCount === undefined ? {} : { rowCount: Number(rowCount) }),
-        };
-    }
-
-    private validateUiGridProjection(
-        parentId: number,
-        grid: UiGridProjection,
-        label: string,
-        site?: ts.Node,
-    ): void {
-        const fail = (reason: string): never => {
-            const message =
-                `Retained UI fixed-grid projection '${label}' is not ` +
-                `provably equivalent to wrapping flex: ${reason}.`;
-            if (site) this.fail(site, message);
-            this.failAtFile(message);
-        };
-        const parent =
-            this.uiStaticElements.get(parentId) ??
-            fail("its target construction site is unknown");
-        if (!parent.childShapeKnown || parent.children.size === 0) {
-            fail("its complete direct-child shape is not statically known");
-        }
-        if (grid.rowCount !== undefined) {
-            if (!parent.childCardinalityKnown) {
-                fail(
-                    "its explicit row template requires a statically known child count",
-                );
-            }
-            const actualRows = Math.ceil(parent.children.size / grid.columns);
-            if (grid.rowCount !== actualRows) {
-                fail(
-                    `the explicit ${grid.rowCount}-row template does not match ` +
-                        `the proven ${actualRows}-row child layout`,
-                );
-            }
-        }
-        let childHeight: number | undefined;
-        for (const childId of parent.children) {
-            const child = this.uiStaticElements.get(childId)!;
-            if (!child) {
-                fail("a direct child has an unknown construction shape");
-            }
-            if (
-                !child.classShapeKnown &&
-                !this.uiUnknownAttributeMutations.some(
-                    (mutation) =>
-                        mutation.attribute === "class" &&
-                        mutation.targetId === childId,
-                )
-            ) {
-                fail(
-                    "a direct child has an unknown class or construction shape",
-                );
-            }
-            if (!child.styleShapeKnown) {
-                fail("a direct child has an unknown final cssText shape");
-            }
-            const geometryProperties = [
-                ...Compiler.UI_GRID_CHILD_GEOMETRY_PROPERTIES,
-                ...(grid.rowCount === undefined ? [] : ["display", "position"]),
-            ];
-            const parsePixels = (
-                value: string | undefined,
-            ): number | undefined => {
-                const match = value?.match(/^([0-9]+(?:\.[0-9]*)?)px$/i);
-                return match ? Number(match[1]) : undefined;
-            };
-            const heightValues = this.uiStaticElementStylePropertyValues(
-                childId,
-                "height",
-            );
-            const fixedHeight =
-                heightValues.size === 1
-                    ? parsePixels(heightValues.values().next().value)
-                    : undefined;
-            const geometryValueIsProvenEqual = (
-                property: string,
-                value: string | undefined,
-            ): boolean => {
-                const normalized = value?.trim().toLowerCase();
-                if (property === "display") {
-                    return (
-                        normalized !== "none" &&
-                        normalized !== "__bbl_dynamic_style_value__"
-                    );
-                }
-                if (property === "position") {
-                    return (
-                        normalized !== "absolute" &&
-                        normalized !== "fixed" &&
-                        normalized !== "__bbl_dynamic_style_value__"
-                    );
-                }
-                const expected = /^(?:min-|max-)?width$/.test(property)
-                    ? grid.cellWidth
-                    : /^(?:min-|max-)?height$/.test(property)
-                      ? fixedHeight
-                      : undefined;
-                return (
-                    expected !== undefined && parsePixels(value) === expected
-                );
-            };
-            const activeRules = this.uiActiveStyleRulesInCascade();
-            const changedGeometryProperty = (
-                rule: LoweredUiStyleRule,
-            ): string | undefined =>
-                geometryProperties.find((property) => {
-                    const value = this.uiStaticStyleProperty(
-                        rule.style,
-                        property,
-                    );
-                    return (
-                        value !== undefined &&
-                        !geometryValueIsProvenEqual(property, value)
-                    );
-                });
-            const unknownClassSites = new Map<string, ts.Node>();
-            for (const mutation of this.uiUnknownClassMutations) {
-                unknownClassSites.set(mutation.className, mutation.site);
-            }
-            for (const rule of activeRules) {
-                if (rule.kind !== "compound-class") continue;
-                const property = changedGeometryProperty(rule);
-                if (!property) continue;
-                const required = new Set([rule.primary, rule.secondary!]);
-                if (
-                    [...required].every((name) => unknownClassSites.has(name))
-                ) {
-                    const lastMutation = [...this.uiUnknownClassMutations]
-                        .reverse()
-                        .find((mutation) => required.has(mutation.className))!;
-                    this.fail(
-                        lastMutation.site,
-                        `Retained UI class mutations '${[...required].join(
-                            "', '",
-                        )}' have unknown targets and can jointly activate ` +
-                            `geometry rule '${rule.selector}', changing ` +
-                            `direct-child ${property}.`,
-                    );
-                }
-            }
-            for (const rule of activeRules) {
-                if (
-                    !this.uiRuleMatchesStaticElement(rule, childId, child) ||
-                    (rule.maxWidth === undefined &&
-                        !rule.hover &&
-                        !this.uiRuleDependsOnMutableClass(rule, childId, child))
-                ) {
-                    continue;
-                }
-                const property = changedGeometryProperty(rule);
-                if (property) {
-                    const trigger =
-                        rule.maxWidth !== undefined
-                            ? `max-width rule '${rule.selector}'`
-                            : rule.hover
-                              ? `hover rule '${rule.selector}'`
-                              : `runtime class rule '${rule.selector}'`;
-                    fail(`${trigger} can change direct-child ${property}`);
-                }
-            }
-            for (const mutation of this.uiUnknownClassMutations) {
-                const rule = activeRules.find(
-                    (candidate) =>
-                        this.uiRuleCouldMatchGridChildAfterUnknownClassMutation(
-                            candidate,
-                            mutation.className,
-                            childId,
-                            child,
-                        ) && changedGeometryProperty(candidate) !== undefined,
-                );
-                if (rule) {
-                    const property = changedGeometryProperty(rule)!;
-                    fail(
-                        `class mutation '${mutation.className}' has an ` +
-                            `unknown target and rule '${rule.selector}' can ` +
-                            `change direct-child ${property}`,
-                    );
-                }
-            }
-            const singleProperty = (property: string): string | undefined => {
-                const values = this.uiStaticElementStylePropertyValues(
-                    childId,
-                    property,
-                );
-                if (values.size !== 1) {
-                    fail(
-                        `direct-child ${property} differs across reachable ` +
-                            "className or cssText alternatives",
-                    );
-                }
-                return values.values().next().value;
-            };
-            if (grid.rowCount !== undefined) {
-                for (const [property, values] of [
-                    [
-                        "display",
-                        this.uiStaticElementStylePropertyValues(
-                            childId,
-                            "display",
-                        ),
-                    ],
-                    [
-                        "position",
-                        this.uiStaticElementStylePropertyValues(
-                            childId,
-                            "position",
-                        ),
-                    ],
-                ] as const) {
-                    const value = [...values].find(
-                        (candidate) =>
-                            candidate !== undefined &&
-                            !geometryValueIsProvenEqual(property, candidate),
-                    );
-                    if (value !== undefined) {
-                        fail(
-                            `explicit rows require every counted child to ` +
-                                `participate in normal flow; child ${property} ` +
-                                `is '${value}'`,
-                        );
-                    }
-                }
-            }
-            const width = singleProperty("width");
-            const height = singleProperty("height");
-            const widthPixels = parsePixels(width);
-            const heightPixels = parsePixels(height);
-            if (widthPixels !== grid.cellWidth || heightPixels === undefined) {
-                fail(
-                    `every child must have fixed ${grid.cellWidth}px width ` +
-                        "and a fixed px height",
-                );
-            }
-            if (childHeight !== undefined && childHeight !== heightPixels) {
-                fail("direct-child heights are not uniform");
-            }
-            childHeight = heightPixels;
-            for (const [property, expected] of [
-                ["min-width", widthPixels],
-                ["max-width", widthPixels],
-                ["min-height", heightPixels],
-                ["max-height", heightPixels],
-            ] as const) {
-                const value = singleProperty(property);
-                if (value !== undefined && parsePixels(value) !== expected) {
-                    fail(
-                        `child ${property} '${value}' is not proven equal to ` +
-                            `its fixed ${expected}px geometry`,
-                    );
-                }
-            }
-            if (
-                grid.rowHeight !== undefined &&
-                grid.rowHeight !== heightPixels
-            ) {
-                fail(
-                    `the ${grid.rowHeight}px row track does not match the ` +
-                        `${heightPixels}px child height`,
-                );
-            }
-            for (const property of Compiler.UI_GRID_CHILD_SPACING_PROPERTIES) {
-                const value = singleProperty(property);
-                if (
-                    value !== undefined &&
-                    !/^(?:0(?:px)?)(?:\s+0(?:px)?){0,3}$/i.test(value)
-                ) {
-                    fail(
-                        `child ${property} '${value}' changes the fixed track`,
-                    );
-                }
-            }
-            const border = singleProperty("border");
-            if (
-                border !== undefined &&
-                !/^(?:none|0(?:px)?(?:\s+transparent)?)$/i.test(border)
-            ) {
-                fail(`child border '${border}' changes the fixed track`);
-            }
-            for (const property of Compiler.UI_GRID_CHILD_BORDER_WIDTH_PROPERTIES) {
-                const value = singleProperty(property);
-                if (value !== undefined && !/^0(?:px)?$/i.test(value)) {
-                    fail(
-                        `child ${property} '${value}' changes the fixed track`,
-                    );
-                }
-            }
-        }
-        this.uiGridSubstitutions.add(
-            `${label}: repeat(${grid.columns}, ${grid.cellWidth}px), ` +
-                `${childHeight}px children, ${grid.gap}px gap` +
-                (grid.rowCount === undefined
-                    ? ""
-                    : `, ${grid.rowCount} explicit rows`),
-        );
-    }
-
-    private validateUiStaticProjection(): void {
-        const activeRules = this.uiActiveStyleRulesInCascade();
-        const parentsByChild = new Map<number, number[]>();
-        for (const [parentId, parent] of this.uiStaticElements) {
-            for (const childId of parent.children) {
-                const parents = parentsByChild.get(childId) ?? [];
-                parents.push(parentId);
-                parentsByChild.set(childId, parents);
-            }
-        }
-        this.uiValidation = {
-            activeRules,
-            parentsByChild,
-            ancestorsById: new Map(),
-        };
-        try {
-            for (const [id, element] of this.uiStaticElements) {
-                const tracks = this.uiStaticElementStylePropertyValues(id, "--bbl-fr-grid-tracks");
-                if ([...tracks].some(value => value !== undefined) && (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown)) {
-                    this.failAtFile("A fractional UI grid requires one stable track list in a statically known style cascade.");
-                }
-                for (const value of tracks) {
-                    if (value === undefined) continue;
-                    const count = value.trim().split(/\s+/).length;
-                    if (!element.childShapeKnown || !element.childCardinalityKnown || element.children.size !== count || element.markupChildren.length) {
-                        this.failAtFile("A fractional UI grid requires one statically known element child per track.");
-                    }
-                }
-            }
-            const anyGrid =
-                this.uiSawGridDeclaration ||
-                this.uiStyleRules.some((rule) => rule.grid !== undefined) ||
-                [...this.uiStaticElements.values()].some((element) =>
-                    element.styles.some(
-                        (style) =>
-                            this.uiGridFromLoweredStyle(style) !== undefined,
-                    ),
-                );
-            if (!this.uiStaticStyleCascadeKnown && anyGrid) {
-                const gridRule = this.uiStyleRules.find(
-                    (rule) => rule.grid !== undefined,
-                );
-                const message =
-                    "Retained UI fixed-grid projection requires a statically " +
-                    "ordered stylesheet attachment and contents cascade.";
-                if (gridRule?.site) this.fail(gridRule.site, message);
-                this.failAtFile(message);
-            }
-            for (const mutation of this.uiUnknownClassMutations) {
-                const gridRule = activeRules.find(
-                    (rule) =>
-                        rule.grid !== undefined &&
-                        this.uiRuleMentionsClass(rule, mutation.className),
-                );
-                if (gridRule) {
-                    this.fail(
-                        mutation.site,
-                        `Retained UI class mutation '${mutation.className}' has ` +
-                            `an unknown target and can activate fixed-grid rule ` +
-                            `'${gridRule.selector}'.`,
-                    );
-                }
-            }
-            const scopedMatches = (
-                rule: LoweredUiStyleRule,
-            ): {
-                retained: number;
-                markup: number;
-                complete: boolean;
-            } => {
-                let retained = 0;
-                let markup = 0;
-                let complete = true;
-                const ancestors = [...this.uiStaticElements.entries()].filter(
-                    ([_id, element]) =>
-                        rule.kind === "class-descendant-tag"
-                            ? element.classAlternatives.some((classes) =>
-                                  classes.has(rule.primary),
-                              )
-                            : element.ids.has(rule.primary),
-                );
-                for (const [id] of ancestors) {
-                    const descendants = this.uiStaticDescendants(id);
-                    complete = complete && descendants.complete;
-                    if (rule.kind === "class-descendant-tag") {
-                        retained += [...descendants.elements].filter(
-                            (childId) =>
-                                this.uiStaticElements.get(childId)?.tag ===
-                                rule.tag,
-                        ).length;
-                        markup += descendants.markup.filter(
-                            (node) => node.tag === rule.tag,
-                        ).length;
-                    } else {
-                        retained += [...descendants.elements].filter(
-                            (childId) =>
-                                this.uiStaticElements
-                                    .get(childId)
-                                    ?.classAlternatives.some((classes) =>
-                                        classes.has(rule.secondary!),
-                                    ),
-                        ).length;
-                        markup += descendants.markup.filter((node) =>
-                            node.classes.has(rule.secondary!),
-                        ).length;
-                    }
-                }
-                return { retained, markup, complete };
-            };
-
-            for (const rule of activeRules) {
-                if (
-                    rule.kind === "class-descendant-tag" ||
-                    rule.kind === "id-descendant-class"
-                ) {
-                    const matches = scopedMatches(rule);
-                    if (
-                        !matches.complete ||
-                        matches.retained + matches.markup === 0
-                    ) {
-                        const reason = !matches.complete
-                            ? "the ancestor has a dynamically-shaped retained subtree"
-                            : "no statically-known descendant matches it";
-                        if (rule.site) {
-                            this.fail(
-                                rule.site,
-                                `Retained stylesheet selector '${rule.selector}' cannot be projected: ${reason}.`,
-                            );
-                        }
-                        this.failAtFile(
-                            `Retained stylesheet selector '${rule.selector}' cannot be projected: ${reason}.`,
-                        );
-                    }
-                }
-            }
-
-            const activeGridRules = activeRules.filter(
-                (rule) => rule.grid !== undefined,
-            );
-            for (const rule of activeGridRules) {
-                const hasTarget = [...this.uiStaticElements.values()].some(
-                    (element) => this.uiRuleMatchesDirect(rule, element),
-                );
-                if (!hasTarget) {
-                    if (rule.site) {
-                        this.fail(
-                            rule.site,
-                            `Retained UI fixed-grid selector '${rule.selector}' has no statically-known target.`,
-                        );
-                    }
-                    this.failAtFile(
-                        `Retained UI fixed-grid selector '${rule.selector}' has no statically-known target.`,
-                    );
-                }
-            }
-            const effectiveGrids = new Map<
-                number,
-                Array<{
-                    grid: UiGridProjection;
-                    label: string;
-                    site?: ts.Node;
-                }>
-            >();
-            for (const [id, element] of this.uiStaticElements) {
-                for (const classes of element.classAlternatives) {
-                    const effective = this.uiStaticEffectiveGrid(id, classes);
-                    if (effective) {
-                        const states = effectiveGrids.get(id) ?? [];
-                        states.push(effective);
-                        effectiveGrids.set(id, states);
-                    }
-                }
-            }
-            for (const mutation of this.uiUnknownAttributeMutations) {
-                for (const [id, element] of this.uiStaticElements) {
-                    const structuralRule = activeRules.find(
-                        (rule) =>
-                            (rule.grid !== undefined ||
-                                this.uiStaticStyleProperty(
-                                    rule.style,
-                                    "display",
-                                ) !== undefined ||
-                                this.uiStaticStyleProperty(
-                                    rule.style,
-                                    "justify-content",
-                                ) !== undefined) &&
-                            (rule.grid !== undefined ||
-                                effectiveGrids.has(id)) &&
-                            this.uiUnknownAttributeCouldAffectRule(
-                                mutation,
-                                rule,
-                                id,
-                                element,
-                            ),
-                    );
-                    if (structuralRule) {
-                        this.fail(
-                            mutation.site,
-                            `Retained UI runtime-unknown ${mutation.attribute} ` +
-                                `mutation can change fixed-grid structural rule ` +
-                                `'${structuralRule.selector}'.`,
-                        );
-                    }
-                }
-            }
-            for (const mutation of this.uiUnknownAttributeMutations) {
-                for (const parentId of effectiveGrids.keys()) {
-                    const parent = this.uiStaticElements.get(parentId)!;
-                    const includesExplicitRows = effectiveGrids
-                        .get(parentId)!
-                        .some(
-                            (effective) =>
-                                effective.grid.rowCount !== undefined,
-                        );
-                    for (const childId of parent.children) {
-                        const child = this.uiStaticElements.get(childId);
-                        if (!child) continue;
-                        const geometryRule = activeRules.find(
-                            (rule) =>
-                                this.uiGridChildGeometryProperty(
-                                    rule,
-                                    includesExplicitRows,
-                                ) !== undefined &&
-                                this.uiUnknownAttributeCouldAffectRule(
-                                    mutation,
-                                    rule,
-                                    childId,
-                                    child,
-                                ),
-                        );
-                        if (geometryRule) {
-                            this.fail(
-                                mutation.site,
-                                `Retained UI runtime-unknown ${mutation.attribute} ` +
-                                    `mutation can alter fixed-grid child ` +
-                                    `${this.uiGridChildGeometryProperty(
-                                        geometryRule,
-                                        includesExplicitRows,
-                                    )} ` +
-                                    `through rule '${geometryRule.selector}'.`,
-                            );
-                        }
-                    }
-                }
-            }
-            for (const [id, states] of effectiveGrids) {
-                for (const effective of states) {
-                    this.validateUiGridProjection(
-                        id,
-                        effective.grid,
-                        effective.label,
-                        effective.site,
-                    );
-                }
-            }
-
-            for (const query of this.uiPendingClassQueries) {
-                if (query.root.uiStaticId === undefined) {
-                    this.fail(
-                        query.site,
-                        "Retained UI querySelectorAll requires a statically-known retained root.",
-                    );
-                }
-                const descendants = this.uiStaticDescendants(
-                    query.root.uiStaticId,
-                );
-                const unknownClass = [...descendants.elements].some(
-                    (id) => !this.uiStaticElements.get(id)?.classShapeKnown,
-                );
-                const retainedMatches = [...descendants.elements].filter(
-                    (id) => {
-                        const element = this.uiStaticElements.get(id);
-                        return (
-                            element !== undefined &&
-                            this.uiStaticElementAlwaysHasClass(
-                                element,
-                                query.className,
-                            )
-                        );
-                    },
-                );
-                const markupMatches = descendants.markup.filter((node) =>
-                    node.classes.has(query.className),
-                );
-                if (
-                    !descendants.complete ||
-                    unknownClass ||
-                    retainedMatches.length === 0 ||
-                    markupMatches.length > 0
-                ) {
-                    this.fail(
-                        query.site,
-                        `Retained UI querySelectorAll('.${query.className}') ` +
-                            "requires a complete statically-known retained subtree " +
-                            "with at least one matching retained element and no " +
-                            "matching innerHTML-only node.",
-                    );
-                }
-            }
-        } finally {
-            this.uiValidation = undefined;
-        }
-    }
-
-    private compileUiStyleString(
-        expression: ts.Expression,
-        ownerId?: number,
-    ): string {
-        const staticValue = this.tryUiStaticString(expression);
-        if (staticValue !== undefined) {
-            const lowered = this.lowerUiAttributeLiteral(
-                "style",
-                staticValue,
-                expression,
-            );
-            if (ownerId !== undefined) {
-                const owner = this.uiStaticElements.get(ownerId);
-                if (owner) this.recordUiStaticStyles(owner, [lowered]);
-            }
-            return this.cppString(lowered);
-        }
-        const unwrapped = this.unwrap(expression);
-        const recordCandidates = (candidate: ts.Expression): void => {
-            if (ownerId === undefined) return;
-            const owner = this.uiStaticElements.get(ownerId);
-            if (!owner) return;
-            const candidates = this.uiStringCandidates(candidate);
-            if (!candidates) {
-                owner.styleShapeKnown = false;
-                return;
-            }
-            this.recordUiStaticStyles(
-                owner,
-                candidates.map((value) =>
-                    this.lowerUiAttributeLiteral("style", value, expression),
-                ),
-            );
-        };
-        if (ts.isConditionalExpression(unwrapped)) {
-            recordCandidates(unwrapped);
-            return (
-                `(${this.compileCondition(unwrapped.condition)} ? ` +
-                `${this.compileUiStyleString(unwrapped.whenTrue)} : ` +
-                `${this.compileUiStyleString(unwrapped.whenFalse)})`
-            );
-        }
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken
-        ) {
-            const containsConditional = (node: ts.Expression): boolean => {
-                const current = this.unwrap(node);
-                return (
-                    ts.isConditionalExpression(current) ||
-                    (ts.isBinaryExpression(current) &&
-                        current.operatorToken.kind ===
-                            ts.SyntaxKind.PlusToken &&
-                        (containsConditional(current.left) ||
-                            containsConditional(current.right)))
-                );
-            };
-            if (containsConditional(unwrapped)) {
-                recordCandidates(unwrapped);
-                return (
-                    `std::string(${this.compileUiStyleString(unwrapped.left)}) + ` +
-                    this.compileUiStyleString(unwrapped.right)
-                );
-            }
-        }
-        const sourceParts = this.collectUiStringParts(unwrapped);
-        if (sourceParts) {
-            const substitutions: ts.Expression[] = [];
-            let source = "";
-            for (const part of sourceParts) {
-                if (typeof part === "string") {
-                    source += part;
-                } else {
-                    source += `__BBLITE_UI_STYLE_${substitutions.length}__`;
-                    substitutions.push(part);
-                }
-            }
-            const lowered = this.lowerUiAttributeLiteral(
-                "style",
-                source,
-                expression,
-            );
-            if (ownerId !== undefined) {
-                const owner = this.uiStaticElements.get(ownerId);
-                if (owner) this.recordUiStaticStyles(owner, [lowered]);
-            }
-            const chunks = lowered.split(
-                /(__BBLITE_UI_(?:STYLE|ASSET)_\d+__)/g,
-            );
-            const parts: string[] = [];
-            for (const chunk of chunks) {
-                if (!chunk) continue;
-                const marker = chunk.match(
-                    /^__BBLITE_UI_(STYLE|ASSET)_(\d+)__$/,
-                );
-                if (!marker) {
-                    parts.push(this.cppString(chunk));
-                    continue;
-                }
-                const substitution = this.uiTemplateSubstitutionCpp(
-                    substitutions[Number(marker[2])]!,
-                    "Native UI cssText",
-                );
-                parts.push(substitution);
-            }
-            this.reachJsData();
-            return `bbl::js::concat(${parts.join(", ")})`;
-        }
-        this.fail(
-            expression,
-            "Native UI cssText must be a template or static fragments joined by string concatenation or a conditional.",
-        );
-    }
-
-    private lowerUiMarkupLiteral(
-        value: string,
-        site?: ts.Node,
-        ownerId?: number,
-    ): string {
-        const fail = (message: string): never => {
-            if (site) this.fail(site, `Native UI innerHTML ${message}`);
-            this.failAtFile(`Native UI innerHTML ${message}`);
-        };
-        const roots: UiStaticMarkupNode[] = [];
-        const stack: UiStaticMarkupNode[] = [];
-        const output: string[] = [];
-        let nextMarkupNodeId = 0;
-        const svgPaintStack: Array<{
-            usesCurrentColor: boolean;
-            usesLiteralPaint: boolean;
-            fill: string;
-            stroke: string;
-            openingOutputIndex?: number;
-        }> = [];
-        const escapeAttribute = (text: string): string =>
-            text
-                .replaceAll("&", "&amp;")
-                .replaceAll('"', "&quot;")
-                .replaceAll("<", "&lt;")
-                .replaceAll(">", "&gt;");
-        const numeric = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
-        const color =
-            /^(?:none|currentColor|#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z][a-z0-9-]*)$/i;
-        const pathData =
-            /^(?:(?:[MmLlHhVvCcSsQqTtAaZz])|(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)|[\s,])*$/;
-        const svgAttributeSchemas: Record<
-            "svg" | "path" | "rect",
-            {
-                allowed: ReadonlySet<string>;
-                numeric: ReadonlySet<string>;
-            }
-        > = {
-            svg: {
-                allowed: new Set([
-                    "viewbox",
-                    "fill",
-                    "stroke",
-                    "stroke-width",
-                    "stroke-linecap",
-                    "stroke-linejoin",
-                    "width",
-                    "height",
-                    "xmlns",
-                ]),
-                numeric: new Set(["width", "height", "stroke-width"]),
-            },
-            path: {
-                allowed: new Set([
-                    "d",
-                    "fill",
-                    "stroke",
-                    "stroke-width",
-                    "stroke-linecap",
-                    "stroke-linejoin",
-                ]),
-                numeric: new Set(["stroke-width"]),
-            },
-            rect: {
-                allowed: new Set([
-                    "x",
-                    "y",
-                    "width",
-                    "height",
-                    "rx",
-                    "ry",
-                    "fill",
-                    "stroke",
-                    "stroke-width",
-                ]),
-                numeric: new Set([
-                    "x",
-                    "y",
-                    "width",
-                    "height",
-                    "rx",
-                    "ry",
-                    "stroke-width",
-                ]),
-            },
-        };
-        let cursor = 0;
-        while (cursor < value.length) {
-            const opening = value.indexOf("<", cursor);
-            if (opening < 0) {
-                const text = value.slice(cursor);
-                if (
-                    stack.some((node) => node.tag === "svg") &&
-                    text.trim().length > 0
-                ) {
-                    fail("does not support text inside <svg>.");
-                }
-                output.push(text);
-                break;
-            }
-            const text = value.slice(cursor, opening);
-            if (
-                stack.some((node) => node.tag === "svg") &&
-                text.trim().length > 0
-            ) {
-                fail("does not support text inside <svg>.");
-            }
-            output.push(text);
-
-            let quote = "";
-            let closing = opening + 1;
-            for (; closing < value.length; closing++) {
-                const character = value[closing]!;
-                if (quote) {
-                    if (character === quote && value[closing - 1] !== "\\") {
-                        quote = "";
-                    }
-                } else if (character === "'" || character === '"') {
-                    quote = character;
-                } else if (character === ">") {
-                    break;
-                }
-            }
-            if (closing >= value.length) fail("contains an unterminated tag.");
-            let token = value.slice(opening + 1, closing).trim();
-            cursor = closing + 1;
-            if (token.startsWith("!") || token.startsWith("?")) {
-                fail(`does not support '<${token}>'.`);
-            }
-            if (token.startsWith("/")) {
-                const tag = token.slice(1).trim().toLowerCase();
-                if (!/^(?:div|span|h1|h2|p|button|b|a|svg)$/.test(tag)) {
-                    fail(`does not support closing tag '</${tag}>'.`);
-                }
-                const current = stack.pop();
-                if (!current || current.tag !== tag) {
-                    fail(`has mismatched closing tag '</${tag}>'.`);
-                }
-                if (tag === "svg") {
-                    const paint = svgPaintStack.pop()!;
-                    if (
-                        paint.usesCurrentColor &&
-                        paint.openingOutputIndex !== undefined
-                    ) {
-                        const openingTag = output[paint.openingOutputIndex]!;
-                        output[paint.openingOutputIndex] =
-                            openingTag.slice(0, -1) +
-                            ' data-bbl-current-color="true">';
-                    }
-                }
-                output.push(`</${tag}>`);
-                continue;
-            }
-
-            const selfClosing = /\/\s*$/.test(token);
-            if (selfClosing) token = token.replace(/\/\s*$/, "").trim();
-            const tagMatch =
-                token.match(/^([A-Za-z][A-Za-z0-9-]*)/) ??
-                fail(`contains invalid tag '<${token}>'.`);
-            const tag = tagMatch[1]!.toLowerCase();
-            const insideSvg = stack.some((node) => node.tag === "svg");
-            const svgPaint =
-                tag === "svg"
-                    ? {
-                          usesCurrentColor: false,
-                          usesLiteralPaint: false,
-                          fill: "black",
-                          stroke: "none",
-                      }
-                    : insideSvg
-                      ? svgPaintStack[svgPaintStack.length - 1]
-                      : undefined;
-            if (
-                (!insideSvg &&
-                    !/^(?:div|span|h1|h2|p|button|b|a|svg)$/.test(tag)) ||
-                (insideSvg && !/^(?:path|rect)$/.test(tag))
-            ) {
-                fail(`tag '<${tag}>' is outside the bounded HTML/SVG subset.`);
-            }
-            if ((tag === "path" || tag === "rect") !== selfClosing) {
-                fail(`<${tag}> must use the self-closing form.`);
-            }
-            if (
-                /^(?:div|span|h1|h2|p|button|b|a|svg)$/.test(tag) &&
-                selfClosing
-            ) {
-                fail(`<${tag}> must have an explicit closing tag.`);
-            }
-
-            const attributes: Array<{ name: string; value: string }> = [];
-            let attributeText = token.slice(tagMatch[0].length);
-            while (attributeText.trim().length > 0) {
-                attributeText = attributeText.trimStart();
-                const attribute =
-                    attributeText.match(
-                        /^([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*(["'])([\s\S]*?)\2/,
-                    ) ??
-                    fail(
-                        `tag '<${tag}>' has an invalid or unquoted attribute.`,
-                    );
-                attributes.push({
-                    name: attribute[1]!,
-                    value: attribute[3]!,
-                });
-                attributeText = attributeText.slice(attribute[0].length);
-            }
-
-            const classes = new Set<string>();
-            const attributeNames = new Set<string>();
-            const loweredAttributes: Array<{ name: string; value: string }> =
-                [];
-            const validateSharedSvgAttribute = (
-                name: string,
-                lowerName: string,
-                value: string,
-            ): string => {
-                if (
-                    (lowerName === "fill" || lowerName === "stroke") &&
-                    !color.test(value)
-                ) {
-                    fail(
-                        `attribute '${name}' on <${tag}> has an unsupported color.`,
-                    );
-                }
-                if (
-                    lowerName === "stroke-linecap" &&
-                    !/^(?:butt|round|square)$/.test(value)
-                ) {
-                    fail(
-                        "attribute 'stroke-linecap' has an unsupported value.",
-                    );
-                }
-                if (
-                    lowerName === "stroke-linejoin" &&
-                    !/^(?:miter|round|bevel)$/.test(value)
-                ) {
-                    fail(
-                        "attribute 'stroke-linejoin' has an unsupported value.",
-                    );
-                }
-                return value.toLowerCase() === "currentcolor" ? "white" : value;
-            };
-            for (const attribute of attributes) {
-                const name = attribute.name;
-                const lowerName = name.toLowerCase();
-                if (attributeNames.has(lowerName)) {
-                    fail(`attribute '${name}' is duplicated on <${tag}>.`);
-                }
-                attributeNames.add(lowerName);
-                if (attribute.value.includes("__BBLITE_UI_MARKUP_")) {
-                    fail(`requires static attribute '${name}' on <${tag}>.`);
-                }
-                let attributeValue = attribute.value;
-                if (!insideSvg && tag !== "svg") {
-                    const allowed = new Set([
-                        "class",
-                        "style",
-                        "id",
-                        ...(tag === "button" ? ["type", "data-action"] : []),
-                        ...(tag === "a" ? ["href", "target", "rel"] : []),
-                    ]);
-                    if (!allowed.has(lowerName)) {
-                        fail(
-                            `attribute '${name}' is not supported on <${tag}>.`,
-                        );
-                    }
-                    if (lowerName === "class") {
-                        for (const className of attributeValue
-                            .split(/\s+/)
-                            .filter(Boolean)) {
-                            if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(className)) {
-                                fail(`class '${className}' is not valid.`);
-                            }
-                            classes.add(className);
-                        }
-                    } else if (lowerName === "style") {
-                        attributeValue = this.lowerUiAttributeLiteral(
-                            "style",
-                            attributeValue,
-                            site,
-                        );
-                        if (/^(?:div|h1|h2|p)$/.test(tag)) {
-                            attributeValue = `display:block;${attributeValue}`;
-                        }
-                    } else if (
-                        lowerName === "type" &&
-                        attributeValue.toLowerCase() !== "button"
-                    ) {
-                        fail("<button> supports only type='button'.");
-                    } else if (
-                        lowerName === "href" &&
-                        !/^https:\/\//i.test(attributeValue)
-                    ) {
-                        fail("<a> requires a static HTTPS href.");
-                    } else if (
-                        lowerName === "target" &&
-                        attributeValue !== "_blank"
-                    ) {
-                        fail("<a> supports only target='_blank'.");
-                    } else if (
-                        lowerName === "rel" &&
-                        attributeValue !== "noopener"
-                    ) {
-                        fail("<a> supports only rel='noopener'.");
-                    }
-                } else {
-                    const svgTag = tag as keyof typeof svgAttributeSchemas;
-                    const schema = svgAttributeSchemas[svgTag];
-                    if (!schema.allowed.has(lowerName)) {
-                        fail(
-                            `attribute '${name}' is not supported on <${tag}>.`,
-                        );
-                    }
-                    if (
-                        schema.numeric.has(lowerName) &&
-                        !numeric.test(attributeValue)
-                    ) {
-                        fail(
-                            `attribute '${name}' on <${tag}> must be numeric.`,
-                        );
-                    }
-                    if (
-                        tag === "path" &&
-                        lowerName === "d" &&
-                        !pathData.test(attributeValue)
-                    ) {
-                        fail(
-                            "attribute 'd' contains unsupported SVG path data.",
-                        );
-                    }
-                    if (
-                        tag === "svg" &&
-                        lowerName === "viewbox" &&
-                        !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\s+[+-]?(?:\d+(?:\.\d*)?|\.\d+)){3}$/.test(
-                            attributeValue.trim(),
-                        )
-                    ) {
-                        fail("attribute 'viewBox' must contain four numbers.");
-                    }
-                    if (
-                        tag === "svg" &&
-                        lowerName === "xmlns" &&
-                        attributeValue !== "http://www.w3.org/2000/svg"
-                    ) {
-                        fail("attribute 'xmlns' has an unsupported value.");
-                    }
-                }
-                if (tag === "svg" || tag === "path" || tag === "rect") {
-                    attributeValue = validateSharedSvgAttribute(
-                        name,
-                        lowerName,
-                        attributeValue,
-                    );
-                }
-                if (
-                    tag === "svg" &&
-                    svgPaint &&
-                    (lowerName === "fill" || lowerName === "stroke")
-                ) {
-                    svgPaint[lowerName] = attribute.value.trim().toLowerCase();
-                }
-                loweredAttributes.push({
-                    name: lowerName === "viewbox" ? "viewBox" : name,
-                    value: attributeValue,
-                });
-            }
-            if ((tag === "path" || tag === "rect") && svgPaint) {
-                const declaredPaint = (name: "fill" | "stroke"): string =>
-                    attributes
-                        .find(
-                            (attribute) =>
-                                attribute.name.toLowerCase() === name,
-                        )
-                        ?.value.trim()
-                        .toLowerCase() ?? svgPaint[name];
-                for (const paint of [
-                    declaredPaint("fill"),
-                    declaredPaint("stroke"),
-                ]) {
-                    if (paint === "none") continue;
-                    if (paint === "currentcolor") {
-                        svgPaint.usesCurrentColor = true;
-                    } else {
-                        svgPaint.usesLiteralPaint = true;
-                    }
-                }
-                if (svgPaint.usesCurrentColor && svgPaint.usesLiteralPaint) {
-                    fail(
-                        "cannot mix currentColor with literal SVG paints (including the implicit default fill:black) because whole-image tinting would recolor the other paint; 'none' is non-paint.",
-                    );
-                }
-            }
-            if (tag === "path" && !attributeNames.has("d")) {
-                fail("<path> requires static path data in attribute 'd'.");
-            }
-            if (
-                tag === "rect" &&
-                !["x", "y", "width", "height"].every((name) =>
-                    attributeNames.has(name),
-                )
-            ) {
-                fail("<rect> requires static x, y, width, and height.");
-            }
-            const node: UiStaticMarkupNode = {
-                id: nextMarkupNodeId++,
-                tag,
-                classes,
-                attributes: new Map(
-                    loweredAttributes.map(({ name, value }) => [
-                        name.toLowerCase(),
-                        value,
-                    ]),
-                ),
-                children: [],
-            };
-            const parent = stack[stack.length - 1];
-            if (parent) parent.children.push(node);
-            else roots.push(node);
-            const renderedAttributes = loweredAttributes
-                .map(
-                    ({ name, value: attributeValue }) =>
-                        ` ${name}="${escapeAttribute(attributeValue)}"`,
-                )
-                .join("");
-            output.push(
-                `<${tag}${renderedAttributes} data-bbl-node="${node.id}"${selfClosing ? "/" : ""}>`,
-            );
-            if (tag === "svg") {
-                svgPaint!.openingOutputIndex = output.length - 1;
-            }
-            if (!selfClosing) {
-                stack.push(node);
-                if (tag === "svg") svgPaintStack.push(svgPaint!);
-            }
-            if (tag === "svg") {
-                this.reachFeature("ui:inline-svg", site);
-            }
-        }
-        if (stack.length > 0) {
-            fail(
-                `is missing closing tag '</${stack[stack.length - 1]!.tag}>'.`,
-            );
-        }
-        this.recordUiStaticMarkup(ownerId, roots);
-        return output.join("");
-    }
-
-    private compileUiMarkupString(
-        expression: ts.Expression,
-        ownerId?: number,
-    ): string {
-        const staticValue = this.tryUiStaticString(expression);
-        if (staticValue !== undefined) {
-            return this.cppString(
-                this.lowerUiMarkupLiteral(staticValue, expression, ownerId),
-            );
-        }
-        const unwrapped = this.unwrap(expression);
-        if (ts.isConditionalExpression(unwrapped)) {
-            return (
-                `(${this.compileCondition(unwrapped.condition)} ? ` +
-                `${this.compileUiMarkupString(unwrapped.whenTrue, ownerId)} : ` +
-                `${this.compileUiMarkupString(unwrapped.whenFalse, ownerId)})`
-            );
-        }
-        const sourceParts = this.collectUiStringParts(unwrapped);
-        if (!sourceParts) {
-            this.fail(
-                expression,
-                "Native UI innerHTML must be a template or static fragments joined by string concatenation or a conditional.",
-            );
-        }
-        const substitutions: ts.Expression[] = [];
-        let source = "";
-        for (const part of sourceParts) {
-            if (typeof part === "string") {
-                source += part;
-            } else {
-                source += `__BBLITE_UI_MARKUP_${substitutions.length}__`;
-                substitutions.push(part);
-            }
-        }
-        const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
-        const chunks = lowered.split(/(__BBLITE_UI_MARKUP_\d+__)/g);
-        const parts: string[] = [];
-        for (const chunk of chunks) {
-            if (!chunk) continue;
-            const marker = chunk.match(/^__BBLITE_UI_MARKUP_(\d+)__$/);
-            if (!marker) {
-                parts.push(this.cppString(chunk));
-                continue;
-            }
-            parts.push(
-                `bbl::ui_escape_rml(${this.uiTemplateSubstitutionCpp(
-                    substitutions[Number(marker[1])]!,
-                    "Native UI innerHTML",
-                    true,
-                )})`,
-            );
-        }
-        this.reachJsData();
-        return `bbl::js::concat(${parts.join(", ")})`;
-    }
-
-    private compileUiBrowserFileAttribute(
-        element: Value,
-        engine: string,
-        name: string,
-        value: ts.Expression,
-        site: ts.Node,
-        syntax: "property" | "attribute",
-    ): string | undefined {
-        if (element.uiTag === "input") {
-            if (
-                name === "multiple" ||
-                name === "webkitdirectory" ||
-                name === "directory"
-            ) {
-                this.fail(
-                    site,
-                    `File input ${syntax} '${name}' is not supported; the native picker accepts one file and no directories.`,
-                );
-            }
-            if (name === "type") {
-                const inputType =
-                    this.compileStringLiteral(value).toLowerCase();
-                if (inputType !== "file") {
-                    this.fail(
-                        value,
-                        `Retained native <input> supports only the static type 'file', not '${inputType}'.`,
-                    );
-                }
-                element.uiFileInput = true;
-                this.reachFeature("browser:file", site);
-                return `bbl::ui_set_file_input(${engine}, ${element.cpp})`;
-            }
-            if (name === "accept") {
-                if (!element.uiFileInput) {
-                    this.fail(
-                        site,
-                        "input accept requires a preceding static type='file'.",
-                    );
-                }
-                const accept = validateFileAccept(
-                    this,
-                    this.compileStringLiteral(value),
-                    value,
-                );
-                this.reachFeature("browser:file", site);
-                return (
-                    `bbl::ui_set_file_accept(${engine}, ${element.cpp}, ` +
-                    `${this.cppString(accept)})`
-                );
-            }
-        }
-        if (element.uiTag !== "a") return undefined;
-        if (name === "href") {
-            const url = this.compileValue(value);
-            this.expectKind(url, "object-url", value);
-            this.expectSameEngine(element, url, site);
-            this.reachFeature("browser:file", site);
-            return `bbl::ui_set_download_url(${engine}, ${element.cpp}, ${url.cpp})`;
-        }
-        if (name === "download") {
-            this.reachFeature("browser:file", site);
-            return (
-                `bbl::ui_set_download_name(${engine}, ${element.cpp}, ` +
-                `${this.uiStringCpp(value, "anchor download")})`
-            );
-        }
-        return undefined;
-    }
-
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
-        const globalLeft = this.unwrap(expression.left);
-        if (this.features.has("engine:device-recovery") && ts.isPropertyAccessExpression(globalLeft) &&
-            ts.isIdentifier(this.unwrap(globalLeft.expression)) && this.unwrap(globalLeft.expression).getText() === "globalThis" &&
-            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            (ts.isArrowFunction(expression.right) || ts.isFunctionExpression(expression.right))) {
-            this.emit(`bbl::set_global_callback(${this.requireDefaultEngine(expression)}, ${this.cppString(globalLeft.name.text)}, ${this.compileVoidCallback(expression.right)});`);
-            return true;
-        }
-        const canvasDataset = this.primaryCanvasDataset(expression.left);
-        if (canvasDataset && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-            if (canvasDataset === "ready") this.primaryCanvasReadyGate = true;
-            this.emit(`bbl::set_canvas_dataset(${this.requireDefaultEngine(expression)}, ${this.cppString(canvasDataset)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`);
-            return true;
-        }
-        if (
-            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-            !ts.isPropertyAccessExpression(expression.left)
-        ) {
-            return false;
-        }
-        const property = expression.left.name.text;
-        const dataset = this.unwrap(expression.left.expression);
-        if (this.options.workers && ts.isPropertyAccessExpression(dataset) && dataset.name.text === "dataset") {
-            const element = this.uiElementValue(dataset.expression);
-            if (element) {
-                const name = `data-${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`;
-                this.emit(`bbl::ui_set_attribute(${this.requireEngine(element, dataset)}, ${element.cpp}, ${this.cppString(name)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`);
-                return true;
-            }
-        }
-        const directElement = this.uiElementValue(expression.left.expression);
-        if (directElement) {
-            const engine = this.requireEngine(directElement, expression.left);
-            if (property === "value" && (directElement.uiTag === "textarea" || directElement.uiTag === "input") && !directElement.uiFileInput) {
-                this.emit(`bbl::ui_set_form_value(${engine}, ${directElement.cpp}, ${this.uiStringCpp(expression.right, "Form value")});`);
-                return true;
-            }
-            const browserFile = this.compileUiBrowserFileAttribute(
-                directElement,
-                engine,
-                property,
-                expression.right,
-                expression,
-                "property",
-            );
-            if (browserFile) {
-                this.emit(`${browserFile};`);
-                return true;
-            }
-            if (
-                directElement.uiCanvas &&
-                !directElement.uiCanvasContext &&
-                (property === "width" || property === "height")
-            ) {
-                // The probe and the emission still compile the RHS twice:
-                // collapsing them to one `castNumber(size, "double")` is
-                // semantically clean, but the duplicate resolution burns
-                // anonymous-record counter numbers, and removing it
-                // renumbers quake's record types (Record22 -> Record18).
-                // Byte identity of generated/ wins until a renumbering
-                // window is open.
-                const staticSize = this.compileValue(
-                    expression.right,
-                ).staticNumber;
-                if (
-                    staticSize !== undefined &&
-                    directElement.uiCanvasId !== undefined
-                ) {
-                    const sizes = this.uiCanvasStaticSizes.get(
-                        directElement.uiCanvasId,
-                    ) ?? { pairs: new Set<string>() };
-                    sizes[property] = staticSize;
-                    if (
-                        sizes.width !== undefined &&
-                        sizes.height !== undefined
-                    ) {
-                        sizes.pairs.add(`${sizes.width}x${sizes.height}`);
-                    }
-                    this.uiCanvasStaticSizes.set(
-                        directElement.uiCanvasId,
-                        sizes,
-                    );
-                }
-                this.emit(
-                    `bbl::ui_canvas_set_${property}(${engine}, ${directElement.cpp}, ` +
-                        `${this.compileNumber(expression.right, "double")});`,
-                );
-                return true;
-            }
-            if (directElement.uiCanvasContext) {
-                if (property === "fillStyle" || property === "strokeStyle") {
-                    this.emit(
-                        `bbl::ui_canvas_set_${property === "fillStyle" ? "fill_style" : "stroke_style"}(` +
-                            `${engine}, ${directElement.cpp}, ` +
-                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    );
-                    return true;
-                }
-                if (property === "lineWidth") {
-                    this.emit(
-                        `bbl::ui_canvas_set_line_width(${engine}, ${directElement.cpp}, ` +
-                            `${this.compileNumber(expression.right, "double")});`,
-                    );
-                    return true;
-                }
-                if (property === "lineJoin" || property === "lineCap") {
-                    this.emit(
-                        `bbl::ui_canvas_set_${property === "lineJoin" ? "line_join" : "line_cap"}(` +
-                            `${engine}, ${directElement.cpp}, ` +
-                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    );
-                    return true;
-                }
-                if (property === "imageSmoothingEnabled") {
-                    this.emit(
-                        `bbl::ui_canvas_set_image_smoothing(${engine}, ${directElement.cpp}, ` +
-                            `${this.compileBoolean(expression.right)});`,
-                    );
-                    return true;
-                }
-                if (
-                    property === "font" ||
-                    property === "textBaseline" ||
-                    property === "shadowColor"
-                ) {
-                    const runtimeProperty =
-                        property === "textBaseline"
-                            ? "text_baseline"
-                            : property === "shadowColor"
-                              ? "shadow_color"
-                              : "font";
-                    this.emit(
-                        `bbl::ui_canvas_set_${runtimeProperty}(${engine}, ${directElement.cpp}, ` +
-                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    );
-                    return true;
-                }
-                if (property === "shadowBlur") {
-                    this.emit(
-                        `bbl::ui_canvas_set_shadow_blur(${engine}, ${directElement.cpp}, ` +
-                            `${this.compileNumber(expression.right, "double")});`,
-                    );
-                    return true;
-                }
-            }
-            if (property === "textContent" || property === "innerText") {
-                if (
-                    this.uiCreatedElementTag(expression.left.expression) ===
-                    "style"
-                ) {
-                    const sheet = this.compileStringLiteral(expression.right);
-                    this.emit(
-                        `bbl::ui_clear_style_rules(${engine}, ${directElement.cpp});`,
-                    );
-                    for (const rule of this.lowerUiStyleSheetLiteral(
-                        sheet,
-                        expression.right,
-                        directElement.uiStaticId,
-                    )) {
-                        if (
-                            (rule.kind === "class" || rule.kind === "id") &&
-                            !rule.hover &&
-                            rule.maxWidth === undefined
-                        ) {
-                            this.emit(
-                                `bbl::ui_add_${rule.kind}_style(${engine}, ` +
-                                    `${directElement.cpp}, ` +
-                                    `${this.cppString(rule.primary)}, ` +
-                                    `${this.cppString(rule.style)});`,
-                            );
-                        } else {
-                            this.emit(
-                                `bbl::ui_add_style_rule(${engine}, ${directElement.cpp}, ` +
-                                    `bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}, ` +
-                                    `${this.cppString(rule.primary)}, ` +
-                                    `${this.cppString(rule.secondary ?? "")}, ` +
-                                    `${this.cppString(rule.tag ?? "")}, ` +
-                                    `${rule.hover ? "true" : "false"}, ` +
-                                    `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                                    `${this.cppString(rule.style)});`,
-                            );
-                        }
-                    }
-                }
-                this.emit(
-                    `bbl::ui_set_text(${engine}, ${directElement.cpp}, ` +
-                        `${this.uiStringCpp(expression.right, `UI ${property}`)});`,
-                );
-                return true;
-            }
-            if (property === "innerHTML") {
-                this.emit(
-                    `bbl::ui_set_inner_rml(${engine}, ${directElement.cpp}, ` +
-                        `${this.compileUiMarkupString(
-                            expression.right,
-                            directElement.uiStaticId,
-                        )});`,
-                );
-                return true;
-            }
-            const attribute =
-                property === "className"
-                    ? "class"
-                    : property === "id" || property === "type"
-                      ? property
-                      : undefined;
-            if (attribute) {
-                if (attribute === "class" || attribute === "id") {
-                    this.recordUiStaticAttribute(
-                        directElement,
-                        attribute,
-                        expression.right,
-                    );
-                }
-                this.emit(
-                    `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ` +
-                        `${this.cppString(attribute)}, ` +
-                        `${this.uiStringCpp(expression.right, `UI ${property}`)});`,
-                );
-                return true;
-            }
-        }
-        const style = this.unwrap(expression.left.expression);
-        if (
-            !ts.isPropertyAccessExpression(style) ||
-            style.name.text !== "style"
-        ) {
-            return false;
-        }
-        if (property === "cursor" && this.isCanvasElement(style.expression)) {
-            this.emit(
-                `bbl::set_canvas_cursor(${this.requireDefaultEngine(expression)}, ` +
-                    `${this.uiStringCpp(expression.right, "canvas style.cursor")});`,
-            );
-            return true;
-        }
-        const styleElement = this.uiElementValue(style.expression);
-        if (!styleElement) return false;
-        const engine = this.requireEngine(styleElement, expression.left);
-        if (property === "cssText") {
-            this.emit(
-                `bbl::ui_set_attribute(${engine}, ${styleElement.cpp}, ` +
-                    `${this.cppString("style")}, ${this.compileUiStyleString(
-                        expression.right,
-                        styleElement.uiStaticId,
-                    )});`,
-            );
-            return true;
-        }
-        const nativeProperty = this.nativeUiStyleProperty(property);
-        this.auditUiStylePropertyName(nativeProperty, expression.left.name);
-        this.recordUiStaticStyleProperty(
-            styleElement,
-            nativeProperty,
-            expression.right,
-        );
-        this.emit(
-            `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
-                `${this.cppString(nativeProperty)}, ` +
-                `${this.uiStringCpp(expression.right, `UI style.${property}`)});`,
-        );
-        return true;
+        return this.ui.emitUiPropertyAssignment(expression);
     }
 
     public compileValue(expression: ts.Expression): Value {
         this.checkNodeGeometryMutation(expression);
         const boundary = this.nextNativeBindingSequence;
-        const dependencies = new Set<NativeCaptureBinding>();
+        const dependencies = new EmissionSet<NativeCaptureBinding>();
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
@@ -9140,7 +4387,7 @@ class Compiler
         // handles read while producing them. A later consumer can therefore
         // use the plan from a hoisted cleanup without capturing those locals.
         const geometryPlan = value.kind === "csg-solid" || value.kind === "csg2-solid";
-        const retained = new Set(value.nativeCaptures);
+        const retained = new EmissionSet(value.nativeCaptures);
         if (!geometryPlan) {
             for (const binding of dependencies) {
                 if (binding.sequence <= boundary) retained.add(binding);
@@ -9446,7 +4693,7 @@ class Compiler
     public compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value {
-        const dataset = this.primaryCanvasDataset(expression);
+        const dataset = this.ui.primaryCanvasDataset(expression);
         if (dataset) return { kind: "string", cpp: `bbl::canvas_dataset(${this.requireDefaultEngine(expression)}, ${this.cppString(dataset)})`, dataType: { kind: "string" } };
         const canvas = compileCanvasValue(this, expression);
         if (canvas) return canvas;
@@ -9496,13 +4743,13 @@ class Compiler
             ts.isPropertyAccessExpression(ownerExpression) &&
             ownerExpression.name.text === "style"
         ) {
-            const element = this.uiElementValue(ownerExpression.expression);
+            const element = this.ui.uiElementValue(ownerExpression.expression);
             if (element) {
                 const engine = this.requireEngine(element, expression);
-                const property = this.nativeUiStyleProperty(
+                const property = this.ui.nativeUiStyleProperty(
                     expression.name.text,
                 );
-                this.auditUiStylePropertyName(property, expression.name);
+                this.ui.auditUiStylePropertyName(property, expression.name);
                 return {
                     kind: "string",
                     cpp: `bbl::ui_get_style_property(${engine}, ${element.cpp}, ${this.cppString(property)})`,
@@ -9586,7 +4833,7 @@ class Compiler
         if (
             expression.name.text === "className" &&
             this.isCanvasElement(ownerExpression) &&
-            !this.uiElementValue(ownerExpression)
+            !this.ui.uiElementValue(ownerExpression)
         ) {
             // The generated host's primary renderCanvas has no class
             // attribute. Keep that browser fact available to multi-surface
@@ -9610,7 +4857,7 @@ class Compiler
         const rawOwner = this.presentationHostCpp &&
             compiledOwner.browserValue?.kind === "object" &&
             compiledOwner.browserValue.primaryCanvas
-            ? this.primaryPresentationCanvas(ownerExpression)
+            ? this.ui.primaryPresentationCanvas(ownerExpression)
             : compiledOwner;
         // A shared class instance read back out of a container is a `Ref`
         // with no compile-time shape of its own. Hydrating it here is what
@@ -10113,15 +5360,13 @@ class Compiler
             ?.declarations?.find(ts.isFunctionDeclaration);
         if (
             !declaration?.body ||
-            declaration.parameters.length !== 3 ||
-            !declaration.parameters.every(({ name }) => ts.isIdentifier(name))
+            declaration.parameters.length !== 3
         ) {
             return undefined;
         }
-        const [meshParameter, bufferParameter, countParameter] =
-            declaration.parameters.map(
-                ({ name }) => (name as ts.Identifier).text,
-            );
+        const names = declaration.parameters.map(({ name }) => name);
+        if (!names.every(ts.isIdentifier)) return undefined;
+        const [meshParameter, bufferParameter, countParameter] = names.map(name => name.text);
         if (
             !this.isDirectThinInstanceUploadBody(
                 declaration.body,
@@ -10239,8 +5484,8 @@ class Compiler
     ): boolean {
         let thinInstancesRead = false;
         let directUpload = false;
-        const dirtyFields = new Set<string>();
-        const visit = (node: ts.Node): void => {
+        const dirtyFields = new EmissionSet<string>();
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
             if (
                 ts.isPropertyAccessExpression(node) &&
                 node.name.text === "thinInstances" &&
@@ -10280,8 +5525,7 @@ class Compiler
             ) {
                 dirtyFields.add(node.name.text);
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         visit(body);
         return thinInstancesRead && directUpload && dirtyFields.size === 3;
     }
@@ -10718,9 +5962,9 @@ class Compiler
         if (writeOnlyObjectResult) {
             let reachesBrowser = false;
             let reachesBabylon = false;
-            const visit = (node: ts.Node): void => {
+            const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
                 if (ts.isTypeNode(node)) {
-                    return;
+                    return "skip";
                 }
                 if (ts.isIdentifier(node)) {
                     if (this.symbols.importedName(node) !== undefined) {
@@ -10735,8 +5979,7 @@ class Compiler
                         reachesBrowser = true;
                     }
                 }
-                ts.forEachChild(node, visit);
-            };
+            });
             visit(declaration.body);
             if (reachesBrowser && !reachesBabylon) {
                 return true;
@@ -10770,46 +6013,7 @@ class Compiler
      * bounded IR rather than the retained element tree.
      */
     public isNativeUiHelperCall(call: ts.CallExpression): boolean {
-        const declaration =
-            this.checker.getResolvedSignature(call)?.declaration;
-        if (
-            !declaration ||
-            (!ts.isFunctionDeclaration(declaration) &&
-                !ts.isMethodDeclaration(declaration) &&
-                !ts.isFunctionExpression(declaration) &&
-                !ts.isArrowFunction(declaration)) ||
-            !declaration.body
-        ) {
-            return false;
-        }
-        let reached = false;
-        const visit = (node: ts.Node): void => {
-            if (reached) return;
-            if (ts.isCallExpression(node)) {
-                const callee = this.unwrap(node.expression);
-                if (
-                    ts.isPropertyAccessExpression(callee) &&
-                    callee.name.text === "createElement" &&
-                    ts.isIdentifier(callee.expression) &&
-                    callee.expression.text === "document" &&
-                    this.isDefaultLibraryIdentifier(callee.expression)
-                ) {
-                    const tag = node.arguments[0];
-                    if (
-                        tag &&
-                        (ts.isStringLiteral(tag) ||
-                            ts.isNoSubstitutionTemplateLiteral(tag)) &&
-                        tag.text.toLowerCase() !== "canvas"
-                    ) {
-                        reached = true;
-                        return;
-                    }
-                }
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration.body);
-        return reached;
+        return this.ui.isNativeUiHelperCall(call);
     }
 
     /**
@@ -10949,17 +6153,16 @@ class Compiler
         const cached = this.browserUtilitySources.get(source);
         if (cached !== undefined) return cached;
         let reachesBabylon = false;
-        const visit = (node: ts.Node): void => {
-            if (reachesBabylon) return;
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+            if (reachesBabylon) return "skip";
             if (
                 ts.isIdentifier(node) &&
                 this.symbols.importedName(node) !== undefined
             ) {
                 reachesBabylon = true;
-                return;
+                return "skip";
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         visit(source);
         const browserOnly = !reachesBabylon;
         this.browserUtilitySources.set(source, browserOnly);
@@ -11039,6 +6242,7 @@ class Compiler
             ) {
                 return this.vec3FromRecord(value, unwrapped, precision);
             }
+            return this.evaluator.compileVec3(expression, precision, value);
         }
         return this.evaluator.compileVec3(expression, precision);
     }
@@ -11305,7 +6509,7 @@ class Compiler
                         `received ${value.kind}.`,
                 );
             }
-            const operator = new Map<ts.SyntaxKind, string>([
+            const operator = new EmissionMap<ts.SyntaxKind, string>([
                 [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
                 [ts.SyntaxKind.ExclamationEqualsEqualsToken, "!="],
                 [ts.SyntaxKind.LessThanToken, "<"],
@@ -11411,7 +6615,7 @@ class Compiler
                 Number.isFinite(staticLeft) &&
                 Number.isFinite(staticRight)
             ) {
-                const folded = new Map<ts.SyntaxKind, boolean>([
+                const folded = new EmissionMap<ts.SyntaxKind, boolean>([
                     [
                         ts.SyntaxKind.EqualsEqualsEqualsToken,
                         staticLeft === staticRight,
@@ -11456,18 +6660,8 @@ class Compiler
         }
         if (ts.isCallExpression(unwrapped)) {
             const value = this.compileValue(unwrapped);
-            if (value.kind === "boolean") {
-                return value.cpp;
-            }
-            if (value.truthinessCpp !== undefined) {
-                return value.truthinessCpp;
-            }
-            if (value.optionalFoundCpp !== undefined) {
-                return value.optionalFoundCpp;
-            }
-            if (value.kind === "data" && value.dataType?.kind === "optional") {
-                return `${value.cpp}.has_value()`;
-            }
+            const condition = this.dataLowerer.conditionFromValue(value);
+            if (condition !== undefined) return condition;
             this.fail(
                 unwrapped,
                 `Condition call must produce a boolean, received ${value.kind}.`,
@@ -11503,21 +6697,8 @@ class Compiler
             // (`result.hitPoint`) — is truthy exactly when the search
             // said so.
             const value = this.compileValue(unwrapped);
-            if (
-                value.kind === "boolean" ||
-                (value.kind === "data" && value.dataType?.kind === "boolean")
-            ) {
-                return this.dataLowerer.conditionFromValue(value) ?? value.cpp;
-            }
-            if (value.truthinessCpp !== undefined) {
-                return value.truthinessCpp;
-            }
-            if (value.optionalFoundCpp !== undefined) {
-                return value.optionalFoundCpp;
-            }
-            if (value.kind === "data" && value.dataType?.kind === "optional") {
-                return `${value.cpp}.has_value()`;
-            }
+            const condition = this.dataLowerer.conditionFromValue(value);
+            if (condition !== undefined) return condition;
             if (value.kind === "callback") {
                 return "true";
             }
@@ -11544,12 +6725,12 @@ class Compiler
         iterations: number;
         controlDepth: number;
         iterationDepth: number;
-    }> = [];
+    }> = emissionArray([]);
     private readonly staticExpansionBudget = new StaticExpansionBudget(
         (node, message) => this.fail(node, message),
     );
     /** Per-iteration scope keys while a loop is being statically emitted. */
-    private readonly staticCallbackEvaluationIdentities: object[] = [];
+    private readonly staticCallbackEvaluationIdentities: object[] = emissionArray([]);
 
     public meshTransformDirtyEntry():
         "mark_mesh_dirty" | "mark_mesh_runtime_transform" {
@@ -11587,7 +6768,7 @@ class Compiler
                         this.useNativeValue(bound);
                         this.emit(`${bound.cpp}();`);
                     };
-                    const compiled = this.captureManagedClosureLines(emitBody, !captureByValue);
+                    const compiled = this.captureManagedClosureLines(emitBody, captureByValue ? false : "entry");
                     return renderClosure(compiled, "");
                 }
                 if (this.options.workers && (bound?.kind === "callback" || !bound)) {
@@ -11702,7 +6883,7 @@ class Compiler
                     this.frameCallbackDepth -= 1;
                 }
             };
-            compiled = this.captureManagedClosureLines(emitBody, !captureByValue);
+            compiled = this.captureManagedClosureLines(emitBody, captureByValue ? false : "entry");
         } finally {
             this.endNativeFunctionBody();
             this.popScope();
@@ -11772,7 +6953,7 @@ class Compiler
                 );
                 this.emitDiscardedValue(result);
             };
-            compiled = this.captureManagedClosureLines(emitBody, previousDepth === 0);
+            compiled = this.captureManagedClosureLines(emitBody, previousDepth === 0 ? "entry" : false);
         } finally {
             this.frameCallbackDepth = previousDepth;
         }
@@ -11827,7 +7008,7 @@ class Compiler
                     this.emit(`${value.cpp};`);
                 }
             };
-            compiled = this.captureManagedClosureLines(emitBody, !captureByValue);
+            compiled = this.captureManagedClosureLines(emitBody, captureByValue ? false : "entry");
         } finally {
             this.frameCallbackDepth -= 1;
             this.deferredCaptureFloor = previousDeferredFloor;
@@ -11995,8 +7176,8 @@ class Compiler
         if (this.staticAssetUrlCandidateCache) {
             return this.staticAssetUrlCandidateCache;
         }
-        const candidates = new Set<string>();
-        const visit = (node: ts.Node): void => {
+        const candidates = new EmissionSet<string>();
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
             if (
                 ts.isCallExpression(node) &&
                 node.arguments.length === 2 &&
@@ -12006,8 +7187,7 @@ class Compiler
                 const url = this.moduleRelativeAssetUrl(node);
                 if (url !== undefined) candidates.add(url);
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         for (const source of this.sourceFiles()) {
             visit(source);
         }
@@ -12054,8 +7234,8 @@ class Compiler
         const ownerSymbol = ownerName
             ? this.symbols.valueSymbol(ownerName)
             : undefined;
-        const visit = (candidate: ts.Node): void => {
-            if (passedExplicitly) return;
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (candidate) => {
+            if (passedExplicitly) return "skip";
             if (
                 ts.isCallExpression(candidate) &&
                 (this.checker.getResolvedSignature(candidate)?.declaration ===
@@ -12067,11 +7247,10 @@ class Compiler
                 reachedCall = true;
                 if (candidate.arguments.length > index) {
                     passedExplicitly = true;
-                    return;
+                    return "skip";
                 }
             }
-            ts.forEachChild(candidate, visit);
-        };
+        });
         for (const source of this.sourceFiles()) visit(source);
         return reachedCall && !passedExplicitly
             ? parameter.initializer
@@ -12368,7 +7547,7 @@ class Compiler
             if (canvas.kind !== "offscreen-canvas" && canvas.kind !== "ui-element") this.fail(argumentAt(call, 0), "The realm engine requires a native canvas context.");
             canvasArgument = `, ${canvas.kind === "ui-element" ? `bbl::pal::window_canvas(${canvas.cpp})` : canvas.cpp}`;
         }
-        this.emit(`auto ${cppName} = ${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}}${canvasArgument});`);
+        this.emit({ kind: "declaration", type: "auto", name: cppName, initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}}${canvasArgument})` });
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers) this.engineCreationExecution = {
             callback: this.frameCallbackDepth, control: this.runtimeControlFlowDepth,
@@ -12378,10 +7557,10 @@ class Compiler
         this.defaultEngineCpp = engineCpp;
         for (const lookup of this.pendingHostUiLookups) {
             lookup.engineCpp = engineCpp;
-            this.emit(`const auto ${lookup.cpp} = bbl::ui_get_element_by_id(${engineCpp}, ${this.cppString(lookup.uiHostId!)});`);
+            this.emit({ kind: "declaration", type: "const auto", name: lookup.cpp, initializer: `bbl::ui_get_element_by_id(${engineCpp}, ${this.cppString(lookup.uiHostId!)})` });
         }
         let surfaceCanvas = false;
-        if (!this.options.workers && [...this.nativeHostUiTags().values()].includes("canvas")) {
+        if (!this.options.workers && [...this.ui.nativeHostUiTags().values()].includes("canvas")) {
             const canvas = this.compileValue(argumentAt(call, 0));
             if (canvas.kind === "ui-element") {
                 if (canvas.uiTag !== "canvas") this.fail(argumentAt(call, 0), "An engine surface requires a retained canvas element.");
@@ -12479,16 +7658,16 @@ class Compiler
         }>;
     } {
         const resolved = this.resolveStaticExpression(expression);
+        const callee = ts.isCallExpression(resolved) ? this.unwrap(resolved.expression) : undefined;
         if (
             !ts.isCallExpression(resolved) ||
-            !ts.isIdentifier(this.unwrap(resolved.expression))
+            !callee || !ts.isIdentifier(callee)
         ) {
             return {
                 source: this.compileStaticString(expression),
                 dynamicUniforms: [],
             };
         }
-        const callee = this.unwrap(resolved.expression) as ts.Identifier;
         const declaration = resolveFunctionDeclaration(
             this.checker,
             callee,
@@ -12501,7 +7680,7 @@ class Compiler
             body &&
             ts.isBlock(body)
         ) {
-            const parameters = new Map<string, ShaderTextBinding>();
+            const parameters = new EmissionMap<string, ShaderTextBinding>();
             // Application shader builders may splice a generation-known
             // constant imported from a sibling module (Antigravity Racer's
             // RING_COUNT/SHADOW_CASCADES are the reached case). The whole
@@ -12603,13 +7782,13 @@ class Compiler
                 dynamicUniforms: [],
             };
         }
-        const formatter = formatted.expression;
+        const formatterTarget = formatted.expression.expression;
         const parameterIndex = declaration.parameters.findIndex(
             ({ name }) =>
                 ts.isIdentifier(name) &&
                 this.symbols.valueSymbol(name) ===
                     this.symbols.valueSymbol(
-                        formatter.expression as ts.Identifier,
+                        formatterTarget,
                     ),
         );
         const argument =
@@ -12714,14 +7893,13 @@ class Compiler
             contractError: (node, message) => this.fail(node, message),
             hasNode: (root, predicate) => {
                 let found = false;
-                const visit = (node: ts.Node): void => {
-                    if (found) return;
+                const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+                    if (found) return "skip";
                     if (predicate(node)) {
                         found = true;
-                        return;
+                        return "skip";
                     }
-                    ts.forEachChild(node, visit);
-                };
+                });
                 visit(root);
                 return found;
             },
@@ -12775,7 +7953,7 @@ class Compiler
 
     public resolveStaticExpression(
         expression: ts.Expression,
-        resolving: ReadonlySet<ts.Symbol> = new Set(),
+        resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
     ): ts.Expression {
         return this.evaluator.resolveStaticExpression(expression, resolving);
     }
@@ -12978,18 +8156,16 @@ class Compiler
         this.reachFeature("storage:local");
     }
 
-    /** Native host-file-dialog adapter for the pinned voxel save/load module. */
-    public compileVoxelFileCall(
+    private voxelFileContract(
         call: ts.CallExpression,
         callee: ts.Identifier,
-    ): Value | undefined {
-        // Every identifier call passes through here; the two names decide
-        // before the declaration is resolved.
-        const name = callee.text;
+    ): { name: "saveToFile" | "loadFromFile"; dataType: DataType | undefined } | undefined {
+        const declaration = tryResolveFunctionDeclaration(this.checker, callee);
+        const name = declaration?.name && ts.isIdentifier(declaration.name)
+            ? declaration.name.text : undefined;
         if (name !== "saveToFile" && name !== "loadFromFile") {
             return undefined;
         }
-        const declaration = tryResolveFunctionDeclaration(this.checker, callee);
         if (!declaration) {
             return undefined;
         }
@@ -12999,50 +8175,39 @@ class Compiler
         if (!/\/demos\/minecraft\/save-load\.(?:ts|js)$/i.test(fileName)) {
             return undefined;
         }
+        const parameter = declaration.parameters[0];
+        const signature = this.checker.getResolvedSignature(call);
+        const type = name === "saveToFile"
+            ? parameter && this.checker.getTypeAtLocation(parameter)
+            : signature && this.checker.getAwaitedType(this.checker.getReturnTypeOfSignature(signature));
+        return { name, dataType: type ? this.dataTypes.fromTsType(type, call) : undefined };
+    }
+
+    /** Native host-file-dialog adapter for the pinned voxel save/load module. */
+    public compileVoxelFileCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        const contract = this.voxelFileContract(call, callee);
+        if (!contract) return undefined;
+        const { name, dataType } = contract;
+        if (!dataType) {
+            this.fail(call, "Voxel file calls require a SaveData record or nullable load result.");
+        }
+        const stored = this.dataTypes.markStoredObjectReferences(dataType);
         this.reachVoxelFileStorage(call);
         this.reachJsData();
         if (name === "saveToFile") {
             this.expectArgumentCount(call, 1, 1);
-            const parameter = declaration.parameters[0];
-            if (!parameter) {
-                this.fail(
-                    call,
-                    "Voxel save is missing its SaveData parameter.",
-                );
-            }
-            const dataType = this.dataTypes.markStoredObjectReferences(
-                this.dataTypes.requireFromTsType(
-                    this.checker.getTypeAtLocation(parameter),
-                    parameter,
-                    "Voxel save parameter",
-                ),
-            );
             return {
                 kind: "boolean",
                 cpp:
                     `bbl::js::save_voxel_world(${this.requireDefaultEngine(call)}, ` +
-                    `${this.dataLowerer.compileForSink(argumentAt(call, 0), dataType)})`,
+                    `${this.dataLowerer.compileForSink(argumentAt(call, 0), stored)})`,
                 dataType: { kind: "boolean" },
             };
         }
         this.expectArgumentCount(call, 0, 0);
-        const signature = this.checker.getResolvedSignature(call);
-        const promised = signature
-            ? this.checker.getReturnTypeOfSignature(signature)
-            : undefined;
-        const awaited = promised
-            ? this.checker.getAwaitedType(promised)
-            : undefined;
-        const mapped = awaited
-            ? this.dataTypes.fromTsType(awaited, call)
-            : undefined;
-        if (!mapped) {
-            this.fail(
-                call,
-                "Voxel load result must be a SaveData value or null.",
-            );
-        }
-        const stored = this.dataTypes.markStoredObjectReferences(mapped);
         return this.dataValue(
             `bbl::js::load_voxel_world<${this.dataTypes.cppType(stored)}>` +
                 `(${this.requireDefaultEngine(call)})`,
@@ -13068,6 +8233,18 @@ class Compiler
 
     public leaveRuntimeControlFlow(): void {
         this.runtimeControlFlowDepth -= 1;
+    }
+
+    public isInFrameCallback(): boolean {
+        return this.frameCallbackDepth > 0;
+    }
+
+    public hasPresentationHost(): boolean {
+        return this.presentationHostCpp !== undefined;
+    }
+
+    public hasFeature(feature: Feature): boolean {
+        return this.features.has(feature);
     }
 
     public isInRuntimeControlFlow(): boolean {
@@ -13386,8 +8563,7 @@ class Compiler
                     ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>();`
                     : `std::optional<${nullableResource.cppType}> ${cppName};`,
             );
-            this.defineVariable(name, {
-                kind: nullableResource.kind,
+            this.defineVariable(name, valueForKind(nullableResource.kind, {
                 cpp: `(*${storage})`,
                 ...((nullableResource.kind === "ui-element" ||
                     nullableResource.kind === "pointer-drag") &&
@@ -13397,7 +8573,7 @@ class Compiler
                 optionalFoundCpp: `${storage}.has_value()`,
                 optionalStorageCpp: storage,
                 ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
-            });
+            }));
             return;
         }
         if (this.bindClassDataField(name, initializer, declared)) {
@@ -13446,8 +8622,7 @@ class Compiler
                 ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${resource.cppType}>>();`
                 : `std::optional<${resource.cppType}> ${cppName};`,
         );
-        const value: Value = {
-            kind: resource.kind,
+        const value: Value = valueForKind(resource.kind, {
             cpp: `(*${storage})`,
             ...((resource.kind === "ui-element" ||
                 resource.kind === "pointer-drag") &&
@@ -13457,7 +8632,7 @@ class Compiler
             optionalFoundCpp: `${storage}.has_value()`,
             optionalStorageCpp: storage,
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
-        };
+        });
         this.defineVariable(name, value);
         return value;
     }
@@ -13504,8 +8679,7 @@ class Compiler
             `class_field_${name.text}`,
         );
         this.emit(`std::optional<${resource.cppType}> ${cppName};`);
-        const value: Value = {
-            kind: resource.kind,
+        const value: Value = valueForKind(resource.kind, {
             cpp: `(*${cppName})`,
             ...((resource.kind === "ui-element" ||
                 resource.kind === "pointer-drag") &&
@@ -13514,7 +8688,7 @@ class Compiler
                 : {}),
             optionalFoundCpp: `${cppName}.has_value()`,
             optionalStorageCpp: cppName,
-        };
+        });
         this.defineVariable(name, value);
         return value;
     }
@@ -13608,7 +8782,7 @@ class Compiler
         const key = this.callbackClosureKey(declaration, owner);
         const perClosure =
             this.callbackIdentities.get(declaration) ??
-            new Map<object, number>();
+            new EmissionMap<object, number>();
         this.callbackIdentities.set(declaration, perClosure);
         const existing = perClosure.get(key);
         if (existing !== undefined) {
@@ -13733,7 +8907,7 @@ class Compiler
         cppName: string,
         signature: string,
         escapesEmittingScope: boolean,
-    ): Value {
+    ): Value<"callback"> {
         const type = `bbl::js::Callback<${signature}>`;
         if (!escapesEmittingScope) {
             this.emit(`${type} ${cppName};`);
@@ -13742,56 +8916,19 @@ class Compiler
         }
         const owner = `${cppName}_owner`;
         this.emit(
-            `auto ${owner} = bbl::js::make_gc_shared<${type}>();`,
+            { kind: "declaration", type: "auto", name: owner, initializer: `bbl::js::make_gc_shared<${type}>()` },
         );
         return { kind: "callback", cpp: `(*${owner})`, sharedStorageCpp: owner,
             nativeCaptures: [this.registerNativeBinding(owner)] };
     }
 
-    /**
-     * Runs a shape probe, keeping what it emitted only when it answers.
-     *
-     * A lowering that asks "is this expression a tuple / a data container"
-     * answers by RESOLVING the expression, and resolving a call compiles
-     * it — so a probe that then declines leaves the call's whole inlined
-     * body in the stream, and the shape that does answer compiles the same
-     * call a second time. The first copy is unreachable, and unreachable is
-     * not free: `break-meshes` fractured every mesh twice and retained 304
-     * orphaned meshes for the copy nothing read. Neither gate could see it,
-     * because an orphan is never drawn and `bbl::js::Array` has a
-     * non-trivial destructor, so the unused-variable warnings stay silent.
-     *
-     * Indentation is left where it is, unlike `captureEmittedLines`: a kept
-     * line stays exactly where the probe emitted it.
-     */
+    /** Commit a successful probe; restore all compiler-owned state on decline or throw. */
     public probeEmission<T>(
         probe: () => T,
         answered: (result: T) => boolean = (result) => result !== undefined,
     ): T {
-        const start = this.body.length;
-        const cameras = this.untrackedTaaCameraWrites.length;
-        const admissions = this.deferredAdmissionFailures.length;
-        const colorReads = this.materialColorReads.length;
-        const registration = this.temporalSceneRegistration;
-        const registeredScenes = this.temporalRegisteredScenes.length;
-        const controls = this.temporalControlAttachment;
-        const textCamera = this.textCameraMutation;
-        const textAttachment = this.textAttachmentReached;
-        const renderContexts = new Set(this.reachedRenderContextRegistrations);
-        const result = probe();
-        if (!answered(result)) {
-            this.body.splice(start);
-            this.untrackedTaaCameraWrites.length = cameras;
-            this.deferredAdmissionFailures.length = admissions;
-            this.materialColorReads.length = colorReads;
-            this.temporalSceneRegistration = registration;
-            this.temporalRegisteredScenes.length = registeredScenes;
-            this.temporalControlAttachment = controls;
-            this.textCameraMutation = textCamera;
-            this.textAttachmentReached = textAttachment;
-            this.reachedRenderContextRegistrations = renderContexts;
-        }
-        return result;
+        return new EmissionTransaction(this, [this.program, this.checker, this.sourceFile, this.options])
+            .run(probe, answered);
     }
 
     /**
@@ -13814,85 +8951,6 @@ class Compiler
         return this.body.splice(start);
     }
 
-    /**
-     * Mark an already-emitted local `[[maybe_unused]]`.
-     *
-     * One case reaches this: a numeric local whose only reader is the
-     * `Math.random` arrow a node-particle bake moves to generation. The
-     * source reads it; the lowered program does not, and MSVC /W4 warns on
-     * a local that is initialized and never referenced.
-     */
-    public markEmittedLocalUnused(cppName: string, site: ts.Node): void {
-        const declaration = `double ${cppName} = `;
-        for (let index = this.body.length - 1; index >= 0; index -= 1) {
-            const line = this.body[index]!;
-            const trimmed = line.trimStart();
-            if (trimmed.startsWith(declaration)) {
-                this.body[index] = line.replace(
-                    declaration,
-                    `[[maybe_unused]] ${declaration}`,
-                );
-                return;
-            }
-        }
-        // A miss cannot be silent: the annotation is what keeps the
-        // generated C++ warning-clean under /W4, and a declaration this no
-        // longer recognizes would surface as a warning in a native build
-        // with nothing pointing back here.
-        this.fail(
-            site,
-            `Cannot mark local '${cppName}' unused: no emitted ` +
-                "declaration matches it.",
-        );
-    }
-
-    /**
-     * Mark every emitted numeric local that nothing else in the body reads.
-     *
-     * Folding is what creates them: a scene's `const x = Math.round(...)`
-     * can end up with every reader folded too, or moved to generation as a
-     * bake step, and MSVC /W4 warns on a local that is initialized and never
-     * referenced. This runs once over the finished body and marks only the
-     * declarations whose name appears nowhere else, so a local that IS read
-     * keeps the warning that would catch a lowering bug.
-     */
-    private markUnreadNumericLocals(): void {
-        const declarations: Array<{
-            index: number;
-            name: string;
-        }> = [];
-        for (let index = 0; index < this.body.length; index += 1) {
-            const match = this.body[index]!.match(
-                /^\s*(?:static\s+)?double\s+(v_[A-Za-z0-9_]+)\s*=/,
-            );
-            if (match) {
-                declarations.push({ index, name: match[1]! });
-            }
-        }
-        for (const declaration of declarations) {
-            const token = new RegExp(`\\b${declaration.name}\\b`);
-            const target = new RegExp(
-                `(?:\\+\\+|--)\\s*${declaration.name}\\b|` +
-                    `\\b${declaration.name}\\b\\s*(?:\\+\\+|--|[+\\-*/%]?=)`,
-                "g",
-            );
-            const read = this.body.some((line, index) => {
-                if (index === declaration.index || !token.test(line)) {
-                    return false;
-                }
-                return token.test(line.replace(target, ""));
-            });
-            if (!read) {
-                this.body[declaration.index] = this.body[
-                    declaration.index
-                ]!.replace(
-                    /(^\s*)(?=(?:static\s+)?double\s)/,
-                    "$1[[maybe_unused]] ",
-                );
-            }
-        }
-    }
-
     /** How many lines the body stream holds, for a caller that may undo. */
 
     /**
@@ -13905,7 +8963,7 @@ class Compiler
      * at the same types share one definition, and a read whose entries
      * emitted helper lines at the call site keeps its inline form.
      */
-    private readonly staticRecordAccessors = new Map<string, string>();
+    private readonly staticRecordAccessors = new EmissionMap<string, string>();
 
     /**
      * Identity of the C++ lexical scope currently receiving emitted lines.
@@ -13957,15 +9015,34 @@ class Compiler
         this.nativeFunctionDefinitions.push(...definitionLines, "");
     }
 
+    public registerSharedNativeFunction(name: string, definitionLines: string[], localBindings: readonly string[]): string {
+        const entry = this.sharedNativeFunctions.intern(name, definitionLines.join("\n"), new Set(localBindings));
+        if (entry.added) this.registerNativeFunction("", definitionLines);
+        return entry.name;
+    }
+
     public beginNativeFunctionBody(
         returnType: DataType | undefined,
         contextualVoid = false,
+        options: NativeFunctionBodyOptions = {},
     ): void {
+        if (options.callSiteEffects && !this.definiteCollectionMutation()) {
+            throw new Error("Shared call effects require a definite source invocation.");
+        }
         this.returnFrames.push({
             kind: "native",
             type: returnType ?? "void",
             ...(contextualVoid ? { contextualVoid: true } : {}),
+            ...options,
         });
+    }
+
+    public prefersNativeDataIteration(): boolean {
+        for (let index = this.returnFrames.length - 1; index >= 0; --index) {
+            const frame = this.returnFrames[index]!;
+            if (frame.kind === "native") return frame.runtimeDataLoops === true;
+        }
+        return false;
     }
 
     public endNativeFunctionBody(): void {
@@ -13975,8 +9052,12 @@ class Compiler
     public registerNativeBinding(name: string, borrowed = false, allowReference = false): NativeCaptureBinding {
         const existing = this.nativeBindings.get(name);
         if (existing) return existing;
-        const binding = { name, borrowed, allowReference, sequence: ++this.nextNativeBindingSequence };
+        const binding = { name, borrowed, allowReference, sequence: ++this.nextNativeBindingSequence,
+            entryLifetime: this.variableScopes.length === 1 && this.activeEmissionScope === 0 && !this.engineStartMark };
         this.nativeBindings.set(name, binding);
+        if (this.engineStartMark && this.indentLevel === this.engineStartMark.indentLevel) {
+            this.continuationLocals.set(name, this.continuationSequence);
+        }
         return binding;
     }
 
@@ -13986,7 +9067,7 @@ class Compiler
 
     public captureHoistedLines(emitBody: () => void, beforeBody: number, site: ts.Node): string[] {
         const beforeGuard = this.nextNativeBindingSequence;
-        const dependencies = new Set<NativeCaptureBinding>();
+        const dependencies = new EmissionSet<NativeCaptureBinding>();
         this.nativeDependencyStack.push(dependencies);
         let lines: string[];
         try {
@@ -14027,9 +9108,15 @@ class Compiler
         // its child returns an existing stored Value.
         for (const dependencies of this.nativeDependencyStack) dependencies.add(binding);
         for (const capture of this.managedCaptures) capture.use(binding);
+        for (const dependencies of this.statementDependencies) dependencies.add(binding);
+        if (this.engineStartMark) {
+            let sequences = this.continuationUses.get(binding.name);
+            if (!sequences) { sequences = new EmissionSet(); this.continuationUses.set(binding.name, sequences); }
+            sequences.add(this.continuationSequence);
+        }
     }
 
-    public useNativeValue(value: Value, seen = new Set<Value>()): void {
+    public useNativeValue(value: Value, seen = new EmissionSet<Value>()): void {
         if (seen.has(value)) return;
         seen.add(value);
         if (value.kind !== "record" && value.kind !== "tuple") {
@@ -14056,11 +9143,24 @@ class Compiler
         if (value.kind === "tuple") {
             for (const field of value.tupleElements ?? []) this.useNativeValue(field, seen);
         }
+        for (const expression of value.materialUboArrayFields?.values() ?? []) {
+            for (const binding of expression.nativeCaptures) this.useNativeBinding(binding);
+        }
+    }
+
+    public captureNativeExpression(compile: () => string): import("./compiler/closure-captures.js").NativeExpression {
+        const dependencies = new EmissionSet<NativeCaptureBinding>();
+        this.nativeDependencyStack.push(dependencies);
+        try {
+            return { cpp: compile(), nativeCaptures: [...dependencies] };
+        } finally {
+            this.nativeDependencyStack.pop();
+        }
     }
 
     public captureManagedClosureLines(
         emitBody: () => void,
-        byReference = false,
+        byReference: boolean | "entry" = false,
     ): CapturedClosure {
         const capture = new ClosureCaptures(
             this.allocateTemporaryCppName("environment"), this.nextNativeBindingSequence, byReference);
@@ -14081,10 +9181,15 @@ class Compiler
             }
             this.managedCaptures.pop();
         }
+        const identifiers = capture.retainReferenced(lines);
+        const localBindings = [...identifiers].filter(name =>
+            (this.nativeBindings.get(name)?.sequence ?? 0) > capture.boundary);
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,
             initializer: capture.initializer,
+            nativeCaptures: capture.nativeCaptures,
+            localBindings: [capture.environment, ...capture.nativeCaptures.map(binding => binding.name), ...localBindings],
         };
     }
 
@@ -14147,7 +9252,7 @@ class Compiler
     /** Compiling a retained callback does not execute its construction in the enclosing loop. */
     private excludeDeferredResourceConstruction(before: ResourceConstructionCheckpoint): void {
         const after = this.resourceConstructionState();
-        const removed = new Set(before.state.lightIdentities.filter((value) => !after.lightIdentities.includes(value)));
+        const removed = new EmissionSet(before.state.lightIdentities.filter((value) => !after.lightIdentities.includes(value)));
         const added = after.lightIdentities.filter((value) => !before.state.lightIdentities.includes(value));
         for (const checkpoint of this.resourceConstructionCheckpoints) {
             if (checkpoint.callbackDepth >= before.callbackDepth) continue;
@@ -14222,6 +9327,10 @@ class Compiler
                 "Non-void native functions must return a value.",
             );
         }
+        if (frame?.kind === "native" && frame.compileReturn) {
+            this.emit(`return ${frame.compileReturn(statement.expression, returnType)};`);
+            return;
+        }
         if (returnType.kind === "number") {
             this.emit(
                 `return ${this.compileNumber(statement.expression, "double")};`,
@@ -14285,11 +9394,11 @@ class Compiler
         let previous: string | undefined;
         if (operator !== "=") {
             previous = this.allocateTemporaryCppName("camera_previous");
-            this.emit(`const double ${previous} = ${target.current};`);
+            this.emit({ kind: "declaration", type: "const double", name: previous, initializer: target.current });
         }
         const right = unary ? "1.0" : this.compileNumber(node.right, "double");
         const value = this.allocateTemporaryCppName("camera_value");
-        this.emit(`const double ${value} = ${operator === "=" ? right : `(${previous} ${operator} ${right})`};`);
+        this.emit({ kind: "declaration", type: "const double", name: value, initializer: operator === "=" ? right : `(${previous} ${operator} ${right})` });
         this.emit(target.write(value));
         return { kind: "number", cpp: unary && ts.isPostfixUnaryExpression(node) ? previous! : value,
             dataType: { kind: "number" } };
@@ -14568,8 +9677,20 @@ class Compiler
         return this.dataLowerer.iterationTarget(expression, knownTuple);
     }
 
-    public requiresStaticDataIteration(statement: ts.Statement): boolean {
+    public requiresStaticDataIteration(statement: ts.Node): boolean {
         return requiresStaticDataIteration(this, statement);
+    }
+
+    public canShareFunctionBody(body: ts.Node): boolean {
+        return canShareFunctionBody(this, body, this.definiteCollectionMutation());
+    }
+
+    public canReplaySharedCallEffects(body: ts.Node): boolean {
+        return this.definiteCollectionMutation() && sharedFunctionHasCallEffects(this, body);
+    }
+
+    public compileSharedMethod(declaration: ts.MethodDeclaration, call: ts.CallExpression, arguments_: readonly Value[]): Value | undefined {
+        return this.userFunctions.compileSharedMethod(this, declaration, call, arguments_);
     }
 
     public emitNativeDataIteration<T>(statement: ts.Statement, emitBody: () => T): T {
@@ -14703,7 +9824,7 @@ class Compiler
                 "An imported root is missing its compile-time handle identity.",
             );
         }
-        root.assetRootState.reparented = true;
+        for (const state of assetRootMutationStates(root)) state.reparented = true;
     }
 
     /**
@@ -14712,13 +9833,21 @@ class Compiler
      * later write through the old root handle would mutate stale state.
      */
     public assertAssetRootWritable(root: Value, node: ts.Node): void {
-        if (root.assetRootState?.reparented) {
+        if (assetRootMutationStates(root).some(state => state.reparented)) {
             this.fail(
                 node,
                 "Writing an imported root after setParent is not lowered; " +
                     "the hierarchy now follows its new TransformNode parent.",
             );
         }
+    }
+
+    public enableGltfCameras(node: ts.Node): void {
+        if (!this.definiteCollectionMutation()) {
+            this.fail(node, "glTF camera activation requires a definite setup call; runtime activation order is not represented by packaged assets.");
+        }
+        this.reachFeature("loader:gltf-cameras", node);
+        this.reachFeature("camera:free", node);
     }
 
     /**
@@ -14749,6 +9878,7 @@ class Compiler
         // them, so the count is also what lets such a fact refuse instead of
         // widening silently.
         asset.containerCount = (asset.containerCount ?? 0) + 1;
+        if (this.hasFeature("loader:gltf-cameras")) asset.gltfCameras = true;
         this.lastGltfContainerAsset = asset;
     }
 
@@ -14902,7 +10032,7 @@ class Compiler
         // A scene-created overlay canvas is retained by the UI IR and owns
         // its own backing extent. Only the browser entry canvas maps to the
         // engine drawing surface below.
-        const element = this.uiElementValue(unwrapped.expression);
+        const element = this.ui.uiElementValue(unwrapped.expression);
         if (element?.uiCanvas) {
             return element.uiPrimaryCanvas && axis.client ? axis : undefined;
         }
@@ -15032,18 +10162,17 @@ class Compiler
      */
     private requireClosedBoundedFrameYield(allowed: ts.Expression): true {
         let other: ts.CallExpression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (other) return;
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
+            if (other) return "skip";
             if (
                 ts.isCallExpression(node) &&
                 this.browserErasure.isDefaultRequestAnimationFrameCall(node) &&
                 !isDeclaredInside(node, allowed)
             ) {
                 other = node;
-                return;
+                return "skip";
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         for (const source of this.program.getSourceFiles()) {
             if (!source.isDeclarationFile) visit(source);
         }
@@ -15166,1012 +10295,12 @@ class Compiler
     }
 
     /** Platform-backed browser APIs that remain ordinary expression values. */
-    public compilePlatformCall(call: ts.CallExpression): Value | undefined {
-        const callee = this.unwrap(call.expression);
-        if (ts.isPropertyAccessExpression(callee)) {
-            const typeName = this.checker.getTypeAtLocation(callee.expression).getSymbol()?.getName();
-            if (typeName === "PhysicsCharacterController" || typeName === "CharacterCollisionObservable") {
-                const owner = this.compileValue(callee.expression);
-                const result = compileCharacterMethod(this, call, owner, callee.name.text);
-                if (result) return result;
-            }
-        }
-        if (ts.isPropertyAccessExpression(callee) && callee.name.text === "addEventListener" &&
-            !this.isBrowserOnlyExpression(callee.expression)) {
-            const owner = this.compileValue(callee.expression);
-            if (owner.kind === "gpu-device") {
-                this.expectArgumentCount(call, 2, 2);
-                if (this.compileStringLiteral(argumentAt(call, 0)) !== "uncapturederror") this.fail(call, "Only GPU uncapturederror listeners are represented.");
-                this.reachFeature("engine:device-recovery", call);
-                const message = this.allocateTemporaryCppName("gpu_error");
-                const value: Value = { kind: "record", cpp: "", recordProperties: { error: { kind: "record", cpp: "", recordProperties: { message: { kind: "string", cpp: message, dataType: { kind: "string" } } } } } };
-                const callback = this.compilePlatformCallback(argumentAt(call, 1), { cppType: "const std::string&", name: message }, [value], undefined, false, false);
-                return { kind: "void", cpp: `bbl::add_gpu_error_listener(${owner.cpp}, ${callback.cpp})` };
-            }
-        }
-        if (ts.isPropertyAccessExpression(callee) && callee.name.text === "disable") {
-            const owner = this.compileValue(callee.expression);
-            if (owner.kind === "device-recovery") {
-                this.expectArgumentCount(call, 0, 0);
-                return { kind: "void", cpp: `bbl::disable_device_recovery(${owner.cpp})` };
-            }
-        }
-        if (ts.isPropertyAccessExpression(callee)) {
-            if (this.browserErasure.isPrimaryCanvas2DContextCall(
-                call, (expression) => this.evaluateBrowserValue(expression),
-            )) {
-                if (this.defaultEngineCpp && !this.presentationHostCpp) {
-                    this.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
-                }
-                this.requirePresentationHost(call);
-            }
-            if (this.isNativeHostUiLookup(call)) {
-                const id = this.compileStringLiteral(argumentAt(call, 0));
-                const engine = this.options.workers ? "bbl::pal::window_document_engine()" : this.requireDefaultEngine(call);
-                this.reachFeature("ui:rml", call);
-                return {
-                    kind: "ui-element",
-                    cpp:
-                        `bbl::ui_get_element_by_id(${engine}, ` +
-                        `${this.cppString(id)})`,
-                    engineCpp: engine,
-                    uiHostId: id,
-                    uiTag: this.nativeHostUiTags().get(id)!,
-                    truthinessCpp: "true",
-                };
-            }
-            if (
-                callee.name.text === "createElement" &&
-                ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "document" &&
-                this.isDefaultLibraryIdentifier(callee.expression)
-            ) {
-                this.expectArgumentCount(call, 1, 1);
-                const tag = this.compileStringLiteral(argumentAt(call, 0));
-                const normalizedTag = tag.toLowerCase();
-                if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
-                    this.fail(
-                        argumentAt(call, 0),
-                        `Native UI element tag '${tag}' is not valid.`,
-                    );
-                }
-                if (Compiler.UI_IMPLEMENTATION_TAGS.has(normalizedTag)) {
-                    this.fail(
-                        argumentAt(call, 0),
-                        `Native UI element tag '${tag}' is reserved for the retained projection.`,
-                    );
-                }
-                const engine = this.requireDefaultEngine(call);
-                this.reachFeature("ui:rml", call);
-                const uiStaticId = this.createUiStaticElement(normalizedTag);
-                this.uiStaticIdsByCreation.set(call, uiStaticId);
-                return {
-                    kind: "ui-element",
-                    cpp: `bbl::ui_create_element(${engine}, ${this.cppString(normalizedTag)})`,
-                    engineCpp: engine,
-                    uiTag: normalizedTag,
-                    uiStaticId,
-                    ...(normalizedTag === "canvas"
-                        ? {
-                              uiCanvas: true as const,
-                              uiCanvasId: this.uiCanvasIds++,
-                          }
-                        : {}),
-                };
-            }
-
-            const classListMutation =
-                ts.isPropertyAccessExpression(callee.expression) &&
-                callee.expression.name.text === "classList" &&
-                (callee.name.text === "add" ||
-                    callee.name.text === "remove" ||
-                    callee.name.text === "toggle");
-            const element = classListMutation
-                ? undefined
-                : this.uiElementValue(callee.expression);
-            if (
-                element?.uiTag === "image-bitmap" &&
-                callee.name.text === "close"
-            ) {
-                this.expectArgumentCount(call, 0, 0);
-                return { kind: "void", cpp: "" };
-            }
-            if (
-                element?.uiCanvas &&
-                !element.uiCanvasContext &&
-                callee.name.text === "getContext"
-            ) {
-                this.expectArgumentCount(call, 1, 1);
-                const context = this.compileStringLiteral(argumentAt(call, 0));
-                if (context !== "2d") {
-                    this.fail(
-                        argumentAt(call, 0),
-                        "Retained native canvas only supports the '2d' context.",
-                    );
-                }
-                return {
-                    ...element,
-                    uiCanvasContext: true,
-                };
-            }
-            if (element?.uiCanvasContext) {
-                const engine = this.requireEngine(element, call);
-                const number = (index: number): string =>
-                    this.compileNumber(argumentAt(call, index), "double");
-                const invocation = (
-                    name: string,
-                    minimum: number,
-                    maximum = minimum,
-                ): Value => {
-                    this.expectArgumentCount(call, minimum, maximum);
-                    return {
-                        kind: "void",
-                        cpp:
-                            `bbl::ui_canvas_${name}(${engine}, ${element.cpp}` +
-                            `${call.arguments.length > 0 ? ", " : ""}` +
-                            `${call.arguments.map((_argument, index) => number(index)).join(", ")})`,
-                    };
-                };
-                switch (callee.name.text) {
-                    case "scale":
-                        this.recordUiCanvasLogicalScale(call);
-                        return invocation("scale", 2);
-                    case "clearRect":
-                        this.expectUiCanvasFullSurfaceClear(
-                            call,
-                            element.uiCanvasId,
-                        );
-                        return invocation("clear_rect", 4);
-                    case "fillRect":
-                        return invocation("fill_rect", 4);
-                    case "beginPath":
-                        return invocation("begin_path", 0);
-                    case "moveTo":
-                        return invocation("move_to", 2);
-                    case "lineTo":
-                        return invocation("line_to", 2);
-                    case "closePath":
-                        return invocation("close_path", 0);
-                    case "arcTo":
-                        return invocation("arc_to", 5);
-                    case "arc":
-                        this.expectArgumentCount(call, 5, 6);
-                        return {
-                            kind: "void",
-                            cpp:
-                                `bbl::ui_canvas_arc(${engine}, ${element.cpp}, ` +
-                                `${call.arguments
-                                    .slice(0, 5)
-                                    .map((_argument, index) => number(index))
-                                    .join(", ")}, ` +
-                                `${call.arguments[5] ? this.compileBoolean(call.arguments[5]) : "false"})`,
-                        };
-                    case "fill":
-                        return invocation("fill", 0);
-                    case "stroke":
-                        return invocation("stroke", 0);
-                    case "getImageData": {
-                        this.expectArgumentCount(call, 4, 4);
-                        const sourceText = call.getSourceFile().text;
-                        if (
-                            !sourceText.includes("createImageBitmap") ||
-                            !sourceText.includes("ctx.drawImage") ||
-                            !sourceText.includes("ctx.getImageData")
-                        ) {
-                            this.fail(
-                                call,
-                                "Retained Canvas2D getImageData is lowered only for the bounded fetched-atlas bake.",
-                            );
-                        }
-                        const atlas = bakeFetchedCanvasAtlas(
-                            call.getSourceFile().fileName,
-                        );
-                        for (const image of atlas.images) {
-                            registerUiImageAsset(
-                                this,
-                                image.source,
-                                image.logicalPath,
-                            );
-                        }
-                        const asset = this.registerAsset(
-                            `data:application/octet-stream;base64,${Buffer.from(atlas.pixels).toString("base64")}`,
-                            "pixels",
-                        );
-                        this.reachJsData();
-                        return {
-                            kind: "record",
-                            cpp: "",
-                            recordProperties: {
-                                data: {
-                                    kind: "data",
-                                    cpp:
-                                        `bbl::js::U8Array(bbl::js::ArrayBuffer(` +
-                                        `bbl::pal::read_binary_file(bbl::asset_path(` +
-                                        `${this.cppString(asset.output)}))))`,
-                                    dataType: { kind: "u8array" },
-                                },
-                            },
-                        };
-                    }
-                    case "putImageData": {
-                        this.expectArgumentCount(call, 3, 3);
-                        const imageData = this.unwrap(argumentAt(call, 0));
-                        if (
-                            !ts.isNewExpression(imageData) ||
-                            !ts.isIdentifier(imageData.expression) ||
-                            imageData.expression.text !== "ImageData" ||
-                            !this.isDefaultLibraryIdentifier(imageData.expression) ||
-                            (imageData.arguments?.length ?? 0) !== 3
-                        ) {
-                            this.fail(
-                                argumentAt(call, 0),
-                                "Retained Canvas2D putImageData requires new ImageData(rgba, width, height).",
-                            );
-                        }
-                        let pixelsExpression = imageData.arguments![0]!;
-                        const pixelsConstructor = this.unwrap(pixelsExpression);
-                        if (
-                            ts.isNewExpression(pixelsConstructor) &&
-                            ts.isIdentifier(pixelsConstructor.expression) &&
-                            (pixelsConstructor.expression.text ===
-                                "Uint8ClampedArray" ||
-                                pixelsConstructor.expression.text ===
-                                    "Uint8Array") &&
-                            pixelsConstructor.arguments?.length === 1
-                        ) {
-                            pixelsExpression = argumentAt(pixelsConstructor, 0);
-                        }
-                        const pixels = this.compileValue(pixelsExpression);
-                        if (
-                            pixels.kind !== "data" ||
-                            pixels.dataType?.kind !== "u8array"
-                        ) {
-                            this.fail(
-                                pixelsExpression,
-                                "Retained Canvas2D ImageData pixels must lower to a Uint8Array.",
-                            );
-                        }
-                        return {
-                            kind: "void",
-                            cpp:
-                                `bbl::ui_canvas_put_image_data(${engine}, ${element.cpp}, ` +
-                                `${pixels.cpp}, ` +
-                                `${this.compileNumber(imageData.arguments![1]!, "double")}, ` +
-                                `${this.compileNumber(imageData.arguments![2]!, "double")}, ` +
-                                `${number(1)}, ${number(2)})`,
-                        };
-                    }
-                    case "drawImage": {
-                        this.expectArgumentCount(call, 5, 5);
-                        const source = this.compileValue(argumentAt(call, 0));
-                        if (source.kind !== "ui-element") {
-                            this.fail(
-                                argumentAt(call, 0),
-                                "Retained Canvas2D drawImage source must be a retained UI element; " +
-                                    `received ${source.kind}.`,
-                            );
-                        }
-                        if (source.uiTag === "image-bitmap") {
-                            return { kind: "void", cpp: "" };
-                        }
-                        this.expectSameEngine(element, source, call);
-                        const sourceText = this.unwrap(
-                            argumentAt(call, 0),
-                        ).getText();
-                        const extent = (
-                            argumentIndex: number,
-                            axis: "width" | "height",
-                        ): string => {
-                            const argument = this.unwrap(
-                                argumentAt(call, argumentIndex),
-                            );
-                            let dimension: ts.Expression = argument;
-                            let multiplier = "1.0";
-                            if (
-                                ts.isBinaryExpression(argument) &&
-                                argument.operatorToken.kind ===
-                                    ts.SyntaxKind.AsteriskToken
-                            ) {
-                                const left = this.unwrap(argument.left);
-                                const right = this.unwrap(argument.right);
-                                const leftIsDimension =
-                                    ts.isPropertyAccessExpression(left) &&
-                                    left.name.text === axis;
-                                const rightIsDimension =
-                                    ts.isPropertyAccessExpression(right) &&
-                                    right.name.text === axis;
-                                if (leftIsDimension) {
-                                    dimension = left;
-                                    multiplier = this.compileNumber(
-                                        argument.right,
-                                        "double",
-                                    );
-                                } else if (rightIsDimension) {
-                                    dimension = right;
-                                    multiplier = this.compileNumber(
-                                        argument.left,
-                                        "double",
-                                    );
-                                }
-                            }
-                            if (
-                                !ts.isPropertyAccessExpression(dimension) ||
-                                dimension.name.text !== axis ||
-                                this.unwrap(dimension.expression).getText() !==
-                                    sourceText
-                            ) {
-                                this.fail(
-                                    argumentAt(call, argumentIndex),
-                                    `Retained Canvas2D drawImage ${axis} must be source.${axis}, optionally multiplied by a scale.`,
-                                );
-                            }
-                            return (
-                                `(bbl::ui_canvas_${axis}(${engine}, ${source.cpp}) * ` +
-                                `(${multiplier}))`
-                            );
-                        };
-                        return {
-                            kind: "void",
-                            cpp:
-                                `bbl::ui_canvas_draw_image(${engine}, ${element.cpp}, ${source.cpp}, ` +
-                                `${number(1)}, ${number(2)}, ${extent(3, "width")}, ${extent(4, "height")})`,
-                        };
-                    }
-                    case "fillText":
-                        this.expectArgumentCount(call, 3, 3);
-                        return {
-                            kind: "void",
-                            cpp:
-                                `bbl::ui_canvas_fill_text(${engine}, ${element.cpp}, ` +
-                                `${this.uiStringCpp(argumentAt(call, 0), "Canvas2D fillText")}, ` +
-                                `${number(1)}, ${number(2)})`,
-                        };
-                }
-            }
-            if (element && callee.name.text === "focus") {
-                this.expectArgumentCount(call, 0, 0);
-                const engine = this.requireEngine(element, call);
-                const focus = `bbl::ui_focus(${engine}, ${element.cpp})`;
-                return {
-                    kind: "void",
-                    cpp: element.optionalFoundCpp
-                        ? `(${element.optionalFoundCpp} ? ${focus} : static_cast<void>(0))`
-                        : focus,
-                };
-            }
-            if (element && callee.name.text === "click") {
-                this.expectArgumentCount(call, 0, 0);
-                if (element.uiTag === "input") {
-                    if (!element.uiFileInput) {
-                        this.fail(
-                            call,
-                            "Programmatic <input>.click() requires the static type 'file'.",
-                        );
-                    }
-                    this.reachFeature("browser:file", call);
-                } else if (element.uiTag === "a") {
-                    this.reachFeature("browser:file", call);
-                }
-                const engine = this.requireEngine(element, call);
-                return {
-                    kind: "void",
-                    cpp: `bbl::ui_click(${engine}, ${element.cpp})`,
-                };
-            }
-            if (element && callee.name.text === "querySelector") {
-                this.expectArgumentCount(call, 1, 1);
-                const selector = this.compileStringLiteral(argumentAt(call, 0));
-                if (element.uiStaticId === undefined) {
-                    this.fail(
-                        call,
-                        "Retained UI querySelector requires a statically-known retained root.",
-                    );
-                }
-                const query = selector.match(/^\.([A-Za-z_][A-Za-z0-9_-]*)$/)
-                    ? {
-                          kind: "class" as const,
-                          name: selector.slice(1),
-                          value: "",
-                      }
-                    : selector.match(/^#([A-Za-z_][A-Za-z0-9_-]*)$/)
-                      ? {
-                            kind: "attribute" as const,
-                            name: "id",
-                            value: selector.slice(1),
-                        }
-                      : (() => {
-                            const matched = selector.match(
-                                /^\[([A-Za-z_:][A-Za-z0-9_:.-]*)=["']([^"']*)["']\]$/,
-                            );
-                            return matched
-                                ? {
-                                      kind: "attribute" as const,
-                                      name: matched[1]!.toLowerCase(),
-                                      value: matched[2]!,
-                                  }
-                                : selector.match(/^[A-Za-z][A-Za-z0-9-]*$/)
-                                  ? {
-                                        kind: "tag" as const,
-                                        name: selector.toLowerCase(),
-                                        value: "",
-                                    }
-                                  : undefined;
-                        })();
-                if (!query) {
-                    this.fail(
-                        argumentAt(call, 0),
-                        `Retained UI querySelector selector '${selector}' is not lowered.`,
-                    );
-                }
-                const descendants = this.uiStaticDescendants(
-                    element.uiStaticId,
-                );
-                const match = descendants.markup.find((node) =>
-                    query.kind === "class"
-                        ? node.classes.has(query.name)
-                        : query.kind === "tag"
-                          ? node.tag === query.name
-                          : node.attributes.get(query.name) === query.value,
-                );
-                if (!descendants.complete || !match) {
-                    this.fail(
-                        call,
-                        `Retained UI querySelector('${selector}') requires a matching node in a complete static innerHTML subtree.`,
-                    );
-                }
-                const engine = this.requireEngine(element, call);
-                return {
-                    kind: "ui-element",
-                    cpp:
-                        `bbl::ui_query_markup(${engine}, ${element.cpp}, ` +
-                        `${match.id}u, ${this.cppString(match.tag)})`,
-                    engineCpp: engine,
-                    uiTag: match.tag,
-                    truthinessCpp: "true",
-                };
-            }
-            if (element && callee.name.text === "querySelectorAll") {
-                this.expectArgumentCount(call, 1, 1);
-                const selector = this.compileStringLiteral(argumentAt(call, 0));
-                const matched = selector.match(/^\.([A-Za-z_][A-Za-z0-9_-]*)$/);
-                if (!matched) {
-                    this.fail(
-                        argumentAt(call, 0),
-                        `Retained UI querySelectorAll selector '${selector}' is not lowered; only a static '.class' scoped query is supported.`,
-                    );
-                }
-                if (element.uiStaticId !== undefined) {
-                    const descendants = this.uiStaticDescendants(
-                        element.uiStaticId,
-                    );
-                    const markupMatches = descendants.markup.filter((node) =>
-                        node.classes.has(matched[1]!),
-                    );
-                    if (markupMatches.length > 0) {
-                        if (!descendants.complete) {
-                            this.fail(
-                                call,
-                                "Retained UI markup query requires a complete static innerHTML subtree.",
-                            );
-                        }
-                        const engine = this.requireEngine(element, call);
-                        this.reachJsData();
-                        return {
-                            kind: "data",
-                            cpp:
-                                "bbl::js::Array<bbl::UiElementHandle>{" +
-                                markupMatches
-                                    .map(
-                                        (node) =>
-                                            `bbl::ui_query_markup(${engine}, ${element.cpp}, ` +
-                                            `${node.id}u, ${this.cppString(node.tag)})`,
-                                    )
-                                    .join(", ") +
-                                "}",
-                            dataType: {
-                                kind: "vector",
-                                element: {
-                                    kind: "handle",
-                                    handle: "ui-element",
-                                },
-                            },
-                        };
-                    }
-                }
-                this.uiPendingClassQueries.push({
-                    root: element,
-                    className: matched[1]!,
-                    site: call,
-                });
-                const engine = this.requireEngine(element, call);
-                this.reachJsData();
-                return {
-                    kind: "data",
-                    cpp: element.optionalFoundCpp
-                        ? `(${element.optionalFoundCpp} ? ` +
-                          `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
-                          `${this.cppString(matched[1]!)}) : ` +
-                          "bbl::js::Array<bbl::UiElementHandle>{})"
-                        : `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
-                          `${this.cppString(matched[1]!)})`,
-                    dataType: {
-                        kind: "vector",
-                        element: {
-                            kind: "handle",
-                            handle: "ui-element",
-                        },
-                    },
-                };
-            }
-            if (element && callee.name.text === "setAttribute") {
-                this.expectArgumentCount(call, 2, 2);
-                const name = this.compileStringLiteral(argumentAt(call, 0));
-                const engine = this.requireEngine(element, call);
-                const browserFile = this.compileUiBrowserFileAttribute(
-                    element,
-                    engine,
-                    name,
-                    argumentAt(call, 1),
-                    call,
-                    "attribute",
-                );
-                if (browserFile) {
-                    return {
-                        kind: "void",
-                        cpp: browserFile,
-                    };
-                }
-                const staticValue = this.tryUiStaticString(argumentAt(call, 1));
-                const sourceValue =
-                    staticValue === undefined
-                        ? this.compileValue(argumentAt(call, 1))
-                        : undefined;
-                if (
-                    sourceValue !== undefined &&
-                    sourceValue.kind !== "string" &&
-                    !(
-                        sourceValue.kind === "data" &&
-                        sourceValue.dataType?.kind === "string"
-                    )
-                ) {
-                    this.fail(
-                        argumentAt(call, 1),
-                        `UI setAttribute value requires a string, received ${sourceValue?.kind}.`,
-                    );
-                }
-                const value =
-                    staticValue !== undefined
-                        ? this.cppString(
-                              this.lowerUiAttributeLiteral(
-                                  name,
-                                  staticValue,
-                                  argumentAt(call, 1),
-                              ),
-                          )
-                        : sourceValue!.cpp;
-                if (name === "class" || name === "id") {
-                    this.recordUiStaticAttribute(
-                        element,
-                        name,
-                        argumentAt(call, 1),
-                    );
-                } else if (name === "style" && staticValue !== undefined) {
-                    this.recordUiStaticStyle(
-                        element,
-                        this.lowerUiAttributeLiteral(
-                            "style",
-                            staticValue,
-                            argumentAt(call, 1),
-                        ),
-                    );
-                } else if (name === "style") {
-                    this.recordUiUnknownStaticStyle(element);
-                }
-                return {
-                    kind: "void",
-                    cpp:
-                        `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
-                        `${this.cppString(name)}, ` +
-                        `${value})`,
-                };
-            }
-            if (element && callee.name.text === "appendChild") {
-                this.expectArgumentCount(call, 1, 1);
-                const child = this.compileValue(argumentAt(call, 0));
-                this.expectKind(child, "ui-element", argumentAt(call, 0));
-                if (!element.uiRoot) {
-                    this.expectSameEngine(element, child, call);
-                }
-                const engine = this.requireEngine(
-                    element.uiRoot ? child : element,
-                    call,
-                );
-                if (element.uiRoot) {
-                    this.recordUiStaticRootAppend(child);
-                } else {
-                    this.recordUiStaticAppend(element, child);
-                }
-                return {
-                    ...child,
-                    cpp: element.uiRoot
-                        ? `bbl::ui_append_to_root(${engine}, ${child.cpp})`
-                        : `bbl::ui_append_child(${engine}, ${element.cpp}, ${child.cpp})`,
-                    engineCpp: engine,
-                };
-            }
-            if (element && callee.name.text === "append") {
-                const children = call.arguments.map((argument) => {
-                    const child = this.compileValue(argument);
-                    this.expectKind(child, "ui-element", argument);
-                    return child;
-                });
-                if (children.length === 0) {
-                    return { kind: "void", cpp: "" };
-                }
-                const engine = this.requireEngine(
-                    element.uiRoot ? children[0]! : element,
-                    call,
-                );
-                const appends = children.map((child) => {
-                    if (element.uiRoot) {
-                        this.expectSameEngine(children[0]!, child, call);
-                        this.recordUiStaticRootAppend(child);
-                        return `bbl::ui_append_to_root(${engine}, ${child.cpp})`;
-                    }
-                    this.expectSameEngine(element, child, call);
-                    this.recordUiStaticAppend(element, child);
-                    return `bbl::ui_append_child(${engine}, ${element.cpp}, ${child.cpp})`;
-                });
-                return { kind: "void", cpp: appends.join(", ") };
-            }
-            if (element && callee.name.text === "replaceChildren") {
-                this.expectArgumentCount(call, 0, 0);
-                const engine = this.requireEngine(element, call);
-                this.recordUiStaticReplaceChildren(element);
-                return {
-                    kind: "void",
-                    cpp: `bbl::ui_replace_children(${engine}, ${element.cpp})`,
-                };
-            }
-            if (element && callee.name.text === "remove") {
-                this.expectArgumentCount(call, 0, 0);
-                const engine = this.requireEngine(element, call);
-                this.recordUiStaticRemoval(element);
-                return {
-                    kind: "void",
-                    cpp: element.optionalFoundCpp
-                        ? `(${element.optionalFoundCpp} ? ` +
-                          `bbl::ui_remove(${engine}, ${element.cpp}) : ` +
-                          "static_cast<void>(0))"
-                        : `bbl::ui_remove(${engine}, ${element.cpp})`,
-                };
-            }
-            if (element && callee.name.text === "getBoundingClientRect") {
-                this.expectArgumentCount(call, 0, 0);
-                const engine = this.requireEngine(element, call);
-                const rect = `bbl::ui_get_client_rect(${engine}, ${element.cpp})`;
-                const component = (name: string): Value => ({
-                    kind: "number",
-                    cpp: `${rect}.${name}`,
-                    dataType: { kind: "number" },
-                    engineCpp: engine,
-                });
-                return {
-                    kind: "record",
-                    cpp: "",
-                    recordProperties: {
-                        left: component("left"),
-                        top: component("top"),
-                        width: component("width"),
-                        height: component("height"),
-                    },
-                };
-            }
-            if (
-                element &&
-                (callee.name.text === "setPointerCapture" ||
-                    callee.name.text === "releasePointerCapture")
-            ) {
-                this.expectArgumentCount(call, 1, 1);
-                // RmlUi owns pointer capture while dispatching a pressed
-                // control. The DOM call has no additional native action.
-                return { kind: "void", cpp: "" };
-            }
-            if (element && callee.name.text === "hasPointerCapture") {
-                this.expectArgumentCount(call, 1, 1);
-                // RmlUi dispatches captured pointer motion back to the pressed
-                // element. Reaching this callback is therefore the native
-                // equivalent of the DOM capture predicate used by the demos.
-                return { kind: "boolean", cpp: "true" };
-            }
-            if (element && callee.name.text === "animate") {
-                this.expectArgumentCount(call, 2, 2);
-                // Web Animations remains outside this retained UI slice. The
-                // state mutation around it (text/style/removal) is preserved.
-                return { kind: "void", cpp: "" };
-            }
-            if (element && callee.name.text === "removeEventListener") {
-                this.expectArgumentCount(call, 2, 2);
-                // Retained UI records share the engine lifetime.
-                // Listener identity/removal is deferred with DOM lifecycle.
-                return { kind: "void", cpp: "" };
-            }
-            if (classListMutation) {
-                const classOwner = callee.expression.expression;
-                let classElement = this.uiElementValue(classOwner);
-                if (
-                    !classElement &&
-                    ts.isCallExpression(this.unwrap(classOwner))
-                ) {
-                    const compiled = this.compileValue(classOwner);
-                    if (compiled.kind === "ui-element") {
-                        classElement = compiled;
-                    }
-                }
-                if (classElement) {
-                    const method = callee.name.text;
-                    this.expectArgumentCount(
-                        call,
-                        method === "toggle" ? 2 : 1,
-                        method === "toggle" ? 2 : 1,
-                    );
-                    const name = this.compileStringLiteral(argumentAt(call, 0));
-                    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
-                        this.fail(
-                            argumentAt(call, 0),
-                            `Native UI class name '${name}' is not valid.`,
-                        );
-                    }
-                    const enabled =
-                        method === "toggle"
-                            ? this.uiBooleanCpp(
-                                  argumentAt(call, 1),
-                                  "UI classList.toggle",
-                              )
-                            : method === "add"
-                              ? "true"
-                              : "false";
-                    this.recordUiStaticClass(
-                        classElement,
-                        name,
-                        method as "add" | "remove" | "toggle",
-                        enabled,
-                    );
-                    if (classElement.uiStaticId === undefined) {
-                        this.uiUnknownClassMutations.push({
-                            className: name,
-                            site: call,
-                        });
-                    }
-                    const engine = this.requireEngine(classElement, call);
-                    const mutation =
-                        `bbl::ui_toggle_class(${engine}, ${classElement.cpp}, ` +
-                        `${this.cppString(name)}, ${enabled})`;
-                    return {
-                        kind: "void",
-                        cpp: classElement.optionalFoundCpp
-                            ? `(${classElement.optionalFoundCpp} ? ${mutation} : static_cast<void>(0))`
-                            : mutation,
-                    };
-                }
-            }
-            if (
-                callee.name.text === "appendChild" &&
-                ts.isPropertyAccessExpression(callee.expression) &&
-                (callee.expression.name.text === "body" ||
-                    callee.expression.name.text === "head") &&
-                ts.isIdentifier(callee.expression.expression) &&
-                callee.expression.expression.text === "document" &&
-                this.isDefaultLibraryIdentifier(callee.expression.expression)
-            ) {
-                this.expectArgumentCount(call, 1, 1);
-                const child = this.compileValue(argumentAt(call, 0));
-                this.expectKind(child, "ui-element", argumentAt(call, 0));
-                const engine = this.requireEngine(child, call);
-                this.recordUiStaticRootAppend(child);
-                return {
-                    ...child,
-                    cpp: `bbl::ui_append_to_root(${engine}, ${child.cpp})`,
-                    engineCpp: engine,
-                };
-            }
-        }
-        if (
-            ts.isIdentifier(callee) &&
-            this.isDefaultLibraryIdentifier(callee)
-        ) {
-            if (callee.text === "isFinite") {
-                this.expectArgumentCount(call, 1, 1);
-                return {
-                    kind: "boolean",
-                    cpp:
-                        `std::isfinite(` +
-                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
-                };
-            }
-            if (callee.text === "setInterval") {
-                this.expectArgumentCount(call, 2, 2);
-                const engine = this.requireDefaultEngine(call);
-                const callback = this.compileFrameCallback(
-                    argumentAt(call, 0),
-                    "interval",
-                );
-                const delay = this.compileNumber(argumentAt(call, 1), "double");
-                return {
-                    kind: "number",
-                    cpp: `bbl::set_interval(${engine}, ${callback}, ${delay})`,
-                    impure: true,
-                };
-            }
-            if (callee.text === "clearInterval") {
-                this.expectArgumentCount(call, 1, 1);
-                const engine = this.requireDefaultEngine(call);
-                return {
-                    kind: "void",
-                    cpp:
-                        `bbl::clear_interval(${engine}, ` +
-                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
-                };
-            }
-            if (callee.text === "clearTimeout") {
-                this.expectArgumentCount(call, 1, 1);
-                const engine = this.requireDefaultEngine(call);
-                return {
-                    kind: "void",
-                    cpp:
-                        `bbl::clear_timeout(${engine}, ` +
-                        `${this.compileNumber(argumentAt(call, 0), "double")})`,
-                };
-            }
-        }
-        if (!ts.isPropertyAccessExpression(callee)) {
-            return undefined;
-        }
-        const receiver = this.unwrap(callee.expression);
-        if (
-            callee.name.text === "destroy" &&
-            call.arguments.length === 0 &&
-            ts.isPropertyAccessExpression(receiver) &&
-            receiver.name.text === "texture"
-        ) {
-            const texture = this.compileValue(receiver.expression);
-            if (texture.kind === "texture") {
-                if (texture.textureStorage !== "render") {
-                    // File and pixel textures are immutable engine assets;
-                    // only createRenderTexture2D exposes a live GPU target
-                    // whose WebGPU destroy call has observable lifetime.
-                    return { kind: "void", cpp: "" };
-                }
-                return {
-                    kind: "void",
-                    cpp:
-                        `bbl::dispose_sprite_render_texture(` +
-                        `${texture.engineCpp ?? this.requireDefaultEngine(call)}, ` +
-                        `${texture.cpp})`,
-                };
-            }
-        }
-        if (
-            callee.name.text === "now" &&
-            call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            receiver.text === "performance" &&
-            this.isDefaultLibraryIdentifier(receiver)
-        ) {
-            return {
-                kind: "number",
-                cpp: "bbl::pal::performance_milliseconds()",
-                impure: true,
-            };
-        }
-        if (
-            callee.name.text === "preventDefault" &&
-            call.arguments.length === 0
-        ) {
-            const platformEvent = ts.isIdentifier(receiver)
-                ? this.lookupOptional(receiver)
-                : ts.isPropertyAccessExpression(receiver) ||
-                    ts.isElementAccessExpression(receiver)
-                  ? this.compileValue(receiver)
-                  : undefined;
-            if (
-                platformEvent?.kind === "platform-keyboard-event" ||
-                platformEvent?.kind === "platform-mouse-event"
-            ) {
-                return {
-                    kind: "void",
-                    cpp: `${platformEvent.cpp}.prevent_default()`,
-                };
-            }
-        }
-        if (
-            callee.name.text === "focus" &&
-            call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            this.isCanvasElement(receiver)
-        ) {
-            return {
-                kind: "void",
-                cpp: `bbl::focus_canvas(${this.requireDefaultEngine(call)})`,
-            };
-        }
-        if (
-            callee.name.text === "requestPointerLock" &&
-            call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            this.isCanvasElement(receiver)
-        ) {
-            return {
-                kind: "void",
-                cpp: `bbl::request_pointer_lock(${this.requireDefaultEngine(call)})`,
-            };
-        }
-        if (
-            callee.name.text === "exitPointerLock" &&
-            call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            receiver.text === "document" &&
-            this.isDefaultLibraryIdentifier(receiver)
-        ) {
-            return {
-                kind: "void",
-                cpp: `bbl::exit_pointer_lock(${this.requireDefaultEngine(call)})`,
-            };
-        }
-        return undefined;
+    public isPrimaryCanvas2DContextCall(call: ts.CallExpression): boolean {
+        return this.browserErasure.isPrimaryCanvas2DContextCall(call, expression => this.evaluateBrowserValue(expression));
     }
 
-    /** Whether a named RAF callback explicitly schedules itself again. */
-    private animationFrameCallbackRearmsItself(
-        expression: ts.Expression,
-    ): boolean {
-        const callback = this.unwrap(expression);
-        if (!ts.isIdentifier(callback)) return false;
-        const symbol = this.symbols.valueSymbol(callback);
-        if (!symbol) return false;
-        const declaration = symbol.valueDeclaration;
-        let functionNode: ts.FunctionLikeDeclaration | undefined;
-        if (
-            declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            declaration.initializer
-        ) {
-            const initializer = this.unwrap(declaration.initializer);
-            if (
-                ts.isArrowFunction(initializer) ||
-                ts.isFunctionExpression(initializer)
-            ) {
-                functionNode = initializer;
-            }
-        } else if (declaration && ts.isFunctionDeclaration(declaration)) {
-            functionNode = declaration;
-        }
-        if (!functionNode?.body) return false;
-
-        let rearmed = false;
-        const visit = (node: ts.Node): void => {
-            if (rearmed) return;
-            if (node !== functionNode && ts.isFunctionLike(node)) return;
-            if (ts.isCallExpression(node)) {
-                const callee = this.unwrap(node.expression);
-                const argument = node.arguments[0]
-                    ? this.unwrap(node.arguments[0])
-                    : undefined;
-                if (
-                    ts.isIdentifier(callee) &&
-                    callee.text === "requestAnimationFrame" &&
-                    argument &&
-                    ts.isIdentifier(argument) &&
-                    this.symbols.valueSymbol(argument) === symbol
-                ) {
-                    rearmed = true;
-                    return;
-                }
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(functionNode.body);
-        return rearmed;
+    public compilePlatformCall(call: ts.CallExpression): Value | undefined {
+        return this.platform.compilePlatformCall(call);
     }
 
     /**
@@ -16192,276 +10321,22 @@ class Compiler
     public compileAnimationFrameCall(
         call: ts.CallExpression,
     ): Value | undefined {
-        this.expectArgumentCount(call, 1, 1);
-        const argument = this.unwrap(argumentAt(call, 0));
-        const stored = ts.isIdentifier(argument) ? this.lookupOptional(argument) : undefined;
-        // A materialized callback retains its own requeue operation, including
-        // conditional schedules and synchronous priming calls.
-        const recurring = !(stored?.kind === "callback" && stored.cpp.length > 0) && this.animationFrameCallbackRearmsItself(
-            argumentAt(call, 0),
-        );
-        const nested = this.frameCallbackDepth > 0;
-        if (nested && recurring) {
-            return { kind: "void", cpp: "" };
-        }
-        const engine = this.requireDefaultEngine(call);
-        const callback = this.compileFrameCallback(
-            argumentAt(call, 0),
-            "timestamp",
-        );
-        if (!recurring) {
-            return { kind: "void", cpp: `bbl::request_animation_frame(${engine}, ${callback})` };
-        }
-        this.requireCompatibleFrameConductor("persistent", call);
-        const callbacks = this.engineStartMark
-            ? "post_render_animation_frame_callbacks"
-            : "animation_frame_callbacks";
-        return {
-            kind: "void",
-            cpp: `${engine}.${callbacks}.push_back(${callback})`,
-        };
+        return this.platform.compileAnimationFrameCall(call);
     }
 
-    private frameConductorOwner: "manager" | "persistent" | undefined;
-
     public requireCompatibleFrameConductor(owner: "manager" | "persistent", site: ts.Node): void {
-        if (this.frameConductorOwner && this.frameConductorOwner !== owner) {
-            this.fail(site, "Autonomous animation managers cannot share a program with a persistent application RAF loop; that loop must retain its source requeue before the two callback orders can compose.");
-        }
-        this.frameConductorOwner = owner;
+        return this.platform.requireCompatibleFrameConductor(owner, site);
     }
 
     public emitPlatformEventListener(call: ts.CallExpression): boolean {
-        const callee = this.unwrap(call.expression);
-        if (
-            !ts.isPropertyAccessExpression(callee) ||
-            (callee.name.text !== "addEventListener" &&
-                callee.name.text !== "removeEventListener")
-        ) {
-            return false;
-        }
-        const removing = callee.name.text === "removeEventListener";
-        const uiElement = this.uiElementValue(callee.expression);
-        if (uiElement) {
-            if (removing) return false;
-            this.expectArgumentCount(call, 2, 2);
-            const event = this.compileStringLiteral(argumentAt(call, 0));
-            if (event === "change") {
-                if (uiElement.uiTag !== "input" || !uiElement.uiFileInput) {
-                    this.fail(
-                        argumentAt(call, 0),
-                        "The native 'change' event is supported only on a retained <input type=\"file\">.",
-                    );
-                }
-                this.reachFeature("browser:file", call);
-            }
-            const mappedEvent =
-                event === "pointerdown"
-                    ? "mousedown"
-                    : event === "pointerup"
-                      ? "mouseup"
-                      : event === "pointermove"
-                        ? "mousemove"
-                        : event === "pointercancel" ||
-                            event === "lostpointercapture"
-                          ? "mouseout"
-                          : event;
-            if (
-                event !== "click" &&
-                event !== "focus" &&
-                event !== "mousedown" &&
-                event !== "pointerdown" &&
-                event !== "pointerup" &&
-                event !== "pointermove" &&
-                event !== "pointercancel" &&
-                event !== "lostpointercapture" &&
-                event !== "change" &&
-                event !== "input" &&
-                event !== "contextmenu"
-            ) {
-                this.fail(
-                    argumentAt(call, 0),
-                    `Native UI elements do not support the '${event}' event.`,
-                );
-            }
-            const callback = argumentAt(call, 1);
-            this.hoistForwardCallbackBindings(callback, call.pos);
-            const engine = this.requireEngine(uiElement, call);
-            if (event === "contextmenu") {
-                // Native has no browser context menu to suppress.
-                return true;
-            }
-            const parameter = this.allocateTemporaryCppName("ui_pointer_event");
-            const pointerValue: Value = {
-                kind: "platform-mouse-event",
-                cpp: parameter,
-                readOnly: true,
-            };
-            const lambda = this.compilePlatformCallback(
-                callback,
-                event === "click" || event === "change"
-                    ? undefined
-                    : {
-                          cppType: "const bbl::PlatformMouseEvent&",
-                          name: parameter,
-                      },
-                event === "click" || event === "change" ? [] : [pointerValue],
-                undefined,
-                true,
-                false,
-            );
-            const registration =
-                event === "click"
-                    ? "ui_on_click"
-                    : event === "change"
-                      ? "ui_on_file_change"
-                      : "ui_on_event";
-            this.emit(
-                `bbl::${registration}(` +
-                    `${engine}, ${uiElement.cpp}, ` +
-                    `${
-                        event === "click" || event === "change"
-                            ? ""
-                            : `${this.cppString(mappedEvent)}, `
-                    }` +
-                    `${lambda.cpp});`,
-            );
-            return true;
-        }
-        if (!ts.isIdentifier(callee.expression)) return false;
-        const target = this.isDefaultLibraryIdentifier(callee.expression)
-            ? callee.expression.text
-            : this.isCanvasElement(callee.expression)
-              ? "canvas"
-              : undefined;
-        if (
-            target !== "window" &&
-            target !== "document" &&
-            target !== "canvas"
-        ) {
-            return false;
-        }
-        if (call.arguments.length < 2 || call.arguments.length > 3) {
-            this.fail(
-                call,
-                "Platform event listeners require an event name, callback, and optional options record.",
-            );
-        }
-        const event = this.evaluator.staticTextValue(argumentAt(call, 0));
-        const callback = argumentAt(call, 1);
-        this.hoistForwardCallbackBindings(callback, call.pos);
-        let once = false;
-        if (!removing && call.arguments[2]) {
-            const options = this.unwrap(call.arguments[2]);
-            if (!ts.isObjectLiteralExpression(options)) {
-                this.fail(
-                    options,
-                    "Native event listener options require a static object literal.",
-                );
-            }
-            const onceExpression = this.objectProperty(options, "once");
-            if (onceExpression) {
-                const compiled = this.compileCondition(onceExpression);
-                if (compiled !== "true" && compiled !== "false") {
-                    this.fail(
-                        onceExpression,
-                        "The event listener 'once' option must be static.",
-                    );
-                }
-                once = compiled === "true";
-            }
-        }
-        const engine = this.requireDefaultEngine(call);
-        const descriptor = this.platformEventDescriptor(target, event);
-        if (!descriptor) return false;
-        if (removing) {
-            const callbackValue = this.compileValue(callback);
-            const identity = this.platformEventCallbackIdentity(
-                callbackValue,
-                callback,
-            );
-            this.emit(
-                `bbl::off_${descriptor.channel}(${engine}, ${identity}u);`,
-            );
-            return true;
-        }
-        let parameter: { cppType: string; name: string } | undefined;
-        let values: Value[] = [];
-        let documentHiddenCpp: string | undefined;
-        if (descriptor.parameter === "keyboard") {
-            const name = this.allocateTemporaryCppName("key_event");
-            parameter = {
-                cppType: "const bbl::PlatformKeyboardEvent&",
-                name,
-            };
-            values = [
-                {
-                    kind: "platform-keyboard-event",
-                    cpp: name,
-                    readOnly: true,
-                },
-            ];
-        } else if (descriptor.parameter === "mouse") {
-            const name = this.allocateTemporaryCppName("mouse_event");
-            parameter = {
-                cppType: "const bbl::PlatformMouseEvent&",
-                name,
-            };
-            values = [
-                {
-                    kind: "platform-mouse-event",
-                    cpp: name,
-                    readOnly: true,
-                },
-            ];
-        } else if (descriptor.parameter === "visibility") {
-            const name = this.allocateTemporaryCppName("document_hidden");
-            parameter = { cppType: "bool", name };
-            documentHiddenCpp = name;
-        }
-        const listener = this.compilePlatformCallback(
-            callback,
-            parameter,
-            values,
-            documentHiddenCpp,
-        );
-        this.emit(
-            `bbl::on_${descriptor.channel}(` +
-                `${engine}, ${listener.identity}u, ${listener.cpp}` +
-                `${once ? ", true" : ""});`,
-        );
-        return true;
-    }
-
-    private platformEventDescriptor(
-        target: PlatformEventTarget,
-        event: string | undefined,
-    ): PlatformEventDescriptor | undefined {
-        return event === undefined
-            ? undefined
-            : PLATFORM_EVENT_DESCRIPTORS[target][event];
+        return this.platform.emitPlatformEventListener(call);
     }
 
     private platformEventCallbackIdentity(
         callback: Value,
         node: ts.Node,
     ): number {
-        if (callback.kind !== "callback") {
-            this.fail(node, "Platform event listener is not a callback.");
-        }
-        if (callback.platformCallbackIdentity !== undefined) {
-            return callback.platformCallbackIdentity;
-        }
-        if (!callback.callbackDeclaration) {
-            this.fail(
-                node,
-                "Platform event listener has no stable callback identity.",
-            );
-        }
-        return this.callbackIdentity(
-            callback.callbackDeclaration,
-            callback.callbackRecordOwner,
-        );
+        return this.platform.platformEventCallbackIdentity(callback, node);
     }
 
     /**
@@ -16481,7 +10356,7 @@ class Compiler
         );
     }
 
-    private readonly hoistedCallbackBindings = new Set<ts.Symbol>();
+    private readonly hoistedCallbackBindings = new EmissionSet<ts.Symbol>();
 
     /**
      * JavaScript closures may name a `const` declared later in the same
@@ -16489,12 +10364,12 @@ class Compiler
      * registration, so materialize such locals just ahead of the listener
      * and skip their original declaration when the source walk reaches it.
      */
-    private hoistForwardCallbackBindings(
+    public hoistForwardCallbackBindings(
         callback: ts.Expression,
         before: number,
     ): void {
-        const candidates = new Map<ts.Symbol, ts.VariableDeclaration>();
-        const visit = (node: ts.Node): void => {
+        const candidates = new EmissionMap<ts.Symbol, ts.VariableDeclaration>();
+        const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
             if (ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
                 const declaration = symbol?.valueDeclaration;
@@ -16511,8 +10386,7 @@ class Compiler
                     candidates.set(symbol, declaration);
                 }
             }
-            ts.forEachChild(node, visit);
-        };
+        });
         visit(callback);
         for (const [symbol, declaration] of candidates) {
             this.emitVariableDeclaration(declaration);
@@ -16527,7 +10401,7 @@ class Compiler
      * caller, because the one caller that spelled it by hand was the one that
      * forgot the attribute.
      */
-    private compilePlatformCallback(
+    public compilePlatformCallback(
         callback: ts.Expression,
         parameter: { cppType: string; name: string } | undefined,
         values: readonly Value[],
@@ -16640,7 +10514,7 @@ class Compiler
                     ? this.withRecordScopes(bound.callbackRecordOwner, compile)
                     : compile();
                 this.emitDiscardedValue(result);
-            }, !captureByValue);
+            }, captureByValue ? false : "entry");
         } finally {
             this.frameCallbackDepth -= 1;
             this.platformDocumentHiddenCpp = previousHidden;
@@ -16794,6 +10668,7 @@ class Compiler
             );
         }
         this.emit(Compiler.frameYieldRequeueMarker);
+        this.continuationSequence += 1;
     }
 
     /**
@@ -16802,7 +10677,7 @@ class Compiler
      * handshake, and the reason the promise value itself has no native
      * representation: what a scene can do with one of these is await it.
      */
-    private readonly promiseLatches = new Map<ts.Symbol, string>();
+    private readonly promiseLatches = new EmissionMap<ts.Symbol, string>();
 
     /**
      * Declare the latch behind `const p = new Promise((resolve) => {
@@ -16850,7 +10725,7 @@ class Compiler
                 "A promise a scene callback resolves needs a named binding.",
             );
         }
-        this.emit(`bool ${cppName} = false;`);
+        this.emit({ kind: "declaration", type: "bool", name: cppName, initializer: "false" });
         this.emit(`${bound.cpp} = [&${cppName}]() { ${cppName} = true; };`);
         this.promiseLatches.set(symbol, cppName);
         return true;
@@ -16902,6 +10777,8 @@ class Compiler
             );
         }
         this.emit(`${Compiler.startContinuationGatePrefix}${latch});`);
+        this.continuationSequence += 1;
+        for (const binding of this.statementDependencies.at(-1) ?? []) this.useNativeBinding(binding);
     }
 
     /**
@@ -17088,8 +10965,8 @@ class Compiler
                 roots.push(declaration.initializer);
             }
         }
-        const visitedSymbols = new Set<ts.Symbol>();
-        const visitedFunctions = new Set<ts.Node>();
+        const visitedSymbols = new EmissionSet<ts.Symbol>();
+        const visitedFunctions = new EmissionSet<ts.Node>();
         const containingFunction = (
             declaration: ts.Declaration | undefined,
         ): ts.SignatureDeclaration | undefined => {
@@ -17102,18 +10979,8 @@ class Compiler
             }
             return undefined;
         };
-        interface PendingVisit {
-            node: ts.Node;
-            activeFunction: ts.SignatureDeclaration | undefined;
-        }
-        const visit = (
-            root: ts.Node,
-            activeFunction?: ts.SignatureDeclaration,
-        ): void => {
-            const pending: PendingVisit[] = [{ node: root, activeFunction }];
-            while (pending.length > 0) {
-                const { node: current, activeFunction: active } =
-                    pending.pop()!;
+        const visit = (root: ts.Node): void => {
+            findAnalysisNodeWithState<ts.SignatureDeclaration | undefined>(root, undefined, (current, active) => {
                 const functionScope = ts.isFunctionLike(current)
                     ? current
                     : active;
@@ -17161,23 +11028,9 @@ class Compiler
                         calledDeclaration = declaration;
                     }
                 }
-                const children: ts.Node[] = [];
-                ts.forEachChild(current, (child) => {
-                    children.push(child);
-                });
-                for (let index = children.length - 1; index >= 0; index -= 1) {
-                    pending.push({
-                        node: children[index]!,
-                        activeFunction: functionScope,
-                    });
-                }
-                if (calledDeclaration) {
-                    pending.push({
-                        node: calledDeclaration,
-                        activeFunction: undefined,
-                    });
-                }
-            }
+                if (calledDeclaration) visit(calledDeclaration);
+                return false;
+            }, (current, active) => ts.isFunctionLike(current) ? current : active);
         };
         for (const root of roots) {
             if (ts.isFunctionLike(root)) {
@@ -17190,7 +11043,7 @@ class Compiler
 
     private valueContainsPlatformEvent(
         value: Value,
-        seen = new Set<Value>(),
+        seen = new EmissionSet<Value>(),
     ): boolean {
         if (seen.has(value)) return false;
         seen.add(value);
@@ -17285,7 +11138,7 @@ class Compiler
         const owner = ts.isIdentifier(expression.expression)
             ? this.lookupOptional(expression.expression)
             : undefined;
-        if (!owner || owner.kind === "data") {
+        if (!owner || owner.kind === "data" || owner.kind === "record") {
             return undefined;
         }
         // Through the same single funnel every other read uses, so this
@@ -17522,8 +11375,7 @@ class Compiler
                     engineCpp: engine,
                     dataType: { kind: "handle", handle: "pointer-drag" },
                 };
-                return {
-                    kind: part.kind,
+                return valueForKind(part.kind, {
                     cpp,
                     engineCpp: engine,
                     ...(part.index >= 3
@@ -17543,7 +11395,7 @@ class Compiler
                             },
                         },
                     },
-                };
+                });
             }
         }
         if (owner.kind === "pointer-drag") {
@@ -18009,9 +11861,9 @@ class Compiler
             value.collectionCardinality = owner.collectionCardinality ?? value.collectionCardinality ?? {
                 kind: keyed ? "keyed" : "array",
                 count,
-                ...(emptyKeys ? { keys: new Set<string | number | boolean>() } : {}),
+                ...(emptyKeys ? { keys: new EmissionSet<string | number | boolean>() } : {}),
                 createdIn: [...this.parameterizedResourceIterations],
-                varyingIn: new Set(),
+                varyingIn: new EmissionSet(),
             };
             owner.collectionCardinality = value.collectionCardinality;
             this.collectionCardinalities.add(value.collectionCardinality);
@@ -18031,14 +11883,6 @@ class Compiler
             value,
             ...(this.frameCallbackDepth > 0 ? { frameLocal: true } : {}),
         });
-        const continuationStorage = value.optionalStorageCpp ?? value.cpp;
-        if (
-            this.engineStartMark &&
-            this.indentLevel === this.engineStartMark.indentLevel &&
-            /^v_[A-Za-z0-9_]+$/.test(continuationStorage)
-        ) {
-            this.engineContinuationStorage.add(continuationStorage);
-        }
     }
 
     public bindLocalValue(identifier: ts.Identifier, value: Value): void {
@@ -18125,7 +11969,7 @@ class Compiler
     ): Value {
         let dataType = this.dataLowerer.dataTypeAt(identifier);
         const parameter = identifier.parent;
-        if (dataType?.kind === "number" && ts.isParameter(parameter) &&
+        if (dataType && ["number", "string", "boolean"].includes(dataType.kind) && ts.isParameter(parameter) &&
             isSupportedFunction(parameter.parent) &&
             parameterIsReadOnly(this.checker, parameter.parent, identifier)) {
             const value = this.compileValue(argument);
@@ -18135,6 +11979,10 @@ class Compiler
                 ...(value.staticNumber !== undefined && !value.parameterBinding
                     ? { staticNumber: value.staticNumber }
                     : {}),
+                ...(value.staticString !== undefined && !value.parameterBinding
+                    ? { staticString: value.staticString } : {}),
+                ...(value.staticBoolean !== undefined && !value.parameterBinding
+                    ? { staticBoolean: value.staticBoolean } : {}),
             };
         }
         if (dataType?.kind === "struct") {
@@ -18178,7 +12026,7 @@ class Compiler
             }
         }
         const unwrapped = this.unwrap(argument);
-        const collection = dataType.kind === "vector" || dataType.kind === "map" || dataType.kind === "set";
+        const collection = dataType.kind === "vector" || dataType.kind === "span" || dataType.kind === "map" || dataType.kind === "set";
         const structural = dataType.kind === "struct" ||
             (dataType.kind === "vector" && dataType.element.kind === "struct");
         if (
@@ -18189,7 +12037,7 @@ class Compiler
         ) {
             const actual = this.compileValue(unwrapped);
             if (collection && actual.kind === "data" && actual.dataType &&
-                dataTypesEqual(actual.dataType, dataType)) {
+                this.dataLowerer.spanCompatible(actual.dataType, dataType)) {
                 return actual;
             }
             if (
@@ -18220,6 +12068,7 @@ class Compiler
                 return actual;
             }
             if (collection) {
+                dataType = this.dataTypes.ownReturnedArray(dataType);
                 const cpp = this.dataLowerer.compileKnownValueForSink(actual, dataType, argument);
                 return this.dataLowerer.leafValue(cpp, dataType);
             }
@@ -18302,8 +12151,10 @@ class Compiler
         }
         if (isHandleKind(value.kind) && !value.nativeBinding) {
             const cpp = this.allocateTemporaryCppName(label);
-            this.emit(`[[maybe_unused]] const auto ${cpp} = ${value.cpp};`);
-            return {...value, cpp, nativeBinding: true};
+            this.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: value.cpp, attributes: "[[maybe_unused]] " });
+            const pinned = { ...value, cpp, nativeBinding: true as const };
+            this.describeNativeValue(pinned);
+            return pinned;
         }
         if (value.kind === "record") {
             if (
@@ -18333,7 +12184,7 @@ class Compiler
                   : undefined;
         if (!cppType) return value;
         const cppName = this.allocateTemporaryCppName(label);
-        this.emit(`const ${cppType} ${cppName} = ${value.cpp};`);
+        this.emit({ kind: "declaration", type: `const ${cppType}`, name: cppName, initializer: value.cpp });
         return { ...value, cpp: cppName };
     }
 
@@ -18351,11 +12202,12 @@ class Compiler
     public bindDataTuple(value: Value, arity: number, label = "tuple"): string {
         const cppName = this.allocateTemporaryCppName(label);
         this.emit(
-            `const ${this.dataTypes.cppType({
+            { kind: "declaration", type: `const ${this.dataTypes.cppType({
                 kind: "tuple",
                 arity,
-            })} ${cppName} = ${value.cpp};`,
+            })}`, name: cppName, initializer: value.cpp },
         );
+        this.useNativeBinding(this.registerNativeBinding(cppName, false, true));
         return cppName;
     }
 
@@ -18385,7 +12237,7 @@ class Compiler
         return { ...projected, freshData: true };
     }
 
-    private recordHasMutableContainer(value: Value, seen = new Set<Value>()): boolean {
+    private recordHasMutableContainer(value: Value, seen = new EmissionSet<Value>()): boolean {
         if (seen.has(value)) return false;
         seen.add(value);
         // Scalar/opaque-handle records already have shared field homes, and
@@ -18402,7 +12254,7 @@ class Compiler
         const vector = value.cameraVector;
         if (!vector || vector.bound) return value;
         const cpp = this.allocateTemporaryCppName("camera_vector_owner");
-        this.emit(`[[maybe_unused]] const auto ${cpp} = ${vector.owner.cpp};`);
+        this.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: vector.owner.cpp, attributes: "[[maybe_unused]] " });
         const owner = { ...vector.owner, cpp };
         this.describeNativeValue(owner);
         const cameraVector = { ...vector, owner, bound: true as const };
@@ -18440,7 +12292,7 @@ class Compiler
         const vector = value.sceneNodeVector;
         if (!vector || vector.bound) return value;
         const cpp = this.allocateTemporaryCppName("vector_owner");
-        this.emit(`[[maybe_unused]] const auto ${cpp} = ${vector.owner.cpp};`);
+        this.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: vector.owner.cpp, attributes: "[[maybe_unused]] " });
         const owner = { ...vector.owner, cpp };
         this.describeNativeValue(owner);
         return {
@@ -18469,14 +12321,24 @@ class Compiler
             // Choose the whole-object home before boxing individual fields.
             // Inlined calls bind it here so later sinks share this allocation.
             const cpp = this.allocateTemporaryCppName(label);
-            this.emit(`auto ${cpp} = ${stored.cpp};`);
+            this.emit({ kind: "declaration", type: "auto", name: cpp, initializer: stored.cpp });
             return { ...stored, cpp: `std::move(${cpp})`, objectIdentityCpp: `${cpp}.get()` };
         }
         const properties: Record<string, Value> = {};
         const classFields = this.classOf(record) !== undefined;
+        const scalarFields = Object.entries(record.recordProperties ?? {}).filter(([, property]) =>
+            !property.sharedRecordScalar && !property.sharedRecordContainer &&
+            !(property.readOnly && property.staticString !== undefined) &&
+            !(classFields && property.sharedStorageCpp && property.cpp === `(*${property.sharedStorageCpp})`) &&
+            (property.kind === "number" || property.kind === "boolean" || property.staticString !== undefined));
+        const packedScalars: Array<{ name: string; cpp: string; type: string; value: Value }> = [];
         for (const [name, property] of Object.entries(
             record.recordProperties ?? {},
         )) {
+            if (property.readOnly && property.staticString !== undefined) {
+                properties[name] = property;
+                continue;
+            }
             if (property.sharedRecordScalar || (classFields && property.sharedStorageCpp &&
                 property.cpp === `(*${property.sharedStorageCpp})`)) {
                 properties[name] = property;
@@ -18505,7 +12367,7 @@ class Compiler
                 );
                 const cppType = this.dataTypes.cppType(property.dataType);
                 this.emit(
-                    `[[maybe_unused]] auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${property.cpp});`,
+                    { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${cppType}>(${property.cpp})`, attributes: "[[maybe_unused]] " },
                 );
                 properties[name] = {
                     ...property,
@@ -18516,15 +12378,29 @@ class Compiler
                 continue;
             }
             const cppName = this.allocateTemporaryCppName(`${label}_${name}`);
+            if (scalarFields.length > 1 &&
+                (property.kind === "number" || property.kind === "boolean" || property.staticString !== undefined)) {
+                const { staticNumber, staticBoolean: _staticBoolean, ...dynamicProperty } = property;
+                const type = property.kind === "number" ? CPP_SCALAR.number
+                    : property.kind === "boolean" ? CPP_SCALAR.boolean : CPP_SCALAR.string;
+                const initial = property.kind === "number"
+                    ? staticNumber === undefined ? property.cpp : doubleLiteral(staticNumber)
+                    : property.kind === "boolean" ? property.cpp : this.cppString(property.staticString!);
+                // Snapshot in property order; the shared allocation follows all initializers.
+                this.emit({ kind: "declaration", type: `const ${type}`, name: cppName, initializer: initial });
+                properties[name] = property;
+                packedScalars.push({ name, cpp: cppName, type, value: property.staticString !== undefined
+                    ? { kind: "data", cpp: cppName, dataType: { kind: "string" } }
+                    : dynamicProperty });
+                continue;
+            }
             if (property.kind === "number") {
                 const { staticNumber: _staticNumber, ...dynamicProperty } =
                     property;
                 this.emit(
-                    `[[maybe_unused]] auto ${cppName} = bbl::js::make_gc_shared<double>(${
-                        property.staticNumber === undefined
+                    { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<double>(${property.staticNumber === undefined
                             ? property.cpp
-                            : doubleLiteral(property.staticNumber)
-                    });`,
+                            : doubleLiteral(property.staticNumber)})`, attributes: "[[maybe_unused]] " },
                 );
                 properties[name] = {
                     ...dynamicProperty,
@@ -18538,7 +12414,7 @@ class Compiler
                 const { staticBoolean: _staticBoolean, ...dynamicProperty } =
                     property;
                 this.emit(
-                    `[[maybe_unused]] auto ${cppName} = bbl::js::make_gc_shared<bool>(${property.cpp});`,
+                    { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<bool>(${property.cpp})`, attributes: "[[maybe_unused]] " },
                 );
                 properties[name] = {
                     ...dynamicProperty,
@@ -18550,19 +12426,31 @@ class Compiler
             }
             if (property.staticString !== undefined) {
                 this.emit(
-                    `[[maybe_unused]] auto ${cppName} = bbl::js::make_gc_shared<std::string>(${this.cppString(property.staticString)});`,
+                    { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<std::string>(${this.cppString(property.staticString)})`, attributes: "[[maybe_unused]] " },
                 );
                 properties[name] = {
                     kind: "data",
                     cpp: `(*${cppName})`,
                     sharedStorageCpp: cppName,
                     dataType: { kind: "string" },
-                    staticString: property.staticString,
                     sharedRecordScalar: true,
                 };
                 continue;
             }
             properties[name] = property;
+        }
+        if (packedScalars.length) {
+            const storage = this.allocateTemporaryCppName(`${label}_scalars`);
+            const type = `std::tuple<${packedScalars.map(field => field.type).join(", ")}>`;
+            this.emit({ kind: "declaration", type: "auto", name: storage, initializer: `bbl::js::make_gc_shared<${type}>(std::tuple{${packedScalars.map(field => field.cpp).join(", ")}})` });
+            packedScalars.forEach((field, index) => {
+                properties[field.name] = {
+                    ...field.value,
+                    cpp: `std::get<${index}>(*${storage})`,
+                    sharedStorageCpp: storage,
+                    sharedRecordScalar: true,
+                };
+            });
         }
         for (const property of Object.values(properties)) this.describeNativeValue(property);
         if (preserveIdentity) {
@@ -18571,7 +12459,7 @@ class Compiler
             Object.assign(record.recordProperties ??= {}, properties);
             return record;
         }
-        return { ...record, recordProperties: properties };
+        return valueForKind(record.kind, { ...record, recordProperties: properties });
     }
 
     private isMutableRecordContainer(dataType: DataType): boolean {
@@ -18763,7 +12651,7 @@ class Compiler
             cppName: callbackName,
             eventName,
             node: expression,
-            scopes: this.variableScopes.map((scope) => new Map(scope)),
+            scopes: this.variableScopes.map((scope) => new EmissionMap(scope)),
         });
         return (
             `[&](const ${infoType}& ${eventName}) { ` +
@@ -18874,7 +12762,7 @@ class Compiler
                 ? doubleLiteral(value.staticNumber)
                 : value.cpp;
         const maybeUnused =
-            value.kind === "boolean" || parameter ? "[[maybe_unused]] " : "";
+            value.kind === "number" || value.kind === "boolean" || parameter ? "[[maybe_unused]] " : "";
         if (sharedStorage) {
             if (isHandleKind(value.kind)) {
                 const cppType = this.dataTypes.cppType({
@@ -18882,28 +12770,32 @@ class Compiler
                     handle: value.kind,
                 });
                 this.emit(
-                    `${maybeUnused}auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${initializerCpp});`,
+                    { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${cppType}>(${initializerCpp})`, attributes: maybeUnused },
                 );
             } else {
                 const initial = this.allocateTemporaryCppName(
                     `${identifier.text}_initial`,
                 );
-                this.emit(`auto ${initial} = ${initializerCpp};`);
+                this.emit({ kind: "declaration", type: "auto", name: initial, initializer: initializerCpp });
                 this.emit(
-                    `${maybeUnused}auto ${cppName} = bbl::js::make_gc_shared<std::decay_t<decltype(${initial})>>(std::move(${initial}));`,
+                    { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<std::decay_t<decltype(${initial})>>(std::move(${initial}))`, attributes: maybeUnused },
                 );
             }
         } else {
             this.emit(
-                `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
+                { kind: "declaration", type: nativeType, name: cppName, initializer: initializerCpp, attributes: maybeUnused },
             );
         }
         const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
+        const constantParameter = parameter && value.kind === "number" &&
+            value.staticNumber !== undefined && !value.parameterBinding &&
+            ts.isParameter(identifier.parent) && isSupportedFunction(identifier.parent.parent) &&
+            parameterIsReadOnly(this.checker, identifier.parent.parent, identifier);
         const stored: Value = {
             ...value,
             cpp: storedCpp,
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
-            ...(parameter ? { parameterBinding: true } : {}),
+            ...(parameter ? { parameterBinding: !constantParameter } : {}),
             ...(!parameter ? { nativeBinding: true } : {}),
             ...(parameter && value.staticElements
                 ? {
@@ -18928,7 +12820,7 @@ class Compiler
 
     /** Visit bindings and the generation facts nested inside their values. */
     private visitScopedValues(visitor: (value: Value) => void): void {
-        const seen = new Set<Value>();
+        const seen = new EmissionSet<Value>();
         const visit = (value: Value): void => {
             if (seen.has(value)) return;
             seen.add(value);
@@ -19037,7 +12929,7 @@ class Compiler
                 this.runtimeIterationDepth === frame.iterationDepth + 1
             : this.runtimeControlFlowDepth === 0 && this.runtimeIterationDepth === 0;
         return definite && this.frameCallbackDepth === 0 &&
-            (frame !== undefined || !this.isInNativeFunctionBody()) &&
+            (frame !== undefined || this.returnFrames.every(current => current.kind !== "native" || current.callSiteEffects)) &&
             !this.returnFrames.some((current) => this.resourceLoopReturns.has(current));
     }
 
@@ -19098,7 +12990,7 @@ class Compiler
         const state = value.collectionCardinality;
         if (!state || state.kind !== "keyed") return;
         if (this.definiteCollectionMutation() && !state.untrackedAliases) {
-            state.keys = new Set();
+            state.keys = new EmissionSet();
             state.count = 0;
         } else {
             delete state.keys;
@@ -19147,7 +13039,7 @@ class Compiler
     private escapingPlatformEventCaptureFloor: number | undefined;
 
     public pushScope(cppPrefix: string, propagateRebindings = false): void {
-        const scope = new Map<ts.Symbol, VariableBinding>();
+        const scope = new EmissionMap<ts.Symbol, VariableBinding>();
         if (propagateRebindings) this.transparentRebindingScopes.add(scope);
         this.variableScopes.push(scope);
         this.cppNamePrefixes.push(cppPrefix);
@@ -19245,30 +13137,10 @@ class Compiler
             // Preamble storage precedes every closure, even one currently
             // being compiled. Its capture boundary therefore is entry scope.
             this.nativeBindings.set(name, {
-                name, sequence: 0, borrowed: true, allowReference: false,
+                name, sequence: 0, borrowed: true, allowReference: false, entryLifetime: true,
             });
         }
         return this.requireDefaultEngine(node);
-    }
-
-    private primaryPresentationCanvas(node: ts.Node): Value {
-        const engine = this.requirePresentationHost(node);
-        if (!this.presentationCanvasValue) {
-            this.reachFeature("ui:rml", node);
-            this.reachFeature("backend:sdl", node);
-            this.reachFeature("renderer:canvas", node);
-            this.presentationCanvasValue = {
-                kind: "ui-element",
-                cpp: `bbl::ui_primary_canvas(${engine})`,
-                engineCpp: engine,
-                uiTag: "canvas",
-                uiCanvas: true,
-                uiPrimaryCanvas: true,
-                uiCanvasId: this.uiCanvasIds++,
-                truthinessCpp: "true",
-            };
-        }
-        return this.presentationCanvasValue;
     }
 
     /**
@@ -19564,7 +13436,7 @@ class Compiler
     public recordDataLightSlot(value: Value, index: number): void {
         if (!value.lightIdentity) return;
         const slots =
-            value.lightIdentity.dataCollectionIndices ?? new Set<number>();
+            value.lightIdentity.dataCollectionIndices ?? new EmissionSet<number>();
         slots.add(index);
         value.lightIdentity.dataCollectionIndices = slots;
     }
@@ -19663,7 +13535,7 @@ class Compiler
         const shaderMesh = this.sceneMeshes[meshIndex];
         if (shaderMesh) {
             if (this.isInRuntimeControlFlow()) {
-                const variants = new Set([
+                const variants = new EmissionSet([
                     ...(shaderMesh.shaderVariant === undefined ? [] : [shaderMesh.shaderVariant]),
                     ...(shaderMesh.shaderVariants ?? []),
                     ...(material.sceneShaderVariant === undefined ? [] : [material.sceneShaderVariant]),
@@ -19681,7 +13553,7 @@ class Compiler
         if (material.pbrMaterial !== null) {
             const meshes =
                 this.scenePbrMaterialMeshes.get(material.pbrMaterial) ??
-                new Set<number>();
+                new EmissionSet<number>();
             meshes.add(meshIndex);
             this.scenePbrMaterialMeshes.set(material.pbrMaterial, meshes);
         }
@@ -19739,7 +13611,7 @@ class Compiler
 
     public recordShadowCasters(
         generatorIndex: number,
-        casters: readonly ShadowCasterManifest[],
+        casters: readonly ShadowCasterMeshManifest[],
     ): void {
         const generator = this.shadowGenerators[generatorIndex];
         if (!generator) {
@@ -19843,7 +13715,7 @@ class Compiler
         node: ts.Node,
     ): string[] {
         const meshes: string[] = [];
-        for (const id of new Set(ids)) {
+        for (const id of new EmissionSet(ids)) {
             const bound = this.sceneMeshesById.get(id);
             if (!bound || bound.length === 0) {
                 this.fail(
@@ -20233,8 +14105,12 @@ class Compiler
         return this.temporalSceneRegistration !== undefined;
     }
 
-    public emit(line: string): void {
-        const emitted = `${"    ".repeat(this.indentLevel)}${line}`;
+    public emit(line: string | NativeDeclaration): void {
+        const code = typeof line === "string" ? line : renderNativeDeclaration(line);
+        if (typeof line !== "string") this.nativeDeclarations.set(code, {
+            ...line, dependencies: [...this.statementDependencies.at(-1) ?? []].map(binding => binding.name),
+        });
+        const emitted = `${"    ".repeat(this.indentLevel)}${code}`;
         this.staticExpansionBudget.emit(emitted);
         this.body.push(emitted);
     }
@@ -20261,45 +14137,9 @@ class Compiler
           }
         | undefined;
 
-    /** Native locals initialized by the post-start continuation. */
-    private readonly engineContinuationStorage = new Set<string>();
+    private continuationStorageReached = false;
 
-    private readonly deviceRecoveryCallbacks: Array<{ cpp: string; options: Value; node: ts.Expression }> = [];
-    private primaryCanvasReadyGate = false;
-    private readonly canvasDatasetReads = new WeakMap<ts.SourceFile, boolean>();
-
-    /** Write-only dataset instrumentation erases; readback requires retained DOM state. */
-    private readsCanvasDataset(source: ts.SourceFile): boolean {
-        const cached = this.canvasDatasetReads.get(source);
-        if (cached !== undefined) return cached;
-        let found = false;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
-            if (ts.isPropertyAccessExpression(node)) {
-                const dataset = this.unwrap(node.expression);
-                if (ts.isPropertyAccessExpression(dataset) && dataset.name.text === "dataset" &&
-                    this.isCanvasElement(dataset.expression) &&
-                    !(ts.isBinaryExpression(node.parent) && node.parent.left === node &&
-                        node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken)) {
-                    found = true;
-                    return;
-                }
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(source);
-        this.canvasDatasetReads.set(source, found);
-        return found;
-    }
-
-    private primaryCanvasDataset(expression: ts.Expression): string | undefined {
-        const value = this.unwrap(expression);
-        if (!ts.isPropertyAccessExpression(value)) return undefined;
-        const dataset = this.unwrap(value.expression);
-        return ts.isPropertyAccessExpression(dataset) && dataset.name.text === "dataset" && this.isCanvasElement(dataset.expression) &&
-            this.readsCanvasDataset(value.getSourceFile())
-            ? value.name.text : undefined;
-    }
+    private readonly deviceRecoveryCallbacks: Array<{ cpp: string; options: Value; node: ts.Expression }> = emissionArray([]);
 
     public compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined {
         if (!["enableDeviceLostSceneRecovery", "forceWebGpuDeviceLossForTesting", "disposeEngine"].includes(name)) return undefined;
@@ -20310,12 +14150,12 @@ class Compiler
         if (name === "enableDeviceLostSceneRecovery") {
             if (this.engineHasStarted() || this.isRuntimeResourceConstruction()) this.fail(call, "Device recovery registration requires unconditional construction before engine startup.");
             const cpp = this.allocateTemporaryCppName("device_recovery");
-            this.emit(`auto ${cpp} = bbl::enable_device_lost_scene_recovery(${engine.cpp});`);
+            this.emit({ kind: "declaration", type: "auto", name: cpp, initializer: `bbl::enable_device_lost_scene_recovery(${engine.cpp})` });
             if (call.arguments[1]) {
                 const node = call.arguments[1];
                 const options = this.compileValue(node);
                 this.expectKind(options, "record", node);
-                const allowed = new Set(["onLost", "onRecovered", "onRecoveryFailed"]);
+                const allowed = new EmissionSet(["onLost", "onRecovered", "onRecoveryFailed"]);
                 for (const key of [...Object.keys(options.recordProperties ?? {}), ...Object.keys(options.recordMethods ?? {})]) {
                     if (!allowed.has(key)) this.fail(node, `Unrepresented device recovery option '${key}'.`);
                 }
@@ -20350,7 +14190,7 @@ class Compiler
 
     public markEngineStart(engineCpp: string, node: ts.Node): void {
         this.emitDeviceRecoveryCallbacks();
-        if (this.primaryCanvasReadyGate) this.emit(`bbl::defer_capture_until(${engineCpp}, [&]() { return bbl::canvas_dataset(${engineCpp}, "ready") == "true"; });`);
+        if (this.ui.primaryCanvasReadyGate) this.emit(`bbl::defer_capture_until(${engineCpp}, [&]() { return bbl::canvas_dataset(${engineCpp}, "ready") == "true"; });`);
         if (this.engineStartMark) {
             this.fail(
                 node,
@@ -20419,26 +14259,13 @@ class Compiler
         // guard finishes cleanup on its own normal, return or exception
         // completion, while the outer guard remains safe to destroy later.
         const completion = this.allocateTemporaryCppName("finally_completion");
-        this.emit(`auto ${completion} = bbl::js::finally([&]() { ${guard}.run(); });`);
+        this.emit({ kind: "declaration", type: "auto", name: completion, initializer: `bbl::js::finally([&]() { ${guard}.run(); })` });
         for (const line of body.slice(start + 1)) this.emit(line);
         this.emit(`${completion}.run();`);
         return true;
     }
 
-    /**
-     * Move everything after `bbl::start_engine(...)` into the callback the
-     * conductor runs at the next frame boundary, registered before the loop
-     * starts. A scene whose body ends at `startEngine` -- every scene that
-     * shipped before this contract -- has an empty continuation and emits
-     * exactly what it emitted before.
-     *
-     * A frame-yield marker in the tail cuts it: the statements after the
-     * yield become a nested `defer_start_continuation`, queued while the
-     * conductor is draining and therefore run at the NEXT frame's drain --
-     * one elapsed frame per yield, with `pending_start_continuations` held
-     * above zero until the innermost part has run, so a capture cannot
-     * land before the whole continuation has.
-     */
+    /** Move the post-start body to frame drains, counting consecutive empty waits. */
     private hoistEngineContinuation(): void {
         const mark = this.engineStartMark;
         if (!mark) {
@@ -20480,56 +14307,28 @@ class Compiler
             );
         }
         const indent = " ".repeat(startDepth);
-        const unpersistedStorage = new Set(this.engineContinuationStorage);
-        const persistentTail = tail.map((line) => {
-            if (depth(line) !== startDepth) return line;
-            const storage = [...unpersistedStorage].find((name) =>
-                new RegExp(`\\b${name}\\b\\s*(?:=|;)`).test(
-                    line.split(/\r?\n/, 1)[0]!,
-                ),
-            );
-            if (!storage) return line;
-            // Only the declaration owns storage duration. A later assignment
-            // to the same continuation local must remain an assignment.
-            unpersistedStorage.delete(storage);
-            const leading = line.slice(
-                0,
-                line.length - line.trimStart().length,
-            );
-            const declaration = line.trimStart();
-            if (declaration.startsWith("[[")) {
-                const attributeEnd = declaration.indexOf("]]", 2);
-                if (attributeEnd >= 0) {
-                    return (
-                        leading +
-                        declaration.slice(0, attributeEnd + 2) +
-                        " static" +
-                        declaration.slice(attributeEnd + 2)
-                    );
-                }
-            }
-            return `${leading}static ${declaration}`;
-        });
-        // Cut the tail at each frame-yield marker. Building from the
-        // innermost part outward nests each later part inside the one
-        // before it, so a part's statics stay lexically visible to
-        // everything after its yield. The outer hoist is part 0's own
-        // wrap, so the loop runs down to it and the deferred-callback
-        // shape is emitted in exactly one place.
-        // A part's `gate` is the latch its own wrap waits on: a plain
-        // frame yield has none and runs at the next boundary, while an
-        // awaited handshake promise runs at the first boundary after the
-        // scene's callback resolved it.
-        const parts: { gate?: string; lines: string[] }[] = [{ lines: [] }];
-        for (const line of persistentTail) {
+        // A part runs after its frame count or promise gate. Statement-bearing
+        // parts stay nested so later parts can name earlier persistent locals.
+        let sequence = 0;
+        const parts: { gate?: string; frames: number; lines: string[]; sequence: number }[] = [{ frames: 1, lines: [], sequence }];
+        for (const line of tail) {
             const trimmed = line.trim();
             if (trimmed === Compiler.frameYieldRequeueMarker) {
-                parts.push({ lines: [] });
+                sequence += 1;
+                const previous = parts.at(-1)!;
+                if (previous.lines.length === 0 && previous.gate === undefined) {
+                    previous.frames += 1;
+                    previous.sequence = sequence;
+                } else {
+                    parts.push({ frames: 1, lines: [], sequence });
+                }
             } else if (
                 trimmed.startsWith(Compiler.startContinuationGatePrefix) &&
                 trimmed.endsWith(");")
             ) {
                 parts.push({
+                    frames: 1,
+                    sequence: ++sequence,
                     gate: trimmed.slice(
                         Compiler.startContinuationGatePrefix.length,
                         -2,
@@ -20540,31 +14339,35 @@ class Compiler
                 parts.at(-1)!.lines.push(line);
             }
         }
+        const storage = this.allocateTemporaryCppName("continuation_storage");
+        const retainsLocals = persistContinuationLocals(parts, this.nativeDeclarations, this.continuationUses, this.continuationLocals, startDepth, storage);
+        this.continuationStorageReached = retainsLocals;
+        const captures = retainsLocals ? `[&, ${storage}]` : "[&]";
         let nested: string[] = [];
-        // Each part re-indents everything already nested inside it, so
-        // indenting unconditionally makes the emitted whitespace quadratic
-        // in the number of frame boundaries: a 160-yield continuation
-        // reaches 115 KB, 92% of it leading spaces. Past a depth no
-        // reached scene comes near, the nesting stops adding columns and
-        // the text stays linear. The deepest continuation any registered
-        // scene emits is six levels, so this moves no emitted byte today.
+        // Bound indentation for continuations with many statement-bearing parts.
         const maxIndentedDepth = 8;
         for (let part = parts.length - 1; part >= 0; part -= 1) {
             const step = parts.length - part <= maxIndentedDepth ? "    " : "";
-            const gate = parts[part]!.gate;
+            const { gate, frames } = parts[part]!;
+            const resolved = gate !== undefined
+                ? `${captures}() { return ${gate}; }`
+                : frames > 1
+                    ? `[remaining = ${frames}u]() mutable { return --remaining == 0; }`
+                    : undefined;
             nested = [
-                gate === undefined
+                resolved === undefined
                     ? `${indent}bbl::defer_start_continuation(` +
-                      `${mark.engine}, [&]() {`
+                      `${mark.engine}, ${captures}() {`
                     : `${indent}bbl::defer_start_continuation_until(` +
-                      `${mark.engine}, [&]() { return ${gate}; }, ` +
-                      `[&]() {`,
+                      `${mark.engine}, ${resolved}, ` +
+                      `${captures}() {`,
                 ...[...parts[part]!.lines, ...nested].map(
                     (line) => `${step}${line}`,
                 ),
                 `${indent}});`,
             ];
         }
+        if (retainsLocals) nested.unshift(`${indent}auto ${storage} = std::make_shared<bbl::ContinuationStorage>();`);
         this.body.splice(index, 0, ...nested);
     }
 
@@ -20580,14 +14383,21 @@ class Compiler
 
     public increaseIndent(): void {
         this.indentLevel += 1;
+        this.emissionBlocks.push(this.nextEmissionBlock++);
     }
 
     public decreaseIndent(): void {
         this.indentLevel -= 1;
+        this.emissionBlocks.pop();
+    }
+
+    public functionEmissionScope(): import("./compiler/function-specializations.js").FunctionEmissionScope {
+        return { lexical: this.variableScopes.at(-1)!, emission: this.activeEmissionScope,
+            block: this.emissionBlocks.at(-1)!, continuation: this.engineStartMark?.index ?? -1 };
     }
 
     private renderCpp(features: Feature[]): string {
-        if (this.presentationHostCpp && !this.presentationCanvasValue) {
+        if (this.presentationHostCpp && !this.ui.presentationCanvasValue) {
             this.failAtFile("An engine-less animation manager needs a reached primary Canvas2D surface for native presentation.");
         }
         if (this.presentationHostCpp && this.defaultEngineCpp !== this.presentationHostCpp) {
@@ -20624,7 +14434,6 @@ class Compiler
                     "of the continuation behind was never emitted.",
             );
         }
-        this.markUnreadNumericLocals();
         return renderMainCpp({
             ...(this.options.workers ? { workers: {
                 namespace: this.options.workers.namespace,
@@ -20637,6 +14446,7 @@ class Compiler
             runtimeMeshProfiles: this.runtimeMeshProfileCount > 0,
             jsRandomReached: this.jsRandomReached,
             audioSessionReached: this.audioSessionReached,
+            continuationStorageReached: this.continuationStorageReached,
             throwReached: this.throwReached,
             postProcessCompositeCount: this.postProcessComposites.length,
             screenSpaceTaskCount: this.screenSpaceTasks.length,
@@ -20674,7 +14484,7 @@ class Compiler
         );
     }
 
-    private failAtFile(message: string): never {
+    public failAtFile(message: string): never {
         throw new CompileError(this.options.fileName, 1, 1, message);
     }
 }

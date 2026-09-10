@@ -7,6 +7,7 @@ import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { materializePinnedText, type CompiledTextData, type TextBlob } from "../src/pinned-text-data.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
@@ -231,6 +232,7 @@ test("deferred scene registration observes snapshot order, identity guards, fail
     const bodies=["void require_scene_engine(","std::uint32_t material_family_bit(","std::uint32_t scene_material_families(","void drain_scene_deferred_builders(","void register_scene(","void unregister_scene(","void dispose_scene("].map((name)=>cppFunction(source,name)).join("\n");
     const cpp=`#include "upstream_text.hpp"
 namespace bbl {
+${lowerMeshMaterialSetter(context)}
 ${bodies}
 }
 int main(){

@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 /**
  * The generated material texture-slot table.
  *
@@ -65,7 +66,7 @@ function rowOrder(header: string, rows: readonly string[]): void {
 }
 
 test("the base slots carry the rules both backends used to hand-keep", () => {
-    const header = materialTextureSlotsHeader(noFeatures, [], "test");
+    const header = inlineCpp(materialTextureSlotsHeader(noFeatures, [], "test"));
     assert.ok(
         header.includes(
             "inline constexpr std::size_t material_texture_mesh_slots = 5;",
@@ -112,7 +113,7 @@ test("the base slots carry the rules both backends used to hand-keep", () => {
 });
 
 test("extension rows append in the pinned registration order", () => {
-    const header = materialTextureSlotsHeader(
+    const header = inlineCpp(materialTextureSlotsHeader(
         {
             transmission: true,
             clearcoat: true,
@@ -131,7 +132,7 @@ test("extension rows append in the pinned registration order", () => {
         },
         [],
         "test",
-    );
+    ));
     assert.ok(
         header.includes(
             "inline constexpr std::size_t material_texture_mesh_slots = 21;",
@@ -204,7 +205,7 @@ test("extension rows append in the pinned registration order", () => {
 });
 
 test("the reflectance rows serve the pin's two composed bindings", () => {
-    const header = materialTextureSlotsHeader(
+    const header = inlineCpp(materialTextureSlotsHeader(
         {
             ...noFeatures,
             metallicReflectanceMap: true,
@@ -219,7 +220,7 @@ test("the reflectance rows serve the pin's two composed bindings", () => {
             ]),
         ],
         "test",
-    );
+    ));
 
     assert.match(header, /MaterialTextureSource::metallic_reflectance/);
     assert.match(header, /MaterialTextureSource::reflectance/);
@@ -240,7 +241,7 @@ test("each metallic-reflectance map adds exactly its own slot", () => {
             "MaterialTextureSource::metallic_reflectance",
         ],
     ] as const) {
-        const header = materialTextureSlotsHeader(
+        const header = inlineCpp(materialTextureSlotsHeader(
             { ...noFeatures, [feature]: true },
             [
                 variantWith([
@@ -249,7 +250,7 @@ test("each metallic-reflectance map adds exactly its own slot", () => {
                 ]),
             ],
             "test",
-        );
+        ));
         assert.match(
             header,
             /inline constexpr std::size_t material_texture_mesh_slots = 6;/,
@@ -284,7 +285,7 @@ test("a scene-37-shaped scene appends occlusion straight after the base five", (
     // Scene 37's variants bind the dedicated uv2 occlusion pair and no
     // other extension, so its occlusion row takes slot 5 where a
     // transmission scene's map pair would sit.
-    const header = materialTextureSlotsHeader(
+    const header = inlineCpp(materialTextureSlotsHeader(
         { ...noFeatures, occlusionUv2: true },
         [
             variantWith([
@@ -299,7 +300,7 @@ test("a scene-37-shaped scene appends occlusion straight after the base five", (
             ]),
         ],
         "test",
-    );
+    ));
     assert.ok(
         header.includes(
             `    {5, MaterialTextureSource::occlusion_uv2, ` +
@@ -312,7 +313,7 @@ test("a scene-37-shaped scene appends occlusion straight after the base five", (
 test("a pinned binding no row serves refuses at generation, named", () => {
     assert.throws(
         () =>
-            materialTextureSlotsHeader(
+            inlineCpp(materialTextureSlotsHeader(
                 noFeatures,
                 [
                     variantWith([
@@ -322,12 +323,12 @@ test("a pinned binding no row serves refuses at generation, named", () => {
                     ]),
                 ],
                 "test",
-            ),
+            )),
         /'anisotropySampler_', 'anisotropyTexture'/,
     );
     // The morph arms' storage buffers and the geometry arms' uniform
     // block are not texture slots; they must not trip the check.
-    const header = materialTextureSlotsHeader(
+    const header = inlineCpp(materialTextureSlotsHeader(
         noFeatures,
         [
             {
@@ -339,7 +340,7 @@ test("a pinned binding no row serves refuses at generation, named", () => {
             },
         ],
         "test",
-    );
+    ));
     assert.ok(header.includes("material_texture_slots"));
 });
 
@@ -350,8 +351,8 @@ test("the emission is deterministic", () => {
         sheen: true,
     };
     assert.equal(
-        materialTextureSlotsHeader(features, [], "test"),
-        materialTextureSlotsHeader(features, [], "test"),
+        inlineCpp(materialTextureSlotsHeader(features, [], "test")),
+        inlineCpp(materialTextureSlotsHeader(features, [], "test")),
     );
 });
 

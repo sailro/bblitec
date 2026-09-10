@@ -1,3 +1,5 @@
+import { GLTF_MESH_WALKS } from "../../gltf-document.js";
+
 /**
  * The generated `.babylon` loader.
  *
@@ -12,21 +14,28 @@ export interface BabylonLoaderLoweredSegments {
      * `src/loader-babylon/bake-local-matrix.ts#bakeLocalMatrix`.
      */
     bakeLocalMatrix: string;
+    materialProperties: string;
+    textureSlots: string;
+    cubeTexture: string;
+    fileTextureLoad: string;
+    submeshDefaults: string;
+    hierarchy: string;
+    meshConstruction: string;
+    sceneData: string;
+    materialMaps: string;
 }
 
 export function babylonLoaderCpp(
     provenance: string,
-    cameraDerivation: string,
-    submeshNameSuffix: string,
+    cameraParser: string,
     lowered: BabylonLoaderLoweredSegments,
     lightMeshLists = false,
-    diffuseUv2 = false,
-    bumpTexture = false,
     meshClones = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 
 #include <algorithm>
@@ -40,6 +49,7 @@ export function babylonLoaderCpp(
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -47,12 +57,6 @@ namespace bbl {
 namespace {
 
 using Json = nlohmann::json;
-
-float number_at(const Json& values, std::size_t index, float fallback) {
-    return values.is_array() && index < values.size() && values[index].is_number()
-        ? values[index].get<float>()
-        : fallback;
-}
 
 // The camera derivation's reads: the pinned parseBabylonCamera consumes the
 // JSON values as JavaScript numbers, so these stay double up to the record's
@@ -85,104 +89,45 @@ std::string string_or(
         : fallback;
 }
 
-Vec3 vec3_or(const Json& object, const char* name, Vec3 fallback) {
-    const auto found = object.find(name);
-    if (found == object.end()) return fallback;
-    return Vec3{
-        number_at(*found, 0, fallback.x),
-        number_at(*found, 1, fallback.y),
-        number_at(*found, 2, fallback.z),
-    };
-}
-
-Color3 color3_or(const Json& object, const char* name, Color3 fallback) {
-    const Vec3 value = vec3_or(
-        object,
-        name,
-        Vec3{fallback.r, fallback.g, fallback.b});
-    return Color3{value.x, value.y, value.z};
-}
-
-TextureAddressMode address_mode(const Json& texture, const char* name) {
-    const int value = texture.value(name, 1);
-    return value == 0
-        ? TextureAddressMode::clamp
-        : value == 2
-            ? TextureAddressMode::mirror
-            : TextureAddressMode::repeat;
-}
-
-TextureData texture_data(
-    const Json& material,
-    const char* name,
-    const std::string& base_path) {
-    const auto found = material.find(name);
-    if (
-        found == material.end() ||
-        !found->is_object() ||
-        found->value("isCube", false)) {
-        return {};
-    }
-    const std::string relative = found->value("name", std::string{});
-    if (relative.empty()) return {};
-    TextureData result;
-    result.bytes = pal::read_binary_file(pal::join_path(base_path, relative));
-    result.sampler.address_u = address_mode(*found, "wrapU");
-    result.sampler.address_v = address_mode(*found, "wrapV");
-    result.sampler.max_anisotropy = 4.0f;
-    result.invert_y = true;
-    return result;
-}
+${cameraParser}
 
 ${lowered.bakeLocalMatrix}
+
+${lowered.materialProperties}
+
+${lowered.textureSlots}
+
+${lowered.cubeTexture}
 
 // The pinned loader hands bakeLocalMatrix the node's localMatrix as the
 // JSON numbers it parsed -- doubles -- and only when the node carries one
 // (\`md.localMatrix && bakeLocalMatrix\`, load-babylon.ts). A matrix that is
 // not sixteen numbers reaches arithmetic the pin runs over \`undefined\`,
 // which is refused here instead.
-std::optional<std::array<double, 16>> local_matrix_or_absent(
-    const Json& node) {
-    const auto found = node.find("localMatrix");
-    if (found == node.end() || found->is_null()) return std::nullopt;
+std::array<double, 16> babylon_local_matrix(const Json& value) {
     std::array<double, 16> matrix{};
     if (
-        !found->is_array() ||
-        found->size() != matrix.size() ||
-        !std::all_of(found->begin(), found->end(), [](const Json& cell) {
+        !value.is_array() ||
+        value.size() != matrix.size() ||
+        !std::all_of(value.begin(), value.end(), [](const Json& cell) {
             return cell.is_number();
         })) {
         throw std::runtime_error(
             "A .babylon localMatrix must carry sixteen numbers.");
     }
     for (std::size_t index = 0; index < matrix.size(); ++index) {
-        matrix[index] = (*found)[index].get<double>();
+        matrix[index] = value[index].get<double>();
     }
     return matrix;
-}
-
-// src/scene/world-matrix-state.ts composeTrsLocalMatrix over the node's own
-// TRS: load-babylon.ts hands each mesh md.position/rotation/scaling, and
-// initMeshTransform (src/mesh/mesh.ts) converts the Euler triple through
-// eulerToQuat before the composition. The pin keeps that TRS as mesh.world
-// while this loader bakes it into vertex.position and records it as the
-// instance parent world for the LOCAL_POSITION variant.
-std::array<float, 16> node_world_matrix(
-    Vec3 position,
-    Vec3 rotation,
-    Vec3 scaling) {
-    return upstream::trs_matrix(upstream::TrsLanes{
-        .rotation = rotation,
-        .scaling = scaling,
-        .position = Vec3d{position.x, position.y, position.z}});
 }
 
 MaterialHandle load_material(
     Engine& engine,
     const Json& source,
     const std::string& base_path,
-    const Color3& scene_ambient,
-    std::unordered_map<std::string, std::uint32_t>& reflection_cubes) {
+    const std::array<double, 3>& scene_ambient,
+    std::unordered_map<std::string, std::uint32_t>& reflection_cubes,
+    bool load_textures) {
     MaterialRecord material;
     material.standard_material = true;
     // loadBabylon copies RGB into a fresh array; exports may include an
@@ -194,51 +139,21 @@ MaterialHandle load_material(
             throw std::runtime_error("Babylon material diffuse requires three numeric channels.");
         }
     }
-    material.source_diffuse_color = std::make_shared<std::vector<double>>(
-        std::initializer_list<double>{double_at(source, "diffuse", 0, 1),
-            double_at(source, "diffuse", 1, 1), double_at(source, "diffuse", 2, 1)});
+    apply_babylon_material_properties(material, source, scene_ambient);
     project_material_source_colors(material);
-    material.specular_color =
-        color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});
-    material.emissive_factor =
-        color3_or(source, "emissive", Color3{0.0f, 0.0f, 0.0f});
-    // BJS multiplies material.ambient by scene.ambientColor.
-    const Color3 raw_ambient =
-        color3_or(source, "ambient", Color3{0.0f, 0.0f, 0.0f});
-    material.ambient_color = Color3{
-        raw_ambient.r * scene_ambient.r,
-        raw_ambient.g * scene_ambient.g,
-        raw_ambient.b * scene_ambient.b,
-    };
-    material.specular_power = source.value("specularPower", 64.0f);
-    const float alpha = source.value("alpha", 1.0f);
+    const float alpha = material.alpha;
     material.base_color_factor = Color4{
         material.diffuse_color.r,
         material.diffuse_color.g,
         material.diffuse_color.b,
         1.0f,
     };
-    material.alpha = alpha;
-    material.alpha_cutoff = source.value("alphaCutOff", 0.0f);
-    material.double_sided = !source.value("backFaceCulling", true);
-    material.base_color_texture =
-        texture_data(source, "diffuseTexture", base_path);
-    material.specular_texture =
-        texture_data(source, "specularTexture", base_path);
-    material.opacity_texture =
-        texture_data(source, "opacityTexture", base_path);
-    material.ambient_texture =
-        texture_data(source, "ambientTexture", base_path);
-    if (const auto texture = source.find("reflectionTexture");
-        texture != source.end() &&
-        texture->is_object() &&
-        texture->value("isCube", false)) {
-        const std::string cube_name =
-            texture->value("name", std::string{});
-        if (!cube_name.empty()) {
+    apply_babylon_texture_slots(material, source, base_path,
+        [&](const char*, const std::string& path) { return ${lowered.fileTextureLoad}; }, load_textures);
+    apply_babylon_cube_texture(material, source, load_textures, [&](const std::string& cube_name) {
             const auto existing = reflection_cubes.find(cube_name);
             if (existing != reflection_cubes.end()) {
-                material.reflection_cube = existing->second;
+                return existing->second;
             } else {
                 constexpr std::array<const char*, 6> suffixes{
                     "_px.jpg",
@@ -258,79 +173,15 @@ MaterialHandle load_material(
                             cube_name + suffixes[index]));
                 }
                 engine.reflection_cubes.push_back(std::move(faces));
-                material.reflection_cube =
+                const auto index =
                     static_cast<std::uint32_t>(
                         engine.reflection_cubes.size() - 1);
                 reflection_cubes.emplace(
                     cube_name,
-                    material.reflection_cube);
+                    index);
+                return index;
             }
-            material.reflection_level =
-                texture->value("level", 1.0f);
-        }
-    }
-    // The non-cube arm of the same slot, exactly the pin's TEX_SLOTS
-    // reflection entry (load-babylon.ts: \`skipIf: (t) => t.isCube === true\`,
-    // \`level\` -> reflectionLevel, \`coordinatesMode === 2\` ->
-    // reflectionCoordMode = 2 over the createStandardMaterial default 1).
-    // texture_data() applies the same cube drop, so the record's
-    // reflection_texture carries bytes only for a 2D reflection.
-    if (const auto texture = source.find("reflectionTexture");
-        texture != source.end() &&
-        texture->is_object() &&
-        !texture->value("isCube", false)) {
-        material.reflection_texture =
-            texture_data(source, "reflectionTexture", base_path);
-        material.reflection_level = texture->value("level", 1.0f);
-        if (texture->value("coordinatesMode", 0) == 2) {
-            material.reflection_coord_mode = 2.0f;
-        }
-    }
-    if (const auto texture = source.find("diffuseTexture");
-        texture != source.end() && texture->is_object()) {
-        material.diffuse_level = texture->value("level", 1.0f);
-        material.diffuse_u_scale = texture->value("uScale", 1.0f);
-        material.diffuse_v_scale = texture->value("vScale", 1.0f);${diffuseUv2 ? `
-        // A diffuse texture selects a UV set the same way the specular and
-        // ambient slots below do. Sponza's upper walls are the reached case:
-        // their base texture is authored against the second set.
-        material.diffuse_coord_index =
-            texture->value("coordinatesIndex", 0) == 1 ? 1u : 0u;` : ""}
-        if (texture->value("hasAlpha", false)) {
-            material.alpha_cutoff = 0.4f;
-        }
-    }
-    if (const auto texture = source.find("specularTexture");
-        texture != source.end() && texture->is_object()) {
-        material.specular_coord_index =
-            texture->value("coordinatesIndex", 0) == 1 ? 1u : 0u;
-    }
-    if (const auto texture = source.find("opacityTexture");
-        texture != source.end() && texture->is_object()) {
-        material.opacity_level = texture->value("level", 1.0f);
-        // The pin's own conditional write (load-babylon.ts TEX_SLOTS
-        // opacity extra: \`if (t.getAlphaFromRGB) m.opacityFromRGB = true\`),
-        // which _computeStandardMaterialFeatures turns into
-        // OPACITY_FROM_RGB and the composed fragment into the
-        // dot(opSample.rgb, ...) luminance arm.
-        material.opacity_from_rgb =
-            texture->value("getAlphaFromRGB", false);
-    }
-${bumpTexture ? `    if (const auto texture = source.find("bumpTexture");
-        texture != source.end() && texture->is_object()) {
-        material.bump_texture =
-            texture_data(source, "bumpTexture", base_path);
-        // The authored level, one-to-one like the slots above. The pinned
-        // writeStdMaterialData derives its bumpScale = 1 / level itself, so
-        // the record carries what the pin's own material property carries.
-        material.bump_scale = texture->value("level", 1.0f);
-    }
-` : ""}    if (const auto texture = source.find("ambientTexture");
-        texture != source.end() && texture->is_object()) {
-        material.ambient_level = texture->value("level", 1.0f);
-        material.ambient_coord_index =
-            texture->value("coordinatesIndex", 0) == 1 ? 1u : 0u;
-    }
+    });
     material.alpha_mode =
         alpha < 1.0f || material.opacity_texture.has_image()
             ? MaterialAlphaMode::blend
@@ -338,36 +189,206 @@ ${bumpTexture ? `    if (const auto texture = source.find("bumpTexture");
     engine.materials.push_back(std::move(material));
     const MaterialHandle handle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
-    if (engine.materials[handle.value].base_color_texture.has_image()) {
-        // TEX_SLOTS starts a fresh loadTexture2D per material/slot; equal
-        // URLs do not make the returned source Texture2D objects equal.
-        auto texture = material_texture(engine, handle, MaterialTextureSlot::diffuse);
-        texture.identity = engine.next_file_texture_identity++;
-        engine.materials[handle.value].source_albedo_texture = std::move(texture);
-    }
     return handle;
 }
 
 MaterialHandle default_material(Engine& engine) {
     MaterialRecord material;
     material.standard_material = true;
-    material.diffuse_color = Color3{1.0f, 1.0f, 1.0f};
-    material.source_diffuse_color = std::make_shared<std::vector<double>>(
-        std::initializer_list<double>{1, 1, 1});
+    apply_babylon_material_properties(material, Json::object(), {0, 0, 0});
+    project_material_source_colors(material);
     engine.materials.push_back(std::move(material));
     return MaterialHandle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
 
-struct SubMesh {
-    std::size_t material_index = 0;
-    std::size_t index_start = 0;
-    std::size_t index_count = 0;
-};
+${lowered.submeshDefaults}
+
+${lowered.hierarchy}
+
+// Project the linked source hierarchy into native baked geometry and traversal order.
+void realize_babylon_hierarchy(Engine& engine, AssetRecord& asset,
+    const std::vector<BabylonHierarchyNode>& nodes, const std::vector<std::size_t>& roots) {
+    std::vector<std::array<float, 16>> worlds(nodes.size());
+    std::vector<std::uint8_t> state(nodes.size());
+    const auto world = [&](auto&& self, std::size_t index) -> const std::array<float, 16>& {
+        if (state.at(index) == 2) return worlds.at(index);
+        if (state.at(index) == 1) throw std::runtime_error("Cyclic .babylon node hierarchy.");
+        state[index] = 1;
+        const auto& node = nodes.at(index);
+        auto local = upstream::trs_matrix(node.transform);
+        if (node.parent != invalid_handle) {
+            std::array<double, 16> product{};
+            upstream::mat4_multiply_into_f64(product, 0, self(self, node.parent), 0, local, 0);
+            local = upstream::narrow_mat4(product);
+        }
+        worlds[index] = local;
+        state[index] = 2;
+        return worlds[index];
+    };
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        const auto& node = nodes[index];
+        const auto& matrix = world(world, index);
+        if (node.mesh.value == invalid_handle) continue;
+        auto& mesh = engine.meshes.at(node.mesh.value);
+        mesh.instance_parent_matrix = matrix;
+        auto& geometry = engine.geometries.at(mesh.geometry);
+        geometry.bounds_min = Vec3{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+        geometry.bounds_max = Vec3{std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+        for (std::size_t vertex_index = 0; vertex_index < geometry.vertices.size(); ++vertex_index) {
+            auto& vertex = geometry.vertices[vertex_index];
+            vertex.position = upstream::transform_position(matrix, vertex.local_position);
+            vertex.normal = upstream::normalize_baked_direction(upstream::transform_direction(matrix, geometry.local_normals.at(vertex_index)));
+            geometry.bounds_min.x = std::min(geometry.bounds_min.x, vertex.position.x);
+            geometry.bounds_min.y = std::min(geometry.bounds_min.y, vertex.position.y);
+            geometry.bounds_min.z = std::min(geometry.bounds_min.z, vertex.position.z);
+            geometry.bounds_max.x = std::max(geometry.bounds_max.x, vertex.position.x);
+            geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
+            geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
+        }
+    }
+    std::vector<std::size_t> pending(roots.rbegin(), roots.rend());
+    std::vector<bool> seen(nodes.size());
+    while (!pending.empty()) {
+        const auto index = pending.back();
+        pending.pop_back();
+        if (seen.at(index)) continue;
+        seen[index] = true;
+        const auto& node = nodes.at(index);
+        if (node.mesh.value != invalid_handle) asset.meshes.push_back(node.mesh);
+        pending.insert(pending.end(), node.children.rbegin(), node.children.rend());
+    }
+}
+
+bool babylon_json_truthy(const Json& object, const char* key) {
+    const auto found = object.find(key);
+    if (found == object.end() || found->is_null()) return false;
+    if (found->is_boolean()) return found->get<bool>();
+    if (found->is_number()) return found->get<double>() != 0.0;
+    if (found->is_string()) return !found->get_ref<const std::string&>().empty();
+    return true;
+}
+
+const Json& babylon_json_field(const Json& object, const char* key) {
+    static const Json absent;
+    const auto found = object.find(key);
+    return found == object.end() ? absent : *found;
+}
+
+double babylon_json_length(const Json& object, const char* key) {
+    const auto& value = babylon_json_field(object, key);
+    return value.is_array() ? static_cast<double>(value.size()) : 0.0;
+}
+
+Vec3 babylon_vec3(const std::array<double, 3>& values) {
+    return Vec3{static_cast<float>(values[0]), static_cast<float>(values[1]), static_cast<float>(values[2])};
+}
+
+Color3 babylon_color3(const std::array<double, 3>& values) {
+    return Color3{static_cast<float>(values[0]), static_cast<float>(values[1]), static_cast<float>(values[2])};
+}
+
+std::vector<float> babylon_f32(const Json& values) {
+    return values.get<std::vector<float>>();
+}
+
+std::vector<std::uint32_t> babylon_u32(const Json& values) {
+    std::vector<std::uint32_t> result;
+    result.reserve(values.size());
+    for (const auto& value : values) result.push_back(js::to_uint32(value.get<double>()));
+    return result;
+}
+
+std::uint32_t upload_babylon_mesh(Engine& engine, const std::vector<float>& positions,
+    const std::vector<float>& normals, const std::vector<std::uint32_t>& indices,
+    const std::vector<float>& uvs, const std::vector<float>& uvs2) {
+    if (positions.size() % 3 != 0 || normals.size() != positions.size())
+        throw std::runtime_error("A .babylon mesh requires matching position and normal triples.");
+    const auto vertex_count = positions.size() / 3;
+    ModelGeometry geometry;
+    geometry.vertices.resize(vertex_count);
+    geometry.local_normals.resize(vertex_count);
+${meshClones ? "    geometry.bind_vertices.resize(vertex_count);" : ""}
+    for (std::size_t index = 0; index < vertex_count; ++index) {
+        ModelVertex vertex;
+        vertex.local_position = Vec3{positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2]};
+        vertex.position = vertex.local_position;
+        vertex.normal = Vec3{normals[index * 3], normals[index * 3 + 1], normals[index * 3 + 2]};
+        if (!uvs.empty()) vertex.uv = Vec2{uvs.at(index * 2), uvs.at(index * 2 + 1)};
+        if (!uvs2.empty()) vertex.uv2 = Vec2{uvs2.at(index * 2), uvs2.at(index * 2 + 1)};
+        geometry.local_normals[index] = vertex.normal;
+        geometry.vertices[index] = vertex;
+${meshClones ? "        geometry.bind_vertices[index] = vertex;" : ""}
+    }
+    geometry.indices = indices;
+    const auto index = static_cast<std::uint32_t>(engine.geometries.size());
+    engine.geometries.push_back(std::move(geometry));
+    return index;
+}
+
+std::size_t create_babylon_mesh(Engine& engine, std::vector<BabylonHierarchyNode>& nodes,
+    const std::string& name, const std::string& id, MaterialHandle material, bool receives_shadows,
+    std::uint32_t geometry, const upstream::TrsLanes& transform) {
+    MeshRecord mesh;
+    mesh.name = name;
+    mesh.primitive = PrimitiveKind::babylon;
+    mesh.geometry = geometry;
+    mesh.material = material;
+    mesh.receives_shadows = receives_shadows;
+${meshClones ? `    mesh.imported_clone_trs = ImportedMeshTrs{
+        Vec3{static_cast<float>(transform.position.x), static_cast<float>(transform.position.y), static_cast<float>(transform.position.z)},
+        transform.rotation, transform.scaling};` : ""}
+    const auto mesh_index = static_cast<std::uint32_t>(engine.meshes.size());
+    engine.meshes.push_back(std::move(mesh));
+    BabylonHierarchyNode node;
+    node.id = id;
+    node.transform = transform;
+    node.mesh = MeshHandle{mesh_index};
+    const auto index = nodes.size();
+    nodes.push_back(std::move(node));
+    return index;
+}
+
+std::size_t create_babylon_container(std::vector<BabylonHierarchyNode>& nodes, const upstream::TrsLanes& transform) {
+    const auto index = nodes.size();
+    BabylonHierarchyNode node;
+    node.transform = transform;
+    nodes.push_back(std::move(node));
+    return index;
+}
+
+${lowered.meshConstruction}
+
+${lightMeshLists ? `std::vector<std::uint32_t> resolve_babylon_light_meshes(const Json& ids,
+    const std::unordered_map<std::string, std::vector<std::size_t>>& meshes_by_id,
+    const std::vector<BabylonHierarchyNode>& nodes) {
+    std::unordered_set<std::string> seen;
+    std::vector<std::uint32_t> result;
+    for (const auto& value : ids) {
+        if (!value.is_string()) continue;
+        const auto id = value.get<std::string>();
+        if (!seen.insert(id).second) continue;
+        const auto found = meshes_by_id.find(id);
+        if (found == meshes_by_id.end()) continue;
+        for (const auto index : found->second) result.push_back(nodes.at(index).mesh.value);
+    }
+    return result;
+}
+` : ""}
+${lowered.sceneData}
+
+std::vector<std::string> babylon_material_ids(const Json& values) {
+    std::vector<std::string> result;
+    result.reserve(values.size());
+    for (const auto& value : values) result.push_back(value.is_string() ? value.get<std::string>() : std::string{});
+    return result;
+}
+
+${lowered.materialMaps}
 
 } // namespace
 
-AssetHandle load_babylon(Engine& engine, const std::string& path) {
+AssetHandle load_babylon(Engine& engine, const std::string& path, bool load_camera, bool load_textures) {
     const std::vector<std::uint8_t> bytes = pal::read_binary_file(path);
     const Json document = Json::parse(std::string(
         reinterpret_cast<const char*>(bytes.data()),
@@ -375,364 +396,34 @@ AssetHandle load_babylon(Engine& engine, const std::string& path) {
     const std::string base_path = pal::parent_path(path);
 
     std::unordered_map<std::string, MaterialHandle> materials;
-    std::unordered_map<std::string, std::uint32_t> reflection_cubes;
-    const Color3 scene_ambient =
-        color3_or(document, "ambientColor", Color3{0.0f, 0.0f, 0.0f});
-    if (const auto values = document.find("materials");
-        values != document.end() && values->is_array()) {
-        for (const Json& value : *values) {
-            if (!value.is_object()) continue;
-            const std::string id = string_or(value, "id");
-            if (!id.empty()) {
-                materials.emplace(
-                    id,
-                    load_material(
-                        engine,
-                        value,
-                        base_path,
-                        scene_ambient,
-                        reflection_cubes));
-            }
-        }
-    }
-
-    std::unordered_map<std::string, std::vector<std::string>>
-        multi_materials;
-    if (const auto values = document.find("multiMaterials");
-        values != document.end() && values->is_array()) {
-        for (const Json& value : *values) {
-            if (!value.is_object()) continue;
-            const std::string id = string_or(value, "id");
-            if (id.empty()) continue;
-            std::vector<std::string> entries;
-            if (const auto source = value.find("materials");
-                source != value.end() && source->is_array()) {
-                entries.reserve(source->size());
-                for (const Json& material : *source) {
-                    entries.push_back(
-                        material.is_string()
-                            ? material.get<std::string>()
-                            : std::string{});
-                }
-            }
-            multi_materials.emplace(id, std::move(entries));
-        }
-    }
+    std::unordered_map<std::string, std::vector<std::string>> multi_materials;
+    load_babylon_material_maps(engine, document, base_path, babylon_scene_ambient(document), load_textures, materials, multi_materials);
 
     AssetRecord asset;
-    MaterialHandle fallback{};
-    const auto fallback_material = [&]() {
-        if (fallback.value == invalid_handle) {
-            fallback = default_material(engine);
-        }
-        return fallback;
-    };
+    std::vector<BabylonHierarchyNode> nodes;
+    BabylonNodeMap node_map;
+    std::unordered_map<std::string, std::vector<std::size_t>> meshes_by_id;
+    std::vector<std::size_t> all_meshes;
 
-${lightMeshLists ? `    // A light names the meshes it lights, or the ones it skips, by mesh id.
-    // Resolving those against the records this loader creates needs the id
-    // of each one, and a node with submeshes becomes several records.
-    std::unordered_map<std::string, std::vector<std::uint32_t>>
-        mesh_records_by_id;
-` : ""}    if (const auto meshes = document.find("meshes");
+    if (const auto meshes = document.find("meshes");
         meshes != document.end() && meshes->is_array()) {
-        for (const Json& source : *meshes) {
-            if (
-                !source.is_object() ||
-                !source.value("isVisible", true) ||
-                !string_or(source, "parentId").empty()) {
-                continue;
-            }
-            const auto positions_it = source.find("positions");
-            const auto normals_it = source.find("normals");
-            const auto indices_it = source.find("indices");
-            if (
-                positions_it == source.end() ||
-                normals_it == source.end() ||
-                indices_it == source.end() ||
-                !positions_it->is_array() ||
-                !normals_it->is_array() ||
-                !indices_it->is_array() ||
-                indices_it->empty()) {
-                continue;
-            }
-            const Json& positions = *positions_it;
-            const Json& normals = *normals_it;
-            const Json* uvs = nullptr;
-            const Json* uvs2 = nullptr;
-            if (const auto found = source.find("uvs");
-                found != source.end() && found->is_array()) {
-                uvs = &*found;
-            }
-            if (const auto found = source.find("uvs2");
-                found != source.end() && found->is_array()) {
-                uvs2 = &*found;
-            }
-            const std::size_t vertex_count = positions.size() / 3;
-            const Vec3 mesh_position =
-                vec3_or(source, "position", Vec3{});
-            const Vec3 mesh_rotation =
-                vec3_or(source, "rotation", Vec3{});
-            const Vec3 mesh_scaling =
-                vec3_or(source, "scaling", Vec3{1.0f, 1.0f, 1.0f});
-            const std::array<float, 16> mesh_world =
-                node_world_matrix(mesh_position, mesh_rotation, mesh_scaling);
-            // The pin's \`new F32(md.positions)\` and \`new F32(md.normals)\`:
-            // the JSON numbers rounded once to the attribute width, then the
-            // pivot bake over both buffers in place.
-            std::vector<float> baked_positions(vertex_count * 3);
-            std::vector<float> baked_normals(vertex_count * 3);
-            for (std::size_t lane = 0; lane < vertex_count * 3; ++lane) {
-                baked_positions[lane] = number_at(positions, lane, 0.0f);
-                baked_normals[lane] =
-                    number_at(normals, lane, lane % 3 == 1 ? 1.0f : 0.0f);
-            }
-            if (const auto local_matrix = local_matrix_or_absent(source)) {
-                bake_local_matrix(
-                    baked_positions, baked_normals, *local_matrix);
-            }
-
-            std::vector<SubMesh> submeshes;
-            if (const auto values = source.find("subMeshes");
-                values != source.end() && values->is_array()) {
-                submeshes.reserve(values->size());
-                for (const Json& value : *values) {
-                    if (!value.is_object()) continue;
-                    submeshes.push_back(SubMesh{
-                        value.value("materialIndex", 0u),
-                        value.value("indexStart", 0u),
-                        value.value("indexCount", 0u),
-                    });
-                }
-            }
-            if (submeshes.empty()) {
-                submeshes.push_back(SubMesh{
-                    0,
-                    0,
-                    indices_it->size(),
-                });
-            }
-
-            const std::string material_id =
-                string_or(source, "materialId");
-            const auto multi = multi_materials.find(material_id);
-            for (const SubMesh& submesh : submeshes) {
-                if (
-                    submesh.index_count == 0 ||
-                    submesh.index_start + submesh.index_count >
-                        indices_it->size()) {
-                    continue;
-                }
-                ModelGeometry geometry;
-                geometry.vertices.resize(vertex_count);
-${meshClones ? "                geometry.bind_vertices.resize(vertex_count);" : ""}
-                geometry.bounds_min = Vec3{
-                    std::numeric_limits<float>::max(),
-                    std::numeric_limits<float>::max(),
-                    std::numeric_limits<float>::max(),
-                };
-                geometry.bounds_max = Vec3{
-                    std::numeric_limits<float>::lowest(),
-                    std::numeric_limits<float>::lowest(),
-                    std::numeric_limits<float>::lowest(),
-                };
-                for (std::size_t index = 0;
-                     index < vertex_count;
-                     ++index) {
-                    // The pin's position and normal attributes: the
-                    // localMatrix-baked lanes, uploaded as they are.
-                    const Vec3 local_position{
-                        baked_positions[index * 3],
-                        baked_positions[index * 3 + 1],
-                        baked_positions[index * 3 + 2],
-                    };
-                    const Vec3 local_normal{
-                        baked_normals[index * 3],
-                        baked_normals[index * 3 + 1],
-                        baked_normals[index * 3 + 2],
-                    };
-                    ModelVertex vertex;
-                    vertex.local_position = local_position;
-                    vertex.position = upstream::transform_position(
-                        mesh_world, local_position);
-                    // standard-template.ts: \`out.vn = normalize(normalWorld
-                    // * normal)\` -- the world basis first, the vertex
-                    // stage's normalize after it.
-                    vertex.normal = upstream::normalize_baked_direction(
-                        upstream::transform_direction(
-                            mesh_world, local_normal));
-                    if (uvs) {
-                        vertex.uv = Vec2{
-                            number_at(*uvs, index * 2, 0.0f),
-                            number_at(*uvs, index * 2 + 1, 0.0f),
-                        };
-                    }
-                    if (uvs2) {
-                        vertex.uv2 = Vec2{
-                            number_at(*uvs2, index * 2, 0.0f),
-                            number_at(*uvs2, index * 2 + 1, 0.0f),
-                        };
-                    }
-                    geometry.bounds_min.x =
-                        std::min(geometry.bounds_min.x, vertex.position.x);
-                    geometry.bounds_min.y =
-                        std::min(geometry.bounds_min.y, vertex.position.y);
-                    geometry.bounds_min.z =
-                        std::min(geometry.bounds_min.z, vertex.position.z);
-                    geometry.bounds_max.x =
-                        std::max(geometry.bounds_max.x, vertex.position.x);
-                    geometry.bounds_max.y =
-                        std::max(geometry.bounds_max.y, vertex.position.y);
-                    geometry.bounds_max.z =
-                        std::max(geometry.bounds_max.z, vertex.position.z);
-                    geometry.vertices[index] = vertex;
-${meshClones ? `                    vertex.position = local_position;
-                    vertex.normal = local_normal;
-                    geometry.bind_vertices[index] = vertex;` : ""}
-                }
-                geometry.indices.reserve(submesh.index_count);
-                for (std::size_t index = 0;
-                     index < submesh.index_count;
-                     ++index) {
-                    const Json& value =
-                        (*indices_it)[submesh.index_start + index];
-                    geometry.indices.push_back(
-                        value.is_number_unsigned()
-                            ? value.get<std::uint32_t>()
-                            : static_cast<std::uint32_t>(
-                                  value.get<double>()));
-                }
-                if (geometry.indices.size() % 3 != 0) {
-                    throw std::runtime_error(
-                        ".babylon triangle indices must be divisible by three.");
-                }
-                engine.geometries.push_back(std::move(geometry));
-
-                MaterialHandle material = fallback_material();
-                std::string selected_id = material_id;
-                if (
-                    multi != multi_materials.end() &&
-                    submesh.material_index < multi->second.size()) {
-                    selected_id = multi->second[submesh.material_index];
-                }
-                if (const auto found = materials.find(selected_id);
-                    found != materials.end()) {
-                    material = found->second;
-                }
-                MeshRecord mesh;
-                // The pinned naming: md.name, suffixed only when the node
-                // splits into several submeshes (load-babylon.ts).
-                mesh.name = source.value("name", std::string{}) +
-                    (submeshes.size() > 1
-                         ? "${submeshNameSuffix}" +
-                               std::to_string(submesh.material_index)
-                         : std::string{});
-                mesh.primitive = PrimitiveKind::babylon;
-${meshClones ? "                mesh.imported_clone_trs = ImportedMeshTrs{mesh_position, mesh_rotation, mesh_scaling};" : ""}
-                // The pin's mesh.world keeps this node's TRS — its position
-                // attribute carries only localMatrix-applied vertices,
-                // measured bit-exact against the browser's uploads — while
-                // this loader bakes the same TRS into vertex.position and
-                // leaves the record transform the identity. A LOCAL_POSITION
-                // geometry variant binds the unbaked local lanes, so its
-                // draw needs the pin's world back: record it the way the
-                // glTF loader records every node's parent matrix.
-                mesh.instance_parent_matrix = mesh_world;
-                mesh.geometry = static_cast<std::uint32_t>(
-                    engine.geometries.size() - 1);
-                mesh.material = material;
-                engine.meshes.push_back(mesh);
-                asset.meshes.push_back(MeshHandle{
-                    static_cast<std::uint32_t>(
-                        engine.meshes.size() - 1)});${lightMeshLists ? `
-                mesh_records_by_id[string_or(source, "id")].push_back(
-                    static_cast<std::uint32_t>(
-                        engine.meshes.size() - 1));` : ""}
-            }
-        }
+        construct_babylon_meshes(engine, *meshes, materials, multi_materials, nodes, node_map, meshes_by_id, all_meshes);
+        const auto roots = wire_babylon_hierarchy(*meshes, nodes, node_map, meshes_by_id, all_meshes);
+        realize_babylon_hierarchy(engine, asset, nodes, roots);
     }
 
-    if (const auto lights = document.find("lights");
-        lights != document.end() && lights->is_array()) {
-        for (const Json& source : *lights) {
-            if (!source.is_object() || source.value("type", -1) != 0) {
-                continue;
-            }
-            LightRecord light;
-            light.kind = LightKind::point;
-            light.position = vec3_or(source, "position", Vec3{});
-            light.intensity = source.value("intensity", 1.0f);
-            light.range = source.value(
-                "range",
-                std::numeric_limits<float>::max());
-            light.diffuse_color =
-                color3_or(source, "diffuse", Color3{1.0f, 1.0f, 1.0f});
-            light.specular_color =
-                color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});${lightMeshLists ? `
-            const auto resolve_mesh_ids =
-                [&](const char* name,
-                    std::vector<std::uint32_t>& target) {
-                const auto ids = source.find(name);
-                if (ids == source.end() || !ids->is_array()) return;
-                for (const Json& entry : *ids) {
-                    if (!entry.is_string()) continue;
-                    const auto found = mesh_records_by_id.find(
-                        entry.get<std::string>());
-                    if (found == mesh_records_by_id.end()) continue;
-                    target.insert(
-                        target.end(),
-                        found->second.begin(),
-                        found->second.end());
-                }
-            };
-            resolve_mesh_ids(
-                "includedOnlyMeshesIds",
-                light.included_meshes);
-            resolve_mesh_ids(
-                "excludedMeshesIds",
-                light.excluded_meshes);` : ""}
-            engine.lights.push_back(light);
-            asset.lights.push_back(LightHandle{
-                static_cast<std::uint32_t>(engine.lights.size() - 1)});
-        }
-    }
-
-    if (const auto colors = document.find("clearColor");
-        colors != document.end() && colors->is_array()) {
-        asset.clear_color = Color4{
-            number_at(*colors, 0, 0.2f),
-            number_at(*colors, 1, 0.2f),
-            number_at(*colors, 2, 0.3f),
-            1.0f,
-        };
+    load_babylon_lights(engine, asset, document${lightMeshLists ? ", meshes_by_id, nodes" : ""});
+    if (const auto color = babylon_clear_color(document)) {
+        asset.clear_color = *color;
         asset.has_clear_color = true;
     }
-
-    if (const auto cameras = document.find("cameras");
-        cameras != document.end() &&
-        cameras->is_array() &&
-        !cameras->empty()) {
-        const std::string active =
-            string_or(document, "activeCameraID");
-        const Json* selected = &cameras->front();
-        for (const Json& candidate : *cameras) {
-            if (string_or(candidate, "id") == active) {
-                selected = &candidate;
-                break;
-            }
-        }
-${cameraDerivation}
-        CameraRecord& camera = engine.cameras[asset.camera.value];
-        camera.fov = selected->value("fov", camera.fov);
-        camera.near_plane =
-            selected->value("minZ", camera.near_plane);
-        camera.far_plane =
-            selected->value("maxZ", camera.far_plane);
+    if (const auto camera = select_babylon_camera(engine, document, load_camera)) {
+        asset.camera = *camera;
         asset.has_camera = true;
     }
 
-    if (asset.meshes.empty()) {
-        throw std::runtime_error(
-            ".babylon scene contains no supported renderable meshes.");
+    if (const auto walks = document.find(${JSON.stringify(GLTF_MESH_WALKS)}); walks != document.end()) {
+        install_asset_mesh_walks(asset, walks->get<std::vector<std::vector<double>>>());
     }
     engine.assets.push_back(std::move(asset));
     return AssetHandle{

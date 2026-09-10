@@ -1,3 +1,4 @@
+import { EmissionWeakMap } from "./emission-transaction.js";
 import type ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { renderClosure } from "./closure-captures.js";
@@ -7,7 +8,7 @@ import type { GizmoIntrinsicContext } from "./intrinsics/gizmo.js";
 // Structural canvas aliases share their property table. The generated state
 // belongs to that runtime object, not to a source spelling or to the engine's
 // real canvas. Weak keys cannot retain one compilation's scopes in the next.
-const proxyDispatchers = new WeakMap<object, Value>();
+const proxyDispatchers = new EmissionWeakMap<object, Value>();
 
 export function pointerDispatcherCpp(
     context: GizmoIntrinsicContext,
@@ -52,14 +53,14 @@ export function compilePointerDragRegistration(
                 context.fail(argumentAt(call, 1), "A pointer canvas proxy must expose source-defined add/removeEventListener methods.");
             }
             dispatcher = context.allocateTemporaryCppName("pointer_dispatcher");
-            context.emit(`auto ${dispatcher} = bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, false);`);
+            context.emit({ kind: "declaration", type: "auto", name: dispatcher, initializer: `bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, false)` });
             proxyDispatchers.set(canvas.recordProperties, {
                 kind: "data", cpp: dispatcher,
                 nativeCaptures: [context.registerNativeBinding(dispatcher)],
             });
             const listeners = ["pointerdown", "pointermove", "pointerup", "pointercancel", "pointerleave"].map((event, index) => {
                 const cpp = context.allocateTemporaryCppName("pointer_listener");
-                context.emit(`auto ${cpp} = bbl::pointer_drag_listener(${dispatcher}, ${index}u);`);
+                context.emit({ kind: "declaration", type: "auto", name: cpp, initializer: `bbl::pointer_drag_listener(${dispatcher}, ${index}u)` });
                 const arguments_: Value[] = [
                     { kind: "string", cpp: JSON.stringify(event), staticString: event },
                     { kind: "data", cpp, nativeCaptures: [context.registerNativeBinding(cpp)], dataType: {

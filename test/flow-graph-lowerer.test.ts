@@ -8,7 +8,9 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { parseGlbJson } from "../src/gltf-document.js";
+import {readFileSync} from "node:fs";
+import {readGlb} from "../src/glb-container.js";
+import {packageGltfLoadPlan} from "../src/gltf-load-plan.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FlowGraphLowerer } from "../src/lowering/flow-graph-lowerer.js";
 import { parseFlowGraphs } from "../src/pinned-flow-graph.js";
@@ -21,7 +23,11 @@ const context = new LoweringContext();
 let parsed: Promise<FlowGraphProgram[]> | undefined;
 
 async function calculatorGraphs(): Promise<FlowGraphProgram[]> {
-    parsed ??= parseFlowGraphs("Calculator.glb", parseGlbJson(calculator));
+    parsed ??= (async () => {
+        const packaged = readGlb(await packageGltfLoadPlan(readFileSync(calculator), calculator));
+        assert.ok(packaged);
+        return parseFlowGraphs("Calculator.glb", packaged.json);
+    })();
     return structuredClone(await parsed);
 }
 

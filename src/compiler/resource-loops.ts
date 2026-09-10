@@ -1,5 +1,9 @@
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { declaredInDomLibrary, isPinnedType, pinnedHandleKind } from "./data-types.js";
+import { forEachAnalysisNode } from "./analysis-walk.js";
+import { declaredInDomLibrary, isPinnedType, pinnedHandleKind, platformHandleKind } from "./data-types.js";
+import { propertyRules } from "./properties.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
@@ -20,26 +24,36 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { nativeDataIterationIntrinsics, runtimeOnlyIntrinsics } from "./intrinsics/registry.js";
+import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
+import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
 import { declarationInDefaultLibrary } from "./symbols.js";
 import { resizingArrayMethods } from "./data-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
-interface ResourceLoopContext extends PositiveIntegerContext {
-    readonly checker: ts.TypeChecker;
-    readonly symbols: CompilerSymbols;
-    canvasSizeProperty(expression: ts.Expression): "width" | "height" | undefined;
-    constArrayLiteral(expression: ts.Expression): ts.ArrayLiteralExpression | undefined;
-    knownCollectionCardinality(expression: ts.Expression): number | undefined;
-}
+interface ResourceLoopContext
+    extends PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "checker"
+        | "symbols"
+        | "canvasSizeProperty"
+        | "constArrayLiteral"
+        | "knownCollectionCardinality"
+        | "knownValueWithoutEvaluation"
+    > {}
 
 function resolvedLoopCallee(
-    context: Pick<ResourceLoopContext, "checker"> & Partial<Pick<ResourceLoopContext, "lookupOptional">>,
+    context: Pick<ResourceLoopContext, "checker"> & Partial<Pick<ResourceLoopContext, "lookupOptional" | "knownValueWithoutEvaluation">>,
     call: ts.CallExpression | ts.NewExpression,
 ): ts.Signature["declaration"] {
     const callee = unwrapExpression(call.expression);
-    const value = ts.isIdentifier(callee) ? context.lookupOptional?.(callee) : undefined;
-    if (value?.kind === "callback" && value.cpp.length === 0 && value.callbackDeclaration) {
-        const declaration = value.callbackDeclaration;
+    const value = context.knownValueWithoutEvaluation?.(callee) ??
+        (ts.isIdentifier(callee) ? context.lookupOptional?.(callee) : undefined);
+    const owner = ts.isPropertyAccessExpression(callee)
+        ? context.knownValueWithoutEvaluation?.(callee.expression) : undefined;
+    const declaration = value?.callbackDeclaration ??
+        (ts.isPropertyAccessExpression(callee) && !owner?.recordGetters?.[callee.name.text]
+            ? owner?.recordMethods?.[callee.name.text] : undefined);
+    if (declaration) {
         return ts.isIdentifier(declaration)
             ? tryResolveFunctionDeclaration(context.checker, declaration)
             : declaration;
@@ -54,8 +68,18 @@ function expressionHandleKind(
     expression: ts.Expression,
 ) {
     const type = context.checker.getNonNullableType(context.checker.getTypeAtLocation(expression));
-    return pinnedHandleKind(type) ??
+    return pinnedHandleKind(type) ?? platformHandleKind(type) ??
         (isPinnedType(type, ["StandardMaterialProps", "PbrMaterialProps"]) ? "material" : undefined);
+}
+
+function nativePlatformRead(context: Pick<ResourceLoopContext, "checker">, node: ts.Node): boolean {
+    if (!ts.isPropertyAccessExpression(node)) return false;
+    const owner = unwrapExpression(node.expression);
+    if (node.name.text === "getGamepads" && ts.isIdentifier(owner) && owner.text === "navigator") return true;
+    const type = context.checker.getNonNullableType(context.checker.getTypeAtLocation(owner));
+    const kind = platformHandleKind(type);
+    return kind !== undefined && propertyRules.some(rule =>
+        rule.owner === kind && rule.property === node.name.text && !("unsupported" in rule));
 }
 
 function nativeSceneMembershipChange(
@@ -83,7 +107,7 @@ export function walkReachedLoopNodes(
     root: ts.Node,
     visit: (node: ts.Node) => boolean | void,
 ): void {
-    const functions = new Set<ts.Node>();
+    const functions = new EmissionSet<ts.Node>();
     const walkFunction = (node: ts.Node): void => {
         if (functions.has(node)) return;
         functions.add(node);
@@ -95,8 +119,8 @@ export function walkReachedLoopNodes(
             walk(node.body);
         }
     };
-    const walk = (node: ts.Node): void => {
-        if (visit(node) === false) return;
+    const walk = (subtree: ts.Node): void => forEachAnalysisNode(subtree, node => {
+        if (visit(node) === false) return "skip";
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
             const callee = unwrapExpression(node.expression);
             const imported = ts.isIdentifier(callee)
@@ -128,16 +152,13 @@ export function walkReachedLoopNodes(
                     ts.isSetAccessorDeclaration(declaration)) walkFunction(declaration);
             }
         }
-        ts.forEachChild(node, (child) => {
-            if (!ts.isFunctionLike(child)) walk(child);
-        });
-    };
+    }, { skip: node => node !== subtree && ts.isFunctionLike(node) });
     walk(root);
 }
 
 export function requiresStaticLoopIteration(
     context: Pick<ResourceLoopContext, "checker" | "symbols">,
-    statement: ts.Statement,
+    statement: ts.Node,
 ): boolean {
     let required = false;
     walkReachedLoopNodes(context, statement, (node) => {
@@ -159,11 +180,26 @@ export function requiresStaticLoopIteration(
 /** Plain-data iteration can update existing native resources, not specialize them. */
 export function requiresStaticDataIteration(
     context: ResourceLoopContext,
-    statement: ts.Statement,
+    statement: ts.Node,
+    callEffects = false,
 ): boolean {
     let required = false;
     walkReachedLoopNodes(context, statement, (node) => {
         if (required) return false;
+        // Handle and finite record properties dispatch by their source key.
+        if (ts.isElementAccessExpression(node) &&
+            !ts.isStringLiteralLike(unwrapExpression(node.argumentExpression))) {
+            const ownerType = context.checker.getNonNullableType(context.checker.getTypeAtLocation(node.expression));
+            const keyType = context.checker.getTypeAtLocation(node.argumentExpression);
+            const stringKey = (keyType.isUnion() ? keyType.types : [keyType])
+                .every((type) => (type.flags & ts.TypeFlags.StringLike) !== 0);
+            if (expressionHandleKind(context, node.expression) ||
+                (stringKey && expressionHandleKind(context, node) &&
+                    !context.checker.getIndexInfoOfType(ownerType, ts.IndexKind.String))) {
+                required = true;
+                return false;
+            }
+        }
         // Canvas extents have native reads; writes still belong to their
         // normal DOM/retained-canvas lowering and cannot use this exemption.
         if (writesThroughTrackedRoot(node, (target) => {
@@ -181,7 +217,8 @@ export function requiresStaticDataIteration(
                 ? context.checker.getSymbolAtLocation(node.expression)
                 : undefined;
         if (symbol && declaredInDomLibrary(symbol) &&
-            !(ts.isPropertyAccessExpression(node) && context.canvasSizeProperty(node))) {
+            !(ts.isPropertyAccessExpression(node) && context.canvasSizeProperty(node)) &&
+            !nativePlatformRead(context, node)) {
             required = true;
             return false;
         }
@@ -193,7 +230,10 @@ export function requiresStaticDataIteration(
             ? unwrapExpression(awaited.expression) : undefined;
         const awaitedIntrinsic = awaitedCallee && ts.isIdentifier(awaitedCallee)
             ? context.symbols.importedName(awaitedCallee) : undefined;
-        if ((ts.isAwaitExpression(node) &&
+        const effectAwait = callEffects && awaited && ts.isCallExpression(awaited) &&
+            ((awaitedIntrinsic && (isMaterialCallEffectIntrinsic(awaitedIntrinsic) || isAssetCallEffectIntrinsic(awaitedIntrinsic))) ||
+                isSupportedFunction(resolvedLoopCallee(context, awaited)));
+        if ((ts.isAwaitExpression(node) && !effectAwait &&
                 !(awaitedIntrinsic && (runtimeOnlyIntrinsics.has(awaitedIntrinsic) ||
                     (awaited && ts.isCallExpression(awaited) && runtimeProfileCall(context, awaitedIntrinsic, awaited))))) ||
             ts.isYieldExpression(node)) {
@@ -206,6 +246,7 @@ export function requiresStaticDataIteration(
                 ? context.symbols.importedName(callee)
                 : undefined;
             if (imported && !nativeDataIterationIntrinsics.has(imported) &&
+                !(callEffects && (isMaterialCallEffectIntrinsic(imported) || isAssetCallEffectIntrinsic(imported))) &&
                 !nativeSceneMembershipChange(context, imported, node) &&
                 !runtimeProfileCall(context, imported, node)) {
                 required = true;
@@ -229,7 +270,7 @@ export function requiresStaticDataIteration(
                     : kind === "node-input"
                         ? property !== "texture"
                     : kind === "material"
-                        ? !runtimeMaterialProperties.has(property)
+                        ? !callEffects && !runtimeMaterialProperties.has(property)
                         : true;
                 return !required;
             }
@@ -237,6 +278,40 @@ export function requiresStaticDataIteration(
         }
     });
     return required;
+}
+
+/** Shared bodies use native construction profiles and ordinary resource operations. */
+export function canShareFunctionBody(context: ResourceLoopContext, body: ts.Node, callEffects = false): boolean {
+    if (requiresStaticDataIteration(context, body, callEffects)) return false;
+    let touchesHandle = false;
+    let specializes = false;
+    walkReachedLoopNodes(context, body, node => {
+        if ((ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) || ts.isCallExpression(node)) &&
+            expressionHandleKind(context, node)) touchesHandle = true;
+        if (nativePlatformRead(context, node)) touchesHandle = true;
+        if (!ts.isCallExpression(node)) return;
+        const callee = unwrapExpression(node.expression);
+        const imported = ts.isIdentifier(callee) ? context.symbols.importedName(callee) : undefined;
+        if (callEffects && imported && (isMaterialCallEffectIntrinsic(imported) || isAssetCallEffectIntrinsic(imported))) touchesHandle = true;
+        const resolved = resolvedLoopCallee(context, node);
+        if (resolved && !resolved.getSourceFile().isDeclarationFile &&
+            !(isSupportedFunction(resolved) && resolved.body)) specializes = true;
+    });
+    return touchesHandle && !specializes;
+}
+
+/** Construction and generation-dependent operations replay their ordinary recorder effects. */
+export function sharedFunctionHasCallEffects(context: ResourceLoopContext, body: ts.Node): boolean {
+    if (!canShareFunctionBody(context, body, true)) return false;
+    if (requiresStaticDataIteration(context, body)) return true;
+    let constructs = false;
+    walkReachedLoopNodes(context, body, node => {
+        if (!ts.isCallExpression(node)) return;
+        const callee = unwrapExpression(node.expression);
+        const imported = ts.isIdentifier(callee) ? context.symbols.importedName(callee) : undefined;
+        if (imported && runtimeProfileConstructionIntrinsics.has(imported)) constructs = true;
+    });
+    return constructs;
 }
 
 /** A folded bound must not be invalidated by the loop or its called helpers. */
@@ -261,7 +336,7 @@ export function loopBoundMayChange(
     };
     reads(bound);
     if (dependencies.length === 0) return false;
-    const reached = new Set<ts.Node>();
+    const reached = new EmissionSet<ts.Node>();
     walkReachedLoopNodes(context, body, (node) => { reached.add(node); });
     return dependencies.some((identifier) => aliasedMutationScan(
         identifier,
@@ -377,15 +452,16 @@ export type ResourceLoop = ts.ForStatement | ts.ForOfStatement;
 // These factories record only an attribute shape and emit native construction.
 // Counts that the existing option lowerers require at generation stay invariant;
 // dimensions and transforms remain ordinary runtime numeric expressions.
-const meshFactories: ReadonlyMap<string, readonly string[]> = new Map([
+const meshFactories: ReadonlyMap<string, readonly string[]> = new EmissionMap([
     ["createBox", []],
     ["createPlane", []],
     ["createGround", ["subdivisions"]],
     ["createSphere", ["segments"]],
     ["createTorus", ["tessellation"]],
+    ["createTorusKnot", []],
 ]);
 /** These native factories have a closed call-site profile, not a baked body. */
-export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> = new Set([
+export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> = new EmissionSet([
     ...meshFactories.keys(),
     "createMeshFromData",
     "cloneTransformNode",
@@ -412,12 +488,12 @@ function runtimeProfileCall(
             staticNumberValue(context, ts.isPropertyAssignment(property) ? property.initializer : property.name) !== undefined;
     });
 }
-const runtimeMeshProperties = new Set([
+const runtimeMeshProperties = new EmissionSet([
     "position", "rotation", "rotationQuaternion", "scaling",
     "name", "visibility", "visible", "isVisible", "isPickable", "renderOrder",
     "boundMin", "boundMax",
 ]);
-const runtimeMaterialProperties = new Set([
+const runtimeMaterialProperties = new EmissionSet([
     "diffuseColor", "specularColor", "ambientColor", "emissiveColor", "specularPower",
 ]);
 
@@ -431,11 +507,11 @@ export function parameterizedResourceLoop(
     statement: ResourceLoop,
     knownIterations?: number,
 ): ParameterizedResourceLoop | undefined {
-    const active = new Set<SupportedFunction>();
-    const indices = new Set<ts.Symbol>();
-    const bindings = new Map<ts.Symbol, ts.Expression>();
-    const mutated = new Set<ts.Symbol>();
-    const rebound = new Set<ts.Symbol>();
+    const active = new EmissionSet<SupportedFunction>();
+    const indices = new EmissionSet<ts.Symbol>();
+    const bindings = new EmissionMap<ts.Symbol, ts.Expression>();
+    const mutated = new EmissionSet<ts.Symbol>();
+    const rebound = new EmissionSet<ts.Symbol>();
     const markMutation = (expression: ts.Expression): false => {
         const root = rootIdentifier(expression);
         const symbol = root && context.symbols.valueSymbol(root);
@@ -463,9 +539,10 @@ export function parameterizedResourceLoop(
     });
     let safe = true;
     let reachesConstruction = false;
+    let dataFunction = false;
     const resolve = (expression: ts.Expression): ts.Expression => {
         let current = unwrapExpression(expression);
-        const seen = new Set<ts.Symbol>();
+        const seen = new EmissionSet<ts.Symbol>();
         while (ts.isIdentifier(current)) {
             const symbol = context.symbols.valueSymbol(current);
             if (!symbol || seen.has(symbol) || indices.has(symbol)) break;
@@ -498,7 +575,7 @@ export function parameterizedResourceLoop(
     };
     const invariant = (
         expression: ts.Expression,
-        seen = new Set<ts.Symbol>(),
+        seen = new EmissionSet<ts.Symbol>(),
     ): boolean => {
         const node = unwrapExpression(expression);
         if (ts.isIdentifier(node)) {
@@ -522,7 +599,7 @@ export function parameterizedResourceLoop(
                 context.symbols.importedName(initializer.expression) === "createStandardMaterial";
             if (mutated.has(symbol) && !localStandard) return false;
             if (initializer) {
-                return invariant(initializer, new Set([...seen, symbol]));
+                return invariant(initializer, new EmissionSet([...seen, symbol]));
             }
             return context.lookupOptional(node) !== undefined;
         }
@@ -591,7 +668,7 @@ export function parameterizedResourceLoop(
             return 0;
         }
         active.add(fn);
-        const previous = new Map(bindings);
+        const previous = new EmissionMap(bindings);
         fn.parameters.forEach((parameter, index) => {
             const argument = call.arguments[index] ?? parameter.initializer;
             if (ts.isIdentifier(parameter.name) && argument) {
@@ -599,6 +676,8 @@ export function parameterizedResourceLoop(
             }
         });
         let work = 0;
+        const previousDataFunction = dataFunction;
+        dataFunction = !requiresStaticLoopIteration(context, fn.body);
         if (ts.isBlock(fn.body)) {
             for (const [index, child] of fn.body.statements.entries()) {
                 if (ts.isReturnStatement(child) && index === fn.body.statements.length - 1) {
@@ -610,6 +689,7 @@ export function parameterizedResourceLoop(
         } else {
             work += visit(fn.body, conditional);
         }
+        dataFunction = previousDataFunction;
         bindings.clear();
         for (const [symbol, expression] of previous) bindings.set(symbol, expression);
         active.delete(fn);
@@ -676,6 +756,9 @@ export function parameterizedResourceLoop(
             const work = count === 0 ? 0 : visit(node.statement, conditional);
             for (const symbol of bound) indices.delete(symbol);
             return Math.max(1, work) * count;
+        }
+        if (ts.isReturnStatement(node) && dataFunction) {
+            return node.expression ? visit(node.expression, conditional) : 0;
         }
         if (
             ts.isWhileStatement(node) || ts.isDoStatement(node) ||
@@ -780,6 +863,8 @@ export function parameterizedResourceLoop(
                     }
                 } else if (imported === "addToScene" || imported === "removeFromScene") {
                     if (!nativeSceneMembershipChange(context, imported, node)) safe = false;
+                } else if (nativeDataIterationIntrinsics.has(imported)) {
+                    reachesConstruction = true;
                 } else if (imported !== "setParent" && imported !== "markMeshDirty" &&
                     !runtimeOnlyIntrinsics.has(imported)) {
                     safe = false;

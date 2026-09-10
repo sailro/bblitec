@@ -1,43 +1,49 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "../context.js";
-import { assertEnvironmentTextureIdentity } from "../scene-uniform-identity.js";
 import { gltfLoaderCpp } from "../templates/gltf-loader-cpp.js";
+import { lowerGltfAccessorShape } from "./accessor-shape.js";
+import { lowerGltfHierarchy } from "./hierarchy.js";
+import { lowerGltfParserJson } from "./parser-json.js";
+import { lowerGltfMaterialAssembly } from "./material-assembly.js";
+import { lowerGltfMaterialTextures } from "./material-textures.js";
+import { lowerGltfMaterialProperties } from "./material-properties.js";
+import { lowerGltfInverseBindMatrices } from "./skin-data.js";
+import { lowerGltfAnimationNodeRest } from "./animation-node-rest.js";
+import {gltfAnimationPoseStorageCpp} from "./animation-pose-storage.js";
+import {lowerGltfAnimationPlayback} from "./animation-playback.js";
+import {lowerGltfAnimationPose,lowerGltfAnimationRootFlip} from "./animation-pose.js";
+import {lowerGltfAnimationEvaluator} from "./animation-evaluator.js";
+import {lowerGltfAnimationBoneOverrides} from "./animation-bone-overrides.js";
+import {lowerGltfAnimationGroupFactory} from "./animation-group-factory.js";
+import {lowerGltfSkeletonPose} from "./skeleton-pose.js";
+import {lowerGltfWeightedAnimationPasses} from "./weighted-animation-passes.js";
+import {lowerGltfWeightedAnimationRuntime} from "./weighted-animation-runtime.js";
+import {lowerGltfWeightedAnimationTargets} from "./weighted-animation-targets.js";
+import {lowerGltfAnimationPointerWriters} from "./animation-pointer-writers.js";
+import {gltfWeightedAnimationTransportCpp} from "./weighted-animation-transport.js";
+import {lowerGltfAnimationMask} from "./animation-mask.js";
+import {gltfAnimationPointerRuntimeCpp} from "./animation-pointer-runtime.js";
+import {gltfAnimationPointerOwnersCpp} from "./animation-pointer-owners.js";
+import {LightLowerer} from "../light-lowerer.js";
+import {lowerGltfVatPlayback} from "./vat-playback.js";
+import { gltfDeformationStateCpp } from "./deformation-state.js";
+import {gltfAnimationBindingsCpp} from "./animation-bindings.js";
 import {
     lowerAccessorNormalizationCpp,
-    lowerVertexColorCpp,
 } from "./accessor-normalization.js";
-import {
-    lowerAnimationInterpolationCpp,
-} from "./animation-interpolation.js";
-import { lowerGltfExtensionDefaults } from "./extension-defaults.js";
+
 import { lowerGltfFactorBake } from "./factor-bake.js";
-import { lowerGltfMaterialColorPresence } from "./material-color-presence.js";
+import {gltfIblLoadingCpp} from "./ibl.js";
+import {lowerGltfAssetSceneSetup, gltfAssetSceneSetupOrder} from "./asset-scene-setup.js";
+import {lowerGltfGaussianSplatSetup} from "./gaussian-splat-setup.js";
 import {
-    lowerIblEnvironmentScalarsCpp,
-    lowerIblPolynomialCpp,
-} from "./ibl.js";
-import {
-    lowerImageProcessingDefaultsCpp,
-} from "./image-processing-defaults.js";
-import { lowerGltfMaterialDefaults } from "./material-defaults.js";
-import {
-    lowerLocalMatrixCpp,
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
 } from "./matrix-leaves.js";
+import { gltfMatrixReaderCpp } from "./local-matrix.js";
 import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
-import { lowerPunctualLightsCpp } from "./punctual-lights.js";
-import { lowerSamplerMappingCpp } from "./sampler-mapping.js";
-import { lowerShPrescaleCpp } from "./sh-prescale.js";
-import {
-    coalescedPropertyDefault,
-    findNodes,
-    identifierText,
-    refuseModule,
-    topLevelFunction,
-    unwrapExpression,
-} from "./shared.js";
+import { pinnedHeader } from "../pinned-header.js";
 
 /**
  * What a scene's assets and reached features decide about the emitted
@@ -50,8 +56,6 @@ export interface GltfLoaderOptions {
     animationBlending?: boolean;
     /** The scene reached `setAnimationAdditive` (the additive arm). */
     animationAdditive?: boolean;
-    /** The scene attaches this file's clips to its own manager. */
-    managedGroups?: boolean;
     /** The scene bakes a mesh's animation into a texture. Three writes in
      *  this loader exist only for the bake -- the per-record `skinned`
      *  flag the first-skinned search reads, the pose pass's skip for an
@@ -93,8 +97,6 @@ export interface GltfLoaderOptions {
     gaussianSplats?: boolean;
     /** The scene assigns an AnimationGroupMask to one of this file's groups. */
     animationMask?: boolean;
-    /** The scene writes an AnimationGroup's speedRatio. */
-    animationSpeedRatio?: boolean;
     nodeVisibility?: boolean;
     /**
      * An asset carries `KHR_interactivity` graphs, so the loader records
@@ -106,15 +108,12 @@ export interface GltfLoaderOptions {
     animationPointer?: boolean;
     animatedWorldBounds?: boolean;
     animationPointerMaterials?: boolean;
-    assetTransmission?: boolean;
     /**
      * Any reached asset carries images the packager transcoded to a KTX1
      * container (`KHR_texture_basisu`). The loader then parses them through
      * the pin's own `parseKtx1` instead of handing bytes to an image codec.
      */
     compressedImages?: boolean;
-    materialSpecular?: boolean;
-    materialExtensionPayload?: boolean;
     /** The `KHR_materials_variants` name a scene selected, or "". */
     selectedMaterialVariant?: string;
     /** The scene reached `enableGltfCameras` (the `_camera` feature). */
@@ -176,14 +175,7 @@ export class GltfLowerer {
         return {
             modulePath,
             symbolName,
-            header: `#pragma once
-
-#include <bblite/ts_runtime.hpp>
-
-#include <cstddef>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/ts_runtime.hpp>","","<cstddef>"], `
 struct ParsedGlbContainer {
     ts::JsonValue json;
     std::size_t json_offset = 0;
@@ -193,9 +185,7 @@ struct ParsedGlbContainer {
 };
 
 ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/upstream/gltf_glb_parser.hpp>
 
@@ -238,290 +228,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         };
     }
 
-    /**
-     * The weighted glTF skeleton mixer's own rules, asserted against the
-     * pinned body the emitted C++ mirrors
-     * (src/animation/weighted-gltf-mixer.ts). The emission lives in the
-     * loader template because that is where the node array, the clips and
-     * the skins are; what is pinned here is every decision it makes.
-     */
-    private assertWeightedGltfMixer(): void {
-        const mixerModule =
-            "src/animation/weighted-gltf-mixer.ts";
-        const { declaration: update } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "updateWeightedGltfAnimations",
-            );
-        // Which groups make the mixer the handler for this tick, and the
-        // early-out that hands an unqualified tick back.
-        this.expectOneShape(
-            update,
-            "group._stopped || !mixer || (group.weight === 1 && !group._additive)",
-            "weighted glTF qualifying skip",
-        );
-        this.expectOneShape(
-            update,
-            "keys.size === 0",
-            "weighted glTF early-out",
-        );
-        const { declaration: accumulate } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "accumulateGroup",
-            );
-        // Translation and scale are weighted sums zeroed on the first
-        // write to a node; rotation is an incremental slerp whose amount
-        // is what makes the result independent of clip order.
-        this.expectOneShape(
-            accumulate,
-            "target.tWeight[nodeIdx] === 0",
-            "weighted glTF translation reset",
-        );
-        this.expectOneShape(
-            accumulate,
-            "target.sWeight[nodeIdx] === 0",
-            "weighted glTF scale reset",
-        );
-        this.expectOneShape(
-            accumulate,
-            "target.trs[base + T_OFF] = target.trs[base + T_OFF] + scratch.sample[0] * weight",
-            "weighted glTF translation sum",
-        );
-        this.expectOneShape(
-            accumulate,
-            "target.tWeight[nodeIdx] = target.tWeight[nodeIdx] + weight",
-            "weighted glTF translation weight",
-        );
-        this.expectOneShape(
-            accumulate,
-            "weight / (accumulatedWeight + weight)",
-            "weighted glTF rotation slerp amount",
-        );
-        this.expectOneShape(
-            accumulate,
-            "target.rWeight[nodeIdx] = accumulatedWeight + weight",
-            "weighted glTF rotation weight",
-        );
-        // The mixer's own clip advance, which forks from the manager's
-        // property one: it wraps only while the group plays.
-        const { declaration: advance } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "advanceGroupTime",
-            );
-        this.expectOneShape(
-            advance,
-            "group.currentTime += (deltaMs / 1000) * group.speedRatio",
-            "weighted glTF advance",
-        );
-        this.expectOneShape(
-            advance,
-            "group.loopAnimation && isPlaying",
-            "weighted glTF loop guard",
-        );
-        this.expectOneShape(
-            advance,
-            "group.currentTime %= clip.duration",
-            "weighted glTF loop wrap",
-        );
-        this.expectOneShape(
-            advance,
-            "group.currentTime = Math.min(Math.max(group.currentTime, 0), clip.duration)",
-            "weighted glTF play-range clamp",
-        );
-        // A node the clips animate below full weight keeps the remainder
-        // of its rest rotation.
-        const { declaration: upload } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "uploadTarget",
-            );
-        // The fork itself: below one blends against the rest rotation,
-        // at or above it renormalizes. The `else if` arm's own
-        // `rotationWeight > 0` is the left half of this test, so pinning
-        // the pair pins both branches.
-        this.expectOneShape(
-            upload,
-            "rotationWeight > 0 && rotationWeight < 1",
-            "weighted glTF partial-weight blend",
-        );
-    }
-
-    /** Exactly one expression under `declaration` has this shape. */
-    private expectOneShape(
-        declaration: ts.Node,
-        expected: string,
-        label: string,
-    ): void {
-        this.expectShapeCount(declaration, expected, 1, label);
-    }
-
-    /** Exactly `count` expressions under `declaration` have this shape. */
-    private expectShapeCount(
-        declaration: ts.Node,
-        expected: string,
-        count: number,
-        label: string,
-    ): void {
-        this.context.expectShapeCount(declaration, expected, label, count);
-    }
-
-    /**
-     * The additive arm of the same mixer, asserted against
-     * `accumulateAdditiveGroup` and its helpers: each channel sampled at
-     * the clip time AND at the additive reference time, weighted T/S
-     * difference accumulation on top of the base pose, and the rotation
-     * rule — reference⁻¹ × sample multiplied onto the base before the
-     * weighted slerp. The two gates the pin states around it — the
-     * qualifying skip's `(weight === 1 && !_additive)` half (asserted
-     * with the base mixer above) and the third-loop condition — decide
-     * when the arm runs at all.
-     */
-    private assertAdditiveMixer(): void {
-        const mixerModule =
-            "src/animation/weighted-gltf-mixer.ts";
-        const { declaration: update } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "updateWeightedGltfAnimations",
-            );
-        // The additive pass runs AFTER every base group accumulated, over
-        // exactly the groups this condition selects.
-        this.expectOneShape(
-            update,
-            "!group._stopped && group._additive && mixer && keys.has(mixer[GLTF_NODES])",
-            "additive accumulation condition",
-        );
-        // In the accumulation loop an additive group only advances its
-        // time and marks the target active; its channels contribute in
-        // the later pass.
-        const additiveAdvances = this.context
-            .findNodes(
-                update,
-                (node): node is ts.IfStatement =>
-                    ts.isIfStatement(node) &&
-                    this.context.expressionMatchesShape(
-                        node.expression,
-                        "group._additive",
-                    ),
-            );
-        if (
-            additiveAdvances.length !== 1 ||
-            !this.context.hasNode(
-                additiveAdvances[0]!,
-                (node) =>
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression) &&
-                    node.expression.text ===
-                        "advanceGroupTime",
-            )
-        ) {
-            this.context.contractError(
-                update,
-                "Expected the additive advance-only arm.",
-            );
-        }
-        const { declaration: accumulate } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "accumulateAdditiveGroup",
-            );
-        this.expectOneShape(
-            accumulate,
-            "!additive || weight === 0",
-            "additive zero-weight skip",
-        );
-        // Translation and scale add the weighted difference between the
-        // clip-time and reference-time samples onto whatever the base
-        // pass left — no zeroing and no weight accumulation.
-        this.expectOneShape(
-            accumulate,
-            "target.trs[base + T_OFF] = target.trs[base + T_OFF] + (scratch.sample[0] - scratch.reference[0]) * weight",
-            "additive translation difference",
-        );
-        this.expectOneShape(
-            accumulate,
-            "target.trs[base + S_OFF] = target.trs[base + S_OFF] + (scratch.sample[0] - scratch.reference[0]) * weight",
-            "additive scale difference",
-        );
-        // Each vector channel samples the reference pose beside the clip
-        // pose; rotation samples both as quaternions.
-        this.expectShapeCount(
-            accumulate,
-            "evaluateSampler(sampler, additive.referenceTime, 3, false, scratch.reference, 0)",
-            2,
-            "additive vector reference samples",
-        );
-        this.expectOneShape(
-            accumulate,
-            "evaluateSampler(sampler, additive.referenceTime, 4, true, scratch.reference, 0)",
-            "additive rotation reference sample",
-        );
-        this.expectOneShape(
-            accumulate,
-            "quatRefInverseTimesSample(scratch.delta, scratch.reference, scratch.sample)",
-            "additive rotation delta",
-        );
-        this.expectOneShape(
-            accumulate,
-            "applyAdditiveQuaternion(target.trs, base + R_OFF, scratch.delta, weight)",
-            "additive rotation application",
-        );
-        // reference⁻¹ × sample: the conjugated reference on the left of
-        // the Hamilton product, normalized before it blends.
-        const { declaration: refInverse } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "quatRefInverseTimesSample",
-            );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                refInverse,
-                "ax",
-            ),
-            "-ref[0]",
-            "Additive reference conjugation",
-        );
-        this.expectOneShape(
-            refInverse,
-            "out[0] = aw * bx + ax * bw + ay * bz - az * by",
-            "additive delta x row",
-        );
-        this.expectOneShape(
-            refInverse,
-            "out[3] = aw * bw - ax * bx - ay * by - az * bz",
-            "additive delta w row",
-        );
-        if (
-            !this.context.hasCall(
-                refInverse,
-                "normalizeQuaternionAt",
-            )
-        ) {
-            this.context.contractError(
-                refInverse,
-                "Expected the additive delta to normalize.",
-            );
-        }
-        // base × delta slerped onto the base by the weight — the whole
-        // call is the contract, product rows included.
-        const { declaration: applyAdditive } =
-            this.context.functionDeclaration(
-                mixerModule,
-                "applyAdditiveQuaternion",
-            );
-        this.expectOneShape(
-            applyAdditive,
-            "quatSlerpInto(base, offset, bx, by, bz, bw, " +
-                "bw * dx + bx * dw + by * dz - bz * dy, " +
-                "bw * dy - bx * dz + by * dw + bz * dx, " +
-                "bw * dz + bx * dy - by * dx + bz * dw, " +
-                "bw * dw - bx * dx - by * dy - bz * dz, weight)",
-            "additive base product slerp",
-        );
-    }
-
+    /** Source loader bodies and their native storage adapters. */
     public lowerLoaderAdapter(
         options: GltfLoaderOptions = {},
     ): LoweredSource {
@@ -548,12 +255,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 this.context.contractError(declaration,
                     "Expected the glTF normal buffer to upload source _normals without transformation.");
             }
-        }
-        if (options.animationBlending) {
-            this.assertWeightedGltfMixer();
-        }
-        if (options.animationAdditive) {
-            this.assertAdditiveMixer();
         }
         const modulePath = "src/loader-gltf/load-gltf.ts";
         const symbolName = "loadGltf";
@@ -644,174 +345,28 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 );
             }
         }
-        const dielectricModule =
-            "src/loader-gltf/gltf-ext-dielectric.ts";
-        const dielectric =
-            this.context.sourceFile(dielectricModule);
-        for (const property of [
-            "KHR_materials_transmission",
-            "KHR_materials_ior",
-            "KHR_materials_volume",
-            "attenuationDistance",
-        ]) {
-            if (
-                !this.context.hasNode(
-                    dielectric,
-                    (node) =>
-                        (ts.isIdentifier(node) ||
-                            ts.isPropertyAccessExpression(node)) &&
-                        (ts.isIdentifier(node)
-                            ? node.text
-                            : node.name.text) === property,
-                )
-            ) {
-                this.context.contractError(
-                    dielectric,
-                    `Expected glTF dielectric property '${property}'.`,
-                );
-            }
-        }
-        // The sampler mapping and the keyframe interpolation used to pair
-        // hand-written template C++ with assertions that never fed it — a
-        // pin change failed the assertion while the stale text still
-        // emitted. Both segments are now produced from the pinned ASTs, so
-        // the assertion and the emission are the same walk: a changed
-        // formula changes the emitted bytes, and a construct the lowering
-        // cannot carry refuses generation.
-        const samplerMapping = lowerSamplerMappingCpp(
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-sampler-desc.ts",
-            ),
-        );
-        const animationInterpolation =
-            lowerAnimationInterpolationCpp(
-                this.context.sourceFile(
-                    "src/animation/evaluate.ts",
-                ),
-            );
         const quantization = this.context.sourceFile(
             "src/loader-gltf/gltf-ext-quantization.ts",
         );
         const accessorNormalization =
             lowerAccessorNormalizationCpp(quantization);
-        const vertexColor = lowerVertexColorCpp(
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-color-normalize.ts",
-            ),
-            quantization,
-        );
-        const assemblyFile = this.context.sourceFile(
-            "src/loader-gltf/ibl-env-assembly.ts",
-        );
-        const imageBasedFile = this.context.sourceFile(
-            "src/loader-gltf/gltf-ext-lights-image-based.ts",
-        );
-        const shPrescale = lowerShPrescaleCpp(
-            assemblyFile,
-            this.context.sourceFile(
-                "src/loader-env/load-env.ts",
-            ),
-        );
-        const imageProcessingDefaults =
-            lowerImageProcessingDefaultsCpp(imageBasedFile);
-        const extensionDefaults = lowerGltfExtensionDefaults(
-            dielectric,
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-iridescence.ts",
-            ),
-        );
-        const factorBake = lowerGltfFactorBake(
-            this.context.sourceFile("src/math/color.ts"),
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-pbr-builder.ts",
-            ),
-        );
-        const materialColorPresence = lowerGltfMaterialColorPresence(
-            this.context.sourceFile("src/loader-gltf/gltf-pbr-builder.ts"),
-        );
-        if (materialColorPresence !== lowerGltfMaterialColorPresence(
-            this.context.sourceFile("src/loader-gltf/gltf-pbr-builder-ext.ts"), "assemblePbrPropsExt",
-        )) {
-            throw new Error("Pinned glTF builders require distinct public material color presence adapters.");
-        }
-        factorBake.helpers += "\n" + materialColorPresence;
-        const materialDefaults = lowerGltfMaterialDefaults({
-            material: this.context.sourceFile(
-                "src/loader-gltf/gltf-material.ts",
-            ),
-            dielectric,
-            uvTransform: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-uv-transform.ts",
-            ),
-            uvTransformWriter: this.context.sourceFile(
-                "src/material/pbr/fragments/uv-transform-fragment.ts",
-            ),
-            clearcoat: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-clearcoat.ts",
-            ),
-            sheen: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-sheen.ts",
-            ),
-            emissiveStrength: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-emissive-strength.ts",
-            ),
-            specGloss: this.context.sourceFile(
-                "src/loader-gltf/gltf-ext-spec-gloss.ts",
-            ),
-        });
+        const accessorShape = lowerGltfAccessorShape(this.context);
+        const factorBake = lowerGltfFactorBake(this.context.sourceFile("src/math/color.ts"));
         const parserFile = this.context.sourceFile(
             "src/loader-gltf/gltf-parser.ts",
         );
         const composeFile = this.context.sourceFile(
             "src/math/mat4-compose-into.ts",
         );
-        const matrixLocal = lowerLocalMatrixCpp(
-            parserFile,
-            composeFile,
-        );
-        const matrixCompose = lowerMatrixComposeCpp(composeFile);
+        const matrixLocal = gltfMatrixReaderCpp();
+        const matrixCompose = lowerMatrixComposeCpp(composeFile,true);
         const matrixNative = lowerMatrixNativeCpp(parserFile);
-        assertEnvironmentTextureIdentity(this.context, imageBasedFile, "src/loader-gltf/ibl-env-assembly.ts", true);
-        const iblPolynomial = lowerIblPolynomialCpp(imageBasedFile);
-        const iblEnvironmentScalars =
-            lowerIblEnvironmentScalarsCpp(
-                imageBasedFile,
-                assemblyFile,
-            );
-        const punctualLightLoading = lowerPunctualLightsCpp(
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-feature-lights-punctual.ts",
-            ),
-            this.context.sourceFile("src/light/spot-light.ts"),
-            parserFile,
-        );
         const gltfCameras = options.gltfCameras
-            ? lowerGltfCamerasCpp(
-                  this.context.sourceFile(
-                      "src/loader-gltf/gltf-feature-camera.ts",
-                  ),
-                  this.context.sourceFile(
-                      "src/loader-gltf/load-gltf.ts",
-                  ),
-                  parserFile,
-              )
+            ? lowerGltfCamerasCpp(parserFile)
             : { parentWriter: "", loading: "", poseRefresh: "" };
         const boneControl = options.boneControl
-            ? lowerBoneControl(
-                  this.context.sourceFile(
-                      "src/skeleton/bone-control.ts",
-                  ),
-              )
+            ? lowerBoneControl(this.context)
             : { loading: "", entryPoints: "" };
-        assertRestPoseSeed(
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-feature-skeleton.ts",
-            ),
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-animation.ts",
-            ),
-        );
-        const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(this.context);
         // The refraction fragment's thickness scale the loader pre-bakes
         // into record.baked_world_scale (gltf-loader-cpp.ts): the pinned
         // read must stay the mesh world's longest basis column.
@@ -836,153 +391,44 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     symbolName,
                 ),
                 {
-                    animationInterpolation,
-                    samplerMapping,
+                    animationStorage: gltfAnimationPoseStorageCpp(),
+                    animationMask: options.animationMask ? lowerGltfAnimationMask(this.context) : "",
+                    animationPlayback: lowerGltfAnimationPlayback(this.context,options.animationBlending===true)+(options.vat?lowerGltfVatPlayback(this.context):""),
+                    animationPose: lowerGltfAnimationPose(this.context),
+                    animationEvaluator: lowerGltfAnimationEvaluator(this.context),
+                    animationRootFlip: lowerGltfAnimationRootFlip(this.context),
+                    animationBoneOverrides: lowerGltfAnimationBoneOverrides(this.context,{visibilityOnly:true}),
+                    animationFactory: lowerGltfAnimationGroupFactory(this.context)+(options.boneControl?lowerGltfSkeletonPose(this.context):""),
+                    animationWeighted: options.animationBlending ? lowerGltfWeightedAnimationRuntime(this.context)+lowerGltfWeightedAnimationPasses(this.context)+lowerGltfWeightedAnimationTargets(this.context):"",
+                    animationWeightedTransport: options.animationBlending ? gltfWeightedAnimationTransportCpp(lowerGltfAnimationRootFlip(this.context,"src/animation/weighted-gltf-mixer.ts")) : {types:"",dispatcher:"bool update_weighted_gltf_animation_groups(Engine&,PropertyAnimationManagerRecord&,double){return false;}"},
+                    animationPointers: options.animationPointer ? lowerGltfAnimationPointerWriters(this.context).source+gltfAnimationPointerOwnersCpp+gltfAnimationPointerRuntimeCpp()+new LightLowerer(this.context).lowerSpotAngleSetter() : "",
                     accessorNormalization,
-                    vertexColor,
-                    shPrescale,
-                    imageProcessingDefaults,
-                    extensionDefaults,
-                    materialDefaults,
+                    accessorShape,
+                    hierarchy: lowerGltfHierarchy(this.context),
+                    parserJson: lowerGltfParserJson(this.context),
+                    inverseBindMatrices: lowerGltfInverseBindMatrices(this.context),
+                    animationNodeRest: lowerGltfAnimationNodeRest(this.context),
+                    deformationState: gltfDeformationStateCpp(options.deformPicking === true),
+                    animationBindings: gltfAnimationBindingsCpp(),
+                    materialAssembly: lowerGltfMaterialAssembly(this.context),
+                    materialTextures: lowerGltfMaterialTextures(this.context),
+                    materialProperties: lowerGltfMaterialProperties(this.context).source,
+                    iblLoading: gltfIblLoadingCpp(),
+                    assetSceneSetup: lowerGltfAssetSceneSetup(this.context),
+                    gaussianSplatSetup: options.gaussianSplats ? lowerGltfGaussianSplatSetup(this.context) : "",
+                    assetSceneSetupOrder: gltfAssetSceneSetupOrder(this.context, options.gaussianSplats === true, options.interactivity === true),
                     factorBake,
                     matrixLocal,
                     matrixCompose,
                     matrixNative,
-                    iblPolynomial,
-                    iblEnvironmentScalars,
-                    punctualLightLoading,
                     gltfCameraParentWriter: gltfCameras.parentWriter,
                     gltfCameraLoading: gltfCameras.loading,
                     gltfCameraPoseRefresh: gltfCameras.poseRefresh,
                     boneControlLoading: boneControl.loading,
                     boneControlEntryPoints: boneControl.entryPoints,
-                    gltfMeshNamePrefix,
                 },
                 options,
             ),
         };
     }
-}
-
-/**
- * The pre-tick pose is the file's REST hierarchy, and the emitted loader
- * depends on it: it runs its pose pass alone at load, over the node TRS
- * the document authored, rather than evaluating the first clip at zero.
- *
- * Upstream states it in two halves. `gltf-feature-skeleton.ts` seeds each
- * skin's bone texture with `computeBoneTextureData(skin)`, and that
- * function takes the skin alone — no time, no sampler — composing
- * `invMeshWorld * jointWorld * IBM` over `jointWorldMatrices`, which
- * `extractSkin` derives straight from `json.nodes`. A seed that grew a
- * time argument, or stopped being what `createSkeleton` is handed, would
- * make the load pose something else, and the divergence it reintroduces
- * measures 0.816 full MAD on the one shape that never ticks
- * (docs/fidelity.md). So both halves are read rather than restated.
- */
-function assertRestPoseSeed(
-    skeletonFeature: ts.SourceFile,
-    animation: ts.SourceFile,
-): void {
-    const symbol = "gltf rest-pose seed";
-    const seed = topLevelFunction(animation, "computeBoneTextureData");
-    if (seed.parameters.length !== 1) {
-        refuseModule(
-            symbol,
-            "computeBoneTextureData no longer composes from the skin alone",
-        );
-    }
-    for (const name of [
-        "jointWorldMatrices",
-        "inverseBindMatrices",
-        "meshWorldMatrix",
-    ]) {
-        if (
-            findNodes(
-                seed,
-                (node): node is ts.Node =>
-                    (ts.isPropertyAccessExpression(node) ||
-                        ts.isPropertyAccessChain(node)) &&
-                    node.name.text === name,
-            ).length === 0
-        ) {
-            refuseModule(
-                symbol,
-                `computeBoneTextureData no longer reads '${name}'`,
-            );
-        }
-    }
-    const seeds = findNodes(
-        skeletonFeature,
-        (node): node is ts.CallExpression =>
-            ts.isCallExpression(node) &&
-            findNodes(
-                node,
-                (inner): inner is ts.Identifier =>
-                    ts.isIdentifier(inner) &&
-                    inner.text === "computeBoneTextureData",
-            ).length > 0,
-    );
-    const handedOver = findNodes(
-        skeletonFeature,
-        (node): node is ts.CallExpression =>
-            ts.isCallExpression(node) &&
-            identifierText(node.expression) === "createSkeleton",
-    ).length > 0;
-    if (seeds.length === 0 || !handedOver) {
-        refuseModule(
-            symbol,
-            "the skeleton feature no longer seeds createSkeleton from " +
-                "computeBoneTextureData",
-        );
-    }
-}
-
-/**
- * The pinned glTF mesh naming: one record per primitive named
- * `json.meshes[json.nodes[m._nodeIndex].mesh].name || gltf_mesh_<i>`,
- * where `i` runs over the extraction walk (nodes in order, primitives in
- * order — the same walk the generated loader performs, and unsupported
- * topologies throw on both sides, so the counters agree). The `||`
- * fallback also covers an authored empty string. Both the tight path
- * (load-gltf.ts) and the shared-primitive path (gltf-share.ts) spell the
- * rule; they must agree for the emitted prefix to serve either.
- */
-export function pinnedGltfMeshNamePrefix(
-    context: LoweringContext,
-): string {
-    const loadGltfFile = context.sourceFile("src/loader-gltf/load-gltf.ts");
-    const shareFile = context.sourceFile("src/loader-gltf/gltf-share.ts");
-    const prefixIn = (file: ts.SourceFile): string | undefined => {
-        const fallback = findNodes(
-            file,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node),
-        )
-            .map((node) =>
-                coalescedPropertyDefault(
-                    node,
-                    ts.SyntaxKind.BarBarToken,
-                )
-            )
-            .find(
-                (candidate) =>
-                    candidate?.key === "name" &&
-                    ts.isTemplateExpression(
-                        unwrapExpression(candidate.fallback),
-                    ),
-            );
-        return fallback
-            ? (unwrapExpression(fallback.fallback) as ts.TemplateExpression)
-                  .head.text
-            : undefined;
-    };
-    const tight = prefixIn(loadGltfFile);
-    const shared = prefixIn(shareFile);
-    if (tight === undefined || tight.length === 0 || tight !== shared) {
-        refuseModule(
-            "loadGltf",
-            "no longer names primitive meshes with one shared fallback prefix",
-        );
-    }
-    return tight;
 }

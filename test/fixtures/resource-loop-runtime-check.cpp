@@ -1,6 +1,7 @@
 #define main generated_grid_main
 #include "grid.hpp"
 #undef main
+#include "mesh-material-setter.hpp"
 #include <cassert>
 #include <cstdio>
 

@@ -426,10 +426,8 @@ void physics_body_set_target_transform(
     PhysicsBodyHandle body,
     const PhysicsTransform& transform);
 /**
- * `HP_Shape_BuildMassProperties`. `setPhysicsBodyMass` keeps the
- * shape-derived tensor and overrides only the mass scalar; that branch is
- * the pin's and lives in generated code, so this returns the tensor and
- * decides nothing.
+ * `HP_Shape_BuildMassProperties`, adapted to Bullet's absolute inertia at
+ * the requested mass. The shape's centre and principal axes are retained.
  */
 [[nodiscard]] PhysicsMassProperties physics_shape_build_mass_properties(
     PhysicsShapeHandle shape,

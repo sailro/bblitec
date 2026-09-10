@@ -9,6 +9,8 @@ import { StaticExpansionBudget } from "../src/compiler/static-expansion.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { loopBoundMayChange } from "../src/compiler/resource-loops.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 function scene(body: string, helpers = ""): string {
@@ -49,6 +51,54 @@ test("parameterizes a 64 by 64 box grid while retaining every composition row", 
     assert.equal(result.manifest.sceneMeshes.length, 4096);
     assert.equal(result.manifest.sceneMeshes.filter((mesh) => mesh.standardMaterial).length, 4096);
     assert.match(result.cpp, /BoxOptions\{static_cast<float>\(\(v_\w+_x \+ 1\.0\)\)/);
+});
+
+test("small torus-knot loops preserve composition counts and record callback evaluation", () => {
+    const result = compileSource(scene(`
+        const material = createStandardMaterial();
+        let calls = 0;
+        const options = { size(index: number): number { calls++; return index + 2; } };
+        for (let index = 0; index < 4; index++) {
+            const mesh = createTorusKnot(engine, { radius: options.size(index), tube: tint(index) });
+            mesh.material = material;
+            addToScene(scene, mesh);
+        }
+        if (calls !== 4) throw new Error("callback count");
+    `, `
+        import { createTorusKnot } from "@babylonjs/lite";
+        function tint(index: number): number {
+            if (index === 0) return 1;
+            return index === 1 ? 2 : 3;
+        }
+    `));
+    assert.equal(result.cpp.match(/bbl::create_torus_knot\(/g)?.length, 1);
+    assert.equal(result.manifest.sceneMeshes.length, 4);
+    assert.equal(result.manifest.sceneMeshes.filter(mesh => mesh.standardMaterial).length, 4);
+    assert.equal(result.cpp.match(/v_calls\+\+|\(\*v_calls\)\+\+/g)?.length, 1);
+});
+
+test("sprite option callbacks and data returns keep a grid compact", () => {
+    const result = compileSource(`
+        import { createEngine, loadSpriteAtlas, createSprite2DLayer, addSprite2DIndex } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const atlas = await loadSpriteAtlas(engine, "atlas.png", { gridSize: [32, 32] });
+        const layer = createSprite2DLayer(atlas, { capacity: 256, depth: "none" });
+        const options = { frame: (index: number): number => index % 16 };
+        function tint(index: number): [number, number, number, number] {
+            if (index === 0) return [1, 1, 1, 1];
+            return [0.5, 1, 0.5, 1];
+        }
+        for (let row = 0; row < 10; row++) {
+            for (let column = 0; column < 25; column++) {
+                const index = row * 25 + column;
+                addSprite2DIndex(layer, { positionPx: [column * 40, row * 40],
+                    sizePx: [32,32], frame: options.frame(index), color: tint(index) });
+            }
+        }
+    `);
+    assert.equal(result.cpp.match(/bbl::add_sprite_2d_index\(/g)?.length, 1);
+    assert.equal(result.cpp.match(/for \(;/g)?.length, 2);
+    assert.ok(Buffer.byteLength(result.cpp) < 6000);
 });
 
 test("inclusive resource loops preserve endpoint values and empty ranges", () => {
@@ -198,6 +248,7 @@ test("the compact grid executes all 4096 ordered native constructions and live c
     const output = resolve("artifacts/resource-loop-runtime-check");
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "grid.hpp"), compileSource(gridSource).cpp);
+    writeFileSync(join(output, "mesh-material-setter.hpp"), `namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())} }`);
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include",
@@ -907,8 +958,9 @@ test("a helper can return after unconditional construction and before runtime mu
         }
     `));
     assert.equal(result.manifest.sceneMeshes.length, 4);
-    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 4);
-    assert.equal(result.cpp.match(/\.position\.x =/g)?.length, 4);
+    assert.ok(result.manifest.sceneMeshes.every(mesh => !mesh.runtimeInstances));
+    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
+    assert.equal(result.cpp.match(/\.position\.x =/g)?.length, 1);
 });
 
 test("a helper exit still refuses construction hidden in a nested call", () => {
@@ -1064,7 +1116,7 @@ test("mutable helper parameter bounds cannot be mistaken for fixed resource coun
                 createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
             }
         }
-    `)), /static resource loop requires an invariant bound/);
+    `)), /Runtime resource construction requires a generation-known iteration count/);
 });
 
 test("bound-alias analysis type-checks only initializers rooted in tracked aliases", () => {

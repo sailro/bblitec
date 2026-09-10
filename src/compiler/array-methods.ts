@@ -14,7 +14,7 @@ export function compileArrayValueMethod(
     }
     lowerer.context.reachJsData();
     const source = lowerer.context.allocateTemporaryCppName("array_receiver");
-    lowerer.context.emit(`auto ${source} = ${owner.cpp};`);
+    lowerer.context.emit({ kind: "declaration", type: "auto", name: source, initializer: owner.cpp });
     const numericArgument = (index: number, fallback: string): string =>
         lowerer.compileNumberArgument(call.arguments[index], fallback);
     if (method === "at") {
@@ -36,7 +36,7 @@ export function compileArrayValueMethod(
             const expected = array ? resultType : type.element;
             const cpp = lowerer.compileKnownValueForSink(value, expected, argument);
             const name = lowerer.context.allocateTemporaryCppName("concat_argument");
-            lowerer.context.emit(`const auto ${name} = ${cpp};`);
+            lowerer.context.emit({ kind: "declaration", type: "const auto", name: name, initializer: cpp });
             return { name, array };
         });
         const result = lowerer.context.allocateTemporaryCppName("concat_result");
@@ -62,7 +62,7 @@ export function compileArrayValueMethod(
         if (call.arguments.length < 1 || call.arguments.length > 3) lowerer.context.fail(call, "Array.fill expects one to three arguments.");
         const value = lowerer.compileForRetainedSink(call.arguments[0]!, type.element, "Array.fill");
         const item = lowerer.context.allocateTemporaryCppName("fill_value");
-        lowerer.context.emit(`const auto ${item} = ${value};`);
+        lowerer.context.emit({ kind: "declaration", type: "const auto", name: item, initializer: value });
         const start = numericArgument(1, "0.0");
         const end = numericArgument(2, "std::numeric_limits<double>::infinity()");
         return { kind: "data", cpp: `bbl::js::array_fill_range(${source}, ${item}, ${start}, ${end})`, dataType: type };
@@ -72,7 +72,7 @@ export function compileArrayValueMethod(
     const inserted = call.arguments.slice(2).map(argument => {
         const value = lowerer.compileForRetainedSink(argument, type.element, "Array.splice");
         const name = lowerer.context.allocateTemporaryCppName("splice_item");
-        lowerer.context.emit(`const auto ${name} = ${value};`);
+        lowerer.context.emit({ kind: "declaration", type: "const auto", name: name, initializer: value });
         return name;
     });
     lowerer.invalidateAliases(owner.cpp);

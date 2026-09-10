@@ -281,7 +281,7 @@ test("TAA refuses lost camera ownership and late construction while preserving o
         assert.throws(() => compileSource(prefix + body + taa), /input.ts:\d+:\d+: TAA requires tracked camera mutations:/);
         assert.throws(() => compileSource(prefix + taa + body), /TAA requires tracked camera mutations:/);
     }
-    assert.throws(() => compileSource(prefix + `createFreeCamera([0,0,0],[0,0,1]);` + taa), /does not cover 'camera:free'/);
+    assert.doesNotThrow(() => compileSource(prefix + `createFreeCamera([0,0,0],[0,0,1]);` + taa));
     assert.throws(() => compileSource(prefix + `await registerScene(scene);await startEngine(engine);` + taa), /TAA task creation after frame execution/);
     assert.throws(() => compileSource(prefix + `await registerScene(scene);` + taa), /TAA tasks must be constructed and attached before initial scene registration/);
     assert.throws(() => compileSource(prefix + `await registerSceneWithShadowSupport(scene);` + taa), /TAA tasks must be constructed and attached before initial scene registration/);

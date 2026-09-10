@@ -6,12 +6,14 @@ import {
     type PinnedBinding,
 } from "../pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "../pinned-operators.js";
+
+import { pinnedMeshOptionLocals, pinnedParameterFlag } from "../../pinned-mesh-defaults.js";
+import { lowerComputeAabb } from "../pinned-compute-aabb.js";
+import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import {
     lowerObjectComponents,
     lowerTupleComponents,
 } from "../pinned-function-lowerer.js";
-import { pinnedMeshOptionLocals, pinnedParameterFlag } from "../../pinned-mesh-defaults.js";
-import { lowerComputeAabb } from "../pinned-compute-aabb.js";
 
 /**
  * The names one pinned closure reads from OUTSIDE itself.
@@ -58,6 +60,36 @@ function freeIdentifiers(
     return free;
 }
 
+type MeshBuilderEmitter = (
+    file: ts.SourceFile,
+    declaration: ts.FunctionDeclaration,
+    optionBindings: ReadonlyMap<string, string>,
+    optionTypes?: ReadonlyMap<string, PinnedBinding["type"]>,
+    booleanOr?: boolean,
+    extra?: {
+        statements?: readonly ts.Statement[];
+        calls?: ReadonlyMap<string, (args: readonly string[]) => string>;
+        fixedTupleCalls?: ReadonlyMap<string, number>;
+        methods?: ReadonlyMap<string, (receiver: string, args: readonly string[], binding: PinnedBinding) => string>;
+        receiverReturningMethods?: ReadonlySet<string>;
+    },
+) => string;
+
+interface MeshBuilderAssertions {
+    assertVariable: (root: ts.Node, name: string, expected: string, label: string) => ts.Expression;
+    indexedAssignments: (declaration: ts.FunctionDeclaration, arrayName: string) => ts.BinaryExpression[];
+    constructorArrayElements: (root: ts.Node, variableName: string, constructorName: string) => {
+        expression: ts.Expression;
+        elements: readonly ts.Expression[];
+    };
+    numericConstructorArray: (file: ts.SourceFile, variableName: string, constructorName: string) => {
+        expression: ts.Expression;
+        values: number[];
+    };
+}
+
+
+
 /**
  * The mesh-builder half of the factory unit: the pinned CreateBox /
  * CreateGround / CreateSphere / CreateTorus / CreateCylinder family and
@@ -96,6 +128,7 @@ export class MeshBuilderLowerer {
             features.includes("mesh:extrude") ||
             features.includes("mesh:tube");
         const torusKnot = features.includes("mesh:torus-knot");
+        const reachedTorus = features.includes("mesh:torus");
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
@@ -141,11 +174,6 @@ export class MeshBuilderLowerer {
             morphModule,
             "setMorphTargetWeights",
         );
-        const { file: torusFile, declaration: torus } =
-            this.context.functionDeclaration(
-                torusModule,
-                "createTorusData",
-            );
         // The pin's own maths, plus the one helper three builders share:
         // `computeNormals` is emitted once beside them, so a call to it is
         // a call rather than another copy of its body.
@@ -173,6 +201,705 @@ export class MeshBuilderLowerer {
          * function's own AST; only the option spellings are specialized to
          * the native record that has already applied the same defaults.
          */
+        const lowerPinnedMeshBuilder = this.createMeshBuilderLowerer(meshMathCalls);
+        /**
+         * The pin's displacement pass, lowered from its own body.
+         *
+         * It returns nothing and mutates the record the grid builder above
+         * produced, so it binds that record's three arrays rather than
+         * producing new ones -- the same translator, a different shape.
+         */
+        const lowerPinnedHeightmap = this.createHeightmapLowerer(groundModule, meshMathCalls);
+        const heightmapBody = heightMapGround ? lowerPinnedHeightmap() : "";
+        const groundBuilderBody = lowerPinnedMeshBuilder(
+            groundFile,
+            ground,
+            new Map([
+                ["opts.width", "options.width"],
+                ["opts.height", "options.height"],
+                ["opts.subdivisions", "options.subdivisions"],
+                ["opts.uvScale?.[0]", "options.uv_scale.x"],
+                ["opts.uvScale?.[1]", "options.uv_scale.y"],
+            ]),
+        );
+        const sphereBuilderBody = lowerPinnedMeshBuilder(
+            sphereFile,
+            sphere,
+            new Map([
+                ["options.segments", "options.segments"],
+                ["options.diameter", "options.diameter_x"],
+                ["options.diameterX", "options.diameter_x"],
+                ["options.diameterY", "options.diameter_y"],
+                ["options.diameterZ", "options.diameter_z"],
+            ]),
+        );
+        // The disc, the first builder the pin writes with a GROWN
+        // `number[]` rather than a preallocated typed array: it pushes its
+        // positions and its indices and converts at the end, which is where
+        // its float rounding happens. `vertexCount`/`indexCount` are bound
+        // rather than returned, because the pin's own return names neither.
+        const discFactory = this.lowerDiscFactory(disc, lowerPinnedMeshBuilder, discModule);
+        // The cylinder, cone and truncated cone are one pinned builder. Its
+        // diameters bind UNCLAMPED, because the body asks two different
+        // questions of the same field: the ring maths uses the value after
+        // a zero is clamped to 0.00001, and the cone-tip normal reuse asks
+        // whether the SCENE wrote a zero. Both reads work off the raw value
+        // because the clamp is a local the body writes itself.
+        const cylinderFactory = this.lowerCylinderFactory(cylinder, lowerPinnedMeshBuilder, cylinderModule);
+        // The capsule. Every option it takes is resolved by a TRUTHINESS
+        // ternary rather than the `??` the rest of the family writes, so
+        // an absent option and an explicit zero are the SAME answer to the
+        // pin -- which is why the record carries zero for an option the
+        // scene omitted and the body's own ternary supplies the default.
+        // Nothing is folded at generation: `radiusTop` falls back to the
+        // resolved `radius` and each cap to `capDetail`, and those chains
+        // are the pin's to run.
+        const capsuleFactory = this.lowerCapsuleFactory(capsule, lowerPinnedMeshBuilder, capsuleModule);
+        // `computeNormals`, the accumulation four of the pinned builders
+        // hand their grown positions and indices to. Emitted once, from the
+        // pin's own body, because the four call it rather than each
+        // carrying a copy.
+        const normalsModule = "src/mesh/compute-normals.ts";
+        // `computeAabb`'s local arm: the bounds `createMeshFromData` folds
+        // over the positions it was handed, lowered from the pinned body.
+        const computeAabb = lowerComputeAabb(this.context, {
+            arm: "local",
+            cppName: "compute_aabb",
+        });
+        const computeNormals = this.lowerNormals(polyhedron, ribbon, torusKnot, normalsModule, meshMathCalls);
+        // The polyhedron. Its type table is pinned DATA and the type a
+        // scene names is a compile-time value, so generation picks the row
+        // and the record carries that row's own vertex and face lists --
+        // which is why `type`, `size` and `data` are bound here rather than
+        // recomputed: each is a local the caller already resolved.
+        const polyhedronBuilderBody = !polyhedron
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(polyhedronModule),
+                  this.context.functionDeclaration(
+                      polyhedronModule,
+                      "createPolyhedronData",
+                  ).declaration,
+                  new Map([
+                      ["type", "0"],
+                      ["size", "0.0"],
+                      ["data", "options"],
+                      ["data.vertex", "options.vertex"],
+                      ["data.face", "options.face"],
+                      ["sizeX", "options.size_x"],
+                      ["sizeY", "options.size_y"],
+                      ["sizeZ", "options.size_z"],
+                      ["flat", "options.flat"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+                  new Map([
+                      ["flat", "bool"],
+                      ["data.vertex", "f64-list-2d"],
+                      ["data.face", "f64-list-2d"],
+                  ]),
+              );
+        const polyhedronFactory = !polyhedron
+            ? ""
+            : `static PinnedMeshData pinned_create_polyhedron_data(
+    PolyhedronOptions options) {
+${polyhedronBuilderBody}
+}
+
+MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
+    PinnedMeshData data =
+        pinned_create_polyhedron_data(std::move(options));
+    return create_mesh_from_data(
+        engine,
+        "${this.context.pinnedFactoryMeshName("createPolyhedron")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`;
+        // `len` and `sub`, the two vector helpers `createRibbonData`
+        // declares beside itself. Lowered from their own bodies rather than
+        // written here, because a square root and three subtractions are
+        // exactly the kind of formula this port must not re-type.
+        const ribbonFactory = this.lowerRibbonFactory(ribbon, ribbonModule, meshMathCalls, lowerPinnedMeshBuilder);
+        // The torus knot. It grows its `number[]`s like the four above and
+        // finishes through the same `computeNormals`, but it is the first
+        // builder whose local closure RETURNS a value: `getPos(angle)`
+        // hands back the curve point as a `[number, number, number]`, and
+        // the body binds two of them and reads their components. So the
+        // closure is lowered into a function of its own -- the shape
+        // `createRibbonData`'s `len` and `sub` already take -- and the
+        // three builder locals it closes over travel as parameters.
+        const torusKnotFactory = this.lowerTorusKnotFactory(torusKnot, torusKnotModule, meshMathCalls, lowerPinnedMeshBuilder);
+        const { assertVariable, numericConstructorArray, indexedAssignments, constructorArrayElements } = this.createBuilderAssertions();
+
+        assertVariable(
+            morphFile,
+            "MORPH_WEIGHTS_HEADER_BYTES",
+            "16",
+            "Morph weights header bytes",
+        );
+        assertVariable(
+            morphFile,
+            "MORPH_FLOATS_PER_VERTEX",
+            "6",
+            "Morph floats per vertex",
+        );
+        assertVariable(
+            morphTargets,
+            "targetCount",
+            "targets.length",
+            "Morph target count",
+        );
+
+        // The box tables FLOW from the pin instead of being compared against
+        // re-typed copies. The emitted add_face helper is structurally a
+        // quad (four explicit corners and a vertices.size() - 4 base), so
+        // the tables are asserted to still factor into four-corner faces;
+        // everything else — corner signs, per-face normals, the shared UV
+        // quad, and the two-triangle local index pattern — is decoded from
+        // the pinned constants and interpolated into the emission.
+        const { boxDataFactory, boxUvQuad, boxQuadPattern, boxFaceCorners, boxFaceNormals, boxQuadSize } = this.lowerBoxFactory(boxFile, numericConstructorArray, box, indexedAssignments, features, lowerPinnedMeshBuilder);
+
+        const { groundNormal, groundWinding } = this.validateGroundBuilder(assertVariable, ground, indexedAssignments, groundFile);
+
+        const { planeVertices, planeIndices } = this.lowerPlaneVertices(assertVariable, plane, planeFile, constructorArrayElements);
+
+        const { sphereMinSegments, spherePolarBase, sphereAzimuthFactor, sphereTurnFactor } = this.validateSphereBuilder(assertVariable, sphere, sphereFile, indexedAssignments);
+
+        const torusBuilderBody = this.lowerTorusBuilder(reachedTorus, torusModule, assertVariable, indexedAssignments, lowerPinnedMeshBuilder);
+        // These values remain validation-only anchors around the AST-driven
+        // bodies. Reading them still makes a reshaped pin fail by name; the
+        // emitted arithmetic now comes from PinnedNumericLowerer instead.
+        void groundNormal;
+        void sphereMinSegments;
+        void spherePolarBase;
+        void sphereAzimuthFactor;
+        void sphereTurnFactor;
+        void groundWinding;
+        const modulePath = this.validateMeshFactory(instanceColors);
+        const dynamicPool = features.includes(
+            "mesh:thin-instances-dynamic",
+        );
+        const gpuCulling = features.includes(
+            "mesh:thin-instance-gpu-culling",
+        );
+        const poolHelpers = dynamicPool
+            ? this.thinInstancePoolHelpers()
+            : "";
+        const cullingHelper = gpuCulling
+            ? this.thinInstanceCullingHelper()
+            : "";
+        const instanceColorSetter = instanceColors
+            ? `// src/mesh/thin-instance.ts setThinInstanceColors: bind the
+// per-instance RGBA stream a material with useThinInstanceColors reads.
+// The pinned setter stores the caller's array and bumps its colour
+// version; nothing in the reached slice re-reads it (the per-instance
+// setThinInstanceColor twin is unlowered), so the record takes a copy.
+void set_thin_instance_colors(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& colors) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    record.instance_colors = colors;
+    record.instance_version += 1;
+}
+
+`
+            : "";
+        // `bbl::js::` reaches this unit through the grown-array builders'
+        // own `new F32(list)` rounding and through the heightmap pass's
+        // value-selecting `||`. Read off what was emitted rather than off a
+        // second copy of the predicates behind it: a builder that starts
+        // converting a list arrives with its include, and one that stops
+        // does not leave a dead one behind.
+        const usesJsData = [
+            boxDataFactory,
+            heightmapBody,
+            discFactory,
+            cylinderFactory,
+            capsuleFactory,
+            polyhedronFactory,
+            ribbonFactory,
+            torusKnotFactory,
+            computeNormals,
+        ].some((emitted) => emitted.includes("bbl::js::"));
+        const value = (input: number): string => this.context.floatLiteral(input);
+        // The emitted fragments the decoded tables above compose. Each is
+        // plain text interpolation: the byte-for-byte C++ is unchanged as
+        // long as the pin is, and moves with the pin when it moves.
+        const boxFaceVertexLines = ["a", "b", "c", "d"]
+            .map(
+                (name, corner) =>
+                    `                ModelVertex{${name}, normal, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{${value(
+                        boxUvQuad[corner * 2]!,
+                    )}, ${value(boxUvQuad[corner * 2 + 1]!)}}},`,
+            )
+            .join("\n");
+        const boxQuadIndexList = boxQuadPattern
+            .map((local) =>
+                local === 0 ? "start" : `start + ${local}`,
+            )
+            .join(", ");
+        const boxAddFaceCalls = boxFaceCorners
+            .map(
+                (corners, face) =>
+                    `    add_face(\n${corners
+                        .map((corner) => `        ${corner},`)
+                        .join("\n")}\n        ${boxFaceNormals[face]});`,
+            )
+            .join("\n");
+        return {
+            modulePath,
+            symbolName: [
+                "createBox,createGround,createPlane,createSphere",
+                "createBoxData,createSphereData,createMorphTargets",
+                "setMorphTargetWeights,createMeshFromData",
+                ...(reachedTorus ? ["createTorus"] : []),
+                ...(disc ? ["createDisc"] : []),
+                ...(cylinder ? ["createCylinder"] : []),
+                ...(capsule ? ["createCapsule"] : []),
+                ...(polyhedron ? ["createPolyhedron"] : []),
+                ...(ribbon ? ["createRibbon"] : []),
+                ...(torusKnot ? ["createTorusKnot"] : []),
+            ].join(","),
+            header: "",
+            source: `// ${this.context.provenance(
+                modulePath,
+                [
+                    "createBox, createGround, createPlane, createSphere",
+                    "createBoxData, createSphereData, createMorphTargets",
+                    "setMorphTargetWeights, createMeshFromData",
+                    ...(reachedTorus ? ["createTorus"] : []),
+                    ...(disc ? ["createDisc"] : []),
+                    ...(cylinder ? ["createCylinder"] : []),
+                    ...(capsule ? ["createCapsule"] : []),
+                    ...(polyhedron ? ["createPolyhedron"] : []),
+                    ...(ribbon ? ["createRibbon"] : []),
+                    ...(torusKnot ? ["createTorusKnot"] : []),
+                ].join(", "),
+                [
+                    "src/mesh/create-box.ts, src/mesh/create-ground.ts",
+                    "src/mesh/create-plane.ts, src/mesh/create-sphere.ts",
+                    "src/morph/create-morph-targets.ts",
+                    ...(reachedTorus ? [torusModule] : []),
+                    ...(disc ? ["src/mesh/create-disc.ts"] : []),
+                    ...(cylinder ? ["src/mesh/create-cylinder.ts"] : []),
+                    ...(capsule ? ["src/mesh/create-capsule.ts"] : []),
+                    ...(polyhedron
+                        ? ["src/mesh/create-polyhedron.ts"]
+                        : []),
+                    ...(ribbon ? ["src/mesh/create-ribbon.ts"] : []),
+                    ...(torusKnot
+                        ? ["src/mesh/create-torus-knot.ts"]
+                        : []),
+                    // The shared accumulator, listed exactly when it is
+                    // emitted -- read off the emission itself rather than
+                    // off a second copy of the predicate behind it.
+                    ...(computeNormals
+                        ? ["src/mesh/compute-normals.ts"]
+                        : []),
+                ].join(", ") +
+                    " defaults, and src/math/compute-aabb.ts bounds folding",
+            )}
+${usesJsData ? "#include <bblite/js_data.hpp>\n" : ""}\
+#include <bblite/runtime.hpp>
+${heightMapGround ? `\
+#include <bblite/pal.hpp>
+#include <bblite/pal_image.hpp>
+` : ""}
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <span>
+#include <stdexcept>
+#include <utility>
+
+namespace bbl {
+
+${this.boxFactorySource(boxFaceVertexLines, boxQuadSize, boxQuadIndexList, boxAddFaceCalls, boxDataFactory)}${this.groundFactorySource(groundBuilderBody, heightMapGround, heightmapBody)}${this.planeAndSphereFactorySource(planeVertices, planeIndices, sphereBuilderBody)}${this.morphAndBuilderSource(reachedTorus, torusBuilderBody, computeNormals, discFactory, cylinderFactory, capsuleFactory, polyhedronFactory, ribbonFactory, torusKnotFactory, computeAabb)}${this.meshDataFactorySource()}${this.thinInstanceSource(instanceColorSetter)}${poolHelpers}${cullingHelper}} // namespace bbl
+`,
+        };
+    }
+
+    /**
+     * The growing half of the pinned pool: `addThinInstance` and
+     * `removeThinInstance`, plus the live `thinInstances.count` read they
+     * are written against.
+     *
+     * Both constants the pin states -- the initial capacity an
+     * `addThinInstance` that finds no pool allocates, and the factor a full
+     * pool grows by -- are READ off the declaration rather than restated,
+     * so a pin that retunes either regenerates a different runtime. The
+     * shapes the arithmetic around them depends on (the swap-remove, the
+     * count and version bumps) are asserted instead, because their meaning
+     * is the shape rather than a value.
+     */
+    private thinRuntimeBuilderAssignment(name: "setThinInstances" | "addThinInstance"): string {
+        const {file, declaration} = this.context.functionDeclaration("src/mesh/thin-instance.ts", name);
+        const assignment = declaration.body!.statements[0];
+        if (!assignment) this.context.contractError(declaration, "Expected thin-instance builder installation.");
+        this.context.assertStatementShapes(assignment, [assignment],
+            "mesh._runtimeThinBuild = buildRuntimeThinMesh;", "Thin-instance runtime builder identity");
+        return lowerPinnedBody(file, [assignment], {
+            bindings: new Map([
+                ["mesh._runtimeThinBuild", {cpp: "record.source_runtime_thin_builder", type: "bool"}],
+                ["buildRuntimeThinMesh", {cpp: "true", type: "bool"}],
+            ]), calls: new Map(),
+        });
+    }
+
+    private thinInstancePoolHelpers(): string {
+        const module = "src/mesh/thin-instance.ts";
+        const { file, declaration: add } =
+            this.context.functionDeclaration(module, "addThinInstance");
+        const { declaration: remove } =
+            this.context.functionDeclaration(
+                module,
+                "removeThinInstance",
+            );
+        const initialCapacity = this.context.numericValue(
+            this.context.variableInitializer(add, "capacity"),
+            file,
+        );
+        const growth = this.context.variableInitializer(add, "newCap");
+        this.context.assertExpressionShape(
+            growth,
+            "ti._capacity * 2",
+            "addThinInstance capacity growth",
+        );
+        const growthFactor = this.context.numericValue(
+            ts.isBinaryExpression(growth)
+                ? growth.right
+                : this.context.contractError(
+                      growth,
+                      "Expected addThinInstance to grow by a factor.",
+                  ),
+            file,
+        );
+        // The pin appends at the ACTIVE count, not at the capacity, and
+        // grows only when the two have met. Both halves are asserted
+        // because the emitted C++ indexes on the same pair.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(add, "index"),
+            "ti.count",
+            "addThinInstance append slot",
+        );
+        this.context.expectShapeCount(
+            add,
+            "index >= ti._capacity",
+            "addThinInstance growth test",
+        );
+        this.context.expectShapeCount(
+            add,
+            "newData.set(ti.matrices)",
+            "addThinInstance row preservation",
+        );
+        this.context.expectShapeCount(
+            add,
+            "ti.matrices.set(matrix, index * 16)",
+            "addThinInstance matrix write",
+        );
+        this.context.expectShapeCount(
+            add,
+            "ti.count++",
+            "addThinInstance count bump",
+        );
+        this.context.expectShapeCount(
+            add,
+            "ti._version++",
+            "addThinInstance version bump",
+        );
+        // The swap-remove: the LAST active row fills the freed slot, and
+        // only when the freed slot is not itself the last one.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(remove, "last"),
+            "ti.count - 1",
+            "removeThinInstance last slot",
+        );
+        this.context.expectShapeCount(
+            remove,
+            "ti.matrices.copyWithin(index * 16, last * 16, last * 16 + 16)",
+            "removeThinInstance swap-remove",
+        );
+        this.context.expectShapeCount(
+            remove,
+            "ti.count--",
+            "removeThinInstance count drop",
+        );
+        this.context.expectShapeCount(
+            remove,
+            "ti._version++",
+            "removeThinInstance version bump",
+        );
+        const capacity = this.pinnedPoolInteger(
+            initialCapacity,
+            "addThinInstance initial capacity",
+        );
+        const factor = this.pinnedPoolInteger(
+            growthFactor,
+            "addThinInstance growth factor",
+        );
+        return `// src/mesh/thin-instance.ts addThinInstance: append one matrix at the
+// active count and return the slot it landed in, growing the pool when
+// that count has reached the capacity. A mesh with no pool gets the pin's
+// own initial capacity with the ENGINE owning the array -- that arm has no
+// caller array to alias -- held beside the mirror so every per-frame
+// helper above keeps reading one pool. The holder is a shared pointer
+// because MeshRecord moves when the scene appends a mesh, and the alias
+// must not move with it.
+double add_thin_instance(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& matrix) {
+    MeshRecord& record = engine.meshes[mesh.value];
+${this.thinRuntimeBuilderAssignment("addThinInstance")}
+    if (matrix.size() < 16) {
+        throw std::runtime_error(
+            "addThinInstance requires a 16-float matrix.");
+    }
+    if (!record.thin_instanced) {
+        if (!record.instance_matrices.empty()) {
+            throw std::runtime_error(
+                "addThinInstance on a loader-built instance pool is not reached.");
+        }
+        record.owned_instance_source =
+            std::make_shared<std::vector<float>>(
+                static_cast<std::size_t>(${capacity}) * 16,
+                0.0f);
+        record.instance_source = record.owned_instance_source.get();
+        record.instance_matrices.assign(
+            static_cast<std::size_t>(${capacity}),
+            std::array<float, 16>{});
+        record.thin_instanced = true;
+        record.instance_count = 0;
+    }
+    const std::size_t index = record.instance_count;
+    if (index >= record.instance_matrices.size()) {
+        const std::size_t grown =
+            record.instance_matrices.size() * ${factor};
+        // The pin allocates a NEW \`F32(newCap * 16)\`, copies the old rows
+        // into it and repoints \`ti.matrices\` at it. The array the scene
+        // handed setThinInstances is left untouched, at its own length --
+        // which matters because that array can be LONGER than the pool
+        // (\`setThinInstances\` takes the count as the capacity), so resizing
+        // it in place would both mutate the scene's own storage and, past a
+        // doubling it does not reach, truncate it. Everything downstream
+        // reads the alias, so repointing it detaches the pool exactly as the
+        // pin's assignment does: later matrix writes land in engine storage
+        // and the scene's array goes stale, on both sides.
+        const std::vector<float>* const previous = record.instance_source;
+        const std::size_t carried =
+            previous != nullptr ? previous->size() : 0;
+        if (carried > grown * 16) {
+            throw std::runtime_error(
+                "addThinInstance cannot grow a pool whose matrix array is longer than the grown capacity: the pinned newData.set(ti.matrices) overflows.");
+        }
+        std::shared_ptr<std::vector<float>> grown_source =
+            std::make_shared<std::vector<float>>(grown * 16, 0.0f);
+        if (carried > 0) {
+            std::copy_n(
+                previous->data(),
+                carried,
+                grown_source->data());
+        }
+        record.owned_instance_source = std::move(grown_source);
+        record.instance_source = record.owned_instance_source.get();
+        record.instance_matrices.resize(
+            grown,
+            std::array<float, 16>{});
+    }
+    // A pool established at capacity 0 -- \`setThinInstances(mesh, new
+    // F32(0), 0)\` -- doubles to 0, and the pin's own
+    // \`ti.matrices.set(matrix, index * 16)\` on that zero-length array
+    // throws. Refuse before any write rather than running off both the
+    // mirror and the source. This is a DIFFERENT state from a mesh with no
+    // pool at all, which the branch above serves with the pin's initial
+    // capacity, so it must not be floored into one.
+    if (index >= record.instance_matrices.size() ||
+        record.instance_source == nullptr ||
+        (index + 1) * 16 > record.instance_source->size()) {
+        throw std::runtime_error(
+            "addThinInstance has no room for the matrix: a thin-instance pool established at capacity 0 stays at capacity 0.");
+    }
+    std::copy_n(
+        matrix.data(),
+        16,
+        record.instance_matrices[index].data());
+    std::copy_n(
+        matrix.data(),
+        16,
+        record.instance_source->data() + index * 16);
+    record.instance_count = static_cast<std::uint32_t>(index + 1);
+    record.instance_version += 1;
+    update_thin_instance_draw_membership(
+        engine,
+        record,
+        static_cast<std::uint32_t>(index));
+    return static_cast<double>(index);
+}
+
+// src/mesh/thin-instance.ts removeThinInstance: swap-remove -- the last
+// ACTIVE row fills the freed slot -- then drop the active count. The pin
+// indexes off that count rather than off the capacity, so the slot is
+// checked against it. The index is a JavaScript number: NaN, a negative,
+// one past the active range and a FRACTIONAL slot all reach here, and the
+// pin would splice at \`index * 16\` on a typed array. This port refuses
+// each by name before touching a row rather than truncating 1.5 to 1 and
+// moving a neighbour's matrix (fidelity: a named refusal for invalid API
+// input, inside the bounded subset).
+void remove_thin_instance(
+    Engine& engine,
+    MeshHandle mesh,
+    double index) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced) {
+        throw std::runtime_error(
+            "removeThinInstance requires thin instances bound by setThinInstances.");
+    }
+    if (!(index >= 0.0) ||
+        !(index < static_cast<double>(record.instance_count)) ||
+        index != std::floor(index)) {
+        throw std::runtime_error(
+            "removeThinInstance index is not an active thin instance.");
+    }
+    const std::size_t slot = static_cast<std::size_t>(index);
+    const std::size_t last =
+        static_cast<std::size_t>(record.instance_count) - 1;
+    if (slot != last) {
+        record.instance_matrices[slot] =
+            record.instance_matrices[last];
+        if (record.instance_source != nullptr) {
+            std::copy_n(
+                record.instance_source->data() + last * 16,
+                16,
+                record.instance_source->data() + slot * 16);
+        }
+    }
+    record.instance_count = static_cast<std::uint32_t>(last);
+    record.instance_version += 1;
+    update_thin_instance_draw_membership(
+        engine,
+        record,
+        static_cast<std::uint32_t>(last + 1));
+}
+
+// src/mesh/thin-instance.ts ThinInstanceData.count: the ACTIVE count every
+// helper above moves. Read live off the record, so a source computing the
+// last slot from it sees what the previous call left. The pin reaches it
+// through \`mesh.thinInstances!\`, so a mesh with no pool fails here rather
+// than reading a zero -- which is the same failure, at the same call.
+double thin_instance_count(const Engine& engine, MeshHandle mesh) {
+    const MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced) {
+        throw std::runtime_error(
+            "mesh.thinInstances is not bound on this mesh.");
+    }
+    return static_cast<double>(record.instance_count);
+}
+
+`;
+    }
+
+    /**
+     * A pinned pool constant as C++ decimal text. Both of them size an
+     * allocation, so a pin that made either fractional or non-positive
+     * would produce a runtime this port cannot state; that fails here
+     * rather than emitting it.
+     */
+    private pinnedPoolInteger(value: number, label: string): string {
+        if (!Number.isInteger(value) || value < 1) {
+            this.context.contractError(
+                this.context.sourceFile("src/mesh/thin-instance.ts"),
+                `${label} is not a positive integer (${value}).`,
+            );
+        }
+        return String(value);
+    }
+
+    /**
+     * `enableThinInstanceGpuCulling`, whose compute culler this port omits.
+     *
+     * Upstream the opt-in has two effects: a compute pass compacts the
+     * visible instances, and the renderable is marked `_direct` so it
+     * leaves the cached opaque bundle -- which is what gives an application
+     * per-frame pool sync on a Standard material. This port records no
+     * bundles and re-uploads every live pool every frame from the record's
+     * own version, so the second effect is already unconditional and the
+     * first is a recorded omission (fidelity `thin-instance-gpu-culling`).
+     * The flag still lands on the record: an opt-in that compiled to
+     * nothing would be indistinguishable from one that was never reached.
+     */
+    private thinInstanceCullingHelper(): string {
+        const module = "src/mesh/thin-instance.ts";
+        const symbol = "enableThinInstanceGpuCulling";
+        const { declaration } = this.context.functionDeclaration(
+            module,
+            symbol,
+        );
+        // The default the intrinsic folds into a one-argument call site.
+        if (
+            pinnedParameterFlag(module, symbol, "enabled") !== true
+        ) {
+            this.context.contractError(
+                declaration,
+                `${symbol} no longer enables culling by default.`,
+            );
+        }
+        this.context.expectShapeCount(
+            declaration,
+            "ti._gpuCullingEnabled === enabled",
+            `${symbol} idempotence test`,
+        );
+        this.context.expectShapeCount(
+            declaration,
+            "ti._gpuCullingEnabled = enabled",
+            `${symbol} flag write`,
+        );
+        // Both GPU stamps are reset, which is the pin's "re-upload the
+        // whole pool next sync"; native says the same with one version.
+        this.context.expectShapeCount(
+            declaration,
+            "ti._gpuVersion = -1",
+            `${symbol} matrix stamp reset`,
+        );
+        this.context.expectShapeCount(
+            declaration,
+            "ti._colorGpuVersion = -1",
+            `${symbol} colour stamp reset`,
+        );
+        return `// src/mesh/thin-instance.ts enableThinInstanceGpuCulling: the pin's
+// performance opt-in. It refuses a mesh with no pool, returns on an
+// unchanged flag, and resets both GPU stamps so the next sync re-uploads
+// the whole pool -- which native states as one version bump. The compute
+// culler itself is omitted; see the scene's fidelity.json.
+void enable_thin_instance_gpu_culling(
+    Engine& engine,
+    MeshHandle mesh,
+    bool enabled) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced) {
+        throw std::runtime_error(
+            "enableThinInstanceGpuCulling requires mesh.thinInstances.");
+    }
+    if (record.thin_instance_gpu_culling == enabled) {
+        return;
+    }
+    record.thin_instance_gpu_culling = enabled;
+    record.instance_version += 1;
+}
+
+`;
+    }
+
+    private createMeshBuilderLowerer(
+        meshMathCalls: Map<string, (args: readonly string[]) => string>,
+    ): MeshBuilderEmitter {
         const lowerPinnedMeshBuilder = (
             file: ts.SourceFile,
             declaration: ts.FunctionDeclaration,
@@ -345,13 +1072,14 @@ export class MeshBuilderLowerer {
                 )
                 .join("\n");
         };
-        /**
-         * The pin's displacement pass, lowered from its own body.
-         *
-         * It returns nothing and mutates the record the grid builder above
-         * produced, so it binds that record's three arrays rather than
-         * producing new ones -- the same translator, a different shape.
-         */
+        return lowerPinnedMeshBuilder;
+    }
+
+
+    private createHeightmapLowerer(
+        groundModule: "src/mesh/create-ground.ts",
+        meshMathCalls: Map<string, (args: readonly string[]) => string>,
+    ) {
         const lowerPinnedHeightmap = (): string => {
             const { file, declaration } =
                 this.context.functionDeclaration(
@@ -375,7 +1103,8 @@ export class MeshBuilderLowerer {
                 ["minHeight", { cpp: "min_height", type: "scalar" }],
                 ["maxHeight", { cpp: "max_height", type: "scalar" }],
             ]);
-            const lowerer = new PinnedNumericLowerer(file, {
+
+            return lowerPinnedBody(file, declaration.body.statements, {
                 bindings,
                 calls: meshMathCalls,
                 methods: new Map([
@@ -392,40 +1121,16 @@ export class MeshBuilderLowerer {
                 // C++ operator would flatten to a bool.
                 maybeUnusedConst: true,
             });
-            return declaration.body.statements
-                .flatMap((statement) =>
-                    lowerer.statement(statement, "    "),
-                )
-                .join("\n");
         };
-        const heightmapBody = heightMapGround ? lowerPinnedHeightmap() : "";
-        const groundBuilderBody = lowerPinnedMeshBuilder(
-            groundFile,
-            ground,
-            new Map([
-                ["opts.width", "options.width"],
-                ["opts.height", "options.height"],
-                ["opts.subdivisions", "options.subdivisions"],
-                ["opts.uvScale?.[0]", "options.uv_scale.x"],
-                ["opts.uvScale?.[1]", "options.uv_scale.y"],
-            ]),
-        );
-        const sphereBuilderBody = lowerPinnedMeshBuilder(
-            sphereFile,
-            sphere,
-            new Map([
-                ["options.segments", "options.segments"],
-                ["options.diameter", "options.diameter_x"],
-                ["options.diameterX", "options.diameter_x"],
-                ["options.diameterY", "options.diameter_y"],
-                ["options.diameterZ", "options.diameter_z"],
-            ]),
-        );
-        // The disc, the first builder the pin writes with a GROWN
-        // `number[]` rather than a preallocated typed array: it pushes its
-        // positions and its indices and converts at the end, which is where
-        // its float rounding happens. `vertexCount`/`indexCount` are bound
-        // rather than returned, because the pin's own return names neither.
+        return lowerPinnedHeightmap;
+    }
+
+
+    private lowerDiscFactory(
+        disc: boolean,
+        lowerPinnedMeshBuilder: MeshBuilderEmitter,
+        discModule: "src/mesh/create-disc.ts",
+    ) {
         const discBuilderBody = !disc
             ? ""
             : lowerPinnedMeshBuilder(
@@ -463,12 +1168,15 @@ MeshHandle create_disc(Engine& engine, DiscOptions options) {
         {});
 }
 `;
-        // The cylinder, cone and truncated cone are one pinned builder. Its
-        // diameters bind UNCLAMPED, because the body asks two different
-        // questions of the same field: the ring maths uses the value after
-        // a zero is clamped to 0.00001, and the cone-tip normal reuse asks
-        // whether the SCENE wrote a zero. Both reads work off the raw value
-        // because the clamp is a local the body writes itself.
+        return discFactory;
+    }
+
+
+    private lowerCylinderFactory(
+        cylinder: boolean,
+        lowerPinnedMeshBuilder: MeshBuilderEmitter,
+        cylinderModule: "src/mesh/create-cylinder.ts",
+    ) {
         const cylinderBuilderBody = !cylinder
             ? ""
             : lowerPinnedMeshBuilder(
@@ -516,14 +1224,15 @@ MeshHandle create_cylinder(Engine& engine, CylinderOptions options) {
         {});
 }
 `;
-        // The capsule. Every option it takes is resolved by a TRUTHINESS
-        // ternary rather than the `??` the rest of the family writes, so
-        // an absent option and an explicit zero are the SAME answer to the
-        // pin -- which is why the record carries zero for an option the
-        // scene omitted and the body's own ternary supplies the default.
-        // Nothing is folded at generation: `radiusTop` falls back to the
-        // resolved `radius` and each cap to `capDetail`, and those chains
-        // are the pin's to run.
+        return cylinderFactory;
+    }
+
+
+    private lowerCapsuleFactory(
+        capsule: boolean,
+        lowerPinnedMeshBuilder: MeshBuilderEmitter,
+        capsuleModule: "src/mesh/create-capsule.ts",
+    ) {
         const capsuleBuilderBody = !capsule
             ? ""
             : lowerPinnedMeshBuilder(
@@ -593,17 +1302,17 @@ MeshHandle create_capsule(Engine& engine, CapsuleOptions options) {
         {});
 }
 `;
-        // `computeNormals`, the accumulation four of the pinned builders
-        // hand their grown positions and indices to. Emitted once, from the
-        // pin's own body, because the four call it rather than each
-        // carrying a copy.
-        const normalsModule = "src/mesh/compute-normals.ts";
-        // `computeAabb`'s local arm: the bounds `createMeshFromData` folds
-        // over the positions it was handed, lowered from the pinned body.
-        const computeAabb = lowerComputeAabb(this.context, {
-            arm: "local",
-            cppName: "compute_aabb",
-        });
+        return capsuleFactory;
+    }
+
+
+    private lowerNormals(
+        polyhedron: boolean,
+        ribbon: boolean,
+        torusKnot: boolean,
+        normalsModule: "src/mesh/compute-normals.ts",
+        meshMathCalls: Map<string, (args: readonly string[]) => string>,
+    ) {
         const computeNormals = !polyhedron && !ribbon && !torusKnot
             ? ""
             : (() => {
@@ -618,14 +1327,15 @@ MeshHandle create_capsule(Engine& engine, CapsuleOptions options) {
                           "Expected computeNormals to have a body.",
                       );
                   }
-                  const lowerer = new PinnedNumericLowerer(file, {
+
+                  const body = lowerPinnedBody(file, declaration.body.statements, {
                       bindings: new Map<string, PinnedBinding>([
                           ["Math.PI", { cpp: "pi_double", type: "scalar" }],
                           ["positions", { cpp: "positions", type: "f64-list" }],
                           ["indices", { cpp: "indices", type: "f64-list" }],
                       ]),
                       calls: meshMathCalls,
-                      returnValue: (expression) =>
+                      returnValue: (expression, lowerer) =>
                           expression
                               ? lowerer.expression(expression)
                               : this.context.contractError(
@@ -636,11 +1346,6 @@ MeshHandle create_capsule(Engine& engine, CapsuleOptions options) {
                       booleanAnd: true,
                       maybeUnusedConst: true,
                   });
-                  const body = declaration.body.statements
-                      .flatMap((statement) =>
-                          lowerer.statement(statement, "    "),
-                      )
-                      .join("\n");
                   return `// ${this.context.provenance(
                       normalsModule,
                       "computeNormals",
@@ -653,64 +1358,16 @@ ${body}
 
 `;
               })();
-        // The polyhedron. Its type table is pinned DATA and the type a
-        // scene names is a compile-time value, so generation picks the row
-        // and the record carries that row's own vertex and face lists --
-        // which is why `type`, `size` and `data` are bound here rather than
-        // recomputed: each is a local the caller already resolved.
-        const polyhedronBuilderBody = !polyhedron
-            ? ""
-            : lowerPinnedMeshBuilder(
-                  this.context.sourceFile(polyhedronModule),
-                  this.context.functionDeclaration(
-                      polyhedronModule,
-                      "createPolyhedronData",
-                  ).declaration,
-                  new Map([
-                      ["type", "0"],
-                      ["size", "0.0"],
-                      ["data", "options"],
-                      ["data.vertex", "options.vertex"],
-                      ["data.face", "options.face"],
-                      ["sizeX", "options.size_x"],
-                      ["sizeY", "options.size_y"],
-                      ["sizeZ", "options.size_z"],
-                      ["flat", "options.flat"],
-                      ["vertexCount", "positions.size() / 3"],
-                      ["indexCount", "indices.size()"],
-                  ]),
-                  new Map([
-                      ["flat", "bool"],
-                      ["data.vertex", "f64-list-2d"],
-                      ["data.face", "f64-list-2d"],
-                  ]),
-              );
-        const polyhedronFactory = !polyhedron
-            ? ""
-            : `static PinnedMeshData pinned_create_polyhedron_data(
-    PolyhedronOptions options) {
-${polyhedronBuilderBody}
-}
+        return computeNormals;
+    }
 
-MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
-    PinnedMeshData data =
-        pinned_create_polyhedron_data(std::move(options));
-    return create_mesh_from_data(
-        engine,
-        "${this.context.pinnedFactoryMeshName("createPolyhedron")}",
-        data.positions,
-        data.normals,
-        data.indices,
-        data.uvs,
-        {},
-        {},
-        {});
-}
-`;
-        // `len` and `sub`, the two vector helpers `createRibbonData`
-        // declares beside itself. Lowered from their own bodies rather than
-        // written here, because a square root and three subtractions are
-        // exactly the kind of formula this port must not re-type.
+
+    private lowerRibbonFactory(
+        ribbon: boolean,
+        ribbonModule: "src/mesh/create-ribbon.ts",
+        meshMathCalls: Map<string, (args: readonly string[]) => string>,
+        lowerPinnedMeshBuilder: MeshBuilderEmitter,
+    ) {
         const ribbonVectorHelpers = !ribbon
             ? ""
             : (() => {
@@ -735,8 +1392,8 @@ MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
                               `Expected ${symbol} to have a body.`,
                           );
                       }
-                      const lowerer: PinnedNumericLowerer =
-                          new PinnedNumericLowerer(file, {
+
+                      const body = lowerPinnedBody(file, declaration.body.statements, {
                               bindings: new Map<string, PinnedBinding>(
                                   parameters.map((parameter) => [
                                       parameter,
@@ -744,7 +1401,7 @@ MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
                                   ]),
                               ),
                               calls: meshMathCalls,
-                              returnValue: (expression) =>
+                              returnValue: (expression, lowerer) =>
                                   expression
                                       ? returns(expression, lowerer)
                                       : this.context.contractError(
@@ -754,11 +1411,6 @@ MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
                               booleanOr: true,
                               booleanAnd: true,
                           });
-                      const body = declaration.body.statements
-                          .flatMap((statement) =>
-                              lowerer.statement(statement, "    "),
-                          )
-                          .join("\n");
                       return `${signature} {\n${body}\n}\n\n`;
                   };
                   return (
@@ -864,14 +1516,16 @@ MeshHandle create_ribbon(Engine& engine, RibbonOptions options) {
         "${this.context.pinnedFactoryMeshName("createRibbon")}");
 }
 `;
-        // The torus knot. It grows its `number[]`s like the four above and
-        // finishes through the same `computeNormals`, but it is the first
-        // builder whose local closure RETURNS a value: `getPos(angle)`
-        // hands back the curve point as a `[number, number, number]`, and
-        // the body binds two of them and reads their components. So the
-        // closure is lowered into a function of its own -- the shape
-        // `createRibbonData`'s `len` and `sub` already take -- and the
-        // three builder locals it closes over travel as parameters.
+        return ribbonFactory;
+    }
+
+
+    private lowerTorusKnotFactory(
+        torusKnot: boolean,
+        torusKnotModule: "src/mesh/create-torus-knot.ts",
+        meshMathCalls: Map<string, (args: readonly string[]) => string>,
+        lowerPinnedMeshBuilder: MeshBuilderEmitter,
+    ) {
         const torusKnotHelper: {
             source: string;
             call: string;
@@ -976,14 +1630,14 @@ MeshHandle create_ribbon(Engine& engine, RibbonOptions options) {
                               ],
                       ),
                   ]);
-                  const lowerer: PinnedNumericLowerer =
-                      new PinnedNumericLowerer(file, {
+
+                  const body = lowerPinnedBody(file, initializer.body.statements, {
                           bindings,
                           calls: meshMathCalls,
                           // The tuple return is the shared shape the
                           // splat lowerer's writers already take; only the
                           // `std::array` wrapper is this caller's.
-                          returnValue: (expression) =>
+                          returnValue: (expression, lowerer) =>
                               `std::array<double, ${arity}>{` +
                               `${lowerTupleComponents(
                                   this.context,
@@ -995,11 +1649,6 @@ MeshHandle create_ribbon(Engine& engine, RibbonOptions options) {
                           booleanAnd: true,
                           maybeUnusedConst: true,
                       });
-                  const body = initializer.body.statements
-                      .flatMap((statement) =>
-                          lowerer.statement(statement, "    "),
-                      )
-                      .join("\n");
                   return {
                       source: `// ${this.context.provenance(
                           torusKnotModule,
@@ -1075,15 +1724,13 @@ MeshHandle create_torus_knot(Engine& engine, TorusKnotOptions options) {
         {});
 }
 `;
-        const torusBuilderBody = lowerPinnedMeshBuilder(
-            torusFile,
-            torus,
-            new Map([
-                ["opts.diameter", "options.diameter"],
-                ["opts.thickness", "options.thickness"],
-                ["opts.tessellation", "options.tessellation"],
-            ]),
-        );
+        return torusKnotFactory;
+    }
+
+
+    private createBuilderAssertions(
+
+    ): MeshBuilderAssertions {
         const assertVariable = (
             root: ts.Node,
             name: string,
@@ -1177,33 +1824,18 @@ MeshHandle create_torus_knot(Engine& engine, TorusKnotOptions options) {
                 ),
             };
         };
+        return { assertVariable, numericConstructorArray, indexedAssignments, constructorArrayElements };
+    }
 
-        assertVariable(
-            morphFile,
-            "MORPH_WEIGHTS_HEADER_BYTES",
-            "16",
-            "Morph weights header bytes",
-        );
-        assertVariable(
-            morphFile,
-            "MORPH_FLOATS_PER_VERTEX",
-            "6",
-            "Morph floats per vertex",
-        );
-        assertVariable(
-            morphTargets,
-            "targetCount",
-            "targets.length",
-            "Morph target count",
-        );
 
-        // The box tables FLOW from the pin instead of being compared against
-        // re-typed copies. The emitted add_face helper is structurally a
-        // quad (four explicit corners and a vertices.size() - 4 base), so
-        // the tables are asserted to still factor into four-corner faces;
-        // everything else — corner signs, per-face normals, the shared UV
-        // quad, and the two-triangle local index pattern — is decoded from
-        // the pinned constants and interpolated into the emission.
+    private lowerBoxFactory(
+        boxFile: ts.SourceFile,
+        numericConstructorArray: MeshBuilderAssertions["numericConstructorArray"],
+        box: ts.FunctionDeclaration,
+        indexedAssignments: MeshBuilderAssertions["indexedAssignments"],
+        features: readonly string[],
+        lowerPinnedMeshBuilder: MeshBuilderEmitter,
+    ) {
         const boxSigns = this.context.unwrapExpression(
             this.context.variableInitializer(
                 boxFile,
@@ -1480,7 +2112,16 @@ ${body}
 }
 `;
         }
+        return { boxDataFactory, boxUvQuad, boxQuadPattern, boxFaceCorners, boxFaceNormals, boxQuadSize };
+    }
 
+
+    private validateGroundBuilder(
+        assertVariable: MeshBuilderAssertions["assertVariable"],
+        ground: ts.FunctionDeclaration,
+        indexedAssignments: MeshBuilderAssertions["indexedAssignments"],
+        groundFile: ts.SourceFile,
+    ) {
         for (const [name, expected] of [
             ["width", "opts.width ?? 1"],
             ["height", "opts.height ?? 1"],
@@ -1608,7 +2249,16 @@ ${body}
                 "Unexpected ground index count.",
             );
         }
+        return { groundNormal, groundWinding };
+    }
 
+
+    private lowerPlaneVertices(
+        assertVariable: MeshBuilderAssertions["assertVariable"],
+        plane: ts.FunctionDeclaration,
+        planeFile: ts.SourceFile,
+        constructorArrayElements: MeshBuilderAssertions["constructorArrayElements"],
+    ) {
         for (const [name, expected] of [
             ["size", "options.size ?? 1"],
             ["width", "options.width ?? size"],
@@ -1730,7 +2380,16 @@ ${body}
                 .slice(vertex * 2, vertex * 2 + 2)
                 .join(", ")}}},`,
         ).join("\n");
+        return { planeVertices, planeIndices };
+    }
 
+
+    private validateSphereBuilder(
+        assertVariable: MeshBuilderAssertions["assertVariable"],
+        sphere: ts.FunctionDeclaration,
+        sphereFile: ts.SourceFile,
+        indexedAssignments: MeshBuilderAssertions["indexedAssignments"],
+    ) {
         for (const [name, expected] of [
             [
                 "baseDiameter",
@@ -2015,360 +2674,384 @@ ${body}
                 "Sphere quad factor no longer matches its triangulation.",
             );
         }
+        return { sphereMinSegments, spherePolarBase, sphereAzimuthFactor, sphereTurnFactor };
+    }
 
-        const torusDiameterExpression = assertVariable(
-            torus,
-            "diameter",
-            "opts.diameter ?? 1",
-            "Torus diameter",
-        );
-        const torusThicknessExpression = assertVariable(
-            torus,
-            "thickness",
-            "opts.thickness ?? 0.5",
-            "Torus thickness",
-        );
-        const torusTessellationExpression = assertVariable(
-            torus,
-            "tessellation",
-            "opts.tessellation ?? 16",
-            "Torus tessellation",
-        );
-        // The torus radii, grid stride, and parameterization, paired with
-        // the emitted create_torus lines (the emission multiplies by 0.5f
-        // where the pin divides by two — exact — and inlines px as
-        // dx * minor_radius with the same operation order).
-        for (const [name, expected] of [
-            ["R", "diameter / 2"],
-            ["r", "thickness / 2"],
-            ["stride", "tessellation + 1"],
-            ["vertexCount", "stride * stride"],
-            ["px", "dx * r"],
-            ["x", "(px + R) * cosOuter"],
-            ["y", "dy * r"],
-            ["z", "-(px + R) * sinOuter"],
-            ["nextI", "(i + 1) % stride"],
-            ["nextJ", "(j + 1) % stride"],
-        ] as const) {
-            assertVariable(
+
+    private lowerTorusBuilder(
+        reachedTorus: boolean,
+        torusModule: "src/mesh/create-torus.ts",
+        assertVariable: MeshBuilderAssertions["assertVariable"],
+        indexedAssignments: MeshBuilderAssertions["indexedAssignments"],
+        lowerPinnedMeshBuilder: MeshBuilderEmitter,
+    ) {
+        const torusBuilderBody = !reachedTorus ? "" : (() => {
+            const { file: torusFile, declaration: torus } =
+                this.context.functionDeclaration(
+                    torusModule,
+                    "createTorusData",
+                );
+            const torusDiameterExpression = assertVariable(
                 torus,
-                name,
-                expected,
-                `Torus '${name}'`,
+                "diameter",
+                "opts.diameter ?? 1",
+                "Torus diameter",
             );
-        }
-        // The angles: the full-turn factor comes from the pinned TWO_PI and
-        // FLOWS into both emitted angle products, and the outer phase
-        // divisor flows as the reciprocal the emission multiplies by.
-        const torusTwoPi = this.context.unwrapExpression(
-            this.context.variableInitializer(torus, "TWO_PI"),
-        );
-        if (
-            !ts.isBinaryExpression(torusTwoPi) ||
-            torusTwoPi.operatorToken.kind !==
-                ts.SyntaxKind.AsteriskToken ||
-            this.context
-                .propertyPath(torusTwoPi.left)
-                ?.join(".") !== "Math.PI" ||
-            !ts.isNumericLiteral(torusTwoPi.right)
-        ) {
-            this.context.contractError(
-                torusTwoPi,
-                "Expected TWO_PI to scale Math.PI.",
-            );
-        }
-        const torusTurnFactor = this.context.numericValue(
-            torusTwoPi.right,
-            torusFile,
-        );
-        const torusOuterAngle = this.context.unwrapExpression(
-            this.context.variableInitializer(
+            const torusThicknessExpression = assertVariable(
                 torus,
-                "outerAngle",
-            ),
-        );
-        if (
-            !ts.isBinaryExpression(torusOuterAngle) ||
-            torusOuterAngle.operatorToken.kind !==
-                ts.SyntaxKind.MinusToken
-        ) {
-            this.context.contractError(
-                torusOuterAngle,
-                "Expected the torus outer angle to subtract a phase.",
+                "thickness",
+                "opts.thickness ?? 0.5",
+                "Torus thickness",
             );
-        }
-        this.context.assertExpressionShape(
-            torusOuterAngle.left,
-            "(i * TWO_PI) / tessellation",
-            "Torus outer angle sweep",
-        );
-        const torusOuterPhase = this.context.unwrapExpression(
-            torusOuterAngle.right,
-        );
-        if (
-            !ts.isBinaryExpression(torusOuterPhase) ||
-            torusOuterPhase.operatorToken.kind !==
-                ts.SyntaxKind.SlashToken ||
-            this.context
-                .propertyPath(torusOuterPhase.left)
-                ?.join(".") !== "Math.PI"
-        ) {
-            this.context.contractError(
-                torusOuterPhase,
-                "Expected the torus outer phase to divide Math.PI.",
-            );
-        }
-        const torusPhaseDivisor = this.context.numericValue(
-            torusOuterPhase.right,
-            torusFile,
-        );
-        const torusInnerAngle = this.context.unwrapExpression(
-            this.context.variableInitializer(
+            const torusTessellationExpression = assertVariable(
                 torus,
-                "innerAngle",
-            ),
-        );
-        if (
-            !ts.isBinaryExpression(torusInnerAngle) ||
-            torusInnerAngle.operatorToken.kind !==
-                ts.SyntaxKind.PlusToken ||
-            this.context
-                .propertyPath(torusInnerAngle.right)
-                ?.join(".") !== "Math.PI"
-        ) {
-            this.context.contractError(
-                torusInnerAngle,
-                "Expected the torus inner angle to add the half-turn phase.",
+                "tessellation",
+                "opts.tessellation ?? 16",
+                "Torus tessellation",
             );
-        }
-        this.context.assertExpressionShape(
-            torusInnerAngle.left,
-            "(j * TWO_PI) / tessellation",
-            "Torus inner angle sweep",
-        );
-        // The stores, paired with the emitted ModelVertex: position and
-        // normal component order, and the UV pair whose V complement flows.
-        const torusPositionStores = indexedAssignments(
-            torus,
-            "positions",
-        );
-        const expectedTorusPositions = ["x", "y", "z"];
-        if (
-            torusPositionStores.length !==
-            expectedTorusPositions.length
-        ) {
-            this.context.contractError(
-                torus,
-                "Unexpected torus position stores.",
-            );
-        }
-        torusPositionStores.forEach((assignment, index) =>
-            this.context.assertExpressionShape(
-                assignment.right,
-                expectedTorusPositions[index]!,
-                `Torus position component ${index}`,
-            ),
-        );
-        const torusNormalStores = indexedAssignments(
-            torus,
-            "normals",
-        );
-        const expectedTorusNormals = [
-            "dx * cosOuter",
-            "dy",
-            "-dx * sinOuter",
-        ];
-        if (
-            torusNormalStores.length !==
-            expectedTorusNormals.length
-        ) {
-            this.context.contractError(
-                torus,
-                "Unexpected torus normal stores.",
-            );
-        }
-        torusNormalStores.forEach((assignment, index) =>
-            this.context.assertExpressionShape(
-                assignment.right,
-                expectedTorusNormals[index]!,
-                `Torus normal component ${index}`,
-            ),
-        );
-        const torusUvStores = indexedAssignments(torus, "uvs");
-        if (torusUvStores.length !== 2) {
-            this.context.contractError(
-                torus,
-                "Unexpected torus UV stores.",
-            );
-        }
-        this.context.assertExpressionShape(
-            torusUvStores[0]!.right,
-            "i / tessellation",
-            "Torus UV u",
-        );
-        const torusUvV = this.context.unwrapExpression(
-            torusUvStores[1]!.right,
-        );
-        if (
-            !ts.isBinaryExpression(torusUvV) ||
-            torusUvV.operatorToken.kind !==
-                ts.SyntaxKind.MinusToken ||
-            !ts.isNumericLiteral(torusUvV.left)
-        ) {
-            this.context.contractError(
-                torusUvV,
-                "Expected the torus V coordinate to complement a unit.",
-            );
-        }
-        const torusUvUnit = this.context.numericValue(
-            torusUvV.left,
-            torusFile,
-        );
-        this.context.assertExpressionShape(
-            torusUvV.right,
-            "j / tessellation",
-            "Torus UV v sweep",
-        );
-        // The triangulation FLOWS from the pinned store order: each entry
-        // is destructured as <corner> * stride + <corner> and re-emitted
-        // with the snake_case corner names.
-        const torusCornerNames: Record<string, string> = {
-            i: "outer_index",
-            j: "inner_index",
-            nextI: "next_outer",
-            nextJ: "next_inner",
-        };
-        const torusCorner = (
-            expression: ts.Expression,
-        ): string => {
-            const unwrapped =
-                this.context.unwrapExpression(expression);
-            const mapped = ts.isIdentifier(unwrapped)
-                ? torusCornerNames[unwrapped.text]
-                : undefined;
-            if (!mapped) {
-                this.context.contractError(
-                    expression,
-                    "Expected a torus grid corner.",
+            // The torus radii, grid stride, and parameterization, paired with
+            // the emitted create_torus lines (the emission multiplies by 0.5f
+            // where the pin divides by two — exact — and inlines px as
+            // dx * minor_radius with the same operation order).
+            for (const [name, expected] of [
+                ["R", "diameter / 2"],
+                ["r", "thickness / 2"],
+                ["stride", "tessellation + 1"],
+                ["vertexCount", "stride * stride"],
+                ["px", "dx * r"],
+                ["x", "(px + R) * cosOuter"],
+                ["y", "dy * r"],
+                ["z", "-(px + R) * sinOuter"],
+                ["nextI", "(i + 1) % stride"],
+                ["nextJ", "(j + 1) % stride"],
+            ] as const) {
+                assertVariable(
+                    torus,
+                    name,
+                    expected,
+                    `Torus '${name}'`,
                 );
             }
-            return mapped;
-        };
-        const torusTriangulation = indexedAssignments(
-            torus,
-            "indices",
-        ).map((assignment) => {
-            const right = this.context.unwrapExpression(
-                assignment.right,
+            // The angles: the full-turn factor comes from the pinned TWO_PI and
+            // FLOWS into both emitted angle products, and the outer phase
+            // divisor flows as the reciprocal the emission multiplies by.
+            const torusTwoPi = this.context.unwrapExpression(
+                this.context.variableInitializer(torus, "TWO_PI"),
             );
             if (
-                !ts.isBinaryExpression(right) ||
-                right.operatorToken.kind !==
-                    ts.SyntaxKind.PlusToken
-            ) {
-                this.context.contractError(
-                    assignment,
-                    "Expected a torus index of the form corner * stride + corner.",
-                );
-            }
-            const scaled = this.context.unwrapExpression(
-                right.left,
-            );
-            if (
-                !ts.isBinaryExpression(scaled) ||
-                scaled.operatorToken.kind !==
+                !ts.isBinaryExpression(torusTwoPi) ||
+                torusTwoPi.operatorToken.kind !==
                     ts.SyntaxKind.AsteriskToken ||
-                !ts.isIdentifier(scaled.right) ||
-                scaled.right.text !== "stride"
+                this.context
+                    .propertyPath(torusTwoPi.left)
+                    ?.join(".") !== "Math.PI" ||
+                !ts.isNumericLiteral(torusTwoPi.right)
             ) {
                 this.context.contractError(
-                    assignment,
-                    "Expected a torus index of the form corner * stride + corner.",
+                    torusTwoPi,
+                    "Expected TWO_PI to scale Math.PI.",
                 );
             }
-            return `${torusCorner(scaled.left)} * stride + ${torusCorner(right.right)}`;
-        });
-        // The reserve factor, checked against the pinned indexCount and
-        // FLOWING into the emitted reserve.
-        const torusIndexTotal = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                torus,
-                "indexCount",
-            ),
-        );
-        if (
-            !ts.isBinaryExpression(torusIndexTotal) ||
-            torusIndexTotal.operatorToken.kind !==
-                ts.SyntaxKind.AsteriskToken ||
-            !ts.isNumericLiteral(torusIndexTotal.right)
-        ) {
-            this.context.contractError(
-                torusIndexTotal,
-                "Expected the torus index total to scale by a quad factor.",
-            );
-        }
-        this.context.assertExpressionShape(
-            torusIndexTotal.left,
-            "stride * stride",
-            "Torus quad count",
-        );
-        if (
-            torusTriangulation.length !==
-            this.context.numericValue(
-                torusIndexTotal.right,
+            const torusTurnFactor = this.context.numericValue(
+                torusTwoPi.right,
                 torusFile,
-            )
-        ) {
-            this.context.contractError(
-                torusIndexTotal,
-                "Torus quad factor no longer matches its triangulation.",
             );
-        }
-        const numericNullishFallback = (
-            expression: ts.Expression,
-        ): number => {
-            const unwrapped =
-                this.context.unwrapExpression(expression);
+            const torusOuterAngle = this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    torus,
+                    "outerAngle",
+                ),
+            );
             if (
-                !ts.isBinaryExpression(unwrapped) ||
-                unwrapped.operatorToken.kind !==
-                    ts.SyntaxKind.QuestionQuestionToken
+                !ts.isBinaryExpression(torusOuterAngle) ||
+                torusOuterAngle.operatorToken.kind !==
+                    ts.SyntaxKind.MinusToken
             ) {
                 this.context.contractError(
-                    expression,
-                    "Expected a numeric nullish default.",
+                    torusOuterAngle,
+                    "Expected the torus outer angle to subtract a phase.",
                 );
             }
-            return this.context.numericValue(
-                unwrapped.right,
+            this.context.assertExpressionShape(
+                torusOuterAngle.left,
+                "(i * TWO_PI) / tessellation",
+                "Torus outer angle sweep",
+            );
+            const torusOuterPhase = this.context.unwrapExpression(
+                torusOuterAngle.right,
+            );
+            if (
+                !ts.isBinaryExpression(torusOuterPhase) ||
+                torusOuterPhase.operatorToken.kind !==
+                    ts.SyntaxKind.SlashToken ||
+                this.context
+                    .propertyPath(torusOuterPhase.left)
+                    ?.join(".") !== "Math.PI"
+            ) {
+                this.context.contractError(
+                    torusOuterPhase,
+                    "Expected the torus outer phase to divide Math.PI.",
+                );
+            }
+            const torusPhaseDivisor = this.context.numericValue(
+                torusOuterPhase.right,
                 torusFile,
             );
-        };
-        const torusDiameter = numericNullishFallback(
-            torusDiameterExpression,
-        );
-        const torusThickness = numericNullishFallback(
-            torusThicknessExpression,
-        );
-        const torusTessellation = numericNullishFallback(
-            torusTessellationExpression,
-        );
-        // These values remain validation-only anchors around the AST-driven
-        // bodies. Reading them still makes a reshaped pin fail by name; the
-        // emitted arithmetic now comes from PinnedNumericLowerer instead.
-        void groundNormal;
-        void sphereMinSegments;
-        void spherePolarBase;
-        void sphereAzimuthFactor;
-        void sphereTurnFactor;
-        void torusTurnFactor;
-        void torusPhaseDivisor;
-        void torusUvUnit;
-        void torusDiameter;
-        void torusThickness;
-        void torusTessellation;
-        void groundWinding;
-        void torusTriangulation;
+            const torusInnerAngle = this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    torus,
+                    "innerAngle",
+                ),
+            );
+            if (
+                !ts.isBinaryExpression(torusInnerAngle) ||
+                torusInnerAngle.operatorToken.kind !==
+                    ts.SyntaxKind.PlusToken ||
+                this.context
+                    .propertyPath(torusInnerAngle.right)
+                    ?.join(".") !== "Math.PI"
+            ) {
+                this.context.contractError(
+                    torusInnerAngle,
+                    "Expected the torus inner angle to add the half-turn phase.",
+                );
+            }
+            this.context.assertExpressionShape(
+                torusInnerAngle.left,
+                "(j * TWO_PI) / tessellation",
+                "Torus inner angle sweep",
+            );
+            // The stores, paired with the emitted ModelVertex: position and
+            // normal component order, and the UV pair whose V complement flows.
+            const torusPositionStores = indexedAssignments(
+                torus,
+                "positions",
+            );
+            const expectedTorusPositions = ["x", "y", "z"];
+            if (
+                torusPositionStores.length !==
+                expectedTorusPositions.length
+            ) {
+                this.context.contractError(
+                    torus,
+                    "Unexpected torus position stores.",
+                );
+            }
+            torusPositionStores.forEach((assignment, index) =>
+                this.context.assertExpressionShape(
+                    assignment.right,
+                    expectedTorusPositions[index]!,
+                    `Torus position component ${index}`,
+                ),
+            );
+            const torusNormalStores = indexedAssignments(
+                torus,
+                "normals",
+            );
+            const expectedTorusNormals = [
+                "dx * cosOuter",
+                "dy",
+                "-dx * sinOuter",
+            ];
+            if (
+                torusNormalStores.length !==
+                expectedTorusNormals.length
+            ) {
+                this.context.contractError(
+                    torus,
+                    "Unexpected torus normal stores.",
+                );
+            }
+            torusNormalStores.forEach((assignment, index) =>
+                this.context.assertExpressionShape(
+                    assignment.right,
+                    expectedTorusNormals[index]!,
+                    `Torus normal component ${index}`,
+                ),
+            );
+            const torusUvStores = indexedAssignments(torus, "uvs");
+            if (torusUvStores.length !== 2) {
+                this.context.contractError(
+                    torus,
+                    "Unexpected torus UV stores.",
+                );
+            }
+            this.context.assertExpressionShape(
+                torusUvStores[0]!.right,
+                "i / tessellation",
+                "Torus UV u",
+            );
+            const torusUvV = this.context.unwrapExpression(
+                torusUvStores[1]!.right,
+            );
+            if (
+                !ts.isBinaryExpression(torusUvV) ||
+                torusUvV.operatorToken.kind !==
+                    ts.SyntaxKind.MinusToken ||
+                !ts.isNumericLiteral(torusUvV.left)
+            ) {
+                this.context.contractError(
+                    torusUvV,
+                    "Expected the torus V coordinate to complement a unit.",
+                );
+            }
+            const torusUvUnit = this.context.numericValue(
+                torusUvV.left,
+                torusFile,
+            );
+            this.context.assertExpressionShape(
+                torusUvV.right,
+                "j / tessellation",
+                "Torus UV v sweep",
+            );
+            // The triangulation FLOWS from the pinned store order: each entry
+            // is destructured as <corner> * stride + <corner> and re-emitted
+            // with the snake_case corner names.
+            const torusCornerNames: Record<string, string> = {
+                i: "outer_index",
+                j: "inner_index",
+                nextI: "next_outer",
+                nextJ: "next_inner",
+            };
+            const torusCorner = (
+                expression: ts.Expression,
+            ): string => {
+                const unwrapped =
+                    this.context.unwrapExpression(expression);
+                const mapped = ts.isIdentifier(unwrapped)
+                    ? torusCornerNames[unwrapped.text]
+                    : undefined;
+                if (!mapped) {
+                    this.context.contractError(
+                        expression,
+                        "Expected a torus grid corner.",
+                    );
+                }
+                return mapped;
+            };
+            const torusTriangulation = indexedAssignments(
+                torus,
+                "indices",
+            ).map((assignment) => {
+                const right = this.context.unwrapExpression(
+                    assignment.right,
+                );
+                if (
+                    !ts.isBinaryExpression(right) ||
+                    right.operatorToken.kind !==
+                        ts.SyntaxKind.PlusToken
+                ) {
+                    this.context.contractError(
+                        assignment,
+                        "Expected a torus index of the form corner * stride + corner.",
+                    );
+                }
+                const scaled = this.context.unwrapExpression(
+                    right.left,
+                );
+                if (
+                    !ts.isBinaryExpression(scaled) ||
+                    scaled.operatorToken.kind !==
+                        ts.SyntaxKind.AsteriskToken ||
+                    !ts.isIdentifier(scaled.right) ||
+                    scaled.right.text !== "stride"
+                ) {
+                    this.context.contractError(
+                        assignment,
+                        "Expected a torus index of the form corner * stride + corner.",
+                    );
+                }
+                return `${torusCorner(scaled.left)} * stride + ${torusCorner(right.right)}`;
+            });
+            // The reserve factor, checked against the pinned indexCount and
+            // FLOWING into the emitted reserve.
+            const torusIndexTotal = this.context.unwrapExpression(
+                this.context.variableInitializer(
+                    torus,
+                    "indexCount",
+                ),
+            );
+            if (
+                !ts.isBinaryExpression(torusIndexTotal) ||
+                torusIndexTotal.operatorToken.kind !==
+                    ts.SyntaxKind.AsteriskToken ||
+                !ts.isNumericLiteral(torusIndexTotal.right)
+            ) {
+                this.context.contractError(
+                    torusIndexTotal,
+                    "Expected the torus index total to scale by a quad factor.",
+                );
+            }
+            this.context.assertExpressionShape(
+                torusIndexTotal.left,
+                "stride * stride",
+                "Torus quad count",
+            );
+            if (
+                torusTriangulation.length !==
+                this.context.numericValue(
+                    torusIndexTotal.right,
+                    torusFile,
+                )
+            ) {
+                this.context.contractError(
+                    torusIndexTotal,
+                    "Torus quad factor no longer matches its triangulation.",
+                );
+            }
+            const numericNullishFallback = (
+                expression: ts.Expression,
+            ): number => {
+                const unwrapped =
+                    this.context.unwrapExpression(expression);
+                if (
+                    !ts.isBinaryExpression(unwrapped) ||
+                    unwrapped.operatorToken.kind !==
+                        ts.SyntaxKind.QuestionQuestionToken
+                ) {
+                    this.context.contractError(
+                        expression,
+                        "Expected a numeric nullish default.",
+                    );
+                }
+                return this.context.numericValue(
+                    unwrapped.right,
+                    torusFile,
+                );
+            };
+            const torusDiameter = numericNullishFallback(
+                torusDiameterExpression,
+            );
+            const torusThickness = numericNullishFallback(
+                torusThicknessExpression,
+            );
+            const torusTessellation = numericNullishFallback(
+                torusTessellationExpression,
+            );
+            void torusTurnFactor;
+            void torusPhaseDivisor;
+            void torusUvUnit;
+            void torusDiameter;
+            void torusThickness;
+            void torusTessellation;
+            void torusTriangulation;
+            return lowerPinnedMeshBuilder(
+                torusFile,
+                torus,
+                new Map([
+                    ["opts.diameter", "options.diameter"],
+                    ["opts.thickness", "options.thickness"],
+                    ["opts.tessellation", "options.tessellation"],
+                ]),
+            );
+        })();
+        return torusBuilderBody;
+    }
+
+
+    private validateMeshFactory(
+        instanceColors: boolean,
+    ) {
         const modulePath = "src/mesh/mesh-factories.ts";
         const { declaration: meshFromData } =
             this.context.functionDeclaration(
@@ -2424,145 +3107,17 @@ ${body}
             "src/mesh/thin-instance.ts",
             "flushThinInstances",
         );
-        const dynamicPool = features.includes(
-            "mesh:thin-instances-dynamic",
-        );
-        const gpuCulling = features.includes(
-            "mesh:thin-instance-gpu-culling",
-        );
-        const poolHelpers = dynamicPool
-            ? this.thinInstancePoolHelpers()
-            : "";
-        const cullingHelper = gpuCulling
-            ? this.thinInstanceCullingHelper()
-            : "";
-        const instanceColorSetter = instanceColors
-            ? `// src/mesh/thin-instance.ts setThinInstanceColors: bind the
-// per-instance RGBA stream a material with useThinInstanceColors reads.
-// The pinned setter stores the caller's array and bumps its colour
-// version; nothing in the reached slice re-reads it (the per-instance
-// setThinInstanceColor twin is unlowered), so the record takes a copy.
-void set_thin_instance_colors(
-    Engine& engine,
-    MeshHandle mesh,
-    const std::vector<float>& colors) {
-    MeshRecord& record = engine.meshes[mesh.value];
-    record.instance_colors = colors;
-    record.instance_version += 1;
-}
+        return modulePath;
+    }
 
-`
-            : "";
-        // `bbl::js::` reaches this unit through the grown-array builders'
-        // own `new F32(list)` rounding and through the heightmap pass's
-        // value-selecting `||`. Read off what was emitted rather than off a
-        // second copy of the predicates behind it: a builder that starts
-        // converting a list arrives with its include, and one that stops
-        // does not leave a dead one behind.
-        const usesJsData = [
-            boxDataFactory,
-            heightmapBody,
-            discFactory,
-            cylinderFactory,
-            capsuleFactory,
-            polyhedronFactory,
-            ribbonFactory,
-            torusKnotFactory,
-            computeNormals,
-        ].some((emitted) => emitted.includes("bbl::js::"));
-        const value = (input: number): string => this.context.floatLiteral(input);
-        // The emitted fragments the decoded tables above compose. Each is
-        // plain text interpolation: the byte-for-byte C++ is unchanged as
-        // long as the pin is, and moves with the pin when it moves.
-        const boxFaceVertexLines = ["a", "b", "c", "d"]
-            .map(
-                (name, corner) =>
-                    `                ModelVertex{${name}, normal, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{${value(
-                        boxUvQuad[corner * 2]!,
-                    )}, ${value(boxUvQuad[corner * 2 + 1]!)}}},`,
-            )
-            .join("\n");
-        const boxQuadIndexList = boxQuadPattern
-            .map((local) =>
-                local === 0 ? "start" : `start + ${local}`,
-            )
-            .join(", ");
-        const boxAddFaceCalls = boxFaceCorners
-            .map(
-                (corners, face) =>
-                    `    add_face(\n${corners
-                        .map((corner) => `        ${corner},`)
-                        .join("\n")}\n        ${boxFaceNormals[face]});`,
-            )
-            .join("\n");
-        return {
-            modulePath,
-            symbolName: [
-                "createBox,createGround,createPlane,createSphere",
-                "createBoxData,createSphereData,createMorphTargets",
-                "setMorphTargetWeights,createTorus,createMeshFromData",
-                ...(disc ? ["createDisc"] : []),
-                ...(cylinder ? ["createCylinder"] : []),
-                ...(capsule ? ["createCapsule"] : []),
-                ...(polyhedron ? ["createPolyhedron"] : []),
-                ...(ribbon ? ["createRibbon"] : []),
-                ...(torusKnot ? ["createTorusKnot"] : []),
-            ].join(","),
-            header: "",
-            source: `// ${this.context.provenance(
-                modulePath,
-                [
-                    "createBox, createGround, createPlane, createSphere",
-                    "createBoxData, createSphereData, createMorphTargets",
-                    "setMorphTargetWeights, createTorus, createMeshFromData",
-                    ...(disc ? ["createDisc"] : []),
-                    ...(cylinder ? ["createCylinder"] : []),
-                    ...(capsule ? ["createCapsule"] : []),
-                    ...(polyhedron ? ["createPolyhedron"] : []),
-                    ...(ribbon ? ["createRibbon"] : []),
-                    ...(torusKnot ? ["createTorusKnot"] : []),
-                ].join(", "),
-                [
-                    "src/mesh/create-box.ts, src/mesh/create-ground.ts",
-                    "src/mesh/create-plane.ts, src/mesh/create-sphere.ts",
-                    "src/morph/create-morph-targets.ts",
-                    "src/mesh/create-torus.ts",
-                    ...(disc ? ["src/mesh/create-disc.ts"] : []),
-                    ...(cylinder ? ["src/mesh/create-cylinder.ts"] : []),
-                    ...(capsule ? ["src/mesh/create-capsule.ts"] : []),
-                    ...(polyhedron
-                        ? ["src/mesh/create-polyhedron.ts"]
-                        : []),
-                    ...(ribbon ? ["src/mesh/create-ribbon.ts"] : []),
-                    ...(torusKnot
-                        ? ["src/mesh/create-torus-knot.ts"]
-                        : []),
-                    // The shared accumulator, listed exactly when it is
-                    // emitted -- read off the emission itself rather than
-                    // off a second copy of the predicate behind it.
-                    ...(computeNormals
-                        ? ["src/mesh/compute-normals.ts"]
-                        : []),
-                ].join(", ") +
-                    " defaults, and src/math/compute-aabb.ts bounds folding",
-            )}
-${usesJsData ? "#include <bblite/js_data.hpp>\n" : ""}\
-#include <bblite/runtime.hpp>
-${heightMapGround ? `\
-#include <bblite/pal.hpp>
-#include <bblite/pal_image.hpp>
-` : ""}
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <limits>
-#include <span>
-#include <stdexcept>
-#include <utility>
-
-namespace bbl {
-
-MeshHandle create_box(Engine& engine, BoxOptions options) {
+    private boxFactorySource(
+        boxFaceVertexLines: string,
+        boxQuadSize: number,
+        boxQuadIndexList: string,
+        boxAddFaceCalls: string,
+        boxDataFactory: string,
+    ): string {
+        return `MeshHandle create_box(Engine& engine, BoxOptions options) {
     const float width = options.width;
     const float height = options.height;
     const float depth = options.depth;
@@ -2625,7 +3180,16 @@ static std::vector<T> mesh_data_buffer(std::array<T, N>&& values) {
 
 ${boxDataFactory}
 
-static PinnedMeshData pinned_create_flat_ground_data(
+`;
+    }
+
+
+    private groundFactorySource(
+        groundBuilderBody: string,
+        heightMapGround: boolean,
+        heightmapBody: string,
+    ): string {
+        return `static PinnedMeshData pinned_create_flat_ground_data(
     GroundOptions options) {
 ${groundBuilderBody}
 }
@@ -2726,7 +3290,16 @@ MeshHandle create_ground_from_height_map(
         {});
 }
 `}
-MeshHandle create_plane(Engine& engine, PlaneOptions options) {
+`;
+    }
+
+
+    private planeAndSphereFactorySource(
+        planeVertices: string,
+        planeIndices: number[],
+        sphereBuilderBody: string,
+    ): string {
+        return `MeshHandle create_plane(Engine& engine, PlaneOptions options) {
     const float half_width = options.width * 0.5f;
     const float half_height = options.height * 0.5f;
     ModelGeometry geometry;
@@ -2819,7 +3392,23 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
-void attach_morph_target(
+`;
+    }
+
+
+    private morphAndBuilderSource(
+        reachedTorus: boolean,
+        torusBuilderBody: string,
+        computeNormals: string,
+        discFactory: string,
+        cylinderFactory: string,
+        capsuleFactory: string,
+        polyhedronFactory: string,
+        ribbonFactory: string,
+        torusKnotFactory: string,
+        computeAabb: string,
+    ): string {
+        return `void attach_morph_target(
     Engine& engine,
     MeshHandle mesh,
     const std::vector<float>& positions,
@@ -2926,7 +3515,7 @@ void set_morph_target_weights(
     ++record.morph_weights_version;
 }
 
-static PinnedMeshData pinned_create_torus_data(
+${reachedTorus ? `static PinnedMeshData pinned_create_torus_data(
     TorusOptions options) {
 ${torusBuilderBody}
 }
@@ -2980,7 +3569,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
     return MeshHandle{
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
-
+` : ""}
 ${computeNormals}${discFactory}${cylinderFactory}${capsuleFactory}${polyhedronFactory}${ribbonFactory}${torusKnotFactory}
 namespace {
 
@@ -2988,7 +3577,14 @@ ${computeAabb}
 
 } // namespace
 
-MeshHandle create_mesh_from_data(
+`;
+    }
+
+
+    private meshDataFactorySource(
+
+    ): string {
+        return `MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::string& name,
     const std::vector<float>& positions,
@@ -3137,7 +3733,14 @@ void update_mesh_positions(
     ++record.transform_version;
 }
 
-namespace {
+`;
+    }
+
+
+    private thinInstanceSource(
+        instanceColorSetter: "" | "// src/mesh/thin-instance.ts setThinInstanceColors: bind the\n// per-instance RGBA stream a material with useThinInstanceColors reads.\n// The pinned setter stores the caller's array and bumps its colour\n// version; nothing in the reached slice re-reads it (the per-instance\n// setThinInstanceColor twin is unlowered), so the record takes a copy.\nvoid set_thin_instance_colors(\n    Engine& engine,\n    MeshHandle mesh,\n    const std::vector<float>& colors) {\n    MeshRecord& record = engine.meshes[mesh.value];\n    record.instance_colors = colors;\n    record.instance_version += 1;\n}\n\n",
+    ): string {
+        return `namespace {
 
 // Copy [0, count) instances from the bound caller array into the record's
 // pool mirror, matching the pinned dirty range [_dirtyMin=0, _dirtyMax=count).
@@ -3180,6 +3783,7 @@ void set_thin_instances(
     std::vector<float>& matrices,
     double count) {
     MeshRecord& record = engine.meshes[mesh.value];
+${this.thinRuntimeBuilderAssignment("setThinInstances")}
     const std::uint32_t previous_count = record.instance_count;
     const std::size_t capacity = std::min(
         static_cast<std::size_t>(count),
@@ -3301,363 +3905,6 @@ void upload_thin_instance_matrices(
             "A direct thin-instance upload exceeds its matrix buffer.");
     }
     copy_thin_instance_range(record, matrices, requested);
-    record.instance_version += 1;
-}
-
-${poolHelpers}${cullingHelper}} // namespace bbl
-`,
-        };
-    }
-
-    /**
-     * The growing half of the pinned pool: `addThinInstance` and
-     * `removeThinInstance`, plus the live `thinInstances.count` read they
-     * are written against.
-     *
-     * Both constants the pin states -- the initial capacity an
-     * `addThinInstance` that finds no pool allocates, and the factor a full
-     * pool grows by -- are READ off the declaration rather than restated,
-     * so a pin that retunes either regenerates a different runtime. The
-     * shapes the arithmetic around them depends on (the swap-remove, the
-     * count and version bumps) are asserted instead, because their meaning
-     * is the shape rather than a value.
-     */
-    private thinInstancePoolHelpers(): string {
-        const module = "src/mesh/thin-instance.ts";
-        const { file, declaration: add } =
-            this.context.functionDeclaration(module, "addThinInstance");
-        const { declaration: remove } =
-            this.context.functionDeclaration(
-                module,
-                "removeThinInstance",
-            );
-        const initialCapacity = this.context.numericValue(
-            this.context.variableInitializer(add, "capacity"),
-            file,
-        );
-        const growth = this.context.variableInitializer(add, "newCap");
-        this.context.assertExpressionShape(
-            growth,
-            "ti._capacity * 2",
-            "addThinInstance capacity growth",
-        );
-        const growthFactor = this.context.numericValue(
-            ts.isBinaryExpression(growth)
-                ? growth.right
-                : this.context.contractError(
-                      growth,
-                      "Expected addThinInstance to grow by a factor.",
-                  ),
-            file,
-        );
-        // The pin appends at the ACTIVE count, not at the capacity, and
-        // grows only when the two have met. Both halves are asserted
-        // because the emitted C++ indexes on the same pair.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(add, "index"),
-            "ti.count",
-            "addThinInstance append slot",
-        );
-        this.context.expectShapeCount(
-            add,
-            "index >= ti._capacity",
-            "addThinInstance growth test",
-        );
-        this.context.expectShapeCount(
-            add,
-            "newData.set(ti.matrices)",
-            "addThinInstance row preservation",
-        );
-        this.context.expectShapeCount(
-            add,
-            "ti.matrices.set(matrix, index * 16)",
-            "addThinInstance matrix write",
-        );
-        this.context.expectShapeCount(
-            add,
-            "ti.count++",
-            "addThinInstance count bump",
-        );
-        this.context.expectShapeCount(
-            add,
-            "ti._version++",
-            "addThinInstance version bump",
-        );
-        // The swap-remove: the LAST active row fills the freed slot, and
-        // only when the freed slot is not itself the last one.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(remove, "last"),
-            "ti.count - 1",
-            "removeThinInstance last slot",
-        );
-        this.context.expectShapeCount(
-            remove,
-            "ti.matrices.copyWithin(index * 16, last * 16, last * 16 + 16)",
-            "removeThinInstance swap-remove",
-        );
-        this.context.expectShapeCount(
-            remove,
-            "ti.count--",
-            "removeThinInstance count drop",
-        );
-        this.context.expectShapeCount(
-            remove,
-            "ti._version++",
-            "removeThinInstance version bump",
-        );
-        const capacity = this.pinnedPoolInteger(
-            initialCapacity,
-            "addThinInstance initial capacity",
-        );
-        const factor = this.pinnedPoolInteger(
-            growthFactor,
-            "addThinInstance growth factor",
-        );
-        return `// src/mesh/thin-instance.ts addThinInstance: append one matrix at the
-// active count and return the slot it landed in, growing the pool when
-// that count has reached the capacity. A mesh with no pool gets the pin's
-// own initial capacity with the ENGINE owning the array -- that arm has no
-// caller array to alias -- held beside the mirror so every per-frame
-// helper above keeps reading one pool. The holder is a shared pointer
-// because MeshRecord moves when the scene appends a mesh, and the alias
-// must not move with it.
-double add_thin_instance(
-    Engine& engine,
-    MeshHandle mesh,
-    const std::vector<float>& matrix) {
-    MeshRecord& record = engine.meshes[mesh.value];
-    if (matrix.size() < 16) {
-        throw std::runtime_error(
-            "addThinInstance requires a 16-float matrix.");
-    }
-    if (!record.thin_instanced) {
-        if (!record.instance_matrices.empty()) {
-            throw std::runtime_error(
-                "addThinInstance on a loader-built instance pool is not reached.");
-        }
-        record.owned_instance_source =
-            std::make_shared<std::vector<float>>(
-                static_cast<std::size_t>(${capacity}) * 16,
-                0.0f);
-        record.instance_source = record.owned_instance_source.get();
-        record.instance_matrices.assign(
-            static_cast<std::size_t>(${capacity}),
-            std::array<float, 16>{});
-        record.thin_instanced = true;
-        record.instance_count = 0;
-    }
-    const std::size_t index = record.instance_count;
-    if (index >= record.instance_matrices.size()) {
-        const std::size_t grown =
-            record.instance_matrices.size() * ${factor};
-        // The pin allocates a NEW \`F32(newCap * 16)\`, copies the old rows
-        // into it and repoints \`ti.matrices\` at it. The array the scene
-        // handed setThinInstances is left untouched, at its own length --
-        // which matters because that array can be LONGER than the pool
-        // (\`setThinInstances\` takes the count as the capacity), so resizing
-        // it in place would both mutate the scene's own storage and, past a
-        // doubling it does not reach, truncate it. Everything downstream
-        // reads the alias, so repointing it detaches the pool exactly as the
-        // pin's assignment does: later matrix writes land in engine storage
-        // and the scene's array goes stale, on both sides.
-        const std::vector<float>* const previous = record.instance_source;
-        const std::size_t carried =
-            previous != nullptr ? previous->size() : 0;
-        if (carried > grown * 16) {
-            throw std::runtime_error(
-                "addThinInstance cannot grow a pool whose matrix array is longer than the grown capacity: the pinned newData.set(ti.matrices) overflows.");
-        }
-        std::shared_ptr<std::vector<float>> grown_source =
-            std::make_shared<std::vector<float>>(grown * 16, 0.0f);
-        if (carried > 0) {
-            std::copy_n(
-                previous->data(),
-                carried,
-                grown_source->data());
-        }
-        record.owned_instance_source = std::move(grown_source);
-        record.instance_source = record.owned_instance_source.get();
-        record.instance_matrices.resize(
-            grown,
-            std::array<float, 16>{});
-    }
-    // A pool established at capacity 0 -- \`setThinInstances(mesh, new
-    // F32(0), 0)\` -- doubles to 0, and the pin's own
-    // \`ti.matrices.set(matrix, index * 16)\` on that zero-length array
-    // throws. Refuse before any write rather than running off both the
-    // mirror and the source. This is a DIFFERENT state from a mesh with no
-    // pool at all, which the branch above serves with the pin's initial
-    // capacity, so it must not be floored into one.
-    if (index >= record.instance_matrices.size() ||
-        record.instance_source == nullptr ||
-        (index + 1) * 16 > record.instance_source->size()) {
-        throw std::runtime_error(
-            "addThinInstance has no room for the matrix: a thin-instance pool established at capacity 0 stays at capacity 0.");
-    }
-    std::copy_n(
-        matrix.data(),
-        16,
-        record.instance_matrices[index].data());
-    std::copy_n(
-        matrix.data(),
-        16,
-        record.instance_source->data() + index * 16);
-    record.instance_count = static_cast<std::uint32_t>(index + 1);
-    record.instance_version += 1;
-    update_thin_instance_draw_membership(
-        engine,
-        record,
-        static_cast<std::uint32_t>(index));
-    return static_cast<double>(index);
-}
-
-// src/mesh/thin-instance.ts removeThinInstance: swap-remove -- the last
-// ACTIVE row fills the freed slot -- then drop the active count. The pin
-// indexes off that count rather than off the capacity, so the slot is
-// checked against it. The index is a JavaScript number: NaN, a negative,
-// one past the active range and a FRACTIONAL slot all reach here, and the
-// pin would splice at \`index * 16\` on a typed array. This port refuses
-// each by name before touching a row rather than truncating 1.5 to 1 and
-// moving a neighbour's matrix (fidelity: a named refusal for invalid API
-// input, inside the bounded subset).
-void remove_thin_instance(
-    Engine& engine,
-    MeshHandle mesh,
-    double index) {
-    MeshRecord& record = engine.meshes[mesh.value];
-    if (!record.thin_instanced) {
-        throw std::runtime_error(
-            "removeThinInstance requires thin instances bound by setThinInstances.");
-    }
-    if (!(index >= 0.0) ||
-        !(index < static_cast<double>(record.instance_count)) ||
-        index != std::floor(index)) {
-        throw std::runtime_error(
-            "removeThinInstance index is not an active thin instance.");
-    }
-    const std::size_t slot = static_cast<std::size_t>(index);
-    const std::size_t last =
-        static_cast<std::size_t>(record.instance_count) - 1;
-    if (slot != last) {
-        record.instance_matrices[slot] =
-            record.instance_matrices[last];
-        if (record.instance_source != nullptr) {
-            std::copy_n(
-                record.instance_source->data() + last * 16,
-                16,
-                record.instance_source->data() + slot * 16);
-        }
-    }
-    record.instance_count = static_cast<std::uint32_t>(last);
-    record.instance_version += 1;
-    update_thin_instance_draw_membership(
-        engine,
-        record,
-        static_cast<std::uint32_t>(last + 1));
-}
-
-// src/mesh/thin-instance.ts ThinInstanceData.count: the ACTIVE count every
-// helper above moves. Read live off the record, so a source computing the
-// last slot from it sees what the previous call left. The pin reaches it
-// through \`mesh.thinInstances!\`, so a mesh with no pool fails here rather
-// than reading a zero -- which is the same failure, at the same call.
-double thin_instance_count(const Engine& engine, MeshHandle mesh) {
-    const MeshRecord& record = engine.meshes[mesh.value];
-    if (!record.thin_instanced) {
-        throw std::runtime_error(
-            "mesh.thinInstances is not bound on this mesh.");
-    }
-    return static_cast<double>(record.instance_count);
-}
-
-`;
-    }
-
-    /**
-     * A pinned pool constant as C++ decimal text. Both of them size an
-     * allocation, so a pin that made either fractional or non-positive
-     * would produce a runtime this port cannot state; that fails here
-     * rather than emitting it.
-     */
-    private pinnedPoolInteger(value: number, label: string): string {
-        if (!Number.isInteger(value) || value < 1) {
-            this.context.contractError(
-                this.context.sourceFile("src/mesh/thin-instance.ts"),
-                `${label} is not a positive integer (${value}).`,
-            );
-        }
-        return String(value);
-    }
-
-    /**
-     * `enableThinInstanceGpuCulling`, whose compute culler this port omits.
-     *
-     * Upstream the opt-in has two effects: a compute pass compacts the
-     * visible instances, and the renderable is marked `_direct` so it
-     * leaves the cached opaque bundle -- which is what gives an application
-     * per-frame pool sync on a Standard material. This port records no
-     * bundles and re-uploads every live pool every frame from the record's
-     * own version, so the second effect is already unconditional and the
-     * first is a recorded omission (fidelity `thin-instance-gpu-culling`).
-     * The flag still lands on the record: an opt-in that compiled to
-     * nothing would be indistinguishable from one that was never reached.
-     */
-    private thinInstanceCullingHelper(): string {
-        const module = "src/mesh/thin-instance.ts";
-        const symbol = "enableThinInstanceGpuCulling";
-        const { declaration } = this.context.functionDeclaration(
-            module,
-            symbol,
-        );
-        // The default the intrinsic folds into a one-argument call site.
-        if (
-            pinnedParameterFlag(module, symbol, "enabled") !== true
-        ) {
-            this.context.contractError(
-                declaration,
-                `${symbol} no longer enables culling by default.`,
-            );
-        }
-        this.context.expectShapeCount(
-            declaration,
-            "ti._gpuCullingEnabled === enabled",
-            `${symbol} idempotence test`,
-        );
-        this.context.expectShapeCount(
-            declaration,
-            "ti._gpuCullingEnabled = enabled",
-            `${symbol} flag write`,
-        );
-        // Both GPU stamps are reset, which is the pin's "re-upload the
-        // whole pool next sync"; native says the same with one version.
-        this.context.expectShapeCount(
-            declaration,
-            "ti._gpuVersion = -1",
-            `${symbol} matrix stamp reset`,
-        );
-        this.context.expectShapeCount(
-            declaration,
-            "ti._colorGpuVersion = -1",
-            `${symbol} colour stamp reset`,
-        );
-        return `// src/mesh/thin-instance.ts enableThinInstanceGpuCulling: the pin's
-// performance opt-in. It refuses a mesh with no pool, returns on an
-// unchanged flag, and resets both GPU stamps so the next sync re-uploads
-// the whole pool -- which native states as one version bump. The compute
-// culler itself is omitted; see the scene's fidelity.json.
-void enable_thin_instance_gpu_culling(
-    Engine& engine,
-    MeshHandle mesh,
-    bool enabled) {
-    MeshRecord& record = engine.meshes[mesh.value];
-    if (!record.thin_instanced) {
-        throw std::runtime_error(
-            "enableThinInstanceGpuCulling requires mesh.thinInstances.");
-    }
-    if (record.thin_instance_gpu_culling == enabled) {
-        return;
-    }
-    record.thin_instance_gpu_culling = enabled;
     record.instance_version += 1;
 }
 

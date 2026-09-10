@@ -1,17 +1,10 @@
 import type { LoweringContext } from "./context.js";
 import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 /** Scene-facing storage and nullability around the shared pinned inverse. */
 export function pinnedMat4InvertHeader(context: LoweringContext): string {
-    return `#pragma once
-#include <array>
-#include <cmath>
-#include <limits>
-#include <optional>
-#include <bblite/js_data.hpp>
-
-namespace bbl::upstream {
-${lowerMat4InvertCpp(context, { inline: true, cppName: "mat4_invert_storage" })}
+    return pinnedHeader(["<array>","<cmath>","<limits>","<optional>","<bblite/js_data.hpp>"], `${lowerMat4InvertCpp(context, { inline: true, cppName: "mat4_invert_storage" })}
 
 [[nodiscard]] inline js::Nullable<js::F32Array> mat4_invert_array(const js::F32Array& input) {
     std::array<float, 16> lanes{};
@@ -23,7 +16,5 @@ ${lowerMat4InvertCpp(context, { inline: true, cppName: "mat4_invert_storage" })}
     const auto inverse = mat4_invert_storage(lanes);
     if (!inverse) return std::nullopt;
     return js::F32Array(inverse->begin(), inverse->end());
-}
-} // namespace bbl::upstream
-`;
+}`, { compactPragma: true });
 }

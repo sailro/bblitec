@@ -54,7 +54,7 @@ navigation and source-selected native paths refuse.
 Generation-time innerHTML accepts bounded text/div/span and reviewed
 svg/path/rect attributes. Scripts, event attributes, dynamic attributes,
 unsupported elements and malformed nesting refuse. Runtime text is escaped.
-Inline SVG rasterizes at live CSS size; mixed currentColor/literal paints and
+Inline SVG rasterizes at live CSS size; [mixed currentColor/literal paints](../src/compiler/ui-projection.ts) and
 queries into SVG internals refuse.
 
 ## Canvas2D
@@ -63,6 +63,10 @@ Supports backing dimensions, scale, full-surface clear, fillRect, bounded
 paths/fill/stroke, putImageData, destination-rectangle canvas drawImage,
 sampling intent and bounded fillText. Offscreen canvases retain premultiplied
 RGBA pixels and revisions.
+
+Generation captures top-level `getImageData` reads in closed canvas-producing
+functions. Arguments must be known data, closed data producers or local asset
+directories; mutable module inputs and runtime engine reads refuse.
 
 An engine-less entry can present primary `renderCanvas` with window/input/RAF
 support on both backends. Source-created GPU engine ownership cannot share that
@@ -80,7 +84,7 @@ bounded shorthands, backgrounds, gradients, rounded borders, text effects and
 deterministic CSS animation. Scrollbars are 16 density-independent pixels.
 
 Selectors are bounded class/id/compound and proven ancestor forms, with optional
-hover. Tag-only projection is unsupported. Static selectors/properties are
+hover. [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
 validated; source/sheet order and live max-width rules are retained.
 Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown
 track/class/id changes refuse.

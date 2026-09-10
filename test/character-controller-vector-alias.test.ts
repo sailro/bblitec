@@ -47,6 +47,13 @@ test("character vectors retain returned references across controller rebinding a
         first.setPosition({x:31,y:32,z:33}); first.setVelocity({x:41,y:42,z:43});
         if (helperPosition.x !== 31 || helperVelocity.y !== 42)
             throw new Error("A helper return stopped observing changes to the character's owned vector");
+        const arrowPosition = () => controller.getPosition();
+        controller = first;
+        const retainedArrow = arrowPosition();
+        controller = second;
+        retainedArrow.z = 51;
+        if (first.getPosition().z !== 51 || second.getPosition().z !== 7)
+            throw new Error("A concise helper return lost its vector alias");
     `);
     const output = resolve("artifacts/character-controller-vector-alias");
     mkdirSync(output, { recursive: true });

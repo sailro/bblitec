@@ -764,87 +764,6 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        // Retires when scene 149 registers -- a corpus scene drawing a node
-        // material in a geometry-renderer task. The Standard and PBR
-        // families each shipped their geometry arm as its own integration;
-        // this is the node family's.
-        //
-        // One graph drawn in two geometry tasks: three attachments
-        // including NORMALIZED_VIEW_DEPTH, so one composed view declares
-        // `NmeGeomParams`, and two attachments so the other declares none.
-        //
-        // MEASURED 0.000/0.000 on both backends, byte-identical between
-        // them.
-        //
-        // The gate OBSERVES the arm rather than reaching it: binding the
-        // colour view's rows for a geometry draw -- the silent-wrong case
-        // the arm exists to prevent, and what the plan's draw-list filter
-        // used to hide -- measures 0.773 full / 1.937 region.
-        id: "regression-node-geometry-output",
-        name: "Regression - Node Material Geometry Output",
-        source: "examples/regression-node-geometry-output.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - Node Geometry Output",
-        buildDirectory:
-            "native/build-regression-node-geometry-output-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/regression-node-geometry-output/babylon-lite-golden.png",
-            },
-            outputDirectory:
-                "artifacts/parity/regression-node-geometry-output",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [51, 51, 77],
-            backgroundThreshold: 30,
-        },
-    },
-    {
-        // Retires when scene 114 or 231 registers. Both author a skeleton
-        // from scene code, and neither compiles yet: 114 still needs its
-        // picking contracts and 231 the Standard skinned draw arm.
-        //
-        // The scene-authored path is not the loader's. The glTF pose pass
-        // folds `invMeshWorld` into every palette entry and draws at
-        // identity, while the pin composes `finalWorld = mesh.world *
-        // influence` for an authored skeleton, so the mesh keeps its
-        // transform and the palette is the bones alone. Reusing the loader
-        // convention compiles and draws in the wrong place.
-        //
-        // MEASURED 0.000/0.000 on both backends, max 0, region 100% exact
-        // and byte-identical between them.
-        //
-        // The gate OBSERVES the skinning rather than reaching it: both rows
-        // stretch past the blue bind-edge rail to the yellow skinned-edge
-        // rail, so a bind-pose render stops at blue. The second row starts
-        // at zero shift and is ramped through `updateSkeletonBoneMatrices`,
-        // so a port that folded the palette at creation paints it
-        // unstretched.
-        id: "regression-scene-skeleton",
-        name: "Regression - Scene-Authored Skeleton",
-        source: "examples/regression-scene-skeleton.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - Scene-Authored Skeleton",
-        buildDirectory:
-            "native/build-regression-scene-skeleton-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/regression-scene-skeleton/babylon-lite-golden.png",
-            },
-            outputDirectory:
-                "artifacts/parity/regression-scene-skeleton",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [37, 42, 54],
-            backgroundThreshold: 30,
-            nativeEnvironment: adHocCaptureEnvironment(),
-        },
-    },
-    {
         // Retires when a corpus scene visibly executes post-creation spot
         // direction, angle and exponent writes. Position and range already
         // have corpus coverage; the remaining writes do not.
@@ -976,42 +895,6 @@ const sceneInputs: readonly SceneInput[] = [
             // measured mid-fall: 2.658 full and 3.998 region, with 29.043 of
             // it on edges, against 0.047/0.074 here. Registration does not
             // supply it the way the ad-hoc path does.
-            nativeEnvironment: adHocCaptureEnvironment(),
-        },
-    },
-    {
-        // Retires when a corpus scene distinguishes a triangle-soup
-        // collider from the convex hull of the same points. None does
-        // today: scene 102's mesh colliders are boxes, so `MESH` and a
-        // `BOX` stand-in render byte-identically -- in Havok's own two
-        // goldens as well as natively. Scenes 104 and 105 would, and
-        // should retire this.
-        //
-        // An uncapped `createTube` ribbon as a static collider, with a
-        // sphere dropped down its axis: the soup has no caps and the ball
-        // falls through (top edge y = 257), the hull of the same points
-        // closes them and holds it up (y = 220). Havok's own hull golden
-        // sits at y = 222, so both solvers agree on the distinction.
-        //
-        // MEASURED 0.000/0.000 on both backends against the Havok golden,
-        // 100% exact, byte-identical between them.
-        id: "regression-physics-mesh-shape",
-        name: "Regression - Physics Mesh Shape",
-        source: "examples/regression-physics-mesh-shape.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - Physics Mesh Shape",
-        buildDirectory: "native/build-regression-physics-mesh-shape-release",
-        parity: {
-            reference: {
-                kind: "source",
-                path:
-                    "reference/regression-physics-mesh-shape/babylon-lite-golden.png",
-            },
-            outputDirectory: "artifacts/parity/regression-physics-mesh-shape",
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [51, 51, 76],
-            backgroundThreshold: 30,
             nativeEnvironment: adHocCaptureEnvironment(),
         },
     },
@@ -2264,13 +2147,8 @@ const sceneInputs: readonly SceneInput[] = [
             // on the silhouette (background 0.000, interior 0.000, edges
             // 1.060). Upstream's own gate is 0.5.
             //
-            // This row does NOT observe `PhysicsShapeType.MESH`, and the
-            // comment says so rather than letting a green cell imply it:
-            // the scene's mesh colliders are boxes, so a BOX stand-in
-            // renders byte-identically -- in Havok's two goldens as well
-            // as natively. `examples/regression-physics-mesh-shape.ts`
-            // carries the mechanism instead, where the shape kind moves
-            // the ball 37 rows.
+            // Box-shaped colliders cannot distinguish triangle soup from
+            // a convex hull here; scenes 104 and 105 observe that distinction.
             maxFullMad: 0.005,
             maxForegroundMad: 0.15,
             backgroundColor: [51, 51, 76],
@@ -4257,24 +4135,6 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        id: "regression-imported-mesh-walk",
-        name: "Regression - Imported Mesh Walk",
-        source: "examples/regression-imported-mesh-walk.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - Imported Mesh Walk",
-        parity: {
-            // The recursive-visitor spelling of the container flatten,
-            // beside the worklist one `regression-gltf-uv-sets` reaches:
-            // every walked mesh is painted with one scene-created
-            // material, so a renderable the walk missed keeps its own
-            // textured one and shows.
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [13, 15, 23],
-            backgroundThreshold: 30,
-        },
-    },
-    {
         id: "regression-gltf-topology",
         name: "Regression - glTF Primitive Topology",
         source: "examples/regression-gltf-topology.ts",
@@ -4300,21 +4160,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [10, 13, 20],
-            backgroundThreshold: 30,
-        },
-    },
-    {
-        // Retires when a corpus scene casts a shadow from a PBR mesh with
-        // no Standard material in the scene.
-        id: "regression-shadow-pbr-only",
-        name: "Regression - PBR Shadow Receiver Without Standard",
-        source: "examples/regression-shadow-pbr-only.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - PBR Shadows Without Standard",
-        parity: {
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },
     },

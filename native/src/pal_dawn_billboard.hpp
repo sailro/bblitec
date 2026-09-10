@@ -35,7 +35,7 @@
 namespace bbl::pal {
 
 /** One billboard system, as Dawn resources. */
-struct DawnBillboardPass {
+struct DawnBillboardResources {
     /**
      * The mip levels the atlas texture was created with, for the caller to
      * fill. The blit that fills them belongs to the frame state, which this
@@ -82,6 +82,9 @@ struct DawnBillboardPass {
     BillboardUploadStamp upload_stamp;
 };
 
+inline void release_dawn_billboard_resources(WGPUDevice, DawnBillboardResources&) noexcept;
+using DawnBillboardPass = OwnedGpuRecord<DawnBillboardResources, std::remove_pointer_t<WGPUDevice>, release_dawn_billboard_resources>;
+
 /** The vertex block the reconstructed billboard stage declares. */
 struct DawnBillboardSceneUniforms {
     std::array<float, 16> view_projection{};
@@ -115,10 +118,10 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     WGPUTextureFormat depth_format,
     std::uint32_t sample_count) {
     const BillboardSystemRecord& system =
-        engine.billboard_systems[system_handle.value];
+        handle_at(engine.billboard_systems, system_handle);
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[system.atlas.value];
-    DawnBillboardPass pass;
+        handle_at(engine.sprite_atlases, system.atlas);
+    DawnBillboardPass pass{device};
     pass.system = system_handle;
 
     {
@@ -283,8 +286,7 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     layout_descriptor.bindGroupLayoutCount =
         static_cast<std::uint32_t>(pass.group_layouts.size());
     layout_descriptor.bindGroupLayouts = pass.group_layouts.data();
-    WGPUPipelineLayout pipeline_layout =
-        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+    DawnPipelineLayout pipeline_layout{wgpuDeviceCreatePipelineLayout(device, &layout_descriptor)};
 
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
@@ -309,7 +311,7 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     descriptor.fragment = &fragment_state;
     pass.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
     if (!pass.pipeline) {
-        wgpuPipelineLayoutRelease(pipeline_layout);
+        pipeline_layout.reset();
         dawn_error("wgpuDeviceCreateRenderPipeline billboard");
     }
 
@@ -344,12 +346,12 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         pass.add_pipeline =
             wgpuDeviceCreateRenderPipeline(device, &add_descriptor);
         if (!pass.add_pipeline) {
-            wgpuPipelineLayoutRelease(pipeline_layout);
+            pipeline_layout.reset();
             dawn_error(
                 "wgpuDeviceCreateRenderPipeline billboard add pass");
         }
     }
-    wgpuPipelineLayoutRelease(pipeline_layout);
+    pipeline_layout.reset();
 
     {
         WGPUBufferDescriptor instance_descriptor =
@@ -401,7 +403,7 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         atlas.height,
         mip_levels);
     pass.atlas_mip_levels = mip_levels;
-    pass.atlas_view = wgpuTextureCreateView(pass.atlas, nullptr);
+    pass.atlas_view = create_dawn_texture_view(pass.atlas, nullptr);
     pass.sampler = create_texture_sampler(device, atlas.sampler);
 
     std::array<WGPUBindGroupEntry, 2> vertex_bindings{};
@@ -422,8 +424,7 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     std::vector<WGPUBindGroupEntry> texture_bindings;
     append_dawn_texture_pair(
         texture_bindings,
-        DawnSampledTexture{
-            pass.atlas, pass.atlas_view, pass.sampler});
+        pass.atlas_view, pass.sampler);
     for (const PixelsTexture& extra : system.custom_textures) {
         pass.extras.push_back(
             upload_dawn_extra_texture(device, queue, extra));
@@ -475,7 +476,7 @@ inline void upload_dawn_billboard_pass(
     const std::array<float, 16>& view,
     double delta_ms) {
     const BillboardSystemRecord& system =
-        engine.billboard_systems[pass.system.value];
+        handle_at(engine.billboard_systems, pass.system);
 
     DawnBillboardSceneUniforms scene_uniforms{};
     scene_uniforms.view_projection = view_projection;
@@ -546,7 +547,7 @@ inline void record_dawn_billboard_pass(
     Engine& engine,
     const DawnBillboardPass& pass) {
     const BillboardSystemRecord& system =
-        engine.billboard_systems[pass.system.value];
+        handle_at(engine.billboard_systems, pass.system);
     if (!system.visible || system.count == 0) {
         return;
     }
@@ -597,7 +598,7 @@ inline void record_dawn_billboard_pass(
     }
 }
 
-inline void release_dawn_billboard_pass(DawnBillboardPass& pass) {
+inline void release_dawn_billboard_resources([[maybe_unused]] WGPUDevice device, DawnBillboardResources& pass) noexcept {
     if (pass.fx_uniforms) wgpuBufferRelease(pass.fx_uniforms);
     release_dawn_extra_textures(pass.extras);
     if (pass.vertex_group) wgpuBindGroupRelease(pass.vertex_group);
@@ -625,7 +626,9 @@ inline void release_dawn_billboard_pass(DawnBillboardPass& pass) {
         wgpuShaderModuleRelease(pass.fragment_module);
     }
     if (pass.pipeline) wgpuRenderPipelineRelease(pass.pipeline);
-    pass = DawnBillboardPass{};
+    pass = DawnBillboardResources{};
 }
+
+inline void release_dawn_billboard_pass(DawnBillboardPass& pass) { pass.reset(); }
 
 }  // namespace bbl::pal

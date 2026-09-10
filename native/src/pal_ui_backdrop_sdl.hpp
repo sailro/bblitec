@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_ui_backdrop.hpp"
 
 #include <bblite/pal_ui.hpp>
 #include <SDL3/SDL_gpu.h>
@@ -39,44 +40,21 @@ inline void render_ui_backdrop_sdl(
     const auto& backdrop = frame.backdrops[backdrop_index];
     if (resources.pairs.size() <= backdrop_index) resources.pairs.resize(backdrop_index + 1);
     auto& pair = resources.pairs[backdrop_index];
-    if (!pair.snapshot || pair.source_width != backdrop.width ||
-        pair.source_height != backdrop.height) {
-        if (pair.snapshot) SDL_ReleaseGPUTexture(device, pair.snapshot);
-        pair.source_width = backdrop.width;
-        pair.source_height = backdrop.height;
-        pair.snapshot = create_frame_texture(
-            device,
-            target_format,
-            SDL_GPU_SAMPLECOUNT_1,
-            pair.source_width,
-            pair.source_height,
-            SDL_GPU_TEXTUREUSAGE_SAMPLER |
-                SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
-    }
-    if (!pair.first || pair.blur_width != backdrop.blur_width ||
-        pair.blur_height != backdrop.blur_height) {
-        if (pair.first) SDL_ReleaseGPUTexture(device, pair.first);
-        if (pair.second) SDL_ReleaseGPUTexture(device, pair.second);
-        pair.blur_width = backdrop.blur_width;
-        pair.blur_height = backdrop.blur_height;
-        pair.first = create_frame_texture(
-            device,
-            SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
-            SDL_GPU_SAMPLECOUNT_1,
-            pair.blur_width,
-            pair.blur_height,
-            SDL_GPU_TEXTUREUSAGE_SAMPLER |
-                SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
-        pair.second = create_frame_texture(
-            device,
-            SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
-            SDL_GPU_SAMPLECOUNT_1,
-            pair.blur_width,
-            pair.blur_height,
-            SDL_GPU_TEXTUREUSAGE_SAMPLER |
-                SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
-    }
-    auto* copy = SDL_BeginGPUCopyPass(command);
+    sync_ui_backdrop_targets(pair, backdrop, pair.snapshot != nullptr, pair.first != nullptr,
+        [&](std::uint32_t width, std::uint32_t height) {
+            if (pair.snapshot) SDL_ReleaseGPUTexture(device, pair.snapshot);
+            pair.snapshot = create_frame_texture(device, target_format, SDL_GPU_SAMPLECOUNT_1, width, height,
+                SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+        },
+        [&](std::uint32_t width, std::uint32_t height) {
+            if (pair.first) SDL_ReleaseGPUTexture(device, pair.first);
+            if (pair.second) SDL_ReleaseGPUTexture(device, pair.second);
+            pair.first = create_frame_texture(device, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, SDL_GPU_SAMPLECOUNT_1,
+                width, height, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+            pair.second = create_frame_texture(device, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, SDL_GPU_SAMPLECOUNT_1,
+                width, height, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+        });
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     const SDL_GPUTextureLocation source{
         target, 0, 0,
         static_cast<Uint32>(backdrop.left),
@@ -86,7 +64,7 @@ inline void render_ui_backdrop_sdl(
     SDL_CopyGPUTextureToTexture(
         copy, &source, &destination,
         backdrop.width, backdrop.height, 1, false);
-    SDL_EndGPUCopyPass(copy);
+    copy.end();
 
     const std::array<float, 16> projection{
         2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0,
@@ -102,7 +80,7 @@ inline void render_ui_backdrop_sdl(
         attachment.load_op = composite ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_CLEAR;
         attachment.store_op = SDL_GPU_STOREOP_STORE;
         attachment.clear_color = {0, 0, 0, 0};
-        auto* pass = SDL_BeginGPURenderPass(command, &attachment, 1, nullptr);
+        SdlRenderPass pass{SDL_BeginGPURenderPass(command, &attachment, 1, nullptr)};
         if (!pass) throw std::runtime_error(SDL_GetError());
         SDL_BindGPUGraphicsPipeline(pass, composite ? composite_pipeline : resources.pipeline);
         SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
@@ -110,17 +88,13 @@ inline void render_ui_backdrop_sdl(
         const SDL_GPUTextureSamplerBinding texture_binding{input, sampler};
         SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
         SDL_DrawGPUIndexedPrimitives(pass, count, 1, first, 0, 0);
-        SDL_EndGPURenderPass(pass);
+        pass.end();
     };
-    draw(
-        pair.first,
-        pair.snapshot,
-        backdrop.sample_index,
-        UiBackdrop::sample_index_count,
-        false);
-    draw(pair.second, pair.first, backdrop.horizontal_index(), backdrop.kernel_index_count, false);
-    draw(pair.first, pair.second, backdrop.vertical_index(), backdrop.kernel_index_count, false);
-    draw(target, pair.first, backdrop.composite_index(), backdrop.composite_index_count, true);
+    const std::array<SDL_GPUTexture*, 4> textures{target, pair.snapshot, pair.first, pair.second};
+    for (const auto& pass : ui_backdrop_draw_plan(backdrop)) {
+        draw(textures[static_cast<std::size_t>(pass.output)], textures[static_cast<std::size_t>(pass.input)],
+            pass.first, pass.count, pass.output == UiBackdropSurface::target);
+    }
 }
 
 } // namespace bbl::pal

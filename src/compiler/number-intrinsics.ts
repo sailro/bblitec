@@ -1,9 +1,10 @@
+import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { ExpressionContext } from "./expressions.js";
 import type { Value } from "./types.js";
 
-const constants: ReadonlyMap<string, number> = new Map([
+const constants: ReadonlyMap<string, number> = new EmissionMap([
     ["MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER],
     ["MIN_SAFE_INTEGER", Number.MIN_SAFE_INTEGER],
     ["EPSILON", Number.EPSILON],
@@ -24,7 +25,7 @@ export function numberConstant(
         ? constants.get(expression.name.text) : undefined;
 }
 
-const predicates: ReadonlyMap<string, { cpp: string; fold: (value: number) => boolean }> = new Map([
+const predicates: ReadonlyMap<string, { cpp: string; fold: (value: number) => boolean }> = new EmissionMap([
     ["isFinite", { cpp: "std::isfinite", fold: Number.isFinite }],
     ["isNaN", { cpp: "std::isnan", fold: Number.isNaN }],
     ["isInteger", { cpp: "bbl::js::number_is_integer", fold: Number.isInteger }],
@@ -49,7 +50,7 @@ export function compileNumberPredicate(context: ExpressionContext, call: ts.Call
     let cpp: string;
     if (value.dataType?.kind === "json" || optionalNumeric) {
         const argument = context.allocateTemporaryCppName("number_predicate_argument");
-        context.emit(`const auto ${argument} = ${value.cpp};`);
+        context.emit({ kind: "declaration", type: "const auto", name: argument, initializer: value.cpp });
         cpp = optionalNumeric
             ? `(${argument}.has_value() && ${predicate.cpp}(*${argument}))`
             : `(${argument}.is_number() && ${predicate.cpp}(${argument}.to_number()))`;

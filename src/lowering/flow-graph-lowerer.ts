@@ -40,6 +40,7 @@ import type {
 } from "../pinned-flow-graph.js";
 import { type LoweredSource, LoweringContext, statementKind } from "./context.js";
 import { CPP_RECORD, CPP_SCALAR } from "./cpp-types.js";
+import {lowerFlowGraphDisposal, lowerFlowGraphMembership, lowerGltfFlowGraphLifecycle} from "./gltf/flow-graph-lifecycle.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
@@ -914,6 +915,10 @@ ${startCalls.length > 0 ? startCalls.join("\n") : "        // No event/onStart r
 ${pointerCalls.length > 0 ? pointerCalls.join("\n") : "        // No event/onSelect receiver."}
     }
 
+    void dispose() override {
+${lowerFlowGraphDisposal(this.context, [...this.slots.values()].filter(slot => slot.member).map(slot => slot.member))}
+    }
+
     bool node_selectable([[maybe_unused]] std::size_t node_index) const override {
 ${selectableCases.length > 0
             ? `        switch (node_index) {\n${selectableCases.join("\n")}\n            default: return true;\n        }`
@@ -1728,9 +1733,6 @@ export class FlowGraphLowerer {
             ],
             (statement) => (ts.isForOfStatement(statement) ? "for-of statement" : statementKind(statement)),
         );
-        const attach = this.context.functionDeclaration(SCENE_MODULE, "attachFlowGraph").declaration;
-        shape(attach, "scene._flowGraphPointerRefresh?.()", "attach pointer refresh");
-
         const bridge = this.context.functionDeclaration(POINTER_MODULE, "refreshFlowGraphPointerPicking").declaration;
         shape(bridge, "pointer.button === 0", "pointer press button");
         // The release is dropped when it comes from another pointer than
@@ -1745,17 +1747,6 @@ export class FlowGraphLowerer {
         shape(dispatch, `pumpFlowGraphEvent(runtime, FgEventType.Pointer, { nodeIndex, controllerIndex: 0, event: ${JSON.stringify(POINTER_EVENT_REFERENCE)} })`, "pointer dispatch payload");
         const forMesh = this.context.functionDeclaration(POINTER_MODULE, "runtimesForMesh").declaration;
         shape(forMesh, "runtime.env._assetScope === mesh._flowGraphAssetScope", "runtimes by asset scope");
-
-        const materialMap = this.context.functionDeclaration(LOADER_MODULE, "buildMaterialMap").declaration;
-        shape(materialMap, "mesh._gltfNodeIndex = ni", "mesh node index");
-        shape(materialMap, "map[matIdx] = mesh.material", "material map");
-        // container.flowGraphRuntimes: assigned by the feature's scene
-        // setup per add, from runFlowGraphs' ordered attach-and-push.
-        const applyAsset = this.context.methodDeclaration(LOADER_MODULE, "feature.applyAsset").declaration;
-        shape(applyAsset, "container.flowGraphRuntimes = runtimes", "container runtimes assignment");
-        const run = this.context.functionDeclaration(SCENE_MODULE, "runFlowGraphs").declaration;
-        shape(run, "attachFlowGraph(scene, rt)", "run attach");
-        shape(run, "runtimes.push(rt)", "run push");
 
         const uv = this.context.functionDeclaration(PATH_CONVERTER_MODULE, "resolveMaterialUvTransform").declaration;
         shape(uv, "{ x: tex?.uScale ?? 1, y: tex?.vScale ?? 1 }", "material scale read");
@@ -1810,6 +1801,7 @@ struct FlowGraphRuntime {
     virtual bool uses_pointer_event() const = 0;
     virtual void fire_start() = 0;
     virtual void pointer(const FlowGraphPointerEvent& payload) = 0;
+    virtual void dispose() = 0;
     /** The KHR_node_selectability accessor's value, true where none exists. */
     virtual bool node_selectable(std::size_t node_index) const = 0;
 };
@@ -1827,10 +1819,10 @@ struct FlowGraphRuntime {
         }
         const table = [...assets].map(
             ([asset, namespaces]) =>
-                `    {${JSON.stringify(asset)}, [](Scene& scene, AssetHandle asset) {\n${namespaces
+                `    {${JSON.stringify(asset)}, {\n${namespaces
                     .map(
                         (namespace) =>
-                            `        attach_flow_graph(scene, std::make_shared<${namespace}::Runtime>(*scene.engine, asset));`,
+                            `        [](Engine& engine, AssetHandle asset) -> std::shared_ptr<FlowGraphRuntime> { return std::make_shared<${namespace}::Runtime>(engine, asset); },`,
                     )
                     .join("\n")}\n    }},`,
         );
@@ -1846,6 +1838,7 @@ struct FlowGraphRuntime {
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -1875,16 +1868,12 @@ ${graphs.map((graph) => graph.source).join("\n\n")}
 
 // ── The scene coordinator and the pointer bridge ─────────────────────────────
 
-// runFlowGraphs: \`attachFlowGraph(scene, rt); runtimes.push(rt);\` -- the
-// scene's list and the container's, one push each.
-void attach_flow_graph(Scene& scene, std::shared_ptr<FlowGraphRuntime> runtime) {
-    scene.engine->assets.at(runtime->asset_scope.value).flow_graph_runtimes.push_back(runtime);
-    scene.state->flow_graphs.push_back(std::move(runtime));
-}
+${lowerFlowGraphMembership(this.context)}
+${lowerGltfFlowGraphLifecycle(this.context)}
 
 struct FlowGraphAssetGraphs {
     const char* asset;
-    void (*attach)(Scene&, AssetHandle);
+    std::vector<FlowGraphFactory> factories;
 };
 
 // The graphs generation parsed, by the packaged asset the loader reads.
@@ -1909,7 +1898,7 @@ std::optional<FlowGraphMeshNode> flow_graph_mesh_node(const Scene& scene, MeshHa
     for (const auto& runtime : scene.state->flow_graphs) {
         const AssetRecord& asset = scene.engine->assets.at(runtime->asset_scope.value);
         for (std::size_t index = 0; index < asset.meshes.size() && index < asset.mesh_nodes.size(); ++index) {
-            if (asset.meshes[index] == mesh) {
+            if (asset.meshes[index] == mesh && asset.mesh_nodes[index] != std::numeric_limits<std::size_t>::max()) {
                 return FlowGraphMeshNode{runtime->asset_scope, asset.mesh_nodes[index]};
             }
         }
@@ -1958,14 +1947,17 @@ void dispatch_flow_graph_pointer_pick(const Scene& scene, const PickingInfo& pic
 // readback is a promise; here the pick is a wait on submitted work, so the
 // cascade runs inside the release handler. The pin also drops a release
 // from a pointer other than the pressing one; native mouse events carry
-// one pointer, so the pair is always the same. A graph never detaches
-// natively, so an installed bridge stays until the scene disposes and the
-// pin's teardown-when-none-remains arm has no state to act on here.
+// one pointer, so the pair is always the same.
 void refresh_flow_graph_pointer_picking(Scene& scene) {
     SceneState& state = *scene.state;
     bool uses_pointer = false;
     for (const auto& runtime : state.flow_graphs) uses_pointer |= runtime->uses_pointer_event();
-    if (!uses_pointer || state.flow_graph_pointer_cleanup) return;
+    if (!uses_pointer) {
+        const auto cleanup = state.flow_graph_pointer_cleanup;
+        if (cleanup) cleanup();
+        return;
+    }
+    if (state.flow_graph_pointer_cleanup) return;
     Engine& engine = *scene.engine;
     const GpuPickerHandle picker = create_gpu_picker(scene);
     const auto press = std::make_shared<std::optional<FlowGraphPress>>();
@@ -1998,11 +1990,12 @@ void refresh_flow_graph_pointer_picking(Scene& scene) {
         dispatch_flow_graph_pointer_pick(picked, pick);
     });
     on_mouse_cancel(engine, identity, [press](const PlatformMouseEvent&) { press->reset(); });
-    state.flow_graph_pointer_cleanup = [&engine, identity, picker]() {
+    state.flow_graph_pointer_cleanup = [&engine, weak, identity, picker]() {
         off_mouse_down(engine, identity);
         off_mouse_up(engine, identity);
         off_mouse_cancel(engine, identity);
         dispose_picker(engine, picker);
+        if (const auto shared = weak.lock()) shared->flow_graph_pointer_cleanup = nullptr;
     };
 }
 
@@ -2012,36 +2005,37 @@ void refresh_flow_graph_pointer_picking(Scene& scene) {
 // subscribes every runtime that has not started, then fires onStart for
 // each -- startFlowGraphs's two loops. No admitted block receives the tick
 // channel or registers a pending task, so the tick's event flush and its
-// two later loops have nothing to run; and a graph never detaches
-// natively, so the list is walked in place and the pin's isAttached
-// re-check between the loops has nothing to see.
+// two later loops have nothing to run.
 void ensure_flow_graph_coordinator(Scene& scene) {
     SceneState& state = *scene.state;
-    if (state.flow_graph_coordinator) return;
-    state.flow_graph_coordinator = true;
+    if (state.flow_graph_tick) return;
     const std::weak_ptr<SceneState> weak = scene.state;
-    on_before_render(scene, js::Callback<void(float)>{[weak](float) {
+    state.flow_graph_tick = js::Callback<void(float)>{[weak](float) {
         const std::shared_ptr<SceneState> shared = weak.lock();
         if (!shared || shared->disposed) return;
-        std::vector<FlowGraphRuntime*> pending_start;
-        for (const auto& runtime : shared->flow_graphs) {
+        std::vector<std::shared_ptr<FlowGraphRuntime>> pending_start;
+        const auto runtimes = shared->flow_graphs;
+        for (const auto& runtime : runtimes) {
             if (runtime->started) continue;
             runtime->started = true;
-            pending_start.push_back(runtime.get());
+            pending_start.push_back(runtime);
         }
-        for (FlowGraphRuntime* runtime : pending_start) runtime->fire_start();
-    }});
-    on_scene_dispose(scene, js::Callback<void()>{[weak]() {
+        for (const auto& runtime : pending_start)
+            if (std::find(shared->flow_graphs.begin(), shared->flow_graphs.end(), runtime) != shared->flow_graphs.end()) runtime->fire_start();
+    }};
+    state.flow_graph_dispose = js::Callback<void()>{[weak]() {
         const std::shared_ptr<SceneState> shared = weak.lock();
         if (!shared) return;
+        auto runtimes = std::move(shared->flow_graphs);
         shared->flow_graphs.clear();
-        if (shared->flow_graph_pointer_cleanup) {
-            std::function<void()> cleanup = std::move(shared->flow_graph_pointer_cleanup);
-            shared->flow_graph_pointer_cleanup = nullptr;
-            cleanup();
-        }
-        shared->flow_graph_coordinator = false;
-    }});
+        for (const auto& runtime : runtimes) runtime->dispose();
+        const auto cleanup = shared->flow_graph_pointer_cleanup;
+        if (cleanup) cleanup();
+        Scene scene = Scene::from_state(shared);
+        remove_flow_graph_coordinator(scene);
+    }};
+    on_before_render(scene, state.flow_graph_tick);
+    on_scene_dispose(scene, state.flow_graph_dispose);
 }
 
 } // namespace
@@ -2055,9 +2049,7 @@ void attach_flow_graphs(Scene& scene, AssetHandle asset, const std::string& asse
     }
     for (const FlowGraphAssetGraphs& entry : flow_graph_assets) {
         if (asset_name != entry.asset) continue;
-        // container.flowGraphRuntimes = runtimes: assigned per add.
-        scene.engine->assets.at(asset.value).flow_graph_runtimes.clear();
-        entry.attach(scene, asset);
+        setup_flow_graphs(scene, asset, entry.factories);
         if (flow_graph_trace_enabled()) {
             std::fprintf(
                 stderr,
@@ -2065,8 +2057,6 @@ void attach_flow_graphs(Scene& scene, AssetHandle asset, const std::string& asse
                 entry.asset,
                 scene.engine->assets.at(asset.value).flow_graph_runtimes.size());
         }
-        ensure_flow_graph_coordinator(scene);
-        if (scene.state->flow_graph_pointer_refresh) refresh_flow_graph_pointer_picking(scene);
         return;
     }
     throw std::runtime_error("No flow graphs were generated for the asset " + asset_name + ".");

@@ -18,70 +18,9 @@ else()
     set(BBLITE_VISUAL_CAPTURE_DEFAULT ON)
 endif()
 option(BBLITE_VISUAL_CAPTURE "Build screenshot and render-state capture" ${BBLITE_VISUAL_CAPTURE_DEFAULT})
+option(BBLITE_CHECKED_HANDLES "Check native record handle bounds" OFF)
 
-# Image codecs reached by the scene's materialized assets: generation
-# writes the list into features.cmake, and a tree without one is not a
-# tree this file knows how to build.
-if(NOT DEFINED BBLITE_IMAGE_CODECS)
-    message(
-        FATAL_ERROR
-        "${BBLITE_GENERATED_DIR}/features.cmake carries no BBLITE_IMAGE_CODECS "
-        "list; regenerate the scene (scene -- compile <id>)."
-    )
-endif()
-set(BBLITE_HAS_IMAGE_DECODER OFF)
-if(BBLITE_IMAGE_CODECS)
-    set(BBLITE_HAS_IMAGE_DECODER ON)
-endif()
-set(BBLITE_REQUIRED_IMAGE_CODECS ${BBLITE_IMAGE_CODECS})
-if(BBLITE_VISUAL_CAPTURE)
-    list(APPEND BBLITE_REQUIRED_IMAGE_CODECS "png")
-endif()
-foreach(BBLITE_IMAGE_CODEC IN ITEMS "png" "jpeg" "webp")
-    if(
-        "${BBLITE_IMAGE_CODEC}" IN_LIST BBLITE_REQUIRED_IMAGE_CODECS
-        AND NOT "${BBLITE_IMAGE_CODEC}" IN_LIST VCPKG_MANIFEST_FEATURES
-    )
-        list(APPEND VCPKG_MANIFEST_FEATURES "${BBLITE_IMAGE_CODEC}")
-    endif()
-endforeach()
-
-# The rigid-body solver, selected the same way and for the same reason: a
-# scene that creates no physics world installs and links nothing.
-if(
-    "physics:world" IN_LIST BBLITE_RUNTIME_FEATURES
-    AND NOT "physics" IN_LIST VCPKG_MANIFEST_FEATURES
-)
-    list(APPEND VCPKG_MANIFEST_FEATURES "physics")
-endif()
-
-# The navigation toolset, same shape: a scene that creates no navigation
-# plugin installs and links nothing.
-if(
-    "navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES
-    AND NOT "navigation" IN_LIST VCPKG_MANIFEST_FEATURES
-)
-    list(APPEND VCPKG_MANIFEST_FEATURES "navigation")
-endif()
-foreach(BBLITE_NAV_COMPONENT IN ITEMS "crowd" "tile-cache")
-    if("navigation:${BBLITE_NAV_COMPONENT}" IN_LIST BBLITE_RUNTIME_FEATURES)
-        list(APPEND VCPKG_MANIFEST_FEATURES "navigation-${BBLITE_NAV_COMPONENT}")
-    endif()
-endforeach()
-
-# Scene-created DOM lowers to a retained UI IR. Only that reached surface
-# installs the font dependency and composes RmlUi into the executable.
-if(
-    "ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES
-    AND NOT "ui" IN_LIST VCPKG_MANIFEST_FEATURES
-)
-    list(APPEND VCPKG_MANIFEST_FEATURES "ui")
-endif()
-if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES AND
-   ("ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES OR NOT BBLITE_MINSIZE) AND
-   NOT "ui-svg" IN_LIST VCPKG_MANIFEST_FEATURES)
-    list(APPEND VCPKG_MANIFEST_FEATURES "ui-svg")
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/dependency-features.cmake")
 
 # A scene reaching a subsystem against a trimmed SDL that omitted it would
 # fail late and opaquely. The builder records capabilities explicitly; load
@@ -152,10 +91,6 @@ if(BBLITE_SDL_DIR AND BBLITE_MINSIZE)
     endforeach()
 endif()
 
-if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES AND NOT "text-layout" IN_LIST VCPKG_MANIFEST_FEATURES)
-    list(APPEND VCPKG_MANIFEST_FEATURES "text-layout")
-endif()
-
 # The vcpkg toolchain would copy every imported DLL beside the executable
 # after each link. The build tree hard-links them instead (below, with the
 # Dawn DLLs): one physical copy of ~30 MB of runtime libraries serves every
@@ -164,6 +99,7 @@ endif()
 set(VCPKG_APPLOCAL_DEPS OFF)
 
 project(babylon_lite_native LANGUAGES CXX)
+include("${BBLITE_NATIVE_ROOT}/compiler-cache.cmake")
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
 set(BBLITE_BUILD_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders")
@@ -367,8 +303,19 @@ add_executable(
     ${BBLITE_GENERATED_SOURCES}
 )
 target_link_libraries(bblite_native PRIVATE bblite_features bblite_pal_common)
-# Only the executable's own units read the generated headers.
-target_include_directories(bblite_native PRIVATE "${BBLITE_GENERATED_DIR}/upstream/include")
+target_compile_definitions(bblite_features INTERFACE BBLITE_CHECKED_HANDLES=$<BOOL:${BBLITE_CHECKED_HANDLES}>)
+if(BBLITE_NATIVE_CACHE_ACTIVE)
+    include("${BBLITE_NATIVE_ROOT}/native-header-cache.cmake")
+    bblite_cached_headers(BBLITE_BACKEND_HEADERS)
+    target_include_directories(bblite_native PRIVATE "${BBLITE_BACKEND_HEADERS}")
+    set_source_files_properties(
+        "${BBLITE_GENERATED_DIR}/main.cpp"
+        "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
+        ${BBLITE_GENERATED_SOURCES}
+        PROPERTIES INCLUDE_DIRECTORIES "${BBLITE_GENERATED_DIR}/upstream/include")
+else()
+    target_include_directories(bblite_native PRIVATE "${BBLITE_GENERATED_DIR}/upstream/include")
+endif()
 
 # One feature, one macro. Every macro named here is defined in every
 # translation unit -- 1 when the generated tree reached any of the listed
@@ -783,6 +730,11 @@ else()
 endif()
 
 bblite_feature_define(BBLITE_HAS_SPRITE_RENDERER "renderer:sprite")
+bblite_feature_define(BBLITE_HAS_SPRITES "sprite:2d" "sprite:billboard" "sprite:animation" "renderer:sprite")
+bblite_feature_define(BBLITE_HAS_SPRITE_ANIMATION "sprite:animation")
+bblite_feature_define(BBLITE_HAS_ANIMATION "animation:property" "animation:managed-groups")
+bblite_feature_define(BBLITE_HAS_GIZMOS "gizmo:utility-layer")
+bblite_feature_define(BBLITE_HAS_SHADOWS "shadow:esm" "shadow:pcf" "shadow:pcf-directional" "shadow:csm" "shadow:task")
 bblite_feature_define(BBLITE_HAS_CANVAS_RENDERER "renderer:canvas")
 bblite_feature_define(BBLITE_HAS_EFFECT_RENDERER "renderer:effect")
 bblite_feature_define(BBLITE_HAS_FRAME_GRAPH_RENDERER "renderer:frame-graph")
@@ -825,6 +777,7 @@ bblite_feature_define(BBLITE_HAS_DETAILED_PICKING "picking:detailed")
 # the composed PBR fragment's own group, from the container the scene holds.
 # A scene that never adds one carries none of it.
 bblite_feature_define(BBLITE_HAS_CLUSTERED_LIGHTS "light:clustered")
+bblite_feature_define(BBLITE_SHADOWS_CSM "shadow:csm")
 
 # The solver is reached only through `bblite/pal_physics.hpp`, whose
 # implementation is one translation unit the feature list selects
@@ -937,11 +890,18 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
             "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
         )
     endif()
+    if(BBLITE_AUDIO_DECODE_FILE AND NOT EXISTS "${BBLITE_LABSOUND_DIR}/include/libnyquist/Decoders.h")
+        message(FATAL_ERROR "Decoded audio requires the libnyquist headers; reinstall with tools/build-labsound.ps1 (-StaticRuntime -EnableCodecs for a minimal build).")
+    endif()
     target_compile_definitions(bblite_features INTERFACE
         BBLITE_HAS_AUDIO_CAPTURE=$<BOOL:${BBLITE_AUDIO_CAPTURE}>
         BBLITE_HAS_AUDIO_DECODE_FILE=$<BOOL:${BBLITE_AUDIO_DECODE_FILE}>
     )
     bblite_feature_define(BBLITE_HAS_AUDIO_BUFFER_SOURCE "audio:buffer-source")
+    foreach(codec IN ITEMS WAV WV MPC FLAC MP3 OPUS OGG)
+        string(TOLOWER "${codec}" codec_feature)
+        bblite_feature_define("BBLITE_AUDIO_DECODE_${codec}" "audio:decode-${codec_feature}")
+    endforeach()
     bblite_feature_define(BBLITE_HAS_AUDIO_OSCILLATOR "audio:oscillator")
     bblite_feature_define(BBLITE_HAS_AUDIO_BIQUAD_FILTER "audio:biquad-filter")
     bblite_feature_define(BBLITE_HAS_AUDIO_STEREO_PANNER "audio:stereo-panner")
@@ -1085,7 +1045,9 @@ option(
     "Precompile the stable native headers once per build tree"
     ${BBLITE_PCH_DEFAULT}
 )
-if(BBLITE_PCH)
+# Cached builds reuse complete objects and do not allocate a PCH per scene.
+# Keeping PCH flags out of cache keys also avoids scene-specific PCH paths.
+if(BBLITE_PCH AND NOT BBLITE_NATIVE_CACHE_ACTIVE)
     # The four repository headers bring the standard library they use; the
     # rest are what the PAL units include beyond them.
     set(

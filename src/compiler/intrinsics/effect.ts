@@ -1,3 +1,18 @@
+import type { LoweringServices } from "../lowering-services.js";
+// The fullscreen-effect family: `EffectWrapper`, its two draws, and the two
+// setters that fill it.
+//
+// Upstream's `src/effect/effect-renderer.ts` is one shader module (the pin's
+// own fullscreen-triangle vertex stage concatenated with the caller's
+// fragment), one explicitly declared bind group, and two ways to draw it: an
+// `EffectRenderer` that registers on the engine as its own `RenderingContext`
+// and owns a swapchain target, and an `EffectRenderTask` scheduled in a
+// scene's frame graph against a `RenderTarget` the caller made.
+//
+// Both halves are compile-time here for the same reason the sprite path is:
+// the module text and the bind-group layout are settled by the descriptor, so
+// generation composes and deploys them, and what stays at run time is the
+// uniform bytes, the bound textures, and the pass.
 // The fullscreen-effect family: `EffectWrapper`, its two draws, and the two
 // setters that fill it.
 //
@@ -24,42 +39,24 @@ import {
 } from "../option-helpers.js";
 
 export interface EffectIntrinsicContext
-    extends
-        IntrinsicCallContext,
-        ObjectValidationContext,
-        PositiveIntegerContext {
-    requireDefaultEngine(node: ts.Node): string;
-    requireEngine(value: Value, node: ts.Node): string;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    unwrap(expression: ts.Expression): ts.Expression;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    cppString(value: string): string;
-    compileBoolean(expression: ts.Expression): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileStaticString(expression: ts.Expression): string;
-    /**
-     * Records one descriptor and returns its index in reach order, which is
-     * the generated table's index order. Generation composes a module per
-     * entry.
-     */
-    recordEffect(effect: {
-        family: "effect" | "uniform-effect";
-        name: string;
-        fragment: string;
-        bindings: EffectBindingManifest[];
-    }): number;
-    emit(line: string): void;
-    fail(node: ts.Node, message: string): never;
-}
+    extends IntrinsicCallContext,
+    ObjectValidationContext,
+    PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "requireDefaultEngine"
+        | "requireEngine"
+        | "expectSameEngine"
+        | "unwrap"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "cppString"
+        | "compileBoolean"
+        | "compileNumber"
+        | "compileStaticString"
+        | "recordEffect"
+        | "emit"
+        | "fail"
+    > {}
 
 /** The pin's own align4 on a uniform binding's declared byte length. */
 function align4(value: number): number {

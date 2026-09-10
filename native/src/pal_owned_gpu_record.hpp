@@ -8,6 +8,11 @@ namespace bbl::pal {
 // A backend record owns its handles from the first upload through publication,
 // vector moves and teardown. The backend supplies dependency-ordered release.
 template <typename Resources, typename Owner>
+void release_owned_gpu_record(Owner* owner, Resources& resources) noexcept {
+    owner->release_gpu_resources(resources);
+}
+
+template <typename Resources, typename Owner, auto Release = &release_owned_gpu_record<Resources, Owner>>
 class OwnedGpuRecord : public Resources {
     static_assert(std::is_nothrow_move_assignable_v<Resources>);
     Owner* owner_ = nullptr;
@@ -15,6 +20,7 @@ class OwnedGpuRecord : public Resources {
 public:
     OwnedGpuRecord() = default;
     explicit OwnedGpuRecord(Owner& owner) : owner_(&owner) {}
+    explicit OwnedGpuRecord(Owner* owner) : owner_(owner) {}
     OwnedGpuRecord(const OwnedGpuRecord&) = delete;
     OwnedGpuRecord& operator=(const OwnedGpuRecord&) = delete;
 
@@ -40,7 +46,7 @@ public:
 
     void reset() noexcept {
         if (Owner* owner = std::exchange(owner_, nullptr)) {
-            owner->release_gpu_resources(static_cast<Resources&>(*this));
+            Release(owner, static_cast<Resources&>(*this));
         }
     }
 };

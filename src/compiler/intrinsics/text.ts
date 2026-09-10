@@ -1,35 +1,47 @@
+import { EmissionSet, EmissionMap } from "../emission-transaction.js";
+import type { LoweringServices } from "../lowering-services.js";
+/** Static shaping executes the pin; native text entities retain the resulting bytes. */
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { materializePinnedText, textSha256, type CompiledTextData, type StaticTextLayout, type TextBlob } from "../../pinned-text-data.js";
+import {
+    materializePinnedText,
+    textSha256,
+    type CompiledTextData,
+    type StaticTextLayout,
+    type TextBlob,
+} from "../../pinned-text-data.js";
 import { readAssetBytesSync } from "../asset-bytes-sync.js";
 import { compileStaticNumber, type PositiveIntegerContext } from "../option-helpers.js";
-import type { CompileAsset, ResolvedCompileOptions, Value } from "../types.js";
+import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { pinnedHandleKind, type DataType } from "../data-types.js";
+import { pinnedHandleKind } from "../data-types.js";
 import { retainTextValue } from "../text-surface.js";
 
-export interface TextIntrinsicContext extends IntrinsicCallContext, PositiveIntegerContext {
-    readonly reachedTextData: CompiledTextData[];
-    readonly options: ResolvedCompileOptions;
-    readonly assetPayloads: Map<string, string>;
-    registerAsset(source: string, kind: CompileAsset["kind"], faceSize?: number): CompileAsset;
-    compileStaticString(expression: ts.Expression): string;
-    expectStaticArrayLiteral(expression: ts.Expression): ts.ArrayLiteralExpression;
-    unwrap(expression: ts.Expression): ts.Expression;
-    emit(line: string): void;
-    allocateTemporaryCppName(label: string): string;
-    pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
-    compileNumber(expression: ts.Expression, precision?: "float" | "double"): string;
-    compileBoolean(expression: ts.Expression): string;
-    compileForDataSink(expression: ts.Expression, dataType: DataType): string;
-    compileColor4(expression: ts.Expression): string;
-    readonly checker: ts.TypeChecker;
-    assertTextPipelineMutable(node: ts.Node): void;
-    recordTextAttachment(node: ts.Node): void;
-    assertTextDisposal(node: ts.Node): void;
-    noteTextSceneLifecycle(node: ts.Node, message?: string): void;
-}
+export interface TextIntrinsicContext
+    extends IntrinsicCallContext,
+    PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "reachedTextData"
+        | "options"
+        | "assetPayloads"
+        | "registerAsset"
+        | "compileStaticString"
+        | "expectStaticArrayLiteral"
+        | "unwrap"
+        | "emit"
+        | "allocateTemporaryCppName"
+        | "pinValueToTemporary"
+        | "compileNumber"
+        | "compileBoolean"
+        | "compileForDataSink"
+        | "compileColor4"
+        | "checker"
+        | "assertTextPipelineMutable"
+        | "recordTextAttachment"
+        | "assertTextDisposal"
+        | "noteTextSceneLifecycle"
+    > {}
 
 export function compileTextIntrinsic(context: TextIntrinsicContext, name: string, call: ts.CallExpression): Value | undefined {
     if (name === "setFontWeightOffset") {
@@ -87,7 +99,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
             const native = ({ positionPx: "position_px", rotationRad: "rotation_rad", coverageGamma: "coverage_gamma" } as Record<string,string>)[field] ?? field;
             if (field === "positionPx") {
                 const components = textOptionEntries(context, value);
-                if (components.length !== 2 || !components.every(([name]) => name === "x" || name === "y") || new Set(components.map(([name]) => name)).size !== 2)
+                if (components.length !== 2 || !components.every(([name]) => name === "x" || name === "y") || new EmissionSet(components.map(([name]) => name)).size !== 2)
                     context.fail(value, "Text layer position requires x and y components.");
                 for (const [axis, component] of components) context.emit(`${options}.${native}.${axis} = ${context.compileNumber(component, "double")};`);
             } else if (["rotationRad", "scale", "order", "opacity", "coverageGamma", "visible"].includes(field)) {
@@ -166,7 +178,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
         const originalScene = context.compileValue(argumentAt(call, 0));
         context.expectKind(originalScene, "scene", argumentAt(call, 0));
         const scene = { ...originalScene, cpp: context.allocateTemporaryCppName("text_scene") };
-        context.emit(`auto ${scene.cpp} = ${originalScene.cpp};`);
+        context.emit({ kind: "declaration", type: "auto", name: scene.cpp, initializer: originalScene.cpp });
         const renderable = context.compileValue(argumentAt(call, 1));
         context.expectKind(renderable, "text-renderable", argumentAt(call, 1));
         context.recordTextAttachment(call);
@@ -331,7 +343,7 @@ function compileRenderableOptions(context: TextIntrinsicContext, expression?: ts
             const vector = context.unwrap(property.initializer);
             if (!ts.isObjectLiteralExpression(vector)) context.fail(vector, "Text transform options require direct component literals; retained vector options are not represented.");
             const lanes = name === "rotationQuaternion" ? ["x", "y", "z", "w"] : ["x", "y", "z"];
-            const values = new Map<string, string>();
+            const values = new EmissionMap<string, string>();
             for (const component of vector.properties) {
                 if (!ts.isPropertyAssignment(component) || (!ts.isIdentifier(component.name) && !ts.isStringLiteral(component.name)) || !lanes.includes(component.name.text))
                     context.fail(component, "Text transform options require named numeric components.");

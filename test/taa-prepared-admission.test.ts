@@ -76,18 +76,17 @@ test("TAA refuses explicit environment cache invalidation in either reach order"
     }
 });
 
-test("TAA preparation refuses unrepresented renderer families in either reach order", () => {
-    for (const [body, feature] of [
-        [`createPbrMaterial({});`, "material:pbr"],
-        [`createGridMaterial();`, "material:grid"],
-        [`createStandardNoColorMaterialView(createStandardMaterial());`, "material:no-color-view"],
-        [`await loadSplat(scene,"/cloud.splat");`, "loader:splat"],
-        [`await loadEnvironment(scene,"/studio.env",{skipGround:true});`, "background:"],
+test("TAA leaves material and contributor admission to the prepared pass", () => {
+    for (const body of [
+        `createPbrMaterial({});`,
+        `createGridMaterial();`,
+        `createStandardNoColorMaterialView(createStandardMaterial());`,
+        `await loadSplat(scene,"/cloud.splat");`,
+        `await loadEnvironment(scene,"/studio.env",{skipGround:true});`,
     ]) {
         assert.doesNotThrow(() => compileSource(prefix + body));
         for (const source of [prefix + body + taa, prefix + taa + body]) {
-            assert.throws(() => compileSource(source), error => error instanceof Error &&
-                error.message.includes("TAA source preparation") && error.message.includes(feature!));
+            assert.doesNotThrow(() => compileSource(source));
         }
     }
 });

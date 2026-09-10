@@ -18,8 +18,11 @@
  * block bodies later decide from that data is decided by evaluating the
  * pinned bodies over it.
  */
-import { asObject, gltfInteractivityGraphs, type JsonRecord } from "./gltf-document.js";
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import ts from "typescript";
+import { asObject, asIndex, GLTF_MESH_PLAN, type JsonRecord } from "./gltf-document.js";
+import type {LoweringContext} from "./lowering/context.js";
+import { pinnedModuleTextUrl } from "./pinned-shader-composer.js";
+import {transpileForBrowser} from "./typescript-transpile.js";
 
 export interface FlowGraphSocket {
     name: string;
@@ -101,34 +104,6 @@ export interface FlowGraphAssetPrograms {
     graphs: FlowGraphProgram[];
 }
 
-interface PinnedGraph {
-    blocks: Array<{
-        id: string;
-        type: string;
-        config?: Record<string, unknown>;
-        dataIn: Array<{
-            name: string;
-            type: string;
-            source?: { blockId: string; socket: string; scale?: number };
-            defaultValue?: unknown;
-        }>;
-        dataOut: Array<{ name: string; type: string }>;
-        signalIn: Array<{ name: string }>;
-        signalOut: Array<{
-            name: string;
-            targets: Array<{ blockId: string; socket: string }>;
-        }>;
-        event?: string;
-    }>;
-    variables: Record<string, { type: string; value: unknown }>;
-}
-
-interface InteractivityParserModule {
-    parseInteractivityGraph(
-        json: unknown,
-    ): Promise<{ graph: PinnedGraph; pointers: string[] }>;
-}
-
 interface PinnedAccessor {
     type: string;
     target?: object;
@@ -136,8 +111,33 @@ interface PinnedAccessor {
     set?: (value: unknown) => void;
 }
 
-interface PathConverterModule {
+export interface PathConverterModule {
     resolvePointerAccessor(pointer: string, context: unknown): PinnedAccessor | null;
+}
+
+/** The feature executes intact except for its recording/runtime boundaries. */
+export function gltfFlowGraphSourceUrl(context: LoweringContext): string {
+    const module = "src/loader-gltf/gltf-feature-interactivity.ts";
+    const file = context.sourceFile(module);
+    const parameter = context.methodDeclaration(module, "feature.applyAsset").declaration.parameters[2]?.name;
+    if (!parameter || !ts.isIdentifier(parameter)) context.contractError(file, "Expected the interactivity load context.");
+    const transform = ts.transform(file, [visitorContext => root => {
+        const visit: ts.Visitor = node => {
+            if (ts.isCallExpression(node)) {
+                const method = context.expressionMatchesShape(node.expression, "resolvePointerAccessor") ? "recordFlowAccessor"
+                    : context.expressionMatchesShape(node.expression, "runFlowGraphs") ? "recordRunFlowGraphs"
+                    : context.expressionMatchesShape(node.expression, "console.warn") ? "recordFlowRejection" : undefined;
+                if (method) return ts.factory.updateCallExpression(node,
+                    ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(parameter.text), method), undefined, node.arguments);
+            }
+            return ts.visitEachChild(node, visit, visitorContext);
+        };
+        return ts.visitNode(root, visit, ts.isSourceFile)!;
+    }]);
+    try {
+        return pinnedModuleTextUrl("loader-gltf/gltf-feature-interactivity.js",
+            transpileForBrowser(ts.createPrinter().printFile(transform.transformed[0]!), module));
+    } finally { transform.dispose(); }
 }
 
 /**
@@ -235,73 +235,75 @@ function materialStandIn(document: JsonRecord, index: number): RecordingRoot {
     return new RecordingRoot({ kind: "material", index }, absent);
 }
 
-/**
- * `buildMaterialMap`: the materials the load prepass offers the resolver are
- * those a primitive of a node with a mesh names, keyed by material index.
- */
-function materialsReachedByPrimitives(document: JsonRecord): number[] {
-    const nodes = Array.isArray(document.nodes) ? document.nodes : [];
-    const meshes = Array.isArray(document.meshes) ? document.meshes : [];
-    const reached = new Set<number>();
-    for (const node of nodes) {
-        const meshIndex = asObject(node)?.mesh;
-        if (typeof meshIndex !== "number") continue;
-        const primitives = asObject(meshes[meshIndex])?.primitives;
-        for (const primitive of Array.isArray(primitives) ? primitives : []) {
-            const material = asObject(primitive)?.material;
-            if (typeof material === "number") reached.add(material);
-        }
-    }
-    return [...reached].sort((left, right) => left - right);
-}
+/** The source feature resolves against its actual node/material maps. */
+export class GltfFlowGraphRecording {
+    private readonly accessors = new WeakMap<object, FlowGraphPointerAccessor>();
+    private readonly unresolvedPointers = new Set<string>();
+    private started: unknown;
+    private runtimes: Promise<never[]> | undefined;
 
-/**
- * `applyAsset`'s constant-pointer prepass, executed over recording
- * stand-ins: the pin's `resolvePointerAccessor` binds each pointer against
- * the same node and material maps the loader builds, then the accessor's
- * getter and setter run once so the members they touch are on record.
- */
-async function resolvePointerAccessors(
-    document: JsonRecord,
-    pointers: readonly string[],
-): Promise<Record<string, FlowGraphPointerAccessor | null>> {
-    const converter = await importPinnedModule<PathConverterModule>(
-        "flow-graph/gltf/path-converter.js",
-    );
-    const nodeCount = Array.isArray(document.nodes) ? document.nodes.length : 0;
-    const materialIndices = materialsReachedByPrimitives(document);
-    const accessors: Record<string, FlowGraphPointerAccessor | null> = {};
-    for (const pointer of pointers) {
-        const nodes = Array.from(
-            { length: nodeCount },
-            (_, index) => new RecordingRoot({ kind: "node", index }),
-        );
-        const materials = materialIndices.map((index) => materialStandIn(document, index));
-        const materialMap: object[] = [];
-        for (const material of materials) materialMap[material.root.index] = material.proxy;
-        const accessor = converter.resolvePointerAccessor(pointer, {
-            nodeMap: nodes.map((node) => node.proxy),
-            materials: materialMap,
-            json: document,
-        });
-        if (!accessor) {
-            accessors[pointer] = null;
-            continue;
-        }
-        const roots = [...nodes, ...materials];
+    public constructor(private readonly converter: PathConverterModule, private readonly document: JsonRecord,
+        private readonly nodes: ReadonlyMap<object, number>, private readonly materials: ReadonlyMap<object, number>) {}
+
+    public resolve(pointer: string, context: unknown): PinnedAccessor | null {
+        const supplied = asObject(context);
+        if (!supplied || supplied.json !== this.document || !Array.isArray(supplied.nodeMap) || !Array.isArray(supplied.materials) ||
+            Object.keys(supplied).some(key => !["json", "nodeMap", "materials"].includes(key)))
+            throw new Error("Unrepresented glTF flow-graph pointer context.");
+        const roots: RecordingRoot[] = [];
+        const map = (values: unknown[], indices: ReadonlyMap<object, number>, kind: "node" | "material") =>
+            values.map(value => {
+                if (value === undefined) return undefined;
+                const object = asObject(value), index = object && indices.get(object);
+                if (index === undefined) throw new Error(`Unrepresented glTF flow-graph ${kind} identity.`);
+                const root = kind === "node" ? new RecordingRoot({kind, index}) : materialStandIn(this.document, index);
+                roots.push(root);
+                return root.proxy;
+            });
+        const accessor = this.converter.resolvePointerAccessor(pointer, {nodeMap: map(supplied.nodeMap, this.nodes, "node"),
+            materials: map(supplied.materials, this.materials, "material"), json: this.document});
+        if (!accessor) { this.unresolvedPointers.add(pointer); return null; }
         for (const root of roots) root.reset();
         accessor.get?.();
         accessor.set?.(probeValue(accessor.type));
-        const target = roots.find((root) => root.proxy === accessor.target)?.root;
-        accessors[pointer] = {
-            pointer,
-            type: accessor.type,
-            ...(target ? { target } : {}),
-            touches: roots.flatMap((root) => root.touches()),
-            writable: accessor.set !== undefined,
-        };
+        const target = roots.find(root => root.proxy === accessor.target)?.root;
+        this.accessors.set(accessor, {pointer, type: accessor.type, ...(target ? {target} : {}),
+            touches: roots.flatMap(root => root.touches()), writable: accessor.set !== undefined});
+        return accessor;
     }
-    return accessors;
+
+    public run(scene: unknown, graphs: unknown, animations: unknown): Promise<never[]> {
+        if (!asObject(scene) || !Array.isArray(graphs) || animations !== undefined || this.started !== undefined)
+            throw new Error("Unrepresented glTF flow-graph recording setup.");
+        this.started = graphs;
+        // Native startup owns the admitted graph runtimes. Recording executes
+        // publication/cleanup registration without starting a scene event loop.
+        return this.runtimes = Promise.resolve([]);
+    }
+
+    public package(value: unknown, publishedRuntimes: unknown): FlowGraphProgram[] {
+        if (publishedRuntimes !== this.runtimes) throw new Error("Unrepresented glTF flow-runtime promise publication.");
+        if (value === undefined) {
+            if (this.started !== undefined) throw new Error("Unpublished glTF flow-graph setup.");
+            return [];
+        }
+        if (!Array.isArray(value) || this.started !== value) throw new Error("Unrepresented glTF flow-graph publication.");
+        const scope = asObject(value[0])?._assetScope;
+        return value.map((value, graphIndex) => {
+            const loaded = asObject(value), graph = asObject(loaded?.graph), accessors = asObject(loaded?.accessors);
+            if (!graph || !accessors || loaded?.rightHanded !== true || typeof loaded.resolveAccessor !== "function" ||
+                !asObject(loaded._assetScope) || loaded._assetScope !== scope) throw new Error("Unrepresented loaded glTF flow graph.");
+            // The source omits unresolved constants from its accessor record;
+            // its runtime resolver returns null again for the same context.
+            const observed: FlowGraphProgram["accessors"] = Object.fromEntries([...this.unresolvedPointers].map(pointer => [pointer, null]));
+            for (const [pointer, value] of Object.entries(accessors)) {
+                const accessor = asObject(value), recording = accessor && this.accessors.get(accessor);
+                if (!recording || recording.pointer !== pointer) throw new Error("Unrepresented glTF flow-graph accessor publication.");
+                observed[pointer] = recording;
+            }
+            return graphProgram(graphIndex, graph, observed);
+        });
+    }
 }
 
 /**
@@ -312,6 +314,8 @@ async function resolvePointerAccessors(
  * the one parser value this port does not carry, and refuses by path.
  */
 function plainValue(value: unknown, path: string): unknown {
+    if (typeof value === "number" && !Number.isFinite(value))
+        throw new Error(`KHR_interactivity: ${path} is not a finite packaged number.`);
     if (
         value === null ||
         value === undefined ||
@@ -337,82 +341,82 @@ function plainValue(value: unknown, path: string): unknown {
     throw new Error(`KHR_interactivity: ${path} is a ${typeof value}, which this port does not carry.`);
 }
 
-/**
- * Parse every graph of one packaged glTF document through the pin.
- *
- * The pin skips a graph its parser rejects with a console warning and runs
- * the rest; a rejected graph here is a generation error naming the asset,
- * because a demo whose browser build silently drops behavior is not one to
- * integrate on a golden that shows the drop. The Babylon editor JSON the
- * same loader feature also accepts (`BABYLON_flow_graph`) is refused at
- * packaging (`asset-specializer.ts`).
- */
-export async function parseFlowGraphs(
-    assetName: string,
-    document: JsonRecord,
-): Promise<FlowGraphProgram[]> {
-    const graphs = gltfInteractivityGraphs(document);
-    if (graphs.length === 0) return [];
-    const parser = await importPinnedModule<InteractivityParserModule>(
-        "flow-graph/gltf/interactivity-parser.js",
-    );
-    const programs: FlowGraphProgram[] = [];
-    for (const [graphIndex, graph] of graphs.entries()) {
-        let parsed: { graph: PinnedGraph; pointers: string[] };
-        try {
-            parsed = await parser.parseInteractivityGraph(graph);
-        } catch (error) {
-            throw new Error(
-                `${assetName}: KHR_interactivity graph ${graphIndex} is rejected ` +
-                    `by the pinned parser (${error instanceof Error ? error.message : String(error)}); ` +
-                    `the browser would run the asset without it.`,
-                { cause: error },
-            );
-        }
-        const variables: FlowGraphProgram["variables"] = {};
-        for (const [name, variable] of Object.entries(parsed.graph.variables)) {
-            variables[name] = {
-                type: variable.type,
-                value: plainValue(variable.value, `variables.${name}`),
+function records(value: unknown, label: string): JsonRecord[] {
+    if (!Array.isArray(value)) throw new Error(`Invalid glTF flow-graph ${label}.`);
+    return value.map(value => {
+        const record = asObject(value);
+        if (!record) throw new Error(`Invalid glTF flow-graph ${label} entry.`);
+        return record;
+    });
+}
+function string(value: unknown): string {
+    if (typeof value !== "string") throw new Error("Invalid glTF flow-graph string.");
+    return value;
+}
+function scale(value: unknown): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("Invalid glTF flow-graph scale.");
+    return value;
+}
+function configuration(value: unknown): JsonRecord {
+    const result = asObject(plainValue(value ?? {}, "config"));
+    if (!result) throw new Error("Invalid glTF flow-graph configuration.");
+    return result;
+}
+function graphProgram(graphIndex: number, graph: JsonRecord, accessors: FlowGraphProgram["accessors"]): FlowGraphProgram {
+    const variables = asObject(graph.variables);
+    if (!variables) throw new Error("Invalid glTF flow-graph variables.");
+    return {graphIndex, accessors, variables: Object.fromEntries(Object.entries(variables).map(([name, value]) => {
+        const variable = asObject(value);
+        if (!variable) throw new Error("Invalid glTF flow-graph variable.");
+        return [name, {type: string(variable.type), value: plainValue(variable.value, `variables.${name}`)}];
+    })), blocks: records(graph.blocks, "blocks").map(block => ({
+        id: string(block.id), type: string(block.type), config: configuration(block.config),
+        dataIn: records(block.dataIn, "data inputs").map(socket => {
+            const source = asObject(socket.source);
+            return {name: string(socket.name), type: string(socket.type),
+                ...(source ? {source: {blockId: string(source.blockId), socket: string(source.socket),
+                    ...(source.scale === undefined ? {} : {scale: scale(source.scale)})}} : {}),
+                ...(socket.defaultValue === undefined ? {} : {defaultValue: plainValue(socket.defaultValue, "socket default")})};
+        }), signalIn: records(block.signalIn, "signal inputs").map(socket => string(socket.name)),
+        signalOut: records(block.signalOut, "signal outputs").map(socket => ({name: string(socket.name),
+            targets: records(socket.targets, "signal targets").map(target => ({blockId: string(target.blockId), socket: string(target.socket)}))})),
+        ...(block.event === undefined ? {} : {event: string(block.event)}),
+    }))};
+}
+
+/** Graph construction and pointer mapping already executed in the mesh feature phase. */
+export async function parseFlowGraphs(assetName: string, document: JsonRecord): Promise<FlowGraphProgram[]> {
+    return packagedFlowGraphPrograms(document, assetName);
+}
+
+export function packagedFlowGraphPrograms(document: JsonRecord, assetName = "glTF"): FlowGraphProgram[] {
+    const plan = asObject(document[GLTF_MESH_PLAN]);
+    if (!plan || !Array.isArray(plan.flowGraphs)) throw new Error(`${assetName}: missing source flow-graph construction schedule.`);
+    return plan.flowGraphs.map((value, index) => {
+        const program = asObject(value), accessors = asObject(program?.accessors);
+        if (!program || program.graphIndex !== index || !accessors) throw new Error("Invalid packaged glTF flow graph.");
+        const observed: FlowGraphProgram["accessors"] = {};
+        for (const [pointer, value] of Object.entries(accessors)) {
+            if (value === null) { observed[pointer] = null; continue; }
+            const accessor = asObject(value), target = asObject(accessor?.target);
+            const root = (value: JsonRecord): FlowGraphRecordingRoot => {
+                const index = asIndex(value.index);
+                if ((value.kind !== "node" && value.kind !== "material") || index === undefined)
+                    throw new Error("Invalid packaged glTF flow-graph target.");
+                return {kind: value.kind, index};
             };
+            if (!accessor || accessor.pointer !== pointer || typeof accessor.writable !== "boolean")
+                throw new Error("Invalid packaged glTF flow-graph accessor.");
+            observed[pointer] = {pointer, type: string(accessor.type), writable: accessor.writable,
+                ...(target ? {target: root(target)} : {}), touches: records(accessor.touches, "accessor touches").map(touch => {
+                    if (typeof touch.write !== "boolean") throw new Error("Invalid packaged glTF flow-graph touch.");
+                    return {...root(touch), path: string(touch.path), write: touch.write};
+                })};
         }
-        programs.push({
-            graphIndex,
-            blocks: parsed.graph.blocks.map((block) => ({
-                id: block.id,
-                type: block.type,
-                config: plainValue(block.config ?? {}, `${block.id}.config`) as Record<string, unknown>,
-                dataIn: block.dataIn.map((socket) => ({
-                    name: socket.name,
-                    type: socket.type,
-                    ...(socket.source
-                        ? {
-                              source: {
-                                  blockId: socket.source.blockId,
-                                  socket: socket.source.socket,
-                                  ...(socket.source.scale !== undefined
-                                      ? { scale: socket.source.scale }
-                                      : {}),
-                              },
-                          }
-                        : {}),
-                    ...(socket.defaultValue !== undefined
-                        ? { defaultValue: plainValue(socket.defaultValue, `${block.id}.${socket.name}`) }
-                        : {}),
-                })),
-                signalIn: block.signalIn.map((socket) => socket.name),
-                signalOut: block.signalOut.map((socket) => ({
-                    name: socket.name,
-                    targets: socket.targets.map((target) => ({
-                        blockId: target.blockId,
-                        socket: target.socket,
-                    })),
-                })),
-                ...(block.event !== undefined ? { event: block.event } : {}),
-            })),
-            variables,
-            accessors: await resolvePointerAccessors(document, parsed.pointers),
+        const blocks = records(program.blocks, "blocks").map(block => {
+            if (!Array.isArray(block.signalIn)) throw new Error("Invalid packaged glTF flow-graph signal inputs.");
+            return {...block, signalIn: block.signalIn.map(name => ({name: string(name)}))};
         });
-    }
-    return programs;
+        return graphProgram(index, {...program, blocks}, observed);
+    });
 }

@@ -1,39 +1,34 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
-import type { Feature } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 /** What the handle's own methods need. The expression compiler satisfies it. */
-interface VatMethodContext {
-    emit(line: string): void;
-    increaseIndent(): void;
-    decreaseIndent(): void;
-    cppString(value: string): string;
-    compileValue(expression: ts.Expression): Value;
-    compileStringLiteral(expression: ts.Expression): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    requireEngine(value: Value, node: ts.Node): string;
-    reachFeature(feature: Feature, site: ts.Node): void;
-    unwrap(expression: ts.Expression): ts.Expression;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    fail(node: ts.Node, message: string): never;
-}
+interface VatMethodContext
+    extends Pick<LoweringServices,
+        | "emit"
+        | "increaseIndent"
+        | "decreaseIndent"
+        | "cppString"
+        | "compileValue"
+        | "compileStringLiteral"
+        | "compileNumber"
+        | "requireEngine"
+        | "reachFeature"
+        | "unwrap"
+        | "lookupOptional"
+        | "expectArgumentCount"
+        | "fail"
+    > {}
 
 export interface VatIntrinsicContext
     extends IntrinsicCallContext,
-        VatMethodContext {
-    allocateTemporaryCppName(label: string): string;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-}
+    VatMethodContext,
+    Pick<LoweringServices,
+        | "allocateTemporaryCppName"
+        | "expectSameEngine"
+    > {}
 
 /**
  * Vertex animation textures (`src/vat/vat-baker.ts`), the slice scenes 218

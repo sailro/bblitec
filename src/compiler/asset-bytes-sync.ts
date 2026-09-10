@@ -14,6 +14,7 @@
 // repository's own `downloadCached` — which also warms the cache for the
 // materialization that follows. The child is the cache module, not a
 // second copy of it, so the cache layout stays single-sourced.
+import { EmissionMap } from "./emission-transaction.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { localAssetPath } from "../asset-source.js";
@@ -21,7 +22,7 @@ import { parseDataUrl } from "../data-url.js";
 import { runGenerationChild } from "./generation-child.js";
 
 /** Immutable inline and download-cache bytes can be shared across compiles. */
-const bytesBySource = new Map<string, Uint8Array>();
+const bytesBySource = new EmissionMap<string, Uint8Array>();
 
 export function readAssetBytesSync(
     source: string,

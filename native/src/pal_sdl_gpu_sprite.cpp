@@ -18,6 +18,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "pal_platform_events.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
+#include "pal_frame_session.hpp"
 #if BBLITE_HAS_TEXT_RENDERER
 #include "pal_sdl_gpu_text_renderer.hpp"
 #endif
@@ -40,22 +42,8 @@ namespace bbl::pal {
 
 #if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER
 
-bool run_sprite_gpu_engine(Engine& engine) {
-    const FrameOptions frame_options = read_frame_options();
-    reject_unsupported_frame_options(
-        frame_options,
-        "SDL_GPU sprites",
-        /*supports_single_sample=*/true,
-        /*supports_copy_task=*/false);
-    const bool canvas_only = engine.registered_sprite_renderers.empty() && engine.registered_text_renderers.empty();
-    if (canvas_only
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        && engine.primary_canvas.value >= engine.ui_elements.size()
-#endif
-    ) {
-        throw std::runtime_error(
-            "The 2D frame host requires a sprite renderer or primary Canvas2D surface.");
-    }
+namespace {
+class SdlSpriteRun : public FrameSession {
     SdlGpuDevice gpu{};
     SDL_Window*& window = gpu.window;
     SDL_GPUDevice*& device = gpu.device;
@@ -73,7 +61,92 @@ bool run_sprite_gpu_engine(Engine& engine) {
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiSdlResources ui_resources;
 #endif
-    const auto release = [&]() {
+    SDL_GPUTextureFormat swapchain_format{};
+    SDL_GPUTexture* swapchain = nullptr;
+    SdlGpuCommand command{nullptr};
+    int surface_width = 0, surface_height = 0;
+    bool capture_run = false, capture_frame = false;
+#if BBLITE_HAS_SPRITE_RENDERER
+    std::unique_ptr<GpuBufferUploadBatch> buffer_uploads;
+#endif
+    std::uint32_t width = 0, height = 0;
+    double delta_ms = 0;
+    bool canvas_only = false, capture_ui = false, mem_profile = false;
+#if BBLITE_HAS_TEXT_RENDERER
+    std::optional<SdlStandaloneTextOps> text_operations;
+#endif
+#if BBLITE_HAS_SPRITE_RENDERER
+    void sync_render_textures() {
+        render_textures.resize(
+            engine.sprite_render_textures.size(), nullptr);
+        // The one refusal walk covers every disposed record, so it
+        // runs once per sync -- at the first disposed record, before
+        // any release -- rather than once per record per frame.
+        bool disposed_refused = false;
+        for (std::size_t index = 0;
+             index < engine.sprite_render_textures.size();
+             ++index) {
+            const SpriteRenderTextureRecord& record =
+                engine.sprite_render_textures[index];
+            SDL_GPUTexture*& texture = render_textures[index];
+            if (record.disposed) {
+                if (!disposed_refused) {
+                    refuse_disposed_sprite_render_texture_in_use(
+                        engine);
+                    disposed_refused = true;
+                }
+                if (texture) SDL_ReleaseGPUTexture(device, texture);
+                texture = nullptr;
+                continue;
+            }
+            if (texture) continue;
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D;
+            info.format = swapchain_format;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.width = record.width;
+            info.height = record.height;
+            info.layer_count_or_depth = 1;
+            info.num_levels = 1;
+            info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+            texture = SDL_CreateGPUTexture(device, &info);
+            if (!texture) {
+                gpu_error("SDL_CreateGPUTexture sprite target");
+            }
+        }
+    }
+    void sync_renderer_passes() {
+        if (sprite_passes_match_registered(engine, passes)) return;
+        for (SpritePass& pass : passes) {
+            release_sprite_pass(device, pass);
+        }
+        passes.clear();
+        for (const SpriteRendererHandle& handle :
+             engine.registered_sprite_renderers) {
+            passes.push_back(create_sprite_pass(
+                device,
+                engine,
+                handle,
+                render_textures,
+                swapchain_format));
+        }
+    }
+#endif
+    void discard_frame() {
+#if BBLITE_HAS_TEXT_RENDERER
+        text_operations.reset();
+#endif
+    }
+public:
+    static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_encoding;
+    explicit SdlSpriteRun(Engine& target) : FrameSession(target) {}
+    ~SdlSpriteRun() {
+        discard_frame();
+        command.reset();
+#if BBLITE_HAS_SPRITE_RENDERER
+        buffer_uploads.reset();
+#endif
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer.reset();
 #endif
@@ -93,20 +166,23 @@ bool run_sprite_gpu_engine(Engine& engine) {
         }
 #endif
         if (color) SDL_ReleaseGPUTexture(device, color);
-        if (window && device) SDL_ReleaseWindowFromGPUDevice(device, window);
-        if (device) SDL_DestroyGPUDevice(device);
-        if (window) release_run_window(window);
-        quit_run_sdl();
-    };
-
-    try {
-        SdlGpuDeviceOptions device_options;
-        device_options.hidden_test_pass = frame_options.test_pass;
-        device_options.immediate_present =
-            frame_options.benchmark_requested;
-        device_options.gpu_debug = frame_options.gpu_debug;
+        gpu.release();
+    }
+    void setup() {
+        reject_unsupported_frame_options(frame_options, "SDL_GPU sprites", true, false);
+        canvas_only = !bbl::has_sprite_renderers(engine) && engine.registered_text_renderers.empty();
+        if (canvas_only
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            && engine.primary_canvas.value >= engine.ui_elements.size()
+#endif
+        ) {
+            throw std::runtime_error(
+                "The 2D frame host requires a sprite renderer or primary Canvas2D surface.");
+        }
+        const DeviceOptions device_options = frame_device_options(frame_options);
         create_sdl_gpu_device(engine.options, device_options, gpu);
-        const SDL_GPUTextureFormat swapchain_format = gpu.swapchain_format;
+        sync_engine_canvas_size(window, engine);
+        swapchain_format = gpu.swapchain_format;
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer=std::make_unique<SdlTextRenderer>(device,!frame_options.render_capture_path.empty());
 #endif
@@ -115,7 +191,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
         // and shares one copy-pass submission instead of paying a
         // transfer-buffer create/release and a submit per layer.
 #if BBLITE_HAS_SPRITE_RENDERER
-        GpuBufferUploadBatch buffer_uploads(device);
+        buffer_uploads = std::make_unique<GpuBufferUploadBatch>(device);
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         ui_runtime = create_ui_rml_runtime(
@@ -126,340 +202,274 @@ bool run_sprite_gpu_engine(Engine& engine) {
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
-        const auto sync_render_textures = [&]() {
-            render_textures.resize(
-                engine.sprite_render_textures.size(), nullptr);
-            // The one refusal walk covers every disposed record, so it
-            // runs once per sync -- at the first disposed record, before
-            // any release -- rather than once per record per frame.
-            bool disposed_refused = false;
-            for (std::size_t index = 0;
-                 index < engine.sprite_render_textures.size();
-                 ++index) {
-                const SpriteRenderTextureRecord& record =
-                    engine.sprite_render_textures[index];
-                SDL_GPUTexture*& texture = render_textures[index];
-                if (record.disposed) {
-                    if (!disposed_refused) {
-                        refuse_disposed_sprite_render_texture_in_use(
-                            engine);
-                        disposed_refused = true;
-                    }
-                    if (texture) SDL_ReleaseGPUTexture(device, texture);
-                    texture = nullptr;
-                    continue;
-                }
-                if (texture) continue;
-                SDL_GPUTextureCreateInfo info{};
-                info.type = SDL_GPU_TEXTURETYPE_2D;
-                info.format = swapchain_format;
-                info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-                    SDL_GPU_TEXTUREUSAGE_SAMPLER;
-                info.width = record.width;
-                info.height = record.height;
-                info.layer_count_or_depth = 1;
-                info.num_levels = 1;
-                info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-                texture = SDL_CreateGPUTexture(device, &info);
-                if (!texture) {
-                    gpu_error("SDL_CreateGPUTexture sprite target");
-                }
-            }
-        };
-        const auto sync_renderer_passes = [&]() {
-            if (sprite_passes_match_registered(engine, passes)) return;
-            for (SpritePass& pass : passes) {
-                release_sprite_pass(device, pass);
-            }
-            passes.clear();
-            for (const SpriteRendererHandle& handle :
-                 engine.registered_sprite_renderers) {
-                passes.push_back(create_sprite_pass(
-                    device,
-                    engine,
-                    handle,
-                    render_textures,
-                    swapchain_format));
-            }
-        };
 
         sync_render_textures();
         sync_renderer_passes();
 #endif
-
-        const long limit = frame_options.frame_budget();
-        const bool benchmark = frame_options.benchmarking();
-        const bool mem_profile =
-            environment_variable("BBLITE_MEM_PROFILE") == "1";
+        mem_profile = environment_variable("BBLITE_MEM_PROFILE") == "1";
+        capture_ui = frame_options.capture_ui || canvas_only;
+        capture_run = captures.requested();
+    }
+    FramePreparation prepare() {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        const bool capture_ui = frame_options.capture_ui || canvas_only;
-#endif
-        const long warmup = frame_options.benchmark_warmup();
-        CaptureGate captures(frame_options, limit, &engine);
-        // A swapchain texture cannot be read back, so a run that was
-        // asked for any capture renders offscreen and blits -- the whole
-        // run, so the captured frame is composed exactly like the ones
-        // before it. A run without one draws straight to the swapchain
-        // and skips the readback-only texture and the blit; the presented
-        // image is identical because the blit is a full-surface 1:1 copy.
-        const bool capture_run = captures.requested();
-        std::vector<double> samples;
-        bool running = true;
-        long frame = 0;
-        FrameClock frame_clock;
-        PlatformInputReplay input_replay;
-        while (captures.keep_running(running, frame)) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-            poll_platform_events(
-                engine,
-                running,
-                frame_options.test_pass,
-                [&](SDL_Event& event) {
-                    return handle_ui_rml_event(*ui_runtime, event);
-                });
+        poll_platform_events(
+            engine,
+            running,
+            frame_options.test_pass,
+            [&](SDL_Event& event) {
+                return handle_ui_rml_event(*ui_runtime, event);
+            });
 #else
-            poll_platform_events(
-                engine, running, frame_options.test_pass);
+        poll_platform_events(
+            engine, running, frame_options.test_pass);
 #endif
-            input_replay.dispatch(frame, window, engine);
-            [[maybe_unused]] const double delta_ms = advance_frame(
-                engine,
-                frame_clock,
-                frame_options.frame_delta_ms);
-            // The window's own pixel size is the surface every context
-            // lays out and draws into this frame; the swapchain acquired
-            // below reports the same extent.
-            int surface_width = 0;
-            int surface_height = 0;
-            SDL_GetWindowSizeInPixels(window, &surface_width, &surface_height);
+        input_replay.dispatch(frame, window, engine);
+        sync_engine_canvas_size(window, engine);
+        return FramePreparation::ready;
+    }
+    FramePreparation update() {
+        delta_ms = advance_frame(
+            engine,
+            frame_clock,
+            frame_options.frame_delta_ms);
+        // The window's own pixel size is the surface every context
+        // lays out and draws into this frame; the swapchain acquired
+        // below reports the same extent.
+        surface_width = 0;
+        surface_height = 0;
+        SDL_GetWindowSizeInPixels(window, &surface_width, &surface_height);
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-            // Browser layout observes DOM changes made by this turn's RAF
-            // callbacks before painting the frame -- the same slot the
-            // scene loops and the Dawn host give it, ahead of every sprite
-            // context's own update.
-            update_ui_rml_runtime(
-                *ui_runtime,
-                static_cast<std::uint32_t>(surface_width),
-                static_cast<std::uint32_t>(surface_height));
+        // Browser layout observes DOM changes made by this turn's RAF
+        // callbacks before painting the frame -- the same slot the
+        // scene loops and the Dawn host give it, ahead of every sprite
+        // context's own update.
+        update_ui_rml_runtime(
+            *ui_runtime,
+            static_cast<std::uint32_t>(surface_width),
+            static_cast<std::uint32_t>(surface_height));
 #endif
-            const double frame_start = monotonic_milliseconds();
-#if BBLITE_HAS_TEXT_RENDERER
-            // Text contexts update right after layout and before the sprite
-            // contexts, the one slot both hosts give them.
-            text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-            SdlStandaloneTextOps text_ops(*text_renderer,swapchain_format);
-            for(const auto& renderer:engine.registered_text_renderers)
-                update_text_renderer(*renderer,surface_width,surface_height,device,text_ops);
-#endif
-
-#if BBLITE_HAS_SPRITE_RENDERER
-            sync_render_textures();
-            sync_renderer_passes();
-
-            // Every context updates before any records, which is the
-            // pinned loop's order and, on D3D12, the only legal one: an
-            // upload and a draw cannot share two open command lists.
-            for (SpritePass& pass : passes) {
-                // `spriteRendererUpdate` runs the renderer's own hooks
-                // first, so one that moves a sprite or a layer is seen by
-                // this frame's mirror rebuild and upload rather than the
-                // next one's.
-                run_sprite_renderer_before_update(
-                    engine, pass.renderer, delta_ms);
-                // A scene callback may have added, removed or disposed a
-                // layer since the last frame; the GPU mirror is addressed
-                // by position, so it is rebuilt before anything reads it.
-                sync_sprite_pass_layers(
-                    device, engine, pass, render_textures);
-                upload_sprite_pass(
-                    device, engine, pass, delta_ms, buffer_uploads);
-            }
-            buffer_uploads.submit();
-#endif
-
-            SDL_GPUCommandBuffer* command =
-                SDL_AcquireGPUCommandBuffer(device);
-            if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
-            SDL_GPUTexture* swapchain = nullptr;
-            std::uint32_t width = 0;
-            std::uint32_t height = 0;
-            if (!SDL_WaitAndAcquireGPUSwapchainTexture(
-                    command, window, &swapchain, &width, &height)) {
-                gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
-            }
-            if (!swapchain || width == 0 || height == 0) {
-                if (!SDL_SubmitGPUCommandBuffer(command)) {
-                    gpu_error("SDL_SubmitGPUCommandBuffer sprite");
-                }
-                continue;
-            }
-            const bool capture_frame =
-                frame >= frame_options.screenshot_frame &&
-                !captures.screenshot_saved &&
-                !frame_options.screenshot_path.empty();
-
-            // Rendered offscreen and blitted only on a capture run,
-            // because a swapchain texture cannot be read back for the
-            // capture.
-            if (capture_run &&
-                (color_width != width || color_height != height)) {
-                if (color) SDL_ReleaseGPUTexture(device, color);
-                SDL_GPUTextureCreateInfo color_info{};
-                color_info.type = SDL_GPU_TEXTURETYPE_2D;
-                color_info.format = swapchain_format;
-                color_info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
-                    SDL_GPU_TEXTUREUSAGE_SAMPLER;
-                color_info.width = width;
-                color_info.height = height;
-                color_info.layer_count_or_depth = 1;
-                color_info.num_levels = 1;
-                color_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-                color = SDL_CreateGPUTexture(device, &color_info);
-                if (!color) gpu_error("SDL_CreateGPUTexture sprite color");
-                color_width = width;
-                color_height = height;
-            }
-
-            if (canvas_only) {
-                SDL_GPUColorTargetInfo target{};
-                target.texture = capture_run ? color : swapchain;
-                target.load_op = SDL_GPU_LOADOP_CLEAR;
-                target.store_op = SDL_GPU_STOREOP_STORE;
-                SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(command, &target, 1, nullptr);
-                SDL_EndGPURenderPass(pass);
-            }
-#if BBLITE_HAS_TEXT_RENDERER
-            text_ops.command=command;text_ops.target=capture_run?color:swapchain;
-            for(const auto& renderer:engine.registered_text_renderers)record_text_renderer(*renderer,text_ops);
-#endif
-#if BBLITE_HAS_SPRITE_RENDERER
-            for (std::size_t first_index = 0;
-                 first_index < passes.size();) {
-                const SpriteRendererRecord& first_renderer =
-                    engine.sprite_renderers[
-                        passes[first_index].renderer.value];
-                SDL_GPUTexture* target = capture_run ? color : swapchain;
-                if (first_renderer.has_target) {
-                    target = render_textures[
-                        first_renderer.target.value];
-                }
-                const std::size_t end_index =
-                    sprite_pass_target_run_end(
-                        engine, passes, first_index);
-                SDL_GPUColorTargetInfo color_target{};
-                color_target.texture = target;
-                color_target.clear_color = SDL_FColor{
-                    first_renderer.clear_value.r,
-                    first_renderer.clear_value.g,
-                    first_renderer.clear_value.b,
-                    first_renderer.clear_value.a};
-                color_target.load_op = first_renderer.clear
-                    ? SDL_GPU_LOADOP_CLEAR
-                    : SDL_GPU_LOADOP_LOAD;
-                color_target.store_op = SDL_GPU_STOREOP_STORE;
-                SDL_GPURenderPass* render_pass =
-                    SDL_BeginGPURenderPass(
-                        command, &color_target, 1, nullptr);
-                for (
-                    std::size_t index = first_index;
-                    index < end_index;
-                    ++index
-                ) {
-                    record_sprite_pass(
-                        command,
-                        render_pass,
-                        engine,
-                        passes[index],
-                        width,
-                        height);
-                }
-                SDL_EndGPURenderPass(render_pass);
-                first_index = end_index;
-            }
-#endif
-
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-            const UiRenderFrame& ui_frame =
-                record_ui_rml_frame(*ui_runtime, width, height);
-            const bool ui_in_capture = capture_frame && capture_ui;
-            if (ui_in_capture) {
-                render_sprite_ui_sdl_frame(
-                    device,
-                    command,
-                    color,
-                    swapchain_format,
-                    ui_resources,
-                    ui_frame);
-            }
-#endif
-
-            captures.maybe_write_standalone_render_capture("sdl_gpu",engine,width,height,frame
-#if BBLITE_HAS_TEXT_RENDERER
-                ,&text_renderer->owner->capture
-#endif
-            );
-
-            if (capture_run) {
-                SDL_GPUBlitInfo blit{};
-                blit.source =
-                    SDL_GPUBlitRegion{color, 0, 0, 0, 0, width, height};
-                blit.destination =
-                    SDL_GPUBlitRegion{
-                        swapchain, 0, 0, 0, 0, width, height};
-                blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                blit.flip_mode = SDL_FLIP_NONE;
-                blit.filter = SDL_GPU_FILTER_NEAREST;
-                SDL_BlitGPUTexture(command, &blit);
-            }
-            #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-            if (!ui_in_capture) {
-                render_sprite_ui_sdl_frame(
-                    device,
-                    command,
-                    swapchain,
-                    swapchain_format,
-                    ui_resources,
-                    ui_frame);
-            }
-#endif
-
-            if (capture_frame) {
-                save_texture_png(
-                    device,
-                    command,
-                    color,
-                    swapchain_format,
-                    width,
-                    height,
-                    frame_options.screenshot_path);
-                captures.screenshot_saved = true;
-            } else if (!SDL_SubmitGPUCommandBuffer(command)) {
+        begin_measurement();
+        return FramePreparation::ready;
+    }
+    bool acquire() {
+        command = SdlGpuCommand{SDL_AcquireGPUCommandBuffer(device)};
+        if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
+        swapchain = nullptr;
+        width = 0;
+        height = 0;
+        if (!command.acquire_swapchain(window, &swapchain, &width, &height)) {
+            gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture");
+        }
+        if (!swapchain || width == 0 || height == 0) {
+            if (!command.submit()) {
                 gpu_error("SDL_SubmitGPUCommandBuffer sprite");
             }
+            discard_frame();
+            return false;
+        }
+        capture_frame =
+            frame >= frame_options.screenshot_frame &&
+            !captures.screenshot_saved &&
+            !frame_options.screenshot_path.empty();
 
-            finish_frame(engine);
-            if (mem_profile && frame % memory_profile_frames == 0) {
-                // No scene list and no geometry cache here: a sprite
-                // renderer draws from its own layers.
-                print_memory_frame_profile(frame, engine, 0, 0, 0, 0);
-            }
-            if (benchmark && frame >= warmup) {
-                samples.push_back(
-                    monotonic_milliseconds() - frame_start);
-            }
-            frame += 1;
+        // Rendered offscreen and blitted only on a capture run,
+        // because a swapchain texture cannot be read back for the
+        // capture.
+        if (capture_run &&
+            (color_width != width || color_height != height)) {
+            if (color) SDL_ReleaseGPUTexture(device, color);
+            SDL_GPUTextureCreateInfo color_info{};
+            color_info.type = SDL_GPU_TEXTURETYPE_2D;
+            color_info.format = swapchain_format;
+            color_info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            color_info.width = width;
+            color_info.height = height;
+            color_info.layer_count_or_depth = 1;
+            color_info.num_levels = 1;
+            color_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+            color = SDL_CreateGPUTexture(device, &color_info);
+            if (!color) gpu_error("SDL_CreateGPUTexture sprite color");
+            color_width = width;
+            color_height = height;
         }
-        if (benchmark) {
-            report_benchmark(
-                std::move(samples),
-                "SDL_GPU",
-                SDL_GetGPUDeviceDriver(device));
-        }
-    } catch (...) {
-        release();
-        throw;
+        return true;
     }
-    release();
+    void synchronize() {
+#if BBLITE_HAS_TEXT_RENDERER
+        // Text contexts update right after layout and before the sprite
+        // contexts, the one slot both hosts give them.
+        text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+        auto& text_ops = text_operations.emplace(*text_renderer, swapchain_format);
+        for(const auto& renderer:engine.registered_text_renderers)
+            update_text_renderer(*renderer,surface_width,surface_height,device,text_ops);
+#endif
+
+#if BBLITE_HAS_SPRITE_RENDERER
+        sync_render_textures();
+        sync_renderer_passes();
+
+        // Every context updates before any records, which is the
+        // pinned loop's order and, on D3D12, the only legal one: an
+        // upload and a draw cannot share two open command lists.
+        for (SpritePass& pass : passes) {
+            // `spriteRendererUpdate` runs the renderer's own hooks
+            // first, so one that moves a sprite or a layer is seen by
+            // this frame's mirror rebuild and upload rather than the
+            // next one's.
+            run_sprite_renderer_before_update(
+                engine, pass.renderer, delta_ms);
+            // A scene callback may have added, removed or disposed a
+            // layer since the last frame; the GPU mirror is addressed
+            // by position, so it is rebuilt before anything reads it.
+            sync_sprite_pass_layers(
+                device, engine, pass, render_textures);
+            upload_sprite_pass(
+                device, engine, pass, delta_ms, *buffer_uploads);
+        }
+        buffer_uploads->submit();
+#endif
+    }
+    void encode() {
+#if BBLITE_HAS_TEXT_RENDERER
+        auto& text_ops = *text_operations;
+#endif
+        if (canvas_only) {
+            SDL_GPUColorTargetInfo target{};
+            target.texture = capture_run ? color : swapchain;
+            target.load_op = SDL_GPU_LOADOP_CLEAR;
+            target.store_op = SDL_GPU_STOREOP_STORE;
+            SdlRenderPass pass{SDL_BeginGPURenderPass(command, &target, 1, nullptr)};
+            pass.end();
+        }
+#if BBLITE_HAS_TEXT_RENDERER
+        text_ops.command=command;text_ops.target=capture_run?color:swapchain;
+        {
+            const auto end_text_pass = js::finally([&] { text_ops.owned_pass.end(); });
+            for(const auto& renderer:engine.registered_text_renderers)record_text_renderer(*renderer,text_ops);
+        }
+#endif
+#if BBLITE_HAS_SPRITE_RENDERER
+        for (std::size_t first_index = 0;
+             first_index < passes.size();) {
+            const SpriteRendererRecord& first_renderer =
+                engine.sprite_renderers[
+                    passes[first_index].renderer.value];
+            SDL_GPUTexture* target = capture_run ? color : swapchain;
+            if (first_renderer.has_target) {
+                target = render_textures[
+                    first_renderer.target.value];
+            }
+            const std::size_t end_index =
+                sprite_pass_target_run_end(
+                    engine, passes, first_index);
+            SDL_GPUColorTargetInfo color_target{};
+            color_target.texture = target;
+            color_target.clear_color = SDL_FColor{
+                first_renderer.clear_value.r,
+                first_renderer.clear_value.g,
+                first_renderer.clear_value.b,
+                first_renderer.clear_value.a};
+            color_target.load_op = first_renderer.clear
+                ? SDL_GPU_LOADOP_CLEAR
+                : SDL_GPU_LOADOP_LOAD;
+            color_target.store_op = SDL_GPU_STOREOP_STORE;
+            SdlRenderPass render_pass{SDL_BeginGPURenderPass(
+                    command, &color_target, 1, nullptr)};
+            for (
+                std::size_t index = first_index;
+                index < end_index;
+                ++index
+            ) {
+                record_sprite_pass(
+                    command,
+                    render_pass,
+                    engine,
+                    passes[index],
+                    width,
+                    height);
+            }
+            render_pass.end();
+            first_index = end_index;
+        }
+#endif
+
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        const UiRenderFrame& ui_frame =
+            record_ui_rml_frame(*ui_runtime, width, height);
+        const bool ui_in_capture = capture_frame && capture_ui;
+        if (ui_in_capture) {
+            render_sprite_ui_sdl_frame(
+                device,
+                command,
+                color,
+                swapchain_format,
+                ui_resources,
+                ui_frame);
+        }
+#endif
+
+        captures.maybe_write_standalone_render_capture("sdl_gpu",engine,width,height,frame
+#if BBLITE_HAS_TEXT_RENDERER
+            ,&text_renderer->owner->capture
+#endif
+        );
+
+        if (capture_run) {
+            SDL_GPUBlitInfo blit{};
+            blit.source =
+                SDL_GPUBlitRegion{color, 0, 0, 0, 0, width, height};
+            blit.destination =
+                SDL_GPUBlitRegion{
+                    swapchain, 0, 0, 0, 0, width, height};
+            blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+            blit.flip_mode = SDL_FLIP_NONE;
+            blit.filter = SDL_GPU_FILTER_NEAREST;
+            SDL_BlitGPUTexture(command, &blit);
+        }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        if (!ui_in_capture) {
+            render_sprite_ui_sdl_frame(
+                device,
+                command,
+                swapchain,
+                swapchain_format,
+                ui_resources,
+                ui_frame);
+        }
+#endif
+    }
+    void present() {
+        if (capture_frame) {
+            save_texture_png(
+                device,
+                command,
+                color,
+                swapchain_format,
+                width,
+                height,
+                frame_options.screenshot_path);
+            captures.screenshot_saved = true;
+        } else if (!command.submit()) {
+            gpu_error("SDL_SubmitGPUCommandBuffer sprite");
+        }
+    }
+    void complete() {
+        FrameSession::complete([&] {
+            if (mem_profile && frame % memory_profile_frames == 0)
+                print_memory_frame_profile(frame, engine, 0, 0, 0, 0);
+        });
+        discard_frame();
+    }
+    void report() { FrameSession::report("SDL_GPU", SDL_GetGPUDeviceDriver(device)); }
+};
+} // namespace
+
+bool run_sprite_gpu_engine(Engine& engine) {
+    SdlSpriteRun renderer(engine);
+    renderer.setup();
+    while (conduct_frame(renderer) != FrameOutcome::stopped) {}
+    renderer.report();
     return true;
 }
 #endif

@@ -1,28 +1,28 @@
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
 import { validateObjectProperties } from "./option-helpers.js";
-import type { DataLowerer } from "./data-lowering.js";
-import type { DataTypeRegistry } from "./data-types.js";
-import type { Value, WorkerCompilation, NativeHostUi } from "./types.js";
+import type { Value } from "./types.js";
 
-export interface WorkerLoweringContext {
-    readonly options: { workers?: WorkerCompilation; nativeHostUi?: NativeHostUi };
-    readonly dataLowerer: DataLowerer;
-    readonly dataTypes: DataTypeRegistry;
-    unwrap(expression: ts.Expression): ts.Expression;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    compileValue(expression: ts.Expression): Value;
-    compileFrameCallback(expression: ts.Expression, signature: "void" | "interval"): string;
-    compileWorkerCallback(expression: ts.Expression, event: "message" | "error"): string;
-    compileNumber(expression: ts.Expression, precision?: "float" | "double"): string;
-    emit(line: string): void;
-    allocateTemporaryCppName(label: string): string;
-    cppString(value: string): string;
-    propertyName(name: ts.PropertyName): string | undefined;
-    fail(node: ts.Node, message: string): never;
-}
+export interface WorkerLoweringContext
+    extends Pick<LoweringServices,
+        | "options"
+        | "dataLowerer"
+        | "dataTypes"
+        | "unwrap"
+        | "isDefaultLibraryIdentifier"
+        | "lookupOptional"
+        | "compileValue"
+        | "compileFrameCallback"
+        | "compileWorkerCallback"
+        | "compileNumber"
+        | "emit"
+        | "allocateTemporaryCppName"
+        | "cppString"
+        | "propertyName"
+        | "fail"
+    > {}
 
 const realm = "bbl::pal::WorkerRealm::current()";
 const loop = "bbl::pal::EventLoop::current()";
@@ -107,7 +107,7 @@ export function compileWorkerValue(context: WorkerLoweringContext, expression: t
         if (!type) return context.fail(argument, "Worker messages require a supported structured-clone data shape.");
         const data = context.dataLowerer.compileForSink(argument, type);
         const snapshot = context.allocateTemporaryCppName("message_value");
-        context.emit(`auto ${snapshot} = ${data};`);
+        context.emit({ kind: "declaration", type: "auto", name: snapshot, initializer: data });
         const transfer = node.arguments[1];
         let transferCpp = "";
         if (transfer) {
@@ -118,7 +118,7 @@ export function compileWorkerValue(context: WorkerLoweringContext, expression: t
                 const value = context.compileValue(element);
                 if (value.kind !== "offscreen-canvas") return context.fail(element, `Transfer of '${value.kind}' is not implemented.`);
                 const temporary = context.allocateTemporaryCppName("transfer_value");
-                context.emit(`auto ${temporary} = ${value.cpp};`);
+                context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp });
                 return `${temporary}.get()`;
             });
             const listName = context.allocateTemporaryCppName("transfer_list");

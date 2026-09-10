@@ -1,16 +1,20 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import {
-    lowerMat4InvertCpp,
-    lowerPinnedFunction,
-    lowerTupleComponents,
-} from "./pinned-function-lowerer.js";
+
 import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { normalizeVec3Call } from "./pinned-normalize-vec3.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { pinnedHeader } from "./pinned-header.js";
+import {
+    vec3MemberBindings,
+    lowerMat4InvertCpp,
+    lowerPinnedFunction,
+    lowerTupleComponents,
+} from "./pinned-function-lowerer.js";
 
 /** The pinned modules the detailed pipeline's CPU half lives in. */
 const detailedModule = "src/picking/detailed-picking.ts";
@@ -151,15 +155,8 @@ export class PickingLowerer {
             [output, ...scalars],
             { cppName: "compute_cloud_pick_matrix", returns: "void", inline: true },
         ) : "";
-        return `#pragma once
-#include <array>
-#include <cstdint>
-
-namespace bbl::upstream {
-${projection}
-${cloud}
-} // namespace bbl::upstream
-`;
+        return pinnedHeader(["<array>","<cstdint>"], `${projection}
+${cloud}`, { compactPragma: true });
     }
 
     /**
@@ -1020,7 +1017,8 @@ void populate_pick_ray(
                 "Expected the pick origin to be initialized.",
             );
         }
-        const lowerer = new PinnedNumericLowerer(file, {
+
+        const body = lowerPinnedBody(file, statements, {
             bindings: new Map<string, PinnedBinding>([
                 ["detailed", { cpp: "false", type: "bool", staticBoolean: false }],
                 [
@@ -1034,9 +1032,7 @@ void populate_pick_ray(
                 ["pickRay.origin", { cpp: "info.ray->origin", type: "f64-buffer" }],
                 ["camera", { cpp: "camera", type: "opaque" }],
                 ["info.pickedPoint", { cpp: "point", type: "f64-buffer" }],
-                ["origin.x", { cpp: "origin.x", type: "scalar" }],
-                ["origin.y", { cpp: "origin.y", type: "scalar" }],
-                ["origin.z", { cpp: "origin.z", type: "scalar" }],
+                ...vec3MemberBindings("origin"),
             ]),
             calls: new Map([
                 ...pinnedNumericMathCallsWithHypot(),
@@ -1063,9 +1059,6 @@ void populate_pick_ray(
                 return undefined;
             },
         });
-        const body = statements
-            .flatMap((statement) => lowerer.statement(statement, "    "))
-            .join("\n");
         return `// ${this.context.provenance(modulePath, "pickAsyncImpl")}
 // \`info.distance\`, from the pick origin to the reconstructed point.
 double picked_distance(const Scene& scene, const PickingInfo& info) {

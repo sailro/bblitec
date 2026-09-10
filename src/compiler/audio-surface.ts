@@ -1,72 +1,51 @@
-// The Web Audio surface: the method calls and the writes a scene
-// performs on the context an audio engine hands back.
-//
-// Babylon Lite's audio API is standalone functions like the rest of the
-// library, and those live in `intrinsics/audio.ts`. This file is the
-// other half, and it exists because the seam the pin draws is the
-// *browser's* API rather than Babylon's: every reached consumer takes
-// `engine.audioContext` and builds an ordinary Web Audio graph on it
-// (`ctx.createOscillator()`, `osc.frequency.setValueAtTime(...)`,
-// `node.connect(...)`), which is method-shaped where Babylon Lite is
-// function-shaped. Those calls resolve here, against the handles
-// `bblite/pal_audio.hpp` defines.
-//
-// The *reads* are deliberately not here: `node.gain`, `ctx.currentTime`
-// and their siblings are ordinary declared property reads, and they live
-// in `properties.ts`'s own rule table beside every other family's.
-//
-// Two rules the shape depends on:
-//
-//   * **A native handle encodes its context.** The PAL resolves each node's
-//     packed context ID and rejects connections across contexts.
-//   * **Times are context times, not frame times.** `osc.start(t)` and
-//     `param.setValueAtTime(v, t)` schedule against
-//     `AudioContext.currentTime`, which advances on the audio thread.
-//     Nothing here is stepped by the renderer, which is also why a
-//     capture render is the measurable one.
+// Web Audio method calls and writes use native context, node and buffer handles.
+import { EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+import { AUDIO_CODECS, audioCodecForBytes } from "../audio-codecs.js";
+import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 
 import { readProperty, type PropertyContext } from "./properties.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
-import type { CompileAsset, Feature, Value } from "./types.js";
+import type { Feature, Value } from "./types.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
  * satisfies it, which is what lets a receiver walk run through the same
  * rule table a direct read takes.
  */
-interface AudioReceiverContext extends PropertyContext {
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    resolveThisField(name: string): Value | undefined;
-    compileValue(expression: ts.Expression): Value;
-    unwrap(expression: ts.Expression): ts.Expression;
-}
+interface AudioReceiverContext
+    extends PropertyContext,
+    Pick<LoweringServices,
+        | "lookupOptional"
+        | "resolveThisField"
+        | "compileValue"
+        | "unwrap"
+    > {}
 
 /** What a property write needs. `AssignmentContext` satisfies it. */
-interface AudioWriteContext extends AudioReceiverContext {
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileBoolean(expression: ts.Expression): string;
-    reachFeature(feature: Feature, site?: ts.Node): void;
-    emit(line: string): void;
-}
+interface AudioWriteContext
+    extends AudioReceiverContext,
+    Pick<LoweringServices,
+        | "compileNumber"
+        | "compileBoolean"
+        | "reachFeature"
+        | "emit"
+    > {}
 
 /** What a method call needs. The expression compiler satisfies it. */
-interface AudioCallContext extends AudioWriteContext {
-    readonly checker: ts.TypeChecker;
-    expectKind(value: Value, kind: Value["kind"], node: ts.Node): void;
-    allocateTemporaryCppName(label: string): string;
-    cppString(value: string): string;
-    registerAsset(
-        source: string,
-        kind: CompileAsset["kind"],
-    ): CompileAsset;
-}
+interface AudioCallContext
+    extends AudioWriteContext,
+    Pick<LoweringServices,
+        | "checker"
+        | "expectKind"
+        | "allocateTemporaryCppName"
+        | "cppString"
+        | "registerAsset"
+        | "options"
+    > {}
 
-const AUDIO_KINDS = new Set<string>([
+const AUDIO_KINDS = new EmissionSet<string>([
     "audio-engine",
     "audio-buffer",
     "audio-context",
@@ -148,8 +127,7 @@ const PARAM_SCHEDULES: Readonly<Record<string, string>> = {
  */
 const REFUSED_METHODS: Readonly<Record<string, string>> = {
     decodeAudioData:
-        "direct decodeAudioData calls are not lowered; the reached asset " +
-        "path requires a generation-known fetch/decode helper",
+        "encoded input must be an ArrayBuffer",
     createAnalyser: "the analyzer is not lowered",
     createPanner: "3D panning is not lowered",
     createDelay: "the delay node is not lowered",
@@ -246,87 +224,6 @@ function resolveAudioReceiver(
 
 // -- method calls --------------------------------------------------------
 
-/**
- * Racer's small `decode(ctx, url)` helper expresses the browser operation as
- * `fetch(url)` followed by `ctx.decodeAudioData(...)`. Native builds package
- * that same encoded file and let LabSound/libnyquist decode it at the audio
- * context's sample rate. Recognize the helper by its body, not merely by its
- * local name, so an unrelated function named `decode` keeps the ordinary user
- * function semantics.
- */
-export function compileAudioDecodeAssetCall(
-    context: AudioCallContext,
-    call: ts.CallExpression,
-    callee: ts.Identifier,
-): Value | undefined {
-    if (callee.text !== "decode" || call.arguments.length !== 2) {
-        return undefined;
-    }
-    const symbol = context.checker.getSymbolAtLocation(callee);
-    const target =
-        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? context.checker.getAliasedSymbol(symbol)
-            : symbol;
-    const declaration = (target?.declarations ?? []).find(
-        (candidate): candidate is ts.FunctionDeclaration =>
-            ts.isFunctionDeclaration(candidate) && candidate.body !== undefined,
-    );
-    if (!declaration || declaration.parameters.length !== 2) {
-        return undefined;
-    }
-    let fetches = false;
-    let decodes = false;
-    const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node)) {
-            if (
-                ts.isIdentifier(node.expression) &&
-                node.expression.text === "fetch" &&
-                isDefaultLibraryIdentifier(context.checker, node.expression)
-            ) {
-                fetches = true;
-            } else if (
-                ts.isPropertyAccessExpression(node.expression) &&
-                node.expression.name.text === "decodeAudioData"
-            ) {
-                decodes = true;
-            }
-        }
-        ts.forEachChild(node, visit);
-    };
-    const body = declaration.body;
-    if (!body) return undefined;
-    visit(body);
-    if (!fetches || !decodes) {
-        return undefined;
-    }
-
-    const audioContext = context.compileValue(argumentAt(call, 0));
-    context.expectKind(audioContext, "audio-context", argumentAt(call, 0));
-    const url = context.compileValue(argumentAt(call, 1));
-    if (url.kind !== "string" || url.staticString === undefined) {
-        context.fail(
-            argumentAt(call, 1),
-            "Encoded audio decode requires a generation-known asset URL.",
-        );
-    }
-    const source = url.staticString;
-    const asset = context.registerAsset(source, "binary");
-    context.reachFeature("audio:buffer-source", call);
-    context.reachFeature("audio:decoded-buffer", call);
-    const decoded = context.allocateTemporaryCppName("decoded_audio");
-    context.emit(
-        `const bbl::pal::AudioBufferHandle ${decoded} = ` +
-            `bbl::pal::audio_decode_file(${audioContext.cpp}, ` +
-            `bbl::asset_path(${context.cppString(asset.output)}));`,
-    );
-    return {
-        kind: "audio-buffer",
-        cpp: decoded,
-        dataType: { kind: "handle", handle: "audio-buffer" },
-        optionalFoundCpp: `${decoded}.value != 0u`,
-    };
-}
-
 export function compileAudioMethodCall(
     context: AudioCallContext,
     call: ts.CallExpression,
@@ -353,16 +250,24 @@ export function compileAudioMethodCall(
         call.arguments.length === 1
     ) {
         const encoded = context.compileValue(argumentAt(call, 0));
-        if (encoded.dynamicAssetPathCpp) {
+        if (encoded.kind === "data" && encoded.dataType?.kind === "arraybuffer") {
             context.reachFeature("audio:buffer-source", call);
             context.reachFeature("audio:decoded-buffer", call);
+            let input = context.unwrap(argumentAt(call, 0));
+            while (ts.isAwaitExpression(input)) input = context.unwrap(input.expression);
+            const sources = encoded.fetchedBytes?.expression === input ? encoded.fetchedBytes.sources : undefined;
+            const codecs = sources ? new Set(sources.flatMap(source => {
+                const codec = audioCodecForBytes(readAssetBytesSync(source, context.options.fileName));
+                return codec ? [codec] : [];
+            })) : AUDIO_CODECS;
+            for (const codec of codecs) context.reachFeature(`audio:decode-${codec}`, call);
             const decoded = context.allocateTemporaryCppName(
                 "decoded_audio",
             );
             context.emit(
                 `const bbl::pal::AudioBufferHandle ${decoded} = ` +
-                    `bbl::pal::audio_decode_file(${receiver.cpp}, ` +
-                    `${encoded.dynamicAssetPathCpp});`,
+                    `bbl::pal::audio_decode_buffer(${receiver.cpp}, ` +
+                    `${encoded.cpp});`,
             );
             return {
                 kind: "audio-buffer",

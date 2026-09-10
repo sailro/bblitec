@@ -14,9 +14,9 @@
  *
  * So generation runs the pin's own loader in the engine the golden runs it
  * in, and bakes what the transcoder produced. What lands beside the
- * executable is a KTX1 container, because the port already reads one: the
- * transcoded mip chain is exactly what `parseKtx1` returns, so wrapping it
- * gives the runtime one compressed-texture reader rather than two. The
+ * executable is a private mip table and its compressed blocks. Generation
+ * wraps the transcoded chain in KTX1, parses it with the pin, and packages
+ * the resulting descriptors for the shared native reader. The
  * tradeoff is the drawn atlas's and the HDR prefilter's — the baked bytes
  * depend on the Chrome that compiled them — and it is recorded per scene as
  * the `executed-basis-transcode` adaptation.

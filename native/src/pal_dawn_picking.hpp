@@ -109,17 +109,16 @@ inline void ensure_dawn_pick_targets(
         descriptor.format = format;
         descriptor.usage = WGPUTextureUsage_RenderAttachment | extra;
         descriptor.size = WGPUExtent3D{1, 1, 1};
-        WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
+        DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
         if (!texture) dawn_error("pick attachment");
-        return texture;
+        return texture.release();
     };
     const auto view = [](WGPUTexture texture) -> WGPUTextureView {
         WGPUTextureViewDescriptor descriptor =
             WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-        WGPUTextureView created =
-            wgpuTextureCreateView(texture, &descriptor);
+        DawnTextureView created{create_dawn_texture_view(texture, &descriptor)};
         if (!created) dawn_error("pick attachment view");
-        return created;
+        return created.release();
     };
     targets.color = attachment(
         WGPUTextureFormat_RGBA8Unorm, WGPUTextureUsage_CopySrc);
@@ -157,10 +156,9 @@ inline WGPUBindGroupLayout create_dawn_pick_scene_layout(
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = 1;
     descriptor.entries = &entry;
-    WGPUBindGroupLayout layout =
-        wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
     if (!layout) dawn_error("pick scene bind group layout");
-    return layout;
+    return layout.release();
 }
 
 inline WGPUBindGroupLayout create_dawn_pick_mesh_layout(
@@ -175,10 +173,9 @@ inline WGPUBindGroupLayout create_dawn_pick_mesh_layout(
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = 1;
     descriptor.entries = &entry;
-    WGPUBindGroupLayout layout =
-        wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
     if (!layout) dawn_error("pick mesh bind group layout");
-    return layout;
+    return layout.release();
 }
 
 #if BBLITE_GPU_INSTANCING
@@ -202,10 +199,9 @@ inline WGPUBindGroupLayout create_dawn_pick_thin_layout(
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    WGPUBindGroupLayout layout =
-        wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    DawnBindGroupLayout layout{wgpuDeviceCreateBindGroupLayout(device, &descriptor)};
     if (!layout) dawn_error("pick thin bind group layout");
-    return layout;
+    return layout.release();
 }
 #endif
 
@@ -433,10 +429,9 @@ private:
         const std::size_t slot =
             orientation == BillboardOrientation::axis_locked ? 1u : 0u;
         if (pipelines_[slot]) return pipelines_[slot];
-        WGPUShaderModule vertex = load_wgsl_module(
-            device_, billboard_pick_vertex_stem(orientation));
-        WGPUShaderModule fragment =
-            load_wgsl_module(device_, billboard_pick_fragment_stem());
+        DawnShaderModule vertex{load_wgsl_module(
+            device_, billboard_pick_vertex_stem(orientation))};
+        DawnShaderModule fragment{load_wgsl_module(device_, billboard_pick_fragment_stem())};
 
         const std::array<WGPUBindGroupLayout, 2> groups{
             scene_layout_, ensure_system_layout()};
@@ -444,8 +439,7 @@ private:
             WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
         layout_descriptor.bindGroupLayoutCount = groups.size();
         layout_descriptor.bindGroupLayouts = groups.data();
-        WGPUPipelineLayout pipeline_layout =
-            wgpuDeviceCreatePipelineLayout(device_, &layout_descriptor);
+        DawnPipelineLayout pipeline_layout{wgpuDeviceCreatePipelineLayout(device_, &layout_descriptor)};
         if (!pipeline_layout) {
             dawn_error("billboard pick pipeline layout");
         }
@@ -503,9 +497,9 @@ private:
 
         pipelines_[slot] =
             wgpuDeviceCreateRenderPipeline(device_, &descriptor);
-        wgpuPipelineLayoutRelease(pipeline_layout);
-        wgpuShaderModuleRelease(vertex);
-        wgpuShaderModuleRelease(fragment);
+        pipeline_layout.reset();
+        vertex.reset();
+        fragment.reset();
         if (!pipelines_[slot]) {
             dawn_error("billboard pick render pipeline");
         }

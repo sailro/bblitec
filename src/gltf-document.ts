@@ -42,9 +42,11 @@ export const GLB_BINARY_CHUNK = 0x004e4942;
  */
 export const GAUSSIAN_SPLATTING_EXTENSION = "KHR_gaussian_splatting";
 export const GAUSSIAN_SPLAT_DOCUMENT_KEY = "__bblitecGaussianSplats";
-export const GLTF_MATERIAL_EXTENSION_PAYLOAD = "__bblitecMaterialExtensions";
 export const GLTF_SOURCE_ALBEDO_IDENTITIES = "__bblitecSourceAlbedoIdentities";
 export const GLTF_MESH_WALKS = "__bblitecMeshWalks";
+export const GLTF_VARIANT_PLAN = "__bblitecVariantMaterials";
+export const GLTF_MESH_PLAN = "__bblitecMeshPlan";
+export const GLTF_TRANSMISSION_PLAN = "__bblitecTransmissionPlan";
 
 /** A parsed JSON object — the shape every glTF document read shares. */
 export type JsonObject = Record<string, unknown>;
@@ -134,6 +136,10 @@ export const asIndex = (value: unknown): number | undefined =>
     typeof value === "number" && Number.isInteger(value) && value >= 0
         ? value
         : undefined;
+
+/** A dense array of indices bounded by a referenced resource table. */
+export const areGltfIndices = (value: unknown, limit: number): value is number[] => Array.isArray(value) &&
+    value.every(index => asIndex(index) !== undefined && index < limit);
 
 export const asString = (value: unknown): string | undefined =>
     typeof value === "string" ? value : undefined;
@@ -238,22 +244,6 @@ export function gltfVariantNames(document: JsonRecord): string[] {
         asObject(asObject(document.extensions)?.["KHR_materials_variants"])
             ?.variants,
     ).map((variant) => asString(variant.name) ?? "");
-}
-
-/**
- * The pinned loader's `KHR_interactivity` feature predicate
- * (`gltf-feature-registry.ts`: `j.extensions?.KHR_interactivity`): the
- * extension object when the document carries it. The feature runs whatever
- * graphs it declares, including none.
- */
-export function gltfInteractivity(document: JsonRecord): JsonRecord | undefined {
-    return asObject(asObject(document.extensions)?.["KHR_interactivity"]);
-}
-
-/** The graphs an interactive document declares; empty without the extension. */
-export function gltfInteractivityGraphs(document: JsonRecord): unknown[] {
-    const graphs = gltfInteractivity(document)?.graphs;
-    return Array.isArray(graphs) ? graphs : [];
 }
 
 /**

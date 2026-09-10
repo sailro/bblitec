@@ -26,6 +26,11 @@ struct Owner {
 
 using Record = bbl::pal::OwnedGpuRecord<Resources, Owner>;
 
+void release_with_context(int* live, Resources& resources) noexcept {
+    *live -= resources.buffer;
+}
+using ContextRecord = bbl::pal::OwnedGpuRecord<Resources, int, release_with_context>;
+
 Record upload(Owner& owner, bool fail = false) {
     Record record(owner);
     record.buffer = 1;
@@ -37,6 +42,16 @@ Record upload(Owner& owner, bool fail = false) {
 }
 
 int main() {
+    int contextual_live = 0;
+    {
+        ContextRecord record(&contextual_live);
+        record.buffer = ++contextual_live;
+        std::vector<ContextRecord> records;
+        records.push_back(std::move(record));
+        records[0].reset();
+        records.clear();
+    }
+    assert(contextual_live == 0);
     Owner owner;
     try { upload(owner, true); } catch (const std::runtime_error&) {}
     assert(owner.live == 0);

@@ -1,0 +1,15 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -410,6 +410,11 @@ if (NOT (ORIGINAL_FTOPTION_H STREQUAL FTOPTION_H))
+   file(WRITE "${FTOPTION_H_NAME}" "${FTOPTION_H}")
+ endif ()
+ 
++if (BBLITE_FREETYPE_MODULES)
++  configure_file("${BBLITE_FREETYPE_MODULES}"
++    "${PROJECT_BINARY_DIR}/include/freetype/config/ftmodule.h" COPYONLY)
++endif ()
++
+ 
+ file(GLOB PUBLIC_HEADERS "include/ft2build.h" "include/freetype/*.h")
+ file(GLOB PUBLIC_CONFIG_HEADERS "include/freetype/config/*.h")

@@ -81,14 +81,14 @@ if (-not (Test-Path (Join-Path $source ".git"))) {
 # (native/vcpkg-overlay-ports/sdl3/portfile.cmake). Stock release-3.4.14
 # does not carry them, and a minimal build without them would diverge
 # from the vcpkg-installed SDL3 the parity numbers were measured against
-# (the multisample-read view and the D3D12 MultisampleEnable line rule).
-# The overlay's third patch, fix-freebsd.patch, only rewires the FreeBSD
+# (multisample reads, line rasterization and descriptor heap rollover).
+# The overlay's fix-freebsd.patch only rewires the FreeBSD
 # pkgconfig install path — vcpkg packaging infrastructure with no effect
 # on this Windows build — so it is deliberately not applied here.
 # Idempotent: a patch that already sits in the working tree (a re-run on
 # a warm workspace) reverse-applies cleanly and is skipped; anything
 # else fails loudly rather than building unpatched sources.
-# The third patch is this build's own, kept beside the other script-only
+# The static-no-dynapi patch is this build's own, kept beside the other script-only
 # patch under tools/patches rather than in the overlay port (whose whole
 # directory keys the development vcpkg install); its header says why the
 # static shipping SDL turns the dynamic API off, and docs/development.md
@@ -96,6 +96,7 @@ if (-not (Test-Path (Join-Path $source ".git"))) {
 $patches = @(
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\sdl-multisample-read.patch"),
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-multisample-lines.patch"),
+    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-descriptor-heaps.patch"),
     (Join-Path $root "tools\patches\sdl-static-no-dynapi.patch")
 )
 foreach ($patch in $patches) {

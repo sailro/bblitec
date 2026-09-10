@@ -1,135 +1,80 @@
-/**
- * The .babylon loader leaves lowered from their pinned ASTs -- byte gate.
- *
- * `bake_local_matrix` is the pinned `bakeLocalMatrix` translated whole,
- * and the node TRS reaches the vertices through the shared pinned
- * composition. The expected text below is the fixed presentation the
- * loader template carries, so a changed pinned formula changes these
- * bytes, and a construct the translation cannot carry refuses generation
- * instead of shipping stale C++.
- */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { BabylonLowerer } from "../src/lowering/babylon-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { transpileCommonJs } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
+import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const BAKE_MODULE = "src/loader-babylon/bake-local-matrix.ts";
-const LOADER_MODULE = "src/loader-babylon/load-babylon.ts";
-const CAMERA_MODULE = "src/loader-babylon/parse-camera.ts";
 
-const lm = (index: number): string =>
-    `static_cast<double>(lm[static_cast<std::size_t>(${index}.0)])`;
-const lane = (buffer: string, offset: number): string =>
-    offset === 0
-        ? `${buffer}[static_cast<std::size_t>(i)]`
-        : `${buffer}[static_cast<std::size_t>((i + ${offset}.0))]`;
-
-const expectedBakeLocalMatrix = `// ${new LoweringContext().provenance(BAKE_MODULE, "bakeLocalMatrix")}
-void bake_local_matrix(
-    std::vector<float>& positions,
-    std::vector<float>& normals,
-    const std::array<double, 16>& lm) {
-    const double isIdentity = ((((((((((((${lm(0)} == 1.0) && (${lm(1)} == 0.0)) && (${lm(2)} == 0.0)) && (${lm(4)} == 0.0)) && (${lm(5)} == 1.0)) && (${lm(6)} == 0.0)) && (${lm(8)} == 0.0)) && (${lm(9)} == 0.0)) && (${lm(10)} == 1.0)) && (${lm(12)} == 0.0)) && (${lm(13)} == 0.0)) && (${lm(14)} == 0.0));
-    if (isIdentity) {
-        return;
+test("native Babylon pivot baking matches pinned positions, normals and degenerate thresholds", t => {
+    const native = optionalNativeFixtureTools();
+    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    const context = new LoweringContext();
+    const changed = doctoredContext(BAKE_MODULE, "if (len > 1e-10) {", "if (len > 1e-7) {");
+    const matrices = [
+        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        [2, .2, 0, 0, 0, -3, .4, 0, .1, 0, .5, 0, 4, 5, 6, 1],
+        [1e-8, 0, 0, 0, 0, 1e-8, 0, 0, 0, 0, 1e-8, 0, 0, 0, 0, 1],
+        Array(16).fill(0) as number[],
+    ];
+    const inputs = { positions: [0, 1, 2, -2, -3, 4, 16777217, 1, -5], normals: [1, 2, 3, 0, 0, 0, -.3, .5, 1], matrices };
+    const expected = [context, changed].map(source => {
+        const { file } = source.functionDeclaration(BAKE_MODULE, "bakeLocalMatrix");
+        const exports = {} as { bakeLocalMatrix(positions: Float32Array, normals: Float32Array, matrix: number[]): void };
+        new Function("exports", transpileCommonJs(file.text, BAKE_MODULE))(exports);
+        return matrices.map(matrix => {
+            const positions = new Float32Array(inputs.positions), normals = new Float32Array(inputs.normals);
+            exports.bakeLocalMatrix(positions, normals, matrix);
+            return { positions: [...positions], normals: [...normals] };
+        });
+    });
+    assert.notDeepEqual(expected[0]![2]!.normals, expected[1]![2]!.normals);
+    const loader = new BabylonLowerer(context).lowerLoaderAdapter().source;
+    const directory = resolve("artifacts/test-babylon-pivot");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "inputs.json"), JSON.stringify(inputs));
+    writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
+    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    writeFileSync(source, `#include <nlohmann/json.hpp>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cassert>
+#include <fstream>
+using Json=nlohmann::json;
+${cppFunction(loader, "void bake_local_matrix(")}
+${cppFunction(loader, "std::array<double, 16> babylon_local_matrix(")}
+${cppFunction(new BabylonLowerer(changed).lowerLoaderAdapter().source, "void bake_local_matrix(").replace("bake_local_matrix(", "changed_bake(")}
+int main() {
+    Json inputs,expected;
+    std::ifstream("inputs.json")>>inputs;
+    std::ifstream("expected.json")>>expected;
+    for(std::size_t version=0;version<2;++version) for(std::size_t row=0;row<inputs.at("matrices").size();++row) {
+        auto positions=inputs.at("positions").get<std::vector<float>>(),normals=inputs.at("normals").get<std::vector<float>>();
+        const auto matrix=babylon_local_matrix(inputs.at("matrices")[row]);
+        (version==0?bake_local_matrix:changed_bake)(positions,normals,matrix);
+        assert(positions==expected[version][row].at("positions").get<std::vector<float>>());
+        const auto wanted=expected[version][row].at("normals").get<std::vector<float>>();
+        for(std::size_t lane=0;lane<normals.size();++lane) assert(std::abs(normals[lane]-wanted[lane])<1e-7f);
     }
-    for (std::int64_t i = static_cast<std::int64_t>(0.0); i < static_cast<double>(positions.size()); i += static_cast<std::int64_t>(3.0)) {
-        const double x = static_cast<double>(${lane("positions", 0)});
-        const double y = static_cast<double>(${lane("positions", 1)});
-        const double z = static_cast<double>(${lane("positions", 2)});
-        ${lane("positions", 0)} = static_cast<float>(((((x * ${lm(0)}) + (y * ${lm(4)})) + (z * ${lm(8)})) + ${lm(12)}));
-        ${lane("positions", 1)} = static_cast<float>(((((x * ${lm(1)}) + (y * ${lm(5)})) + (z * ${lm(9)})) + ${lm(13)}));
-        ${lane("positions", 2)} = static_cast<float>(((((x * ${lm(2)}) + (y * ${lm(6)})) + (z * ${lm(10)})) + ${lm(14)}));
+    for(const auto& invalid:Json::array({nullptr,Json::array({1,2}),Json::array({"bad"})})) {
+        bool refused=false;
+        try { (void)babylon_local_matrix(invalid); } catch(const std::runtime_error&) { refused=true; }
+        assert(refused);
     }
-    for (std::int64_t i = static_cast<std::int64_t>(0.0); i < static_cast<double>(normals.size()); i += static_cast<std::int64_t>(3.0)) {
-        const double nx = static_cast<double>(${lane("normals", 0)});
-        const double ny = static_cast<double>(${lane("normals", 1)});
-        const double nz = static_cast<double>(${lane("normals", 2)});
-        const double rx = (((nx * ${lm(0)}) + (ny * ${lm(4)})) + (nz * ${lm(8)}));
-        const double ry = (((nx * ${lm(1)}) + (ny * ${lm(5)})) + (nz * ${lm(9)}));
-        const double rz = (((nx * ${lm(2)}) + (ny * ${lm(6)})) + (nz * ${lm(10)}));
-        const double len = std::sqrt((((rx * rx) + (ry * ry)) + (rz * rz)));
-        if (len > 1e-10) {
-            ${lane("normals", 0)} = static_cast<float>((rx / len));
-            ${lane("normals", 1)} = static_cast<float>((ry / len));
-            ${lane("normals", 2)} = static_cast<float>((rz / len));
-        }
-    }
-}`;
-
-function loaderSource(context = new LoweringContext()): string {
-    return new BabylonLowerer(context).lowerLoaderAdapter().source;
-}
-
-test("lowers the pinned pivot bake byte-identically to the loader's fixed presentation", () => {
-    assert.ok(loaderSource().includes(expectedBakeLocalMatrix));
+}`);
+    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", `/Fo:${directory}/`, `/Fe:${executable}`,
+        "/I", join(nativeFixtureVcpkgRoot, "include"), source]);
+    execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });
 
-test("the loader composes each node's TRS through the shared pinned composition and bakes only pivoted nodes", () => {
-    const source = loaderSource();
-    // The Euler triple goes through the world-transform header's one
-    // eulerToQuat + mat4ComposeInto composition, never a per-axis rotator.
-    assert.match(
-        source,
-        /return upstream::trs_matrix\(upstream::TrsLanes\{\n\s*\.rotation = rotation,\n\s*\.scaling = scaling,/,
-    );
-    assert.doesNotMatch(source, /cosine_x|sine_x|const double cx = std::cos/);
-    // The bake runs on the pin's own predicate: a node carrying a
-    // localMatrix, refused rather than padded when it is malformed.
-    assert.match(
-        source,
-        /if \(const auto local_matrix = local_matrix_or_absent\(source\)\) \{\n\s*bake_local_matrix\(/,
-    );
-    assert.match(source, /A \.babylon localMatrix must carry sixteen numbers\./);
-});
-
-test("a changed pivot renormalization threshold flows into the emitted bytes", () => {
-    const source = loaderSource(
-        doctoredContext(BAKE_MODULE, "if (len > 1e-10) {", "if (len > 1e-7) {"),
-    );
-    assert.ok(!source.includes(expectedBakeLocalMatrix));
-    assert.match(source, /if \(len > 1e-7\) \{/);
-});
-
-test("a pivot bake the loader stops guarding refuses generation", () => {
-    assert.throws(
-        () =>
-            loaderSource(
-                doctoredContext(
-                    LOADER_MODULE,
-                    "if (md.localMatrix && bakeLocalMatrix) {",
-                    "if (bakeLocalMatrix) {",
-                ),
-            ),
-        /Babylon pivot-bake guard/,
-    );
-});
-
-test("a mesh TRS argument that stops defaulting the pinned way refuses generation", () => {
-    assert.throws(
-        () =>
-            loaderSource(
-                doctoredContext(
-                    LOADER_MODULE,
-                    "md.scaling?.[2] ?? 1\n                    );",
-                    "md.scaling?.[2] ?? 2\n                    );",
-                ),
-            ),
-        /Babylon mesh TRS argument 8/,
-    );
-});
-
-test("a camera store the pin stops guarding refuses generation", () => {
-    assert.throws(
-        () =>
-            loaderSource(
-                doctoredContext(
-                    CAMERA_MODULE,
-                    "if (cd.fov != null) {",
-                    "if (cd.fov !== undefined) {",
-                ),
-            ),
-        /Pinned camera fov guard/,
-    );
+test("an unrepresented camera undefined comparison refuses generation", () => {
+    assert.throws(() => new BabylonLowerer(doctoredContext("src/loader-babylon/parse-camera.ts",
+        "if (cd.fov != null) {", "if (cd.fov !== undefined) {")).lowerLoaderAdapter(),
+    /parse-camera.ts.*Unsupported pinned identifier: undefined/);
 });

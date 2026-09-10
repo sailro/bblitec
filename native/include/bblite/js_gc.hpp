@@ -31,6 +31,7 @@ struct Registry {
     Node* first = nullptr;
     std::size_t size = 0;
     std::size_t allocations = 0;
+    std::size_t total_allocations = 0;
     unsigned frames_since_collection = 0;
     bool collecting = false;
 };
@@ -49,6 +50,7 @@ struct Node {
         registry.first = this;
         ++registry.size;
         ++registry.allocations;
+        ++registry.total_allocations;
     }
     virtual ~Node() {
         if (previous) previous->next = next;

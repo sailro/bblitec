@@ -1,3 +1,4 @@
+import { pinnedHeader } from "./pinned-header.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
@@ -314,21 +315,12 @@ export class GeometryOutputLowerer {
             modulePath: geometryModule,
             symbolName:
                 "createGeometryRendererTask,createRenderTask,createCopyToTextureTask,addTask,addTaskAtStart,RenderTask.addMesh",
-            header: `#pragma once
-
-#include <bblite/runtime.hpp>
-
-#include <cstdint>
-
-namespace bbl::upstream {
-
+            header: pinnedHeader(["<bblite/runtime.hpp>","","<cstdint>"], `
 PixelViewport resolve_copy_viewport(
     const NormalizedViewport& viewport,
     std::uint32_t target_width,
     std::uint32_t target_height);
-
-} // namespace bbl::upstream
-`,
+`),
             source: `// ${this.context.provenance(
                 geometryModule,
                 "createGeometryRendererTask",

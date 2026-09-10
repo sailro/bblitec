@@ -18,6 +18,9 @@ vcpkg_from_github(
         # once the patch ships in an SDL release; the measurement, which
         # reaches triangle edges too, is in docs/backends.md.
         d3d12-multisample-lines.patch
+        # Reserve complete graphics/compute descriptor bindings before
+        # switching heaps, then republish every affected root table.
+        d3d12-descriptor-heaps.patch
 )
 
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" SDL_STATIC)

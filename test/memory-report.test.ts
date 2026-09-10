@@ -14,7 +14,7 @@ const line = (frame: number, workingSet: number, records: number): string =>
     `[mem][frame] frame=${frame} working_set_mb=${workingSet.toFixed(1)} ` +
     `mesh_records=${records} scene_meshes=40 geometry_records=${records} ` +
     "live_geometries=40 geometry_mb=8.0 gpu_meshes=40 shared_geometries=12 " +
-    "shared_geometry_mb=6.5";
+    `shared_geometry_mb=6.5 gc_nodes=${records + 10} gc_allocations=${records * 10}`;
 
 test("parses only complete memory frame lines out of a run's stderr", () => {
     const samples = parseMemoryProfile(
@@ -26,6 +26,8 @@ test("parses only complete memory frame lines out of a run's stderr", () => {
             line(16, Infinity, 41),
             line(17, -1, 41),
             line(18, 0, 41),
+            line(19, 100, 41).replace(/ gc_nodes=\d+/, ""),
+            line(20, 100, 41).replace(/gc_allocations=\d+/, "gc_allocations=-1"),
             line(30, 104.5, 41),
             "",
         ].join("\r\n"),
@@ -36,9 +38,11 @@ test("parses only complete memory frame lines out of a run's stderr", () => {
     );
     assert.equal(samples[1]?.workingSetMb, 104.5);
     assert.equal(samples[1]?.meshRecords, 41);
+    assert.equal(samples[1]?.gcNodes, 51);
+    assert.equal(samples[1]?.gcAllocations, 410);
 });
 
-test("judges growth from the warm-up third and reports retired records", () => {
+test("judges working-set growth and reports object growth after warm-up", () => {
     const samples = parseMemoryProfile(
         [line(0, 100, 40), line(1000, 130, 60), line(2000, 131, 80), line(3000, 132, 100)].join("\n"),
     );
@@ -47,7 +51,7 @@ test("judges growth from the warm-up third and reports retired records", () => {
     // Warm-up ends a third of the way through the samples (frame 1000).
     assert.equal(summary.settled.frame, 1000);
     assert.equal(summary.growthMb, 2);
-    assert.equal(summary.last.meshRecords - summary.last.sceneMeshes, 60);
+    assert.match(formatMemorySummary("demo", summary), /GC nodes 70 -> 110, 400 GC allocations after warm-up/);
     assert.equal(summary.passed, true);
     assert.equal(summarizeMemoryProfile(samples, 1)?.passed, false);
     // Fewer than three samples cannot separate warm-up from the run.
@@ -69,6 +73,13 @@ test("formats a verdict, and names an unmeasured loop instead of passing it", ()
     assert.match(text, /100\.0 -> 150\.0 MB/);
     assert.match(text, /frames 1000\.\.3000/);
     assert.match(formatMemorySummary("sprite", undefined), /unmeasured/);
+});
+
+test("scene entries exceeding engine records do not imply negative retired meshes", () => {
+    const samples = parseMemoryProfile([0, 30, 60].map((frame) => line(frame, 90, 20)).join("\n"));
+    const text = formatMemorySummary("shared", summarizeMemoryProfile(samples, 32));
+    assert.match(text, /20 mesh records, 40 scene mesh entries/);
+    assert.doesNotMatch(text, /retired/);
 });
 
 test("parses the memory command's flags, defaults and a tape file", (t) => {

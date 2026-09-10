@@ -1,31 +1,30 @@
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./closure-captures.js";
-import type { DataLowerer } from "./data-lowering.js";
-import type { DataTypeRegistry } from "./data-types.js";
+import { renderClosure, type CapturedClosure } from "./closure-captures.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { unwrapExpression, argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 
-interface AsyncContext {
-    checker: ts.TypeChecker;
-    dataLowerer: DataLowerer;
-    dataTypes: DataTypeRegistry;
-    compileValue(expression: ts.Expression): Value;
-    compileCallbackWithValues(declaration: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration,
-        values: readonly Value[], node: ts.Node): Value;
-    captureManagedClosureLines(body: () => void, byReference?: boolean): CapturedClosure;
-    withOwnedCallbackBody<T>(body: () => T): T;
-    allocateTemporaryCppName(label: string): string;
-    registerNativeBinding(name: string): NativeCaptureBinding;
-    emit(line: string): void;
-    unwrap(expression: ts.Expression): ts.Expression;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
-    isBrowserOnlyExpression(expression: ts.Expression): boolean;
-    fail(node: ts.Node, message: string): never;
-}
+interface AsyncContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "dataLowerer"
+        | "dataTypes"
+        | "compileValue"
+        | "compileCallbackWithValues"
+        | "captureManagedClosureLines"
+        | "withOwnedCallbackBody"
+        | "allocateTemporaryCppName"
+        | "registerNativeBinding"
+        | "emit"
+        | "unwrap"
+        | "lookupOptional"
+        | "isDefaultLibraryIdentifier"
+        | "isBrowserOnlyLocalCall"
+        | "isBrowserOnlyExpression"
+        | "fail"
+    > {}
 
 /** Async activation and reaction lowering share the compiler's managed captures. */
 export class AsyncLowerer {
@@ -43,7 +42,7 @@ export class AsyncLowerer {
                 ((context.checker.getAwaitedType(context.checker.getTypeAtLocation(node.expression))?.flags ?? 0) & ts.TypeFlags.Void) !== 0;
             const awaited = this.asPromise(erasedVoid ? { kind: "void", cpp: "" } : context.compileValue(node.expression), node);
             const temporary = context.allocateTemporaryCppName("await_result");
-            context.emit(`[[maybe_unused]] auto ${temporary} = co_await ${awaited.cpp};`);
+            context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: `co_await ${awaited.cpp}`, attributes: "[[maybe_unused]] " });
             const binding = context.registerNativeBinding(temporary);
             return { ...this.resultAt(awaited.promiseResult!, temporary), nativeCaptures: [binding] };
         }
@@ -63,21 +62,21 @@ export class AsyncLowerer {
             const name = context.allocateTemporaryCppName("promise_argument");
             const rejection = callee.name.text === "catch";
             const parameterType = rejection ? "std::exception_ptr" : `const ${promise.promiseType}&`;
-            let result: Value = { kind: "void", cpp: "" };
+            const result: { value: Value } = { value: { kind: "void", cpp: "" } };
             const compiled = context.withOwnedCallbackBody(() => context.captureManagedClosureLines(() => {
                 context.registerNativeBinding(name);
                 const input: Value = rejection ? { kind: "string", cpp: `bbl::js::promise_error_string(${name})` }
                     : this.resultAt(promise.promiseResult!, name);
-                result = context.compileCallbackWithValues(callback, [input], node);
-                if (result.kind === "void") { if (result.cpp) context.emit(`${result.cpp};`); }
-                else context.emit(`return ${result.cpp};`);
+                result.value = context.compileCallbackWithValues(callback, [input], node);
+                if (result.value.kind === "void") { if (result.value.cpp) context.emit(`${result.value.cpp};`); }
+                else context.emit(`return ${result.value.cpp};`);
             }));
-            if (rejection && promise.promiseResult!.kind !== "void" && result.kind === "void") {
+            if (rejection && promise.promiseResult!.kind !== "void" && result.value.kind === "void") {
                 return context.fail(callback, "A value promise's recovery must preserve its admitted result type.");
             }
             const reaction = renderClosure(compiled, `[[maybe_unused]] ${parameterType} ${name}`);
-            const output = rejection ? promise.promiseResult! : result.kind === "promise" ? result.promiseResult! : result;
-            const cppType = rejection ? promise.promiseType! : result.kind === "promise" ? result.promiseType! : this.cppType(output, node);
+            const output = rejection ? promise.promiseResult! : result.value.kind === "promise" ? result.value.promiseResult! : result.value;
+            const cppType = rejection ? promise.promiseType! : result.value.kind === "promise" ? result.value.promiseType! : this.cppType(output, node);
             return { kind: "promise", cpp: `${promise.cpp}.${rejection ? "catch_error" : "then"}(${reaction})`, promiseResult: output, promiseType: cppType };
         }
         if (!ts.isIdentifier(callee)) return undefined;
@@ -88,25 +87,25 @@ export class AsyncLowerer {
             const value = context.compileValue(argument);
             if (!value.cpp || value.kind === "engine") return value;
             const temporary = context.allocateTemporaryCppName("async_argument");
-            context.emit(`auto ${temporary} = ${value.cpp};`);
+            context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp });
             const binding = context.registerNativeBinding(temporary);
             return { ...this.resultAt(value, temporary), nativeCaptures: [binding] };
         });
-        let result: Value = { kind: "void", cpp: "" };
+        const result: { value: Value } = { value: { kind: "void", cpp: "" } };
         this.depth++;
         let compiled: CapturedClosure;
         try {
             compiled = context.withOwnedCallbackBody(() => context.captureManagedClosureLines(() => {
-                result = context.compileCallbackWithValues(callee, values, node);
-                if (result.kind === "void" && result.cpp) context.emit(`${result.cpp};`);
-                context.emit(`co_return ${result.kind === "void" ? "bbl::js::PromiseVoid{}" : result.ownedEngineCpp ?? result.cpp};`);
+                result.value = context.compileCallbackWithValues(callee, values, node);
+                if (result.value.kind === "void" && result.value.cpp) context.emit(`${result.value.cpp};`);
+                context.emit(`co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : result.value.ownedEngineCpp ?? result.value.cpp};`);
             }));
         } finally { this.depth--; }
-        const output = result.kind === "promise" ? result.promiseResult! : result;
-        const cppType = result.kind === "promise" ? result.promiseType! : this.cppType(output, node);
+        const output = result.value.kind === "promise" ? result.value.promiseResult! : result.value;
+        const cppType = result.value.kind === "promise" ? result.value.promiseType! : this.cppType(output, node);
         // The coroutine takes its environment by value; a temporary closure's
         // this pointer or a borrowed environment must never enter its frame.
-        const cpp = `([]([[maybe_unused]] auto ${compiled.environment}) -> bbl::js::Promise<${cppType}> {\n${compiled.lines.join("\n")}\n}(${compiled.initializer}))`;
+        const cpp = `([]([[maybe_unused]] decltype(${compiled.initializer}) ${compiled.environment}) -> bbl::js::Promise<${cppType}> {\n${compiled.lines.join("\n")}\n}(${compiled.initializer}))`;
         return { kind: "promise", cpp, promiseResult: output, promiseType: cppType };
     }
 

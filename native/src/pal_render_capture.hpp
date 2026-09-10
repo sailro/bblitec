@@ -332,7 +332,7 @@ private:
  * twice is a real defect shape here).
  */
 inline std::uint64_t fold_payload(
-    const std::vector<std::uint8_t>& bytes,
+    std::span<const std::uint8_t> bytes,
     std::uint64_t hash = 0xcbf29ce484222325ull) {
     for (const std::uint8_t byte : bytes) {
         hash ^= byte;
@@ -980,7 +980,7 @@ inline void write_draw_uniforms(
             // the capture dumps the same bytes the same writer builds.
             const MaterialRecord* material =
                 draw.item.material.value < engine.materials.size()
-                    ? &engine.materials[draw.item.material.value]
+                    ? &handle_at(engine.materials, draw.item.material)
                     : nullptr;
             std::uint32_t features = material
                 ? upstream::standard_material_features(*material)
@@ -1017,10 +1017,10 @@ inline void write_draw_uniforms(
                 draw.item.material.value < engine.materials.size() &&
                 draw.item.mesh.value < engine.meshes.size()) {
                 const MaterialRecord& material =
-                    engine.materials[draw.item.material.value];
+                    handle_at(engine.materials, draw.item.material);
                 const ShaderDrawMatrices shader_matrices(
                     engine,
-                    engine.meshes[draw.item.mesh.value],
+                    handle_at(engine.meshes, draw.item.mesh),
                     pass_matrices);
                 const ShaderPassMatrices shader_pass_matrices =
                     shader_matrices.apply(pass_matrices);
@@ -1139,7 +1139,7 @@ inline void write_draw_list(
             json.field("vertexCount", geometry.vertices.size());
         }
         if (draw.item.mesh.value < engine.meshes.size()) {
-            const MeshRecord& mesh = engine.meshes[draw.item.mesh.value];
+            const MeshRecord& mesh = handle_at(engine.meshes, draw.item.mesh);
             json.field(
                 "instanceCount",
                 mesh.thin_instanced
@@ -1162,7 +1162,7 @@ inline void write_shadow_generator(
     LightHandle light,
     std::size_t slot) {
     const ShadowGeneratorRecord& generator =
-        engine.shadow_generators[handle.value];
+        handle_at(engine.shadow_generators, handle);
     json.begin_object();
     json.handle("index", handle.value);
     json.handle("light", light.value);
@@ -1204,7 +1204,7 @@ inline void write_shadow_generator(
         json.handle("task", task_handle.value);
         if (task_handle.value < engine.frame_tasks.size()) {
             const FrameTaskRecord& task =
-                engine.frame_tasks[task_handle.value];
+                handle_at(engine.frame_tasks, task_handle);
             json.field("renderMeshes", task.render_meshes.size());
             json.handle("target", task.render.target.value);
         }
@@ -1224,7 +1224,7 @@ inline void write_splat_list(
     const std::string& capture_path) {
     for (const SplatMeshHandle handle : scene.splat_meshes) {
         if (handle.value >= engine.splat_meshes.size()) continue;
-        const SplatMeshRecord& splat = engine.splat_meshes[handle.value];
+        const SplatMeshRecord& splat = handle_at(engine.splat_meshes, handle);
         json.begin_object();
         json.field("index", handle.value);
         json.field("name", splat.name);
@@ -1273,7 +1273,7 @@ inline void write_splat_draw_list(
     int height) {
     for (const SplatMeshHandle handle : scene.splat_meshes) {
         if (handle.value >= engine.splat_meshes.size()) continue;
-        const SplatMeshRecord& splat = engine.splat_meshes[handle.value];
+        const SplatMeshRecord& splat = handle_at(engine.splat_meshes, handle);
         if (splat.vertex_count == 0) continue;
 
         upstream::SplatUniforms uniforms;
@@ -1366,7 +1366,7 @@ inline void write_sprite_atlas_reference(
     json.key("atlas");
     json.begin_object();
     if (atlas.value < engine.sprite_atlases.size()) {
-        const SpriteAtlasRecord& record = engine.sprite_atlases[atlas.value];
+        const SpriteAtlasRecord& record = handle_at(engine.sprite_atlases, atlas);
         json.field("index", atlas.value);
         json.field("width", record.width);
         json.field("height", record.height);
@@ -1416,7 +1416,7 @@ inline void write_billboard_draw_list(
     for (const BillboardSystemHandle handle : scene.billboard_systems) {
         if (handle.value >= engine.billboard_systems.size()) continue;
         const BillboardSystemRecord& system =
-            engine.billboard_systems[handle.value];
+            handle_at(engine.billboard_systems, handle);
         // The pass's own gate: an invisible or empty system records no
         // draw, so it must not describe one here either.
         if (!system.visible || system.count == 0) continue;
@@ -1547,7 +1547,7 @@ inline void write_sprite_renderer_list(
             const Sprite2DLayerHandle handle = renderer.layers[slot];
             if (handle.value >= engine.sprite_layers.size()) continue;
             const Sprite2DLayerRecord& layer =
-                engine.sprite_layers[handle.value];
+                handle_at(engine.sprite_layers, handle);
             json.begin_object();
             json.field("layer", handle.value);
             json.field("order", layer.order);
@@ -1727,7 +1727,7 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
         json.field("clearColor", task.effect.clear_color);
         if (task.effect.target.value < engine.render_targets.size()) {
             const RenderTargetRecord& target =
-                engine.render_targets[task.effect.target.value];
+                handle_at(engine.render_targets, task.effect.target);
             json.field("targetWidth", target.width);
             json.field("targetHeight", target.height);
             json.field("targetSamples", target.samples);
@@ -1753,7 +1753,7 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
     json.begin_array();
     for (const TaskHandle handle : scene.tasks) {
         if (handle.value >= engine.frame_tasks.size()) continue;
-        const FrameTaskRecord& task = engine.frame_tasks[handle.value];
+        const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
         if (!task.scene_uniforms && !task.post_process.taa) continue;
         json.begin_object();
         json.field("taskIndex", handle.value);
@@ -2034,7 +2034,7 @@ inline void write_render_capture(
     json.begin_array();
     for (const LightHandle handle : scene.lights) {
         if (handle.value >= engine.lights.size()) continue;
-        write_light(json, handle.value, engine.lights[handle.value]);
+        write_light(json, handle.value, handle_at(engine.lights, handle));
     }
     json.end_array();
 
@@ -2222,7 +2222,7 @@ inline void write_render_capture(
                 }
                 const std::size_t variant = pinned_variant_for_draw(scene, engine, draw);
                 if (variant == npos) continue;
-                const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+                const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
                 const PinnedDrawConventions conventions = pinned_draw_conventions(variant, record);
                 const upstream::MeshUniforms block = pinned_draw_mesh_block(
                     scene, engine, draw, variant, conventions);

@@ -24,12 +24,8 @@
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import {
-    absentBinding,
-    type PinnedBinding,
-    PinnedNumericLowerer,
-    type PinnedNumericScope,
-} from "./pinned-numeric-lowerer.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import { pinnedHeader } from "./pinned-header.js";
 
 export const COMPUTE_AABB_MODULE = "src/math/compute-aabb.ts";
 
@@ -64,125 +60,38 @@ export function lowerComputeAabb(
     context: LoweringContext,
     options: ComputeAabbLowering,
 ): string {
-    const { file, declaration } = context.functionDeclaration(
-        COMPUTE_AABB_MODULE,
-        "computeAabb",
-    );
-    const [positions, world] = declaration.parameters;
-    if (
-        declaration.parameters.length !== 2 ||
-        !positions ||
-        !world ||
-        !ts.isIdentifier(positions.name) ||
-        positions.name.text !== "positions" ||
-        positions.type?.getText(file) !== "Float32Array" ||
-        !ts.isIdentifier(world.name) ||
-        world.name.text !== "world" ||
-        !world.questionToken ||
-        world.type?.getText(file) !== "Mat4"
-    ) {
-        context.contractError(
-            declaration,
-            "Expected pinned computeAabb to take " +
-                "(positions: Float32Array, world?: Mat4).",
-        );
-    }
-    let lowerer: PinnedNumericLowerer | undefined;
-    const scope: PinnedNumericScope = {
-        bindings: new Map<string, PinnedBinding>([
-            ["positions", { cpp: "positions", type: "scalar" }],
-            [
-                "positions.length",
-                {
-                    cpp: "static_cast<std::int64_t>(positions.size())",
-                    type: "scalar",
-                },
-            ],
-            [
-                "world",
-                options.arm === "world"
-                    ? { cpp: "world", type: "scalar" }
-                    : absentBinding(),
-            ],
-        ]),
-        calls: new Map(),
-        returnValue: (expression) => {
-            const returned = expression
-                ? context.unwrapExpression(expression)
-                : undefined;
-            if (
-                !returned ||
-                !ts.isArrayLiteralExpression(returned) ||
-                returned.elements.length !== 2
-            ) {
-                return context.contractError(
-                    declaration,
-                    "Expected pinned computeAabb to return a min/max pair.",
-                );
-            }
-            const rows = returned.elements.map((row) => {
-                const literal = context.unwrapExpression(row);
-                if (
-                    !ts.isArrayLiteralExpression(literal) ||
-                    literal.elements.length !== 3
-                ) {
-                    return context.contractError(
-                        declaration,
-                        "Expected each pinned AABB corner to have three " +
-                            "components.",
-                    );
+    const at = context.functionDeclaration(COMPUTE_AABB_MODULE, "computeAabb").declaration;
+    return lowerPinnedFunction(context, COMPUTE_AABB_MODULE, "computeAabb", [
+        { pinned: "positions", kind: "f32Buffer", cpp: "positions",
+            cppType: options.positionsType ?? "Positions", binding: { cpp: "positions", type: "scalar" } },
+        { pinned: "world", kind: "mat4Const", cpp: "world", optional: true,
+            ...(options.arm === "local" ? { absent: true } : {}),
+            binding: { cpp: "world", type: "scalar" } },
+    ], {
+        cppName: options.cppName,
+        ...(options.inline ? { inline: true } : {}),
+        ...(!options.positionsType ? { templateParameters: ["typename Positions"] } : {}),
+        armOf: { condition: "world", arm: options.arm === "world" ? "then" : "else" },
+        memberBindings: new Map([["positions.length",
+            { cpp: "static_cast<std::int64_t>(positions.size())", type: "scalar" }]]),
+        returns: {
+            type: COMPUTE_AABB_RESULT,
+            value: (lowerer, expression) => {
+                const returned = expression ? context.unwrapExpression(expression) : undefined;
+                if (!returned || !ts.isArrayLiteralExpression(returned) || returned.elements.length !== 2) {
+                    return context.contractError(at, "Expected pinned computeAabb to return a min/max pair.");
                 }
-                return `{${literal.elements
-                    .map((element) => lowerer!.expression(element))
-                    .join(", ")}}`;
-            });
-            return `${COMPUTE_AABB_RESULT}{{${rows.join(", ")}}}`;
+                const rows = returned.elements.map(row => {
+                    const literal = context.unwrapExpression(row);
+                    if (!ts.isArrayLiteralExpression(literal) || literal.elements.length !== 3) {
+                        return context.contractError(at, "Expected each pinned AABB corner to have three components.");
+                    }
+                    return "{" + literal.elements.map(element => lowerer.expression(element)).join(", ") + "}";
+                });
+                return COMPUTE_AABB_RESULT + "{{" + rows.join(", ") + "}}";
+            },
         },
-    };
-    lowerer = new PinnedNumericLowerer(file, scope);
-    const statements = declaration.body!.statements;
-    const guard = statements.find(
-        (statement): statement is ts.IfStatement =>
-            ts.isIfStatement(statement) &&
-            ts.isIdentifier(statement.expression) &&
-            statement.expression.text === "world",
-    );
-    if (
-        !guard ||
-        !ts.isBlock(guard.thenStatement) ||
-        !guard.elseStatement ||
-        !ts.isBlock(guard.elseStatement)
-    ) {
-        context.contractError(
-            declaration,
-            "Expected pinned computeAabb to guard its transforming arm on " +
-                "the supplied world matrix, with a local arm behind it.",
-        );
-    }
-    const arm =
-        options.arm === "world" ? guard.thenStatement : guard.elseStatement;
-    const body = statements
-        .flatMap((statement) =>
-            statement === guard
-                ? arm.statements.flatMap((inner) =>
-                      lowerer!.statement(inner, "    "),
-                  )
-                : lowerer!.statement(statement, "    "),
-        )
-        .join("\n");
-    const parameters = [
-        `const ${options.positionsType ?? "Positions"}& positions`,
-        ...(options.arm === "world"
-            ? ["const std::array<float, 16>& world"]
-            : []),
-    ];
-    return `// ${context.provenance(COMPUTE_AABB_MODULE, "computeAabb")}
-${options.positionsType ? "" : "template <typename Positions>\n"}${
-        options.inline ? "inline " : ""
-    }${COMPUTE_AABB_RESULT} ${options.cppName}(
-    ${parameters.join(",\n    ")}) {
-${body}
-}`;
+    });
 }
 
 /**
@@ -233,19 +142,9 @@ export function pinnedComputeAabbHeader(context: LoweringContext): string {
         cppName: "compute_aabb",
         inline: true,
     });
-    return `#pragma once
-
-#include <array>
-#include <cstddef>
-#include <cstdint>
-#include <limits>
-
-namespace bbl::upstream {
-
+    return pinnedHeader(["<array>","<cstddef>","<cstdint>","<limits>"], `
 ${local}
 
 ${world}
-
-} // namespace bbl::upstream
-`;
+`);
 }

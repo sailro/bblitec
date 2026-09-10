@@ -1,3 +1,4 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import {
@@ -5,15 +6,10 @@ import {
     postProcessEffect,
 } from "../../post-process-effects.js";
 import type {
-    GeometryOutputTaskManifest,
-    PostProcessCompositeManifest,
-    PostProcessTaskManifest,
-    ScreenSpaceTaskManifest,
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type {
-    CompiledRenderTargetOptions,
     EngineOptionContext,
 } from "./engine-options.js";
 import { compileScreenSpaceTaskOptions } from "./screen-space-options.js";
@@ -24,67 +20,36 @@ import {
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
 import { validateObjectProperties } from "../option-helpers.js";
 
-interface CompiledGeometryTask {
-    cpp: string;
-    manifest: GeometryOutputTaskManifest;
-}
 
 export interface EngineIntrinsicContext
-    extends IntrinsicCallContext, EngineOptionContext {
-    noteTextSceneLifecycle(node: ts.Node, message?: string): void;
-    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
-    emit(line: string): void;
-    fail(node: ts.Node, message: string): never;
-    expectSameEngine(
-        left: Value,
-        right: Value,
-        node: ts.Node,
-    ): void;
-    requireDefaultEngine(node: ts.Node): string;
-    allocateTemporaryCppName(label: string): string;
-    compileEngineCreation(
-        call: ts.CallExpression,
-        cppName: string,
-    ): Value;
-    compileRenderTargetOptions(
-        expression: ts.Expression,
-    ): CompiledRenderTargetOptions;
-    compileRenderTaskOptions(
-        expression: ts.Expression,
-    ): string;
-    compileGeometryTaskOptions(
-        expression: ts.Expression,
-    ): CompiledGeometryTask;
-    compileCopyTaskOptions(
-        expression: ts.Expression,
-    ): string;
-    recordGeometryOutputTask(
-        manifest: GeometryOutputTaskManifest,
-    ): void;
-    recordPostProcessTask(
-        manifest: PostProcessTaskManifest,
-    ): void;
-    recordPostProcessComposite(
-        manifest: PostProcessCompositeManifest,
-        site: ts.Node,
-    ): void;
-    recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void;
-    readonly postProcessTasks: readonly PostProcessTaskManifest[];
-    readonly postProcessComposites: readonly PostProcessCompositeManifest[];
-    readonly screenSpaceTasks: readonly ScreenSpaceTaskManifest[];
-    compileSceneDefaultRenderTask(
-        expression: ts.Expression | undefined,
-    ): boolean;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    propertyName(name: ts.PropertyName): string | undefined;
-    compileFrameCallback(expression: ts.Expression, signature?: import("../types.js").FrameCallbackSignature, retainCaptures?: boolean): string;
-}
+    extends IntrinsicCallContext,
+    EngineOptionContext,
+    Pick<LoweringServices,
+        | "noteTextSceneLifecycle"
+        | "noteTemporalRecordBoundary"
+        | "emit"
+        | "fail"
+        | "expectSameEngine"
+        | "requireDefaultEngine"
+        | "allocateTemporaryCppName"
+        | "compileEngineCreation"
+        | "compileRenderTargetOptions"
+        | "compileRenderTaskOptions"
+        | "compileGeometryTaskOptions"
+        | "compileCopyTaskOptions"
+        | "recordGeometryOutputTask"
+        | "recordPostProcessTask"
+        | "recordPostProcessComposite"
+        | "recordScreenSpaceTask"
+        | "postProcessTasks"
+        | "postProcessComposites"
+        | "screenSpaceTasks"
+        | "compileSceneDefaultRenderTask"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "propertyName"
+        | "compileFrameCallback"
+    > {}
 
 function reachRenderer(
     context: EngineIntrinsicContext,
@@ -208,7 +173,7 @@ export function compileEngineIntrinsic(
                 : undefined;
             context.reachFeature("renderer:frame-graph", call);
             const nativeContext = context.allocateTemporaryCppName("frame_graph");
-            context.emit(`auto ${nativeContext} = bbl::create_frame_graph_context(${surface.cpp});`);
+            context.emit({ kind: "declaration", type: "auto", name: nativeContext, initializer: `bbl::create_frame_graph_context(${surface.cpp})` });
             if (update) {
                 context.emit(`bbl::on_frame_graph_update(${nativeContext}, ${context.compileFrameCallback(update)});`);
             }

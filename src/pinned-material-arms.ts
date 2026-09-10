@@ -19,11 +19,12 @@
  */
 import {
     animatedMaterialPointerPatterns,
-    asNumber,
+    asIndex,
     asObject,
+    asRecords,
     glbDocument,
+    GLTF_TRANSMISSION_PLAN,
     selectedVariantIndex,
-    variantMaterialIndex,
     type JsonObject,
 } from "./gltf-document.js";
 import {
@@ -51,15 +52,16 @@ import type {
     ScenePbrLightmapManifest,
     ScenePbrMaterialManifest,
 } from "./compiler/types.js";
-import { pinnedGltfMeshNamePrefix } from "./lowering/gltf/loader.js";
-import { LoweringContext } from "./lowering/context.js";
-import {
-    pinnedMeshFeaturesFromPrimitive,
-    skinnedMeshIndices,
-} from "./pinned-mesh-features.js";
+import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
+import { gltfVariantPlan } from "./gltf-variant-plan.js";
+import { packagedGltfMeshPlan, type GltfConstructedMaterialPlan } from "./gltf-mesh-plan.js";
+import { packagedGltfLights } from "./gltf-light-plan.js";
+import {packagedGltfTransmissionPlan, selectedGltfTransmission, type GltfTransmissionPlan} from "./gltf-transmission-plan.js";
+import {pinnedPbrTransmissionSelection} from "./pinned-pbr-transmission.js";
+import type {LoweringContext} from "./lowering/context.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -258,6 +260,8 @@ const glbView = (path: string): GltfDocument | undefined =>
 /** One material's composer input, plus what it takes to name and place it. */
 export interface MaterialSubject {
     index: number;
+    /** Original glTF material index; -1 denotes the implicit default. */
+    sourceIndex: number;
     name: string;
     input: PinnedMaterialInput;
     uv2Mask: number;
@@ -270,71 +274,21 @@ export interface MaterialSubject {
      */
     meshFeatures: number;
     metallicReflectanceRegistered: boolean;
+    transmissionRegistered: boolean;
 }
 
-/** The punctual lights a glTF asset's nodes reference. */
+/** Source-registered lights that join the scene's composed lighting arms. */
 export interface GltfNodeLights {
-    /**
-     * How many nodes reference a light — the count the pin grows
-     * `MAX_LIGHTS` from: `gltf-feature-lights-punctual.ts` walks the node
-     * array and calls `setMaxLights(lightNodeCount)` when it exceeds the
-     * constant. This port freezes the pin's constant and the native writers
-     * stop at it, so the same count is read at generation to refuse what
-     * upstream would grow.
-     */
     count: number;
-    /**
-     * The single-light kinds those nodes' lights reach, in first-reference
-     * order. glTF has no hemispheric light, so the mapping is the identity
-     * on the three punctual kinds.
-     */
     kinds: readonly string[];
 }
 
-/**
- * The lights a glTF asset creates, read the way the pin creates them.
- *
- * `gltf-feature-lights-punctual.ts` walks the NODE array and creates one
- * light per node carrying `KHR_lights_punctual.light`; the document's
- * declared `lights[]` table is only what those references resolve through,
- * so a declared light no node names creates nothing and reaches no arm.
- * The two consumers -- the `light:*` feature join, whose arms the composed
- * variants must cover because the loader creates these lights exactly like
- * scene code does, and the static scene-arm selection, which asks whether
- * an asset contributes lights at all -- read this one answer.
- */
 export function gltfNodeLights(path: string): GltfNodeLights {
-    const record = glbDocument(path);
-    if (!record) return { count: 0, kinds: [] };
-    const extensions = record["extensions"] as
-        | Record<string, unknown>
-        | undefined;
-    const declared =
-        (extensions?.["KHR_lights_punctual"] as
-            | { lights?: { type?: string }[] }
-            | undefined)?.lights ?? [];
-    const nodes = Array.isArray(record["nodes"])
-        ? (record["nodes"] as Record<string, unknown>[])
-        : [];
-    let count = 0;
-    const kinds = new Set<string>();
-    for (const node of nodes) {
-        const nodeExtensions = node?.["extensions"] as
-            | Record<string, unknown>
-            | undefined;
-        const reference = (nodeExtensions?.["KHR_lights_punctual"] as
-            | { light?: unknown }
-            | undefined)?.light;
-        if (reference === undefined) continue;
-        count += 1;
-        const type = typeof reference === "number"
-            ? declared[reference]?.type
-            : undefined;
-        if (type === "point" || type === "directional" || type === "spot") {
-            kinds.add(type);
-        }
-    }
-    return { count, kinds: [...kinds] };
+    const document = glbDocument(path);
+    if (!document) return {count: 0, kinds: []};
+    const plan = packagedGltfLights(document);
+    const kinds = new Set(plan.sceneLights.map(index => plan.lights[index]!.kind));
+    return {count: plan.sceneLights.length, kinds: [...kinds]};
 }
 
 /**
@@ -354,29 +308,31 @@ export function gltfHasImageBasedLight(path: string): boolean {
         used.includes("EXT_lights_image_based");
 }
 
-/**
- * Whether the asset alone makes the scene render linear: the pin's
- * `set-transmission.ts` retargets the frame graph's colour buffer when any
- * material transmits, and marks every material `_linearImageProcessing`.
- *
- * This is the asset-side half of the flag only. Generation passes its own
- * value into `materialSubjects` instead, because scene code reaches the same
- * retarget through the `material:pbr-linear-image-processing` feature with no
- * transmissive material in any asset; the compose gate has only the asset,
- * and derives the flag here.
- */
-export function gltfLinearImageProcessing(document: JsonObject): boolean {
-    const materials = (document as GltfDocument).materials ?? [];
-    return materials.some(
-        (entry) =>
-            (asNumber(
-                asObject(
-                    asObject(entry["extensions"])?.[
-                        "KHR_materials_transmission"
-                    ],
-                )?.["transmissionFactor"],
-            ) ?? 0) > 0,
-    );
+/** Source material construction, registration and selection over the actual scene mesh list. */
+export async function gltfTransmissionPlan(document: JsonObject, context?: LoweringContext): Promise<GltfTransmissionPlan> {
+    const base = packagedGltfMeshPlan(document);
+    const variants = await gltfVariantPlan(document);
+    const subjects = await materialSubjects(document);
+    const registered = subjects.some(subject => subject.transmissionRegistered);
+    const select = pinnedPbrTransmissionSelection(context);
+    const selected = (slots: readonly number[]): boolean => registered && select(base.sceneMeshes.map(index => {
+        const subject = subjects[slots[index]!];
+        if (!subject) throw new Error("glTF transmission selection references an unconstructed material.");
+        return subject.input;
+    }));
+    return {registered, initial: selected(base.meshes.map(mesh => mesh.material)),
+        variants: Object.fromEntries(Object.entries(variants.selections).map(([name, slots]) => [name, selected(slots)]))};
+}
+
+/** Persist the async source decision before synchronous asset specialization. */
+export async function packageGltfTransmissionPlan(document: JsonObject): Promise<void> {
+    if (GLTF_TRANSMISSION_PLAN in document) throw new Error("glTF source already carries compiler transmission metadata.");
+    document[GLTF_TRANSMISSION_PLAN] = await gltfTransmissionPlan(document);
+}
+
+/** The asset-side linear target decision; explicit scene opt-ins remain separate. */
+export async function gltfLinearImageProcessing(document: JsonObject, selectedVariant?: string): Promise<boolean> {
+    return selectedGltfTransmission(packagedGltfTransmissionPlan(document) ?? await gltfTransmissionPlan(document), selectedVariant);
 }
 
 /**
@@ -562,6 +518,7 @@ export async function materialSubjects(
          */
         sceneLightmap?: SceneLightmapSelection;
     } = {},
+    construction?: {meshPlan: GltfConstructedMaterialPlan; context?: LoweringContext; deferAnimationPointers?: boolean},
 ): Promise<readonly MaterialSubject[]> {
     // The executed pinned loader behind every reader below, run on first
     // need: this is the one async choke point through which production
@@ -576,55 +533,62 @@ export async function materialSubjects(
     const view = document as GltfDocument;
     const materials = view.materials ?? [];
     const imageOf = gltfImageResolver(document);
-    const animatedBaseColor = gltfAnimatedMaterialPointers(
+    const prepareAnimationPointers = !construction?.deferAnimationPointers;
+    const animatedBaseColor = prepareAnimationPointers ? gltfAnimatedMaterialPointers(
         document,
         animatedMaterialPointerPatterns.baseColorFactor,
-    );
-    const animatedUvTransform = gltfAnimatedMaterialPointers(
+    ) : undefined;
+    const animatedUvTransform = prepareAnimationPointers ? gltfAnimatedMaterialPointers(
         document,
         animatedMaterialPointerPatterns.uvTransform,
-    );
-    const animatedEmissive = new Set(
+    ) : undefined;
+    const animatedEmissive = prepareAnimationPointers ? new Set(
         animatedMaterialPointerPatterns.emissive.flatMap((pointer) => [
             ...gltfAnimatedMaterialPointers(document, pointer),
         ]),
-    );
-    const animatedExtensions = gltfAnimatedExtensionTargets(document);
+    ) : undefined;
+    const animatedExtensions = prepareAnimationPointers ? gltfAnimatedExtensionTargets(document) : undefined;
     // Which primitive first names each material, for the subject's mesh half:
     // a second UV set or a vertex-colour stream changes the composed fragment.
-    const skinned = skinnedMeshIndices(document);
+    const basePlan = construction?.meshPlan ?? packagedGltfMeshPlan(document);
     const primitiveOf = new Map<
         number,
-        { mesh: number; primitive: JsonObject }
+        { primitive: JsonObject; skinned: boolean; morphed: boolean; geometry: {attributes: JsonObject; flatNormal: boolean} }
     >();
-    for (const [mesh, entry] of (
-        Array.isArray(document["meshes"])
-            ? (document["meshes"] as JsonObject[])
-            : []
-    ).entries()) {
-        for (const primitive of Array.isArray(entry["primitives"])
-            ? (entry["primitives"] as JsonObject[])
-            : []) {
-            const material = asNumber(primitive["material"]);
-            if (material === undefined || primitiveOf.has(material)) continue;
-            primitiveOf.set(material, { mesh, primitive });
-        }
+    const nodes = asRecords(document.nodes), meshes = asRecords(document.meshes);
+    const primitives = meshes.map(mesh => asRecords(mesh.primitives));
+    for (const entry of basePlan.meshes) {
+        const mesh = asIndex(nodes[entry.node]!.mesh)!;
+        if (!primitiveOf.has(entry.material)) primitiveOf.set(entry.material,
+            {primitive: primitives[mesh]![entry.primitive]!, skinned: entry.skin !== undefined, morphed: entry.morph !== undefined,
+                geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal}});
     }
     const subjects: MaterialSubject[] = [];
-    for (const [index, material] of materials.entries()) {
+    const variantPlan = await gltfVariantPlan(document, construction?.context, construction?.meshPlan);
+    const materialEntries = [
+        ...basePlan.materials.map((core, index) => {
+            const sourceIndex = basePlan.cores[core]!;
+            return {material: sourceIndex === -1 ? {} : materials[sourceIndex]!, index, sourceIndex, variant: false};
+        }),
+        ...variantPlan.materials.map((sourceIndex, index) => ({material: materials[sourceIndex]!,
+            index: variantPlan.baseCount + index, sourceIndex, variant: true})),
+    ];
+    for (const {index, material, sourceIndex, variant} of materialEntries) {
         let metallicReflectanceRegistered = false;
+        let transmissionRegistered = false;
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
             ...scene,
-            animatedBaseColorFactor: animatedBaseColor.has(index),
-            animatedEmissive: animatedEmissive.has(index),
-            animatedUvTransform: animatedUvTransform.has(index),
-            ...(animatedExtensions.has(index)
-                ? { animatedExtensionTargets: animatedExtensions.get(index)! }
+            animatedBaseColorFactor: !variant && animatedBaseColor?.has(sourceIndex) === true,
+            animatedEmissive: !variant && animatedEmissive?.has(sourceIndex) === true,
+            animatedUvTransform: !variant && animatedUvTransform?.has(sourceIndex) === true,
+            ...(!variant && animatedExtensions?.has(sourceIndex)
+                ? { animatedExtensionTargets: animatedExtensions.get(sourceIndex)! }
                 : {}),
             recordMetallicReflectanceRegistration: () => {
                 metallicReflectanceRegistered = true;
             },
+            recordTransmissionRegistration: () => { transmissionRegistered = true; },
         });
         stampClusteredLightState(input, scene.clusteredLights);
         stampSceneUnlit(input, scene.sceneUnlit);
@@ -634,44 +598,21 @@ export async function materialSubjects(
         const drawn = primitiveOf.get(index);
         subjects.push({
             index,
-            name: typeof material["name"] === "string"
+            sourceIndex,
+            name: sourceIndex === -1 ? "default material" : typeof material["name"] === "string"
                 ? material["name"]
                 : `material ${index}`,
             input,
             uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
             meshFeatures: drawn
                 ? await pinnedMeshFeaturesFromPrimitive(drawn.primitive, {
-                    skinned: skinned.has(drawn.mesh),
+                    skinned: drawn.skinned,
+                    morphed: drawn.morphed,
+                    geometry: drawn.geometry,
                 })
                 : 0,
             metallicReflectanceRegistered,
-        });
-    }
-    if (documentHasDefaultMaterial(view)) {
-        // The pin's getMat(undefined) assembles the default material from an
-        // empty object; the same builder over the same empty object carries
-        // the glTF loader's own stamps, specular AA included.
-        const input = pinnedMaterialInputFromGltf({}, {
-            imageOf,
-            ...scene,
-            animatedBaseColorFactor: false,
-            animatedEmissive: false,
-            animatedUvTransform: false,
-        });
-        stampClusteredLightState(input, scene.clusteredLights);
-        stampSceneUnlit(input, scene.sceneUnlit);
-        if (setters && lightmap?.materials.has(materials.length)) {
-            stampSceneLightmap(setters, input, lightmap.options);
-        }
-        subjects.push({
-            index: materials.length,
-            name: "default material",
-            input,
-            // The pin's default material carries no textures, so this is
-            // zero unless a lightmap stamped its TEXCOORD_1 claim.
-            uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
-            meshFeatures: 0,
-            metallicReflectanceRegistered: false,
+            transmissionRegistered,
         });
     }
     return subjects;
@@ -696,11 +637,7 @@ export async function composeGltfMaterials(
 ): Promise<readonly PinnedComposedMaterial[]> {
     const document = glbView(path);
     if (!document) return [];
-    if (
-        !document.materials?.length &&
-        !documentHasDefaultMaterial(document)) {
-        return [];
-    }
+    if (!packagedGltfMeshPlan(document as JsonObject).materials.length) return [];
     const { PBR_HAS_ENV } = await importPinnedModule<{
         PBR_HAS_ENV: number;
     }>("material/pbr/pbr-flag-bits.js");
@@ -867,11 +804,7 @@ export async function composeRenderableVariants(
 ): Promise<readonly PinnedRenderableVariant[]> {
     const document = glbView(path);
     if (!document || arms.length === 0) return [];
-    if (
-        !document.materials?.length &&
-        !documentHasDefaultMaterial(document)) {
-        return [];
-    }
+    if (!packagedGltfMeshPlan(document as JsonObject).materials.length) return [];
     // The first primitive drawn with each material. A material used on two
     // primitives with different attribute sets composes two variants; the
     // renderable table keys on `(material, meshFeatures)` so both are
@@ -1009,32 +942,12 @@ export async function composeRenderableVariants(
  * That is why this does not share the glTF input builder, which enables the
  * flag unconditionally.
  */
-/** Whether any meshed primitive omits its material index, which makes the
- *  loader create the pin's default material after the document's. */
-function documentHasDefaultMaterial(document: GltfDocument): boolean {
-    const record = document as unknown as Record<string, unknown>;
-    const meshes = Array.isArray(record["meshes"])
-        ? (record["meshes"] as Record<string, unknown>[])
-        : [];
-    for (const mesh of meshes) {
-        const primitives = mesh["primitives"];
-        if (!Array.isArray(primitives)) continue;
-        for (const primitive of primitives as Record<string, unknown>[]) {
-            if (typeof primitive["material"] !== "number") return true;
-        }
-    }
-    return false;
-}
-
-/** The number of materials a glTF document creates -- the declared ones plus
- *  the pin's default when any primitive omits its index. */
-export function gltfMaterialCount(path: string): number {
+/** The material construction count across the source's base and variant phases. */
+export async function gltfMaterialCount(path: string): Promise<number> {
     const document = glbView(path);
     if (!document) return 0;
-    return (
-        (document.materials?.length ?? 0) +
-        (documentHasDefaultMaterial(document) ? 1 : 0)
-    );
+    const plan = await gltfVariantPlan(document as unknown as JsonObject);
+    return plan.baseCount + plan.materials.length;
 }
 
 type PinnedLayerSetter<TProps> = (
@@ -1483,18 +1396,7 @@ export async function composeScenePbrVariants(
     return variants;
 }
 
-/**
- * One entry per renderable, in the pinned loader's own node-order walk:
- * nodes by index, a meshed node's primitives in order. This is the walk
- * that keys the runtime's mesh handles, and composition groups the same
- * entries by material, so both sides read one traversal.
- *
- * The `name` is the one `load-gltf.ts` gives each renderable —
- * `json.meshes[json.nodes[m._nodeIndex].mesh].name || prefix + i`, whose
- * `||` also covers an authored empty string — carried here so a scene walk
- * that selects renderables by name reads this traversal rather than
- * growing a second one. It is the counter this loop already keeps.
- */
+/** Source-ordered renderables and names from the packaged mesh schedule. */
 export async function gltfRenderables(
     document: GltfDocument,
     /** The `KHR_materials_variants` a scene selected, by name. */
@@ -1503,54 +1405,36 @@ export async function gltfRenderables(
     ReadonlyArray<{ material: number; features: number; name: string }>
 > {
     const record = document as unknown as Record<string, unknown>;
-    const nodes = Array.isArray(record["nodes"])
-        ? (record["nodes"] as Record<string, unknown>[])
-        : [];
-    const meshes = Array.isArray(record["meshes"])
-        ? (record["meshes"] as Record<string, unknown>[])
-        : [];
+    const nodes = asRecords(record.nodes), meshes = asRecords(record.meshes);
+    const primitives = meshes.map(mesh => asRecords(mesh.primitives));
+    const basePlan = packagedGltfMeshPlan(record);
     // A selected variant reassigns which material a mapped primitive draws
     // with, so the arms compose for the material the frame actually carries.
-    const selectedVariant = selectedVariantIndex(
+    selectedVariantIndex(
         record,
         selectedVariantName,
         "composition",
     );
-    const prefix = pinnedGltfMeshNamePrefix(
-        new LoweringContext(sharedUpstreamStore()),
-    );
+    const variantPlan = await gltfVariantPlan(record);
+    const selectedMaterials = selectedVariantName === undefined ? undefined : variantPlan.selections[selectedVariantName];
     const renderables: {
         material: number;
         features: number;
         name: string;
     }[] = [];
-    for (const node of nodes) {
-        const meshIndex = node["mesh"];
-        if (typeof meshIndex !== "number") continue;
-        const mesh = meshes[meshIndex];
-        const primitives = mesh?.["primitives"];
-        if (!Array.isArray(primitives)) continue;
-        const authored = mesh?.["name"];
-        for (const primitive of primitives as Record<string, unknown>[]) {
-            const material = variantMaterialIndex(
-                primitive,
-                selectedVariant,
-            );
-            renderables.push({
-                material: material ?? (document.materials?.length ?? 0),
-                name: typeof authored === "string" && authored !== ""
-                    ? authored
-                    : `${prefix}${renderables.length}`,
-                features: await pinnedMeshFeaturesFromPrimitive(primitive, {
-                    skinned: node["skin"] !== undefined,
-                    instanced:
-                        (node["extensions"] as
-                            | Record<string, unknown>
-                            | undefined)?.["EXT_mesh_gpu_instancing"] !==
-                        undefined,
-                }),
-            });
-        }
+    for (const entry of basePlan.meshes) {
+        const node = nodes[entry.node]!;
+        const primitive = primitives[asIndex(node.mesh)!]![entry.primitive]!;
+        renderables.push({
+            material: selectedMaterials ? selectedMaterials[renderables.length]! : entry.material,
+            name: entry.name,
+            features: await pinnedMeshFeaturesFromPrimitive(primitive, {
+                skinned: entry.skin !== undefined,
+                morphed: entry.morph !== undefined,
+                instanced: entry.setup.instances !== undefined,
+                geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal},
+            }),
+        });
     }
     return renderables;
 }

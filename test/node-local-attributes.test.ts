@@ -77,7 +77,7 @@ namespace bbl::upstream {
 Vec3 normalize_baked_direction(Vec3) { return {10, 20, 30}; }
 }
 Vec3 transform_direction(int, Vec3) { return {40, 50, 60}; }
-void read_normals(ModelGeometry& geometry, const std::vector<float>& source, bool animated, bool instanced) {
+void read_normals(ModelGeometry& geometry, const std::vector<float>& source, bool deformed_geometry, bool instanced) {
     const auto& buffer = source;
     const int container = 0, views = 0, accessor = 0, matrix = 0;
     const int* normals = &accessor;
@@ -88,7 +88,7 @@ void read_normals(ModelGeometry& geometry, const std::vector<float>& source, boo
         ModelVertex& vertex = geometry.vertices[index];
         ${block}
         assert(live_local_normal.x == 10);
-        assert(vertex.normal.x == (animated || instanced ? 10 : 40));
+        assert(vertex.normal.x == (deformed_geometry || instanced ? 10 : 40));
     }
 }
 int main() {

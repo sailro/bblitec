@@ -1,3 +1,4 @@
+import { EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import type { NativeHostUi } from "./types.js";
 import { nativeHostUiStyleRules } from "../ui-style-rule.js";
@@ -17,7 +18,7 @@ export function writesUnobservedCanvasMetadata(
     const parameter = declaration.parameters[argumentIndex];
     if (!parameter || !ts.isIdentifier(parameter.name)) return false;
     const symbol = checker.getSymbolAtLocation(parameter.name);
-    const fields = new Set<string>();
+    const fields = new EmissionSet<string>();
     let valid = true;
     const visit = (node: ts.Node): void => {
         if (!valid || ts.isTypeNode(node)) return;

@@ -9,6 +9,21 @@ export function defaultDevelopmentBackend(
     return platform === "win32" ? "BOTH" : "SDL_GPU";
 }
 
+export function selectedCompiledBackend(): ReturnType<typeof canonicalCompiledBackend> {
+    return canonicalCompiledBackend(
+        process.env.BBLITE_BACKEND ?? defaultDevelopmentBackend(process.platform),
+        "BBLITE_BACKEND",
+    );
+}
+
+/** Single-backend builds keep separate CMake caches and deployed payloads. */
+export function compiledBuildDirectory(
+    directory: string,
+    backend = selectedCompiledBackend(),
+): string {
+    return backend === "BOTH" ? directory : `${directory}-${backend.toLowerCase()}`;
+}
+
 export type OfflineShaderTarget = "d3d12" | "vulkan" | "metal" | "all";
 
 /** Dawn consumes WGSL directly; an explicit offline target still requests a sweep. */

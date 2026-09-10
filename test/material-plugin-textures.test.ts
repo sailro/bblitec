@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 /**
  * The material-plugin texture and sampler slice, end to end.
  *
@@ -558,7 +559,7 @@ function supportBlock(
     pluginBindings: PinnedStandardSupportOptions["pluginBindings"],
     skeleton = false,
 ): string {
-    return pinnedStandardSupportBlock(
+    return inlineCpp(pinnedStandardSupportBlock(
         new LoweringContext(sharedUpstreamStore()),
         {
             skeleton,
@@ -568,7 +569,7 @@ function supportBlock(
             renderableMeshFeatures: [],
             ...(pluginBindings ? { pluginBindings } : {}),
         },
-    );
+    ));
 }
 
 test("emits one plugin binding row per declaration, keyed by signature index", () => {

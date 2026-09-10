@@ -1,3 +1,4 @@
+import { emissionArray, EmissionMap } from "./emission-transaction.js";
 import type {
     ScenePbrAnisotropyManifest,
     ScenePbrClearCoatManifest,
@@ -79,11 +80,11 @@ function pbrMaterialView(
  * recording rules live here.
  */
 export class SceneMaterialRecorder {
-    public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
-    public readonly standardMaterialPlugins: MaterialPluginManifest[][] = [];
+    public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = emissionArray([]);
+    public readonly standardMaterialPlugins: MaterialPluginManifest[][] = emissionArray([]);
     public readonly standardMaterialPluginInputs:
-        PinnedStandardMaterialInput[][] = [];
-    private readonly pluginIndexByKey = new Map<string, number>();
+        PinnedStandardMaterialInput[][] = emissionArray([]);
+    private readonly pluginIndexByKey = new EmissionMap<string, number>();
     private sceneMaterialCount = 0;
 
     /** The final creation count across families, for the manifest. */

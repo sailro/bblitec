@@ -1,7 +1,7 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type {
-    DefaultRenderTaskEmission,
     Feature,
     ShadowCasterMeshManifest,
     Value,
@@ -16,60 +16,26 @@ import {
 
 export interface ShadowIntrinsicContext
     extends IntrinsicCallContext,
-        ObjectValidationContext,
-        PositiveIntegerContext {
-    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileF32ArrayCallback(expression: ts.Expression): string;
-    allocateTemporaryCppName(prefix: string): string;
-    emit(line: string): void;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    readonly handleCollections: {
-        tupleElements(
-            expression: ts.Expression,
-        ): readonly Value[] | undefined;
-        /** An inline array or a compile-time tuple, as one list. */
-        staticHandleList(
-            expression: ts.Expression,
-        ): readonly { value: Value; node: ts.Node }[] | undefined;
-    };
-    requireEngine(value: Value, node: ts.Node): string;
-    ensureDefaultRenderTask(
-        scene: Value,
-        node: ts.Node,
-    ): DefaultRenderTaskEmission;
-    fail(node: ts.Node, message: string): never;
-    recordShadowGenerator(entry: {
-        kind:
-            | "pcf-spot"
-            | "pcf-directional"
-            | "csm-directional"
-            | "esm-directional";
-        lightIndex: number;
-        lightIdentity?: NonNullable<Value["lightIdentity"]>;
-        esm?: {
-            mapSize?: number;
-            blurKernel?: number;
-            blurScale?: number;
-        };
-    }): number;
-    recordShadowCasters(
-        generatorIndex: number,
-        casters: readonly ShadowCasterMeshManifest[],
-    ): void;
-    recordDynamicShadowCasters(generatorIndex: number): void;
-    recordDynamicShadowCastersForUnknownGenerator(): void;
-    esmGeneratorOrdinal(): number;
-}
+    ObjectValidationContext,
+    PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "noteTemporalRecordBoundary"
+        | "compileNumber"
+        | "compileF32ArrayCallback"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "handleCollections"
+        | "requireEngine"
+        | "ensureDefaultRenderTask"
+        | "fail"
+        | "recordShadowGenerator"
+        | "recordShadowCasters"
+        | "recordDynamicShadowCasters"
+        | "recordDynamicShadowCastersForUnknownGenerator"
+        | "esmGeneratorOrdinal"
+    > {}
 
 /**
  * The options `createPcfSpotlightShadowGenerator` takes.

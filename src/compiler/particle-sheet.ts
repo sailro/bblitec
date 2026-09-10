@@ -1,3 +1,4 @@
+import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { AssignmentContext } from "./assignments.js";
@@ -20,7 +21,7 @@ export function emitFrozenParticleSheetAssignment(
     if (!ts.isObjectLiteralExpression(object)) {
         context.fail(object, "A frozen particle sprite sheet is supplied as an object literal; replacing fields through a sheet-object alias is not lowered.");
     }
-    const fields = new Map<string, ts.Expression>();
+    const fields = new EmissionMap<string, ts.Expression>();
     for (const property of object.properties) {
         if ((!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) ||
             ts.isComputedPropertyName(property.name)) {

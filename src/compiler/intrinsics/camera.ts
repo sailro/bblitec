@@ -1,3 +1,4 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import {
@@ -5,48 +6,29 @@ import {
     staticVec3Value,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import type { DataType, DataTypeRegistry } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface CameraIntrinsicContext
-    extends IntrinsicCallContext, PositiveIntegerContext {
-    readonly dataTypes: DataTypeRegistry;
-    readonly checker: ts.TypeChecker;
-    reachJsData(): void;
-    allocateTemporaryCppName(label: string): string;
-    emit(line: string): void;
-    readonly dataLowerer: {
-        structAggregate(
-            dataType: DataType & { kind: "struct" },
-            parts: readonly string[],
-        ): string;
-    };
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    requireEngine(value: Value, node: ts.Node): string;
-    requireDefaultEngine(node: ts.Node): string;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    vec3FromRecord(
-        value: Value,
-        node: ts.Node,
-        precision?: "float" | "double",
-    ): string;
-    fail(node: ts.Node, message: string): never;
-}
+    extends IntrinsicCallContext,
+    PositiveIntegerContext,
+    Pick<LoweringServices,
+        | "dataTypes"
+        | "checker"
+        | "reachJsData"
+        | "allocateTemporaryCppName"
+        | "emit"
+        | "dataLowerer"
+        | "compileVec3"
+        | "compileNumber"
+        | "expectObjectLiteral"
+        | "objectProperty"
+        | "requireEngine"
+        | "requireDefaultEngine"
+        | "expectSameEngine"
+        | "vec3FromRecord"
+        | "fail"
+    > {}
 
 /**
  * A Vec3 argument a scene COMPUTES.
@@ -72,7 +54,7 @@ function compileVec3Argument(
         );
     }
     const name = context.allocateTemporaryCppName("vec3");
-    context.emit(`const auto ${name} = ${value.cpp};`);
+    context.emit({ kind: "declaration", type: "const auto", name: name, initializer: value.cpp });
     return context.vec3FromRecord(
         { ...value, cpp: name },
         expression,

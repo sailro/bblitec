@@ -1,3 +1,4 @@
+import type { LoweringServices } from "./lowering-services.js";
 // Web Storage: `localStorage.getItem`, `setItem` and `removeItem`.
 //
 // `localStorage` is a browser object with no Babylon declaration behind
@@ -16,31 +17,43 @@
 // `try`/`catch` around a save observes the same arm rather than a silent
 // success.
 
+// Web Storage: `localStorage.getItem`, `setItem` and `removeItem`.
+//
+// `localStorage` is a browser object with no Babylon declaration behind
+// it, so there is no pinned module to lower from -- it is a platform
+// service, like the frame conductor's timers, and the PAL owns it. This
+// module is only the recognition and the shapes: it decides that the
+// identifier really is the DOM global (and not something a scene bound
+// itself), lowers the key as an ordinary string, and hands the call to
+// `bbl::js::local_storage_*`.
+//
+// The shapes are the browser's, because the source's own control flow
+// reads them. `getItem` answers a nullable string, so an absent key stays
+// distinguishable from an empty value and `if (!raw)` decides over both.
+// `setItem` and `removeItem` return nothing and let a platform failure
+// throw, which is where the browser throws its quota error -- so a scene's
+// `try`/`catch` around a save observes the same arm rather than a silent
+// success.
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { DataType } from "./data-types.js";
-import type { Feature, Value } from "./types.js";
+import type { Value } from "./types.js";
 
 /** The narrow slice of the expression context this lowering needs. */
-interface WebStorageContext {
-    unwrap(expression: ts.Expression): ts.Expression;
-    fail(node: ts.Node, message: string): never;
-    expectArgumentCount(
-        call: ts.CallExpression,
-        minimum: number,
-        maximum: number,
-    ): void;
-    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    reachFeature(feature: Feature, site?: ts.Node): void;
-    reachJsData(): void;
-    reachLocalStorage(): void;
-    readonly dataLowerer: {
-        compileForSink(expression: ts.Expression, dataType: DataType): string;
-    };
-}
+interface WebStorageContext
+    extends Pick<LoweringServices,
+        | "unwrap"
+        | "fail"
+        | "expectArgumentCount"
+        | "isDefaultLibraryIdentifier"
+        | "lookupOptional"
+        | "reachFeature"
+        | "reachJsData"
+        | "reachLocalStorage"
+        | "dataLowerer"
+    > {}
 
 const stringType: DataType = { kind: "string" };
 
@@ -94,7 +107,6 @@ export function compileWebStorageCall(
             kind: "data",
             cpp: `bbl::js::local_storage_get_item(${key()})`,
             dataType: { kind: "optional", inner: stringType },
-            nullableStringFalsy: true,
         };
     }
     if (method === "removeItem") {

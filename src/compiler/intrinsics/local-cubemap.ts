@@ -1,22 +1,30 @@
+import type { LoweringServices } from "../lowering-services.js";
 import type ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type {CompileAsset, ResolvedCompileOptions, ScenePbrMaterialManifest, Value} from "../types.js";
-import type {IntrinsicCallContext} from "./context.js";
-import {packLocalCubemapSync, pinnedLocalCubemapLimits, type LocalCubemapJson, type LocalCubemapPlan} from "../../pinned-local-cubemap.js";
+import type { Value } from "../types.js";
+import type { IntrinsicCallContext } from "./context.js";
+import {
+    packLocalCubemapSync,
+    pinnedLocalCubemapLimits,
+    type LocalCubemapJson,
+    type LocalCubemapPlan,
+} from "../../pinned-local-cubemap.js";
 
-export interface LocalCubemapIntrinsicContext extends IntrinsicCallContext {
-    readonly options: ResolvedCompileOptions;
-    readonly localCubemapState: {maxCandidates?: number};
-    readonly scenePbrMaterials: ScenePbrMaterialManifest[];
-    registerAsset(source: string, kind: CompileAsset["kind"], faceSize?: number): CompileAsset;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    engineHasStarted(): boolean;
-    hasRegisteredScene(): boolean;
-    emit(line: string): void;
-    cppString(value: string): string;
-    compileCondition(expression: ts.Expression): string;
-    fail(node: ts.Node, message: string): never;
-}
+export interface LocalCubemapIntrinsicContext
+    extends IntrinsicCallContext,
+    Pick<LoweringServices,
+        | "options"
+        | "localCubemapState"
+        | "scenePbrMaterials"
+        | "registerAsset"
+        | "expectSameEngine"
+        | "engineHasStarted"
+        | "hasRegisteredScene"
+        | "emit"
+        | "cppString"
+        | "compileCondition"
+        | "fail"
+    > {}
 
 function optionsJson(context: LocalCubemapIntrinsicContext, value: Value, node: ts.Node, environments: Value[]): LocalCubemapJson {
     if (value.kind === "environment-textures" && value.environmentAsset) {

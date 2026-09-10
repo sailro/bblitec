@@ -18,8 +18,8 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import {
     type PinnedBinding,
-    PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 export const clusteredModule = "src/light/clustered.ts";
 const spotModule = "src/light/clustered-spot-support.ts";
@@ -120,7 +120,8 @@ export function clusteredConeWriter(context: LoweringContext): string {
             "Expected the pinned _write to take (data, offset, spot).",
         );
     }
-    const lowerer = new PinnedNumericLowerer(file, {
+
+    const body = lowerPinnedBody(file, write.body.statements, {
         bindings: new Map<string, PinnedBinding>([
             ["data", { cpp: "data", type: "f32" }],
             ["offset", { cpp: "offset", type: "scalar" }],
@@ -139,7 +140,6 @@ export function clusteredConeWriter(context: LoweringContext): string {
         // `len === 0 || len === 1` joins two comparisons.
         booleanOr: true,
     });
-    const body = lowerer.statements(write.body.statements, "    ").join("\n");
     return `// ${context.provenance(spotModule, "_write")}
 // The pin's own spot stride is ${stride}: three texels per light, the third
 // carrying the cone this writes.
@@ -206,17 +206,15 @@ export function clusteredSliceMapping(
             );
         }
     });
-    const lowerer = new PinnedNumericLowerer(file, {
+
+    return lowerPinnedBody(file, statements, {
         bindings: new Map<string, PinnedBinding>([
             ["farZ", { cpp: "far_plane", type: "scalar" }],
             ["nearZ", { cpp: "near_plane", type: "scalar" }],
             ["zSlices", { cpp: "slices", type: "scalar" }],
         ]),
         calls: pinnedNumericMathCalls(),
-    });
-    return statements
-        .flatMap((statement) => lowerer.statement(statement, indent))
-        .join("\n");
+    }, indent);
 }
 
 /**

@@ -1,19 +1,21 @@
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { isPinnedType } from "./data-types.js";
 import { cameraRecordField } from "./properties.js";
 import type { Value } from "./types.js";
 
-interface CameraWriteContext {
-    checker: ts.TypeChecker;
-    unwrap(expression: ts.Expression): ts.Expression;
-    compileValue(expression: ts.Expression): Value;
-    resolveRecordValue(expression: ts.Expression): Value | undefined;
-    resolveRecordMember(expression: ts.PropertyAccessExpression): Value | undefined;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    requireEngine(value: Value, node: ts.Node): string;
-    allocateTemporaryCppName(label: string): string;
-    emit(line: string): void;
-}
+interface CameraWriteContext
+    extends Pick<LoweringServices,
+        | "checker"
+        | "unwrap"
+        | "compileValue"
+        | "resolveRecordValue"
+        | "resolveRecordMember"
+        | "lookupOptional"
+        | "requireEngine"
+        | "allocateTemporaryCppName"
+        | "emit"
+    > {}
 
 export function isCameraExpression(context: Pick<CameraWriteContext, "checker" | "lookupOptional" | "resolveRecordMember">, expression: ts.Expression): boolean {
     const value = ts.isIdentifier(expression) ? context.lookupOptional(expression) :
@@ -49,7 +51,7 @@ export function cameraNumberWrite(context: CameraWriteContext, expression: ts.Ex
     if (camera?.kind !== "camera") return undefined;
     const engine = context.requireEngine(camera, left);
     const handle = context.allocateTemporaryCppName("camera_write_owner");
-    context.emit(`const auto ${handle} = ${camera.cpp};`);
+    context.emit({ kind: "declaration", type: "const auto", name: handle, initializer: camera.cpp });
     const record = `${engine}.cameras[${handle}.value]`;
     return vector ? {
         camera, property: vector.field,

@@ -6,6 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
@@ -97,4 +98,71 @@ int main() {
     runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", file]);
     assert.match(execFileSync(executable, {encoding: "utf8"}), /mesh-clone-local: ok/);
+});
+
+test("removing shared meshes retires each owner once and releases the final geometry allocation", {skip: !tools}, () => {
+    const output = resolve("artifacts/mesh-retirement-check");
+    mkdirSync(output, {recursive: true});
+    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
+    const lowerer = new SceneLowerer(new LoweringContext()).lowerCore().source;
+    const functions = [
+        "void require_scene_engine(", "std::uint32_t material_family_bit(", "MeshHandle clone_mesh_node(",
+        "void add_to_scene(Scene& scene, MeshHandle", "void reclaim_unshared_geometry(",
+        "void remove_from_scene(Scene& scene, MeshHandle",
+    ].map(signature => cppFunction(lowerer, signature)).join("\n");
+    writeFileSync(file, `#include <bblite/runtime.hpp>
+#include <cassert>
+#include <tuple>
+namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())} ${functions} }
+int main() {
+    bbl::Engine engine;
+    bbl::Scene scene;
+    scene.engine = &engine;
+    engine.geometries.resize(1);
+    auto& geometry = engine.geometries[0];
+    auto arrays = std::tie(geometry.vertices, geometry.bind_vertices, geometry.local_normals,
+        geometry.morph_positions, geometry.morph_bounds, geometry.morph_normals,
+        geometry.morph_tangents, geometry.indices);
+    std::apply([](auto&... values) { (values.resize(4), ...); }, arrays);
+    geometry.bounds_min = {-1,-2,-3}; geometry.position_version = 17;
+    geometry.source_indices_reversed = true;
+    bbl::MeshRecord source;
+    source.geometry = 0;
+    engine.meshes.push_back(source);
+    const bbl::MeshHandle first{0};
+    const auto second = bbl::clone_mesh_node(engine, first);
+    const auto third = bbl::clone_mesh_node(engine, second);
+    assert(geometry.owners == 3);
+    for (auto mesh : {first, second, third}) bbl::add_to_scene(scene, mesh);
+    const auto version = scene.render_topology_version;
+    bbl::remove_from_scene(scene, second);
+    assert(geometry.owners == 2 && engine.meshes[second.value].retired);
+    assert(!engine.meshes[first.value].retired && !engine.meshes[third.value].retired);
+    assert(scene.render_topology_version == version + 1 && scene.meshes.size() == 2);
+    std::apply([](auto&... values) { assert(((values.size() == 4) && ...)); }, arrays);
+    bbl::remove_from_scene(scene, second);
+    assert(geometry.owners == 2 && scene.render_topology_version == version + 1);
+    bool refused = false;
+    try { bbl::add_to_scene(scene, second); } catch (const std::runtime_error&) { refused = true; }
+    assert(refused && geometry.owners == 2 && scene.meshes.size() == 2);
+    bbl::remove_from_scene(scene, first);
+    assert(geometry.owners == 1);
+    std::apply([](auto&... values) { assert(((values.size() == 4) && ...)); }, arrays);
+    bbl::remove_from_scene(scene, third);
+    std::apply([](auto&... values) { assert(((values.empty() && values.capacity() == 0) && ...)); }, arrays);
+    assert(!geometry.source_indices_reversed && geometry.position_version == 17);
+    assert(geometry.bounds_min.x == -1 && geometry.bounds_min.z == -3);
+    assert(scene.meshes.empty() && scene.render_topology_version == version + 3);
+    bbl::remove_from_scene(scene, third);
+    assert(scene.render_topology_version == version + 3);
+    engine.meshes.push_back(bbl::MeshRecord{});
+    const bbl::MeshHandle empty{3};
+    bbl::add_to_scene(scene, empty);
+    bbl::remove_from_scene(scene, empty);
+    assert(scene.meshes.empty());
+}
+`);
+    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", file]);
+    assert.equal(execFileSync(executable, {encoding: "utf8"}), "");
 });

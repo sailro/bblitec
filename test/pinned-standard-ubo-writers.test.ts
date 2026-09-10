@@ -1,3 +1,4 @@
+import { inlineCpp } from "./generated-cpp.js";
 /**
  * The Standard material family's UBO mirror and its pinned writers.
  *
@@ -136,11 +137,11 @@ test("emits the Standard header with the pin's own offsets", async () => {
         { diffuseTexture: {}, bumpTexture: {} },
         { fog: true },
     );
-    const header = pinnedStandardVariantsHeader(
+    const header = inlineCpp(pinnedStandardVariantsHeader(
         context(),
         "test provenance",
         [pinnedStandardVariantManifestEntry(variant)],
-    );
+    ));
     // The mirror totals the renderable's own F32(24) scratch: 96 bytes.
     assert.match(
         header,
@@ -173,10 +174,9 @@ test("emits the Standard header with the pin's own offsets", async () => {
             `expected ${field} at ${offset}`,
         );
     }
-    // Both writers are lowered into the header, with the pin's defaults on
-    // the props mirror (createStandardMaterial's own values).
-    assert.match(header, /inline void write_standard_material\(/);
-    assert.match(header, /inline void write_standard_uv_transform\(/);
+    // The module includes both lowered writers and the pin's props defaults.
+    assert.match(header, /void write_standard_material\(/);
+    assert.match(header, /void write_standard_uv_transform\(/);
     assert.match(
         header,
         /\[\[maybe_unused\]\] const StandardMaterialProps& material/,
@@ -214,15 +214,15 @@ test("the header emitter is deterministic", async () => {
         { diffuseTexture: {} },
     );
     const entries = [pinnedStandardVariantManifestEntry(variant)];
-    const first = pinnedStandardVariantsHeader(
+    const first = inlineCpp(pinnedStandardVariantsHeader(
         context(),
         "test provenance",
         entries,
-    );
-    const second = pinnedStandardVariantsHeader(
+    ));
+    const second = inlineCpp(pinnedStandardVariantsHeader(
         context(),
         "test provenance",
         entries,
-    );
+    ));
     assert.equal(second, first);
 });

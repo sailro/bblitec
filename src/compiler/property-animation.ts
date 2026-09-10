@@ -1,3 +1,13 @@
+import { EmissionMap, EmissionSet } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
+// Property-animation lowering: clips, tracks, keys, and group options.
+//
+// A clip's tracks and keys are static literals, so the whole timeline
+// lowers at compile time: paths map to the native track enum, frames
+// divide by the resolved frame rate, and key values pad to the
+// four-component native key. Group options fold their from/to frames
+// through the clip's own frame rate. The intrinsic lowerer in
+// animation.ts calls these through its context.
 // Property-animation lowering: clips, tracks, keys, and group options.
 //
 // A clip's tracks and keys are static literals, so the whole timeline
@@ -8,58 +18,38 @@
 // animation.ts calls these through its context.
 import ts from "typescript";
 import type { Value } from "./types.js";
-import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./closure-captures.js";
-import type { DataTypeRegistry } from "./data-types.js";
+import { renderClosure } from "./closure-captures.js";
 
-export interface PropertyAnimationContext {
-    readonly sourceFile: ts.SourceFile;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    expectStaticArrayLiteral(
-        expression: ts.Expression,
-    ): ts.ArrayLiteralExpression;
-    objectProperty(
-        object: ts.ObjectLiteralExpression,
-        name: string,
-    ): ts.Expression | undefined;
-    resolveStaticExpression(
-        expression: ts.Expression,
-    ): ts.Expression;
-    compileNumber(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    compileBoolean(expression: ts.Expression): string;
-    compileStaticString(
-        expression: ts.Expression,
-    ): string;
-    cppString(value: string): string;
-    fail(node: ts.Node, message: string): never;
-}
+export interface PropertyAnimationContext
+    extends Pick<LoweringServices,
+        | "sourceFile"
+        | "expectObjectLiteral"
+        | "expectStaticArrayLiteral"
+        | "objectProperty"
+        | "resolveStaticExpression"
+        | "compileNumber"
+        | "compileBoolean"
+        | "compileStaticString"
+        | "cppString"
+        | "fail"
+    > {}
 
-interface PropertyAnimationTargetContext {
-    readonly dataTypes: DataTypeRegistry;
-    fail(node: ts.Node, message: string): never;
-    allocateTemporaryCppName(label: string): string;
-    captureManagedClosureLines(
-        emitBody: () => void,
-    ): CapturedClosure;
-    withRecordScopes<T>(owner: Value, work: () => T): T;
-    compileRecordSetterValue(
-        owner: Value,
-        setter: ts.SetAccessorDeclaration,
-        node: ts.Expression,
-        value: Value,
-    ): void;
-    callbackIdentity(declaration: ts.Node, owner: Value | undefined): number;
-    requireDefaultEngine(node: ts.Node): string;
-    emit(line: string): void;
-    useNativeValue(value: Value): void;
-    registerNativeBinding(name: string): NativeCaptureBinding;
-    cppString(value: string): string;
-    materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
-}
+interface PropertyAnimationTargetContext
+    extends Pick<LoweringServices,
+        | "dataTypes"
+        | "fail"
+        | "allocateTemporaryCppName"
+        | "captureManagedClosureLines"
+        | "withRecordScopes"
+        | "compileRecordSetterValue"
+        | "callbackIdentity"
+        | "requireDefaultEngine"
+        | "emit"
+        | "useNativeValue"
+        | "registerNativeBinding"
+        | "cppString"
+        | "materializeEscapingValue"
+    > {}
 
 /** Callback writers bound to the owner resolved when the group is created. */
 export class PropertyAnimationTargetLowerer {
@@ -115,7 +105,7 @@ export class PropertyAnimationTargetLowerer {
                 }
                 const captured = context.allocateTemporaryCppName("property_animation_owner");
                 context.useNativeValue(target);
-                context.emit(`const auto ${captured} = ${owner.cpp};`);
+                context.emit({ kind: "declaration", type: "const auto", name: captured, initializer: owner.cpp });
                 context.emit(`if (!${captured}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`);
                 const binding = context.registerNativeBinding(captured);
                 return this.scalarTarget(context, property,
@@ -235,7 +225,7 @@ interface PropertyAnimationLane {
 export const propertyAnimationLanes: ReadonlyMap<
     string,
     PropertyAnimationLane
-> = new Map([
+> = new EmissionMap([
     [
         "position",
         {
@@ -424,7 +414,7 @@ export function compilePropertyAnimationClip(
                 context.compileNumber(value),
             );
         const distinct = [
-            ...new Set(trackFrameRates),
+            ...new EmissionSet(trackFrameRates),
         ];
         if (distinct.length > 1) {
             context.fail(
@@ -434,7 +424,7 @@ export function compilePropertyAnimationClip(
         }
         frameRate = distinct[0] ?? "60.0f";
     }
-    const targets = new Set<PropertyAnimationTargetKind>();
+    const targets = new EmissionSet<PropertyAnimationTargetKind>();
     const paths: string[] = [];
     const compiledTracks = tracks.elements.map((element) => {
         const track = context.expectObjectLiteral(

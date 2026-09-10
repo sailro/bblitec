@@ -1,136 +1,19 @@
+import type { DataType, HandleKind } from "./data-types/model.js";
+import { TYPED_ARRAY_KINDS } from "./data-types/typed-arrays.js";
+import { dataTypeCppType, dataTypeKey, dataTypesEqual, passesByReferenceKind, containsDataKind, type DataTypeCppContext } from "./data-types/operations.js";
+export type { DataType, TypedArrayKind } from "./data-types/model.js";
+export { isHandleKind, handleCppType } from "./data-types/handles.js";
+export { TYPED_ARRAY_KINDS, BUFFER_VIEW_KINDS, isTypedArrayType, typedArrayStem, typedArrayCppType, typedArrayStoreExpression } from "./data-types/typed-arrays.js";
+export { dataTypesEqual, passesByReferenceKind } from "./data-types/operations.js";
+import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import { createHash } from "node:crypto";
 import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
 import { nativeReturnTsType } from "./native-return-type.js";
+import { classInstanceProperties } from "./class-properties.js";
 
 type Fail = (node: ts.Node, message: string) => never;
-
-/**
- * Native representation for the TypeScript data subset: numbers, booleans,
- * interface-typed structs, string-literal-union enums, nullable objects,
- * containers, tuples, and the resource values whose native representation is
- * safe to carry through those structures.
- *
- * Most resources below are trivially copyable ids. A pixels texture is the
- * pin's value-shaped CPU upload record; it is also safe to copy into a cache,
- * and remains a texture when read back out. Scene and picking-result values
- * instead copy a shared identity, retaining their source object through data.
- */
-type HandleKind =
-  | "gpu-device"
-  | "gpu-texture"
-  | "device-recovery"
-  | "gpu-environment"
-  | "node-input"
-  | "text-data"
-  | "text-renderable"
-  | "text-layer"
-  | "text-renderer"
-  | "text-run"
-  | "text-run-ref"
-  | "picking-info"
-  | "offscreen-canvas"
-  | "mesh"
-  | "animation-group"
-  | "flow-graph"
-  | "flow-graph-runtime"
-  | "audio-buffer"
-  | "audio-context"
-  | "camera"
-  | "property-animation-group"
-  | "ui-element"
-  | "utility-layer"
-  | "pointer-drag"
-  | "gamepad"
-  | "gamepad-button"
-  | "scene"
-  | "scene-node"
-  | "light"
-  | "shadow-generator"
-  | "hierarchy-instance-pool"
-  | "storage-buffer"
-  | "material"
-  | "physics-body"
-  | "physics-viewer"
-  | "physics-character-controller"
-  | "physics-shape"
-  | "billboard-sprite"
-  | "billboard-system"
-  | "sprite-layer"
-  | "sprite-atlas"
-  | "splat-mesh"
-  | "texture"
-  | "transform-node"
-  | "skeleton"
-  | "scene-skeleton"
-  | "bone"
-  | "navigation-obstacle";
-
-const handleCppTypes: Record<HandleKind, string> = {
-  "gpu-device": "bbl::GpuDeviceIdentity",
-  "gpu-texture": "bbl::GpuTextureIdentity",
-  "device-recovery": "std::shared_ptr<bbl::DeviceRecoveryRegistration>",
-  "gpu-environment": "bbl::EnvironmentIdentity",
-  "node-input": "bbl::NodeInputHandle",
-  "text-data": "std::shared_ptr<bbl::TextDataState>",
-  "text-renderable": "std::shared_ptr<bbl::TextRenderableState>",
-  "text-layer": "std::shared_ptr<bbl::TextLayerState>",
-  "text-renderer": "std::shared_ptr<bbl::TextRendererState>",
-  "text-run": "std::shared_ptr<bbl::TextRunState>",
-  "text-run-ref": "bbl::TextRunRef",
-  "picking-info": "bbl::PickingInfo",
-  "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
-  mesh: "bbl::MeshHandle",
-  "animation-group": "bbl::AnimationGroupHandle",
-  "flow-graph": "bbl::FlowGraphHandle",
-  "flow-graph-runtime": "std::shared_ptr<bbl::FlowGraphRuntime>",
-  "audio-buffer": "bbl::pal::AudioBufferHandle",
-  "audio-context": "bbl::pal::AudioContextHandle",
-  camera: "bbl::CameraHandle",
-  "property-animation-group": "bbl::PropertyAnimationGroup",
-  "ui-element": "bbl::UiElementHandle",
-  "utility-layer": "bbl::UtilityLayerHandle",
-  "pointer-drag": "bbl::PointerDragHandle",
-  gamepad: "bbl::GamepadHandle",
-  "gamepad-button": "bbl::GamepadButtonHandle",
-  scene: "bbl::Scene",
-  "scene-node": "bbl::SceneNodeHandle",
-  light: "bbl::LightHandle",
-  "shadow-generator": "bbl::ShadowGeneratorHandle",
-  "hierarchy-instance-pool": "bbl::HierarchyInstancePoolHandle",
-  "storage-buffer": "bbl::StorageBufferHandle",
-  material: "bbl::MaterialHandle",
-  "physics-body": "bbl::upstream::PhysicsBody",
-  "physics-viewer": "bbl::upstream::PhysicsViewerHandle",
-  "physics-character-controller": "std::shared_ptr<bbl::character::PhysicsCharacterController>",
-  "physics-shape": "bbl::upstream::PhysicsShape",
-  "billboard-sprite": "bbl::BillboardSpriteHandle",
-  "billboard-system": "bbl::BillboardSystemHandle",
-  "sprite-layer": "bbl::Sprite2DLayerHandle",
-  "sprite-atlas": "bbl::SpriteAtlasHandle",
-  "splat-mesh": "bbl::SplatMeshHandle",
-  texture: "bbl::StoredTexture",
-  "transform-node": "bbl::TransformNodeHandle",
-  skeleton: "bbl::SkeletonHandle",
-  "scene-skeleton": "bbl::SceneSkeletonHandle",
-  bone: "bbl::BoneHandle",
-  "navigation-obstacle": "bbl::pal::NavObstacleHandle",
-};
-
-/** Whether a compiler value kind is one of the data model's copyable handles. */
-export function isHandleKind(kind: string): kind is HandleKind {
-  return Object.prototype.hasOwnProperty.call(handleCppTypes, kind);
-}
-
-/**
- * The C++ type one handle kind is stored as — the same spelling
- * `DataTypeRegistry.cppType` gives a `handle` data type, for an emitter
- * that names a handle without a registry in hand.
- */
-export function handleCppType(kind: HandleKind): string {
-  return handleCppTypes[kind];
-}
 
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
@@ -169,6 +52,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   StorageBuffer: "storage-buffer",
   Material: "material",
   PhysicsBody: "physics-body",
+  PhysicsAggregate: "physics-aggregate",
   PhysicsViewer: "physics-viewer",
   PhysicsCharacterController: "physics-character-controller",
   PhysicsShape: "physics-shape",
@@ -266,80 +150,6 @@ export function opaqueEngineValue(
   const entry = symbol ? opaqueEngineTypes[symbol.name] : undefined;
   return entry && declaredInBabylonLite(symbol!) ? entry : undefined;
 }
-
-export type DataType =
-  | { kind: "number" }
-  | { kind: "boolean" }
-  | { kind: "arraybuffer" }
-  | { kind: "dataview" }
-  /**
-   * A DOM event borrowed from one active synchronous platform callback.
-   * `event` is the exact supported view: the base Event exposes only
-   * preventDefault, while the two typed views reuse the existing platform
-   * event property lowering.
-   */
-  | {
-      kind: "borrowed-platform-event";
-      event: "event" | "mouse" | "keyboard";
-    }
-  // A resource value stored inside ordinary data. Most are handles, while
-  // the pixels-texture arm maps the pin's Texture2D to its native upload
-  // record. `compileForSink` rejects texture producers represented by a
-  // different native record instead of allowing an invalid C++ conversion.
-  // A runtime string. String fields and parameters are part of the same
-  // plain-data model as numbers: fetched/decoded binary documents commonly
-  // carry names through records and containers before rendering reaches
-  // them.
-  | { kind: "string" }
-  | { kind: "handle"; handle: HandleKind }
-  | {
-      kind: "function";
-      parameters: DataType[];
-      result?: DataType;
-      /**
-       * The container this function is stored in observes its JavaScript
-       * identity -- a Set membership, a Map key. Such a value carries the
-       * identity of the declaration it was materialized from so `delete`
-       * and a duplicate `add` answer the way the source does.
-       */
-      identity?: true;
-      /**
-       * Source parameters whose type is void/never and therefore have no
-       * native argument. Their expressions are still validated at calls; no
-       * placeholder runtime value is invented.
-       */
-      erasedParameters?: number[];
-    }
-  | { kind: "struct"; name: string }
-  | { kind: "enum"; name: string }
-  /**
-   * A `JSON.parse` result: the one dynamic value in the model, because a
-   * parsed document's shape is exactly what the source has not proven yet.
-   * Reads over it answer `undefined` where the document has nothing, so
-   * the source's own guards -- `Array.isArray`, `typeof`, a strict
-   * comparison, an optional property read -- decide as they do in the
-   * browser. Nothing else produces one, so it stays where the parse put it.
-   */
-  | { kind: "json" }
-  | { kind: "optional"; inner: DataType }
-  | { kind: "vector"; element: DataType }
-  | { kind: "map"; key: DataType; value: DataType }
-  | { kind: "set"; element: DataType }
-  | { kind: "span"; element: DataType }
-  | { kind: "tuple"; arity: number }
-  // `Record<Union, T>`: one slot per member of a string-literal
-  // union, indexed at runtime by the union's own enum tag. The key
-  // space is closed at compile time, so this is a fixed table rather
-  // than a growable array.
-  | { kind: "enummap"; enumName: string; element: DataType }
-  | { kind: "table"; dimensions: number[] }
-  | { kind: "u8array" }
-  | { kind: "f64array" }
-  | { kind: "f32array" }
-  | { kind: "u16array" }
-  | { kind: "i16array" }
-  | { kind: "u32array" }
-  | { kind: "i32array" };
 
 /**
  * The element exposed by a native data-container `for...of` loop.
@@ -465,6 +275,13 @@ export function declaredInDomLibrary(symbol: ts.Symbol): boolean {
   );
 }
 
+export function platformHandleKind(type: ts.Type): "gamepad" | "gamepad-button" | undefined {
+  if (!type.symbol || !declaredInDomLibrary(type.symbol)) return undefined;
+  if (type.symbol.name === "Gamepad") return "gamepad";
+  if (type.symbol.name === "GamepadButton") return "gamepad-button";
+  return undefined;
+}
+
 function borrowedPlatformEventKind(
   symbol: ts.Symbol | undefined,
 ): "event" | "mouse" | "keyboard" | undefined {
@@ -497,141 +314,10 @@ export function isDataTuple(
 ): boolean {
   return (
     value.kind === "data" &&
-    value.dataType?.kind === "tuple" &&
-    value.dataType.arity === arity
+    ((value.dataType?.kind === "tuple" && value.dataType.arity === arity) ||
+      (value.dataType?.kind === "table" && value.dataType.dimensions.length === 1 &&
+        value.dataType.dimensions[0] === arity))
   );
-}
-
-/** The typed-array kinds this model carries, as one narrowing test. */
-export type TypedArrayKind =
-  | "u8array"
-  | "f64array"
-  | "f32array"
-  | "u16array"
-  | "i16array"
-  | "u32array"
-  | "i32array";
-
-/**
- * One typed-array kind: the ECMAScript constructor that names it, the
- * `bbl::js::` spelling stem of its `<stem>_array_from` /
- * `<stem>_array_sized` family and its `<STEM>Array` element alias, the C++
- * type it is stored as, and the reached ECMAScript store conversion one of
- * its lanes applies.
- */
-interface TypedArrayRecord {
-  readonly constructor: string;
-  readonly stem: string;
-  readonly cppType: string;
-  readonly store: (value: string) => string;
-}
-
-/**
- * The one table every typed-array question reads: which constructor names
- * a kind, and what each kind spells to. A kind added here is known to the
- * `instanceof` test, `new` lowering, the type mapper and the C++ spellings
- * at once.
- */
-const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
-  u8array: {
-    constructor: "Uint8Array",
-    stem: "u8",
-    cppType: "bbl::js::U8Array",
-    store: (value) => `bbl::js::to_uint8(${value})`,
-  },
-  f64array: {
-    constructor: "Float64Array",
-    stem: "f64",
-    cppType: "bbl::js::F64Array",
-    store: (value) => value,
-  },
-  f32array: {
-    constructor: "Float32Array",
-    stem: "f32",
-    cppType: "bbl::js::F32Array",
-    store: (value) => `static_cast<float>(${value})`,
-  },
-  u16array: {
-    constructor: "Uint16Array",
-    stem: "u16",
-    cppType: "bbl::js::U16Array",
-    store: (value) => `bbl::js::to_uint16(${value})`,
-  },
-  i16array: {
-    constructor: "Int16Array",
-    stem: "i16",
-    cppType: "bbl::js::I16Array",
-    store: (value) => `bbl::js::to_int16(${value})`,
-  },
-  u32array: {
-    constructor: "Uint32Array",
-    stem: "u32",
-    cppType: "bbl::js::U32Array",
-    store: (value) => `bbl::js::to_uint32(${value})`,
-  },
-  i32array: {
-    constructor: "Int32Array",
-    stem: "i32",
-    cppType: "bbl::js::I32Array",
-    store: (value) => `bbl::js::to_int32(${value})`,
-  },
-};
-
-/**
- * The typed-array constructor names, each mapped to its kind. `ArrayBuffer`
- * and `DataView` are deliberately NOT here: they are buffer views with no
- * element lane, stem or store, so a consumer that also recognizes them
- * (the `instanceof` test) says so beside this table rather than through it.
- */
-export const TYPED_ARRAY_KINDS: ReadonlyMap<string, TypedArrayKind> = new Map(
-  (Object.entries(TYPED_ARRAYS) as [TypedArrayKind, TypedArrayRecord][]).map(
-    ([kind, record]) => [record.constructor, kind],
-  ),
-);
-
-/** The two buffer views, named beside the typed arrays they underlie. */
-export const BUFFER_VIEW_KINDS: ReadonlyMap<string, "arraybuffer" | "dataview"> =
-  new Map([
-    ["ArrayBuffer", "arraybuffer"],
-    ["DataView", "dataview"],
-  ]);
-
-/**
- * Whether a data type is one of them.
- *
- * Every typed-array method and every native-function parameter rule asks
- * this, and each site that spelled the three-way disjunction itself was a
- * place a fourth kind could be forgotten.
- */
-export function isTypedArrayType(
-  dataType: DataType | undefined,
-): dataType is DataType & { kind: TypedArrayKind } {
-  return (
-    dataType !== undefined &&
-    Object.prototype.hasOwnProperty.call(TYPED_ARRAYS, dataType.kind)
-  );
-}
-
-/**
- * The runtime spelling stem for one typed-array kind: the `bbl::js::`
- * `<stem>_array_from` / `<stem>_array_sized` family, and the `<STEM>Array`
- * alias its elements are stored in.
- */
-export function typedArrayStem(kind: TypedArrayKind): string {
-  return TYPED_ARRAYS[kind].stem;
-}
-
-/** The C++ type one typed-array kind is stored as. */
-export function typedArrayCppType(kind: TypedArrayKind): string {
-  return TYPED_ARRAYS[kind].cppType;
-}
-
-/** Apply the reached ECMAScript store conversion for one typed-array lane. */
-export function typedArrayStoreExpression(
-  kind: TypedArrayKind,
-  value: string,
-): string {
-  return TYPED_ARRAYS[kind].store(value);
 }
 
 /**
@@ -650,25 +336,6 @@ export function passesByReference(
     (dataType.kind === "struct" &&
       !dataTypes.isReferenceStruct(dataType.name)) ||
     passesByReferenceKind(dataType)
-  );
-}
-
-/**
- * The reference-passed kinds a data type answers for by ITSELF -- every
- * one but `struct`, which needs the registry to say whether the struct is
- * reference-backed. Split out because a table-validation pass has rules
- * rather than a compiled program, and so has no registry to ask.
- */
-export function passesByReferenceKind(dataType: DataType): boolean {
-  return (
-    dataType.kind === "vector" ||
-    dataType.kind === "map" ||
-    dataType.kind === "set" ||
-    dataType.kind === "tuple" ||
-    dataType.kind === "enummap" ||
-    dataType.kind === "arraybuffer" ||
-    dataType.kind === "dataview" ||
-    isTypedArrayType(dataType)
   );
 }
 
@@ -713,92 +380,7 @@ function markIdentityFunctions(dataType: DataType): DataType {
   }
 }
 
-export function dataTypesEqual(left: DataType, right: DataType): boolean {
-  if (left.kind !== right.kind) {
-    return false;
-  }
-  // A typed array carries nothing beyond its kind.
-  if (isTypedArrayType(left)) return true;
-  switch (left.kind) {
-    case "number":
-    case "boolean":
-    case "string":
-    case "arraybuffer":
-    case "dataview":
-    case "json":
-      return true;
-    case "borrowed-platform-event":
-      return (
-        left.event ===
-        (right as { event: "event" | "mouse" | "keyboard" }).event
-      );
-    case "handle":
-      return left.handle === (right as { handle: string }).handle;
-    case "function": {
-      const other = right as {
-        parameters: DataType[];
-        result?: DataType;
-        identity?: true;
-        erasedParameters?: number[];
-      };
-      return (
-        left.identity === other.identity &&
-        (left.erasedParameters ?? []).join(",") ===
-          (other.erasedParameters ?? []).join(",") &&
-        left.parameters.length === other.parameters.length &&
-        left.parameters.every((parameter, index) =>
-          dataTypesEqual(parameter, other.parameters[index]!)) &&
-        (left.result === undefined
-          ? other.result === undefined
-          : other.result !== undefined &&
-            dataTypesEqual(left.result, other.result))
-      );
-    }
-    case "struct":
-    case "enum":
-      return left.name === (right as { name: string }).name;
-    case "optional":
-      return dataTypesEqual(left.inner, (right as { inner: DataType }).inner);
-    case "vector":
-    case "span":
-      return dataTypesEqual(
-        left.element,
-        (right as { element: DataType }).element,
-      );
-    case "map": {
-      const other = right as {
-        key: DataType;
-        value: DataType;
-      };
-      return (
-        dataTypesEqual(left.key, other.key) &&
-        dataTypesEqual(left.value, other.value)
-      );
-    }
-    case "set":
-      return dataTypesEqual(
-        left.element,
-        (right as { element: DataType }).element,
-      );
-    case "tuple":
-      return left.arity === (right as { arity: number }).arity;
-    case "enummap": {
-      const other = right as {
-        enumName: string;
-        element: DataType;
-      };
-      return (
-        left.enumName === other.enumName &&
-        dataTypesEqual(left.element, other.element)
-      );
-    }
-    case "table":
-      return (
-        left.dimensions.join(",") ===
-        (right as { dimensions: number[] }).dimensions.join(",")
-      );
-  }
-}
+
 
 function sanitizeIdentifier(name: string): string {
   return cppIdentifier(name);
@@ -809,23 +391,23 @@ function sanitizeIdentifier(name: string): string {
  * enum, and static-table definitions emitted ahead of `main`.
  */
 export class DataTypeRegistry {
-  private readonly structsByKey = new Map<string, DataStructDefinition>();
-  private readonly structNames = new Set<string>();
-  private readonly enumsByKey = new Map<string, DataEnumDefinition>();
-  private readonly enumNames = new Set<string>();
+  private readonly structsByKey = new EmissionMap<string, DataStructDefinition>();
+  private readonly structNames = new EmissionSet<string>();
+  private readonly enumsByKey = new EmissionMap<string, DataEnumDefinition>();
+  private readonly enumNames = new EmissionSet<string>();
   /** String-union enums that actually receive a runtime string value. */
-  private readonly runtimeEnumParsers = new Set<string>();
-  private readonly runtimeEnumSerializers = new Set<string>();
+  private readonly runtimeEnumParsers = new EmissionSet<string>();
+  private readonly runtimeEnumSerializers = new EmissionSet<string>();
   /** Named data types that reached emitted C++ rather than a type probe. */
-  private readonly emittedNamedTypes = new Set<string>();
-  private readonly tables = new Map<ts.Node, DataTableDefinition>();
-  private readonly tableNames = new Set<string>();
+  private readonly emittedNamedTypes = new EmissionSet<string>();
+  private readonly tables = new EmissionMap<ts.Node, DataTableDefinition>();
+  private readonly tableNames = new EmissionSet<string>();
   /**
    * One-dimensional constant arrays, materialized so a runtime index
    * can reach them. The numeric tables above are doubles all the way
    * down and may nest; these are flat and hold any scalar element.
    */
-  private readonly tagTables = new Map<
+  private readonly tagTables = new EmissionMap<
     ts.Node,
     {
       name: string;
@@ -833,25 +415,25 @@ export class DataTypeRegistry {
       elements: string[];
     }
   >();
-  private readonly structNamesInProgress = new Map<
+  private readonly structNamesInProgress = new EmissionMap<
     ts.Symbol | ts.Type | string,
     string
   >();
-  private readonly structTypesByIdentity = new Map<
+  private readonly structTypesByIdentity = new EmissionMap<
     ts.Symbol | ts.Type | string,
     DataType & { kind: "struct" }
   >();
-  private readonly referenceStructNames = new Set<string>();
+  private readonly referenceStructNames = new EmissionSet<string>();
   /**
    * Local classes that reached a native data position, by the struct name
    * standing for them. The declaration is how a method call on a value read
    * back out of a container recovers what to inline.
    */
-  private readonly classStructDeclarations = new Map<
+  private readonly classStructDeclarations = new EmissionMap<
     string,
     ClassStructBinding
   >();
-  private readonly classStructNames = new Map<
+  private readonly classStructNames = new EmissionMap<
     ts.Symbol | ts.Type | string,
     string
   >();
@@ -878,7 +460,7 @@ export class DataTypeRegistry {
    * found them. Nothing else emits a codec: a scene that serializes one
    * record does not carry a writer for every other record it declares.
    */
-  private readonly jsonSerializedStructs = new Set<string>();
+  private readonly jsonSerializedStructs = new EmissionSet<string>();
 
   public constructor(
     private readonly checker: ts.TypeChecker,
@@ -1026,20 +608,8 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "DataView") {
       return { kind: "dataview" };
     }
-    if (
-      type.symbol &&
-      declaredInDomLibrary(type.symbol) &&
-      type.symbol.name === "Gamepad"
-    ) {
-      return { kind: "handle", handle: "gamepad" };
-    }
-    if (
-      type.symbol &&
-      declaredInDomLibrary(type.symbol) &&
-      type.symbol.name === "GamepadButton"
-    ) {
-      return { kind: "handle", handle: "gamepad-button" };
-    }
+    const platformHandle = platformHandleKind(type);
+    if (platformHandle) return { kind: "handle", handle: platformHandle };
     const borrowedEvent = borrowedPlatformEventKind(type.symbol);
     if (borrowedEvent) {
       return {
@@ -1251,15 +821,17 @@ export class DataTypeRegistry {
       this.checker.getReturnTypeOfSignature(signature),
       signature.declaration,
     );
-    const result = resultType
+    const mappedResult = resultType
       ? this.fromStoredTsType(resultType, node)
       : undefined;
+    const result = mappedResult ? this.ownReturnedArray(mappedResult) : undefined;
     if (resultType && !result) {
       return undefined;
     }
     return {
       kind: "function",
-      parameters: parameters as DataType[],
+      parameters: (parameters as DataType[]).map(parameter =>
+        this.returnsArray(result) ? this.ownReturnedArray(parameter) : parameter),
       ...(result ? { result } : {}),
       ...(erasedParameters.length > 0 ? { erasedParameters } : {}),
     };
@@ -1440,7 +1012,7 @@ export class DataTypeRegistry {
       });
       return (
         values.every((value) => value !== undefined) &&
-        new Set(values).size === type.types.length
+        new EmissionSet(values).size === type.types.length
       );
     });
     if (!discriminant) return undefined;
@@ -1663,7 +1235,7 @@ export class DataTypeRegistry {
       (objectType.objectFlags & ts.ObjectFlags.Reference) !== 0
         ? this.checker.getTypeArguments(type as ts.TypeReference)
         : [];
-    const substitution = new Map<ts.Symbol, ts.Type>();
+    const substitution = new EmissionMap<ts.Symbol, ts.Type>();
     parameters.forEach((parameter, index) => {
       const argument = supplied[index];
       const symbol = this.checker.getTypeAtLocation(parameter).symbol;
@@ -1702,7 +1274,7 @@ export class DataTypeRegistry {
    */
   private mentionsSubstitution(
     type: ts.Type,
-    seen: Set<ts.Type> = new Set(),
+    seen: Set<ts.Type> = new EmissionSet(),
   ): boolean {
     if (!this.activeTypeArguments || seen.has(type)) {
       return false;
@@ -1956,13 +1528,7 @@ export class DataTypeRegistry {
     type: ts.Type,
   ): DataStructField[] {
     const fields: DataStructField[] = [];
-    for (const member of declaration.members) {
-      if (
-        !ts.isPropertyDeclaration(member) ||
-        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !== 0
-      ) {
-        continue;
-      }
+    for (const member of classInstanceProperties(declaration)) {
       if (!ts.isIdentifier(member.name)) {
         this.fail(
           member,
@@ -2150,6 +1716,44 @@ export class DataTypeRegistry {
       this.fromTsType(type, node));
   }
 
+  public returnsArray(type: DataType | undefined): boolean {
+    const inner = type?.kind === "optional" ? type.inner : type;
+    return inner?.kind === "vector" || inner?.kind === "span";
+  }
+
+  /** Returned arrays retain their backing storage, including readonly arrays. */
+  public ownReturnedArray(type: DataType): DataType {
+    const inner = type.kind === "optional" ? type.inner : type;
+    return inner.kind === "span" ? this.markStoredObjectReferences(type) : type;
+  }
+
+  /** Shared returns can own local classes whose fields all have native storage. */
+  public fromSharedReturnType(type: ts.Type, node: ts.Node): DataType | undefined {
+    const concrete = this.checker.getNonNullableType(type);
+    const resource = isPinnedType(concrete, ["PbrMaterialProps", "StandardMaterialProps"]) ? "material"
+      : isPinnedType(concrete, ["AssetContainer"]) ? "asset" : undefined;
+    if (resource) {
+      const handle: DataType = { kind: "handle", handle: resource };
+      return concrete === type ? handle : { kind: "optional", inner: handle };
+    }
+    const mapped = this.fromTsType(type, node);
+    if (mapped) return this.ownReturnedArray(mapped);
+    const symbol = concrete.symbol;
+    const declaration = symbol?.declarations?.find(ts.isClassDeclaration);
+    if (!symbol || !declaration || declaredInBabylonLite(symbol) ||
+        (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Abstract) !== 0 ||
+        declaration.heritageClauses?.some(clause => clause.token === ts.SyntaxKind.ExtendsKeyword)) return undefined;
+    for (const member of classInstanceProperties(declaration)) {
+      if (!ts.isIdentifier(member.name)) return undefined;
+      const property = concrete.getProperty(member.name.text);
+      const fieldType = property ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
+        : this.checker.getTypeAtLocation(member.name);
+      const field = this.fromClassFieldType(fieldType, member.name);
+      if (!field || this.carriesFunction(field)) return undefined;
+    }
+    return this.fromStoredTsType(type, node);
+  }
+
   /**
    * `fromTsType` for a class's own stored field.
    *
@@ -2287,9 +1891,9 @@ export class DataTypeRegistry {
     definition: DataEnumDefinition,
     literal: string,
   ): string {
-    const occurrences = new Map<string, number>();
+    const occurrences = new EmissionMap<string, number>();
     for (const member of definition.members) {
-      const base = sanitizeIdentifier(member);
+      const base = sanitizeIdentifier(member) || "empty";
       const occurrence = (occurrences.get(base) ?? 0) + 1;
       occurrences.set(base, occurrence);
       if (member === literal) {
@@ -2358,31 +1962,8 @@ export class DataTypeRegistry {
   }
 
   /** Whether a data shape contains a stored native closure. */
-  public carriesFunction(type: DataType, seen = new Set<string>()): boolean {
-    switch (type.kind) {
-      case "function":
-        return true;
-      case "optional":
-        return this.carriesFunction(type.inner, seen);
-      case "vector":
-      case "span":
-      case "enummap":
-      case "set":
-        return this.carriesFunction(type.element, seen);
-      case "map":
-        return (
-          this.carriesFunction(type.key, seen) ||
-          this.carriesFunction(type.value, seen)
-        );
-      case "struct":
-        if (seen.has(type.name)) return false;
-        seen.add(type.name);
-        return this.structFieldTypes(type.name).some((field) =>
-          this.carriesFunction(field, seen),
-        );
-      default:
-        return false;
-    }
+  public carriesFunction(type: DataType, seen = new EmissionSet<string>()): boolean {
+    return containsDataKind(type, "function", name => this.structFieldTypes(name), false, seen);
   }
 
   /**
@@ -2391,36 +1972,8 @@ export class DataTypeRegistry {
    * Function signatures deliberately stop the walk: a stored handler may
    * accept an event-bearing payload without itself containing a live event.
    */
-  public carriesBorrowedPlatformEvent(
-    type: DataType,
-    seen = new Set<string>(),
-  ): boolean {
-    switch (type.kind) {
-      case "borrowed-platform-event":
-        return true;
-      case "optional":
-        return this.carriesBorrowedPlatformEvent(type.inner, seen);
-      case "vector":
-      case "span":
-      case "enummap":
-      case "set":
-        return this.carriesBorrowedPlatformEvent(type.element, seen);
-      case "map":
-        return (
-          this.carriesBorrowedPlatformEvent(type.key, seen) ||
-          this.carriesBorrowedPlatformEvent(type.value, seen)
-        );
-      case "function":
-        return false;
-      case "struct":
-        if (seen.has(type.name)) return false;
-        seen.add(type.name);
-        return this.structFieldTypes(type.name).some((field) =>
-          this.carriesBorrowedPlatformEvent(field, seen),
-        );
-      default:
-        return false;
-    }
+  public carriesBorrowedPlatformEvent(type: DataType, seen = new EmissionSet<string>()): boolean {
+    return containsDataKind(type, "borrowed-platform-event", name => this.structFieldTypes(name), false, seen);
   }
 
   /** The shared structural view of two record types, if one is non-empty. */
@@ -2432,7 +1985,7 @@ export class DataTypeRegistry {
     const fieldsFor = (name: string): DataStructField[] =>
       [...this.structsByKey.values()].find((entry) => entry.name === name)
         ?.fields ?? [];
-    const rightFields = new Map(
+    const rightFields = new EmissionMap(
       fieldsFor(right.name).map((field) => [field.sourceName, field]),
     );
     const fields = fieldsFor(left.name).filter((field) => {
@@ -2464,39 +2017,8 @@ export class DataTypeRegistry {
   }
 
   /** Whether a plain-data shape owns an engine/PAL resource handle. */
-  public carriesHandle(type: DataType, seen = new Set<string>()): boolean {
-    switch (type.kind) {
-      case "handle":
-        return true;
-      case "optional":
-        return this.carriesHandle(type.inner, seen);
-      case "vector":
-      case "span":
-      case "enummap":
-      case "set":
-        return this.carriesHandle(type.element, seen);
-      case "map":
-        return (
-          this.carriesHandle(type.key, seen) ||
-          this.carriesHandle(type.value, seen)
-        );
-      case "function":
-        // A stored function reaches whatever its signature names, which is
-        // what a class field holding a handler has to be judged on.
-        return (
-          type.parameters.some((parameter) =>
-            this.carriesHandle(parameter, seen)) ||
-          (type.result !== undefined && this.carriesHandle(type.result, seen))
-        );
-      case "struct":
-        if (seen.has(type.name)) return false;
-        seen.add(type.name);
-        return this.structFieldTypes(type.name).some((field) =>
-          this.carriesHandle(field, seen),
-        );
-      default:
-        return false;
-    }
+  public carriesHandle(type: DataType, seen = new EmissionSet<string>()): boolean {
+    return containsDataKind(type, "handle", name => this.structFieldTypes(name), true, seen);
   }
 
   public structFields(name: string, node: ts.Node): DataStructField[] {
@@ -2585,7 +2107,7 @@ export class DataTypeRegistry {
     return name;
   }
 
-  private readonly sharedConstantArrays = new Map<string, string>();
+  private readonly sharedConstantArrays = new EmissionMap<string, string>();
 
   public registerSharedConstantArray(
     preferredName: string,
@@ -2664,110 +2186,18 @@ export class DataTypeRegistry {
   }
 
   public cppType(dataType: DataType): string {
-    if (isTypedArrayType(dataType)) return typedArrayCppType(dataType.kind);
-    switch (dataType.kind) {
-      case "number":
-        return "double";
-      case "boolean":
-        return "bool";
-      case "arraybuffer":
-        return "bbl::js::ArrayBuffer";
-      case "dataview":
-        return "bbl::js::DataView";
-      case "borrowed-platform-event":
-        return dataType.event === "event"
-          ? "bbl::js::BorrowedEvent"
-          : `bbl::js::Borrowed<const bbl::Platform${
-              dataType.event === "mouse" ? "Mouse" : "Keyboard"
-            }Event>`;
-      case "string":
-        return "std::string";
-      case "handle":
-        return handleCppTypes[dataType.handle];
-      case "function": {
-        const signature =
-          `${dataType.result ? this.cppType(dataType.result) : "void"}` +
-          `(${dataType.parameters.map((parameter) => this.cppType(parameter)).join(", ")})`;
-        return `bbl::js::Callback<${signature}>`;
-      }
-      case "struct":
-        this.emittedNamedTypes.add(dataType.name);
-        return `bblscene::${dataType.name}`;
-      case "enum":
-        this.emittedNamedTypes.add(dataType.name);
-        return `bblscene::${dataType.name}`;
-      case "json":
-        return "bbl::js::JsonValue";
-      case "optional":
-        if (
-          dataType.inner.kind === "struct" &&
-          this.isReferenceStruct(dataType.inner.name)
-        ) {
-          return this.cppType(dataType.inner);
-        }
-        return `bbl::js::Nullable<${this.cppType(dataType.inner)}>`;
-      case "vector":
-        return `bbl::js::Array<${this.cppType(dataType.element)}>`;
-      case "map":
-        return `bbl::js::Map<${this.cppType(dataType.key)}, ${this.cppType(dataType.value)}>`;
-      case "set":
-        return `bbl::js::Set<${this.cppType(dataType.element)}>`;
-      case "span":
-        return `bbl::js::Span<const ${this.cppType(dataType.element)}>`;
-      case "tuple":
-        return `bbl::js::Tuple<${dataType.arity}>`;
-      case "enummap":
-        this.emittedNamedTypes.add(dataType.enumName);
-        return `bbl::js::EnumMap<${this.cppType(dataType.element)}, ${this.enumMembers(dataType.enumName).length}>`;
-      case "table":
-        return `const ${this.tableCppType(dataType.dimensions)}&`;
-    }
+    return dataTypeCppType(dataType, this.cppContext);
   }
 
-  private typeKey(dataType: DataType): string {
-    // The key is the runtime spelling stem, which is unique per kind.
-    if (isTypedArrayType(dataType)) return typedArrayStem(dataType.kind);
-    switch (dataType.kind) {
-      case "number":
-        return "n";
-      case "boolean":
-        return "b";
-      case "arraybuffer":
-        return "ab";
-      case "dataview":
-        return "dv";
-      case "borrowed-platform-event":
-        return `borrowed(${dataType.event})`;
-      case "string":
-        return "str";
-      case "handle":
-        return `h(${dataType.handle})`;
-      case "function":
-        return `${dataType.identity ? "cb" : "fn"}(${dataType.parameters.map((parameter) => this.typeKey(parameter)).join(",")})${dataType.erasedParameters?.length ? `~${dataType.erasedParameters.join(",")}` : ""}->${dataType.result ? this.typeKey(dataType.result) : "void"}`;
-      case "struct":
-        return `s(${dataType.name})`;
-      case "enum":
-        return `e(${dataType.name})`;
-      case "json":
-        return "json";
-      case "optional":
-        return `o(${this.typeKey(dataType.inner)})`;
-      case "vector":
-        return `v(${this.typeKey(dataType.element)})`;
-      case "map":
-        return `map(${this.typeKey(dataType.key)},${this.typeKey(dataType.value)})`;
-      case "set":
-        return `set(${this.typeKey(dataType.element)})`;
-      case "span":
-        return `r(${this.typeKey(dataType.element)})`;
-      case "tuple":
-        return `t${dataType.arity}`;
-      case "enummap":
-        return `m(${dataType.enumName},${this.typeKey(dataType.element)})`;
-      case "table":
-        return `g(${dataType.dimensions.join("x")})`;
-    }
-  }
+  private readonly cppContext: DataTypeCppContext = {
+    cppType: type => this.cppType(type),
+    namedType: name => { this.emittedNamedTypes.add(name); return `bblscene::${name}`; },
+    isReferenceStruct: name => this.isReferenceStruct(name),
+    enumSize: name => this.enumMembers(name).length,
+    tableCppType: dimensions => this.tableCppType(dimensions),
+  };
+
+  private typeKey(dataType: DataType): string { return dataTypeKey(dataType); }
 
   private uniqueName(preferred: string, used: Set<string>): string {
     let name = preferred;
@@ -2968,7 +2398,7 @@ export class DataTypeRegistry {
         );
       }
     }
-    const emitted = new Set<string>();
+    const emitted = new EmissionSet<string>();
     const structs = [...this.structsByKey.values()].filter((definition) =>
       used.structs.has(definition.name),
     );
@@ -2997,7 +2427,7 @@ export class DataTypeRegistry {
           }
         }
       }
-      const cloneTags = new Set(structuredClone
+      const cloneTags = new EmissionSet(structuredClone
         ? definition.fields.flatMap(field => field.presentForTags ? [field.presentForTags.discriminant] : [])
         : []);
       const cloneFields = structuredClone ? [...definition.fields].sort((left, right) =>
@@ -3054,8 +2484,8 @@ export class DataTypeRegistry {
     structs: Set<string>;
     enums: Set<string>;
   } {
-    const structs = new Set<string>();
-    const enums = new Set<string>();
+    const structs = new EmissionSet<string>();
+    const enums = new EmissionSet<string>();
     const visit = (dataType: DataType): void => {
       switch (dataType.kind) {
         case "struct": {

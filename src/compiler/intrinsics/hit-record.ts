@@ -1,5 +1,6 @@
+import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import type { DataType, DataTypeRegistry } from "../data-types.js";
+import type { DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 
 /**
@@ -33,17 +34,13 @@ interface HitRecordField {
 export const numberField = (type: DataType): boolean =>
     type.kind === "number";
 
-export interface HitRecordContext {
-    readonly dataTypes: DataTypeRegistry;
-    readonly checker: ts.TypeChecker;
-    readonly dataLowerer: {
-        structAggregate(
-            dataType: DataType & { kind: "struct" },
-            parts: readonly string[],
-        ): string;
-    };
-    fail(node: ts.Node, message: string): never;
-}
+export interface HitRecordContext
+    extends Pick<LoweringServices,
+        | "dataTypes"
+        | "checker"
+        | "dataLowerer"
+        | "fail"
+    > {}
 
 interface NullableHitRecord {
     /** The intrinsic's own name, for the refusals below. */

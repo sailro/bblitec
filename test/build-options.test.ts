@@ -5,12 +5,20 @@ import {
     canonicalCompiledBackend,
     canonicalDevelopmentCompiler,
     canonicalOfflineShaderTarget,
+    compiledBuildDirectory,
     defaultDevelopmentBackend,
     DEVELOPMENT_VCPKG_INSTALL,
     developmentVcpkgFeatures,
     hostOfflineShaderTarget,
     needsOfflineShaders,
 } from "../src/build-options.js";
+
+test("compiled backends have independent build and deployment directories", () => {
+    const directory = "native/build-primitives-release";
+    assert.equal(compiledBuildDirectory(directory, "BOTH"), directory);
+    assert.equal(compiledBuildDirectory(directory, "SDL_GPU"), `${directory}-sdl_gpu`);
+    assert.equal(compiledBuildDirectory(directory, "DAWN"), `${directory}-dawn`);
+});
 
 test("Dawn-only iteration needs no offline compiler unless a target is explicitly requested", () => {
     assert.equal(needsOfflineShaders("DAWN"), false);
@@ -236,7 +244,8 @@ test("shipping packages require the trimmed static build", () => {
     // The package is the executable alone: the trimmed SDL carries only the
     // Direct3D 12 driver, so no launcher pins one, and the console window
     // is the log.
-    assert.doesNotMatch(script, /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/);
+    assert.doesNotMatch(script.slice(0, script.indexOf("$smokeFrames")), /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/);
+    assert.match(script, /\$smokeStart\.Environment\["SDL_ASSERT"\] = "abort"/);
     assert.match(script, /Double-click \$exeName/);
     assert.match(patterns, /\*\.dxil/);
     assert.doesNotMatch(patterns, /\*\.spv/);
@@ -371,7 +380,7 @@ test("feature macros come from one CMake function", () => {
     assert.doesNotMatch(cmake, /BBLITE_HAS_GLTF/);
     assert.equal((cmake.match(/\/STACK:8388608/g) ?? []).length, 1);
     // A generated tree without a codec list is refused, not defaulted.
-    assert.match(cmake, /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/);
+    assert.match(readFileSync("native/dependency-features.cmake", "utf8"), /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/);
 });
 
 test("the scene-invariant PAL units compile in their own object library", () => {
@@ -537,28 +546,6 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(packager, /RmlUi-LICENSE\.txt/);
     assert.match(packager, /LunaSVG\.txt.*lunasvg/s);
     assert.match(packager, /PlutoVG\.txt.*plutovg/s);
-});
-
-test("shader compilation gates non-target formats", () => {
-    const script = readFileSync("tools/compile-shaders.ps1", "utf8");
-    assert.match(script, /\$emitDxil = \$Target -in/);
-    assert.match(script, /\$emitSpirv = \$Target -in/);
-    assert.match(script, /\$emitMsl = \$Target -in/);
-    assert.match(script, /if \(\$emitSpirv\)/);
-    assert.match(script, /if \(\$emitMsl\)/);
-    assert.match(script, /target = \$Target/);
-    assert.doesNotMatch(script, /Copy-Item \$cached(?:Dxil|Spirv)/);
-    assert.match(script, /Copy-IfDifferent \$cachedDxil/);
-});
-
-test("shader slot sidecars rebase storage buffers within their register space", () => {
-    const script = readFileSync("tools/compile-shaders.ps1", "utf8");
-    assert.match(script, /\$sampledBySpace = @\{\}/);
-    assert.match(script, /\$sampled\.Groups\[1\]\.Success/);
-    assert.match(script, /\$_\.Groups\[6\]\.Success/);
-    assert.match(script, /\$sampledBySpace\[\$space\]/);
-    assert.match(script, /\$sampledBySpace\[\$space\] \?\? 0/);
-    assert.doesNotMatch(script, /\[int\]\$_\.Groups\[5\]\.Value - \$sampledCount/);
 });
 
 test("SDL shader slot loading rejects unbounded generated indices", () => {

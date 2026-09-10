@@ -39,7 +39,7 @@ test("retained button navigation helpers preserve focus, activeElement and click
 });
 
 test("every renderer device entry initializes reached gamepads", () => {
-    for (const file of ["pal_sdl_gpu.cpp", "pal_sdl_gpu_shared.hpp", "pal_dawn_shared.hpp"]) {
+    for (const file of ["pal_sdl_gpu_shared.hpp", "pal_dawn_shared.hpp"]) {
         assert.match(readFileSync(`native/src/${file}`, "utf8"), /BBLITE_HAS_GAMEPAD[\s\S]*?init_flags \|= SDL_INIT_GAMEPAD;[\s\S]*?initialize_run_sdl\(init_flags\)/);
     }
 });

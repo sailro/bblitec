@@ -97,10 +97,16 @@ function compiledGeneratedFiles(
         .sort();
 }
 
+function nativeBuildFiles(repositoryRoot: string): string[] {
+    const nativeRoot = resolve(repositoryRoot, "native");
+    return ["CMakeLists.txt", ...(existsSync(nativeRoot)
+        ? readdirSync(nativeRoot).filter(name => name.endsWith(".cmake")) : [])];
+}
+
 /** The handwritten native sources every configuration is built from. */
 function nativeSourceFiles(repositoryRoot: string): string[] {
     const nativeRoot = resolve(repositoryRoot, "native");
-    const tracked = ["CMakeLists.txt"];
+    const tracked = nativeBuildFiles(repositoryRoot);
     for (const directory of ["src", "include"]) {
         for (const path of walkFiles(
             resolve(nativeRoot, directory),
@@ -133,7 +139,9 @@ export function computeBuildStamp(
         )) {
             inputs.push({
                 path: `generated/${path}`,
-                sha256: contentDigest(resolve(generatedDirectory, path)),
+                // This path also handles explicit post-generation changes,
+                // including same-size writes within one filesystem clock tick.
+                sha256: digest(readFileSync(resolve(generatedDirectory, path))),
             });
         }
     }
@@ -412,7 +420,7 @@ export function generatorWouldReconfigure(
     if (!existsSync(generationMarker)) return true;
     const generationTime = statSync(generationMarker).mtimeMs;
     const configureInputs = [
-        resolve(repositoryRoot, "native", "CMakeLists.txt"),
+        ...nativeBuildFiles(repositoryRoot).map(path => resolve(repositoryRoot, "native", path)),
         resolve(repositoryRoot, "native", "vcpkg.json"),
         resolve(generatedDirectory, "features.cmake"),
     ];

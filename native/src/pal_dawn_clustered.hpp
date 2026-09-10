@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_clustered_shared.hpp"
 
 // The clustered light field's Dawn resources.
 //
@@ -25,13 +26,13 @@ namespace bbl::pal {
 
 /** The params buffer, the three data textures, and what was uploaded. */
 struct DawnClusteredLights {
-    WGPUBuffer params = nullptr;
-    WGPUTexture lights_texture = nullptr;
-    WGPUTexture cells_texture = nullptr;
-    WGPUTexture indices_texture = nullptr;
-    WGPUTextureView lights = nullptr;
-    WGPUTextureView cells = nullptr;
-    WGPUTextureView indices = nullptr;
+    DawnBuffer params;
+    DawnTexture lights_texture;
+    DawnTexture cells_texture;
+    DawnTexture indices_texture;
+    DawnTextureView lights;
+    DawnTextureView cells;
+    DawnTextureView indices;
     std::uint64_t uploaded_version = 0;
     bool created = false;
 };
@@ -48,6 +49,7 @@ inline void create_dawn_clustered(
     const ClusteredLightContainer& container,
     DawnClusteredLights& gpu) {
     if (gpu.created) return;
+    gpu = {};
     WGPUBufferDescriptor params = WGPU_BUFFER_DESCRIPTOR_INIT;
     params.size = container.params.size() * sizeof(std::uint32_t);
     params.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
@@ -56,8 +58,8 @@ inline void create_dawn_clustered(
     const auto make = [&](std::uint32_t rows,
                           WGPUTextureFormat format,
                           const char* label,
-                          WGPUTexture& texture,
-                          WGPUTextureView& view) {
+                          DawnTexture& texture,
+                          DawnTextureView& view) {
         WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
         descriptor.format = format;
         descriptor.usage =
@@ -65,7 +67,7 @@ inline void create_dawn_clustered(
         descriptor.size = {container.data_texture_width, rows, 1};
         texture = wgpuDeviceCreateTexture(device, &descriptor);
         if (!texture) dawn_error(label);
-        view = wgpuTextureCreateView(texture, nullptr);
+        view = create_dawn_texture_view(texture, nullptr);
         if (!view) dawn_error(label);
     };
     make(
@@ -98,62 +100,23 @@ inline void create_dawn_clustered(
  * the very branch that rebinned.
  */
 inline void upload_dawn_clustered(
-    WGPUDevice device,
-    WGPUQueue queue,
-    ClusteredLightContainer& container,
-    const std::array<float, 16>& view,
-    const std::array<float, 16>& projection,
-    double near_plane,
-    double far_plane,
-    DawnClusteredLights& gpu) {
+    WGPUDevice device, WGPUQueue queue, ClusteredLightContainer& container,
+    const std::array<float, 16>& view, const std::array<float, 16>& projection,
+    double near_plane, double far_plane, DawnClusteredLights& gpu) {
     create_dawn_clustered(device, container, gpu);
-    upstream::refresh_clustered_lights(
-        container, view, projection, near_plane, far_plane);
-    if (gpu.uploaded_version == container.upload_version) return;
-    wgpuQueueWriteBuffer(
-        queue,
-        gpu.params,
-        0,
-        container.params.data(),
-        container.params.size() * sizeof(std::uint32_t));
-    const auto write = [&](WGPUTexture texture,
-                           const void* bytes,
-                           std::size_t byte_size,
-                           std::uint32_t texel_bytes,
-                           std::uint32_t texels,
-                           std::uint32_t rows) {
-        const auto region = container.upload_region(texels, rows);
-        WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-        destination.texture = texture;
-        WGPUTexelCopyBufferLayout layout{};
-        layout.bytesPerRow = region.width * texel_bytes;
-        layout.rowsPerImage = region.height;
-        const WGPUExtent3D extent{region.width, region.height, 1};
-        wgpuQueueWriteTexture(
-            queue, &destination, bytes, byte_size, &layout, &extent);
-    };
-    write(
-        gpu.lights_texture,
-        container.light_data.data(),
-        container.light_data.size() * sizeof(float),
-        16u,
-        container.light_texels,
-        container.light_rows);
-    write(
-        gpu.cells_texture,
-        container.slice_data.data(),
-        container.slice_data.size() * sizeof(std::uint32_t),
-        16u,
-        container.slice_count,
-        container.slice_rows);
-    write(
-        gpu.indices_texture,
-        container.mask_data.data(),
-        container.mask_data.size() * sizeof(std::uint32_t),
-        4u,
-        container.mask_texels,
-        container.mask_rows);
-    gpu.uploaded_version = container.upload_version;
+    sync_clustered_payloads(container, gpu.uploaded_version, view, projection, near_plane, far_plane,
+        [&](const void* bytes, std::size_t size) { wgpuQueueWriteBuffer(queue, gpu.params, 0, bytes, size); },
+        [&](ClusteredTexture slot, const void* bytes, std::size_t size, std::uint32_t texel_bytes,
+            std::uint32_t width, std::uint32_t height) {
+            WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+            destination.texture = slot == ClusteredTexture::lights ? gpu.lights_texture
+                : slot == ClusteredTexture::cells ? gpu.cells_texture : gpu.indices_texture;
+            WGPUTexelCopyBufferLayout layout{};
+            layout.bytesPerRow = width * texel_bytes;
+            layout.rowsPerImage = height;
+            const WGPUExtent3D extent{width, height, 1};
+            wgpuQueueWriteTexture(queue, &destination, bytes, size, &layout, &extent);
+        });
 }
 
 }  // namespace bbl::pal

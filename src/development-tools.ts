@@ -20,6 +20,7 @@ export interface WindowsBuildTools {
 }
 
 export interface DevelopmentTools {
+    ccache: string | undefined;
     cmake: string | undefined;
     dawnDirectory: string;
     dawnInstalled: boolean;
@@ -338,6 +339,11 @@ export function discoverDevelopmentTools(
         );
 
     return {
+        ccache: environment.CCACHE_PATH !== undefined
+            ? findExecutable(environment.CCACHE_PATH, options)
+            : findExecutable(resolve(cwd, "artifacts/tools/ccache",
+                platform === "win32" ? "ccache.exe" : "ccache"), options)
+                ?? findExecutable("ccache", options),
         visualStudioRoot,
         cmake,
         powershell: findExecutable(
@@ -367,7 +373,8 @@ export function discoverDevelopmentTools(
         labSoundDirectory,
         labSoundInstalled:
             existsSync(join(labSoundDirectory, "lib", "LabSound.lib")) &&
-            existsSync(join(labSoundDirectory, "lib", "libnyquist.lib")),
+            existsSync(join(labSoundDirectory, "lib", "libnyquist.lib")) &&
+            existsSync(join(labSoundDirectory, "include", "libnyquist", "Decoders.h")),
         rmlUiDirectory,
         rmlUiInstalled:
             // The package must carry the SVG-enabled option set now consumed

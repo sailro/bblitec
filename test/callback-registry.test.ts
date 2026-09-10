@@ -379,7 +379,7 @@ test("evaluates erased void callback defaults before the callback body", () => {
     assert.ok(bodyMark > defaultMark);
     assert.match(
         result.cpp,
-        /Callback<void\(\)> \w+\{\d+u, bbl::js::make_closure\(std::tuple\{v_marks\}, \[\]\(\[\[maybe_unused\]\] auto& \w+\) -> void \{/,
+        /Callback<void\(\)> \w+\{\d+u, bbl::js::make_closure\(std::tuple\{v_marks\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) -> void \{/,
     );
 });
 
