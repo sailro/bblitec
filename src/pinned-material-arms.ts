@@ -598,14 +598,14 @@ export async function materialSubjects(
     const basePlan = packagedGltfMeshPlan(document);
     const primitiveOf = new Map<
         number,
-        { mesh: number; primitive: JsonObject; geometry: {attributes: JsonObject; flatNormal: boolean} }
+        { primitive: JsonObject; skinned: boolean; morphed: boolean; geometry: {attributes: JsonObject; flatNormal: boolean} }
     >();
     const nodes = asRecords(document.nodes), meshes = asRecords(document.meshes);
     const primitives = meshes.map(mesh => asRecords(mesh.primitives));
     for (const entry of basePlan.meshes) {
         const mesh = asIndex(nodes[entry.node]!.mesh)!;
         if (!primitiveOf.has(entry.material)) primitiveOf.set(entry.material,
-            {mesh: entry.node, primitive: primitives[mesh]![entry.primitive]!,
+            {primitive: primitives[mesh]![entry.primitive]!, skinned: entry.skin !== undefined, morphed: entry.morph !== undefined,
                 geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal}});
     }
     const subjects: MaterialSubject[] = [];
@@ -649,7 +649,8 @@ export async function materialSubjects(
             uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
             meshFeatures: drawn
                 ? await pinnedMeshFeaturesFromPrimitive(drawn.primitive, {
-                    skinned: nodes[drawn.mesh]!.skin !== undefined,
+                    skinned: drawn.skinned,
+                    morphed: drawn.morphed,
                     geometry: drawn.geometry,
                 })
                 : 0,
@@ -1470,7 +1471,8 @@ export async function gltfRenderables(
             material: selectedMaterials ? selectedMaterials[renderables.length]! : entry.material,
             name: entry.name,
             features: await pinnedMeshFeaturesFromPrimitive(primitive, {
-                skinned: node.skin !== undefined,
+                skinned: entry.skin !== undefined,
+                morphed: entry.morph !== undefined,
                 instanced: asObject(node.extensions)?.EXT_mesh_gpu_instancing !== undefined,
                 geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal},
             }),

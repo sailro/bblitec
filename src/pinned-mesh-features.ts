@@ -78,7 +78,7 @@ async function meshFeatureBits(): Promise<MeshFeatureBits> {
  */
 export async function pinnedMeshFeaturesFromPrimitive(
     primitive: JsonObject,
-    options: { skinned?: boolean; instanced?: boolean; geometry?: {attributes: JsonObject; flatNormal: boolean} } = {},
+    options: { skinned?: boolean; morphed?: boolean; instanced?: boolean; geometry?: {attributes: JsonObject; flatNormal: boolean} } = {},
 ): Promise<number> {
     const attributes =
         options.geometry?.attributes ?? (primitive["attributes"] as JsonObject | undefined) ?? {};
@@ -90,7 +90,7 @@ export async function pinnedMeshFeaturesFromPrimitive(
         },
         _flatNormal: options.geometry?.flatNormal ?? attributes.NORMAL === undefined,
         skeleton: options.skinned ? {} : null,
-        morphTargets: Array.isArray(primitive.targets) && primitive.targets.length > 0 ? {} : null,
+        morphTargets: (options.morphed ?? (Array.isArray(primitive.targets) && primitive.targets.length > 0)) ? {} : null,
         thinInstances: options.instanced ? {} : null,
     });
 }

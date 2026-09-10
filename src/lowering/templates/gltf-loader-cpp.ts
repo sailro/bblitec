@@ -192,6 +192,7 @@ ${compressedImages ? "#include <bblite/upstream/compressed_texture.hpp>\n" : ""}
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -646,7 +647,7 @@ struct AnimatedNode {
     Matrix world{};
     bool computed = false;
     bool computing = false;
-    std::vector<float> weights;${animationBlending || animationMask || boneControl ? `
+    std::optional<std::vector<float>> weights;${animationBlending || animationMask || boneControl ? `
     // The rest pose the authored TRS is: the mixer resets to it each tick
     // before a clip accumulates, a masked node holds it, and the
     // bone-control bake starts from it — the pin's own \`resetTRS\`, which
@@ -672,6 +673,7 @@ struct AnimatedMeshBinding {
     std::uint32_t geometry = 0;
     std::size_t node = 0;
     std::size_t skin = std::numeric_limits<std::size_t>::max();
+    std::vector<float> morph_default_weights;
 };
 
 // One glTF animation, the shape src/animation/animation-group.ts builds per
@@ -1674,7 +1676,6 @@ ${animationPointer ? `    animation_runtime->light_nodes =
         [&](double index) { gltf_checked_index(index); return find_gltf_parent(parents, index); });
     animation_runtime->nodes.resize(node_rest.size());
     for (std::size_t index = 0; index < node_rest.size(); ++index) {
-        const JsonObject& node = node_json[index].as_object();
         const auto& rest = node_rest[index];
         AnimatedNode& animated_node =
             animation_runtime->nodes[index];
@@ -1689,19 +1690,7 @@ ${animationPointer ? `    animation_runtime->light_nodes =
         animated_node.translation = Vec3{static_cast<float>(rest.tx), static_cast<float>(rest.ty), static_cast<float>(rest.tz)};
         animated_node.rotation = Vec4{static_cast<float>(rest.rx), static_cast<float>(rest.ry), static_cast<float>(rest.rz), static_cast<float>(rest.rw)};
         animated_node.scale = Vec3{static_cast<float>(rest.sx), static_cast<float>(rest.sy), static_cast<float>(rest.sz)};
-        animated_node.weights =
-            float_array(optional(node, "weights"));
-        if (
-            animated_node.weights.empty() &&
-            optional(node, "mesh")) {
-            animated_node.weights = float_array(
-                optional(
-                    mesh_json.at(
-                        unsigned_value(
-                            *optional(node, "mesh")))
-                        .as_object(),
-                    "weights"));
-        }${animationBlending || animationMask || boneControl ? `
+${animationBlending || animationMask || boneControl ? `
         // The node's authored TRS is the rest pose the weighted mixer
         // resets to each tick before any clip accumulates into it, and the
         // pose a masked node holds: the pin's controller resets every node
@@ -1774,7 +1763,11 @@ ${nonTrianglePrimitives
             }`}
             const auto& planned_geometry = planned_geometries.at(unsigned_value(required(planned, "geometry"))).as_object();
             const JsonObject& attributes = required(planned_geometry, "attributes").as_object();
-            const JsonObject& source_attributes = required(primitive, "attributes").as_object();
+            const auto* planned_skin = optional(planned, "skin");
+            const auto* planned_morph = optional(planned, "morph");
+            if (planned_skin && unsigned_value(required(planned_skin->as_object(), "boneCount")) !=
+                animation_runtime->skins.at(unsigned_value(required(planned_skin->as_object(), "index"))).joints.size())
+                throw std::runtime_error("glTF skeleton storage disagrees with its joint bindings.");
             const AccessorInfo& positions = accessors.at(unsigned_value(required(attributes, "POSITION")));
             const AccessorInfo* normals = required(planned, "flatNormal").as_boolean()
                 ? nullptr : &accessors.at(unsigned_value(required(attributes, "NORMAL")));
@@ -1788,37 +1781,25 @@ ${nonTrianglePrimitives
             const AccessorInfo* colors = optional(attributes, "COLOR_0")
                 ? &accessors.at(unsigned_value(*optional(attributes, "COLOR_0")))
                 : nullptr;
-            const AccessorInfo* joints = optional(source_attributes, "JOINTS_0")
-                ? &accessors.at(unsigned_value(*optional(source_attributes, "JOINTS_0")))
-                : nullptr;
-            const AccessorInfo* weights = optional(source_attributes, "WEIGHTS_0")
-                ? &accessors.at(unsigned_value(*optional(source_attributes, "WEIGHTS_0")))
-                : nullptr;
+            const AccessorInfo* joints = planned_skin
+                ? &accessors.at(unsigned_value(required(planned_skin->as_object(), "joints"))) : nullptr;
+            const AccessorInfo* weights = planned_skin
+                ? &accessors.at(unsigned_value(required(planned_skin->as_object(), "weights"))) : nullptr;
             std::vector<const AccessorInfo*> morph_positions;
             std::vector<const AccessorInfo*> morph_normals;
-            std::vector<const AccessorInfo*> morph_tangents;
-            for (const ts::JsonValue& target_value :
-                 array_or_empty(primitive, "targets")) {
-                const JsonObject& target =
-                    target_value.as_object();
-                morph_positions.push_back(
-                    optional(target, "POSITION")
-                        ? &accessors.at(
-                              unsigned_value(
-                                  *optional(target, "POSITION")))
-                        : nullptr);
-                morph_normals.push_back(
-                    optional(target, "NORMAL")
-                        ? &accessors.at(
-                              unsigned_value(
-                                  *optional(target, "NORMAL")))
-                        : nullptr);
-                morph_tangents.push_back(
-                    optional(target, "TANGENT")
-                        ? &accessors.at(
-                              unsigned_value(
-                                  *optional(target, "TANGENT")))
-                        : nullptr);
+            std::vector<float> morph_default_weights;
+            if (planned_morph) {
+                const auto& morph = planned_morph->as_object();
+                for (const auto& index : required(morph, "positions").as_array())
+                    morph_positions.push_back(&accessors.at(unsigned_value(index)));
+                for (const auto& index : required(morph, "normals").as_array())
+                    morph_normals.push_back(&accessors.at(unsigned_value(index)));
+                const auto& initial_weights = accessors.at(unsigned_value(required(morph, "weights")));
+                morph_default_weights.resize(initial_weights.count);
+                for (std::size_t index = 0; index < initial_weights.count; ++index)
+                    morph_default_weights[index] = read_component(buffer, container, views, initial_weights, index, 0);
+                if (morph_positions.size() != morph_normals.size() || morph_positions.size() != morph_default_weights.size())
+                    throw std::runtime_error("Invalid glTF morph storage counts.");
             }
             // The node's own world in the native convention, for every mesh:
             // the thin-instance arm composes through it, and a geometry
@@ -2112,98 +2093,20 @@ ${nonTrianglePrimitives
                 }
             }
             for (std::size_t target = 0; target < morph_positions.size(); ++target) {
-                std::vector<Vec3> position_deltas(
-                    positions.count,
-                    Vec3{});
-                std::vector<Vec3> normal_deltas(
-                    positions.count,
-                    Vec3{});
-                std::vector<Vec3> tangent_deltas(
-                    positions.count,
-                    Vec3{});
+                auto& position_deltas = geometry.morph_positions.emplace_back(positions.count);
+                auto& normal_deltas = geometry.morph_normals.emplace_back(positions.count);
                 for (std::size_t index = 0; index < positions.count; ++index) {
-                    if (morph_positions[target]) {
-                        position_deltas[index] = Vec3{
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_positions[target],
-                                index,
-                                0),
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_positions[target],
-                                index,
-                                1),
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_positions[target],
-                                index,
-                                2),
-                        };
-                    }
-                    if (morph_normals[target]) {
-                        normal_deltas[index] = Vec3{
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_normals[target],
-                                index,
-                                0),
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_normals[target],
-                                index,
-                                1),
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_normals[target],
-                                index,
-                                2),
-                        };
-                    }
-                    if (morph_tangents[target]) {
-                        tangent_deltas[index] = Vec3{
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_tangents[target],
-                                index,
-                                0),
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_tangents[target],
-                                index,
-                                1),
-                            read_component(
-                                buffer,
-                                container,
-                                views,
-                                *morph_tangents[target],
-                                index,
-                                2),
-                        };
-                    }
+                    position_deltas[index] = Vec3{
+                        read_component(buffer, container, views, *morph_positions[target], index, 0),
+                        read_component(buffer, container, views, *morph_positions[target], index, 1),
+                        read_component(buffer, container, views, *morph_positions[target], index, 2),
+                    };
+                    normal_deltas[index] = Vec3{
+                        read_component(buffer, container, views, *morph_normals[target], index, 0),
+                        read_component(buffer, container, views, *morph_normals[target], index, 1),
+                        read_component(buffer, container, views, *morph_normals[target], index, 2),
+                    };
                 }
-                geometry.morph_positions.push_back(
-                    std::move(position_deltas));
-                geometry.morph_normals.push_back(
-                    std::move(normal_deltas));
-                geometry.morph_tangents.push_back(
-                    std::move(tangent_deltas));
             }
             {
                 const AccessorInfo& indices = accessors.at(unsigned_value(required(planned_geometry, "indices")));
@@ -2298,8 +2201,6 @@ ${nonTrianglePrimitives
                     geometry.morph_positions.size());
                 std::vector<std::vector<Vec3>> flat_morph_normals(
                     geometry.morph_normals.size());
-                std::vector<std::vector<Vec3>> flat_morph_tangents(
-                    geometry.morph_tangents.size());
                 for (const std::uint32_t index : geometry.indices) {
                     flat_vertices.push_back(
                         geometry.vertices.at(index));
@@ -2312,8 +2213,6 @@ ${nonTrianglePrimitives
                             geometry.morph_positions[target].at(index));
                         flat_morph_normals[target].push_back(
                             geometry.morph_normals[target].at(index));
-                        flat_morph_tangents[target].push_back(
-                            geometry.morph_tangents[target].at(index));
                     }
                 }
                 geometry.vertices = std::move(flat_vertices);
@@ -2325,8 +2224,6 @@ ${nonTrianglePrimitives
                     std::move(flat_morph_positions);
                 geometry.morph_normals =
                     std::move(flat_morph_normals);
-                geometry.morph_tangents =
-                    std::move(flat_morph_tangents);
                 geometry.indices.resize(geometry.vertices.size());
                 for (
                     std::size_t index = 0;
@@ -2532,8 +2429,8 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                 static_cast<std::uint32_t>(engine.meshes.size() - 1);
             if (animated) {
                 const std::size_t skin_index =
-                    optional(node, "skin")
-                        ? unsigned_value(*optional(node, "skin"))
+                    planned_skin
+                        ? unsigned_value(required(planned_skin->as_object(), "index"))
                         : std::numeric_limits<std::size_t>::max();
                 ${pinnedSkeletonPalette
                     ? `// A composed skeleton variant reads the pin's own
@@ -2581,6 +2478,7 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                         record.geometry,
                         node_index,
                         skin_index,
+                        std::move(morph_default_weights),
                     });
             }
             asset.meshes.push_back(MeshHandle{mesh_record_index});${interactivity ? `
@@ -3367,10 +3265,8 @@ ${deformPicking ? `                // The pin's detailed pick reads \`mesh.world
                 }
                 ++mesh_record.bone_matrices_version;
                 mesh_record.morph_weights = {};
-                const std::vector<float>& node_weights =
-                    animation_runtime
-                        ->nodes[binding.node]
-                        .weights;
+                const auto& sampled_weights = animation_runtime->nodes[binding.node].weights;
+                const auto& node_weights = sampled_weights ? *sampled_weights : binding.morph_default_weights;
                 for (
                     std::size_t target = 0;
                     target < node_weights.size() &&
@@ -3404,10 +3300,7 @@ ${deformPicking ? `                // The pin's detailed pick reads \`mesh.world
                         geometry.bind_vertices[vertex_index];
                     Vec3 morphed_position =
                         bind.local_position;
-                    const std::vector<float>& morph_weights =
-                        animation_runtime
-                            ->nodes[binding.node]
-                            .weights;
+                    const auto& morph_weights = node_weights;
                     for (
                         std::size_t target = 0;
                         target < morph_weights.size() &&
@@ -4135,13 +4028,14 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     clip.time);
                 AnimatedNode& node =
                     animation_runtime->nodes[track.node];
-                node.weights.resize(track.target_count);
+                if (!node.weights) node.weights.emplace();
+                node.weights->resize(track.target_count);
                 for (std::size_t target = 0; target < track.target_count; ++target) {
                     const float left_value =
                         track.values[left * track.target_count + target];
                     const float right_value =
                         track.values[right * track.target_count + target];
-                    node.weights[target] = static_cast<float>(
+                    (*node.weights)[target] = static_cast<float>(
                         left_value +
                         (static_cast<double>(right_value) -
                          left_value) *

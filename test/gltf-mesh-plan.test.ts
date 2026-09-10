@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GLTF_MESH_PLAN, asRecords, asIndex, type JsonObject } from "../src/gltf-document.js";
+import { GLTF_MESH_PLAN, type JsonObject } from "../src/gltf-document.js";
 import { gltfMeshPlan, packageGltfMeshPlan, packagedGltfMeshPlan } from "../src/gltf-mesh-plan.js";
 import { packageGltfLoadPlan } from "../src/gltf-load-plan.js";
 import { materialSubjects, gltfRenderables, gltfLinearImageProcessing } from "../src/pinned-material-arms.js";
 import { buildGlb, readGlbFixture } from "./glb-fixture.js";
-import { meshPlanFixture } from "./gltf-mesh-fixture.js";
+import { meshPlanFixture, readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 
 const module = "src/loader-gltf/load-gltf.ts";
@@ -100,36 +100,22 @@ test("the final asset pass packages source scheduling against embedded BIN data"
     assert.throws(() => packagedGltfMeshPlan({} as JsonObject), /missing packaged/);
 });
 
-function attributeValues(document: JsonObject, binary: Buffer, accessor: number): number[] {
-    const value = asRecords(document.accessors)[accessor]!;
-    const view = asRecords(document.bufferViews)[asIndex(value.bufferView)!]!;
-    const count = asIndex(value.count)!;
-    const components = value.type === "SCALAR" ? 1 : Number(String(value.type).slice(3));
-    const width = value.componentType === 5123 ? 2 : 4;
-    const base = asIndex(view.byteOffset)! + (asIndex(value.byteOffset) ?? 0);
-    const stride = asIndex(view.byteStride) ?? components * width;
-    return Array.from({length: count * components}, (_, index) => {
-        const offset = base + Math.floor(index / components) * stride + (index % components) * width;
-        return value.componentType === 5123 ? binary.readUInt16LE(offset)
-            : value.componentType === 5125 ? binary.readUInt32LE(offset) : binary.readFloatLE(offset);
-    });
-}
 
 test("packaged geometry carries actual source uploads, generated indices and flat-normal state", async () => {
     const make = () => meshPlanFixture({nodes: [{mesh: 0}], meshes: [{primitives: [{}]}], scenes: [{nodes: [0]}]});
     const original = make();
     const binary = await packageGltfMeshPlan(original.document, original.bin);
     const plan = packagedGltfMeshPlan(original.document), geometry = plan.geometries[0]!;
-    assert.deepEqual(attributeValues(original.document, binary, geometry.attributes.POSITION!), [0, 0, 0, 1, 0, 0, 0, 1, 0]);
-    assert.deepEqual(attributeValues(original.document, binary, geometry.attributes.TEXCOORD_0!), [0, 0, 0, 0, 0, 0]);
-    assert.deepEqual(attributeValues(original.document, binary, geometry.indices), [0, 1, 2]);
+    assert.deepEqual(readPackedGltfAttribute(original.document, binary, geometry.attributes.POSITION!), [0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    assert.deepEqual(readPackedGltfAttribute(original.document, binary, geometry.attributes.TEXCOORD_0!), [0, 0, 0, 0, 0, 0]);
+    assert.deepEqual(readPackedGltfAttribute(original.document, binary, geometry.indices), [0, 1, 2]);
     assert.equal(plan.meshes[0]!.flatNormal, true);
     const changed = make();
     const changedBinary = await packageGltfMeshPlan(changed.document, changed.bin, doctoredContext(module,
         "positionBuffer: createMappedBuffer(engine, meshData._positions!, BU.VERTEX)",
         "positionBuffer: createMappedBuffer(engine, meshData._positions!.map(value => value * 2), BU.VERTEX)"));
     const changedPlan = packagedGltfMeshPlan(changed.document);
-    assert.deepEqual(attributeValues(changed.document, changedBinary, changedPlan.geometries[0]!.attributes.POSITION!), [0, 0, 0, 2, 0, 0, 0, 2, 0]);
+    assert.deepEqual(readPackedGltfAttribute(changed.document, changedBinary, changedPlan.geometries[0]!.attributes.POSITION!), [0, 0, 0, 2, 0, 0, 0, 2, 0]);
     const smooth = make();
     await packageGltfMeshPlan(smooth.document, smooth.bin, doctoredContext(module, "_flatNormal: meshData._flatNormal,", "_flatNormal: false,"));
     assert.equal(packagedGltfMeshPlan(smooth.document).meshes[0]!.flatNormal, false);
@@ -161,9 +147,9 @@ test("interleaved uploads retain shared buffer bytes, attribute offsets and inde
     assert.equal(plan.geometries.length, 1);
     assert.deepEqual(plan.meshes.map(mesh => [mesh.geometry, mesh.flatNormal]), [[0, false], [0, false]]);
     const geometry = plan.geometries[0]!;
-    assert.deepEqual(attributeValues(document, binary, geometry.attributes.POSITION!), [0, 0, 0, 1, 0, 0, 0, 1, 0]);
-    assert.deepEqual(attributeValues(document, binary, geometry.attributes.NORMAL!), [0, 0, 1, 0, 0, 1, 0, 0, 1]);
-    assert.deepEqual(attributeValues(document, binary, geometry.attributes.TEXCOORD_0!), [...new Float32Array([0.2, 0.3, 0.4, 0.5, 0.6, 0.7])]);
+    assert.deepEqual(readPackedGltfAttribute(document, binary, geometry.attributes.POSITION!), [0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    assert.deepEqual(readPackedGltfAttribute(document, binary, geometry.attributes.NORMAL!), [0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    assert.deepEqual(readPackedGltfAttribute(document, binary, geometry.attributes.TEXCOORD_0!), [...new Float32Array([0.2, 0.3, 0.4, 0.5, 0.6, 0.7])]);
 });
 
 test("source extraction packages normalized color and UV streams with synthesized alpha", async () => {
@@ -196,8 +182,8 @@ test("source extraction packages normalized color and UV streams with synthesize
             const geometry = packagedGltfMeshPlan(document).geometries[0]!;
             const expectedColor = Array.from({length: 12}, (_, index) => index % 4 === 3 && components === 3
                 ? 1 : Math.fround(colors[Math.floor(index / 4) * components + index % 4]! / maximum));
-            assert.deepEqual(attributeValues(document, binary, geometry.attributes.COLOR_0!), expectedColor);
-            assert.deepEqual(attributeValues(document, binary, geometry.attributes.TEXCOORD_0!), [...uvs].map(value => Math.fround(value / maximum)));
+            assert.deepEqual(readPackedGltfAttribute(document, binary, geometry.attributes.COLOR_0!), expectedColor);
+            assert.deepEqual(readPackedGltfAttribute(document, binary, geometry.attributes.TEXCOORD_0!), [...uvs].map(value => Math.fround(value / maximum)));
         }
     }
 });

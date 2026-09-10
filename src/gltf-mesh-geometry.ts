@@ -42,7 +42,7 @@ export class GltfGeometryPacker {
         this.binary = new BinaryBuilder(Buffer.from(bin.buffer, bin.byteOffset, bin.byteLength));
     }
 
-    private accessor(buffer: RecordedBuffer, count: number, components: number, componentType: number, layout?: VertexLayout): number {
+    public accessor(buffer: RecordedBuffer, count: number, components: number, componentType: number, layout?: VertexLayout): number {
         const bytes = componentType === 5123 ? 2 : 4;
         const stride = layout?._stride ?? components * bytes;
         const offset = layout?._offset ?? 0;

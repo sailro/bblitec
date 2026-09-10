@@ -948,8 +948,6 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /alpha_cutoff/);
     assert.match(adapter.source, /normal_texture_scale/);
     assert.match(adapter.source, /record\.baked_world_scale/);
-    assert.match(adapter.source, /JOINTS_0/);
-    assert.match(adapter.source, /WEIGHTS_0/);
     assert.match(adapter.source, /inverseBindMatrices/);
     assert.match(adapter.source, /RotationTrack/);
     assert.match(adapter.source, /animation_tick/);

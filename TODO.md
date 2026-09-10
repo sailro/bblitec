@@ -10,7 +10,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] A finally spanning startEngine admits plain writes only (compiler.ts:20545-20567); lower exception completion so a cleanup exception replaces the active one instead of terminating. M; 8 trees reach finally.
 - [ ] Union discriminants accept string literals only (data-types.ts:1393); generic user functions refuse (user-functions.ts:691). S each; no corpus reach measured, drop if none.
 - [ ] Typed WGSL parsing falls back to `rawSource` (shader-ir.ts:982) behind three regex predicates (:1154-1194); 37 regex-over-WGSL sites remain across the shader pipeline. Extend the IR to helper functions, constants and loops (:1320) before removing any. L.
-- [ ] Lower remaining glTF mesh setup, bounds and animation orchestration from pinned source (lowering/templates/gltf-loader-cpp.ts). L; imported assets.
+- [ ] Lower remaining glTF mesh setup, bounds, initial deformation and animation orchestration from pinned source (lowering/templates/gltf-loader-cpp.ts). L; imported assets.
 
 ## Assets and composition
 
