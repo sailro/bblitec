@@ -4,10 +4,9 @@
 // The clustered light field's SDL_GPU resources.
 //
 // The container is a generated record and its binning is generated code; what
-// this file owns is the three data textures the composed fragment reads and
-// the sampler SDL requires beside each. The fragment `textureLoad`s all three,
-// so the sampler is never consulted -- but SDL_GPU binds textures and samplers
-// as pairs, so one nearest/clamp sampler is created and shared.
+// this file owns is the three data textures the composed fragment reads.
+// Integer payloads use SDL's storage-read lane. The float texture retains
+// a sampler binding; its textureLoad never consults the nearest/clamp sampler.
 //
 // Every extent here comes off the container: `size_clustered_light_state` sized
 // the payloads through the pin's own `textureElementCount`, and
@@ -54,11 +53,12 @@ inline void create_clustered_textures(
     gpu = ClusteredLightGpu{device};
     const auto make = [&](std::uint32_t rows,
                           SDL_GPUTextureFormat format,
+                          SDL_GPUTextureUsageFlags usage,
                           const char* label) {
         SDL_GPUTextureCreateInfo info{};
         info.type = SDL_GPU_TEXTURETYPE_2D;
         info.format = format;
-        info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        info.usage = usage;
         info.width = container.data_texture_width;
         info.height = rows;
         info.layer_count_or_depth = 1;
@@ -70,14 +70,17 @@ inline void create_clustered_textures(
     gpu.lights = make(
         container.light_rows,
         SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
+        SDL_GPU_TEXTUREUSAGE_SAMPLER,
         "clustered light data texture");
     gpu.cells = make(
         container.slice_rows,
         SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
+        SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ,
         "clustered slice texture");
     gpu.indices = make(
         container.mask_rows,
         SDL_GPU_TEXTUREFORMAT_R32_UINT,
+        SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ,
         "clustered tile mask texture");
     SDL_GPUSamplerCreateInfo sampler{};
     sampler.min_filter = SDL_GPU_FILTER_NEAREST;

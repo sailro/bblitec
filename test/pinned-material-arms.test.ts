@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -12,6 +12,9 @@ import {
     type PinnedMaterialArms,
 } from "../src/pinned-material-arms.js";
 import { pinnedSceneArms } from "../src/pinned-scene-arms.js";
+import { readGlb, writeGlb } from "../src/glb-container.js";
+import { GLTF_MESH_PLAN, GLTF_TRANSMISSION_PLAN, GLTF_VARIANT_PLAN } from "../src/gltf-document.js";
+import { packageGltfLoadPlan } from "../src/gltf-load-plan.js";
 
 const armNames: (keyof PinnedMaterialArms)[] = [
     "clearcoat",
@@ -25,16 +28,24 @@ const armNames: (keyof PinnedMaterialArms)[] = [
     "specularGlossiness",
 ];
 
-/** The .glb a generated scene loads, when that scene has been generated. */
-function sceneAsset(scene: string): string | undefined {
+/** Repackage a generated input using the current source schedule in an isolated test copy. */
+async function sceneAsset(scene: string): Promise<string | undefined> {
     const directory = join("generated", scene, "assets");
     if (!existsSync(directory)) return undefined;
     const glb = readdirSync(directory).find((name) => /\.glb$/i.test(name));
-    return glb ? join(directory, glb) : undefined;
+    if (!glb) return undefined;
+    const source = readGlb(readFileSync(join(directory, glb)));
+    assert.ok(source);
+    for (const key of [GLTF_MESH_PLAN, GLTF_VARIANT_PLAN, GLTF_TRANSMISSION_PLAN]) delete source.json[key];
+    const outputDirectory = join("artifacts", "test-pinned-material-arms", scene);
+    mkdirSync(outputDirectory, {recursive: true});
+    const output = join(outputDirectory, glb);
+    writeFileSync(output, await packageGltfLoadPlan(writeGlb(source.json, source.binary), output));
+    return output;
 }
 
 test("reports the arms a scene's own materials compose", async (t) => {
-    const asset = sceneAsset("scene37");
+    const asset = await sceneAsset("scene37");
     if (!asset) return t.skip("scene37 has not been generated");
     const materials = await composeGltfMaterials(asset);
     assert.equal(materials.length, 6);
@@ -59,7 +70,7 @@ test("reports the arms a scene's own materials compose", async (t) => {
 });
 
 test("a glTF clearcoat never asks for the base-F0 remap", async (t) => {
-    const asset = sceneAsset("scene28");
+    const asset = await sceneAsset("scene28");
     if (!asset) return t.skip("scene28 has not been generated");
     const materials = await composeGltfMaterials(asset);
     const coats = materials.filter((material) => material.arms.clearcoat);
@@ -75,7 +86,7 @@ test("a glTF clearcoat never asks for the base-F0 remap", async (t) => {
 });
 
 test("the composed renderable variants carry every arm the materials compose", async (t) => {
-    const asset = sceneAsset("scene253");
+    const asset = await sceneAsset("scene253");
     if (!asset) return t.skip("scene253 has not been generated");
     const materials = await composeGltfMaterials(asset);
     const union = unionArms(materials);
@@ -114,7 +125,7 @@ test("the composed renderable variants carry every arm the materials compose", a
 });
 
 test("allows an emitted fragment carrying more than the assets need", async (t) => {
-    const asset = sceneAsset("scene39");
+    const asset = await sceneAsset("scene39");
     if (!asset) return t.skip("scene39 has not been generated");
     const materials = await composeGltfMaterials(asset);
     // Scene 21's cloth is the real case: its sheen comes from `setPbrSheen` in

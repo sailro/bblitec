@@ -11,9 +11,15 @@ export const gltfMaterialValueRuntime = `double gltf_pbr_extremum(std::initializ
 class GltfPbrValue;
 using GltfPbrArray = std::vector<GltfPbrValue>;
 struct GltfPbrObject;
+struct GltfPbrFloat32View {
+    const float* data = nullptr;
+    std::size_t size = 0;
+    bool operator==(const GltfPbrFloat32View&) const = default;
+};
 class GltfPbrValue {
     using Storage = std::variant<std::monostate, std::nullptr_t, bool, double, std::string,
-        const ts::JsonValue*, std::shared_ptr<GltfPbrArray>, std::shared_ptr<GltfPbrObject>, GltfMaterialImage>;
+        const ts::JsonValue*, std::shared_ptr<GltfPbrArray>, std::shared_ptr<GltfPbrObject>, GltfMaterialImage, GltfPbrFloat32View,
+        std::shared_ptr<std::vector<double>>>;
     Storage value_;
 public:
     GltfPbrValue() = default;
@@ -25,9 +31,12 @@ public:
     GltfPbrValue(GltfMaterialImage value) : value_(value ? Storage{std::move(value)} : Storage{nullptr}) {}
     GltfPbrValue(const ts::JsonValue* value);
     GltfPbrValue(const std::vector<double>& value);
+    GltfPbrValue(std::shared_ptr<std::vector<double>> value) : value_(value ? Storage{std::move(value)} : Storage{nullptr}) {}
     GltfPbrValue(GltfMaterialTexture value);
     static GltfPbrValue object();
     static GltfPbrValue array(std::initializer_list<GltfPbrValue> values);
+    /** Borrowed only for the duration of a source writer call. */
+    static GltfPbrValue float32(const std::vector<float>& values);
     bool undefined() const { return std::holds_alternative<std::monostate>(value_); }
     bool nullish() const { return undefined() || std::holds_alternative<std::nullptr_t>(value_); }
     bool is_number() const { return std::holds_alternative<double>(value_); }
@@ -45,11 +54,13 @@ public:
     GltfPbrValue get(const std::string& key, bool optional = false) const;
     GltfPbrValue at(double index, bool optional = false) const;
     GltfPbrValue set(const std::string& key, GltfPbrValue value) const;
+    GltfPbrValue set_at(double index, GltfPbrValue value) const;
     void erase(const std::string& key) const;
     void merge(const GltfPbrValue& other) const;
     GltfPbrValue clone() const;
     bool equals(const GltfPbrValue& other) const;
     GltfPbrArray elements() const;
+    std::shared_ptr<std::vector<double>> numeric_array() const;
     void push(GltfPbrValue value) const;
     GltfPbrValue add(const GltfPbrValue& other) const;
 };
@@ -88,9 +99,14 @@ GltfPbrValue GltfPbrValue::array(std::initializer_list<GltfPbrValue> values) {
     result.value_ = std::make_shared<GltfPbrArray>(values);
     return result;
 }
+GltfPbrValue GltfPbrValue::float32(const std::vector<float>& values) {
+    GltfPbrValue result;
+    result.value_ = GltfPbrFloat32View{values.data(), values.size()};
+    return result;
+}
 bool GltfPbrValue::is_array() const {
     if (const auto* source = std::get_if<const ts::JsonValue*>(&value_)) return (*source)->is_array();
-    return std::holds_alternative<std::shared_ptr<GltfPbrArray>>(value_);
+    return std::holds_alternative<std::shared_ptr<GltfPbrArray>>(value_) || std::holds_alternative<std::shared_ptr<std::vector<double>>>(value_);
 }
 bool GltfPbrValue::truthy() const {
     if (nullish()) return false;
@@ -133,11 +149,13 @@ const GltfMaterialImage& GltfPbrValue::image() const {
     throw std::runtime_error("Expected a glTF material bitmap.");
 }
 std::size_t GltfPbrValue::size() const {
+    if (const auto* view = std::get_if<GltfPbrFloat32View>(&value_)) return view->size;
     if (const auto* source = std::get_if<const ts::JsonValue*>(&value_)) {
         if ((*source)->is_array()) return (*source)->as_array().size();
         return (*source)->as_object().size();
     }
     if (const auto* array = std::get_if<std::shared_ptr<GltfPbrArray>>(&value_)) return (*array)->size();
+    if (const auto* array = std::get_if<std::shared_ptr<std::vector<double>>>(&value_)) return (*array)->size();
     if (const auto* object = std::get_if<std::shared_ptr<GltfPbrObject>>(&value_)) return (*object)->fields.size();
     if (const auto* text = std::get_if<std::string>(&value_)) return text->size();
     throw std::runtime_error("Expected a glTF material array or object.");
@@ -147,7 +165,8 @@ GltfPbrValue GltfPbrValue::get(const std::string& key, bool optional) const {
         if (optional) return {};
         throw std::runtime_error("Cannot read an absent glTF material object.");
     }
-    if (key == "length" && (is_array() || std::holds_alternative<std::string>(value_))) return GltfPbrValue{double(size())};
+    if (key == "length" && (is_array() || std::holds_alternative<std::string>(value_) || std::holds_alternative<GltfPbrFloat32View>(value_)))
+        return GltfPbrValue{double(size())};
     if (const auto* source = std::get_if<const ts::JsonValue*>(&value_)) {
         if ((*source)->is_object()) return GltfPbrValue{::bbl::optional((*source)->as_object(), key)};
         return {};
@@ -165,8 +184,10 @@ GltfPbrValue GltfPbrValue::at(double index, bool optional) const {
     }
     if (!std::isfinite(index) || index < 0 || std::floor(index) != index || index >= double(size())) return {};
     const auto offset = static_cast<std::size_t>(index);
+    if (const auto* view = std::get_if<GltfPbrFloat32View>(&value_)) return GltfPbrValue{double(view->data[offset])};
     if (const auto* source = std::get_if<const ts::JsonValue*>(&value_)) return GltfPbrValue{&(*source)->as_array()[offset]};
     if (const auto* array = std::get_if<std::shared_ptr<GltfPbrArray>>(&value_)) return (**array)[offset];
+    if (const auto* array = std::get_if<std::shared_ptr<std::vector<double>>>(&value_)) return GltfPbrValue{(**array)[offset]};
     throw std::runtime_error("Expected an indexed glTF material array.");
 }
 GltfPbrValue GltfPbrValue::set(const std::string& key, GltfPbrValue value) const {
@@ -175,6 +196,23 @@ GltfPbrValue GltfPbrValue::set(const std::string& key, GltfPbrValue value) const
         return value;
     }
     throw std::runtime_error("Expected a mutable glTF material object.");
+}
+GltfPbrValue GltfPbrValue::set_at(double index, GltfPbrValue value) const {
+    if (!std::isfinite(index) || index < 0 || std::floor(index) != index || index >= 4294967295.0)
+        throw std::runtime_error("Unrepresented glTF array property index.");
+    if (const auto* array = std::get_if<std::shared_ptr<GltfPbrArray>>(&value_)) {
+        const auto offset = static_cast<std::size_t>(index);
+        if ((*array)->size() <= offset) (*array)->resize(offset + 1);
+        (**array)[offset] = value;
+        return value;
+    }
+    if (const auto* array = std::get_if<std::shared_ptr<std::vector<double>>>(&value_)) {
+        const auto offset = static_cast<std::size_t>(index);
+        if ((*array)->size() <= offset) (*array)->resize(offset + 1, std::numeric_limits<double>::quiet_NaN());
+        (**array)[offset] = value.number();
+        return value;
+    }
+    throw std::runtime_error("Expected a mutable glTF material array.");
 }
 void GltfPbrValue::erase(const std::string& key) const {
     if (const auto* object = std::get_if<std::shared_ptr<GltfPbrObject>>(&value_)) { (*object)->fields.erase(key); return; }
@@ -216,12 +254,25 @@ GltfPbrArray GltfPbrValue::elements() const {
     if (!is_array()) throw std::runtime_error("Expected a glTF material array.");
     if (const auto* array = std::get_if<std::shared_ptr<GltfPbrArray>>(&value_)) return **array;
     GltfPbrArray result;
+    if (const auto* array = std::get_if<std::shared_ptr<std::vector<double>>>(&value_)) {
+        result.reserve((*array)->size());
+        for (double element : **array) result.emplace_back(element);
+        return result;
+    }
     for (const auto& element : std::get<const ts::JsonValue*>(value_)->as_array()) result.emplace_back(&element);
     return result;
 }
 void GltfPbrValue::push(GltfPbrValue value) const {
     if (const auto* array = std::get_if<std::shared_ptr<GltfPbrArray>>(&value_)) { (*array)->push_back(std::move(value)); return; }
     throw std::runtime_error("Expected a mutable glTF material array.");
+}
+std::shared_ptr<std::vector<double>> GltfPbrValue::numeric_array() const {
+    if (const auto* array = std::get_if<std::shared_ptr<std::vector<double>>>(&value_)) return *array;
+    if (!is_array()) throw std::runtime_error("Expected a numeric glTF material array.");
+    auto result = std::make_shared<std::vector<double>>();
+    result->reserve(size());
+    for (const auto& value : elements()) result->push_back(value.number());
+    return result;
 }
 GltfPbrValue GltfPbrValue::add(const GltfPbrValue& other) const {
     if (is_string() && other.is_string()) return GltfPbrValue{string() + other.string()};

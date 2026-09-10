@@ -447,12 +447,28 @@ function compileCreatePbrMaterial(context: MaterialIntrinsicContext, call: ts.Ca
     if (orm.textureFile?.srgb) {
         context.fail(call, "PBR ORM maps must be linear textures.");
     }
+    // Typed Texture2D returns use StoredTexture even when every source return
+    // is a solid or file producer. Those producers occupy its FileTexture arm.
+    const fileTexture = (texture: Value): string | undefined => {
+        if (texture.dataType?.kind === "handle" && texture.dataType.handle === "texture") {
+            if (texture.textureStorage !== "solid" && texture.textureStorage !== "file") {
+                context.fail(call, "PBR Texture2D storage requires a known solid or file texture producer.");
+            }
+            const temporary = context.allocateTemporaryCppName("texture");
+            context.emit({ kind: "declaration", type: "const auto", name: temporary,
+                initializer: `std::get<bbl::FileTexture>(${texture.cpp})` });
+            return temporary;
+        }
+        return texture.textureFile ? texture.cpp : undefined;
+    };
+    const baseColorFile = fileTexture(baseColor);
+    const ormFile = fileTexture(orm);
     // A loaded base-color image pairs with the neutral white
     // factor texel and attaches after creation, carrying its own
     // encoding: upstream keeps the sRGB/linear choice on the
     // `Texture2D` `loadTexture2D` built, so the slot samples what
     // the scene asked for rather than what the family assumes.
-    const baseColorCpp = baseColor.textureFile
+    const baseColorCpp = baseColorFile
         ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
         : baseColor.cpp;
     // The pinned PBR fragment always samples its ORM texture. A
@@ -460,7 +476,7 @@ function compileCreatePbrMaterial(context: MaterialIntrinsicContext, call: ts.Ca
     // fallback as a missing image, then replaces that slot after the
     // material record exists. loadTexture2D's sampler and invertY
     // remain on the FileTexture that the attachment moves whole.
-    const ormCpp = orm.textureFile
+    const ormCpp = ormFile
         ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
         : orm.cpp;
     // Designated rather than positional: the option list is long
@@ -498,14 +514,14 @@ function compileCreatePbrMaterial(context: MaterialIntrinsicContext, call: ts.Ca
         `.metallic_f0_factor = ${metallicF0Factor}, ` +
         `.use_physical_light_falloff = ` +
         `${usePhysicalLightFalloff}})`;
-    if (baseColor.textureFile || orm.textureFile) {
+    if (baseColorFile || ormFile) {
         const temporary = context.allocateTemporaryCppName("material");
         context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: creation });
-        if (baseColor.textureFile) {
-            context.emit(`bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColor.cpp});`);
+        if (baseColorFile) {
+            context.emit(`bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColorFile});`);
         }
-        if (orm.textureFile) {
-            context.emit(`bbl::set_material_orm_file(${engine}, ${temporary}, ${orm.cpp});`);
+        if (ormFile) {
+            context.emit(`bbl::set_material_orm_file(${engine}, ${temporary}, ${ormFile});`);
         }
         return {
             kind: "material",
@@ -906,19 +922,14 @@ function compileSetPbrEmissive(context: MaterialIntrinsicContext, call: ts.CallE
 function compileSetPbrGammaAlbedo(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
     // src/material/pbr/set-gamma-albedo.ts stamps
     // `mat._gammaAlbedo = true` and registers the gamma extension,
-    // whose whole contribution is one feature bit and the base
-    // template's decode block — "No fragment slot / UBO field /
-    // binding of its own", as the pinned ext says. So the mark is
-    // composition input and nothing else reaches run time: the
-    // material's own variant already carries
-    // `pow(baseColorSample.rgb, 2.2)`, and the slot it decodes is
-    // linear because the scene loaded a linear texture into it.
+    // which contributes the composed decode block. The runtime mark also
+    // participates in the group's late-material rebuild decision.
     context.expectArgumentCount(call, 1, 1);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     context.recordScenePbrGammaAlbedo(material.scenePbrMaterialIndex);
     context.reachFeature("material:pbr-gamma-albedo", call);
-    return { kind: "void", cpp: "" };
+    return { kind: "void", cpp: `bbl::set_pbr_gamma_albedo(${context.requireEngine(material, call)}, ${material.cpp})` };
 }
 
 function compileSetShadowOnly(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {

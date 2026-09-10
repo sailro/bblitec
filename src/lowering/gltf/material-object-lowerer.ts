@@ -12,6 +12,7 @@ export interface GltfMaterialFunction {
     cpp: string;
     declaration: ts.FunctionDeclaration | ts.MethodDeclaration;
     contextParameter?: string;
+    contextType?: string;
     constants?: ReadonlyMap<string, string>;
     sourceSymbol?: string;
 }
@@ -32,7 +33,7 @@ export function lowerGltfMaterialObjectFunction(
         if (!ts.isIdentifier(parameter.name)) context.contractError(parameter, "Expected named material parameters.");
         const sourceName = parameter.name.text;
         bindings.set(sourceName, { cpp: sourceName, type: "opaque", absentCpp: `!${sourceName}.truthy()` });
-        return sourceName === contextParameter ? `const GltfPbrContext& ${sourceName}` : `GltfPbrValue ${sourceName}`;
+        return sourceName === contextParameter ? `const ${target.contextType ?? "GltfPbrContext"}& ${sourceName}` : `GltfPbrValue ${sourceName}`;
     });
     const calls = new Map<string, (args: readonly string[]) => string>();
     for (const [name, emit] of [...pinnedNumericMathCalls(), ["Math.round", pinnedRoundCall]] as const)
@@ -104,6 +105,16 @@ export function lowerGltfMaterialObjectFunction(
                 if (node.operator === ts.SyntaxKind.MinusToken) return `GltfPbrValue{-${operand}.number()}`;
                 if (node.operator === ts.SyntaxKind.PlusToken) return `GltfPbrValue{${operand}.number()}`;
             }
+            if ((ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node)) &&
+                (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) {
+                const location = member(node.operand, lowerer);
+                if (!location) context.contractError(node, "Expected a material field increment.");
+                const receiver = `material_increment_${temporary++}`, previous = `material_previous_${temporary++}`;
+                const sign = node.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-";
+                return `[&]() { const auto ${receiver} = ${location.receiver}; const auto ${previous} = ${receiver}.get(${location.key}); ` +
+                    `const auto updated = ${receiver}.set(${location.key}, GltfPbrValue{${previous}.number() ${sign} 1.0}); ` +
+                    `return ${ts.isPostfixUnaryExpression(node) ? previous : "updated"}; }()`;
+            }
             if (ts.isPropertyAccessExpression(node)) {
                 const receiver = context.unwrapExpression(node.expression);
                 if (node.name.text === "length" && ts.isCallExpression(receiver) && context.expressionMatchesShape(receiver.expression, "Object.keys") && receiver.arguments.length === 1)
@@ -136,6 +147,7 @@ export function lowerGltfMaterialObjectFunction(
                     const target = member(node.left, lowerer);
                     const left = context.unwrapExpression(node.left);
                     const store = target ? `${target.receiver}.set(${target.key}, ${value(node.right, lowerer)})`
+                        : ts.isElementAccessExpression(left) ? `${value(left.expression, lowerer)}.set_at(${value(left.argumentExpression, lowerer)}.number(), ${value(node.right, lowerer)})`
                         : ts.isIdentifier(left) && bindings.has(left.text) ? `(${left.text} = ${value(node.right, lowerer)})` : undefined;
                     if (!store) context.contractError(node.left, "Unsupported material assignment target.");
                     if (operator === ts.SyntaxKind.EqualsToken) return store;
@@ -203,9 +215,13 @@ export function lowerGltfMaterialObjectFunction(
             if (ts.isReturnStatement(statement) && !statement.expression) return [`${indent}return GltfPbrValue{};`];
             if (ts.isExpressionStatement(statement)) {
                 const expression = context.unwrapExpression(statement.expression);
+                if (ts.isCallExpression(expression) && context.expressionMatchesShape(expression.expression, "_registerPbrSceneHook")) {
+                    context.assertExpressionShape(expression, "_registerPbrSceneHook(registerPbrTransmission)", "PBR transmission hook registration");
+                    return [`${indent}register_pbr_scene_hook(register_pbr_transmission);`];
+                }
                 if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) &&
-                    ["_registerPbrExt", "_registerPbrSceneHook", "_setDispersionSampleWgsl"].includes(expression.expression.text)) {
-                    // Shader fragments and scene hooks are resolved by material composition.
+                    ["_registerPbrExt", "_setDispersionSampleWgsl"].includes(expression.expression.text)) {
+                    // Shader fragments are resolved by material composition.
                     if (expression.arguments.length !== 1 || !ts.isIdentifier(expression.arguments[0]!))
                         context.contractError(expression, "Unsupported material composition registration.");
                     return [];

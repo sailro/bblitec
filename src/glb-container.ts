@@ -47,4 +47,3 @@ export function writeGlb(json: JsonRecord, binary: Buffer): Uint8Array {
     binary.copy(glb, binaryHeader + 8);
     return glb;
 }
-

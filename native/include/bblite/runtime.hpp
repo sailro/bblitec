@@ -31,6 +31,7 @@ namespace bbl {
 
 struct Engine;
 struct ShadowGeneratorRecord;
+struct PropertyAnimationManagerRecord;
 
 namespace pal { class AudioSession; class OffscreenRun; }
 
@@ -42,6 +43,8 @@ class TypedArray;
 using F32Array = TypedArray<float>;
 template <typename T>
 class Nullable;
+template <typename K, typename V>
+class Map;
 template <std::size_t N>
 class Tuple;
 class U8Array;
@@ -2176,6 +2179,7 @@ struct MeshRecord {
     // dangle. Loader-built instancing (glTF EXT_mesh_gpu_instancing)
     // leaves it null and never bumps the version.
     bool thin_instanced = false;
+    bool source_runtime_thin_builder = false;
     std::uint32_t instance_count = 0;
     std::uint64_t instance_version = 0;
     std::vector<float>* instance_source = nullptr;
@@ -2359,11 +2363,6 @@ struct EffectRendererOptions {
     Color4 clear_color{};
 };
 
-struct BlendedClip {
-    std::size_t clip = 0;
-    float weight = 1.0f;
-};
-
 #if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-records.hpp>
 #endif
@@ -2408,6 +2407,13 @@ struct MaterialRecord {
     // Texture2D producer arm and identity, separately from upload data.
     std::optional<StoredTexture> source_albedo_texture{};
     bool source_colors_registered = false;
+    bool source_pbr_group_builder = false;
+    // Standard/shader singleton keys and per-node builder closure identities.
+    std::uint64_t source_group_builder = 0;
+    bool source_gamma_albedo = false;
+    // Source control reads retain number precision separately from GPU floats.
+    bool source_transmissive = false;
+    std::optional<double> source_refraction_intensity;
     // Babylon keeps the material-wide alpha separate from the PBR base-color
     // factor. The fragment multiplies both when the factor field is composed.
     float alpha = 1.0f;
@@ -2675,6 +2681,9 @@ struct MaterialRecord {
     // pbr-template-ext pair for occlusionTexture.texCoord == 1).
     TextureData occlusion_texture;
     bool occlusion_texture_uv2 = false;
+    /** Replacing an admitted texture slot detaches existing animation captures. */
+    std::uint64_t orm_texture_generation = 0;
+    std::uint64_t occlusion_texture_generation = 0;
     // Texture-less base color baked to the pinned 8-bit sRGB texel
     // (uploadBaseColorFactorTexture); the hardware decode of these
     // bytes is the browser's effective base color.
@@ -2691,12 +2700,6 @@ struct MaterialRecord {
     // scene did not ask sRGB for, which is how a gamma-albedo material feeds
     // the decode to its own fragment instead.
     bool base_color_srgb = true;
-    // Set by the loader's whiteFallback path: an animated base colour factor
-    // on an image-less material bakes a white texel and keeps the live factor
-    // in the record for the pointer writer. The pin seeds `mat.alpha` from
-    // the factor it ASSEMBLES with -- the white one -- so the pinned
-    // materialAlpha lane holds 1 whatever the animated alpha does.
-    bool animated_base_color = false;
     // Texture-less metallic/roughness baked to the pinned 8-bit texel
     // (uploadOrmFactorTexture writes [255, roughness, metallic, 255]) with the
     // uniform factors left at one. Keeping the factor in the texel rather than
@@ -2724,6 +2727,13 @@ struct MaterialRecord {
     // 2 only for coordinatesMode === 2 (planar), load-babylon.ts.
     float reflection_coord_mode = 1.0f;
 };
+
+inline std::uint32_t material_family_bit(const MaterialRecord& record) {
+    if (record.grid_material) return material_family_grid;
+    if (record.shader_material) return material_family_shader;
+    if (record.standard_material) return material_family_standard;
+    return material_family_pbr;
+}
 
 // The pin reads `mat.alpha < 1` live when it builds renderables, and the
 // PBR transmission extension forces blending regardless of alpha, so the
@@ -2928,6 +2938,7 @@ struct AnimationGroupRecord {
     std::size_t clip = 0;
     /** `AnimationGroup.weight`: what the weighted mixer contributes it at. */
     float weight = 1.0f;
+    std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
 };
 
 /**
@@ -3020,6 +3031,8 @@ struct AssetMeshWalks {
     std::vector<std::vector<std::size_t>> collectors;
 };
 
+struct GltfAnimationRuntimeState;
+
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
     // Source traversals, separate from loader-order storage.
@@ -3044,6 +3057,8 @@ struct AssetRecord {
     bool has_clear_color = false;
     std::function<void(float)> animation_tick;
     std::function<void(float)> animation_seek;
+    std::shared_ptr<GltfAnimationRuntimeState> source_animation;
+    std::function<void(std::size_t, double, bool)> animation_tick_group;
     js::Callback<void(float)> before_render_hook;
     /**
      * Registers a cloned mesh with the source asset's animation runtime.
@@ -3051,22 +3066,8 @@ struct AssetRecord {
      * hierarchy clone continues to receive the original controller's pose.
      */
     std::function<void(MeshHandle, MeshHandle)> clone_mesh_animation;
-    /**
-     * The weighted pass over the clips a manager attached, present only
-     * when the scene reached `enableAnimationBlending`. Returns whether
-     * it drove the tick — false hands it back to the per-clip advance,
-     * which is the pin's own category-handler contract.
-     */
-    std::function<bool(const std::vector<BlendedClip>&, float)>
-        animation_blend;
-    /**
-     * Advances exactly the clips a manager owns and re-evaluates the
-     * asset, where `animation_tick` advances every clip the file holds
-     * from one master clock. A manager-driven scene takes this one.
-     */
-    std::function<void(const std::vector<BlendedClip>&, float)>
-        animation_tick_clips;
     js::Callback<void(Scene&)> scene_setup;
+    std::map<std::weak_ptr<SceneState>, js::Callback<void()>, std::owner_less<std::weak_ptr<SceneState>>> scene_cleanups;
     /**
      * `KHR_interactivity`'s view of the file, filled only when the asset
      * carries graphs: `mesh._gltfNodeIndex` per entry of `meshes`, each
@@ -3119,6 +3120,12 @@ struct AssetRecord {
      * this is the reader for it, beside the writers above.
      */
     std::function<float(std::size_t)> clip_duration;
+    /** VAT binding lookup over the group's shared glTF skeleton bindings. */
+    std::function<bool(MeshHandle)> animation_has_skeleton;
+    /** Source goToFrameCpu, which seeks without publishing GPU palettes. */
+    std::function<void(std::size_t, double)> animation_cpu_go_to_frame;
+    /** Shared CPU bone palette folded into this mesh's native VAT coordinates. */
+    std::function<std::vector<std::array<float, 16>>(MeshHandle)> animation_bone_palette;
     /** Sets one clip's loopAnimation, which the weighted mixer reads. */
     std::function<void(std::size_t, bool)> set_clip_loop;
     /** Sets one clip's speedRatio, which its own advance scales by. */
@@ -3541,7 +3548,10 @@ struct DeviceRecoveryRegistration {
     std::function<void(const std::string&)> on_failed;
 };
 
+using MeshMaterialSceneOwners = std::vector<std::weak_ptr<SceneState>>;
+
 struct Engine {
+    std::unordered_map<std::uint32_t, std::shared_ptr<MeshMaterialSceneOwners>> mesh_material_scenes;
     struct DeviceRecoveryState;
     std::shared_ptr<DeviceRecoveryState> device_recovery;
     std::uint64_t device_generation = 1;
@@ -3582,6 +3592,8 @@ struct Engine {
      * drains cannot run recursively in the same frame.
      */
     std::vector<std::function<void()>> deferred_callbacks;
+    std::vector<std::function<void()>> material_continuations;
+    void (*drain_material_jobs)(Engine&) = nullptr;
     /**
      * Entry-code continuations waiting for a render boundary. A measured
      * capture cannot precede code after `await startEngine`, and a frame
@@ -4359,8 +4371,32 @@ struct SceneDeferredBuilder {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
 };
 
+/** A source builder function owns one mesh-list identity per scene. */
+using SourceMaterialDrawGuard = bool (*)(MaterialHandle, MaterialHandle, bool);
+struct SourceMaterialDraw {
+    MeshHandle mesh;
+    MaterialHandle material;
+    SourceMaterialDrawGuard guard = nullptr;
+};
+using SourceMaterialOutput = std::shared_ptr<SourceMaterialDraw>;
+using SourceMaterialOutputs = std::vector<SourceMaterialOutput>;
+
+struct SourceMaterialGroupState {
+    SourceMaterialOutputs outputs;
+    std::vector<MeshHandle> meshes;
+    bool rebuild_ready = false;
+    bool gamma_invalidates = false;
+};
+using SourceMaterialGroups = js::Map<std::uint64_t, std::shared_ptr<SourceMaterialGroupState>>;
+
 /** The mutable state shared by every native copy of one SceneContext. */
+using PbrTransmissionTransaction = std::array<js::Callback<void()>, 2>;
+
 struct SceneState {
+    bool source_material_publication = false;
+    SourceMaterialOutputs material_outputs;
+    bool material_runtime_installed = false;
+    std::exception_ptr material_runtime_error;
     Engine* engine = nullptr;
     bool default_render_task = true;
     bool default_render_task_created = false;
@@ -4419,7 +4455,8 @@ struct SceneState {
      * the bridge, and the bridge's own teardown while it is installed.
      */
     std::vector<std::shared_ptr<FlowGraphRuntime>> flow_graphs;
-    bool flow_graph_coordinator = false;
+    js::Callback<void(float)> flow_graph_tick;
+    js::Callback<void()> flow_graph_dispose;
     bool flow_graph_pointer_refresh = false;
     std::function<void()> flow_graph_pointer_cleanup;
     std::vector<js::Callback<void(float)>> animation_seekers;
@@ -4435,6 +4472,14 @@ struct SceneState {
     bool seeks_vat = false;
     std::vector<SceneDeferredBuilder> deferred_builders;
     std::vector<std::shared_ptr<NodeMaterialGroupState>> node_material_groups;
+    std::shared_ptr<SourceMaterialGroupState> pbr_material_group;
+    std::shared_ptr<SourceMaterialGroups> source_material_groups;
+    std::vector<MeshHandle> pbr_material_swap_queue;
+    bool material_groups_built = false;
+    bool material_group_rebuild_pending = false;
+    void (*process_material_groups)(Scene&) = nullptr;
+    void (*enqueue_material_group)(Scene&, MeshHandle) = nullptr;
+    void (*complete_material_group)(Scene&, MaterialHandle) = nullptr;
     EnvironmentState environment;
     /** `createSceneContext`: fog is null and _envTextures is absent. */
     std::uint64_t fog_identity = 0;
@@ -4446,6 +4491,7 @@ struct SceneState {
     bool topology_rebuild_pending = false;
     std::uint32_t material_family_mask = 0;
     bool transmission_enabled = false;
+    js::Callback<bool(PbrTransmissionTransaction)> pbr_transmission_transaction;
     float fog_mode = 0.0f;
     float fog_density = 0.0f;
     float fog_start = 0.0f;
@@ -6260,6 +6306,11 @@ void register_frame_graph_context(FrameGraphContext& context);
  */
 void register_scene_with_shadow_support(Scene& scene);
 void enable_scene_transmission(Scene& scene);
+void run_pbr_scene_hooks(Scene& scene, const std::vector<MeshHandle>& meshes);
+std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
+    bool (*builder)(Scene&, const std::vector<MeshHandle>&));
+void set_mesh_material(Engine& engine, MeshHandle mesh, MaterialHandle material);
+void set_pbr_gamma_albedo(Engine& engine, MaterialHandle material);
 void load_image_skybox(
     Scene& scene,
     std::array<std::string, 6> face_paths,

@@ -2760,7 +2760,7 @@ function emitMaterialAssignment(context: AssignmentContext, state: TargetPropert
         );
       }
       context.emit(
-        `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].material = ${material.cpp};`,
+        `bbl::set_mesh_material(${context.requireEngine(target, expression)}, ${target.cpp}, ${material.cpp});`,
       );
       // The pin's opt-in setters take the material back off the mesh
       // (`setPbrSkybox(box.material)`) and mutate the same object, so

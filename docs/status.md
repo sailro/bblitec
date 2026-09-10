@@ -42,7 +42,7 @@ keep their published value while the newest report lies inside the recorded band
 | 25 | <img src="images/scenes/scene25.png" alt="Scene 25 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | KTX Compressed Texture |
 | 26 | <img src="images/scenes/scene26.png" alt="Scene 26 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Subsurface |
 | 27 | <img src="images/scenes/scene27.png" alt="Scene 27 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Variants |
-| 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="160"> | 0.001 / 0.007 | 0.001 / 0.007 | Clearcoat glTF |
+| 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Clearcoat glTF |
 | 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | Sheen Cloth glTF |
 | 30 | <img src="images/scenes/scene30.png" alt="Scene 30 rendering" width="160"> | 0.007 / 0.010 | 0.003 / 0.005 | Volume Testing |
 | 31 | <img src="images/scenes/scene31.png" alt="Scene 31 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | Emissive Strength |
@@ -144,7 +144,7 @@ keep their published value while the newest report lies inside the recorded band
 | 141 | <img src="images/scenes/scene141.png" alt="Scene 141 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node, Standard and PBR ESM Casters |
 | 142 | <img src="images/scenes/scene142.png" alt="Scene 142 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Post-Process Viewports |
 | 143 | <img src="images/scenes/scene143.png" alt="Scene 143 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Post-Process Chain |
-| 144 | <img src="images/scenes/scene144.png" alt="Scene 144 rendering" width="160"> | 0.003 / 0.018 | 0.004 / 0.020 | Bloom |
+| 144 | <img src="images/scenes/scene144.png" alt="Scene 144 rendering" width="160"> | 0.003 / 0.017 | 0.003 / 0.017 | Bloom |
 | 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="160"> | 0.022 / 0.021 | 0.010 / 0.009 | Standard Geometry Outputs |
 | 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="160"> | 0.003 / 0.003 | 0.003 / 0.003 | PBR Geometry Outputs |
 | 147 | <img src="images/scenes/scene147.png" alt="Scene 147 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Circle of Confusion |
@@ -152,13 +152,13 @@ keep their published value while the newest report lies inside the recorded band
 | 149 | <img src="images/scenes/scene149.png" alt="Scene 149 rendering" width="160"> | 0.007 / 0.009 | 0.000 / 0.000 | Node Material Geometry Outputs |
 | 150 | <img src="images/scenes/scene150.png" alt="Scene 150 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Position Animation |
 | 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Transform Animation |
-| 152 | <img src="images/scenes/scene152.png" alt="Scene 152 rendering" width="160"> | 0.010 / 0.281 | 0.010 / 0.281 | Managed Animation Groups |
+| 152 | <img src="images/scenes/scene152.png" alt="Scene 152 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Managed Animation Groups |
 | 153 | <img src="images/scenes/scene153.png" alt="Scene 153 rendering" width="160"> | 0.000 / 0.028 | 0.000 / 0.028 | Autonomous Canvas Animation |
 | 154 | <img src="images/scenes/scene154.png" alt="Scene 154 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | STEP Time Animation |
 | 155 | <img src="images/scenes/scene155.png" alt="Scene 155 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Weighted Property Blending |
 | 156 | <img src="images/scenes/scene156.png" alt="Scene 156 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Manual Cross-Fade Animation |
 | 157 | <img src="images/scenes/scene157.png" alt="Scene 157 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Weighted Skeleton Blending |
-| 158 | <img src="images/scenes/scene158.png" alt="Scene 158 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Additive Pose Blending |
+| 158 | <img src="images/scenes/scene158.png" alt="Scene 158 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Additive Pose Blending |
 | 159 | <img src="images/scenes/scene159.png" alt="Scene 159 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Flat Color |
 | 160 | <img src="images/scenes/scene160.png" alt="Scene 160 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Texture Sampler |
 | 161 | <img src="images/scenes/scene161.png" alt="Scene 161 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Custom Uniforms |
@@ -170,11 +170,11 @@ keep their published value while the newest report lies inside the recorded band
 | 167 | <img src="images/scenes/scene167.png" alt="Scene 167 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Lightmap |
 | 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | Mirrored Double-Sided Winding |
 | 170 | <img src="images/scenes/scene170.png" alt="Scene 170 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd |
-| 171 | <img src="images/scenes/scene171.png" alt="Scene 171 rendering" width="160"> | 0.013 / 0.028 | 0.013 / 0.028 | Navigation Crowd Path |
+| 171 | <img src="images/scenes/scene171.png" alt="Scene 171 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd Path |
 | 172 | <img src="images/scenes/scene172.png" alt="Scene 172 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Tile Cache Obstacles |
 | 173 | <img src="images/scenes/scene173.png" alt="Scene 173 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Toggle |
-| 174 | <img src="images/scenes/scene174.png" alt="Scene 174 rendering" width="160"> | 0.006 / 0.023 | 0.006 / 0.023 | Navigation Off-Mesh Connections |
-| 175 | <img src="images/scenes/scene175.png" alt="Scene 175 rendering" width="160"> | 0.006 / 0.023 | 0.006 / 0.023 | Navigation Raycast |
+| 174 | <img src="images/scenes/scene174.png" alt="Scene 174 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Off-Mesh Connections |
+| 175 | <img src="images/scenes/scene175.png" alt="Scene 175 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Raycast |
 | 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="160"> | 0.016 / 0.016 | 0.014 / 0.014 | Mosquito In Amber |
 | 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | Iridescence Sphere |
 | 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | 0.018 / 0.016 | 0.018 / 0.016 | Iridescence Abalone |
@@ -193,15 +193,15 @@ keep their published value while the newest report lies inside the recorded band
 | 207 | <img src="images/scenes/scene207.png" alt="Scene 207 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Directional Shadows |
 | 209 | <img src="images/scenes/scene209.png" alt="Scene 209 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Havok Physics; Floating Origin Physics Regions |
 | 210 | <img src="images/scenes/scene210.png" alt="Scene 210 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | XMP Metadata Rounded Cube |
-| 211 | <img src="images/scenes/scene211.png" alt="Scene 211 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | BrainStem Meshopt |
+| 211 | <img src="images/scenes/scene211.png" alt="Scene 211 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | BrainStem Meshopt |
 | 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="160"> | 0.014 / 0.016 | 0.010 / 0.011 | Dispersion Test |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Grid Material Ordering |
 | 214 | <img src="images/scenes/scene214.png" alt="Scene 214 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Cascaded Shadow Torus Knots |
 | 215 | <img src="images/scenes/scene215.png" alt="Scene 215 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Cascaded Shadows On A PBR Receiver |
 | 216 | <img src="images/scenes/scene216.png" alt="Scene 216 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Fog |
 | 217 | <img src="images/scenes/scene217.png" alt="Scene 217 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Plugins |
-| 218 | <img src="images/scenes/scene218.png" alt="Scene 218 rendering" width="160"> | 0.010 / 0.276 | 0.010 / 0.276 | VAT Shark |
-| 219 | <img src="images/scenes/scene219.png" alt="Scene 219 rendering" width="160"> | 0.010 / 0.276 | 0.010 / 0.276 | Instanced VAT Shark |
+| 218 | <img src="images/scenes/scene218.png" alt="Scene 218 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | VAT Shark |
+| 219 | <img src="images/scenes/scene219.png" alt="Scene 219 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Instanced VAT Shark |
 | 220 | <img src="images/scenes/scene220.png" alt="Scene 220 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Quantized Duck |
 | 221 | <img src="images/scenes/scene221.png" alt="Scene 221 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Pointer Drags |
 | 222 | <img src="images/scenes/scene222.png" alt="Scene 222 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Composite Gizmos |
@@ -239,7 +239,7 @@ keep their published value while the newest report lies inside the recorded band
 | 263 | <img src="images/scenes/scene263.png" alt="Scene 263 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Gravity |
 | 264 | <img src="images/scenes/scene264.png" alt="Scene 264 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Sphere Emitter |
 | 265 | <img src="images/scenes/scene265.png" alt="Scene 265 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | Environment Test |
-| 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="160"> | 0.009 / 0.017 | 0.009 / 0.017 | Negative Scale Spheres |
+| 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Negative Scale Spheres |
 | 267 | <img src="images/scenes/scene267.png" alt="Scene 267 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard Vertex Colors |
 | 268 | <img src="images/scenes/scene268.png" alt="Scene 268 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Orthographic Camera |
 | 269 | <img src="images/scenes/scene269.png" alt="Scene 269 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Mirrored Transform Reparenting |

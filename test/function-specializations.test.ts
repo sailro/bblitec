@@ -5,10 +5,11 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { FunctionSpecializations } from "../src/compiler/function-specializations.js";
+import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const controls = `
-    import { createEngine, createBox, createStandardMaterial, markMaterialUboDirty, type Mesh } from "@babylonjs/lite";
+    import { createEngine, createBox, createStandardMaterial, loadTexture2D, markMaterialUboDirty, type Mesh } from "@babylonjs/lite";
     async function main() {
         const engine = await createEngine({});
         let total = 0;
@@ -137,12 +138,36 @@ const controls = `
         callbacks[runtimeIndex()]!();
         if (colors.rgb[0] !== 0.75)
             throw new Error("retained material array");
+        class AlternatingStepper {
+            constructor(public mesh: Mesh) {}
+            first(n: number, ignored: number): void {
+                if (n <= 0) return;
+                this.mesh.position.y += 1;
+                this.second(n - 1);
+            }
+            second(n: number): void {
+                if (n <= 0) return;
+                this.mesh.position.y += 2;
+                this.first(n - 1, 0);
+            }
+        }
+        const alternating = new AlternatingStepper(other);
+        alternating.first(argument(4), argument(7));
+        if (other.position.y !== 6 || argumentCalls !== 10)
+            throw new Error("mutual recursive receiver");
+        let loads = 0;
+        async function load(ignored: number): Promise<void> {
+            await loadTexture2D(engine, "data:image/png;base64,iVBORw0KGgo=", { mipMaps: false });
+            loads++;
+        }
+        await load(argument(0));
+        if (loads !== 1 || argumentCalls !== 11) throw new Error("specialized asset argument");
     }
 `;
 
 test("recursive specializations share bodies within their native scope", () => {
     const result = compileSource(controls);
-    assert.equal(result.cpp.match(/make_recursive_group\(/g)?.length, 6);
+    assert.equal(result.cpp.match(/make_recursive_group\(/g)?.length, 8);
     assert.equal(result.cpp.match(/"shared move body"/g)?.length, 1);
     assert.equal(result.cpp.match(/"shared method body"/g)?.length, 1);
     assert.match(result.cpp, /storedmover_receiver/);
@@ -189,23 +214,28 @@ test("escaping recursive groups share their traced callable within one scope", (
 });
 
 const native = optionalNativeFixtureTools(false);
-test("reused recursive groups retain live captures, receivers and sibling lifetimes", { skip: !native }, () => {
-    const output = resolve("artifacts/function-specializations-check");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(source, compileSource(controls).cpp + `
+for (const compiler of ["msvc", "clangcl"] as const) {
+    test(`reused recursive groups retain live captures, receivers and sibling lifetimes (${compiler})`, { skip: !native }, () => {
+        const tools = compiler === "msvc" ? native! : discoverWindowsBuildTools(compiler);
+        const output = resolve("artifacts/function-specializations-check", compiler);
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"), executable = join(output, "check.exe");
+        writeFileSync(source, compileSource(controls).cpp + `
         namespace bbl {
             Engine create_engine(EngineOptions) { return {}; }
             MeshHandle create_box(Engine& engine, BoxOptions) { engine.meshes.emplace_back(); return {static_cast<std::uint32_t>(engine.meshes.size() - 1)}; }
             void mark_mesh_dirty(Engine&, MeshHandle) {}
             MaterialHandle create_standard_material(Engine& engine) { engine.materials.emplace_back(); return {static_cast<std::uint32_t>(engine.materials.size() - 1)}; }
+            std::string asset_path(const std::string& path) { return path; }
+            FileTexture load_file_texture(Engine&, const std::string&, TextureSamplerState, bool, bool, bool) { return {}; }
             void mark_material_ubo_dirty(Engine& engine, MaterialHandle material) {
                 if (std::abs(engine.materials[material.value].emissive_factor.r - 0.75f) > 0.000001f)
                     throw std::runtime_error("retained material array upload");
             }
         }
-    `);
-    runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native\\include", source]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+        `);
+        runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
+            `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native\\include", source]);
+        execFileSync(executable, { encoding: "utf8" });
+    });
+}

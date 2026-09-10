@@ -42,6 +42,10 @@ void update_animation_manager(
     PropertyAnimationManager manager,
     Engine& engine,
     double delta_ms);
+bool update_weighted_gltf_animation_groups(
+    Engine& engine, PropertyAnimationManagerRecord& manager, double delta_ms);
+void tick_animation_group_reference(
+    Engine& engine, const AnimationGroupReference& group, double delta_ms);
 void seek_animation_manager(
     PropertyAnimationManager manager,
     Engine& engine,

@@ -6,6 +6,8 @@ import {
 import { LoweredSource } from "../context.js";
 import { MeshBuilderLowerer } from "./mesh-builders.js";
 import { assertAsyncSceneBuilder } from "../scene-deferred.js";
+import {lowerPbrGammaAlbedo} from "../pbr-scene-hooks.js";
+import {materialGroupIdentity} from "../material-group-identity.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -198,6 +200,7 @@ MaterialHandle create_node_material(
         upstream::node_variants.at(variant);
     MaterialRecord material;
     material.node_material = true;
+    material.source_group_builder = ${materialGroupIdentity(this.context, "node")};
     material.shader_variant = variant;
     material.double_sided = !entry.back_face_culling;
     material.alpha_mode = entry.alpha_blending
@@ -282,6 +285,10 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
             }
             record.shader_textures = std::move(textures);
             captured.push_back(current.value);
+        }
+        if (state->complete_material_group) {
+            auto scene = Scene::from_state(state);
+            state->complete_material_group(scene, group->initial_material);
         }
     }, SceneDeferredFailure::promise_rejection);
 }
@@ -415,6 +422,7 @@ MaterialHandle create_shader_material(
         upstream::shader_variant_info(variant);
     MaterialRecord material;
     material.shader_material = true;
+    material.source_group_builder = ${materialGroupIdentity(this.context, "shader")};
     material.shader_variant = variant;
     material.double_sided = !info.back_face_culling;
     material.shader_alpha_testing = info.alpha_testing;
@@ -1072,6 +1080,8 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
             );
         const returned =
             this.context.returnObject(createPbrMaterial);
+        this.context.assertExpressionShape(this.context.propertyInitializer(returned, "_buildGroup"),
+            "getPbrGroupBuilder()", "PBR material group builder");
         if (
             !returned.properties.some(
                 (property) =>
@@ -1112,6 +1122,7 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
 
 namespace bbl {
 
+${lowerPbrGammaAlbedo(this.context)}
 // Attaches a loaded base-color image to a created PBR material. The slot's
 // encoding travels with the image, because upstream keeps the format on the
 // Texture2D its caller loaded: loadTexture2D's own srgb option picked
@@ -1137,6 +1148,7 @@ void set_material_orm_file(
     FileTexture texture) {
     engine.materials[material.value].metallic_roughness_texture =
         std::move(texture.data);
+    ++engine.materials[material.value].orm_texture_generation;
 }
 
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
@@ -1226,6 +1238,7 @@ void set_pbr_occlusion_solid_texture(
     MaterialRecord& record = engine.materials[material.value];
     record.occlusion_texture = solid_texture_data(texture);
     record.has_occlusion_texture = true;
+    ++record.occlusion_texture_generation;
 }
 
 // src/material/pbr/fragments/clearcoat-fragment.ts#writeClearcoatUBO leaves
@@ -1345,6 +1358,7 @@ MaterialHandle create_pbr_material(
     Engine& engine,
     PbrMaterialOptions options) {
     MaterialRecord material;
+    material.source_pbr_group_builder = true;
     // The pin's createPbrMaterial is {...props}: a solid texture IS the
     // texture -- createSolidTexture2D writes the rounded texel into a 1x1
     // rgba8unorm sampled without decode -- and the factors stay the options'
@@ -1537,6 +1551,7 @@ MaterialHandle create_grid_material(
     GridMaterialOptions options) {
     MaterialRecord material;
     material.grid_material = true;
+    material.source_group_builder = ${materialGroupIdentity(this.context, "shader")};
     material.grid_main_color = options.main_color;
     material.grid_line_color = options.line_color;
     material.grid_control = Vec4{
@@ -1942,6 +1957,7 @@ namespace bbl {
 MaterialHandle create_standard_material(Engine& engine) {
     MaterialRecord material;
     material.standard_material = true;
+    material.source_group_builder = ${materialGroupIdentity(this.context, "standard")};
     material.diffuse_color = ${tuple("diffuseColor")};
     material.source_diffuse_color = std::make_shared<std::vector<double>>(
         std::initializer_list<double>{${this.context.numericTuple(this.context.propertyInitializer(object, "diffuseColor"), file).join(", ")}});

@@ -119,10 +119,14 @@ does not resolve metallic-roughness texture-transform pointers.
 
 Public color/texture presence and identity differ from render fallbacks.
 
-glTF scene setup composes Gaussian splat, environment and interactivity callbacks in source
-registry order. Their activation and lifecycle still include native feature adapters.
-Transmission remains a separate native material adapter: it scans loaded materials and
-activates after asset feature setup, while the source checks a material group's meshes at build.
+glTF scene setup composes Gaussian splat, environment and interactivity callbacks
+in source registry order. Activation consumes source feature results; native
+storage transports resolved resources, scene ownership and cleanup. Repeated
+attachment creates fresh splat clouds. Transmission uses the source hook registry
+and each material group's current meshes at build. Native shaders precompose the
+source transaction's linear-capable variants. Deferred publication retains source
+group/output identities and captured-material draw guards; native continuations
+and GPU resource operations provide the platform transport.
 
 ### Deformation and instancing
 
@@ -148,11 +152,20 @@ Borrowed buffers without an owning lifetime refuse.
 
 ### Animation and hierarchy
 
-Property/glTF tracks have separate target/interpolation contracts. Preserve
-mutation and render-list invalidation boundaries. Autonomous managers issue ordered
-cancellable native frame requests.
-Container attachment retains fresh callback identities per add; its glTF callback body still
-uses the native per-asset playback adapter. Per-group ticking and mixing remain unfinished.
+Source glTF parsing determines whether animation data is accepted, resolves targets
+and preserves channel order. Per-clip controllers retain source-selected skeleton,
+morph and node bindings. Pose evaluation and manager traversal preserve source
+write order, masks, engine-presence guards and weighted/additive phases.
+
+Native adapters retain source Float32 stores and shared deformation resources.
+Material pointer writers preserve double-valued public arrays and captured object
+identities. Supported ORM/occlusion replacement leaves an existing writer attached
+to its original wrapper; its later writes do not publish into the replacement.
+CPU-only VAT seeks update source palette storage without uploading temporary poses.
+
+Container attachment retains fresh callback identities per add. Property/glTF
+tracks keep their separate target/interpolation contracts and mutation boundaries.
+Autonomous managers issue ordered cancellable native frame requests.
 
 ### Frame graph and post-process passes
 

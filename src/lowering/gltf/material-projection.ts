@@ -1,3 +1,76 @@
+/** Shared source-property to native-field transport for load and animation. */
+export const gltfMaterialPropertyFields = [
+    {"kind": "number", "owner": "props", "path": [], "key": "metallicFactor", "field": "metallic_factor"},
+    {"kind": "number", "owner": "props", "path": [], "key": "roughnessFactor", "field": "roughness_factor"},
+    {"kind": "number", "owner": "props", "path": [], "key": "reflectance", "field": "reflectance"},
+    {"kind": "number", "owner": "props", "path": [], "key": "normalTextureScale", "field": "normal_texture_scale"},
+    {"kind": "number", "owner": "props", "path": [], "key": "occlusionStrength", "field": "occlusion_strength"},
+    {"kind": "number", "owner": "props", "path": [], "key": "_alphaCutOff", "field": "alpha_cutoff"},
+    {"kind": "number", "owner": "props", "path": [], "key": "alpha", "field": "alpha"},
+    {"kind": "number", "owner": "props", "path": [], "key": "_metallicF0Factor", "field": "metallic_f0_factor"},
+    {"kind": "number", "owner": "props", "path": [], "key": "_specularWeight", "field": "specular_weight"},
+    {"kind": "number", "owner": "refraction", "path": ["_subsurface", "refraction"], "key": "indexOfRefraction", "field": "index_of_refraction"},
+    {"kind": "number", "owner": "refraction", "path": ["_subsurface", "refraction"], "key": "intensity", "field": "transmission_factor"},
+    {"kind": "number", "owner": "refraction", "path": ["_subsurface", "refraction"], "key": "dispersion", "field": "dispersion"},
+    {"kind": "number", "owner": "thickness", "path": ["_subsurface", "thickness"], "key": "max", "field": "thickness"},
+    {"kind": "number", "owner": "tint", "path": ["_subsurface", "tint"], "key": "atDistance", "field": "attenuation_distance"},
+    {"kind": "number", "owner": "translucency", "path": ["_subsurface", "translucency"], "key": "intensity", "field": "subsurface_intensity"},
+    {"kind": "number", "owner": "thickness", "path": ["_subsurface", "thickness"], "key": "min", "field": "subsurface_minimum_thickness"},
+    {"kind": "number", "owner": "thickness", "path": ["_subsurface", "thickness"], "key": "max", "field": "subsurface_maximum_thickness"},
+    {"kind": "number", "owner": "coat", "path": ["_clearCoat"], "key": "intensity", "field": "clearcoat_intensity"},
+    {"kind": "number", "owner": "coat", "path": ["_clearCoat"], "key": "roughness", "field": "clearcoat_roughness"},
+    {"kind": "number", "owner": "coat", "path": ["_clearCoat"], "key": "indexOfRefraction", "field": "clearcoat_index_of_refraction"},
+    {"kind": "number", "owner": "coat", "path": ["_clearCoat"], "key": "bumpTextureScale", "field": "clearcoat_normal_scale"},
+    {"kind": "number", "owner": "sheen", "path": ["_sheen"], "key": "intensity", "field": "sheen_intensity"},
+    {"kind": "number", "owner": "sheen", "path": ["_sheen"], "key": "roughness", "field": "sheen_roughness"},
+    {"kind": "number", "owner": "iri", "path": ["_iridescence"], "key": "intensity", "field": "iridescence_intensity"},
+    {"kind": "number", "owner": "iri", "path": ["_iridescence"], "key": "indexOfRefraction", "field": "iridescence_index_of_refraction"},
+    {"kind": "number", "owner": "iri", "path": ["_iridescence"], "key": "minimumThickness", "field": "iridescence_minimum_thickness"},
+    {"kind": "number", "owner": "iri", "path": ["_iridescence"], "key": "maximumThickness", "field": "iridescence_maximum_thickness"},
+    {"kind": "number", "owner": "anisotropy", "path": ["_anisotropy"], "key": "intensity", "field": "anisotropy_intensity"},
+    {"kind": "color", "owner": "props", "path": [], "key": "_unlitColor", "field": "unlit_color"},
+    {"kind": "color", "owner": "props", "path": [], "key": "_emissiveColor", "field": "emissive_factor"},
+    {"kind": "color", "owner": "props", "path": [], "key": "_metallicReflectanceColor", "field": "metallic_reflectance_color"},
+    {"kind": "color", "owner": "tint", "path": ["_subsurface", "tint"], "key": "color", "field": "attenuation_color"},
+    {"kind": "color", "owner": "translucency", "path": ["_subsurface", "translucency"], "key": "color", "field": "subsurface_color"},
+    {"kind": "color", "owner": "translucency", "path": ["_subsurface", "translucency"], "key": "diffusionDistance", "field": "subsurface_diffusion_distance"},
+    {"kind": "color", "owner": "sheen", "path": ["_sheen"], "key": "color", "field": "sheen_color"},
+] as const;
+
+function materialProperty(field: string): string {
+    const value = gltfMaterialPropertyFields.find(value => value.field === field);
+    if (!value) throw new Error(`Unknown glTF material field ${field}.`);
+    return `gltf_pbr_${value.kind}(${value.owner}, "${value.key}", material.${value.field});`;
+}
+
+export const gltfMaterialTextureFields = [
+    {"owner": "props", "path": ["baseColorTexture"], "key": "baseColorTexture", "data": "base_color_texture", "transform": "base_color_transform", "srgb": true},
+    {"owner": "props", "path": ["ormTexture"], "key": "ormTexture", "data": "metallic_roughness_texture", "transform": "orm_transform", "srgb": false},
+    {"owner": "props", "path": ["normalTexture"], "key": "normalTexture", "data": "normal_texture", "transform": "normal_transform", "srgb": false},
+    {"owner": "props", "path": ["emissiveTexture"], "key": "emissiveTexture", "data": "emissive_texture", "transform": "emissive_transform", "srgb": true},
+    {"owner": "props", "path": ["_metallicReflectanceTexture"], "key": "_metallicReflectanceTexture", "data": "metallic_reflectance_texture", "transform": "metallic_reflectance_transform", "srgb": false},
+    {"owner": "props", "path": ["_reflectanceTexture"], "key": "_reflectanceTexture", "data": "reflectance_texture", "transform": "reflectance_transform", "srgb": false},
+    {"owner": "refraction", "path": ["_subsurface", "refraction", "texture"], "key": "texture", "data": "transmission_texture", "transform": "transmission_transform", "srgb": false},
+    {"owner": "thickness", "path": ["_subsurface", "thickness", "texture"], "key": "texture", "data": "thickness_texture", "transform": "thickness_transform", "srgb": false},
+    {"owner": "translucency", "path": ["_subsurface", "translucency", "colorTexture"], "key": "colorTexture", "data": "translucency_color_texture", "transform": "translucency_color_transform", "srgb": true},
+    {"owner": "translucency", "path": ["_subsurface", "translucency", "intensityTexture"], "key": "intensityTexture", "data": "translucency_intensity_texture", "transform": "translucency_intensity_transform", "srgb": false},
+    {"owner": "coat", "path": ["_clearCoat", "texture"], "key": "texture", "data": "clearcoat_texture", "transform": "clearcoat_transform", "srgb": false},
+    {"owner": "coat", "path": ["_clearCoat", "roughnessTexture"], "key": "roughnessTexture", "data": "clearcoat_roughness_texture", "transform": "clearcoat_roughness_transform", "srgb": false},
+    {"owner": "coat", "path": ["_clearCoat", "bumpTexture"], "key": "bumpTexture", "data": "clearcoat_normal_texture", "transform": "clearcoat_normal_transform", "srgb": false},
+    {"owner": "sheen", "path": ["_sheen", "texture"], "key": "texture", "data": "sheen_color_texture", "transform": "sheen_transform", "srgb": true},
+    {"owner": "sheen", "path": ["_sheen", "roughnessTexture"], "key": "roughnessTexture", "data": "sheen_roughness_texture", "transform": "sheen_roughness_transform", "srgb": false},
+    {"owner": "iri", "path": ["_iridescence", "texture"], "key": "texture", "data": "iridescence_texture", "transform": "iridescence_transform", "srgb": true},
+    {"owner": "iri", "path": ["_iridescence", "thicknessTexture"], "key": "thicknessTexture", "data": "iridescence_thickness_texture", "transform": "iridescence_thickness_transform", "srgb": true},
+    {"owner": "anisotropy", "path": ["_anisotropy", "texture"], "key": "texture", "data": "anisotropy_texture", "transform": "anisotropy_transform", "srgb": false},
+    {"owner": "props", "path": ["occlusionTexture"], "key": "occlusionTexture", "data": "occlusion_texture", "transform": "occlusion_transform", "srgb": false},
+] as const;
+
+function materialTexture(field: string): string {
+    const value = gltfMaterialTextureFields.find(value => value.transform === field);
+    if (!value) throw new Error(`Unknown glTF texture field ${field}.`);
+    return `project_texture(${value.owner}, "${value.key}", material.${value.data}, material.${value.transform}, ${value.srgb});`;
+}
+
 /** Project source-built options and texture descriptors into native renderer storage. */
 export function gltfMaterialProjection(animationPointerMaterials: boolean): string {
     return `void gltf_pbr_number(const GltfPbrValue& object, const char* key, float& field) {
@@ -28,7 +101,7 @@ MaterialHandle load_material(
     const JsonArray& textures,
     const JsonArray& samplers,
     const GltfImageFetcher& extension_fetcher,
-    bool animated_base_color,
+    bool base_color_definition,
     const GltfPbrValue& features = GltfPbrValue::array({}),
     bool extended_material = false,
     bool texture_wrap = false,
@@ -36,7 +109,9 @@ MaterialHandle load_material(
     GltfTextureCache* texture_cache = nullptr,
     GltfSamplerContext* sampler_context = nullptr,
     const std::function<pal::DecodedImage(const TextureData&)>& decode_image = {},
-    bool variant_material = false) {
+    bool variant_material = false,
+    GltfPbrValue* source_properties = nullptr,
+    bool base_color_module = false) {
     static_cast<void>(material_json);
     MaterialRecord material;
     if (core._baseColorFactor.size() != 4 || core._emissiveFactor.size() != 3)
@@ -64,6 +139,8 @@ MaterialHandle load_material(
         return result;
     };
     GltfPbrContext context;
+    context.base_color_definition = base_color_definition;
+    context.base_color_module = base_color_module;
     const auto upload_texture = [&](GltfMaterialImage bitmap, bool encoded) {
         return GltfMaterialTexture{std::move(bitmap), encoded, std::nullopt, nullptr, sampler_context->default_sampler};
     };
@@ -78,14 +155,14 @@ MaterialHandle load_material(
         };
         return variant_material ? gltf_variant_upload_image(image, srgb, upload) : gltf_extension_upload_image(image, srgb, upload);
     };
-    context.default_textures = [&](const GltfPbrValue&) { return texture_values(gltf_default_pbr_textures(core, texture_cache, sampler_context), false); };
-    context.sampled_textures = [&](const GltfPbrValue&) { return texture_values(gltf_sampled_pbr_textures(core, texture_cache, sampler_context), false); };
-    context.extended_textures = [&](const GltfPbrValue&) {
+    context.default_textures = [&](const GltfPbrValue& value) { return texture_values(gltf_default_pbr_textures(gltf_pbr_core_storage(value), texture_cache, sampler_context), false); };
+    context.sampled_textures = [&](const GltfPbrValue& value) { return texture_values(gltf_sampled_pbr_textures(gltf_pbr_core_storage(value), texture_cache, sampler_context), false); };
+    context.extended_textures = [&](const GltfPbrValue& value) {
         std::function<GltfMaterialTexture(GltfMaterialImage, bool)> upload;
         if (variant_material) upload = [&](GltfMaterialImage bitmap, bool encoded) {
             return gltf_pbr_variant_texture(GltfPbrValue{std::move(bitmap)}, GltfPbrValue{encoded}, context).texture();
         };
-        return texture_values(gltf_default_pbr_textures_ext(core, !variant_material && sampled_material, texture_cache, sampler_context, upload), true);
+        return texture_values(gltf_default_pbr_textures_ext(gltf_pbr_core_storage(value), !variant_material && sampled_material, texture_cache, sampler_context, upload), true);
     };
     context.texture = [&](const GltfPbrValue& info, bool srgb) {
         const auto upload = [&](GltfMaterialImage image, bool encoded) {
@@ -100,6 +177,8 @@ MaterialHandle load_material(
     };
     const auto props = variant_material ? gltf_pbr_build_variant(core_value, features, context)
         : gltf_pbr_build_material(core_value, features, context, GltfPbrValue{extended_material}, GltfPbrValue{sampled_material});
+    material.source_pbr_group_builder = props.get("_buildGroup").truthy();
+    material.source_gamma_albedo = props.get("_gammaAlbedo").truthy();
     const auto stage = [&](const GltfPbrValue& value, bool srgb) {
         if (value.nullish()) return TextureData{};
         const auto& texture = value.texture();
@@ -121,10 +200,10 @@ MaterialHandle load_material(
         data = stage(value, srgb);
         gltf_pbr_transform(transform, value);
     };
-    project_texture(props, "baseColorTexture", material.base_color_texture, material.base_color_transform, true);
-    project_texture(props, "ormTexture", material.metallic_roughness_texture, material.orm_transform, false);
-    project_texture(props, "normalTexture", material.normal_texture, material.normal_transform, false);
-    project_texture(props, "emissiveTexture", material.emissive_texture, material.emissive_transform, true);
+    ${materialTexture("base_color_transform")}
+    ${materialTexture("orm_transform")}
+    ${materialTexture("normal_transform")}
+    ${materialTexture("emissive_transform")}
     material.has_public_base_color_texture = props.get("baseColorTexture").truthy();
     if (const auto name = props.get("name"); !name.nullish()) material.name = name.string();
     const auto base_factor = props.get("baseColorFactor");
@@ -139,30 +218,24 @@ MaterialHandle load_material(
     if (base_texture.fallback) material.base_color_fallback = *base_texture.fallback;
     const auto& orm_texture = props.get("ormTexture").texture();
     if (orm_texture.fallback) material.orm_fallback = *orm_texture.fallback;
-    if (animated_base_color) {
-        material.source_base_color_factor = std::make_shared<std::vector<double>>(core._baseColorFactor);
-        const auto& factor = core._baseColorFactor;
-        material.base_color_factor = Color4{static_cast<float>(factor[0]), static_cast<float>(factor[1]), static_cast<float>(factor[2]), static_cast<float>(factor[3])};
-        if (base_texture.fallback) { material.base_color_fallback = {255, 255, 255, 255}; material.animated_base_color = true; }
-    }
-    gltf_pbr_number(props, "metallicFactor", material.metallic_factor);
-    gltf_pbr_number(props, "roughnessFactor", material.roughness_factor);
-    gltf_pbr_number(props, "reflectance", material.reflectance);
-    gltf_pbr_number(props, "normalTextureScale", material.normal_texture_scale);
-    gltf_pbr_number(props, "occlusionStrength", material.occlusion_strength);
+    ${materialProperty("metallic_factor")}
+    ${materialProperty("roughness_factor")}
+    ${materialProperty("reflectance")}
+    ${materialProperty("normal_texture_scale")}
+    ${materialProperty("occlusion_strength")}
     material.specular_aa = props.get("enableSpecularAA").truthy();
     material.double_sided = props.get("doubleSided").truthy();
     material.has_uv_transform = props.get("_hasUvTx").truthy();
     material.unlit = props.get("_unlit").truthy();
-    gltf_pbr_color(props, "_unlitColor", material.unlit_color);
+    ${materialProperty("unlit_color")}
     material.emissive_factor = Color3{static_cast<float>(core._emissiveFactor[0]), static_cast<float>(core._emissiveFactor[1]), static_cast<float>(core._emissiveFactor[2])};
 ${animationPointerMaterials ? `    material.emissive_base_factor = material.emissive_factor;
     material.emissive_strength = static_cast<float>(gltf_pbr_emissive_strength(core, features));` : ""}
-    gltf_pbr_color(props, "_emissiveColor", material.emissive_factor);
+    ${materialProperty("emissive_factor")}
     if (props.get("alphaBlend").truthy()) material.alpha_mode = MaterialAlphaMode::blend;
     else if (!props.get("_alphaCutOff").nullish()) material.alpha_mode = MaterialAlphaMode::mask;
-    gltf_pbr_number(props, "_alphaCutOff", material.alpha_cutoff);
-    if (!animated_base_color) gltf_pbr_number(props, "alpha", material.alpha);
+    ${materialProperty("alpha_cutoff")}
+    ${materialProperty("alpha")}
     material.has_occlusion_texture = static_cast<bool>(core._occlusionImage);
     if (core._occlusionImage) {
         const auto coord = props.get("occlusionTexCoord");
@@ -180,69 +253,73 @@ ${animationPointerMaterials ? `    material.emissive_base_factor = material.emis
     if (!spec_gloss.nullish() && texture_transform_value(spec_gloss.texture().info))
         throw std::runtime_error("Reached KHR_materials_pbrSpecularGlossiness supports an untransformed specular-glossiness texture only.");
     material.spec_gloss_texture = stage(spec_gloss, true);
-    project_texture(props, "_metallicReflectanceTexture", material.metallic_reflectance_texture, material.metallic_reflectance_transform, false);
-    project_texture(props, "_reflectanceTexture", material.reflectance_texture, material.reflectance_transform, false);
-    gltf_pbr_number(props, "_metallicF0Factor", material.metallic_f0_factor);
-    gltf_pbr_number(props, "_specularWeight", material.specular_weight);
-    gltf_pbr_color(props, "_metallicReflectanceColor", material.metallic_reflectance_color);
+    ${materialTexture("metallic_reflectance_transform")}
+    ${materialTexture("reflectance_transform")}
+    ${materialProperty("metallic_f0_factor")}
+    ${materialProperty("specular_weight")}
+    ${materialProperty("metallic_reflectance_color")}
     material.has_metallic_reflectance = !props.get("_metallicF0Factor").nullish() || !props.get("_metallicReflectanceColor").nullish() ||
         !props.get("_metallicReflectanceTexture").nullish() || !props.get("_reflectanceTexture").nullish();
     const auto subsurface = props.get("_subsurface");
     const auto refraction = subsurface.get("refraction", true);
+    material.source_transmissive = props.get("_transmissive").truthy();
+    if (const auto intensity = refraction.get("intensity", true); !intensity.nullish())
+        material.source_refraction_intensity = intensity.number();
     const auto thickness = subsurface.get("thickness", true);
     const auto tint = subsurface.get("tint", true);
-    gltf_pbr_number(refraction, "indexOfRefraction", material.index_of_refraction);
-    gltf_pbr_number(refraction, "intensity", material.transmission_factor);
-    gltf_pbr_number(refraction, "dispersion", material.dispersion);
+    ${materialProperty("index_of_refraction")}
+    ${materialProperty("transmission_factor")}
+    ${materialProperty("dispersion")}
     material.use_thickness_as_depth = refraction.get("useThicknessAsDepth", true).truthy();
-    gltf_pbr_number(thickness, "max", material.thickness);
-    gltf_pbr_color(tint, "color", material.attenuation_color);
-    gltf_pbr_number(tint, "atDistance", material.attenuation_distance);
+    ${materialProperty("thickness")}
+    ${materialProperty("attenuation_color")}
+    ${materialProperty("attenuation_distance")}
     material.has_volume = tint.truthy();
-    project_texture(refraction, "texture", material.transmission_texture, material.transmission_transform, false);
-    project_texture(thickness, "texture", material.thickness_texture, material.thickness_transform, false);
+    ${materialTexture("transmission_transform")}
+    ${materialTexture("thickness_transform")}
     const auto translucency = subsurface.get("translucency", true);
     material.has_subsurface = translucency.truthy();
-    gltf_pbr_number(translucency, "intensity", material.subsurface_intensity);
-    gltf_pbr_color(translucency, "color", material.subsurface_color);
-    gltf_pbr_color(translucency, "diffusionDistance", material.subsurface_diffusion_distance);
-    gltf_pbr_number(thickness, "min", material.subsurface_minimum_thickness);
-    gltf_pbr_number(thickness, "max", material.subsurface_maximum_thickness);
-    project_texture(translucency, "colorTexture", material.translucency_color_texture, material.translucency_color_transform, true);
-    project_texture(translucency, "intensityTexture", material.translucency_intensity_texture, material.translucency_intensity_transform, false);
+    ${materialProperty("subsurface_intensity")}
+    ${materialProperty("subsurface_color")}
+    ${materialProperty("subsurface_diffusion_distance")}
+    ${materialProperty("subsurface_minimum_thickness")}
+    ${materialProperty("subsurface_maximum_thickness")}
+    ${materialTexture("translucency_color_transform")}
+    ${materialTexture("translucency_intensity_transform")}
     const auto coat = props.get("_clearCoat");
-    gltf_pbr_number(coat, "intensity", material.clearcoat_intensity);
-    gltf_pbr_number(coat, "roughness", material.clearcoat_roughness);
-    gltf_pbr_number(coat, "indexOfRefraction", material.clearcoat_index_of_refraction);
-    gltf_pbr_number(coat, "bumpTextureScale", material.clearcoat_normal_scale);
-    project_texture(coat, "texture", material.clearcoat_texture, material.clearcoat_transform, false);
-    project_texture(coat, "roughnessTexture", material.clearcoat_roughness_texture, material.clearcoat_roughness_transform, false);
-    project_texture(coat, "bumpTexture", material.clearcoat_normal_texture, material.clearcoat_normal_transform, false);
+    ${materialProperty("clearcoat_intensity")}
+    ${materialProperty("clearcoat_roughness")}
+    ${materialProperty("clearcoat_index_of_refraction")}
+    ${materialProperty("clearcoat_normal_scale")}
+    ${materialTexture("clearcoat_transform")}
+    ${materialTexture("clearcoat_roughness_transform")}
+    ${materialTexture("clearcoat_normal_transform")}
     const auto sheen = props.get("_sheen");
-    gltf_pbr_number(sheen, "intensity", material.sheen_intensity);
-    gltf_pbr_number(sheen, "roughness", material.sheen_roughness);
-    gltf_pbr_color(sheen, "color", material.sheen_color);
-    project_texture(sheen, "texture", material.sheen_color_texture, material.sheen_transform, true);
-    project_texture(sheen, "roughnessTexture", material.sheen_roughness_texture, material.sheen_roughness_transform, false);
+    ${materialProperty("sheen_intensity")}
+    ${materialProperty("sheen_roughness")}
+    ${materialProperty("sheen_color")}
+    ${materialTexture("sheen_transform")}
+    ${materialTexture("sheen_roughness_transform")}
     if (sheen.get("roughnessTexture", true).nullish()) {
         material.sheen_roughness_texture = material.sheen_color_texture;
         material.sheen_roughness_transform = material.sheen_transform;
     }
     const auto iri = props.get("_iridescence");
-    gltf_pbr_number(iri, "intensity", material.iridescence_intensity);
-    gltf_pbr_number(iri, "indexOfRefraction", material.iridescence_index_of_refraction);
-    gltf_pbr_number(iri, "minimumThickness", material.iridescence_minimum_thickness);
-    gltf_pbr_number(iri, "maximumThickness", material.iridescence_maximum_thickness);
-    project_texture(iri, "texture", material.iridescence_texture, material.iridescence_transform, true);
-    project_texture(iri, "thicknessTexture", material.iridescence_thickness_texture, material.iridescence_thickness_transform, true);
+    ${materialProperty("iridescence_intensity")}
+    ${materialProperty("iridescence_index_of_refraction")}
+    ${materialProperty("iridescence_minimum_thickness")}
+    ${materialProperty("iridescence_maximum_thickness")}
+    ${materialTexture("iridescence_transform")}
+    ${materialTexture("iridescence_thickness_transform")}
     const auto anisotropy = props.get("_anisotropy");
     material.has_anisotropy = anisotropy.get("isEnabled", true).truthy();
-    gltf_pbr_number(anisotropy, "intensity", material.anisotropy_intensity);
+    ${materialProperty("anisotropy_intensity")}
     if (const auto direction = anisotropy.get("direction", true); !direction.nullish()) {
         if (!direction.is_array() || direction.size() != 2) throw std::runtime_error("Invalid glTF anisotropy direction.");
         material.anisotropy_direction = Vec2{static_cast<float>(direction.at(0).number()), static_cast<float>(direction.at(1).number())};
     }
-    project_texture(anisotropy, "texture", material.anisotropy_texture, material.anisotropy_transform, false);
+    ${materialTexture("anisotropy_transform")}
+    if (source_properties) *source_properties = props;
     engine.materials.push_back(std::move(material));
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }`;

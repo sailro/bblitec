@@ -19,11 +19,11 @@
  */
 import {
     animatedMaterialPointerPatterns,
-    asNumber,
     asIndex,
     asObject,
     asRecords,
     glbDocument,
+    GLTF_TRANSMISSION_PLAN,
     selectedVariantIndex,
     type JsonObject,
 } from "./gltf-document.js";
@@ -57,8 +57,11 @@ import { importPinnedModule } from "./pinned-shader-composer.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import { gltfVariantPlan } from "./gltf-variant-plan.js";
-import { packagedGltfMeshPlan } from "./gltf-mesh-plan.js";
+import { packagedGltfMeshPlan, type GltfConstructedMaterialPlan } from "./gltf-mesh-plan.js";
 import { packagedGltfLights } from "./gltf-light-plan.js";
+import {packagedGltfTransmissionPlan, selectedGltfTransmission, type GltfTransmissionPlan} from "./gltf-transmission-plan.js";
+import {pinnedPbrTransmissionSelection} from "./pinned-pbr-transmission.js";
+import type {LoweringContext} from "./lowering/context.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -271,6 +274,7 @@ export interface MaterialSubject {
      */
     meshFeatures: number;
     metallicReflectanceRegistered: boolean;
+    transmissionRegistered: boolean;
 }
 
 /** Source-registered lights that join the scene's composed lighting arms. */
@@ -304,32 +308,31 @@ export function gltfHasImageBasedLight(path: string): boolean {
         used.includes("EXT_lights_image_based");
 }
 
-/**
- * Whether the asset alone makes the scene render linear: the pin's
- * `set-transmission.ts` retargets the frame graph's colour buffer when any
- * material transmits, and marks every material `_linearImageProcessing`.
- *
- * This is the asset-side half of the flag only. Generation passes its own
- * value into `materialSubjects` instead, because scene code reaches the same
- * retarget through the `material:pbr-linear-image-processing` feature with no
- * transmissive material in any asset; the compose gate has only the asset,
- * and derives the flag here.
- */
-export async function gltfLinearImageProcessing(document: JsonObject): Promise<boolean> {
-    const materials = (document as GltfDocument).materials ?? [];
+/** Source material construction, registration and selection over the actual scene mesh list. */
+export async function gltfTransmissionPlan(document: JsonObject, context?: LoweringContext): Promise<GltfTransmissionPlan> {
     const base = packagedGltfMeshPlan(document);
     const variants = await gltfVariantPlan(document);
-    const sources = [...base.materials.map(core => base.cores[core]!), ...variants.materials];
-    return sources.some(
-        (source) => source !== -1 &&
-            (asNumber(
-                asObject(
-                    asObject(materials[source]!["extensions"])?.[
-                        "KHR_materials_transmission"
-                    ],
-                )?.["transmissionFactor"],
-            ) ?? 0) > 0,
-    );
+    const subjects = await materialSubjects(document);
+    const registered = subjects.some(subject => subject.transmissionRegistered);
+    const select = pinnedPbrTransmissionSelection(context);
+    const selected = (slots: readonly number[]): boolean => registered && select(base.sceneMeshes.map(index => {
+        const subject = subjects[slots[index]!];
+        if (!subject) throw new Error("glTF transmission selection references an unconstructed material.");
+        return subject.input;
+    }));
+    return {registered, initial: selected(base.meshes.map(mesh => mesh.material)),
+        variants: Object.fromEntries(Object.entries(variants.selections).map(([name, slots]) => [name, selected(slots)]))};
+}
+
+/** Persist the async source decision before synchronous asset specialization. */
+export async function packageGltfTransmissionPlan(document: JsonObject): Promise<void> {
+    if (GLTF_TRANSMISSION_PLAN in document) throw new Error("glTF source already carries compiler transmission metadata.");
+    document[GLTF_TRANSMISSION_PLAN] = await gltfTransmissionPlan(document);
+}
+
+/** The asset-side linear target decision; explicit scene opt-ins remain separate. */
+export async function gltfLinearImageProcessing(document: JsonObject, selectedVariant?: string): Promise<boolean> {
+    return selectedGltfTransmission(packagedGltfTransmissionPlan(document) ?? await gltfTransmissionPlan(document), selectedVariant);
 }
 
 /**
@@ -515,6 +518,7 @@ export async function materialSubjects(
          */
         sceneLightmap?: SceneLightmapSelection;
     } = {},
+    construction?: {meshPlan: GltfConstructedMaterialPlan; context?: LoweringContext; deferAnimationPointers?: boolean},
 ): Promise<readonly MaterialSubject[]> {
     // The executed pinned loader behind every reader below, run on first
     // need: this is the one async choke point through which production
@@ -529,23 +533,24 @@ export async function materialSubjects(
     const view = document as GltfDocument;
     const materials = view.materials ?? [];
     const imageOf = gltfImageResolver(document);
-    const animatedBaseColor = gltfAnimatedMaterialPointers(
+    const prepareAnimationPointers = !construction?.deferAnimationPointers;
+    const animatedBaseColor = prepareAnimationPointers ? gltfAnimatedMaterialPointers(
         document,
         animatedMaterialPointerPatterns.baseColorFactor,
-    );
-    const animatedUvTransform = gltfAnimatedMaterialPointers(
+    ) : undefined;
+    const animatedUvTransform = prepareAnimationPointers ? gltfAnimatedMaterialPointers(
         document,
         animatedMaterialPointerPatterns.uvTransform,
-    );
-    const animatedEmissive = new Set(
+    ) : undefined;
+    const animatedEmissive = prepareAnimationPointers ? new Set(
         animatedMaterialPointerPatterns.emissive.flatMap((pointer) => [
             ...gltfAnimatedMaterialPointers(document, pointer),
         ]),
-    );
-    const animatedExtensions = gltfAnimatedExtensionTargets(document);
+    ) : undefined;
+    const animatedExtensions = prepareAnimationPointers ? gltfAnimatedExtensionTargets(document) : undefined;
     // Which primitive first names each material, for the subject's mesh half:
     // a second UV set or a vertex-colour stream changes the composed fragment.
-    const basePlan = packagedGltfMeshPlan(document);
+    const basePlan = construction?.meshPlan ?? packagedGltfMeshPlan(document);
     const primitiveOf = new Map<
         number,
         { primitive: JsonObject; skinned: boolean; morphed: boolean; geometry: {attributes: JsonObject; flatNormal: boolean} }
@@ -559,7 +564,7 @@ export async function materialSubjects(
                 geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal}});
     }
     const subjects: MaterialSubject[] = [];
-    const variantPlan = await gltfVariantPlan(document);
+    const variantPlan = await gltfVariantPlan(document, construction?.context, construction?.meshPlan);
     const materialEntries = [
         ...basePlan.materials.map((core, index) => {
             const sourceIndex = basePlan.cores[core]!;
@@ -570,18 +575,20 @@ export async function materialSubjects(
     ];
     for (const {index, material, sourceIndex, variant} of materialEntries) {
         let metallicReflectanceRegistered = false;
+        let transmissionRegistered = false;
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
             ...scene,
-            animatedBaseColorFactor: !variant && animatedBaseColor.has(sourceIndex),
-            animatedEmissive: !variant && animatedEmissive.has(sourceIndex),
-            animatedUvTransform: !variant && animatedUvTransform.has(sourceIndex),
-            ...(!variant && animatedExtensions.has(sourceIndex)
+            animatedBaseColorFactor: !variant && animatedBaseColor?.has(sourceIndex) === true,
+            animatedEmissive: !variant && animatedEmissive?.has(sourceIndex) === true,
+            animatedUvTransform: !variant && animatedUvTransform?.has(sourceIndex) === true,
+            ...(!variant && animatedExtensions?.has(sourceIndex)
                 ? { animatedExtensionTargets: animatedExtensions.get(sourceIndex)! }
                 : {}),
             recordMetallicReflectanceRegistration: () => {
                 metallicReflectanceRegistered = true;
             },
+            recordTransmissionRegistration: () => { transmissionRegistered = true; },
         });
         stampClusteredLightState(input, scene.clusteredLights);
         stampSceneUnlit(input, scene.sceneUnlit);
@@ -605,6 +612,7 @@ export async function materialSubjects(
                 })
                 : 0,
             metallicReflectanceRegistered,
+            transmissionRegistered,
         });
     }
     return subjects;

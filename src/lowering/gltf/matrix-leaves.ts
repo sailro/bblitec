@@ -199,13 +199,13 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
 }
 
 /** `mat4ComposeInto` → `trs_matrix` (float lanes lifted to double). */
-export function lowerMatrixComposeCpp(file: ts.SourceFile): string {
+export function lowerMatrixComposeCpp(file: ts.SourceFile, doubleInputs = false): string {
     const walk = composePinWalk(file);
     return [
         "Matrix trs_matrix(",
-        "    Vec3 translation,",
-        "    Vec4 rotation,",
-        "    Vec3 scale) {",
+        `    ${doubleInputs ? "Vec3d" : "Vec3"} translation,`,
+        `    ${doubleInputs ? "Vec4d" : "Vec4"} rotation,`,
+        `    ${doubleInputs ? "Vec3d" : "Vec3"} scale) {`,
         "    // Pinned mat4ComposeInto runs in JavaScript double precision and",
         "    // rounds once at the Float32Array store; mirror its products and",
         "    // association exactly.",
@@ -226,9 +226,9 @@ export function lowerMatrixComposeCpp(file: ts.SourceFile): string {
                 `    result[${store.lane}] = ` +
                 `static_cast<float>(${store.text});`,
         ),
-        "    result[12] = translation.x;",
-        "    result[13] = translation.y;",
-        "    result[14] = translation.z;",
+        "    result[12] = static_cast<float>(translation.x);",
+        "    result[13] = static_cast<float>(translation.y);",
+        "    result[14] = static_cast<float>(translation.z);",
         "    return result;",
         "}",
     ].join("\n");

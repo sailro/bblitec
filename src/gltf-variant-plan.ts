@@ -1,5 +1,5 @@
 import { asIndex, asObject, asRecords, areGltfIndices, gltfVariantNames, GLTF_VARIANT_PLAN, type JsonObject } from "./gltf-document.js";
-import { packagedGltfMeshPlan } from "./gltf-mesh-plan.js";
+import { packagedGltfMeshPlan, type GltfConstructedMaterialPlan } from "./gltf-mesh-plan.js";
 import { LoweringContext } from "./lowering/context.js";
 import { gltfVariantMaterialSource } from "./lowering/gltf/material-variants.js";
 import { transpileCommonJs } from "./typescript-transpile.js";
@@ -35,11 +35,11 @@ function variantRunners(context: LoweringContext): {schedule: Schedule; select: 
 }
 
 /** Execute the source caches, complete mapping walk and selection over recording handles. */
-export async function gltfVariantPlan(document: JsonObject, context?: LoweringContext): Promise<GltfVariantPlan> {
+export async function gltfVariantPlan(document: JsonObject, context?: LoweringContext, constructed?: GltfConstructedMaterialPlan): Promise<GltfVariantPlan> {
     const names = gltfVariantNames(document);
-    const base = packagedGltfMeshPlan(document);
+    const base = constructed ?? packagedGltfMeshPlan(document);
     const baseCount = base.materials.length;
-    if (!context && GLTF_VARIANT_PLAN in document) {
+    if (!context && !constructed && GLTF_VARIANT_PLAN in document) {
         const plan = asObject(document[GLTF_VARIANT_PLAN]);
         const selections = asObject(plan?.selections);
         if (!plan || plan.baseCount !== baseCount || !areGltfIndices(plan.materials, asRecords(document.materials).length) || !selections)

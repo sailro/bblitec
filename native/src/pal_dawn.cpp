@@ -14268,6 +14268,7 @@ public:
             (void)esm_shadow_index;
             for (const upstream::RenderDrawCommand& draw :
                  list.commands) {
+                if (!upstream::render_item_draws_now(draw.item, engine)) continue;
                 if (draw.item_index >= (*pass_meshes).size()) continue;
                 DawnMesh& mesh = (*pass_meshes)[draw.item_index];
 #if BBLITE_PBR_VARIANTS > 0
@@ -14681,6 +14682,7 @@ public:
                 }
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
+                    if (!upstream::render_item_draws_now(draw.item, engine)) continue;
                     if (draw.item_index >= state.meshes.size()) {
                         continue;
                     }
@@ -15975,6 +15977,7 @@ public:
                     [&](const upstream::RenderDrawList& list) {
                         for (const upstream::RenderDrawCommand& draw :
                              list.commands) {
+                            if (!upstream::render_item_draws_now(draw.item, engine)) continue;
                             if (
                                 draw.item_index >=
                                 graph_meshes.size()) {
@@ -16751,7 +16754,7 @@ public:
             for (std::size_t i = 0; i < engine.shadow_generators.size(); ++i) {
                 const auto& generator = engine.shadow_generators[i];
                 if (generator.map_target.value >= state.render_targets.size()) continue;
-                auto texture = handle_at(state.render_targets, generator.map_target).depth;
+                WGPUTexture texture = handle_at(state.render_targets, generator.map_target).depth.get();
 #if BBLITE_SHADOWS_ESM
                 if (generator.filter == ShadowFilter::esm_directional && generator.esm_index < state.esm_blurs.size()) texture = state.esm_blurs[generator.esm_index].blur_v;
 #endif

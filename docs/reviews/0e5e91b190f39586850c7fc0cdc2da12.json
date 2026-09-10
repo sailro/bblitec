@@ -1,0 +1,16 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {"summary": "Reuse javascriptModuleUrl for Babylon hierarchy execution and shared AST assignment/update predicates for animation writer discovery.", "applied": true},
+    {"summary": "Remove the unused animation master clock and node map; retain the source binding plan only during resource hydration.", "applied": true},
+    {"summary": "Remove three unused glTF loader options and their call arguments while retaining the independently reached animation APIs.", "applied": true},
+    {"summary": "Share the node-particle metadata tuple across the six value kinds that use it.", "applied": true},
+    {"summary": "Reuse source material and light snapshots after pointer publication and retain only observed flags that have readers.", "applied": true},
+    {"summary": "Use identity sets for source material-output removal and replacement membership.", "applied": true},
+    {"summary": "Index weighted animation targets by node-array identity while preserving source insertion order and cache publication behavior.", "applied": true},
+    {"summary": "Skip animation-pointer pre-scans when the source parser owns deferred material initialization.", "applied": true},
+    {"summary": "Delete unused native clip/sampler lowerers and exercise the active source-packaging path in the clip tests.", "applied": true},
+    {"summary": "Remove test-only pointer dispatch and texture-owner helpers; use the active function binding and replacement ownership paths in fixtures.", "applied": true},
+    {"summary": "Reuse cppFunction for node-material fixture extraction so C++ function boundaries are independent of checkout line endings.", "applied": true}
+  ]
+}

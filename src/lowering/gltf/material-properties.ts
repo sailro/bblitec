@@ -7,6 +7,7 @@ import { lowerGltfMaterialSetup } from "./material-setup.js";
 import { lowerGltfSamplers } from "./sampler-resolver.js";
 import { lowerGltfExtensionImages } from "./extension-images.js";
 import { lowerGltfOrmComposition } from "./orm-composition.js";
+import {lowerPbrSceneHookRegistry} from "../pbr-scene-hooks.js";
 
 const setters = [
     ["set-clearcoat", "setPbrClearCoat"], ["set-sheen", "setPbrSheen"], ["set-iridescence", "setPbrIridescence"],
@@ -50,6 +51,18 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
     for (const file of ["gltf-ext-clearcoat", "gltf-ext-iridescence", "gltf-ext-emissive-strength", "gltf-ext-sheen",
         "gltf-ext-anisotropy", "gltf-ext-diffuse-transmission", "gltf-ext-unlit", "gltf-ext-spec-gloss", "gltf-ext-dielectric", "gltf-ext-orm"])
         add(`src/loader-gltf/${file}.ts`, "applyMaterial", true);
+    add("src/loader-gltf/animation-pointer-basecolor.ts", "whiteFallback");
+    add("src/loader-gltf/gltf-feature-animation-pointer.ts", "applyMaterial", true);
+    for (const target of functions.slice(-2)) {
+        const declaration = target.declaration;
+        const file = ts.createSourceFile(target.module, `function ${target.name}(${[
+            ...declaration.parameters.map(parameter => parameter.getText()), "pointerContext",
+        ].join(", ")}) ${declaration.body!.getText()}`, ts.ScriptTarget.Latest, true);
+        const lowered = file.statements[0];
+        if (!lowered || !ts.isFunctionDeclaration(lowered)) context.contractError(declaration, "Expected a source pointer material function.");
+        target.declaration = lowered;
+        target.contextParameter = "pointerContext";
+    }
     const registryModule = "src/loader-gltf/gltf-feature-registry.ts";
     const registry = context.sourceFile(registryModule);
     const constants = new Map<string, string>();
@@ -97,13 +110,27 @@ export function lowerGltfMaterialProperties(context: LoweringContext): {
     const bodies = functions.map(target => lowerGltfMaterialObjectFunction(context, target, name =>
         (functions.find(candidate => candidate.module === target.module && candidate.name === name) ??
             functions.find(candidate => candidate.name === name))?.cpp, (call, lowerer) => {
+                if (target.name === "whiteFallback" && context.expressionMatchesShape(call.expression, "_animBaseColorDefs?.has")) {
+                    if (call.arguments.length !== 1) context.contractError(call, "Expected source base-color definition membership.");
+                    context.assertExpressionShape(call.arguments[0]!, "mat._rawMatDef", "Source animation base-color owner");
+                    return "GltfPbrValue{pointerContext.base_color_definition}";
+                }
+                if (target.module === "src/loader-gltf/gltf-feature-animation-pointer.ts" &&
+                    context.expressionMatchesShape(call.expression, "_baseColorMod?.whiteFallback")) {
+                    if (call.arguments.length !== 1) context.contractError(call, "Expected the source base-color material feature call.");
+                    const handler = functions.find(target => target.name === "whiteFallback")!;
+                    return `(pointerContext.base_color_module ? ${handler.cpp}(${lowerer.expression(call.arguments[0]!)}, pointerContext) : GltfPbrValue{})`;
+                }
                 if (target.module !== "src/loader-gltf/gltf-ext-orm.ts" || !context.expressionMatchesShape(call.expression, "compositeOrm")) return undefined;
                 if (call.arguments.length !== 2 || !target.contextParameter) context.contractError(call, "Expected two ORM bitmaps and their image context.");
                 return `gltf_pbr_composite_orm(${target.contextParameter}, ${call.arguments.map(argument => lowerer.expression(argument)).join(", ")})`;
             }));
     const setup = lowerGltfMaterialSetup(context, name => functions.find(target => target.name === name)?.cpp);
-    return { functions: [...functions, ...setup.functions], features, textureWrapTriggers, source: `${gltfMaterialValueRuntime}
+    return { functions: [...functions, ...setup.functions], features, textureWrapTriggers, source: `${lowerPbrSceneHookRegistry(context)}
+${gltfMaterialValueRuntime}
 struct GltfPbrContext {
+    bool base_color_module = false;
+    bool base_color_definition = false;
     std::function<GltfPbrValue(const GltfPbrValue&, bool)> texture;
     std::function<GltfPbrValue(const GltfPbrValue&, bool)> upload_image;
     std::function<pal::DecodedImage(const GltfMaterialImage&)> decode_image;
@@ -140,6 +167,17 @@ GltfPbrValue gltf_pbr_core_value(const GltfCoreMaterial& core) {
     auto result = GltfPbrValue::object();
 ${[...gltfCoreMaterialFields.keys()].map(name => `    result.set("${name}", GltfPbrValue{core.${name}});`).join("\n")}
     return result;
+}
+GltfCoreMaterial gltf_pbr_core_storage(const GltfPbrValue& value) {
+    GltfCoreMaterial core;
+${[...gltfCoreMaterialFields].map(([name, type]) => {
+    const access = `value.get(${JSON.stringify(name)})`;
+    const expression = type === "std::vector<double>" ? `*${access}.numeric_array()` : type === "double" ? `${access}.number()`
+        : type === "bool" ? `${access}.truthy()` : type === "std::string" ? `${access}.string()`
+        : type === "GltfMaterialImage" ? `${access}.nullish() ? GltfMaterialImage{} : ${access}.image()` : `${access}.source()`;
+    return `    core.${name} = ${expression};`;
+}).join("\n")}
+    return core;
 }
 [[maybe_unused]] double gltf_pbr_emissive_strength(const GltfCoreMaterial& core, const GltfPbrValue& features) {
     if (!gltf_pbr_includes(features, GltfPbrValue{${features.findIndex(({handler}) => handler.module.endsWith("/gltf-ext-emissive-strength.ts"))}.0}).truthy()) return 1.0;

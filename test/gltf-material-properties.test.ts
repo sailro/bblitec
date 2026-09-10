@@ -42,6 +42,7 @@ function executableFunctions(functions: readonly GltfMaterialFunction[]): Map<st
     const modules: Record<string, Record<string, MaterialFunction>> = {};
     const textures = () => ({ baseColorTexture: {}, ormTexture: {} });
     const boundaries: Record<string, unknown> = {
+        _animBaseColorDefs: null, _baseColorMod: null,
         _registerPbrExt() {}, _registerPbrSceneHook() {}, _setDispersionSampleWgsl() {},
         pbrExt: {}, stdUvTransformExt: {}, registerPbrTransmission: {}, DISPERSION_SAMPLE_WGSL: {},
         getPbrGroupBuilder: () => true,
@@ -199,15 +200,8 @@ for (const [variant, context] of [
     const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
     const named = (name: string) => lowered.functions.find(target => target.name === name)!.cpp;
     const loader = new GltfLowerer(context).lowerLoaderAdapter({ animationPointerMaterials: true }).source;
-    const animationWrite = (kind: string) => {
-        const label = `case MaterialTrackKind::${kind}:`;
-        const begin = loader.indexOf(label);
-        const end = loader.indexOf("break;", begin);
-        assert.ok(begin >= 0 && end > begin);
-        return loader.slice(begin + label.length, end);
-    };
-    const iorFunction = lowered.functions.find(target => target.name === "iorToF0Factor")!;
     writeFileSync(source, `#include <bblite/ts_runtime.hpp>
+        #include <bblite/js_data.hpp>
         #include <bblite/pal_image_canvas.hpp>
         #include <bblite/runtime.hpp>
         #include <array>
@@ -216,6 +210,7 @@ for (const [variant, context] of [
         #include <functional>
         #include <optional>
         namespace bbl {
+            void enable_scene_transmission(Scene& scene) { scene.transmission_enabled = true; }
             using JsonObject = ts::JsonValue::Object;
             using JsonArray = ts::JsonValue::Array;
             namespace upstream { struct ParsedGlbContainer {}; }
@@ -232,16 +227,6 @@ for (const [variant, context] of [
                 TextureData result; result.bytes = {static_cast<std::uint8_t>(index + 1)}; return result;
             }
             ${gltfMaterialProjection(true)}
-            void animate_ior(MaterialRecord& material, float sample) {
-                const Vec4 a{sample, 0, 0, 0}, b{sample, 0, 0, 0};
-                const auto mix = [](float left, float right) { return left + (right - left) * .25f; };
-                ${animationWrite("index_of_refraction")}
-            }
-            void animate_thickness(MaterialRecord& material, float sample) {
-                const Vec4 a{sample, 0, 0, 0}, b{sample, 0, 0, 0};
-                const auto mix = [](float left, float right) { return left + (right - left) * .25f; };
-                ${animationWrite("volume_thickness")}
-            }
             void compare(const GltfPbrValue& actual, const nlohmann::json& expected) {
                 if (expected.is_object() && expected.contains("__undefined")) { assert(actual.undefined()); return; }
                 assert(!actual.undefined());
@@ -348,14 +333,6 @@ for (const [variant, context] of [
                 assert(gltf_pbr_gltf_ext_orm_applyMaterial(absent, unused_context).nullish());
                 absent.erase("_occlusionImage");
                 assert(gltf_pbr_gltf_ext_orm_applyMaterial(absent, unused_context).nullish());
-            }
-            {
-                MaterialRecord animated;
-                ${[1, 1.2, 1.5, 2, 3].map(sample => `animate_ior(animated, static_cast<float>(${context.doubleLiteral(sample)}));
-                assert(std::abs(animated.metallic_f0_factor - static_cast<float>(${Number(execute.get(iorFunction.cpp)!(Math.fround(sample)))})) < 1e-6f);
-                assert(animated.specular_weight == 1.0f);`).join("\n")}
-                animate_thickness(animated, .25f);
-                assert(animated.thickness == .25f && animated.use_thickness_as_depth);
             }
             nlohmann::json cases;
             std::ifstream("cases.json") >> cases;

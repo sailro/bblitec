@@ -8,6 +8,7 @@ export interface GltfLight {
     diffuse: number[];
     specular: number[];
     intensity: number;
+    bumpVersion: boolean;
     range?: number;
     spot?: {angle: number; cosine: number; exponent: number};
 }
@@ -43,8 +44,11 @@ export function packageGltfLight(value: object, nodes: ReadonlyMap<object, numbe
     const parent = light.parent;
     const node = parent == null ? null : typeof parent === "object" ? nodes.get(parent) : undefined;
     if (node === undefined) throw new Error("Unrepresented glTF light parent.");
+    if (light._bumpLightVersion != null && typeof light._bumpLightVersion !== "function")
+        throw new Error("Unrepresented glTF light version callback.");
     const result: GltfLight = {kind: type, world: packer.float32(world, 4), node,
-        diffuse: color(light.diffuse), specular: color(light.specular), intensity: scalar(light.intensity)};
+        diffuse: color(light.diffuse), specular: color(light.specular), intensity: scalar(light.intensity),
+        bumpVersion: typeof light._bumpLightVersion === "function"};
     if (light.range !== undefined) result.range = scalar(light.range);
     if (type === "spot") {
         if (typeof light._writeLightUbo !== "function") throw new Error("Missing glTF spot light writer.");
@@ -60,8 +64,9 @@ function readGltfLight(value: unknown, accessorCount: number, nodeCount: number)
     if (!light || world === undefined || world >= accessorCount ||
         node === undefined || (node !== null && node >= nodeCount))
         throw new Error("Invalid packaged glTF light binding.");
+    if (typeof light.bumpVersion !== "boolean") throw new Error("Missing packaged glTF light callback state.");
     const result: GltfLight = {kind: kind(light.kind), world, node,
-        diffuse: color(light.diffuse), specular: color(light.specular), intensity: scalar(light.intensity)};
+        diffuse: color(light.diffuse), specular: color(light.specular), intensity: scalar(light.intensity), bumpVersion: light.bumpVersion};
     if (light.range !== undefined) result.range = scalar(light.range);
     if (result.kind === "spot") {
         const spot = asObject(light.spot);

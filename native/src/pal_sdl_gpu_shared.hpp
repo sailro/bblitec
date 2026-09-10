@@ -193,6 +193,8 @@ struct PinnedStageSlots {
     std::vector<std::string> textures;
     /** Storage buffer names in storage-slot order -- the morph arms'. */
     std::vector<std::string> storage;
+    /** Integer texture loads, after sampled textures and before buffers. */
+    std::vector<std::string> storage_textures;
 };
 
 inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
@@ -221,13 +223,14 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
         // to declare its two blocks in index order and so looked correct.
         // `b` is a uniform slot and `t` a texture; `s` is the sampler paired
         // with the texture of the same index, which SDL_GPU binds together.
-        // `r` is a storage buffer at its storage slot, which shares the SRV
-        // space after the sampled textures.
+        // `i` is an integer texture load; `r` is a storage buffer. Their
+        // own slot indices follow the sampled textures in the SRV space.
         std::vector<std::string>* target = reg[0] == 'b'
             ? &slots.uniforms
             : reg[0] == 't'
                 ? &slots.textures
-                : reg[0] == 'r' ? &slots.storage : nullptr;
+                : reg[0] == 'r' ? &slots.storage
+                    : reg[0] == 'i' ? &slots.storage_textures : nullptr;
         if (!target) return;
         // Sidecars are generated build artifacts, but a stale or malformed one
         // must still fail in bounded space. In particular, `stoul("-4")`
@@ -327,17 +330,42 @@ inline void bind_stage_textures(
     bool fragment,
     const char* what,
     Resolve resolve) {
-    if (slots.textures.empty()) return;
-    const auto bindings = resolve_stage_textures(slots, what, resolve);
+    if (!slots.textures.empty()) {
+        const auto bindings = resolve_stage_textures(slots, what, resolve);
+        if (fragment) {
+            SDL_BindGPUFragmentSamplers(
+                pass,
+                0,
+                bindings.data(),
+                static_cast<Uint32>(bindings.size()));
+        } else {
+            SDL_BindGPUVertexSamplers(
+                pass,
+                0,
+                bindings.data(),
+                static_cast<Uint32>(bindings.size()));
+        }
+    }
+    if (slots.storage_textures.empty()) return;
+    std::vector<SDL_GPUTexture*> bindings;
+    bindings.reserve(slots.storage_textures.size());
+    for (std::size_t slot = 0; slot < slots.storage_textures.size(); ++slot) {
+        const std::string& name = slots.storage_textures[slot];
+        SDL_GPUTexture* texture = resolve(name, slot).texture;
+        if (!texture) {
+            gpu_error((std::string(what) + " declares an unresolved storage texture '" + name + "'.").c_str());
+        }
+        bindings.push_back(texture);
+    }
     if (fragment) {
-        SDL_BindGPUFragmentSamplers(
+        SDL_BindGPUFragmentStorageTextures(
             pass,
             0,
             bindings.data(),
             static_cast<Uint32>(bindings.size()));
         return;
     }
-    SDL_BindGPUVertexSamplers(
+    SDL_BindGPUVertexStorageTextures(
         pass,
         0,
         bindings.data(),
@@ -996,14 +1024,15 @@ inline SDL_GPUTexture* upload_2d_texture(
     // record rather than inferring here: `loadSpriteAtlas` turns mips off
     // and the atlas a node-particle texture.get() block builds leaves them on.
     // Generating the levels needs the texture.get() to be a colour target too.
-    std::uint32_t mip_levels = 1u) {
+    std::uint32_t mip_levels = 1u,
+    SDL_GPUTextureUsageFlags read_usage = SDL_GPU_TEXTUREUSAGE_SAMPLER) {
     SDL_GPUTextureCreateInfo texture_info{};
     texture_info.type = SDL_GPU_TEXTURETYPE_2D;
     texture_info.format = format;
     texture_info.usage = mip_levels > 1u
-        ? (SDL_GPU_TEXTUREUSAGE_SAMPLER |
+        ? (read_usage |
            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET)
-        : SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        : read_usage;
     texture_info.width = width;
     texture_info.height = height;
     texture_info.layer_count_or_depth = 1;

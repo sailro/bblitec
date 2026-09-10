@@ -7,6 +7,8 @@ import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
 import { sceneNodeTransformsSource } from "./scene-node-transforms.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 import {lowerAssetSceneAttachment} from "./asset-scene-attachment.js";
+import {lowerMeshMaterialSetter} from "./mesh-material-setter.js";
+import {lowerPbrMaterialGroups} from "./pbr-material-groups.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -34,6 +36,7 @@ interface SceneCoreOptions {
   text?: boolean;
   /** Node materials capture texture slots in deferred scene groups. */
   nodeMaterials?: boolean;
+  pbrSceneHooks?: boolean;
 }
 
 export class SceneLowerer {
@@ -589,7 +592,7 @@ export class SceneLowerer {
 #include <bblite/runtime.hpp>
 ${options.text ? "#include <bblite/text.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
-${options.geometryAccess || options.parenting ? "#include <bblite/js_data.hpp>" : ""}
+${options.geometryAccess || options.parenting || options.pbrSceneHooks ? "#include <bblite/js_data.hpp>" : ""}
 ${
   options.mirroredMeshes || options.geometryAccess || options.parenting
     ? `// The mirrored-mesh watcher this scene installs calls the render
@@ -621,14 +624,15 @@ std::uint32_t material_family_bit(
     const MaterialHandle material = engine.meshes[mesh.value].material;
     if (material.value >= engine.materials.size()) return 0;
     const MaterialRecord& record = engine.materials[material.value];
-    if (record.grid_material) return material_family_grid;
-    if (record.shader_material) return material_family_shader;
-    if (record.standard_material) return material_family_standard;
-    return material_family_pbr;
+    return bbl::material_family_bit(record);
 }
 
 std::uint32_t scene_material_families(const Scene& scene) {
     std::uint32_t result = 0;
+    if (scene.state->source_material_publication) {
+        for (const auto& output : scene.state->material_outputs) result |= bbl::material_family_bit(scene.engine->materials.at(output->material.value));
+        return result;
+    }
     for (const MeshHandle mesh : scene.meshes) {
         result |= material_family_bit(*scene.engine, mesh);
     }
@@ -637,7 +641,8 @@ std::uint32_t scene_material_families(const Scene& scene) {
 
 } // namespace
 
-${this.sceneCreationSource(callbackDelta, value, clear)}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix)}${this.assetRootSource()}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
+${lowerMeshMaterialSetter(this.context)}
+${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix)}${this.assetRootSource()}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
@@ -1754,6 +1759,7 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
     callbackDelta: string,
     value: (input: number) => string,
     clear: (name: string) => number,
+    options: SceneCoreOptions,
   ): string {
     return `double scene_callback_delta(const Scene& scene, double engine_delta_ms) {
     return ${callbackDelta};
@@ -1762,6 +1768,7 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
 Scene create_scene_context(Engine& engine) {
     Scene scene;
     scene.engine = &engine;
+${options.pbrSceneHooks ? "    scene.state->source_material_publication = true;\n" : ""}\
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     scene.surface_canvas = engine.surface_canvas;
 #endif
@@ -1823,11 +1830,12 @@ Scene create_scene_context(Surface& surface) {
             "' was removed from the scene and its geometry reclaimed; "
             "re-adding a removed mesh is outside the reached subset.");
     }
+    register_mesh_material_scene(scene, mesh);
     scene.meshes.push_back(mesh);
-    ++scene.render_topology_version;
-    scene.material_family_mask |=
-        material_family_bit(*scene.engine, mesh);
+    if (!scene.state->source_material_publication) ++scene.render_topology_version;
+    if (!scene.state->source_material_publication) scene.material_family_mask |= material_family_bit(*scene.engine, mesh);
 ${options.nodeMaterials ? "    queue_node_material_group(scene, mesh);\n" : ""}\
+${options.pbrSceneHooks ? "    queue_pbr_material_group(scene, mesh);\n" : ""}\
 }
 
 // A static glTF mesh normally bakes its node world into each vertex. Once
@@ -1932,8 +1940,10 @@ void remove_from_scene(Scene& scene, MeshHandle mesh) {
         });
     if (found == scene.meshes.end()) return;
     scene.meshes.erase(found);
+    std::erase_if(scene.state->material_outputs, [mesh](const auto& output) { return output->mesh == mesh; });
+    const bool last_owner = unregister_mesh_material_scene(scene, mesh);
     ++scene.render_topology_version;
-    reclaim_unshared_geometry(*scene.engine, mesh);
+    if (last_owner) reclaim_unshared_geometry(*scene.engine, mesh);
 }
 
 
@@ -2547,7 +2557,9 @@ void register_scene(Scene& scene) {
             return registered && registered->shares_identity(scene);
         });
     if (found != scene.engine->registered_scenes.end()) return;${managerSeek}${vatSeek}
+${options.pbrSceneHooks ? "    prepare_pbr_scene_build(scene);\n" : ""}\
     drain_scene_deferred_builders(scene);
+${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
     // The source builders read public material arrays when registration
     // creates their UBOs; direct later array writes do not bump _uboVersion.
     for (const auto mesh : scene.meshes) {
@@ -2588,6 +2600,7 @@ void dispose_scene(Scene& scene) {
     for (const auto& dispose : disposables) {
         dispose();
     }
+    for (const auto mesh : scene.meshes) unregister_mesh_material_scene(scene, mesh);
     scene.meshes.clear();
     scene.lights.clear();
     scene.tasks.clear();
@@ -2605,11 +2618,22 @@ ${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
     scene.animation_seekers.clear();
     scene.deferred_builders.clear();
 ${options.nodeMaterials ? "    scene.state->node_material_groups.clear();\n" : ""}\
+${options.pbrSceneHooks ? `    scene.state->pbr_material_group.reset();
+    scene.state->source_material_groups.reset();
+    scene.state->material_outputs.clear();
+    scene.state->material_runtime_error = nullptr;
+    scene.state->pbr_material_swap_queue.clear();
+    scene.state->material_group_rebuild_pending = false;
+    scene.state->process_material_groups = nullptr;
+    scene.state->enqueue_material_group = nullptr;
+    scene.state->complete_material_group = nullptr;
+` : ""}\
     scene.camera = {};
 }
 
 void rebuild_scene_renderables(Scene& scene) {
     require_scene_engine(scene);
+${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
 #if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
     for (const ShadowGeneratorHandle generator :
          scene.pending_shadow_retirements) {

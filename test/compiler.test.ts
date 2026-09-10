@@ -15139,7 +15139,7 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
     assert.match(result.cpp, /bbl::create_solid_texture/);
     assert.match(result.cpp, /bbl::create_pbr_material/);
     assert.match(result.cpp, /bbl::create_sphere/);
-    assert.match(result.cpp, /\.material =/);
+    assert.match(result.cpp, /bbl::set_mesh_material\(v_engine, v_sphere, bbl::create_pbr_material\(/);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
         "upstream/src/scene_core.cpp",

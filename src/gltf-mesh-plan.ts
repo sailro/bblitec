@@ -13,42 +13,71 @@ import { packageMeshSetup, readMeshSetup, type GltfMeshSetup, type RecordedMeshS
 import { packageGltfLight, packagedGltfLights, type GltfLightPlan } from "./gltf-light-plan.js";
 import { packageGltfCamera, packagedGltfCameras, type GltfCameraPlan, type SourceCameraMatrices } from "./gltf-camera-plan.js";
 import {gltfIblSourceUrls, GltfIblRecording, packagedGltfIbl, resolveRecordedIblImage, type GltfIblPlan, type SourceIblImageResolver} from "./gltf-ibl-plan.js";
+import {gltfFlowGraphSourceUrl, GltfFlowGraphRecording, packagedFlowGraphPrograms, type FlowGraphProgram, type PathConverterModule} from "./pinned-flow-graph.js";
+import {gltfAnimationBindingsSourceUrl, packSourceAnimationBindings, readAnimationBindings, type GltfAnimationBindings} from "./gltf-animation-bindings.js";
+import {gltfControllerBindingsSourceUrl, gltfPointerBridgeUrl, gltfPointerSourceUrls, packageAnimationReceipt, readAnimationReceipt,
+    type GltfAnimationReceipt, type PointerBridge, type SourceController, type SourceParse} from "./gltf-animation-pointers.js";
 
 export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
+    animationBindings: GltfAnimationBindings | null;
+    animation: GltfAnimationReceipt | null;
     ibl: GltfIblPlan;
+    flowGraphs: FlowGraphProgram[];
+    /** Source interactivity mesh ownership, indexed by the upload schedule. */
+    flowGraphNodes: Array<number | null>;
     /** Source material indices in assembly order; -1 denotes the implicit default. */
     cores: number[];
     /** Core record indices in native material construction order. */
     materials: number[];
+    /** Raw definition identities selected by the source animation base-color feature. */
+    baseColorDefinitions: number[];
+    baseColorModule: boolean;
     nodeVisibility: boolean[];
     /** Source scene registration indices, independent of upload order. */
     sceneMeshes: number[];
     meshes: Array<{node: number; primitive: number; material: number; geometry: number; name: string; flatNormal: boolean; setup: GltfMeshSetup} & GltfMeshDeformation>;
     geometries: GltfMeshGeometry[];
 }
+/** Actual material/geometry construction available before final animation packaging. */
+export type GltfConstructedMaterialPlan = Pick<GltfMeshPlan, "cores" | "materials" | "meshes" | "geometries">;
 export interface GltfLoadFeatures { cameras?: boolean }
 type CoreMaterial = object;
 type Material = object;
 interface MeshData { _nodeIndex: number; _primitive: JsonObject; _vertexCount: number }
-interface Mesh extends RecordedMeshDeformation, RecordedMeshSetup { material: Material; name: string; _gpu: GltfRecordedGeometry; _flatNormal?: boolean }
+interface Mesh extends RecordedMeshDeformation, RecordedMeshSetup {
+    material: Material; name: string; _gpu: GltfRecordedGeometry; _flatNormal?: boolean;
+    _gltfNodeIndex?: number; _flowGraphAssetScope?: object;
+}
 interface SceneNode { visible?: boolean }
 interface UploadContext {
     _engine: {_device: object}; _json: JsonObject; _binChunk: DataView; _baseUrl: string;
     _matExts: unknown[]; _wrapTex: unknown; recordMaterial(material: CoreMaterial): Promise<Material>;
     recordLightLimit(count: number): never;
     recordIblImage(json: JsonObject, bin: DataView, index: number, base: string): Promise<object>;
+    recordFlowAccessor(pointer: string, context: unknown): unknown;
+    recordRunFlowGraphs(scene: unknown, graphs: unknown, animations: unknown): Promise<never[]>;
+    recordFlowRejection(message: unknown, error: unknown): never;
     _parentMap: Map<number, number>; _worldMatrixCache: Map<number, Float32Array>;
     _nodeMap?: readonly (SceneNode | undefined)[];
 }
 interface MeshFeature {
+    preParse?(json: JsonObject, bin: DataView): Promise<DataView | void>;
     applyMesh?(data: MeshData, mesh: Mesh, context: UploadContext): void | Promise<void>;
     applyAsset?(meshes: Mesh[], root: object, context: UploadContext): Promise<object>;
 }
 interface SourceLoader {
+    __animationBindingsSource: SourceParse;
+    __animationPointerBridge: PointerBridge;
+    __animationControllerSource: SourceController;
+    __prepareAnimationPointers(json: JsonObject, bin: DataView, features: MeshFeature[]):
+        Promise<{clearMaterialMap(meshes: object[]): void; baseColorDefinitions?: WeakSet<object> | null} | undefined>;
+    __animationFeature: MeshFeature;
     __instanceFeature: MeshFeature;
     __visibilityFeature: MeshFeature;
     __lightFeature: MeshFeature;
     __iblFeature: MeshFeature;
+    __flowGraphFeature: MeshFeature;
+    __flowPathConverter: PathConverterModule;
     __resolveIblImage: SourceIblImageResolver;
     __iblShaders: {rgbdShader: string; brdfShader: string};
     __cameraFeature?: MeshFeature;
@@ -57,7 +86,7 @@ interface SourceLoader {
     __getPunctualLight(json: JsonObject, index: number): object | undefined;
     __worldBounds: SourceWorldBounds;
     __addToScene(scene: object, entity: object): void;
-    __applyPreparedAssets(features: MeshFeature[], meshes: Mesh[], root: object, context: UploadContext): Promise<{entities: object[]; cameras?: object[]; _sceneSetup?: (scene: object) => void}>;
+    __applyPreparedAssets(features: MeshFeature[], meshes: Mesh[], root: object, context: UploadContext): Promise<{entities: object[]; cameras?: object[]; flowGraphs?: object[]; flowGraphRuntimes?: unknown; _sceneSetup?: (scene: object) => void}>;
     __prepareMeshes(json: JsonObject): Promise<{features: MeshFeature[]; parentMap: Map<number, number>; worldMatrixCache: Map<number, Float32Array>}>;
     buildNodeHierarchy(json: JsonObject, meshes: Mesh[], data: MeshData[]): {root: object; nodeMap: readonly (SceneNode | undefined)[]};
     extractAllMeshes(json: JsonObject, bin: DataView, base: string, parents: Map<number, number>, world: Map<number, Float32Array>, decoded: Map<unknown, unknown>,
@@ -100,7 +129,10 @@ async function recordingLoader(context: LoweringContext, options: GltfLoadFeatur
         cameraImports = `import __cameraFeature, {enableGltfCameras as __enableGltfCameras} from ${JSON.stringify(cameras)};\nimport * as __cameraMatrices from ${JSON.stringify(cameraMatrices)};`;
         cameraExports.push("__cameraFeature", "__enableGltfCameras", "__cameraMatrices");
     }
+    const pointerBridge = gltfPointerBridgeUrl() + `#loader-${loaderIdentity}`;
+    const animation = gltfAnimationBindingsSourceUrl(context, pointerBridge);
     const skeleton = sourceModule("src/loader-gltf/gltf-feature-skeleton.ts", new Map([
+        ["./gltf-animation.js", animation],
         ["../skeleton/create-skeleton.js", sourceModule("src/skeleton/create-skeleton.ts")],
     ]));
     const morph = sourceModule("src/loader-gltf/gltf-feature-morph.ts", new Map([
@@ -117,6 +149,7 @@ async function recordingLoader(context: LoweringContext, options: GltfLoadFeatur
         ["../scene/visibility.js", sourceModule("src/scene/visibility.ts")],
     ]));
     const lightState = sourceModule("src/loader-gltf/gltf-light-pointer-state.ts");
+    const pointers = gltfPointerSourceUrls(context, animation, lightState, pointerBridge);
     const lightModule = "src/loader-gltf/gltf-feature-lights-punctual.ts";
     const lightFile = context.sourceFile(lightModule);
     const lightMethod = featureMethod(lightFile, "KHR_lights_punctual", "applyAsset");
@@ -141,12 +174,17 @@ async function recordingLoader(context: LoweringContext, options: GltfLoadFeatur
             [`../light/${type}-light.js`, sourceModule(`src/light/${type}-light.ts`)] as const),
     ]));
     const ibl = gltfIblSourceUrls(context);
+    const flowGraphs = gltfFlowGraphSourceUrl(context);
+    const animations = sourceModule("src/loader-gltf/gltf-feature-animations.ts", new Map([["./gltf-animation.js", animation]]));
     const registry = sourceModule("src/loader-gltf/gltf-feature-registry.ts", new Map([
         ["./gltf-feature-skeleton.js", skeleton], ["./gltf-feature-morph.js", morph],
         ["./gltf-feature-gpu-instancing.js", instances], ["./gltf-feature-primitive.js", primitive],
         ["./gltf-ext-node-visibility.js", visibility],
         ["./gltf-feature-lights-punctual.js", lights],
         ["./gltf-ext-lights-image-based.js", ibl.feature],
+        ["./gltf-feature-interactivity.js", flowGraphs],
+        ["./gltf-feature-animations.js", animations],
+        ["./gltf-feature-animation-pointer.js", pointers.feature], ["./gltf-sampler-denorm.js", pointers.converter],
     ]));
     const module = "src/loader-gltf/load-gltf.ts";
     const {file, call, material, uploadContext} = gltfBaseMaterialConstruction(context);
@@ -180,6 +218,23 @@ async function recordingLoader(context: LoweringContext, options: GltfLoadFeatur
         statement.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === "activeBin"));
     if (binaryStart < 2) context.contractError(load, "Expected the glTF feature-discovery boundary before activeBin.");
     const preparation = transpileForBrowser(`async function __prepareMeshes(json) {\n${statements.slice(1, binaryStart).map(statement => statement.getText(file)).join("\n")}\nreturn {features, parentMap, worldMatrixCache};\n}`, module);
+    const binaryLoop = statements[binaryStart + 1];
+    if (!binaryLoop || !ts.isForOfStatement(binaryLoop) || !context.expressionMatchesShape(binaryLoop.expression, "features"))
+        context.contractError(load, "Expected the source sequential pre-parse feature loop.");
+    const pointerFile = context.sourceFile("src/loader-gltf/gltf-feature-animation-pointer.ts");
+    const pointerObject = context.unwrapExpression(context.variableInitializer(pointerFile, "feature"));
+    if (!ts.isObjectLiteralExpression(pointerObject)) context.contractError(pointerObject, "Expected the animation pointer feature.");
+    const pointerId = pointerObject.properties.find(property => ts.isPropertyAssignment(property) && context.propertyName(property.name) === "id");
+    if (!pointerId || !ts.isPropertyAssignment(pointerId)) context.contractError(pointerObject, "Expected the animation pointer feature identity.");
+    const pointerPreparation = transpileForBrowser(`async function __prepareAnimationPointers(json, binChunk, discovered) {
+        const features = discovered.filter(feature => feature.id === ${JSON.stringify(context.stringValue(pointerId.initializer, pointerFile))});
+        if (!features.length) return;
+        const pointer = await import(${JSON.stringify(pointers.feature)});
+        if (features.length !== 1 || features[0] !== pointer.default) throw new Error("Unrepresented source pointer feature identity.");
+        ${[statements[binaryStart]!, binaryLoop].map(statement => statement.getText(file)).join("\n")}
+        if (activeBin !== binChunk) throw new Error("Animation pointer preparation changed binary storage.");
+        return {clearMaterialMap: pointer.__clearPointerMaterialMap, baseColorDefinitions: pointer.__baseColorDefinitions()};
+    }`, module);
     const assetStart = statements.findIndex(statement => ts.isVariableStatement(statement) &&
         statement.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === "assetFragments"));
     if (assetStart < 0) context.contractError(load, "Expected the glTF asset-feature phase.");
@@ -190,9 +245,9 @@ async function recordingLoader(context: LoweringContext, options: GltfLoadFeatur
     // Core material records are opaque to extraction. Their actual assembler
     // and the replaced PBR constructor both execute in the generated loader.
     const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\n${cameraImports}\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
-    const iblImports = `import __iblFeature from ${JSON.stringify(ibl.feature)};\nimport {resolveImage as __resolveIblImage} from ${JSON.stringify(ibl.assembly)};\nconst __iblShaders = ${JSON.stringify({rgbdShader: ibl.rgbdShader, brdfShader: ibl.brdfShader})};`;
-    const loader = await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation + "\n" + assetPhase + "\n" + setupImports + "\n" + iblImports,
-        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__applyPreparedAssets", "__addToScene", "__instanceFeature", "__visibilityFeature", "__lightFeature", "__iblFeature", "__resolveIblImage", "__iblShaders", ...cameraExports, "__getPunctualLight", "__worldBounds"],
+    const iblImports = `import __iblFeature from ${JSON.stringify(ibl.feature)};\nimport {resolveImage as __resolveIblImage} from ${JSON.stringify(ibl.assembly)};\nconst __iblShaders = ${JSON.stringify({rgbdShader: ibl.rgbdShader, brdfShader: ibl.brdfShader})};\nimport __flowGraphFeature from ${JSON.stringify(flowGraphs)};\nimport * as __flowPathConverter from ${JSON.stringify(sourceModule("src/flow-graph/gltf/path-converter.ts"))};\nimport * as __animationBindingsSource from ${JSON.stringify(animation)};\nimport * as __animationPointerBridge from ${JSON.stringify(pointerBridge)};\nimport * as __animationControllerSource from ${JSON.stringify(gltfControllerBindingsSourceUrl(context))};\nimport __animationFeature from ${JSON.stringify(animations)};`;
+    const loader = await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation + "\n" + pointerPreparation + "\n" + assetPhase + "\n" + setupImports + "\n" + iblImports,
+        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__prepareAnimationPointers", "__applyPreparedAssets", "__addToScene", "__instanceFeature", "__visibilityFeature", "__lightFeature", "__iblFeature", "__resolveIblImage", "__iblShaders", "__flowGraphFeature", "__flowPathConverter", "__animationBindingsSource", "__animationPointerBridge", "__animationControllerSource", "__animationFeature", ...cameraExports, "__getPunctualLight", "__worldBounds"],
         new Map([["./gltf-feature-registry.js", registry], ["./gltf-feature-hooks.js", hooks]]))) as SourceLoader;
     if (options.cameras) {
         if (!loader.__enableGltfCameras) throw new Error("Missing glTF camera activation module.");
@@ -215,6 +270,10 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context: Lowe
     const loader = await (context ? recordingLoader(context, options) : pinnedLoaders.get(enabledCameras)!);
     const {identityTexWrap} = await importPinnedModule<{identityTexWrap: unknown}>("loader-gltf/gltf-pbr-builder.js");
     const {features, parentMap, worldMatrixCache} = await loader.__prepareMeshes(document);
+    const pointerPreparation = await loader.__prepareAnimationPointers(document, bin, features);
+    const baseColorDefinitions = asRecords(document.materials).flatMap((definition, index) =>
+        pointerPreparation?.baseColorDefinitions?.has(definition) ? [index] : []);
+    const baseColorModule = pointerPreparation?.baseColorDefinitions !== undefined;
     const cores: number[] = [], coreRecords = new Map<CoreMaterial, number>();
     const sourceMaterials = asRecords(document.materials);
     let imageCache: unknown[] | undefined;
@@ -237,14 +296,26 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context: Lowe
     try {
         const materials: number[] = [];
         const builtRecords = new Map<Material, number>();
-        const associations = new Map<Mesh, MeshData>();
+    const associations = new Map<Mesh, MeshData>();
+    let flowRecording: GltfFlowGraphRecording | undefined;
         const uploadContext: UploadContext = {
             _engine: {_device: device}, _json: document, _binChunk: bin, _baseUrl: "", _matExts: [], _wrapTex: identityTexWrap,
             _parentMap: parentMap, _worldMatrixCache: worldMatrixCache,
             recordLightLimit(count) {
                 throw new Error(`glTF requested MAX_LIGHTS = ${count}; native light capacity is fixed at the pinned limit.`);
             },
-            recordIblImage: (json, bytes, index, base) => resolveRecordedIblImage(loader.__resolveIblImage, json, bytes, index, base),
+        recordIblImage: (json, bytes, index, base) => resolveRecordedIblImage(loader.__resolveIblImage, json, bytes, index, base),
+        recordFlowAccessor(pointer, supplied) {
+            if (!flowRecording) throw new Error("Flow-graph accessors require the constructed hierarchy.");
+            return flowRecording.resolve(pointer, supplied);
+        },
+        recordRunFlowGraphs(scene, graphs, animations) {
+            if (!flowRecording) throw new Error("Flow-graph setup requires the constructed hierarchy.");
+            return flowRecording.run(scene, graphs, animations);
+        },
+        recordFlowRejection(message, error) {
+            throw new Error(`${String(message)} ${error instanceof Error ? error.message : String(error)}; the pinned parser rejected this graph.`, {cause: error});
+        },
             async recordMaterial(material) {
                 const core = coreRecords.get(material);
                 if (core === undefined) throw new Error("glTF mesh planning lost its assembled material identity.");
@@ -264,17 +335,20 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context: Lowe
         }}], uploadContext);
         const {root, nodeMap} = loader.buildNodeHierarchy(document, meshes, data);
         uploadContext._nodeMap = nodeMap;
+        flowRecording = new GltfFlowGraphRecording(loader.__flowPathConverter, document,
+            new Map(nodeMap.flatMap((node, index) => node ? [[node, index] as const] : [])),
+            new Map([...builtRecords].map(([material, index]) => [material, cores[materials[index]!]!])));
         // Other per-asset hooks retain their native adapters until their bindings
         // are represented. The source phase owns hook scheduling and fragment merge.
-        const prepared = features.filter(feature => feature === loader.__instanceFeature || feature === loader.__visibilityFeature || feature === loader.__lightFeature || feature === loader.__cameraFeature || feature === loader.__iblFeature);
+        const prepared = features.filter(feature => feature === loader.__instanceFeature || feature === loader.__visibilityFeature || feature === loader.__lightFeature || feature === loader.__cameraFeature || feature === loader.__iblFeature || feature === loader.__flowGraphFeature);
         const container = await loader.__applyPreparedAssets(prepared, meshes, root, uploadContext);
-        if (Object.keys(container).some(key => key !== "entities" && key !== "cameras" && key !== "_sceneSetup") || !Array.isArray(container.entities) ||
+        if (Object.keys(container).some(key => key !== "entities" && key !== "cameras" && key !== "_sceneSetup" && key !== "flowGraphs") || !Array.isArray(container.entities) ||
             (container._sceneSetup !== undefined && typeof container._sceneSetup !== "function") ||
             (container.cameras !== undefined && (!Array.isArray(container.cameras) || container.cameras.some(camera => !asObject(camera)))) ||
             container.entities[0] !== root || container.entities.slice(1).some(entity => !asObject(entity) || !("lightType" in entity)))
             throw new Error("Unrepresented glTF mesh asset fragment.");
         const scene = {meshes: [] as Mesh[], lights: [] as object[], _groups: new Map<object, object>(),
-            _deferredBuilders: [] as Array<() => Promise<unknown>>, _built: false};
+            _deferredBuilders: [] as Array<() => Promise<unknown>>, _disposables: [] as Array<() => void>, _built: false};
         const iblRecording = new GltfIblRecording(recorder, loader.__iblShaders);
         Object.defineProperties(scene, iblRecording.properties);
         loader.__addToScene(new Proxy(Object.seal(scene), {get(target, key, receiver) {
@@ -334,7 +408,28 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context: Lowe
         const cameras = sourceCameras.map(camera => packageGltfCamera(camera, nodeIndices, packer, loader.__cameraMatrices!));
         const containerCameras = (container.cameras ?? []).map(camera => cameraIndices.get(camera)!);
         const iblPlan = await iblRecording.package(packer);
-        return {plan: {cores, materials, nodeVisibility, sceneMeshes, lights, sceneLights, lightTargets, cameras, containerCameras, ibl: iblPlan,
+        const flowGraphs = flowRecording.package(container.flowGraphs, container.flowGraphRuntimes);
+        const flowScope = asObject(container.flowGraphs?.[0])?._assetScope;
+        const flowGraphNodes = meshes.map(mesh => {
+            if (!flowScope || mesh._flowGraphAssetScope !== flowScope) return null;
+            const node = asIndex(mesh._gltfNodeIndex);
+            if (node === undefined || node >= nodes.length) throw new Error("Invalid source flow-graph mesh node.");
+            return node;
+        });
+        let animation: GltfAnimationReceipt | null = null, animationBindings: GltfAnimationBindings | null = null;
+        if (features.includes(loader.__animationFeature)) {
+            const materialInputs = pointerPreparation
+                ? (await (await import("./pinned-material-arms.js")).materialSubjects(document, {}, {
+                    meshPlan: {cores, materials, meshes: plannedMeshes, geometries: geometryRecords}, deferAnimationPointers: true, ...(context ? {context} : {}),
+                })).map(subject => subject.input) : [];
+            const recording = packageAnimationReceipt(loader.__animationBindingsSource, loader.__animationPointerBridge,
+                loader.__animationControllerSource, document, bin, meshes, parentMap, worldMatrixCache, nodeMap,
+                materialInputs, plannedMeshes.map(mesh => mesh.material), packer, pointerPreparation?.clearMaterialMap ?? (() => {}));
+            animation = recording.receipt;
+            animationBindings = recording.terminal ? packSourceAnimationBindings(recording.terminal, meshes, nodeMap, packer) : null;
+        }
+        return {plan: {cores, materials, baseColorDefinitions, baseColorModule, nodeVisibility, sceneMeshes, lights, sceneLights, lightTargets, cameras, containerCameras, ibl: iblPlan,
+            flowGraphs, flowGraphNodes, animationBindings, animation,
             meshes: plannedMeshes, geometries: geometryRecords}, packer};
     } finally {
         // The source IBL pipeline caches retain their last GPU device. Drop
@@ -352,6 +447,8 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
         (asIndex(index) !== undefined && index < sourceMaterialCount)) ||
         !areGltfIndices(plan.materials, plan.cores.length) || !Array.isArray(plan.meshes) || !Array.isArray(plan.geometries) ||
         !areGltfIndices(plan.sceneMeshes, plan.meshes.length) ||
+        !Array.isArray(plan.flowGraphNodes) || plan.flowGraphNodes.length !== plan.meshes.length ||
+        !plan.flowGraphNodes.every(index => index === null || (asIndex(index) !== undefined && index < nodes.length)) ||
         !Array.isArray(plan.nodeVisibility) || plan.nodeVisibility.length !== nodes.length ||
         !plan.nodeVisibility.every((value): value is boolean => typeof value === "boolean"))
         throw new Error("Invalid or missing packaged glTF mesh schedule.");
@@ -382,8 +479,19 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
             setup: readMeshSetup(mesh.setup, accessorCount),
             ...readMeshDeformation(mesh, accessorCount, skinCount)};
     });
-    return {cores: plan.cores, materials: plan.materials, nodeVisibility: plan.nodeVisibility, sceneMeshes: plan.sceneMeshes,
-        ...packagedGltfLights(document), ...packagedGltfCameras(document), ibl: packagedGltfIbl(document), meshes, geometries};
+    const animationBindings = plan.animationBindings === null ? null
+        : readAnimationBindings(plan.animationBindings, meshes.length, nodes.length, accessorCount);
+    const animation = plan.animation === null ? null : readAnimationReceipt(plan.animation, {nodes: nodes.length,
+        materials: materialIndices.length, accessors: accessorCount, skeletons: animationBindings?.skeletons.length ?? 0,
+        morphs: animationBindings?.morphs.length ?? 0});
+    if (animation?.accepted && !animationBindings) throw new Error("Accepted glTF animation is missing source target bindings.");
+    if (!areGltfIndices(plan.baseColorDefinitions, asRecords(document.materials).length) || typeof plan.baseColorModule !== "boolean")
+        throw new Error("Missing source animation base-color definition identities.");
+    return {cores: plan.cores, materials: plan.materials, baseColorDefinitions: plan.baseColorDefinitions, baseColorModule: plan.baseColorModule,
+        nodeVisibility: plan.nodeVisibility, sceneMeshes: plan.sceneMeshes,
+        ...packagedGltfLights(document), ...packagedGltfCameras(document), ibl: packagedGltfIbl(document),
+        flowGraphs: packagedFlowGraphPrograms(document), flowGraphNodes: plan.flowGraphNodes,
+        animationBindings, animation, meshes, geometries};
 }
 
 export async function packageGltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext, options: GltfLoadFeatures = {}): Promise<Buffer> {

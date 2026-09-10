@@ -6,6 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
@@ -112,7 +113,7 @@ test("removing shared meshes retires each owner once and releases the final geom
     writeFileSync(file, `#include <bblite/runtime.hpp>
 #include <cassert>
 #include <tuple>
-namespace bbl { ${functions} }
+namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())} ${functions} }
 int main() {
     bbl::Engine engine;
     bbl::Scene scene;

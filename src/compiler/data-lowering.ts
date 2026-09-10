@@ -6368,10 +6368,10 @@ export class DataLowerer {
             return `bbl::js::number_truthy(${value.cpp})`;
         }
         if (value.kind === "tuple" || value.kind === "record") {
-            // Arrays and plain objects are truthy even when empty. A
-            // statically specialized callback can expose either shape
-            // directly instead of first storing it as native data.
-            return "true";
+            // Present arrays and objects are truthy even when empty.
+            // Specialized records can also carry an optional-presence
+            // guard instead of storing a native optional value.
+            return value.truthinessCpp ?? value.optionalFoundCpp ?? "true";
         }
         if (
             value.kind === "data" &&

@@ -12,6 +12,7 @@ import {
 } from "../src/lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
+import {lowerGltfAnimationEvaluator} from "../src/lowering/gltf/animation-evaluator.js";
 
 const store = new UpstreamSourceStore();
 
@@ -205,10 +206,11 @@ test("lowers the pinned interpolation functions byte-identically to the shipped 
     );
 });
 
-test("the emitted loader carries the lowered interpolation functions", () => {
-    const adapter = new GltfLowerer(new LoweringContext(store))
+test("the emitted loader carries the complete source sampler evaluator", () => {
+    const context = new LoweringContext(store);
+    const adapter = new GltfLowerer(context)
         .lowerLoaderAdapter();
-    assert.ok(adapter.source.includes(expectedAnimationInterpolation));
+    assert.ok(adapter.source.includes(lowerGltfAnimationEvaluator(context)));
 });
 
 test("a changed slerp threshold flows into the emitted bytes", () => {
@@ -400,9 +402,9 @@ const expectedMatrixCompose = `Matrix trs_matrix(
     result[8] = static_cast<float>(2.0 * (xz + wy) * sz);
     result[9] = static_cast<float>(2.0 * (yz - wx) * sz);
     result[10] = static_cast<float>((1.0 - 2.0 * (xx + yy)) * sz);
-    result[12] = translation.x;
-    result[13] = translation.y;
-    result[14] = translation.z;
+    result[12] = static_cast<float>(translation.x);
+    result[13] = static_cast<float>(translation.y);
+    result[14] = static_cast<float>(translation.z);
     return result;
 }`;
 
@@ -451,7 +453,7 @@ test("the emitted loader carries the source matrix helpers", () => {
     const adapter = new GltfLowerer(new LoweringContext(store))
         .lowerLoaderAdapter();
     for (const segment of [
-        expectedMatrixCompose,
+        lowerMatrixComposeCpp(pinnedFile(composeModule), true),
         expectedMatrixNative,
     ]) {
         assert.ok(

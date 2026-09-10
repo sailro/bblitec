@@ -1,6 +1,9 @@
 #pragma once
 // Included within namespace bbl by runtime.hpp.
 
+struct PropertyAnimationManagerRecord;
+struct GltfWeightedAnimationRuntimeState;
+
 enum class PropertyAnimationPath {
     position,
     scaling,
@@ -88,8 +91,10 @@ struct PropertyAnimationGroupRecord {
     float speed_ratio = 1.0f;
     bool loop = true;
     bool playing = true;
+    bool stopped = false;
     /** `AnimationGroup.weight`: the mixer's contribution, default 1. */
     float weight = 1.0f;
+    std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(targets); }
 };
 
@@ -124,6 +129,8 @@ struct AnimationWeightFadeTarget {
         return target;
     }
 };
+
+using AnimationGroupReference = AnimationWeightFadeTarget;
 
 /**
  * One manager-owned weight tween. The fade scheduler is a pre-update
@@ -167,12 +174,6 @@ struct PropertyAnimationBucket {
 };
 
 /**
- * One clip a manager blends this tick, as the weighted glTF mixer reads
- * it: which clip of the owning asset, and at what weight. The clip state
- * lives inside the asset's own animation runtime, so the manager hands
- * the list across rather than reaching into it.
- */
-/**
  * Which handler a manager's animation-group category has installed.
  * `setAnimationTaskCategoryHandler` keeps one slot, so the second opt-in
  * replaces the first rather than composing with it.
@@ -184,7 +185,6 @@ enum class AnimationCategoryHandler {
 };
 
 struct Engine;
-struct PropertyAnimationManagerRecord;
 using AnimationManagerPreUpdate = std::function<void(
     Engine&,
     PropertyAnimationManagerRecord&,
@@ -193,7 +193,11 @@ using AnimationManagerPreUpdate = std::function<void(
 struct PropertyAnimationManagerRecord {
     /** The engine inferred from the first attached group or scene. */
     Engine* engine = nullptr;
+    /** Source options.engine presence; host association alone does not supply it. */
+    bool source_engine_present = false;
     std::vector<PropertyAnimationGroup> groups;
+    /** Source _animationGroups order, including property and glTF groups. */
+    std::vector<AnimationGroupReference> ordered_groups;
     /** Scheduled by crossFadeAnimationGroups, advanced before the mixer. */
     std::vector<PropertyAnimationWeightFade> weight_fades;
     /** The pin's one stable pre-update slot and the hook it preserves. */
@@ -216,9 +220,10 @@ struct PropertyAnimationManagerRecord {
         AnimationCategoryHandler::none;
     /** The mixers' per-manager scratch, upstream's `scratchByManager`. */
     std::vector<PropertyAnimationBucket> buckets;
-    std::vector<BlendedClip> blend_scratch;
+    std::shared_ptr<GltfWeightedAnimationRuntimeState> source_gltf_animation;
     void gc_trace(const js::TraceVisitor& visitor) const {
         visitor(groups);
+        visitor(ordered_groups);
         visitor(weight_fades);
         visitor(buckets);
         visitor(on_update);
@@ -231,6 +236,8 @@ using PropertyAnimationManager =
 struct PropertyAnimationManagerOptions {
     double fixed_delta_ms = 0.0;
     js::Callback<void(double)> on_update;
+    /** Overrides host inference when source options.engine was absent. */
+    std::optional<bool> source_engine_present;
 };
 
 struct PropertyAnimationGroupOptions {

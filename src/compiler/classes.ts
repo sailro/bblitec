@@ -1299,7 +1299,7 @@ export class ClassLowerer {
             },
         );
         this.context.emit(
-            `auto ${cppName} = bbl::js::make_recursive_group([&](auto& ${self}${cppParameters.length ? ", " : ""}${cppParameters.map(({ name, typeCpp }) => `${typeCpp} ${name}`).join(", ")}) -> ${returnCpp} {`,
+            `auto ${cppName} = bbl::js::make_recursive_group([&]([[maybe_unused]] auto& ${self}${cppParameters.length ? ", " : ""}${cppParameters.map(({ name, typeCpp }) => `${typeCpp} ${name}`).join(", ")}) -> ${returnCpp} {`,
         );
         this.context.increaseIndent();
         this.context.pushScope(prefix);

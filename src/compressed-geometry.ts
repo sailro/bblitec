@@ -821,12 +821,6 @@ async function convertGaussianSplats(
     glb: GlbChunks,
     label: string,
 ): Promise<boolean> {
-    if (
-        !declaredExtensions(glb.json).includes(GAUSSIAN_SPLATTING_EXTENSION)
-    ) {
-        return false;
-    }
-    refuseDracoGaussianSplats(glb.json, label);
     const { extractGltfGaussianSplats } = await import(
         "./splat-packager.js"
     );
@@ -834,7 +828,10 @@ async function convertGaussianSplats(
         glb.json,
         binaryChunkView(glb),
         label,
+        undefined,
+        () => refuseDracoGaussianSplats(glb.json, label),
     );
+    if (splats === undefined) return false;
     dropExtension(glb.json, GAUSSIAN_SPLATTING_EXTENSION);
     if (splats.length === 0) {
         // A document declaring the extension with no GS primitive in it: the

@@ -1426,7 +1426,7 @@ export class ExpressionLowerer {
      * `test/compiler.test.ts` pins both halves.
      */
     private laneValue(expression: ts.Expression): Value {
-        const value = this.compileValue(expression);
+        const value = this.context.compileValue(expression);
         // Array/object members retain the result of a resource-producing call.
         // Reusing the member must never execute its factory again.
         if (isHandleKind(value.kind) && containsEvaluatedCall(expression) && !value.nativeBinding) {

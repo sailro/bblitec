@@ -56,6 +56,7 @@ import {
 import { createRecordingDevice } from "./recording-device.js";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {recordingTransmissionSetter, transmissionRegistrationMarker} from "./pinned-pbr-transmission.js";
 
 /**
  * Builds the pinned material input for one glTF material.
@@ -119,6 +120,8 @@ export interface PinnedMaterialSceneContext {
     /** Records a call to the pinned metallic-reflectance setter while this
      *  material's loader and animation-pointer paths execute. */
     recordMetallicReflectanceRegistration?: () => void;
+    /** Records the actual transmission hook call in the executed material setters. */
+    recordTransmissionRegistration?: () => void;
 }
 
 /** The material indices a `KHR_animation_pointer` channel drives a pointer into. */
@@ -507,12 +510,16 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
         }, { value: true, enumerable: false });\n` +
         `}\n`,
     );
+    const transmissionSetter = recordingTransmissionSetter("transmission");
+    const dispersionSetter = recordingTransmissionSetter("dispersion");
     for (const path of loaderMaterialExtensionModules) {
         const module = await importPinnedModuleUnasynced(
             path,
             [],
             path === "loader-gltf/gltf-ext-dielectric.js"
                 ? new Map([
+                    ["../material/pbr/set-transmission.js", transmissionSetter],
+                    ["../material/pbr/set-dispersion.js", dispersionSetter],
                     [
                         "../material/pbr/set-metallic-reflectance.js",
                         reflectanceRegistrationShim,
@@ -680,6 +687,7 @@ function loaderMaterialState(
 interface PinnedExtensionLayerResult {
     layers: JsonObject;
     metallicReflectanceRegistered: boolean;
+    transmissionRegistered: boolean;
 }
 
 function pinnedExtensionLayers(
@@ -691,12 +699,14 @@ function pinnedExtensionLayers(
     };
     const layers: JsonObject = {};
     let metallicReflectanceRegistered = false;
+    let transmissionRegistered = false;
     for (const extension of executedPin().materialExtensions) {
         const fragment = assertPinnedSync(
             extension.applyMaterial(mat, ctx),
             `${extension.id}.applyMaterial`,
         );
         if (fragment) {
+            if (fragment[transmissionRegistrationMarker] === true) transmissionRegistered = true;
             if (fragment[reflectanceRegistrationMarker] === true) {
                 metallicReflectanceRegistered = true;
             }
@@ -711,7 +721,7 @@ function pinnedExtensionLayers(
             );
         }
     }
-    return { layers, metallicReflectanceRegistered };
+    return { layers, metallicReflectanceRegistered, transmissionRegistered };
 }
 
 /**
@@ -744,10 +754,12 @@ export function pinnedMaterialInputFromGltf(
     const {
         layers,
         metallicReflectanceRegistered,
+        transmissionRegistered,
     } = pinnedExtensionLayers(mat, imageOf);
     if (metallicReflectanceRegistered) {
         scene.recordMetallicReflectanceRegistration?.();
     }
+    if (transmissionRegistered) scene.recordTransmissionRegistration?.();
     const textures = pin.buildDefaultPbrTexturesExt(
         uploadEngine,
         mat,

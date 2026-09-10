@@ -4,6 +4,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { meshProfileBindingCpp } from "../src/lowering/resource-profiles.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
@@ -125,6 +127,7 @@ test("shared returns preserve identity, captures and argument evaluation", { ski
         #include <cassert>
         namespace { unsigned int constructions = 0; }
         namespace bbl {
+            ${lowerMeshMaterialSetter(new LoweringContext())}
             Engine create_engine(EngineOptions) { return {}; }
             MeshHandle create_box(Engine& engine, BoxOptions options) {
                 const std::array<float, 7> widths{2, 3, 4, 5, 6, 7, 8};

@@ -1,13 +1,12 @@
 import ts from "typescript";
+import type {LoweringContext} from "../context.js";
+import {lowerGltfBoneVisibility} from "./bone-visibility.js";
 import { stringLiteral } from "../../cpp-literals.js";
 import {
     coalescedPropertyDefault,
     findNodes,
-    declarationOf,
-    identifierText,
     refuseModule,
     requirePropertyReads,
-    pinnedNumericValue,
     topLevelFunction,
     unwrapExpression,
 } from "./shared.js";
@@ -23,132 +22,6 @@ function callsNamed(root: ts.Node, name: string): ts.CallExpression[] {
             ts.isPropertyAccessExpression(node.expression) &&
             node.expression.name.text === name,
     );
-}
-
-/** `<identifier> & <numeric literal>`, as the literal it tests. */
-function maskBit(
-    file: ts.SourceFile,
-    expression: ts.Expression,
-): number | undefined {
-    const node = unwrapExpression(expression);
-    if (
-        !ts.isBinaryExpression(node) ||
-        node.operatorToken.kind !== ts.SyntaxKind.AmpersandToken ||
-        identifierText(node.left) === undefined ||
-        !ts.isNumericLiteral(unwrapExpression(node.right))
-    ) {
-        return undefined;
-    }
-    return pinnedNumericValue(SYMBOL, file, node.right);
-}
-
-/**
- * The hidden bit, read from the phase that applies it.
- *
- * `applyOverridesToTRS` has two phases and the split is the whole point of
- * the feature: the transform bits are written *before* channel evaluation
- * so a clip that animates the same bone wins, and the hidden bit is
- * written *after* it, which is what keeps `setBoneVisible` in force on a
- * rig that bakes a constant scale track onto every bone. Only the second
- * phase is reached here -- `setBoneVisible` is the one lowered mutator, so
- * no override this port can build carries a transform bit -- and the bit
- * is read out of the `hiddenOnly` branch rather than restated, so a
- * renumbering fails here.
- */
-function hiddenMaskBit(boneControl: ts.SourceFile): number {
-    const applier = topLevelFunction(
-        boneControl,
-        "applyOverridesToTRS",
-    );
-    const hiddenOnly = findNodes(
-        applier,
-        (node): node is ts.IfStatement =>
-            ts.isIfStatement(node) &&
-            findNodes(
-                node.expression,
-                (inner): inner is ts.Identifier =>
-                    ts.isIdentifier(inner) &&
-                    inner.text === "hiddenOnly",
-            ).length > 0,
-    )[0];
-    const bit = hiddenOnly
-        ? findNodes(
-              hiddenOnly.thenStatement,
-              (node): node is ts.IfStatement => ts.isIfStatement(node),
-          )
-              .map((node) => maskBit(boneControl, node.expression))
-              .find((value) => value !== undefined)
-        : undefined;
-    if (bit === undefined) {
-        refuseModule(
-            SYMBOL,
-            "applyOverridesToTRS no longer applies a hidden bit in a " +
-                "phase of its own",
-        );
-    }
-    return bit;
-}
-
-/**
- * `setBoneVisible`'s two arms, asserted rather than emitted from the body:
- * hiding sets the bit and bakes, showing clears exactly that bit, drops an
- * override the clear emptied, and bakes only when there was one.
- */
-function assertVisibilityArms(
-    boneControl: ts.SourceFile,
-    hidden: number,
-): void {
-    const declaration = topLevelFunction(
-        boneControl,
-        "setBoneVisible",
-    );
-    const assigns = (
-        operator: ts.SyntaxKind,
-        right: (node: ts.Expression) => boolean,
-    ): boolean =>
-        findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === operator &&
-                right(node.right),
-        ).length > 0;
-    const setsBit = assigns(
-        ts.SyntaxKind.BarEqualsToken,
-        (right) =>
-            ts.isNumericLiteral(unwrapExpression(right)) &&
-            pinnedNumericValue(SYMBOL, boneControl, right) === hidden,
-    );
-    // The clear is `&= ~<hidden>`: the complement of the same bit, not any
-    // mask, because the emitted arm hardcodes that one.
-    const clearsBit = assigns(
-        ts.SyntaxKind.AmpersandEqualsToken,
-        (right) => {
-            const node = unwrapExpression(right);
-            return (
-                ts.isPrefixUnaryExpression(node) &&
-                node.operator === ts.SyntaxKind.TildeToken &&
-                pinnedNumericValue(
-                    SYMBOL,
-                    boneControl,
-                    node.operand,
-                ) === hidden
-            );
-        },
-    );
-    if (
-        !setsBit ||
-        !clearsBit ||
-        callsNamed(declaration, "delete").length === 0 ||
-        callsNamed(declaration, "_bake").length !== 2
-    ) {
-        refuseModule(
-            SYMBOL,
-            "setBoneVisible no longer sets the hidden bit and bakes on " +
-                "one arm and clears exactly that bit, deletes an emptied " +
-                "override and bakes on the other",
-        );
-    }
 }
 
 /**
@@ -205,50 +78,6 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
 }
 
 /**
- * The bake's own statement order, which is the contract the emitted bake
- * mirrors with a working pose of its own: reset to rest, apply the
- * overrides, compose the node worlds, write the palettes.
- */
-function assertBakeOrder(boneControl: ts.SourceFile): void {
-    const builder = topLevelFunction(boneControl, "buildSkeletons");
-    const bake = declarationOf(builder, "bake")?.initializer;
-    const body =
-        bake && ts.isArrowFunction(bake) && ts.isBlock(bake.body)
-            ? bake.body
-            : undefined;
-    if (!body) {
-        refuseModule(
-            SYMBOL,
-            "buildSkeletons no longer builds its eager bake as one arrow",
-        );
-    }
-    const expected = [
-        "resetTRS",
-        "applyOverridesToTRS",
-        "applyOverridesToTRS",
-        "computeNodeWorldMatrices",
-        "writeBoneTextures",
-    ];
-    const named = findNodes(
-        body,
-        (node): node is ts.CallExpression => ts.isCallExpression(node),
-    )
-        .map((node) => identifierText(node.expression))
-        .filter(
-            (name): name is string =>
-                name !== undefined && expected.includes(name),
-        );
-    if (named.join(",") !== expected.join(",")) {
-        refuseModule(
-            SYMBOL,
-            "the eager bake no longer resets to rest, applies both " +
-                "override phases, composes the node worlds and writes the " +
-                "palettes in that order",
-        );
-    }
-}
-
-/**
  * `extractSkinGroups` builds one group per NODE, which is what makes a skin
  * instanced twice two skeletons and a mesh split into primitives one -- the
  * grouping the emitted loader mirrors by de-duplicating its own bindings on
@@ -293,29 +122,14 @@ interface LoweredBoneControl {
     entryPoints: string;
 }
 
-/**
- * The opt-in bone-control chunk (`src/skeleton/bone-control.ts` plus its
- * own `src/skeleton/skeleton-pose.ts`).
- *
- * Nothing here emits arithmetic: the bake is the node-world composition and
- * palette product the loader already owns, run over a working pose this
- * feature supplies. Upstream draws exactly that line too --
- * `skeleton-pose.ts` says it "mirrors the per-frame math the animation tick
- * runs" and exists only so the always-fetched tick stays byte identical
- * without bone control. So what this lowering owes is the facts the two
- * copies must agree on, each read from the declaration that states it.
- */
-export function lowerBoneControl(
-    boneControlFile: ts.SourceFile,
-): LoweredBoneControl {
-    const hidden = hiddenMaskBit(boneControlFile);
-    assertVisibilityArms(boneControlFile, hidden);
-    assertBakeOrder(boneControlFile);
+/** Bone handles adapt source skeleton identity; pose and visibility bodies derive from source. */
+export function lowerBoneControl(context: LoweringContext): LoweredBoneControl {
+    const boneControlFile = context.sourceFile("src/skeleton/bone-control.ts");
     assertSkinGrouping(boneControlFile);
     const unnamedBonePrefix = nameLookupPrefix(boneControlFile);
     return {
-        loading: loadingCpp(unnamedBonePrefix, hidden),
-        entryPoints: entryPointsCpp(hidden),
+        loading: loadingCpp(unnamedBonePrefix),
+        entryPoints: lowerGltfBoneVisibility(context) + entryPointsCpp(),
     };
 }
 
@@ -323,10 +137,7 @@ export function lowerBoneControl(
  * The skeleton build, the asset-wide override table and the eager bake, as
  * they are emitted inside the loader's animated block.
  */
-function loadingCpp(
-    unnamedBonePrefix: string,
-    hidden: number,
-): string {
+function loadingCpp(unnamedBonePrefix: string): string {
     return `
         // src/skeleton/bone-control.ts#buildSkeletons. One Skeleton per
         // NODE carrying both a skin and mesh primitives, which is the
@@ -385,116 +196,30 @@ function loadingCpp(
             engine.skeletons.push_back(std::move(skeleton));
             asset.skeletons.push_back(SkeletonHandle{skeleton_index});
         }
-        // The override map is asset-wide upstream and keyed by node index,
-        // because one skin is often split across meshes and an override
-        // may reach across skins through the hierarchy. One slot per node
-        // says the same thing.
-        asset.bone_overrides.assign(
-            animation_runtime->nodes.size(), BoneOverride{});
-        // The eager bake: rest pose, the hidden phase, the node worlds and
-        // the palettes. It composes a working pose of its own rather than
-        // walking the live node TRS, exactly as upstream keeps
-        // skeleton-pose.ts apart from the animation tick -- so a bake
-        // moves the skins and nothing else, and it answers with no
-        // animation running at all.
-        asset.bake_skeletons =
-            [animation_runtime, &engine, asset_index]() {
-            const AssetRecord& owner = engine.assets[asset_index];
-            const std::size_t node_count =
-                animation_runtime->nodes.size();
-            // resetTRS
-            std::vector<Vec3> translation(node_count);
-            std::vector<Vec4> rotation(node_count);
-            std::vector<Vec3> scaling(node_count);
-            for (std::size_t index = 0; index < node_count; ++index) {
-                const AnimatedNode& node =
-                    animation_runtime->nodes[index];
-                translation[index] = node.rest_translation;
-                rotation[index] = node.rest_rotation;
-                scaling[index] = node.rest_scale;
-            }
-            // applyOverridesToTRS, hidden phase. The pin's first phase
-            // writes the translation, rotation and scale bits before
-            // channel evaluation; no override this port can build carries
-            // one, because \`setBoneVisible\` is the single lowered
-            // mutator, so only the phase it fills is emitted.
-            for (
-                std::size_t index = 0;
-                index < node_count &&
-                index < owner.bone_overrides.size();
-                ++index) {
-                if (
-                    (owner.bone_overrides[index].mask &
-                     ${hidden}u) != 0u) {
-                    scaling[index] = Vec3{0.0f, 0.0f, 0.0f};
-                }
-            }
-            // computeNodeWorldMatrices, over that working pose. The root
-            // flip stays folded into native_matrix at the palette, which
-            // is where every other node world in this loader carries it.
-            std::vector<Matrix> world(node_count);
-            std::vector<bool> computed(node_count, false);
-            std::vector<bool> computing(node_count, false);
-            std::function<const Matrix&(std::size_t)> bake_world =
-                [&](std::size_t index) -> const Matrix& {
-                if (computed[index]) return world[index];
-                if (computing[index]) {
-                    throw std::runtime_error(
-                        "glTF node hierarchy contains a cycle.");
-                }
-                computing[index] = true;
-                const AnimatedNode& node =
-                    animation_runtime->nodes[index];
-                const Matrix local = node.has_matrix
-                    ? node.matrix
-                    : trs_matrix(
-                          translation[index],
-                          rotation[index],
-                          scaling[index]);
-                world[index] = node.parent >= 0
-                    ? upstream::matrix_product(
-                          bake_world(
-                              static_cast<std::size_t>(node.parent)),
-                          local)
-                    : local;
-                computing[index] = false;
-                computed[index] = true;
-                return world[index];
+        // Each bake uses private rest/world scratch and shared source palette resources.
+        if (!animation_runtime->source_skeletons.entries.empty()) {
+            asset.bone_overrides.assign(animation_runtime->source_nodes.size(), BoneOverride{});
+            auto bone_pose = std::make_shared<GltfAnimationPoseState>();
+            bone_pose->nodes = animation_runtime->source_nodes;
+            bone_pose->skeletons = animation_runtime->source_skeletons;
+            gltf_initialize_skeleton_pose(*bone_pose);
+            asset.bake_skeletons = [animation_runtime, bone_pose, &engine, asset_index]() {
+                const auto overrides = gltf_animation_override_rows(engine, asset_index);
+                const auto apply_overrides = [&](auto& trs, double count, bool hidden) {
+                    gltf_apply_animation_bone_overrides(overrides, trs, count, hidden);
+                };
+                gltf_bake_skeleton_pose(*bone_pose, static_cast<double>(overrides.size()),
+                    [](double) -> const GltfAnimationFloats* { return nullptr; },
+                    apply_overrides, gltf_animation_compose, gltf_animation_multiply,
+                    animation_runtime->upload_bones);
+                animation_runtime->publish_pose();
             };
-            // writeBoneTextures: the same joint-world times inverse-bind
-            // product the pose pass composes, in the same convention --
-            // the mesh world is conjugated into the palette here, which is
-            // what native_matrix applies. Palettes and nothing else, as
-            // the pin's own bake writes bone textures and nothing else.
-            for (const AnimatedMeshBinding& binding :
-                 animation_runtime->meshes) {
-                if (
-                    binding.skin >=
-                    animation_runtime->skins.size()) {
-                    continue;
-                }
-                const SkinRuntime& skin =
-                    animation_runtime->skins[binding.skin];
-                MeshRecord& mesh_record =
-                    engine.meshes.at(binding.mesh);
-                mesh_record.bone_matrices.clear();
-                for (
-                    std::size_t joint = 0;
-                    joint < skin.joints.size();
-                    ++joint) {
-                    mesh_record.bone_matrices.push_back(
-                        native_matrix(
-                            upstream::matrix_product(
-                                bake_world(skin.joints[joint]),
-                                skin.inverse_bind_matrices[joint])));
-                }
-                ++mesh_record.bone_matrices_version;
-            }
-        };`;
+        }`;
+
 }
 
 /** `getBoneByName` and `setBoneVisible`, as the loader's own free functions. */
-function entryPointsCpp(hidden: number): string {
+function entryPointsCpp(): string {
     return `
 // src/skeleton/bone-control.ts#getBoneByName, which is one
 // skeleton._byName.get(name). The map keeps the FIRST bone carrying a
@@ -538,15 +263,9 @@ void set_bone_visible(
     AssetRecord& owner = engine.assets[asset];
     const std::uint32_t node = engine.bones[bone.value].node_index;
     if (node >= owner.bone_overrides.size()) return;
-    BoneOverride& entry = owner.bone_overrides[node];
-    if (!visible) {
-        entry.mask |= ${hidden}u;
+    gltf_set_bone_visibility(owner.bone_overrides, node, visible, [&] {
         if (owner.bake_skeletons) owner.bake_skeletons();
-        return;
-    }
-    if ((entry.mask & ${hidden}u) == 0u) return;
-    entry.mask &= ~static_cast<std::uint32_t>(${hidden}u);
-    if (owner.bake_skeletons) owner.bake_skeletons();
+    });
 }
 `;
 }

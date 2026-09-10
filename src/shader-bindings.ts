@@ -9,6 +9,12 @@ function registerKey(register: Register): string {
     return `${register.kind}:${register.space}:${register.index}`;
 }
 
+/** Integer textures cannot be sampled; SDL binds their Load() SRVs separately. */
+function integerTextureRegisters(source: string): Set<string> {
+    return new Set([...source.matchAll(/Texture\w*<\s*(?:uint|int)\d?\s*>\s+\w+\s*:\s*register\(t(\d+)(?:, space(\d+))?/g)]
+        .map(match => registerKey({ kind: "t", index: Number(match[1]), space: Number(match[2] ?? 0) })));
+}
+
 function compactRegisters(source: string, vertex?: boolean): string {
     const pattern = vertex === undefined
         ? /register\(([tsbu])(\d+), space(\d+)\)/g
@@ -23,12 +29,15 @@ function compactRegisters(source: string, vertex?: boolean): string {
         storage.add(registerKey({ kind: "t", index: Number(match[1]), space: Number(match[2] ?? 0) }));
     }
     const mapping = new Map<string, number>();
+    const integerTextures = integerTextureRegisters(source);
+    const resourceOrder = (register: Register): number => storage.has(registerKey(register)) ? 2
+        : integerTextures.has(registerKey(register)) ? 1 : 0;
     for (const kind of ["b", "t", "s", "u"]) {
         const ordered = [...registers.values()].filter(register => register.kind === kind);
         ordered.sort((left, right) => {
-            const storageOrder = vertex !== undefined && kind === "t"
-                ? Number(storage.has(registerKey(left))) - Number(storage.has(registerKey(right))) : 0;
-            return storageOrder || left.space - right.space || left.index - right.index;
+            const storageOrder = kind === "t" ? resourceOrder(left) - resourceOrder(right) : 0;
+            return (vertex === undefined ? left.space - right.space : 0) || storageOrder ||
+                left.space - right.space || left.index - right.index;
         });
         let previousSpace: number | undefined;
         let index = 0;
@@ -90,16 +99,24 @@ export interface ShaderSlot {
 /** Storage slots follow the sampled-texture prefix within each register space. */
 export function shaderStageSlots(hlsl: string): ShaderSlot[] {
     const sampledBySpace = new Map<number, number>();
-    for (const match of hlsl.matchAll(/Texture\w*(?:<[^>]+>)?\s+\w+\s*:\s*register\(t\d+(?:, space(\d+))?/g)) {
-        const space = Number(match[1] ?? 0);
-        sampledBySpace.set(space, 1 + (sampledBySpace.get(space) ?? 0));
+    const texturesBySpace = new Map<number, number>();
+    const integerTextures = integerTextureRegisters(hlsl);
+    for (const match of hlsl.matchAll(/Texture\w*(?:<[^>]+>)?\s+\w+\s*:\s*register\(t(\d+)(?:, space(\d+))?/g)) {
+        const space = Number(match[2] ?? 0);
+        texturesBySpace.set(space, 1 + (texturesBySpace.get(space) ?? 0));
+        if (!integerTextures.has(registerKey({ kind: "t", index: Number(match[1]), space }))) {
+            sampledBySpace.set(space, 1 + (sampledBySpace.get(space) ?? 0));
+        }
     }
     const slots: ShaderSlot[] = [];
     for (const match of hlsl.matchAll(/(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*(?:<[^>]+>)?|Sampler\w*State)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)(?:, space(\d+))?/g)) {
         const storage = match[3] !== undefined;
+        const space = Number(match[6] ?? 0);
+        const integer = match[4] === "t" && integerTextures.has(registerKey({ kind: "t", index: Number(match[5]), space }));
         slots.push({
-            kind: storage ? "r" : match[4]!,
-            index: Number(match[5]) - (storage ? (sampledBySpace.get(Number(match[6] ?? 0)) ?? 0) : 0),
+            kind: storage ? "r" : integer ? "i" : match[4]!,
+            index: Number(match[5]) - (storage ? (texturesBySpace.get(space) ?? 0)
+                : integer ? (sampledBySpace.get(space) ?? 0) : 0),
             name: (match[1] ?? match[3] ?? match[2])!,
         });
     }

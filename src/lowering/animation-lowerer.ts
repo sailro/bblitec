@@ -6,6 +6,9 @@ import {
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerAnimationManagerClock } from "./animation-manager.js";
 import { lowerAnimationInterpolationCpp } from "./gltf/animation-interpolation.js";
+import {lowerAnimationGroupRegistration} from "./gltf/animation-group-registration.js";
+import {lowerPropertyAnimationPlayback} from "./animation-property-playback.js";
+import {lowerAnimationManagerDispatch} from "./animation-manager-dispatch.js";
 
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -679,23 +682,9 @@ void set_animation_additive(
     // mixer as its category handler. setAnimationTaskCategoryHandler
     // keeps ONE handler per manager, so this replaces rather than
     // composes.
-    for (
-        const PropertyAnimationManager& manager :
-        engine.animation_managers) {
-        if (!manager) continue;
-        bool owns = false;
-        for (
-            const AnimationGroupHandle attached :
-            manager->gltf_groups) {
-            if (attached.value == group.value) {
-                owns = true;
-                break;
-            }
-        }
-        if (!owns) continue;
+    if (const auto manager = record.animation_owner.lock()) {
         manager->category_handler =
             AnimationCategoryHandler::gltf_mixer;
-        break;
     }
 }
 
@@ -1198,9 +1187,7 @@ float advance_property_group_time(
  * category-handler contract: true means the manager skips the
  * animation-group tasks it would otherwise have ticked.
  *
- * Every group a property manager owns carries a mixer upstream, and a
- * stopped one cannot be reached -- stopAnimation is lowered for glTF
- * groups alone — so the pinned skip reduces to the weight test.
+ * Property and glTF groups share the source registration order.
  */
 bool update_weighted_property_animations(
     Engine& engine,
@@ -1214,7 +1201,7 @@ bool update_weighted_property_animations(
     }
     bool contested = false;
     for (const PropertyAnimationGroup& group : manager.groups) {
-        if (!group || group->weight == 1.0f) continue;
+        if (!group || group->stopped || group->weight == 1.0f) continue;
         for (std::size_t index = 0;
              index < group->clip.tracks.size();
              ++index) {
@@ -1228,8 +1215,14 @@ bool update_weighted_property_animations(
         }
     }
     if (!contested) return false;
-    for (const PropertyAnimationGroup& group : manager.groups) {
-        if (!group) continue;
+    for (std::size_t group_index = 0; group_index < manager.ordered_groups.size(); ++group_index) {
+        const AnimationGroupReference reference = manager.ordered_groups[group_index];
+        if (reference.kind != AnimationWeightFadeTargetKind::property) {
+            tick_animation_group_reference(engine, reference, delta_ms);
+            continue;
+        }
+        const PropertyAnimationGroup group = reference.property_group;
+        if (!group || group->stopped) continue;
         const float time =
             advance_property_group_time(group, delta_ms);
         const float weight = group->weight;
@@ -1286,12 +1279,8 @@ bool update_weighted_property_animations(
      * scene that drives a loaded file's clips itself instead of letting
      * `addToScene` register them with the scene.
      *
-     * A group's clip state lives in its asset's own runtime, so the
-     * manager hands that runtime the clips it owns and their weights;
-     * `animation_tick_clips` advances exactly those, the way upstream
-     * ticks each attached group through its own controller. The clips a
-     * manager does not own keep the pose they last wrote, which is what
-     * a group nothing ticks does upstream.
+     * The ordered registry spans property groups and all attached assets.
+     * The source mixer runs once over that registry before task fallback.
      */
     private lowerManagedGroups(): string {
         const taskModule =
@@ -1351,15 +1340,11 @@ void add_animation_groups(
             throw std::runtime_error(
                 "Invalid animation group handle.");
         }
-        // Attaching a group twice is the pin's own no-op.
-        const auto found = std::find_if(
-            owner.gltf_groups.begin(),
-            owner.gltf_groups.end(),
-            [group](const AnimationGroupHandle candidate) {
-                return candidate.value == group.value;
-            });
-        if (found != owner.gltf_groups.end()) continue;
-        owner.gltf_groups.push_back(group);
+        auto& record = engine.animation_groups[group.value];
+        register_animation_group(manager, record.animation_owner, record.name, [&] {
+            owner.ordered_groups.push_back(AnimationGroupReference::from_gltf(group));
+            owner.gltf_groups.push_back(group);
+        });
     }
 }
 
@@ -1393,6 +1378,8 @@ void enable_animation_blending(
             weightFades?: boolean;
             /** The scene drives a loaded file's clips from a manager. */
             managedGroups?: boolean;
+            /** A generated glTF unit supplies the manager-wide mixer dispatcher. */
+            gltfLoaderAvailable?: boolean;
             /** Exact observable camera setters required by a temporal task. */
             cameraVersions?: boolean;
         } = {},
@@ -1401,6 +1388,7 @@ void enable_animation_blending(
             blending = false,
             weightFades = false,
             managedGroups = false,
+            gltfLoaderAvailable = false,
             cameraVersions = false,
         } = options;
         const propertyModule = "src/animation/property-animation.ts";
@@ -2044,8 +2032,8 @@ void cross_fade_animation_groups(
         manager.category_handler ==
             AnimationCategoryHandler::property_mixer &&
         update_weighted_property_animations(
-            engine, manager, delta_ms)) {
-        return;
+            engine, manager, static_cast<float>(delta_ms))) {
+        return true;
     }`
             : "";
         // `_preUpdate` runs before the category handler in the pin. The
@@ -2054,7 +2042,7 @@ void cross_fade_animation_groups(
         const weightFadeTick = weightFades
             ? `
     if (manager.pre_update) {
-        manager.pre_update(engine, manager, delta_ms);
+        manager.pre_update(engine, manager, static_cast<float>(delta_ms));
     }`
             : "";
         const managerEntryPoints = managedGroups
@@ -2107,59 +2095,15 @@ PropertyAnimationManagerRecord& bind_manager_engine(
     return owner;
 }
 
+${lowerAnimationGroupRegistration(this.context)}
+${lowerPropertyAnimationPlayback(this.context)}
+${lowerAnimationManagerDispatch(this.context)}
 `;
-        // A glTF group's clip advances inside its asset's own runtime, so
-        // the manager ticks each distinct asset it holds groups from,
-        // once per frame.
-        const managedGroupTick = managedGroups
+        const managedGroupTick = managedGroups && gltfLoaderAvailable
             ? `
-    std::vector<std::uint32_t> ticked_assets;
-    for (const AnimationGroupHandle group : manager.gltf_groups) {
-        if (group.value >= engine.animation_groups.size()) continue;
-        const std::uint32_t asset =
-            engine.animation_groups[group.value].asset;
-        if (asset >= engine.assets.size()) continue;
-        if (
-            std::find(
-                ticked_assets.begin(),
-                ticked_assets.end(),
-                asset) != ticked_assets.end()) {
-            continue;
-        }
-        ticked_assets.push_back(asset);
-        // The clips this manager owns, at the weights it holds. Reusing
-        // the manager's own scratch keeps the capacity across frames.
-        manager.blend_scratch.clear();
-        for (const AnimationGroupHandle attached :
-             manager.gltf_groups) {
-            if (
-                attached.value >= engine.animation_groups.size()) {
-                continue;
-            }
-            const AnimationGroupRecord& entry =
-                engine.animation_groups[attached.value];
-            if (entry.asset != asset) continue;
-            manager.blend_scratch.push_back(
-                BlendedClip{entry.clip, entry.weight});
-        }
-        AssetRecord& record = engine.assets[asset];
-        // The manager's own weighted pass first, exactly where the pin
-        // runs its category handler: when it drives the tick, the clips
-        // it holds are not advanced a second time.
-        if (
-            manager.category_handler ==
-                AnimationCategoryHandler::gltf_mixer &&
-            record.animation_blend &&
-            record.animation_blend(
-                manager.blend_scratch,
-                delta_ms)) {
-            continue;
-        }
-        if (record.animation_tick_clips) {
-            record.animation_tick_clips(
-                manager.blend_scratch,
-                delta_ms);
-        }
+    if (manager.category_handler == AnimationCategoryHandler::gltf_mixer &&
+        update_weighted_gltf_animation_groups(engine, manager, delta_ms)) {
+        return true;
     }`
             : "";
 
@@ -2315,9 +2259,10 @@ ${this.propertyWriterArms("mesh", "        ")}
     mark_mesh_runtime_transform(engine, MeshHandle{target.index});
 }
 ${trackArity}
-void apply_group(
+void apply_group_at(
     Engine& engine,
-    const PropertyAnimationGroup& group) {
+    const PropertyAnimationGroup& group,
+    float time) {
     if (!group) {
         throw std::runtime_error(
             "Property animation group is null.");
@@ -2332,36 +2277,22 @@ void apply_group(
             group->targets[index],
             track.path,
             track.component,
-            evaluate_track(track, group->current_time));
+            evaluate_track(track, time));
     }
+}
+
+void apply_group(Engine& engine,const PropertyAnimationGroup& group) {
+    if (group) apply_group_at(engine,group,group->current_time);
 }
 
 void tick_group(
     Engine& engine,
     const PropertyAnimationGroup& group,
-    float delta_ms) {
-    if (!group || !group->playing) return;
-    group->current_time +=
-        delta_ms * ${this.context.floatLiteral(1 / msPerSecond)} * group->speed_ratio;
-    const float duration =
-        group->to_time - group->from_time;
-    if (duration <= 0.0f) return;
-    if (group->loop) {
-        group->current_time =
-            group->from_time +
-            std::fmod(
-                group->current_time - group->from_time,
-                duration);
-        if (group->current_time < group->from_time) {
-            group->current_time += duration;
-        }
-    } else {
-        group->current_time = std::clamp(
-            group->current_time,
-            group->from_time,
-            group->to_time);
-    }
-    apply_group(engine, group);
+    double delta_ms) {
+    if (!group) return;
+    tick_property_animation_group(*group,delta_ms,[&](double time) {
+        apply_group_at(engine,group,static_cast<float>(time));
+    });
 }
 ${mixerSource}${weightFadeSource}
 /**
@@ -2372,10 +2303,13 @@ ${mixerSource}${weightFadeSource}
 void tick_manager(
     Engine& engine,
     PropertyAnimationManagerRecord& manager,
-    float delta_ms) {${weightFadeTick}${blendingTick}
-    for (const PropertyAnimationGroup& group : manager.groups) {
-        tick_group(engine, group, delta_ms);
-    }${managedGroupTick}
+    double delta_ms) {
+    dispatch_animation_manager_groups(manager,delta_ms,[&]() {${weightFadeTick}
+    },[&]() -> bool {${blendingTick}${managedGroupTick}
+        return false;
+    },[&](const AnimationGroupReference& group,double step) {
+        tick_animation_group_reference(engine,group,step);
+    });
 }
 
 /**
@@ -2419,18 +2353,37 @@ ${clock.tickWrites.replaceAll("    ", "            ")}
 
 } // namespace
 
+void tick_animation_group_reference(
+    Engine& engine, const AnimationGroupReference& reference, double delta_ms) {
+    if (reference.kind == AnimationWeightFadeTargetKind::property) {
+        const PropertyAnimationGroup group = reference.property_group;
+        tick_group(engine, group, delta_ms);
+        return;
+    }
+    if (reference.gltf_group.value >= engine.animation_groups.size()) return;
+    const AnimationGroupRecord& group = engine.animation_groups[reference.gltf_group.value];
+    if (group.asset >= engine.assets.size()) return;
+    AssetRecord& asset = engine.assets[group.asset];
+    const auto owner = group.animation_owner.lock();
+    if (asset.animation_tick_group) asset.animation_tick_group(group.clip, delta_ms,
+        owner && owner->source_engine_present);
+}
+
 PropertyAnimationManager create_animation_manager(
     PropertyAnimationManagerOptions options) {
     auto manager = js::make_gc_shared<PropertyAnimationManagerRecord>();
     manager->fixed_delta_ms = options.fixed_delta_ms;
     manager->on_update = std::move(options.on_update);
+    manager->source_engine_present = options.source_engine_present.value_or(false);
     return manager;
 }
 
 PropertyAnimationManager create_animation_manager(
     Engine& engine,
     PropertyAnimationManagerOptions options) {
+    const bool source_engine_present = options.source_engine_present.value_or(true);
     auto manager = create_animation_manager(std::move(options));
+    manager->source_engine_present = source_engine_present;
     bind_manager_engine(manager, engine);
     return manager;
 }
@@ -2442,7 +2395,7 @@ void update_animation_manager(
     PropertyAnimationManagerRecord& owner = bind_manager_engine(manager, engine);
     const double step = ${clock.step};
     if (${clock.stepGuard}) return;
-    tick_manager(engine, owner, static_cast<float>(step));
+    tick_manager(engine, owner, step);
 }
 
 void seek_animation_manager(
@@ -2517,7 +2470,11 @@ PropertyAnimationGroup create_property_animation_group(
     group->current_time = options.from_time;
     group->speed_ratio = options.speed_ratio;
     group->loop = options.loop;
-    owner.groups.push_back(group);
+    property_playAnimation(*group);
+    register_animation_group(manager, group->animation_owner, group->clip.name, [&] {
+        owner.ordered_groups.push_back(AnimationGroupReference::from_property(group));
+        owner.groups.push_back(group);
+    });
     return group;
 }
 
@@ -2543,7 +2500,7 @@ void play_animation(PropertyAnimationGroup group) {
         throw std::runtime_error(
             "Property animation group is null.");
     }
-    group->playing = true;
+    property_playAnimation(*group);
 }
 
 void pause_animation(PropertyAnimationGroup group) {
@@ -2551,7 +2508,7 @@ void pause_animation(PropertyAnimationGroup group) {
         throw std::runtime_error(
             "Property animation group is null.");
     }
-    group->playing = false;
+    property_pauseAnimation(*group);
 }
 
 void stop_animation(PropertyAnimationGroup group) {
@@ -2559,8 +2516,7 @@ void stop_animation(PropertyAnimationGroup group) {
         throw std::runtime_error(
             "Property animation group is null.");
     }
-    group->playing = false;
-    group->current_time = 0.0f;
+    property_stopAnimation(*group);
 }
 
 void go_to_frame(

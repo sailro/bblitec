@@ -197,11 +197,13 @@ test("glTF texture builders and native material projection preserve source selec
         .map(signature => cppFunction(loader, signature)).join("\n");
     const file = join(output, "check.cpp"), executable = join(output, "check.exe");
     writeFileSync(file, `#include <bblite/runtime.hpp>
+        #include <bblite/js_data.hpp>
         #include <bblite/pal_image_canvas.hpp>
         #include <bblite/ts_runtime.hpp>
         #include <cassert>
         #include <fstream>
         namespace bbl {
+            void enable_scene_transmission(Scene& scene) { scene.transmission_enabled = true; }
             using JsonObject = ts::JsonValue::Object;
             using JsonArray = ts::JsonValue::Array;
             namespace upstream { struct ParsedGlbContainer {}; }

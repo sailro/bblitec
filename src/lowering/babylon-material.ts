@@ -3,6 +3,7 @@ import { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { babylonTextureProperties } from "./babylon-textures.js";
+import {materialGroupIdentity} from "./material-group-identity.js";
 
 /** Material property guards and assignments come from the pinned loader. */
 export function lowerBabylonMaterialProperties(context: LoweringContext): string {
@@ -46,6 +47,7 @@ export function lowerBabylonMaterialProperties(context: LoweringContext): string
             ? `    material.${field} = std::make_shared<std::vector<double>>(std::initializer_list<double>{${lanes.map(value => context.doubleLiteral(value)).join(", ")}});`
             : `    material.${field} = ${context.cppColor3(lanes)};`;
     });
+    initializers.unshift(`    material.source_group_builder = ${materialGroupIdentity(context, "standard")};`);
     for (const [name, field] of scalars) {
         initializers.push(`    material.${field} = ${context.floatLiteral(context.numericValue(context.propertyInitializer(defaults, name), factory.file))};`);
     }

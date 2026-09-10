@@ -3,6 +3,11 @@ import test from "node:test";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { lowerGltfAnimationEvaluator } from "../src/lowering/gltf/animation-evaluator.js";
+import { lowerGltfAnimationMask } from "../src/lowering/gltf/animation-mask.js";
+import { lowerGltfAnimationPlayback } from "../src/lowering/gltf/animation-playback.js";
+import { lowerGltfWeightedAnimationRuntime } from "../src/lowering/gltf/weighted-animation-runtime.js";
+import { lowerGltfWeightedAnimationPasses } from "../src/lowering/gltf/weighted-animation-passes.js";
 
 test("emits a group's speed-ratio and mask writers only when reached", () => {
     const plain = new AnimationLowerer(
@@ -25,16 +30,16 @@ test("emits a group's speed-ratio and mask writers only when reached", () => {
 });
 
 test("carries STEP and the non-triangle topologies into the glTF loader", () => {
-    const lowerer = new GltfLowerer(new LoweringContext());
+    const context = new LoweringContext();
+    const lowerer = new GltfLowerer(context);
     const plain = lowerer.lowerLoaderAdapter();
     // STEP is unconditional: the pin branches on it in `evaluateSampler`, so
     // every glTF loader carries the arm. Sampler parsing has native source comparisons.
-    assert.match(plain.source, /TrackInterpolation::step/);
-    assert.match(plain.source, /std::size_t track_step_key_at\(/);
+    assert.ok(plain.source.includes(lowerGltfAnimationEvaluator(context)));
     // The topology handling stays behind the specialization flag, the way
     // upstream keeps `gltf-feature-primitive.js` behind its own predicate.
     assert.doesNotMatch(plain.source, /MeshTopology::line_strip/);
-    assert.doesNotMatch(plain.source, /clip_masks_node/);
+    assert.doesNotMatch(plain.source, /void gltf_sync_animation_mask\(/);
 
     const exotic = lowerer.lowerLoaderAdapter({
         nonTrianglePrimitives: true,
@@ -54,85 +59,30 @@ test("carries STEP and the non-triangle topologies into the glTF loader", () => 
     );
 
     const masked = lowerer.lowerLoaderAdapter({ animationMask: true });
-    assert.match(masked.source, /bool clip_masks_node\(/);
+    assert.ok(masked.source.includes(lowerGltfAnimationMask(context)));
     assert.match(masked.source, /animation_runtime->node_names/);
-    assert.match(masked.source, /if \(listed == include\) continue;/);
-    assert.match(masked.source, /target\.rotation = target\.rest_rotation/);
-
-    // The manager advance is the arm that accumulates, so the ratio has to
-    // reach it as well as the master-clock fan-out.
-    const scaled = lowerer.lowerLoaderAdapter({
-        animationSpeedRatio: true,
-        managedGroups: true,
-    });
-    assert.match(scaled.source, /asset\.set_clip_speed_ratio =/);
-    assert.match(
-        scaled.source,
-        /clip\.time \+= delta_ms \* 0\.001f \* clip\.speed_ratio/,
-    );
-    // The seek mirrors the browser harness, which pins a pose by writing the
-    // group's own currentTime -- no ratio scales that.
-    assert.match(
-        scaled.source,
-        /const float raw = seek\s*\?\s*animation_runtime->time/,
-    );
+    assert.match(masked.source, /gltf_sync_animation_mask\(clip,animation_runtime->node_names\)/);
+    // Speed and seek use the source controller clock, covered with source
+    // mutations and paused/stopped/reverse playback in the native fixture.
+    assert.ok(plain.source.includes(lowerGltfAnimationPlayback(context)));
+    assert.match(plain.source, /asset\.set_clip_speed_ratio\s*=/);
+    assert.match(plain.source, /clip\.time=time;clip\.playing=false;/);
 });
 
-test("the weighted mixer walks each clip's own recorded track range", () => {
-    const lowerer = new GltfLowerer(new LoweringContext());
+test("the weighted mixer uses source channels and global manager membership", () => {
+    const context = new LoweringContext();
+    const lowerer = new GltfLowerer(context);
     const blended = lowerer.lowerLoaderAdapter({
         animationBlending: true,
     });
-    // The loader records each clip's contiguous [first, last) run beside
-    // the track vectors, filled where it appends: first before the
-    // channel loop, last after, pushed once per clip in clip order.
-    assert.match(
-        blended.source,
-        /std::vector<ClipTrackRanges> clip_track_ranges;/,
-    );
-    assert.match(
-        blended.source,
-        /clip_track_range\.rotation\.first =\s*animation_runtime->rotation_tracks\.size\(\);/,
-    );
-    assert.match(
-        blended.source,
-        /clip_track_range\.scale\.last =\s*animation_runtime->scale_tracks\.size\(\);/,
-    );
-    assert.match(
-        blended.source,
-        /clip_track_ranges\.push_back\(\s*clip_track_range\);/,
-    );
-    // The mixer iterates only the clip's own run instead of rejecting
-    // every other clip's tracks once per blended clip...
-    assert.match(
-        blended.source,
-        /clip_range\.rotation\.first;\s*track_index < clip_range\.rotation\.last;/,
-    );
-    assert.match(
-        blended.source,
-        /const TrackRange& range,/,
-    );
-    assert.match(
-        blended.source,
-        /clip_range\.translation,\s*&AnimatedNode::translation/,
-    );
-    assert.match(
-        blended.source,
-        /clip_range\.scale,\s*&AnimatedNode::scale/,
-    );
-    // ...and keeps the track.clip rejection inside the narrowed walks, so
-    // correctness never depends on the grouping (rotation walk plus the
-    // shared translation/scale lambda).
-    const rejects = blended.source.match(
-        /track\.clip != entry\.clip/g,
-    );
-    assert.ok(
-        rejects !== null && rejects.length >= 2,
-        "the clip test stays inside the narrowed walks",
-    );
-    // Without blending there is no mixer, so none of the bookkeeping is
-    // emitted -- untouched scenes stay byte-identical.
+    assert.ok(blended.source.includes(lowerGltfWeightedAnimationRuntime(context)));
+    assert.ok(blended.source.includes(lowerGltfWeightedAnimationPasses(context)));
+    assert.match(blended.source, /manager\.ordered_groups/);
+    assert.match(blended.source, /gltf_update_weighted_animation_passes\(transport,delta_ms\)/);
+    // Clip channel order and manager traversal have source/native differential
+    // fixtures; the loader binds those channels to each source-created pose.
+    assert.match(blended.source, /gltf_accumulate_weighted_group\(scratch,group,\*group\.pose,/);
+    assert.match(blended.source, /gltf_accumulate_additive_group\(scratch,group,\*group\.pose,/);
     const plain = lowerer.lowerLoaderAdapter();
-    assert.doesNotMatch(plain.source, /ClipTrackRanges/);
-    assert.doesNotMatch(plain.source, /clip_track_range/);
+    assert.doesNotMatch(plain.source, /gltf_update_weighted_animation_passes/);
 });

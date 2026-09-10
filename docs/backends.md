@@ -33,6 +33,8 @@ SDL binds resources retained by the compiled stage, including compacted slots
 after dead declarations disappear. Use sidecars for visibility, resource kind,
 slot order and uniform size. Large uniform blocks can become read-only storage
 in SDL-facing artifacts; Dawn keeps their original declarations and bytes.
+SDL places integer texture loads in storage-texture slots between sampled
+textures and storage buffers, with matching allocation usage and shader counts.
 
 Local PBR probes bind the pin's recorded cube array, grid and material fields. Each retained probe set
 owns its GPU resources; single local environments override the cube independently per material.
@@ -112,4 +114,6 @@ composition. Supported drivers and browser compatibility belong in [UI](ui.md).
 - Single-sample resolves are copies; changed targets invalidate dependent state.
 - Transmission scene-color capture uses resolved color on SDL and multisamples
   on Dawn. Separate this difference from image processing when diagnosing.
-- D3D12 line/multisample-storage paths require maintained SDL patches.
+- D3D12 line/multisample-storage paths and descriptor-heap rollover require
+  maintained SDL patches. Descriptor tables reserve capacity before binding;
+  switching heaps rebinds the affected graphics and compute resources.

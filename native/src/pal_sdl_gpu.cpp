@@ -2231,14 +2231,14 @@ const GpuState::EsmBlur* esm_caster_params_for(
 #endif
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
         // The clustered field's three, from the container the scene holds.
-        // Each is `textureLoad`ed, so the sampler beside it is the one SDL
-        // requires as a pair and the shader never consults.
+        // Integer payloads bind as storage textures; the float payload
+        // retains its unused sampler binding.
         case upstream::MaterialTextureSource::clustered_lights:
             return {state.clustered.lights, state.clustered.sampler};
         case upstream::MaterialTextureSource::clustered_cells:
-            return {state.clustered.cells, state.clustered.sampler};
+            return {state.clustered.cells, nullptr};
         case upstream::MaterialTextureSource::clustered_indices:
-            return {state.clustered.indices, state.clustered.sampler};
+            return {state.clustered.indices, nullptr};
 #endif
         default:
             return {};
@@ -2544,7 +2544,8 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         static_cast<Uint32>(vertex_slots.textures.size()),
         static_cast<Uint32>(vertex_slots.uniforms.size()),
         "main",
-        static_cast<Uint32>(vertex_slots.storage.size()));
+        static_cast<Uint32>(vertex_slots.storage.size()),
+        static_cast<Uint32>(vertex_slots.storage_textures.size()));
     auto fragment_shader = load_shader(
         state.device,
         fragment_name.c_str(),
@@ -2552,7 +2553,8 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         static_cast<Uint32>(fragment_slots.textures.size()),
         static_cast<Uint32>(fragment_slots.uniforms.size()),
         "main",
-        static_cast<Uint32>(fragment_slots.storage.size()));
+        static_cast<Uint32>(fragment_slots.storage.size()),
+        static_cast<Uint32>(fragment_slots.storage_textures.size()));
 
     // The variant's own inputs, at the locations it declares them. The names are
     // the pin's; where each sits in our vertex is this backend's.
@@ -3223,7 +3225,8 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         static_cast<Uint32>(vertex_slots.textures.size()),
         static_cast<Uint32>(vertex_slots.uniforms.size()),
         "vs_main",
-        static_cast<Uint32>(vertex_slots.storage.size()));
+        static_cast<Uint32>(vertex_slots.storage.size()),
+        static_cast<Uint32>(vertex_slots.storage_textures.size()));
     auto fragment_shader = load_shader(
         state.device,
         std::string(stems.fragment).c_str(),
@@ -3231,7 +3234,8 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         static_cast<Uint32>(fragment_slots.textures.size()),
         static_cast<Uint32>(fragment_slots.uniforms.size()),
         "fs_main",
-        static_cast<Uint32>(fragment_slots.storage.size()));
+        static_cast<Uint32>(fragment_slots.storage.size()),
+        static_cast<Uint32>(fragment_slots.storage_textures.size()));
     std::vector<SDL_GPUVertexAttribute> attributes;
     attributes.reserve(view.attribute_count);
     for (std::size_t index = 0; index < view.attribute_count; ++index) {
@@ -3782,7 +3786,8 @@ GpuState::EsmBlur& ensure_esm_blur(
         static_cast<Uint32>(vertex_slots.textures.size()),
         static_cast<Uint32>(vertex_slots.uniforms.size()),
         "main",
-        static_cast<Uint32>(vertex_slots.storage.size()));
+        static_cast<Uint32>(vertex_slots.storage.size()),
+        static_cast<Uint32>(vertex_slots.storage_textures.size()));
     auto fragment_shader = load_shader(
         state.device,
         (stem + ".frag").c_str(),
@@ -3790,7 +3795,8 @@ GpuState::EsmBlur& ensure_esm_blur(
         static_cast<Uint32>(fragment_slots.textures.size()),
         static_cast<Uint32>(fragment_slots.uniforms.size()),
         "main",
-        static_cast<Uint32>(fragment_slots.storage.size()));
+        static_cast<Uint32>(fragment_slots.storage.size()),
+        static_cast<Uint32>(fragment_slots.storage_textures.size()));
     SDL_GPUColorTargetDescription color_target{};
     // The one target `blurPipeline` declares, as the factory declared it.
     color_target.format =
@@ -4159,7 +4165,8 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         static_cast<Uint32>(vertex_slots.textures.size()),
         static_cast<Uint32>(vertex_slots.uniforms.size()),
         "main",
-        static_cast<Uint32>(vertex_slots.storage.size()));
+        static_cast<Uint32>(vertex_slots.storage.size()),
+        static_cast<Uint32>(vertex_slots.storage_textures.size()));
     auto fragment_shader = load_shader(
         state.device,
         fragment_name.c_str(),
@@ -4167,7 +4174,8 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         static_cast<Uint32>(fragment_slots.textures.size()),
         static_cast<Uint32>(fragment_slots.uniforms.size()),
         "main",
-        static_cast<Uint32>(fragment_slots.storage.size()));
+        static_cast<Uint32>(fragment_slots.storage.size()),
+        static_cast<Uint32>(fragment_slots.storage_textures.size()));
     std::vector<SDL_GPUVertexAttribute> attributes;
     attributes.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
@@ -6809,7 +6817,8 @@ inline void ensure_pick_pipelines(GpuState& state) {
         0,
         static_cast<std::uint32_t>(thin_vertex_slots.uniforms.size()),
         "vs",
-        static_cast<std::uint32_t>(thin_vertex_slots.storage.size()));
+        static_cast<std::uint32_t>(thin_vertex_slots.storage.size()),
+        static_cast<std::uint32_t>(thin_vertex_slots.storage_textures.size()));
     auto thin_fragment = load_shader(
         state.device,
         "picking-thin.frag",
@@ -6817,7 +6826,8 @@ inline void ensure_pick_pipelines(GpuState& state) {
         0,
         static_cast<std::uint32_t>(thin_fragment_slots.uniforms.size()),
         "fs",
-        static_cast<std::uint32_t>(thin_fragment_slots.storage.size()));
+        static_cast<std::uint32_t>(thin_fragment_slots.storage.size()),
+        static_cast<std::uint32_t>(thin_fragment_slots.storage_textures.size()));
     SDL_GPUGraphicsPipelineCreateInfo thin_info = info;
     thin_info.vertex_shader = thin_vertex.get();
     thin_info.fragment_shader = thin_fragment.get();
@@ -6919,7 +6929,8 @@ inline void ensure_pick_pipelines(GpuState& state) {
                 state.device, stem, SDL_GPU_SHADERSTAGE_VERTEX,
                 static_cast<Uint32>(program.vertex_slots.textures.size()),
                 static_cast<Uint32>(program.vertex_slots.uniforms.size()), "vs",
-                static_cast<Uint32>(program.vertex_slots.storage.size()));
+                static_cast<Uint32>(program.vertex_slots.storage.size()),
+                static_cast<Uint32>(program.vertex_slots.storage_textures.size()));
             const char* fragment_stem = mode == 0 ? "picking.frag" : "picking-detailed.frag";
             const auto deform_fragment_slots = read_pinned_stage_slots(fragment_stem);
             auto deform_fragment = load_shader(
@@ -8530,7 +8541,8 @@ public:
                     static_cast<Uint32>(vertex_slots.textures.size()),
                     static_cast<Uint32>(vertex_slots.uniforms.size()),
                     "mainVertex",
-                    static_cast<Uint32>(vertex_slots.storage.size()));
+                    static_cast<Uint32>(vertex_slots.storage.size()),
+                    static_cast<Uint32>(vertex_slots.storage_textures.size()));
                 shader_fragment_shaders[variant] = load_shader(
                     state.device,
                     fragment_name.c_str(),
@@ -8538,7 +8550,8 @@ public:
                     static_cast<Uint32>(fragment_slots.textures.size()),
                     static_cast<Uint32>(fragment_slots.uniforms.size()),
                     "mainFragment",
-                    static_cast<Uint32>(fragment_slots.storage.size()));
+                    static_cast<Uint32>(fragment_slots.storage.size()),
+                    static_cast<Uint32>(fragment_slots.storage_textures.size()));
             }
         }
         // The pinned position-seeded dither. background-ground.ts and
@@ -11274,6 +11287,7 @@ public:
                     for (
                         const upstream::RenderDrawCommand& draw :
                         list.commands) {
+                        if (!upstream::render_item_draws_now(draw.item, engine)) continue;
                         if (
                             draw.item_index >=
                             draw_meshes.size()) {
@@ -13138,6 +13152,7 @@ public:
             for (
                 const upstream::RenderDrawCommand& draw :
                 list.commands) {
+                if (!upstream::render_item_draws_now(draw.item, engine)) continue;
                 if (
                     draw.item_index >=
                     (*pass_meshes).size()) {

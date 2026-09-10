@@ -6521,6 +6521,7 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     for (const auto& callback : root_callbacks) {
         callback(callback_delta_ms);
     }
+    if (scene.state->process_material_groups) scene.state->process_material_groups(scene);
     // Every other registered scene's own callbacks. A swapchain overlay
     // layer is a second SceneContext with its own `_beforeRender` list --
     // the utility layer's camera forwarding and each gizmo's follow live
@@ -6534,6 +6535,7 @@ inline void run_animation_frame_callbacks(Engine& engine) {
         for (const auto& callback : callbacks) {
             callback(registered_delta_ms);
         }
+        if (registered->state->process_material_groups) registered->state->process_material_groups(*registered);
     }
     return scene_delta_ms;
 }
@@ -6579,6 +6581,7 @@ inline void run_animation_frame_callbacks(Engine& engine) {
  * timeout queued anywhere in the turn is then drained at the turn boundary.
  */
 inline void finish_frame(Engine& engine) {
+    if (engine.drain_material_jobs) engine.drain_material_jobs(engine);
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
     complete_device_recovery(engine);
 #endif

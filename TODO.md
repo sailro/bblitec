@@ -10,7 +10,6 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] A finally spanning startEngine admits plain writes only (compiler.ts:20545-20567); lower exception completion so a cleanup exception replaces the active one instead of terminating. M; 8 trees reach finally.
 - [ ] Union discriminants accept string literals only (data-types.ts:1393); generic user functions refuse (user-functions.ts:691). S each; no corpus reach measured, drop if none.
 - [ ] Typed WGSL parsing falls back to `rawSource` (shader-ir.ts:982) behind three regex predicates (:1154-1194); 37 regex-over-WGSL sites remain across the shader pipeline. Extend the IR to helper functions, constants and loops (:1320) before removing any. L.
-- [ ] Lower remaining glTF mesh feature setup, initial deformation and animation orchestration from pinned source (lowering/templates/gltf-loader-cpp.ts). L; imported assets.
 
 ## Assets and composition
 
@@ -49,7 +48,6 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 - [ ] Bullet writes an ACTION target pose immediately (pal_physics_bullet.cpp:2763-2770); Havok integrates a deferred target and keeps the derived velocity. M; scene 106.
 - [ ] Solver residuals at the registered poses (status.md: 105 0.274, 41 0.215, 101 0.178, 48 0.060, 45 0.039). Trace per substep with BBLITE_PHYSICS_TRACE (pal_physics_bullet.cpp:1715) before touching authored scenes or thresholds.
-- [ ] Investigate the remaining shark residuals at the published poses for scenes 152/218/219; compare mesh transforms, bone palettes and animation-manager state. M.
 - [ ] Editing gizmos are display-only (display-only-editing-gizmo adaptation; scenes 221/222/224): bounding-box and scale drags are not reached. M.
 
 ## Worker and platform

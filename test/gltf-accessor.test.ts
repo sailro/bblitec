@@ -10,7 +10,7 @@ import { lowerGltfAccessorShape } from "../src/lowering/gltf/accessor-shape.js";
 import { lowerGltfParserJson } from "../src/lowering/gltf/parser-json.js";
 import { transpileCommonJs } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
-import { cppFunction, cppSection, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { cppFunction, cppRecord, cppSection, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const parserModule = "src/loader-gltf/gltf-parser.ts";
 const quantizationModule = "src/loader-gltf/gltf-ext-quantization.ts";
@@ -74,7 +74,8 @@ test("glTF accessors preserve pinned widths, normalization and zero-filled stora
     });
     const loader = new GltfLowerer(context).lowerLoaderAdapter().source;
     const records = loader.slice(loader.indexOf("struct BufferViewInfo {"), loader.indexOf("using Matrix ="));
-    const helpers = cppSection(loader, "std::size_t component_count(", "Vec4 normalize_quaternion(");
+    const helpers = cppSection(loader, "std::size_t component_count(", "struct GltfAccessorView {") +
+        cppRecord(loader, "struct GltfAccessorView {") + cppFunction(loader, "std::vector<float> gltf_skin_float32_view(");
     const changedReaders = readerContexts.map((ctx, index) =>
         lowerAccessorNormalizationCpp(ctx.sourceFile(quantizationModule)).replace("read_quantized_component(", `reader_${index}(`));
     const changedShape = lowerGltfAccessorShape(doctoredContext(parserModule, "MAT3: 9", "MAT3: 8"))

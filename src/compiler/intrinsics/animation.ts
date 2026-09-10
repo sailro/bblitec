@@ -150,6 +150,7 @@ export function compileAnimationIntrinsic(
             const fields: string[] = [];
             if (fixedDelta) fields.push(`.fixed_delta_ms = ${context.compileNumber(fixedDelta, "double")}`);
             if (onUpdate) fields.push(`.on_update = ${context.compileFrameCallback(onUpdate, "timestamp", true)}`);
+            if (onUpdate && !engineExpression) fields.push(".source_engine_present = false");
             const nativeOptions = `bbl::PropertyAnimationManagerOptions{${fields.join(", ")}}`;
             return {
                 kind: "animation-manager",

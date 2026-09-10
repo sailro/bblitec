@@ -1,4 +1,5 @@
 import { inlineCpp } from "./generated-cpp.js";
+import { cppFunction } from "./native-fixture.js";
 /**
  * The node-material composition path: a Babylon NME graph compiled by the
  * pin's own emitter and pipeline builder, never re-derived here.
@@ -188,13 +189,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
 
 test("both native node paths bind per-mesh morph storage and its fallback", () => {
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
-    const drawStart = sdl.indexOf("void draw_node_variant(");
-    // The function's own closing brace at column zero, rather than
-    // whatever declaration happens to follow it -- an anchor on the
-    // next section broke the moment one was inserted between them.
-    const drawEnd = sdl.indexOf("\n}\n", drawStart);
-    assert.ok(drawStart >= 0 && drawEnd > drawStart);
-    const drawNode = sdl.slice(drawStart, drawEnd);
+    const drawNode = cppFunction(sdl, "void draw_node_variant(");
     const resolverStart = drawNode.indexOf("const auto resolve_storage");
     const resolverEnd = drawNode.indexOf(
         "bind_stage_storage(",

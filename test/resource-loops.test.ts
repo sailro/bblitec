@@ -9,6 +9,8 @@ import { StaticExpansionBudget } from "../src/compiler/static-expansion.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { loopBoundMayChange } from "../src/compiler/resource-loops.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 function scene(body: string, helpers = ""): string {
@@ -246,6 +248,7 @@ test("the compact grid executes all 4096 ordered native constructions and live c
     const output = resolve("artifacts/resource-loop-runtime-check");
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "grid.hpp"), compileSource(gridSource).cpp);
+    writeFileSync(join(output, "mesh-material-setter.hpp"), `namespace bbl { ${lowerMeshMaterialSetter(new LoweringContext())} }`);
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include",

@@ -1,5 +1,14 @@
 import type { ValueFields, ValueKind } from "../types.js";
 
+const nodeParticleMetadataFields = [
+    "nodeParticleSetIndex",
+    "nodeParticleSystemIndex",
+    "nodeParticleRequestIndex",
+    "nodeParticleBridgeIndex",
+    "nodeParticleLive",
+    "nodeParticleColumn",
+] as const;
+
 /** Metadata admitted by each value family; native data retains transported fields. */
 const resourceMetadataFields = {
     "static-fetch-response": ["packagedSources", "staticJson"],
@@ -98,54 +107,12 @@ const resourceMetadataFields = {
     "splat-mesh": ["asset", "assetKind", "assetRootState", "assetRootClone"],
     "node-particle-graph": ["nodeParticleGraph"],
     "splat-fragment": ["splatFragment"],
-    "node-particle-set": [
-        "nodeParticleSetIndex",
-        "nodeParticleSystemIndex",
-        "nodeParticleRequestIndex",
-        "nodeParticleBridgeIndex",
-        "nodeParticleLive",
-        "nodeParticleColumn",
-    ],
-    "node-particle-system": [
-        "nodeParticleSetIndex",
-        "nodeParticleSystemIndex",
-        "nodeParticleRequestIndex",
-        "nodeParticleBridgeIndex",
-        "nodeParticleLive",
-        "nodeParticleColumn",
-    ],
-    "node-particle-2d-binding": [
-        "nodeParticleSetIndex",
-        "nodeParticleSystemIndex",
-        "nodeParticleRequestIndex",
-        "nodeParticleBridgeIndex",
-        "nodeParticleLive",
-        "nodeParticleColumn",
-    ],
-    "node-particle-2d-bridge": [
-        "nodeParticleSetIndex",
-        "nodeParticleSystemIndex",
-        "nodeParticleRequestIndex",
-        "nodeParticleBridgeIndex",
-        "nodeParticleLive",
-        "nodeParticleColumn",
-    ],
-    "node-particle-buffer": [
-        "nodeParticleSetIndex",
-        "nodeParticleSystemIndex",
-        "nodeParticleRequestIndex",
-        "nodeParticleBridgeIndex",
-        "nodeParticleLive",
-        "nodeParticleColumn",
-    ],
-    "node-particle-column": [
-        "nodeParticleSetIndex",
-        "nodeParticleSystemIndex",
-        "nodeParticleRequestIndex",
-        "nodeParticleBridgeIndex",
-        "nodeParticleLive",
-        "nodeParticleColumn",
-    ],
+    "node-particle-set": nodeParticleMetadataFields,
+    "node-particle-system": nodeParticleMetadataFields,
+    "node-particle-2d-binding": nodeParticleMetadataFields,
+    "node-particle-2d-bridge": nodeParticleMetadataFields,
+    "node-particle-buffer": nodeParticleMetadataFields,
+    "node-particle-column": nodeParticleMetadataFields,
     "animation-group": [
         "animationGroupSource",
         "animationFrameRate",

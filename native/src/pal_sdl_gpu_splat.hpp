@@ -68,10 +68,6 @@ namespace bbl::pal {
 inline constexpr std::size_t splat_float_payload_count =
     std::tuple_size_v<decltype(upstream::splat_texture_payloads(
         std::declval<const SplatMeshRecord&>()))>;
-inline constexpr std::size_t splat_texture_count =
-    splat_float_payload_count +
-    static_cast<std::size_t>(BBLITE_SPLAT_SH_TEXTURES);
-
 struct SplatPassResources {
     SplatMeshHandle mesh{};
     std::uint32_t vertex_count = 0;
@@ -81,7 +77,8 @@ struct SplatPassResources {
     SDL_GPUBuffer* quad = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* order = nullptr;
-    std::array<SDL_GPUTextureSamplerBinding, splat_texture_count> textures{};
+    std::array<SDL_GPUTextureSamplerBinding, splat_float_payload_count> textures{};
+    std::array<SDL_GPUTexture*, BBLITE_SPLAT_SH_TEXTURES> storage_textures{};
     SDL_GPUSampler* sampler = nullptr;
 
     /** The register `splat.vert.slots` left the uniform block in. */
@@ -131,6 +128,10 @@ inline SplatPass create_splat_pass(
     pass.vertex_count = record.vertex_count;
 
     const PinnedStageSlots slots = read_pinned_stage_slots("splat.vert");
+    if (slots.textures.size() != pass.textures.size() ||
+        slots.storage_textures.size() != pass.storage_textures.size()) {
+        gpu_error("splat.vert texture counts differ from the source payloads");
+    }
     pass.uniform_slot = stage_uniform_slot(slots, "u");
     if (pass.uniform_slot < 0) {
         gpu_error("splat.vert kept no uniform block for the splat UBO");
@@ -141,7 +142,9 @@ inline SplatPass create_splat_pass(
         SDL_GPU_SHADERSTAGE_VERTEX,
         static_cast<std::uint32_t>(slots.textures.size()),
         static_cast<std::uint32_t>(slots.uniforms.size()),
-        "vs");
+        "vs",
+        0,
+        static_cast<std::uint32_t>(slots.storage_textures.size()));
     // The fragment stage samples nothing: every data texture is read
     // in the vertex stage. Whether it declares the uniform block depends on
     // the scene -- the stock density is `exp(-dot(vq, vq)) * vc.a` over the
@@ -151,7 +154,7 @@ inline SplatPass create_splat_pass(
     const PinnedStageSlots fragment_slots =
         read_pinned_stage_slots("splat.frag");
     pass.fragment_uniform_slot = stage_uniform_slot(fragment_slots, "u");
-    if (!fragment_slots.textures.empty()) {
+    if (!fragment_slots.textures.empty() || !fragment_slots.storage_textures.empty()) {
         gpu_error(
             "splat.frag kept a texture binding; the splat fragment stage "
             "binds none");
@@ -254,26 +257,22 @@ inline SplatPass create_splat_pass(
         pass.textures[slot].sampler = pass.sampler;
     }
 #if BBLITE_SPLAT_SH
-    // The harmonics, at the same texel grid and the same sampler pair the
-    // four above take: the stage `textureLoad`s them, so no filtering
-    // happens and SDL's texture/sampler pairing is satisfied by the one
-    // point sampler already created -- the shape `pal_sdl_gpu_clustered.hpp`
-    // takes for its own unsigned data textures.
+    // The harmonics retain their integer texels and use SDL's storage-read
+    // bindings: Texture2D<uint4>.Load has no sampler.
     if (record.sh_textures.size() != upstream::splat_sh_texture_count) {
         gpu_error("splat record carries the wrong SH payload count");
     }
     for (std::size_t slot = 0; slot < record.sh_textures.size(); ++slot) {
-        SDL_GPUTextureSamplerBinding& binding =
-            pass.textures[payloads.size() + slot];
-        binding.texture = upload_2d_texture(
+        pass.storage_textures[slot] = upload_2d_texture(
             device,
             record.sh_textures[slot].data(),
             record.sh_textures[slot].size(),
             record.texture_width,
             record.texture_height,
             SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
-            "splat harmonics");
-        binding.sampler = pass.sampler;
+            "splat harmonics",
+            1,
+            SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ);
     }
     // Released once the GPU owns the bytes. The neighbouring `splats_data` field
     // is reach-gated for the same reason and states it: these three
@@ -414,6 +413,11 @@ inline void record_splat_pass(
         0,
         pass.textures.data(),
         static_cast<Uint32>(pass.textures.size()));
+    if (!pass.storage_textures.empty()) {
+        SDL_BindGPUVertexStorageTextures(
+            render_pass, 0, pass.storage_textures.data(),
+            static_cast<Uint32>(pass.storage_textures.size()));
+    }
 
     SDL_DrawGPUIndexedPrimitives(
         render_pass,
@@ -425,6 +429,9 @@ inline void record_splat_pass(
 }
 
 inline void release_splat_pass_resources([[maybe_unused]] SDL_GPUDevice* device, SplatPassResources& pass) noexcept {
+    for (SDL_GPUTexture* texture : pass.storage_textures) {
+        if (texture) SDL_ReleaseGPUTexture(device, texture);
+    }
     for (SDL_GPUTextureSamplerBinding& binding : pass.textures) {
         if (binding.texture) SDL_ReleaseGPUTexture(device, binding.texture);
         binding.texture = nullptr;

@@ -4,6 +4,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const imports = `import { createEngine, createBox, createStandardMaterial, createPbrMaterial, setPbrUnlit, setPbrEmissive, loadGltf,
@@ -110,6 +112,7 @@ test("shared resource definitions execute every construction and retain native h
         #include <cassert>
         unsigned materials = 0, loads = 0, unlit = 0, emissive = 0;
         namespace bbl {
+            ${lowerMeshMaterialSetter(new LoweringContext())}
             Engine create_engine(EngineOptions) { return {}; }
             MaterialHandle create_standard_material(Engine& engine) {
                 assert(materials % 2 == 0); ++materials; engine.materials.emplace_back(); return {materials - 1};

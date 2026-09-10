@@ -1961,7 +1961,7 @@ export class UserFunctionLowerer {
                 const cppName = `${parameterPrefix}recursive_arg_${runtimeIndex++}`;
                 parameterNames.push(cppName);
                 parameterDeclarations.push(
-                    `${this.recursiveParameterCpp(context.dataTypes, type, entry.parameterReadOnly[index]!)} ${cppName}`,
+                    `[[maybe_unused]] ${this.recursiveParameterCpp(context.dataTypes, type, entry.parameterReadOnly[index]!)} ${cppName}`,
                 );
                 parameterBindings.push({
                     parameter,

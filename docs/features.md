@@ -207,8 +207,9 @@ Imported perspective cameras retain source constructor state, fixup parents and 
 orthographic imports require unsupported explicit clip-plane storage.
 Image-based environments execute the pinned feature's image selection, assembly, uniform writer
 and ordered scene assignments. Native storage consumes its recorded RGBD cube and BRDF resources.
-Skin/morph attachment, joint influences, target deltas and initial morph weights come from
-the pinned feature hooks and GPU constructors; weights are packaged per mesh.
+Skin/morph attachment, joint influences, target deltas, initial bone palettes and morph weights
+come from the pinned feature hooks and GPU constructors, including assets without clips.
+Animation resource bindings consume the source-selected skeletons, morphs and node targets.
 Unused base declarations allocate no render material; variant materials retain separate identities.
 Separate occlusion and metallic-roughness images use the pinned ORM composition and upload path.
 Its CPU Canvas2D adapter requires equally sized opaque images; scaling, alpha compositing and
@@ -218,9 +219,9 @@ Mesh construction, hierarchy and material/scene control flow lower from the pin.
 `loadTextures` are honored; `maxMeshes` is unsupported.
 Container attachment lowers the source field order and guards, including preserving an existing
 scene camera and running feature setup after animation-group and callback registration.
-glTF feature setup uses the source registry order and lowers its callback fold, with shared
-callback identity and captures. Remaining activation and lifecycle boundaries are recorded in
-[Fidelity](fidelity.md#gltf-material-inputs).
+glTF feature setup uses the source registry order and lowers its callback fold,
+preserving callback identity and captures. Resource ownership and platform
+adaptations are recorded in [Fidelity](fidelity.md#gltf-material-inputs).
 
 Recognized closed glTF and `.babylon` collectors retain source traversal independently of native flat
 mesh storage. glTF owner maps retain insertion order. Metadata is demanded per asset/collector pair. Rest/default/
@@ -270,6 +271,8 @@ Standard UV and vertex-colour opt-ins remain distinct from asset discovery; live
 `enableStandardUvOffset`. Vertex-alpha meshes select the matching transparent variant.
 Standard file lightmaps preserve texture encoding, UV channel, intensity, additive/shadowmap blending
 and the pinned `uAng === Math.PI` V flip. Texture binding requires setup before registration.
+PBR base-color/ORM texture helper returns require a known solid or file producer;
+runtime producer choices and pixel-buffer returns refuse.
 
 Public PBR factor/Standard diffuse arrays retain identity and double precision; factors have four
 channels and diffuse colors three. Standard whole-array replacement retains its supplied storage.
@@ -315,9 +318,12 @@ per-material identity. Wider uniform writers, runtime signatures and PBR sampler
 
 ## Animation playback
 
-Property clips and glTF channels have separate deterministic seek runtimes. Reached glTF channels include
-TRS, skinning, morph weights and animation-pointer material/visibility targets. Metallic-roughness texture
-transforms retain load-time values because the pinned resolver ignores those animation targets.
+Property clips and glTF channels retain separate target and interpolation contracts.
+glTF playback supports LINEAR, STEP and CUBICSPLINE samplers, TRS, skinning, morph
+weights and supported material, punctual-light and node-visibility pointers.
+Groups support playback, seeks, speed ratios, masks and weighted/additive mixing.
+Metallic-roughness texture transforms retain load-time values because the pinned
+resolver ignores those animation targets.
 
 Property groups bind mutable numeric data leaves to their owner at group creation; intermediate replacement
 does not retarget them. Owner/property identity governs mixing. Missing, readonly, nonnumeric and whole-vector/array targets refuse.
@@ -333,6 +339,8 @@ GPU skinning, storage morphs, VAT and dynamic thin-instance pools are supported;
 skins are an [adaptation](fidelity.md#semantic-contract). Direct Standard/PBR morphs require one definite pre-start
 attachment per mesh; replacement, conditional attachment and thin-instance combinations refuse. Weight updates work.
 Scene-authored skeletons retain arrays/live palettes; Standard needs `enableStandardSkeleton`.
+Supported imported skinned/morphed clones share their source deformation resources.
+VAT baking uses source skeleton bindings and CPU-only seeks.
 
 Thin-instance pools support count/matrix/color/flush and add/remove operations. GPU-culling enablement
 is an [adaptation](fidelity.md#semantic-contract).

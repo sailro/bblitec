@@ -540,6 +540,20 @@ ${this.boxFactorySource(boxFaceVertexLines, boxQuadSize, boxQuadIndexList, boxAd
      * count and version bumps) are asserted instead, because their meaning
      * is the shape rather than a value.
      */
+    private thinRuntimeBuilderAssignment(name: "setThinInstances" | "addThinInstance"): string {
+        const {file, declaration} = this.context.functionDeclaration("src/mesh/thin-instance.ts", name);
+        const assignment = declaration.body!.statements[0];
+        if (!assignment) this.context.contractError(declaration, "Expected thin-instance builder installation.");
+        this.context.assertStatementShapes(assignment, [assignment],
+            "mesh._runtimeThinBuild = buildRuntimeThinMesh;", "Thin-instance runtime builder identity");
+        return lowerPinnedBody(file, [assignment], {
+            bindings: new Map([
+                ["mesh._runtimeThinBuild", {cpp: "record.source_runtime_thin_builder", type: "bool"}],
+                ["buildRuntimeThinMesh", {cpp: "true", type: "bool"}],
+            ]), calls: new Map(),
+        });
+    }
+
     private thinInstancePoolHelpers(): string {
         const module = "src/mesh/thin-instance.ts";
         const { file, declaration: add } =
@@ -644,6 +658,7 @@ double add_thin_instance(
     MeshHandle mesh,
     const std::vector<float>& matrix) {
     MeshRecord& record = engine.meshes[mesh.value];
+${this.thinRuntimeBuilderAssignment("addThinInstance")}
     if (matrix.size() < 16) {
         throw std::runtime_error(
             "addThinInstance requires a 16-float matrix.");
@@ -3768,6 +3783,7 @@ void set_thin_instances(
     std::vector<float>& matrices,
     double count) {
     MeshRecord& record = engine.meshes[mesh.value];
+${this.thinRuntimeBuilderAssignment("setThinInstances")}
     const std::uint32_t previous_count = record.instance_count;
     const std::size_t capacity = std::min(
         static_cast<std::size_t>(count),

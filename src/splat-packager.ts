@@ -21,10 +21,9 @@
  */
 
 import {
-    assertPinnedSync,
     importPinnedModule,
     importPinnedModuleFetching,
-    importPinnedModuleUnasynced,
+    pinnedModuleTextUrl,
     installPinnedImportHook,
     pinnedLibraryRoot,
 } from "./pinned-shader-composer.js";
@@ -38,6 +37,9 @@ import {
     screenshotCaptureBrowserArgs,
 } from "./browser-harness.js";
 import { javascriptModuleUrl } from "./data-url.js";
+import {LoweringContext} from "./lowering/context.js";
+import {transpileForBrowser} from "./typescript-transpile.js";
+import {ensurePinnedLoaderExecution} from "./pinned-material-input.js";
 import {
     cachedBake,
     cachedBakeSync,
@@ -780,15 +782,15 @@ export interface GltfGaussianSplat {
 /** The shape the pinned feature's default export must still have. */
 interface PinnedGaussianSplattingFeature {
     id: string;
-    preParse: (json: JsonRecord) => unknown;
+    preParse: (json: JsonRecord) => Promise<void>;
     applyAsset: (
         meshes: undefined,
         root: undefined,
         context: { _json: JsonRecord; _binChunk: DataView },
-    ) => {
+    ) => Promise<{
         _sceneSetup?: (scene: unknown) => void;
         _gaussianSplats?: unknown[];
-    };
+    }>;
 }
 
 const GS_FEATURE_MODULE = "loader-gltf/gltf-feature-gaussian-splatting.js";
@@ -808,7 +810,9 @@ export async function extractGltfGaussianSplats(
     json: JsonRecord,
     binChunk: DataView,
     label: string,
-): Promise<GltfGaussianSplat[]> {
+    context = new LoweringContext(),
+    validate?: () => void,
+): Promise<GltfGaussianSplat[] | undefined> {
     const recorded: RecordedAttach[] = [];
     const { hook, release } = installPinnedImportHook(
         (entry: RecordedAttach) => {
@@ -817,12 +821,19 @@ export async function extractGltfGaussianSplats(
     );
     const recorder = attachParsedSplatRecorder(hook);
     try {
-        const module = await importPinnedModuleUnasynced(
-            GS_FEATURE_MODULE,
-            [],
-            new Map([["../loader-splat/load-splat.js", recorder]]),
-        );
-        const feature = module.default as PinnedGaussianSplattingFeature;
+        await ensurePinnedLoaderExecution();
+        const sourceUrl = (path: string, redirects: ReadonlyMap<string, string> = new Map()) => pinnedModuleTextUrl(
+            path.replace(/^src\//, "").replace(/\.ts$/, ".js"), transpileForBrowser(context.sourceFile(path).text, path), [], redirects);
+        const featureUrl = sourceUrl("src/loader-gltf/gltf-feature-gaussian-splatting.ts",
+            new Map([["../loader-splat/load-splat.js", recorder]]));
+        const registry = await import(sourceUrl("src/loader-gltf/gltf-feature-registry.ts",
+            new Map([["./gltf-feature-gaussian-splatting.js", featureUrl]]))) as {
+                loadGltfFeatures(json: JsonRecord): Promise<Array<{id: string}>>;
+            };
+        const {default: feature} = await import(featureUrl) as {default: PinnedGaussianSplattingFeature};
+        const selected = (await registry.loadGltfFeatures(json)).filter(candidate => candidate === feature);
+        if (!selected.length) return undefined;
+        if (selected.length !== 1) throw new Error("Unrepresented repeated Gaussian-splat feature activation.");
         if (
             feature?.id !== GAUSSIAN_SPLATTING_EXTENSION ||
             typeof feature.preParse !== "function" ||
@@ -834,21 +845,18 @@ export async function extractGltfGaussianSplats(
                     "hooks.",
             );
         }
-        assertPinnedSync(feature.preParse(json), `${GAUSSIAN_SPLATTING_EXTENSION} preParse`);
-        const applied = assertPinnedSync(
-            feature.applyAsset(undefined, undefined, {
-                _json: json,
-                _binChunk: binChunk,
-            }),
-            `${GAUSSIAN_SPLATTING_EXTENSION} applyAsset`,
-        );
-        if (json[GS_SCRATCH_KEY] === undefined) {
-            return [];
-        }
+        validate?.();
+        await feature.preParse(json);
+        const applied = await feature.applyAsset(undefined, undefined, {
+            _json: json,
+            _binChunk: binChunk,
+        });
         delete json[GS_SCRATCH_KEY];
+        if (Object.keys(applied).length === 0) return [];
         if (
             typeof applied._sceneSetup !== "function" ||
-            !Array.isArray(applied._gaussianSplats)
+            !Array.isArray(applied._gaussianSplats) || applied._gaussianSplats.length !== 0 ||
+            Object.keys(applied).some(key => key !== "_sceneSetup" && key !== "_gaussianSplats")
         ) {
             throw new Error(
                 `${label}: the pinned ${GAUSSIAN_SPLATTING_EXTENSION} feature no longer hands ` +
@@ -861,7 +869,8 @@ export async function extractGltfGaussianSplats(
         // which the recorder replaces, so nothing reads a member of it; a
         // pin that starts to throws here naming the property.
         applied._sceneSetup(undefined);
-        if (applied._gaussianSplats.length !== recorded.length) {
+        if (applied._gaussianSplats.length !== recorded.length ||
+            applied._gaussianSplats.some((mesh, index) => mesh !== recorded[index]!.mesh)) {
             throw new Error(
                 `${label}: the pinned ${GAUSSIAN_SPLATTING_EXTENSION} feature published ` +
                     `${applied._gaussianSplats.length} splat promise(s) from ` +

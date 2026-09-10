@@ -476,7 +476,7 @@ function anchorSpecifiersInText(
     shims: ReadonlyMap<string, string> = new Map(),
 ): string {
     return text.replace(
-        /(from\s*|import\()(["'])(\.\.?\/[^"']+)\2/g,
+        /(from\s*|import\(\s*|import\s*)(["'])(\.\.?\/[^"']+)\2/g,
         (_match, keyword: string, quote: string, specifier: string) =>
             `${keyword}${quote}${
                 shims.get(specifier) ??

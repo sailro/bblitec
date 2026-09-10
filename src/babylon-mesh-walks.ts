@@ -1,6 +1,7 @@
 import { GLTF_MESH_WALKS, type JsonObject } from "./gltf-document.js";
 import { evaluateMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import { importPinnedModule, importPinnedModuleFetching, pinnedModuleUrl } from "./pinned-shader-composer.js";
+import { javascriptModuleUrl } from "./data-url.js";
 
 export async function packageBabylonMeshWalks(document: JsonObject, walks: readonly (CompiledMeshWalk | undefined)[]): Promise<void> {
     const demanded = walks.filter((walk): walk is CompiledMeshWalk => walk !== undefined);
@@ -13,7 +14,7 @@ export async function packageBabylonMeshWalks(document: JsonObject, walks: reado
     const imported = await importPinnedModuleFetching<{
         loadBabylon(engine: object, url: string, options: object): Promise<Container>;
     }>("loader-babylon/load-babylon.js", () => Buffer.from(JSON.stringify(document)),
-        new Map([["../mesh/mesh.js", `data:text/javascript;base64,${Buffer.from(transport).toString("base64")}`]]));
+        new Map([["../mesh/mesh.js", javascriptModuleUrl(transport)]]));
     try {
         const container = await imported.module.loadBabylon({}, "https://bblite.invalid/meshes.babylon", { loadTextures: false, loadCamera: false });
         const { getContainerMeshes } = await importPinnedModule<{ getContainerMeshes(container: Container): Meshes }>("asset-container.js");

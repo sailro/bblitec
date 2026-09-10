@@ -8,6 +8,14 @@ import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
+import { lowerAnimationManagerDispatch } from "../src/lowering/animation-manager-dispatch.js";
+import { lowerPropertyAnimationPlayback } from "../src/lowering/animation-property-playback.js";
+import { lowerGltfAnimationPlayback } from "../src/lowering/gltf/animation-playback.js";
+import { lowerGltfAnimationEvaluator } from "../src/lowering/gltf/animation-evaluator.js";
+import { lowerGltfAnimationPose } from "../src/lowering/gltf/animation-pose.js";
+import { lowerGltfSkeletonPose } from "../src/lowering/gltf/skeleton-pose.js";
+import { lowerGltfBoneVisibility } from "../src/lowering/gltf/bone-visibility.js";
+import { lowerGltfAnimationBoneOverrides } from "../src/lowering/gltf/animation-bone-overrides.js";
 import { EngineLowerer } from "../src/lowering/engine-lowerer.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
@@ -201,7 +209,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
     assert.match(
         lowered.source,
-        /scene\.meshes\.erase\(found\);\s*\r?\n\s*\+\+scene\.render_topology_version;/,
+        /scene\.meshes\.erase\(found\);\s*std::erase_if\(scene\.state->material_outputs, \[mesh\]\(const auto& output\) \{ return output->mesh == mesh; \}\);\s*const bool last_owner = unregister_mesh_material_scene\(scene, mesh\);\s*\+\+scene\.render_topology_version;/,
     );
     assert.match(
         lowered.source,
@@ -576,7 +584,7 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
         weightFades: true,
     });
     const fadeTick = blended.source.indexOf(
-        "manager.pre_update(engine, manager, delta_ms);",
+        "manager.pre_update(engine, manager, static_cast<float>(delta_ms));",
     );
     const mixerTick = blended.source.indexOf(
         "manager.category_handler ==",
@@ -584,6 +592,8 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
     );
     assert.ok(fadeTick >= 0);
     assert.ok(mixerTick > fadeTick);
+    assert.ok(blended.source.includes(lowerAnimationManagerDispatch(new LoweringContext())),
+        "the source dispatcher calls pre-update before category handling and task snapshots");
 
     const managed = new AnimationLowerer(
         new LoweringContext(),
@@ -609,35 +619,19 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
     );
 });
 
-test("flows the pinned animation constants into the emission", () => {
-    const lowered = new AnimationLowerer(
-        new LoweringContext(),
-    ).lowerPropertyAnimation();
-    // The near-parallel slerp threshold flows inside the translated
-    // quatSlerp (src/animation/evaluate.ts) at the pin's double width, and
-    // the ms->s advance factor is the reciprocal of the pinned tick's
-    // divisor (src/animation/property-animation.ts
-    // createPointerAnimationGroup).
+test("integrates the source property clock and pinned interpolation", () => {
+    const context = new LoweringContext();
+    const lowered = new AnimationLowerer(context).lowerPropertyAnimation();
     assert.match(lowered.source, /if \(dot > 0\.9995\) \{/);
-    assert.match(
-        lowered.source,
-        /delta_ms \* 0\.001f \* group->speed_ratio/,
-    );
+    // The native playback fixture covers source clock-divisor and wrap
+    // mutations, including reverse playback and paused/stopped groups.
+    assert.ok(lowered.source.includes(lowerPropertyAnimationPlayback(context)));
+    assert.match(lowered.source, /tick_property_animation_group\(\*group,delta_ms,/);
     // The STEP tie-break direction the lowerer shape-asserts: an exact
     // key-time query takes the LATER key's value.
     assert.match(
         lowered.source,
         /time >= track\.keys\[right\]\.time\s*\? track\.keys\[right\]\.value/,
-    );
-    // The loop wrap and its negative-wrap correction, shape-asserted
-    // against the pinned tick.
-    assert.match(
-        lowered.source,
-        /std::fmod\(\s*group->current_time - group->from_time,\s*duration\)/,
-    );
-    assert.match(
-        lowered.source,
-        /if \(group->current_time < group->from_time\) \{\s*group->current_time \+= duration;/,
     );
 });
 
@@ -851,10 +845,8 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(lowered.source, /0x4e4942/);
     assert.match(adapter.source, /ts::await\(pal::fetch_array_buffer/);
     assert.match(adapter.source, /read_component/);
-    assert.match(
-        adapter.source,
-        /if \(selected\.stopped && !with_engine\) return;\s*apply_animation_state\(clip, with_engine\);/,
-    );
+    assert.ok(adapter.source.includes(lowerGltfAnimationPlayback(new LoweringContext())));
+    assert.match(adapter.source, /gltf_animation_go_to_frame\(clip,clip\.time\*clip\.frame_rate,/);
     assert.match(
         adapter.source,
         /glTF accessor exceeds its bufferView/,
@@ -941,37 +933,22 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /normal_texture_scale/);
     assert.match(adapter.source, /record\.baked_world_scale/);
     assert.match(adapter.source, /inverseBindMatrices/);
-    assert.match(adapter.source, /RotationTrack/);
+    assert.match(adapter.source, /GltfAnimationPoseChannel/);
     assert.match(adapter.source, /animation_tick/);
-    // The load-time pose is the pose pass alone, over the node TRS the file
-    // authored: upstream seeds each skin's bone texture from that rest
-    // hierarchy and evaluates no channel until a tick, so a scene that never
-    // ticks holds the rest pose (docs/fidelity.md).
+    // Initial deformation consumes source-created palettes and morph weights;
+    // it does not evaluate animation channels during load.
     assert.match(
         adapter.source,
-        /apply_animation_pose\(\);\s*\/\/ cloneTransformNode/,
+        /publish_gltf_deformation\(engine\.meshes\[mesh_record_index\],[\s\S]*?mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights\);/,
     );
-    // Every transform and morph channel reads its keyframe pair through
-    // the one sampler pair, which carries the pinned clamp.
-    assert.match(
-        adapter.source,
-        /for \(const RotationTrack& track[\s\S]*?sample_rotation_track\(/,
-    );
-    assert.match(
-        adapter.source,
-        /for \(const TranslationTrack& track[\s\S]*?sample_vec3_track\(/,
-    );
-    assert.match(
-        adapter.source,
-        /weight_tracks\.rbegin\(\)[\s\S]*?const WeightTrack& track[\s\S]*?track_amount_at\(/,
-    );
-    assert.match(adapter.source, /double track_amount_at\([\s\S]*?std::clamp\(/);
-    assert.match(adapter.source, /if \(dot > 0\.9995\)/);
-    assert.match(adapter.source, /const double theta = std::acos\(dot\)/);
-    assert.match(
-        adapter.source,
-        /std::sin\(\(1\.0 - amount\) \* theta\)/,
-    );
+    assert.doesNotMatch(adapter.source, /apply_animation_pose\(\);\s*\/\/ cloneTransformNode/);
+    // Differential fixtures check complete sampler and pose bodies, including
+    // Float32 stores and source channel order; verify their loader wiring here.
+    const context = new LoweringContext();
+    assert.ok(adapter.source.includes(lowerGltfAnimationEvaluator(context)));
+    assert.ok(adapter.source.includes(lowerGltfAnimationPose(context)));
+    assert.match(adapter.source, /gltf_evaluate_animation_pose\(pose,time,upload_gpu,/);
+    assert.match(adapter.source, /gltf_evaluate_animation_sampler\(sampler,t,arity,quaternion,output,offset\)/);
     // Deformation runs on the GPU or not at all. The transcribed
     // palette's 64-matrix cap is the transport's limit, so a larger skin
     // is refused at load rather than deformed CPU-side; a composed
@@ -985,61 +962,44 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /\.gpu_deformation = true;/);
     assert.match(
         adapter.source,
-        /asset\.clone_mesh_animation =/,
+        /asset\.clone_mesh_animation\s*=/,
     );
     assert.match(
         adapter.source,
-        /found->skin ==\s*std::numeric_limits<std::size_t>::max\(\)/,
+        /found->skin\s*==\s*std::numeric_limits<std::size_t>::max\(\)/,
     );
     assert.match(
         adapter.source,
-        /AnimatedMeshBinding binding = \*found;/,
+        /auto binding=\*found;binding\.mesh=clone\.value;/,
     );
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 
 test("emits the opt-in bone-control chunk only when it is reached", () => {
-    const plain = new GltfLowerer(new LoweringContext())
+    const context = new LoweringContext();
+    const plain = new GltfLowerer(context)
         .lowerLoaderAdapter().source;
     assert.doesNotMatch(plain, /bake_skeletons/);
     assert.doesNotMatch(plain, /get_bone_by_name/);
     assert.doesNotMatch(plain, /rest_translation/);
 
-    const source = new GltfLowerer(new LoweringContext())
+    const source = new GltfLowerer(context)
         .lowerLoaderAdapter({ boneControl: true }).source;
     // One skeleton per node carrying both a skin and mesh primitives, and
     // the asset-wide override slot per node the bake reads.
     assert.match(source, /skin_groups\.emplace_back\(binding\.node, binding\.skin\)/);
     assert.match(
         source,
-        /asset\.bone_overrides\.assign\(\s*animation_runtime->nodes\.size\(\), BoneOverride\{\}\)/,
+        /asset\.bone_overrides\.assign\(\s*animation_runtime->source_nodes\.size\(\), BoneOverride\{\}\)/,
     );
-    // The bake resets to the authored rest pose, applies the one override
-    // phase this slice reaches, then composes the palettes. The hidden bit
-    // comes from the pin's own guard, so it is asserted as the value that
-    // module declares rather than as a literal typed here — and the three
-    // transform bits are absent, because no lowered setter can set one.
-    assert.match(
-        source,
-        /translation\[index\] = node\.rest_translation;/,
-    );
-    assert.doesNotMatch(source, /mask &\s*(1|2|4)u/);
-    assert.match(
-        source,
-        /mask &\s*8u\) != 0u\) \{\s*scaling\[index\] = Vec3\{0\.0f, 0\.0f, 0\.0f\};/,
-    );
-    assert.match(
-        source,
-        /native_matrix\(\s*upstream::matrix_product\(\s*bake_world\(skin\.joints\[joint\]\),/,
-    );
-    // The two entry points, and the show arm's own rules: clear the bit,
-    // drop an override the clear emptied, re-bake only when there was one.
+    // Native differential fixtures cover rest reset, world composition,
+    // visibility and disposed palette handling through these source bodies.
+    for (const body of [lowerGltfSkeletonPose(context), lowerGltfBoneVisibility(context),
+        lowerGltfAnimationBoneOverrides(context, {visibilityOnly: true})])
+        assert.ok(source.includes(body), "bone control includes the tested source body");
+    assert.match(source, /gltf_bake_skeleton_pose\(\*bone_pose,/);
     assert.match(source, /BoneHandle get_bone_by_name\(/);
-    assert.match(source, /if \(\(entry\.mask & 8u\) == 0u\) return;/);
-    assert.match(
-        source,
-        /entry\.mask &= ~static_cast<std::uint32_t>\(8u\);/,
-    );
+    assert.match(source, /gltf_set_bone_visibility\(owner\.bone_overrides, node, visible,/);
     // A skinned file with no animations carries no skin runtime here, so
     // that pairing is refused by name rather than silently empty.
     assert.match(source, /if \(!animated && !skin_json\.empty\(\)\)/);

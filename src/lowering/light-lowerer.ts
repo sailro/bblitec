@@ -83,6 +83,17 @@ void set_${kind}_light_${vector}(
      * the shape `refresh_spot_light_matrix` already takes for the vector
      * writes — so the pinned factor reaches the output in one place.
      */
+    public lowerSpotAngleSetter(): string {
+        const {file,declaration}=this.context.functionDeclaration("src/light/spot-light.ts","createSpotLight");
+        const expression=this.context.unwrapExpression(this.context.variableInitializer(declaration,"_cosHalfAngle"));
+        if(!ts.isCallExpression(expression)||this.context.propertyPath(expression.expression)?.join(".")!=="Math.cos"||expression.arguments.length!==1)
+            this.context.contractError(expression,"Expected source spot cone cosine.");
+        const product=this.context.unwrapExpression(expression.arguments[0]!);
+        if(!ts.isBinaryExpression(product)||product.operatorToken.kind!==ts.SyntaxKind.AsteriskToken||!ts.isIdentifier(product.left)||product.left.text!=="angle")
+            this.context.contractError(product,"Expected source spot cone angle scaling.");
+        return this.spotConeSetter(declaration,this.context.numericValue(product.right,file));
+    }
+
     private spotConeSetter(
         declaration: ts.FunctionDeclaration,
         coneHalfFactor: number,

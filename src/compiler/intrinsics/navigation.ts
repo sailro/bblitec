@@ -19,6 +19,7 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { handleCppType } from "../data-types.js";
 import type { Value } from "../types.js";
+import type { NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     validateObjectProperties,
@@ -41,6 +42,7 @@ export interface NavigationIntrinsicContext
         | "compileBoolean"
         | "emitDataVectorOfStructs"
         | "allocateTemporaryCppName"
+        | "registerNativeBinding"
         | "emit"
         | "requireEngine"
         | "unwrap"
@@ -452,11 +454,11 @@ export function compileNavigationIntrinsic(
             );
             const temporary =
                 context.allocateTemporaryCppName("nav_ray");
-            context.emit(
-                `const bbl::upstream::NavRaycastResult ${temporary} = ` +
-                    `bbl::upstream::nav_raycast(${plugin.cpp}, ` +
-                    `${start}, ${end});`,
-            );
+            context.emit({
+                kind: "declaration", type: "const bbl::upstream::NavRaycastResult", name: temporary,
+                initializer: `bbl::upstream::nav_raycast(${plugin.cpp}, ${start}, ${end})`,
+            });
+            const owner = context.registerNativeBinding(temporary);
             // `hitPoint` is present exactly when `hit` is true upstream;
             // the record models it as always-readable coordinates whose
             // meaning the scene's own `hit` guard decides — the same
@@ -469,10 +471,12 @@ export function compileNavigationIntrinsic(
                         kind: "data",
                         cpp: `${temporary}.hit`,
                         dataType: { kind: "boolean" },
+                        nativeCaptures: [owner],
                     },
                     hitPoint: {
-                        ...vec3LanesOf(`${temporary}.hit_point`),
+                        ...vec3LanesOf(`${temporary}.hit_point`, owner),
                         optionalFoundCpp: `${temporary}.hit`,
+                        nativeCompanionCaptures: { optionalFoundCpp: [owner] },
                     },
                 },
             };
@@ -652,14 +656,14 @@ const AGENT_PARAM_NAMES = [
  * time. Every navigation query answers in one, whether the vector is the
  * whole result or a member of it.
  */
-function vec3LanesOf(base: string): Value {
+function vec3LanesOf(base: string, owner: NativeCaptureBinding): Value {
     return {
         kind: "record",
         cpp: "",
         recordProperties: {
-            x: { kind: "number", cpp: `${base}.x` },
-            y: { kind: "number", cpp: `${base}.y` },
-            z: { kind: "number", cpp: `${base}.z` },
+            x: { kind: "number", cpp: `${base}.x`, nativeCaptures: [owner] },
+            y: { kind: "number", cpp: `${base}.y`, nativeCaptures: [owner] },
+            z: { kind: "number", cpp: `${base}.z`, nativeCaptures: [owner] },
         },
     };
 }
@@ -677,7 +681,7 @@ function navVec3Record(
     context.emit(
         { kind: "declaration", type: "const bbl::Vec3d", name: temporary, initializer: expression },
     );
-    return vec3LanesOf(temporary);
+    return vec3LanesOf(temporary, context.registerNativeBinding(temporary));
 }
 
 function validateNavMeshParams(

@@ -272,6 +272,7 @@ function sharedPinnedMirrors(
 // ---------------------------------------------------------------------------
 // The shared pinned per-pass blocks, hoisted for a scene whose earlier family
 // headers are not emitted.
+#include <bblite/runtime.hpp>
 ${
         reachedKinds.length > 0
             ? "#include <bblite/upstream/light_matrix.hpp>\n"
@@ -963,6 +964,7 @@ class GeneratedSourceWriter {
                 vat: features.includes("mesh:vat"),
                 text: features.includes("text:renderable"),
                 nodeMaterials: nodeVariantList.length > 0,
+                pbrSceneHooks: features.includes("loader:gltf"),
             }),
             generated,
         );
@@ -1780,6 +1782,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             this.writeSource(
                 "upstream/src/animation_property.cpp",
                 new AnimationLowerer(context).lowerPropertyAnimation({
+                    gltfLoaderAvailable: features.includes("loader:gltf"),
                     cameraVersions: options.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask"),
                     blending: features.includes(
                         "animation:property-blending",
@@ -1824,9 +1827,6 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     animationAdditive: features.includes(
                         "animation:gltf-additive",
                     ),
-                    managedGroups: features.includes(
-                        "animation:managed-groups",
-                    ),
                     vat: features.includes("mesh:vat"),
                     deformPicking:
                         (options.pickingShaders?.deform?.length ?? 0) > 0,
@@ -1843,9 +1843,6 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     animationMask: features.includes(
                         "animation:gltf-group-mask",
                     ),
-                    animationSpeedRatio: features.includes(
-                        "animation:gltf-group-speed",
-                    ),
                     nodeVisibility: options.gltfNodeVisibility,
                     interactivity: options.gltfInteractivity ?? false,
                     animationPointer: options.animationPointer,
@@ -1853,8 +1850,6 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         options.animatedWorldBounds,
                     animationPointerMaterials:
                         options.animationPointerMaterials,
-                    assetTransmission: options.assetTransmission,
-                    materialSpecular: options.materialSpecular,
                     selectedMaterialVariant:
                         options.selectedMaterialVariant,
                     gltfCameras: features.includes(

@@ -4,7 +4,8 @@ import {mkdirSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import test from "node:test";
 import {compileSource} from "../src/compiler.js";
-import {asObject, GLTF_MESH_PLAN, type JsonObject} from "../src/gltf-document.js";
+import {asObject, asRecords, GLTF_MESH_PLAN, type JsonObject} from "../src/gltf-document.js";
+import {BinaryBuilder} from "../src/glb-binary-builder.js";
 import {gltfMeshPlan, packageGltfMeshPlan, packagedGltfMeshPlan} from "../src/gltf-mesh-plan.js";
 import {GltfLowerer} from "../src/lowering/gltf/loader.js";
 import {CameraLowerer} from "../src/lowering/camera-lowerer.js";
@@ -80,8 +81,19 @@ test("source camera scale checks and changing-scale skip run before native packa
         const {document, bin} = fixture({nodes: [{camera: 0, scale}]});
         await assert.rejects(gltfMeshPlan(document, bin, undefined, enabled), /non-zero uniform scale/);
     }
-    const {document, bin} = fixture({animations: [{channels: [{sampler: 0, target: {node: 1, path: "scale"}}], samplers: [{}]}]});
-    const plan = await gltfMeshPlan(document, bin, undefined, enabled);
+    const {document, bin} = fixture();
+    const binary = new BinaryBuilder(Buffer.from(bin.buffer, bin.byteOffset, bin.byteLength));
+    const accessors = asRecords(document.accessors), bufferViews = asRecords(document.bufferViews);
+    for (const [data, type, count] of [[new Float32Array([0, 1]), "SCALAR", 2],
+        [new Float32Array([2, 2, 2, 3, 3, 3]), "VEC3", 2]] as const) {
+        bufferViews.push({buffer: 0, byteOffset: binary.append(data), byteLength: data.byteLength});
+        accessors.push({bufferView: bufferViews.length - 1, componentType: 5126, count, type});
+    }
+    document.accessors = accessors; document.bufferViews = bufferViews;
+    document.buffers = [{byteLength: binary.byteLength}];
+    document.animations = [{channels: [{sampler: 0, target: {node: 1, path: "scale"}}], samplers: [{input: 1, output: 2}]}];
+    const bytes = binary.build();
+    const plan = await gltfMeshPlan(document, new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), undefined, enabled);
     assert.deepEqual(plan.cameras.map(camera => camera.name), ["outside"]);
     const ortho = fixture({cameras: [{type: "orthographic", orthographic: {xmag: 2, ymag: 1, znear: .1, zfar: 10}}]});
     await assert.rejects(gltfMeshPlan(ortho.document, ortho.bin, undefined, enabled), /explicit clip-plane storage/);

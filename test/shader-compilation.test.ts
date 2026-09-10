@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { compileOfflineShaders, offlineShaderFormats } from "../src/compile-shaders.js";
 import { assertUniformBufferCap, demotableUniformBlocks, demoteUniformBlocks, normalizeTintHlslBindings,
     prepareSdlUniformAdaptation, remapPinnedVariantRegisters, sdlUniformSource, shaderStageSlots } from "../src/shader-bindings.js";
 import { readShaderComposition, shaderStageConstants } from "../src/shader-composition.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
+import { repositoryModuleClosure } from "../src/bake-cache.js";
 
 const tools = discoverDevelopmentTools();
 
@@ -49,6 +52,26 @@ discard;`;
     assert.deepEqual(shaderStageSlots(actual), [
         { kind: "r", index: 0, name: "data" }, { kind: "t", index: 0, name: "color" },
     ]);
+});
+
+test("integer texture loads occupy SDL storage texture slots between sampled textures and buffers", () => {
+    const source = `ByteAddressBuffer morph : register(t0, space2);
+Texture2D<uint4> cells : register(t1, space2);
+Texture2D<float4> color : register(t8, space2);
+Texture2D<int4> signs : register(t5, space2);
+SamplerState colorSampler : register(s8, space2);
+uint4 value = cells.Load(int3(0, 0, 0));`;
+    for (const actual of [normalizeTintHlslBindings(source), remapPinnedVariantRegisters(source, true), remapPinnedVariantRegisters(source, false)]) {
+        assert.deepEqual(shaderStageSlots(actual), [
+            { kind: "i", index: 0, name: "cells" }, { kind: "i", index: 1, name: "signs" },
+            { kind: "r", index: 0, name: "morph" },
+            { kind: "s", index: 0, name: "colorSampler" }, { kind: "t", index: 0, name: "color" },
+        ]);
+        assert.match(actual, /cells : register\(t1,/);
+        assert.match(actual, /signs : register\(t2,/);
+        assert.match(actual, /morph : register\(t3,/);
+        assert.ok(actual.includes("uint4 value = cells.Load(int3(0, 0, 0));"));
+    }
 });
 
 test("uniform adaptation admits only layout-compatible blocks and caps every stage", () => {
@@ -161,6 +184,47 @@ test("shader checkpoints include DXC codegen DLL contents only for DXC targets",
         writeFileSync(path, "ignored by Metal");
         assert.equal(compile("metal").directoriesReused, 1);
     }
+});
+
+test("binding adapter changes invalidate cached sidecars and reordered shader binaries", { skip: !tools.tint || !tools.dxc }, t => {
+    const root = fixtureRoot(t);
+    const directory = shaderDirectory(root, "integer", `@group(2) @binding(0) var values: texture_2d<u32>;
+@group(2) @binding(1) var color: texture_2d<f32>;
+@group(2) @binding(2) var colorSampler: sampler;
+@fragment fn main() -> @location(0) vec4f {
+    return textureSample(color, colorSampler, vec2f(0.5)) + vec4f(textureLoad(values, vec2i(0), 0));
+}`);
+    const compilerRoot = mkdtempSync(resolve("artifacts/test-shader-implementation-"));
+    t.after(() => rmSync(compilerRoot, { recursive: true, force: true }));
+    const entry = fileURLToPath(new URL("../src/compile-shaders.js", import.meta.url));
+    const sourceRoot = dirname(entry);
+    const closure = repositoryModuleClosure([entry], sourceRoot);
+    assert.ok(closure);
+    for (const module of closure) {
+        const path = join(compilerRoot, relative(sourceRoot, module.path));
+        mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, module.source);
+    }
+    const bindingPath = join(compilerRoot, "shader-bindings.js");
+    const current = readFileSync(bindingPath, "utf8");
+    const marker = "function integerTextureRegisters(source) {";
+    assert.ok(current.includes(marker));
+    // Reproduce the old classification in an isolated compiler copy.
+    writeFileSync(bindingPath, current.replace(marker, `${marker}\nsource = "";`));
+    const script = `import {compileOfflineShaders} from ${JSON.stringify(pathToFileURL(join(compilerRoot, "compile-shaders.js")).href)};
+process.stdout.write(JSON.stringify(compileOfflineShaders(${JSON.stringify({ repositoryRoot: root, directories: [directory], tools, target: "d3d12" })})));`;
+    const compile = () => JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" })) as { directoriesCompiled: number; directoriesReused: number; tintCompiled: number; compiled: number };
+    assert.equal(compile().directoriesCompiled, 1);
+    assert.equal(compile().directoriesReused, 1);
+    const oldBinary = readFileSync(join(directory, "simple.frag.dxil"));
+    assert.ok(!readFileSync(join(directory, "simple.frag.slots"), "utf8").includes("i0 values"));
+    writeFileSync(bindingPath, current);
+    const refreshed = compile();
+    assert.equal(refreshed.directoriesCompiled, 1);
+    assert.equal(refreshed.tintCompiled, 1);
+    assert.equal(refreshed.compiled, 1);
+    assert.match(readFileSync(join(directory, "simple.frag.slots"), "utf8"), /i0 values/);
+    assert.notDeepEqual(readFileSync(join(directory, "simple.frag.dxil")), oldBinary);
+    assert.equal(compile().directoriesReused, 1);
 });
 
 test("target switches remove unrequested products and specialize all formats", { skip: !tools.tint || !tools.dxc }, t => {

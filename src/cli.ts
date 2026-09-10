@@ -86,7 +86,7 @@ import {
     gltfHasCompressedImages,
     gltfHasGaussianSplats,
 } from "./asset-specializer.js";
-import { gltfInteractivity, parseGlbJson } from "./gltf-document.js";
+import { parseGlbJson } from "./gltf-document.js";
 import {
     type FlowGraphAssetPrograms,
     parseFlowGraphs,
@@ -923,18 +923,12 @@ async function main(): Promise<void> {
         if (gltfHasCompressedImages(assetPath)) {
             assetFeatures.push("texture:compressed" as Feature);
         }
-        // KHR_interactivity: the pinned registry selects the feature by the
-        // extension's presence, the graphs it declares are parsed through
-        // the pin per packaged file, and the flow-graph lowering emits
-        // them. A scene that never reads the container's runtimes still
-        // runs them, so the asset joins the feature the way its punctual
-        // lights do.
+        // The source applyAsset result owns activation, including an empty
+        // result when the extension creates no usable graph.
         const document = parseGlbJson(assetPath);
-        if (gltfInteractivity(document) !== undefined) {
-            flowGraphs.push({
-                asset: asset.output,
-                graphs: await parseFlowGraphs(asset.output, document),
-            });
+        const graphs = await parseFlowGraphs(asset.output, document);
+        if (graphs.length) {
+            flowGraphs.push({asset: asset.output, graphs});
             assetFeatures.push("flow-graph:interactivity" as Feature);
         }
         for (const feature of assetFeatures) {

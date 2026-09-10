@@ -4,6 +4,7 @@ import { compressedTextureFormat } from "../../compressed-texture-format.js";
 // from the module that owns the document schema both sides read.
 import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES, GLTF_VARIANT_PLAN, GLTF_MESH_PLAN } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
+import {gltfAnimationRuntimeTypesCpp, gltfAnimationMatrixTransportCpp, gltfAnimationPoseTransportCpp, gltfAnimationLoadingCpp} from "../gltf/animation-runtime.js";
 import { gltfMaterialProjection } from "../gltf/material-projection.js";
 /**
  * The generated glTF loader.
@@ -22,13 +23,17 @@ import { gltfMaterialProjection } from "../gltf/material-projection.js";
  * text behind an unrelated assertion.
  */
 export interface GltfLoaderLoweredSegments {
-    /**
-     * `normalize_quaternion`, `interpolate_quaternion`, `cubic_quaternion`
-     * and `cubic_vec3`, lowered from `src/animation/evaluate.ts`
-     * (`normalizeQuat4`, `quatSlerp`, and `evaluateSampler`'s CUBICSPLINE
-     * branch).
-     */
-    animationInterpolation: string;
+    animationStorage: string;
+    animationMask: string;
+    animationPlayback: string;
+    animationPose: string;
+    animationEvaluator: string;
+    animationBoneOverrides: string;
+    animationRootFlip: string;
+    animationFactory: string;
+    animationWeighted: string;
+    animationWeightedTransport: {types: string; dispatcher: string};
+    animationPointers: string;
     /** Complete pinned DataView component reader, including normalization. */
     accessorNormalization: string;
     /** Pinned accessor component counts and typed-array constructor widths. */
@@ -37,12 +42,14 @@ export interface GltfLoaderLoweredSegments {
     parserJson: string;
     inverseBindMatrices: string;
     animationNodeRest: string;
-    animationClips: string;
+    deformationState: string;
+    animationBindings: string;
     materialAssembly: string;
     materialTextures: string;
     materialProperties: string;
     iblLoading: string;
     assetSceneSetup: string;
+    gaussianSplatSetup: string;
     assetSceneSetupOrder: string[];
     /** Pinned sRGB byte conversion. */
     factorBake: string;
@@ -98,9 +105,6 @@ export function gltfLoaderCpp(
     options: GltfLoaderOptions = {},
 ): string {
     const {
-        animationBlending = false,
-        animationAdditive = false,
-        managedGroups = false,
         vat = false,
         deformPicking = false,
         pinnedSkeletonPalette = false,
@@ -111,14 +115,11 @@ export function gltfLoaderCpp(
         sourceMeshWalks = false,
         nonTrianglePrimitives = false,
         gaussianSplats = false,
-        animationMask = false,
-        animationSpeedRatio = false,
         nodeVisibility = false,
         interactivity = false,
         animationPointer = false,
         animatedWorldBounds = false,
         animationPointerMaterials = false,
-        assetTransmission = false,
         selectedMaterialVariant = "",
         gltfCameras = false,
         boneControl = false,
@@ -136,6 +137,7 @@ export function gltfLoaderCpp(
 #include <bblite/pal_gltf.hpp>
 #include <bblite/pal_image_canvas.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/gltf_glb_parser.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
@@ -152,6 +154,7 @@ ${compressedImages ? "#include <bblite/upstream/compressed_texture.hpp>\n" : ""}
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -216,16 +219,6 @@ std::string string_or(const JsonObject& object, const std::string& key, std::str
     return value ? value->as_string() : std::move(fallback);
 }
 
-${gaussianSplats ? `std::vector<float> float_array(const ts::JsonValue* value) {
-    if (!value) return {};
-    std::vector<float> result;
-    for (const ts::JsonValue& element : value->as_array()) {
-        result.push_back(static_cast<float>(element.as_number()));
-    }
-    return result;
-}
-` : ""}
-
 std::vector<double> double_array(const ts::JsonValue* value) {
     if (!value) return {};
     std::vector<double> result;
@@ -238,6 +231,7 @@ std::vector<double> double_array(const ts::JsonValue* value) {
 ${lowered.animationNodeRest}
 
 ${lowered.assetSceneSetup}
+${lowered.gaussianSplatSetup}
 
 struct BufferViewInfo {
     std::size_t offset = 0;
@@ -256,318 +250,13 @@ struct AccessorInfo {
 
 using Matrix = std::array<float, 16>;
 
-// The pin's own sampler interpolation (src/animation/types.ts:
-// INTERP_LINEAR, INTERP_STEP, INTERP_CUBICSPLINE), which is what
-// evaluateSampler branches on.
-enum class TrackInterpolation : std::uint8_t {
-    linear,
-    step,
-    cubic,
-};
-
-struct RotationTrack {
-    std::size_t clip = 0;
-    std::size_t node = 0;
-    TrackInterpolation interpolation = TrackInterpolation::linear;
-    std::vector<float> times;
-    std::vector<Vec4> values;
-    std::vector<Vec4> in_tangents;
-    std::vector<Vec4> out_tangents;
-};
-
-struct TranslationTrack {
-    std::size_t clip = 0;
-    std::size_t node = 0;
-    TrackInterpolation interpolation = TrackInterpolation::linear;
-    std::vector<float> times;
-    std::vector<Vec3> values;
-    std::vector<Vec3> in_tangents;
-    std::vector<Vec3> out_tangents;
-};
-
-struct WeightTrack {
-    std::size_t clip = 0;
-    std::size_t node = 0;
-    TrackInterpolation interpolation = TrackInterpolation::linear;
-    std::size_t target_count = 0;
-    std::vector<float> times;
-    std::vector<float> values;
-};${gltfCameras ? `
-
-// An imported glTF camera on a reachable node: the pinned feature parents
-// its fixup TransformNode to that node, so the camera's parent world
-// follows the animated pose. The lanes are the fixup diagonal, resolved
-// once at load from the node's rest scale.
-struct AnimatedCameraBinding {
-    CameraHandle camera{};
-    std::size_t node = 0;
-    Matrix local{};
-};` : ""}${animationPointer ? `
-
-struct VisibilityTrack {
-    std::size_t clip = 0;
-    std::size_t node = 0;
-    // The target node and every descendant, resolved once at load. The
-    // pinned writer calls setSubtreeVisible on each evaluation, which
-    // materializes the KHR_node_visibility cascade rather than testing
-    // ancestors while drawing.
-    std::vector<std::size_t> subtree;
-    std::vector<float> times;
-    std::vector<bool> values;
-};
-
-enum class LightTrackKind {
-    color,
-    intensity,
-    range,
-    outer_cone_angle,
-};
-
-// A light instantiated on an animated node. The pinned loader parents the
-// light to that node, so its world position and direction follow the node
-// every frame; ours bakes them at load, which leaves an animated light
-// shining from wherever it started.
-struct AnimatedLightBinding {
-    LightHandle light{};
-    std::size_t node = 0;
-};
-
-struct LightTrack {
-    std::size_t clip = 0;
-    LightHandle light{};
-    LightTrackKind kind = LightTrackKind::color;
-    std::vector<float> times;
-    std::vector<Vec4> values;
-};
-
-// Pointer targets the pinned resolver has no handler for. Its registry is a
-// list of patterns and anything outside it returns null, so the channel is
-// warned about once and then never applied — the browser renders as though the
-// asset had not authored it. Reproducing that is a parity requirement rather
-// than a shortcut: implementing one of these would animate a value the
-// reference holds still. Each entry is absent from the pinned registry for its
-// own reason:
-//   - roughnessFactor: Babylon.js registers the metallicFactor pointer twice
-//     and the second registration animates roughness, so roughnessFactor
-//     itself is never registered. The pin matches that deliberately.
-//   - alphaCutoff and the camera planes: no handler in any pointer module.
-//   - spot/innerConeAngle: the lights module handles color, intensity, range
-//     and spot/outerConeAngle only.
-bool pointer_unhandled_upstream(const std::string& pointer) {
-    const auto tail_after_index =
-        [&pointer](const std::string& prefix) -> std::string {
-        if (pointer.rfind(prefix, 0) != 0) return std::string();
-        const std::size_t start = prefix.size();
-        std::size_t end = start;
-        while (end < pointer.size() && std::isdigit(
-                   static_cast<unsigned char>(pointer[end]))) {
-            ++end;
-        }
-        if (end == start) return std::string();
-        return pointer.substr(end);
-    };
-    const std::string material_tail = tail_after_index("/materials/");
-    if (
-        material_tail == "/pbrMetallicRoughness/roughnessFactor" ||
-        material_tail == "/alphaCutoff") {
-        return true;
-    }
-    if (!tail_after_index("/cameras/").empty()) return true;
-    return tail_after_index("/extensions/KHR_lights_punctual/lights/") ==
-        "/spot/innerConeAngle";
-}` : ""}${animationPointerMaterials ? `
-
-enum class MaterialTrackKind {
-    base_color_factor,
-    emissive_factor,
-    emissive_strength,
-    texture_transform,
-    // Babylon.js registers the glTF metallicFactor pointer twice and the
-    // second registration animates roughness, so a metallicFactor channel
-    // drives the roughness factor and metallic itself is never animated. The
-    // pin matches that for parity and says so; roughnessFactor has no handler
-    // at all.
-    roughness_from_metallic,
-    normal_texture_scale,
-    occlusion_strength,
-    transmission_factor,
-    index_of_refraction,
-    volume_thickness,
-    volume_attenuation_distance,
-    volume_attenuation_color,
-    iridescence_factor,
-    iridescence_index_of_refraction,
-    iridescence_maximum_thickness,
-};
-
-// Which texture slot's transform a KHR_texture_transform pointer drives, and
-// which of its three components. The pin resolves the slot to the runtime
-// texture wrapper and writes uAng, uOffset/vOffset or uScale/vScale on it;
-// per-slot transforms live on the material record here, so the slot travels as
-// a tag rather than as a pointer into a vector that reallocates.
-enum class TextureTransformSlot {
-    base_color,
-    occlusion,
-    normal,
-    emissive,
-    clearcoat,
-    clearcoat_roughness,
-    clearcoat_normal,
-    sheen,
-    sheen_roughness,
-    iridescence,
-    iridescence_thickness,
-    transmission,
-    thickness,
-    anisotropy,
-    translucency_color,
-    translucency_intensity,
-    metallic_reflectance,
-    reflectance,
-};
-
-enum class TextureTransformResolution {
-    resolved,
-    ignored,
-    unsupported,
-};
-
-enum class TextureTransformComponent {
-    offset,
-    scale,
-    rotation,
-};
-
-struct MaterialTrack {
-    std::size_t clip = 0;
-    std::size_t material = 0;
-    MaterialTrackKind kind = MaterialTrackKind::base_color_factor;
-    TextureTransformSlot slot = TextureTransformSlot::base_color;
-    TextureTransformComponent component =
-        TextureTransformComponent::rotation;
-    std::vector<float> times;
-    std::vector<Vec4> values;
-};
-
-// The texture slots a KHR_texture_transform pointer may name. The core four
-// mirror the pin's TX_SLOT map, in which metallicRoughnessTexture is
-// deliberately absent: Babylon.js omits the extension path segment when it
-// registers that pointer, so the interpolation never attaches and the MR
-// transform stays at its load-time value. The pin matches that for parity, and
-// so does this. The extension slots mirror resolveExtTexture. Occlusion uses
-// its independent texture when the loader built one, otherwise the ORM slot.
-TextureTransformResolution material_transform_slot(
-    const std::string& path,
-    TextureTransformSlot& slot) {
-    if (path == "/pbrMetallicRoughness/metallicRoughnessTexture") {
-        return TextureTransformResolution::ignored;
-    } else if (path == "/pbrMetallicRoughness/baseColorTexture") {
-        slot = TextureTransformSlot::base_color;
-    } else if (path == "/emissiveTexture") {
-        slot = TextureTransformSlot::emissive;
-    } else if (path == "/normalTexture") {
-        slot = TextureTransformSlot::normal;
-    } else if (path == "/occlusionTexture") {
-        slot = TextureTransformSlot::occlusion;
-    } else if (
-        path ==
-        "/extensions/KHR_materials_clearcoat/clearcoatTexture") {
-        slot = TextureTransformSlot::clearcoat;
-    } else if (
-        path ==
-        "/extensions/KHR_materials_clearcoat/clearcoatRoughnessTexture") {
-        slot = TextureTransformSlot::clearcoat_roughness;
-    } else if (
-        path ==
-        "/extensions/KHR_materials_clearcoat/clearcoatNormalTexture") {
-        slot = TextureTransformSlot::clearcoat_normal;
-    } else if (
-        path == "/extensions/KHR_materials_sheen/sheenColorTexture") {
-        slot = TextureTransformSlot::sheen;
-    } else if (
-        path ==
-        "/extensions/KHR_materials_sheen/sheenRoughnessTexture") {
-        slot = TextureTransformSlot::sheen_roughness;
-    } else if (
-        path ==
-        "/extensions/KHR_materials_iridescence/iridescenceTexture") {
-        slot = TextureTransformSlot::iridescence;
-    } else if (
-        path ==
-        "/extensions/KHR_materials_iridescence/iridescenceThicknessTexture") {
-        slot = TextureTransformSlot::iridescence_thickness;
-    } else if (
-        path ==
-        "/extensions/KHR_materials_transmission/transmissionTexture") {
-        slot = TextureTransformSlot::transmission;
-    } else if (
-        path == "/extensions/KHR_materials_volume/thicknessTexture") {
-        slot = TextureTransformSlot::thickness;
-    } else if (path == "/extensions/KHR_materials_anisotropy/anisotropyTexture") {
-        slot = TextureTransformSlot::anisotropy;
-    } else if (path == "/extensions/KHR_materials_diffuse_transmission/diffuseTransmissionColorTexture") {
-        slot = TextureTransformSlot::translucency_color;
-    } else if (path == "/extensions/KHR_materials_diffuse_transmission/diffuseTransmissionTexture") {
-        slot = TextureTransformSlot::translucency_intensity;
-    } else if (path == "/extensions/KHR_materials_specular/specularTexture") {
-        slot = TextureTransformSlot::metallic_reflectance;
-    } else if (path == "/extensions/KHR_materials_specular/specularColorTexture") {
-        slot = TextureTransformSlot::reflectance;
-    } else {
-        return TextureTransformResolution::unsupported;
-    }
-    return TextureTransformResolution::resolved;
-}
-
-TextureTransform& material_transform(
-    MaterialRecord& material,
-    TextureTransformSlot slot) {
-    switch (slot) {
-        case TextureTransformSlot::base_color:
-            return material.base_color_transform;
-        case TextureTransformSlot::occlusion:
-            return material.has_occlusion_transform
-                ? material.occlusion_transform : material.orm_transform;
-        case TextureTransformSlot::normal:
-            return material.normal_transform;
-        case TextureTransformSlot::emissive:
-            return material.emissive_transform;
-        case TextureTransformSlot::clearcoat:
-            return material.clearcoat_transform;
-        case TextureTransformSlot::clearcoat_roughness:
-            return material.clearcoat_roughness_transform;
-        case TextureTransformSlot::clearcoat_normal:
-            return material.clearcoat_normal_transform;
-        case TextureTransformSlot::sheen:
-            return material.sheen_transform;
-        case TextureTransformSlot::sheen_roughness:
-            return material.sheen_roughness_transform;
-        case TextureTransformSlot::iridescence:
-            return material.iridescence_transform;
-        case TextureTransformSlot::iridescence_thickness:
-            return material.iridescence_thickness_transform;
-        case TextureTransformSlot::transmission:
-            return material.transmission_transform;
-        case TextureTransformSlot::anisotropy:
-            return material.anisotropy_transform;
-        case TextureTransformSlot::translucency_color:
-            return material.translucency_color_transform;
-        case TextureTransformSlot::translucency_intensity:
-            return material.translucency_intensity_transform;
-        case TextureTransformSlot::metallic_reflectance:
-            return material.metallic_reflectance_transform;
-        case TextureTransformSlot::reflectance:
-            return material.reflectance_transform;
-        case TextureTransformSlot::thickness:
-            break;
-    }
-    return material.thickness_transform;
-}` : ""}
+${gltfCameras ? `struct AnimatedCameraBinding { CameraHandle camera{}; std::size_t node=0; Matrix local{}; };` : ""}
+${animationPointer ? `struct AnimatedLightBinding { LightHandle light{}; std::size_t node=0; };` : ""}
 
 struct AnimatedNode {
-    Vec3 translation{};
-    Vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f};
-    Vec3 scale{1.0f, 1.0f, 1.0f};
+    Vec3d translation{};
+    Vec4d rotation{0.0, 0.0, 0.0, 1.0};
+    Vec3d scale{1.0, 1.0, 1.0};
     // A node authored with a matrix keeps it verbatim: the pinned loader builds
     // such a node with createSceneNodeFromMatrix, which stores the raw matrix as
     // _localMatrix, and the local matrix reads _localMatrix in preference to the
@@ -578,20 +267,7 @@ struct AnimatedNode {
     Matrix world{};
     bool computed = false;
     bool computing = false;
-    std::optional<std::vector<float>> weights;${animationBlending || animationMask || boneControl ? `
-    // The rest pose the authored TRS is: the mixer resets to it each tick
-    // before a clip accumulates, a masked node holds it, and the
-    // bone-control bake starts from it — the pin's own \`resetTRS\`, which
-    // is why its working pose is the file's rather than the last frame's.
-    Vec3 rest_translation{};
-    Vec4 rest_rotation{0.0f, 0.0f, 0.0f, 1.0f};
-    Vec3 rest_scale{1.0f, 1.0f, 1.0f};` : ""}${animationBlending ? `
-    // The partial-weight rotation slerp blends against that rest
-    // rotation, which is what upstream's uploadTarget does when a node's
-    // weights sum below one.
-    float translation_weight = 0.0f;
-    float rotation_weight = 0.0f;
-    float scale_weight = 0.0f;` : ""}
+
 };
 
 struct SkinRuntime {
@@ -605,90 +281,19 @@ struct AnimatedMeshBinding {
     std::size_t node = 0;
     std::size_t skin = std::numeric_limits<std::size_t>::max();
     std::vector<float> morph_default_weights;
+    std::size_t skeleton_binding = std::numeric_limits<std::size_t>::max();
+    std::size_t morph_node = std::numeric_limits<std::size_t>::max();
+    std::vector<Matrix> initial_joint_matrices;
+    Matrix initial_mesh_world{};
 };
 
-// One glTF animation, the shape src/animation/animation-group.ts builds per
-// clip: its own name, duration, frame rate and play state. Upstream starts
-// only the first clip (isPlaying: clipIndex === 0) and loops each one over
-// its own duration, so the clips advance independently.
-struct AnimationClip {
-    std::string name;
-    float time = 0.0f;
-    float duration = 0.0f;
-    bool playing = false;
-    bool stopped = true;
-    // AnimationGroup.loopAnimation, which both advances read; the pinned
-    // group default is true.
-    bool loop = true;
-${animationSpeedRatio ? `
-    // AnimationGroup.speedRatio, at the pinned group default. The manager
-    // advance scales its own delta by it; the scene's master-clock fan-out
-    // scales the elapsed span since the ratio was written, which is the
-    // same accumulation for a ratio that does not move.
-    float speed_ratio = 1.0f;
-    // Where the scene's master clock was when the ratio last changed, and
-    // the clip time it stood at -- so a write moves the future and never
-    // the past, exactly as the pin's own time += dt * speedRatio does.
-    float speed_origin = 0.0f;
-    float speed_base = 0.0f;` : ""}${animationMask ? `
-    // The pin's resolveAnimationMask output: one skip flag per node, and
-    // whether a mask is attached at all. A masked node's channels are
-    // skipped, so it keeps the rest-pose TRS the tick reset it to.
-    std::vector<std::uint8_t> masked_nodes;
-    // The same set as an index list, because the pose pass restores only
-    // the masked nodes and would otherwise rescan every node each frame.
-    std::vector<std::uint32_t> masked_node_indices;
-    bool mask_active = false;` : ""}${animationAdditive ? `
-    // group._additive (src/animation/weighted-gltf-mixer.ts): set by
-    // setAnimationAdditive through the writer below, read by the
-    // weighted pass — an additive clip contributes each channel's
-    // difference from its reference-time sample instead of joining the
-    // weighted base sums.
-    bool additive = false;
-    float additive_reference_time = 0.0f;` : ""}
-};
-${animationBlending ? `
-// The clip loop below appends the transform tracks clip by clip in
-// ascending order, so each clip's tracks are one contiguous run of the
-// vectors. [first, last) per channel, recorded beside the vectors so
-// the weighted mixer walks only the clip's own run instead of
-// rejecting every other clip's tracks by track.clip once per blended
-// clip -- the walk keeps that test, so correctness never depends on
-// this grouping.
-struct TrackRange {
-    std::size_t first = 0;
-    std::size_t last = 0;
-};
+${lowered.animationBindings}
 
-struct ClipTrackRanges {
-    TrackRange rotation;
-    TrackRange translation;
-    TrackRange scale;
-};
-` : ""}
-struct AnimationRuntime {
-    float time = 0.0f;
-    bool paused = false;${animationMask ? `
-    // The glTF node names, in document order -- what an AnimationGroupMask
-    // matches its target names against (parseAnimationData's nodeNames).
-    std::vector<std::string> node_names;` : ""}
-    std::vector<AnimationClip> clips;
-    std::vector<RotationTrack> rotation_tracks;
-    std::vector<TranslationTrack> translation_tracks;
-    std::vector<TranslationTrack> scale_tracks;${animationBlending ? `
-    // One entry per clip, indexed like clips.
-    std::vector<ClipTrackRanges> clip_track_ranges;` : ""}
-    std::vector<WeightTrack> weight_tracks;${animationPointer ? `
-    std::vector<VisibilityTrack> visibility_tracks;
-    std::vector<LightTrack> light_tracks;
-    std::vector<AnimatedLightBinding> light_nodes;` : ""}${animationPointerMaterials ? `
-    std::vector<MaterialTrack> material_tracks;` : ""}${gltfCameras ? `
-    std::vector<AnimatedCameraBinding> camera_nodes;` : ""}
-    std::vector<std::vector<std::uint32_t>> node_meshes;
-    std::vector<AnimatedNode> nodes;
-    std::vector<SkinRuntime> skins;
-    std::vector<AnimatedMeshBinding> meshes;
-};
+${lowered.animationStorage}
+${lowered.animationPlayback}
+${lowered.animationMask}
+${gltfAnimationRuntimeTypesCpp(options)}
+${lowered.animationWeightedTransport.types}
 
 ${lowered.accessorShape}
 
@@ -828,141 +433,11 @@ Vec3 normalize(Vec3 value) {
     };
 }
 ` : ""}
-${lowered.animationInterpolation}
-
-/**
- * One transform track sampled at a clip time: the keyframe pair around
- * it and the interpolation evaluateSampler performs
- * (src/animation/evaluate.ts), CUBICSPLINE included. Both the direct
- * per-clip pass and the weighted mixer read a channel through these.
- */
-std::size_t track_key_at(
-    const std::vector<float>& times,
-    float time) {
-    // The first key at or after the time, never index 0, clamped to the
-    // last. Binary rather than linear because glTF requires a sampler's
-    // input times to be strictly increasing, so the two agree exactly --
-    // and because a VAT bake walks every frame of every clip through
-    // every channel, which made this the bake's dominant cost at tens of
-    // millions of comparisons for one shark.
-    std::size_t right = static_cast<std::size_t>(
-        std::lower_bound(times.begin() + 1, times.end(), time) -
-        times.begin());
-    if (right >= times.size()) {
-        right = times.size() - 1;
-    }
-    return right;
-}
-
-double track_amount_at(
-    const std::vector<float>& times,
-    std::size_t left,
-    std::size_t right,
-    float time) {
-    const double span =
-        static_cast<double>(times[right]) - times[left];
-    return span > 0.0
-        ? std::clamp(
-              (static_cast<double>(time) - times[left]) /
-                  span,
-              0.0,
-              1.0)
-        : 0.0;
-}
-
-// evaluateSampler's STEP branch: the later key once the time reaches its
-// own, the earlier one inside the span. track_key_at returns the first key at
-// or after the time (clamped, never zero), so its own pair is exactly the two
-// the pin's (t >= t1 ? idx + 1 : idx) chooses between.
-${animationMask ? `// animationGroupMaskRetainsTarget, resolved per node at the write and
-// read here per channel: a masked node keeps the rest-pose TRS the tick
-// reset it to, which is what upstream's own \`continue\` leaves behind.
-bool clip_masks_node(
-    const AnimationClip& clip,
-    std::size_t node) {
-    return clip.mask_active &&
-        node < clip.masked_nodes.size() &&
-        clip.masked_nodes[node] != 0;
-}
-
-` : ""}std::size_t track_step_key_at(
-    const std::vector<float>& times,
-    std::size_t left,
-    std::size_t right,
-    float time) {
-    return times[right] <= time ? right : left;
-}
-
-Vec4 sample_rotation_track(
-    const RotationTrack& track,
-    float time) {
-    const std::size_t right = track_key_at(track.times, time);
-    const std::size_t left = right > 0 ? right - 1 : 0;
-    if (track.interpolation == TrackInterpolation::step) {
-        return track.values[
-            track_step_key_at(track.times, left, right, time)];
-    }
-    const double span =
-        static_cast<double>(track.times[right]) -
-        track.times[left];
-    const double amount =
-        track_amount_at(track.times, left, right, time);
-    return track.interpolation == TrackInterpolation::cubic
-        ? cubic_quaternion(
-              track.values[left],
-              track.out_tangents[left],
-              track.values[right],
-              track.in_tangents[right],
-              amount,
-              span)
-        : interpolate_quaternion(
-              track.values[left],
-              track.values[right],
-              amount);
-}
-
-Vec3 sample_vec3_track(
-    const TranslationTrack& track,
-    float time) {
-    const std::size_t right = track_key_at(track.times, time);
-    const std::size_t left = right > 0 ? right - 1 : 0;
-    if (track.interpolation == TrackInterpolation::step) {
-        return track.values[
-            track_step_key_at(track.times, left, right, time)];
-    }
-    const double span =
-        static_cast<double>(track.times[right]) -
-        track.times[left];
-    const double amount =
-        track_amount_at(track.times, left, right, time);
-    const Vec3 left_value = track.values[left];
-    const Vec3 right_value = track.values[right];
-    return track.interpolation == TrackInterpolation::cubic
-        ? cubic_vec3(
-              left_value,
-              track.out_tangents[left],
-              right_value,
-              track.in_tangents[right],
-              amount,
-              span)
-        : Vec3{
-              static_cast<float>(
-                  left_value.x +
-                  (static_cast<double>(right_value.x) -
-                   left_value.x) *
-                      amount),
-              static_cast<float>(
-                  left_value.y +
-                  (static_cast<double>(right_value.y) -
-                   left_value.y) *
-                      amount),
-              static_cast<float>(
-                  left_value.z +
-                  (static_cast<double>(right_value.z) -
-                   left_value.z) *
-                      amount),
-          };
-}
+${lowered.animationEvaluator}
+${lowered.animationBoneOverrides}
+${lowered.animationPose}
+${lowered.animationFactory}
+${lowered.animationWeighted}
 
 Matrix identity_matrix() {
     Matrix result{};
@@ -977,6 +452,9 @@ ${lowered.matrixLocal}
 ${lowered.matrixCompose}
 
 ${lowered.matrixNative}
+${gltfAnimationMatrixTransportCpp()}
+
+${lowered.deformationState}
 
 ${lowered.hierarchy}
 
@@ -1079,64 +557,25 @@ const ts::JsonValue* texture_transform_value(
 
 ${factorBake}
 
-// animation-pointer-basecolor.ts#collectBaseColorDefs: which materials have
-// their base colour factor driven by a KHR_animation_pointer channel. It is a
-// pre-pass upstream for the same reason it is one here — materials are built
-// before animations are read, and the answer changes how a material is built.
-std::vector<bool> collect_animated_base_color(
-    const JsonObject& document,
-    std::size_t material_count) {
-    std::vector<bool> animated(material_count, false);
-    for (const ts::JsonValue& animation : array_or_empty(document, "animations")) {
-        for (const ts::JsonValue& channel :
-             array_or_empty(animation.as_object(), "channels")) {
-            const ts::JsonValue* target =
-                optional(channel.as_object(), "target");
-            if (target == nullptr) continue;
-            const ts::JsonValue* extensions =
-                optional(target->as_object(), "extensions");
-            if (extensions == nullptr) continue;
-            const ts::JsonValue* pointer_extension = optional(
-                extensions->as_object(), "KHR_animation_pointer");
-            if (pointer_extension == nullptr) continue;
-            const ts::JsonValue* pointer =
-                optional(pointer_extension->as_object(), "pointer");
-            if (pointer == nullptr) continue;
-            const std::string path = pointer->as_string();
-            const std::string prefix = "/materials/";
-            const std::string suffix =
-                "/pbrMetallicRoughness/baseColorFactor";
-            if (path.size() <= prefix.size() + suffix.size()) continue;
-            if (path.compare(0, prefix.size(), prefix) != 0) continue;
-            if (path.compare(
-                    path.size() - suffix.size(),
-                    suffix.size(),
-                    suffix) != 0) {
-                continue;
-            }
-            const std::string digits = path.substr(
-                prefix.size(),
-                path.size() - prefix.size() - suffix.size());
-            if (digits.empty() ||
-                digits.find_first_not_of("0123456789") != std::string::npos) {
-                continue;
-            }
-            const std::size_t index =
-                static_cast<std::size_t>(std::stoull(digits));
-            if (index < animated.size()) animated[index] = true;
-        }
-    }
-    return animated;
-}
-
 ${lowered.materialAssembly}
 ${lowered.materialTextures}
 
 ${lowered.materialProperties}
-${lowered.animationClips}
 ${gltfMaterialProjection(animationPointerMaterials)}
+${lowered.animationPointers}
 
 } // namespace
+
+struct GltfAnimationRuntimeState { std::shared_ptr<AnimationRuntime> value; };
+${lowered.animationWeightedTransport.dispatcher}
+
+void run_pbr_scene_hooks(Scene& scene, const std::vector<MeshHandle>& meshes) {
+    run_pbr_scene_hooks_impl(scene, meshes);
+}
+std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
+    bool (*builder)(Scene&, const std::vector<MeshHandle>&)) {
+    return run_pbr_rebuild_transaction_impl(scene, meshes, builder);
+}
 
 ${gltfCameras ? `AssetHandle load_gltf(Engine& engine, const std::string& path) {
     return load_gltf(engine, path, false);
@@ -1144,7 +583,8 @@ ${gltfCameras ? `AssetHandle load_gltf(Engine& engine, const std::string& path) 
 
 ` : ""}AssetHandle load_gltf(Engine& engine, const std::string& path${gltfCameras ? ", bool load_cameras" : ""}) {
     ts::ArrayBuffer buffer = ts::await(pal::fetch_array_buffer(path));
-    const upstream::ParsedGlbContainer container = upstream::parse_glb_container(buffer);
+${animationPointer ? `    const auto source_container=std::make_shared<const upstream::ParsedGlbContainer>(upstream::parse_glb_container(buffer));
+    const auto& container=*source_container;` : "    const upstream::ParsedGlbContainer container = upstream::parse_glb_container(buffer);"}
     const JsonObject& document = container.json.as_object();
     const auto material_features = gltf_pbr_material_features(GltfPbrValue{&container.json});
     const bool material_texture_wrap = gltf_pbr_has_texture_wrap(GltfPbrValue{&container.json});
@@ -1159,9 +599,9 @@ ${gltfCameras ? `AssetHandle load_gltf(Engine& engine, const std::string& path) 
     const JsonArray& mesh_json = array_or_empty(document, "meshes");
     const JsonArray& node_json = array_or_empty(document, "nodes");
     const JsonArray& skin_json = array_or_empty(document, "skins");
-    const JsonArray& animation_json =
-        array_or_empty(document, "animations");
-    const bool animated = !animation_json.empty();
+    const auto& mesh_plan = required(document, "${GLTF_MESH_PLAN}").as_object();
+    const auto& source_animation = required(mesh_plan, "animation");
+    const bool animated = !source_animation.is_null() && required(source_animation.as_object(), "accepted").as_boolean();
 
     std::vector<BufferViewInfo> views;
     views.reserve(view_json.size());
@@ -1212,12 +652,12 @@ ${gltfCameras ? `AssetHandle load_gltf(Engine& engine, const std::string& path) 
             bool_or(object, "normalized", false),
         });
     }
-    const auto& mesh_plan = required(document, "${GLTF_MESH_PLAN}").as_object();
     const auto& planned_materials = required(mesh_plan, "materials").as_array();
     const auto& planned_meshes = required(mesh_plan, "meshes").as_array();
     const auto& planned_geometries = required(mesh_plan, "geometries").as_array();
     std::vector<MaterialHandle> materials;
     materials.reserve(planned_materials.size());
+${animationPointer ? "    std::vector<GltfPbrValue> source_physical_properties;" : ""}
 ${animationPointerMaterials || interactivity ? `    std::vector<MaterialHandle> source_materials(material_json.size());` : ""}
     GltfMaterialImageCache material_image_cache;
     GltfTextureCache material_texture_cache;
@@ -1258,8 +698,10 @@ ${sourceTextureReads ? `
         }
         engine.materials.at(handle.value).source_albedo_texture = std::move(texture);
     };` : ""}
-    const std::vector<bool> animated_base_color =
-        collect_animated_base_color(document, material_json.size());
+    std::vector<bool> base_color_definitions(material_json.size(), false);
+    for (const auto& index : required(mesh_plan, "baseColorDefinitions").as_array())
+        base_color_definitions.at(unsigned_value(index)) = true;
+    const bool base_color_module = required(mesh_plan, "baseColorModule").as_boolean();
     const auto decode_material_image = [](const TextureData& texture) {
         if (!texture.compressed.mips.empty()) throw std::runtime_error("Canvas2D composition of compressed glTF images is unsupported.");
         return pal::decode_image(js::ArrayBuffer(texture.bytes));
@@ -1272,13 +714,14 @@ ${sourceTextureReads ? `
         core_materials.push_back(assemble_gltf_material(document, source_index, material_image_cache, resolve_material_image));
     }
     for (const auto& core_index : planned_materials) {
+${animationPointer ? "            source_physical_properties.emplace_back();" : ""}
             const auto& material = core_materials.at(unsigned_value(core_index));
             const auto source_material_index = material._rawMatDef ? static_cast<std::size_t>(material._rawMatDef - material_json.data()) : material_json.size();
             const auto handle = load_material(engine, gltf_material_object(material._rawMatDef), material, buffer, container, views,
                 image_json, texture_json, sampler_json, extension_image_fetcher,
-                source_material_index < animated_base_color.size() && animated_base_color[source_material_index],
+                source_material_index < base_color_definitions.size() && base_color_definitions[source_material_index],
                 material_features, extended_material, material_texture_wrap, sampled_material, &material_texture_cache, &material_sampler_context,
-                decode_material_image);
+                decode_material_image, false, ${animationPointer ? "&source_physical_properties.back()" : "nullptr"}, base_color_module);
 ${sourceTextureReads ? `            retain_source_albedo(handle, source_material_index);` : ""}
             materials.push_back(handle);
     }
@@ -1307,9 +750,9 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
             if (index >= material_json.size()) throw std::runtime_error("Invalid glTF variant material index.");
             const auto core = assemble_gltf_material(document, index, variant_image_cache, resolve_material_image);
             materials.push_back(load_material(engine, material_json.at(index).as_object(), core, buffer, container, views,
-                image_json, texture_json, sampler_json, variant_fetcher, false, material_features,
+                image_json, texture_json, sampler_json, variant_fetcher, base_color_definitions.at(index), material_features,
                 true, material_texture_wrap, false, nullptr, &variant_sampler_context,
-                decode_material_image, true));
+                decode_material_image, true, nullptr, base_color_module));
         }
     }
 
@@ -1317,32 +760,14 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
     validate_gltf_parents(parents);
 
     AssetRecord asset;
-    js::Callback<void(Scene&)> ibl_scene_setup;${gaussianSplats ? "\n    js::Callback<void(Scene&)> gaussian_splat_setup;" : ""}${interactivity ? "\n    js::Callback<void(Scene&)> interactivity_scene_setup;" : ""}${assetTransmission ? "\n    js::Callback<void(Scene&)> transmission_scene_setup;" : ""}${interactivity ? `
-    // KHR_interactivity's node-to-meshes table, filled by the mesh walk
+    js::Callback<void(Scene&)> ibl_scene_setup;${gaussianSplats ? "\n    js::Callback<void(Scene&)> gaussian_splat_setup;" : ""}${interactivity ? "\n    js::Callback<void(Scene&)> interactivity_scene_setup;" : ""}${interactivity || animationPointer ? `
+    // glTF node-to-mesh identities, filled by the mesh walk
     // below; the rest of the asset's tables join it once the document is
     // loaded (see the scene-setup chain).
     asset.node_meshes.resize(node_json.size());` : ""}
-${lowered.iblLoading}${assetTransmission ? `
-    // Native transmission activation still scans loaded material records.
-    // The source registerPbrTransmission hook instead checks the meshes in a
-    // material group when that group builds; this boundary remains under LW-1.
-    {
-        bool transmissive_surface = false;
-        for (const MaterialHandle handle : materials) {
-            if (
-                handle.value < engine.materials.size() &&
-                engine.materials[handle.value].transmission_factor >
-                    0.0f) {
-                transmissive_surface = true;
-                break;
-            }
-        }
-        if (transmissive_surface) {
-            transmission_scene_setup = [](Scene& scene) {
-                enable_scene_transmission(scene);
-            };
-        }
-    }` : ""}${gaussianSplats ? `
+${lowered.iblLoading}${gaussianSplats ? `
+    struct PreparedGltfSplat { std::string name; std::vector<std::uint8_t> rows; };
+    const auto prepared_splats = std::make_shared<std::vector<PreparedGltfSplat>>();
     // KHR_gaussian_splatting: packaging ran the pin's own preParse and
     // applyAsset over this document (compressed-geometry.ts), so what is left
     // of the extension is the 32-byte-per-splat row buffer each GS primitive
@@ -1359,26 +784,17 @@ ${lowered.iblLoading}${assetTransmission ? `
                 views.at(unsigned_value(required(entry, "bufferView")));
             const std::uint8_t* rows =
                 buffer.data() + container.bin_offset + view.offset;
-            const SplatMeshHandle splat = create_gaussian_splatting_mesh(
-                engine,
-                string_or(entry, "name"),
-                std::vector<std::uint8_t>(rows, rows + view.length));
-            // The TRS the pinned scene wiring writes on the cloud it just
-            // attached, observed at generation rather than restated: the glTF
-            // splat convention and the .ply one differ by a half turn about
-            // Z, and the pin corrects it on the node rather than in the rows.
-            const std::vector<float> rotation =
-                float_array(optional(entry, "rotation"));
-            if (rotation.size() == 3u) {
-                engine.splat_meshes[splat.value].rotation =
-                    Vec3{rotation[0], rotation[1], rotation[2]};
-            }
-            asset.gaussian_splats.push_back(splat);
+            prepared_splats->push_back(PreparedGltfSplat{
+                string_or(entry, "name"), std::vector<std::uint8_t>(rows, rows + view.length)});
         }
-        gaussian_splat_setup = [attached = asset.gaussian_splats](Scene& scene) {
-            for (const SplatMeshHandle splat : attached) {
-                attach_gaussian_splatting_mesh(scene, splat);
-            }
+        const AssetHandle self{static_cast<std::uint32_t>(engine.assets.size())};
+        gaussian_splat_setup = [self, prepared_splats](Scene& scene) {
+            setup_gltf_gaussian_splats(scene, scene.engine->assets.at(self.value), *prepared_splats,
+                [](Scene& target, const PreparedGltfSplat& item) {
+                    const auto splat = create_gaussian_splatting_mesh(*target.engine, item.name, item.rows);
+                    attach_gaussian_splatting_mesh(target, splat);
+                    return splat;
+                });
         };
     }` : ""}
     const auto read_matrix = [&](const AccessorInfo& value, std::size_t index) {
@@ -1439,13 +855,17 @@ ${animationPointer ? `    animation_runtime->light_nodes =
         std::move(light_node_bindings);
 ` : ""}${gltfCameras ? `    animation_runtime->camera_nodes =
         std::move(camera_node_bindings);
-` : ""}    animation_runtime->node_meshes.resize(node_json.size());
+` : ""}
     {
     const auto node_rest = gltf_animation_node_rest(document,
         [&](double index) { gltf_checked_index(index); return find_gltf_parent(parents, index); });
     animation_runtime->nodes.resize(node_rest.size());
+    animation_runtime->source_nodes.reserve(node_rest.size());
     for (std::size_t index = 0; index < node_rest.size(); ++index) {
         const auto& rest = node_rest[index];
+        GltfAnimationPoseNode source_node{rest.tx,rest.ty,rest.tz,rest.rx,rest.ry,rest.rz,rest.rw,rest.sx,rest.sy,rest.sz,rest.parentIdx,{}};
+        if(rest.matrix&&!rest.matrix->is_null()){const auto matrix=gltf_matrix_from_json(rest.matrix);source_node.matrix=GltfAnimationFloats(matrix.begin(),matrix.end());}
+        animation_runtime->source_nodes.push_back(std::move(source_node));
         AnimatedNode& animated_node =
             animation_runtime->nodes[index];
         if (!std::isfinite(rest.parentIdx) || std::floor(rest.parentIdx) != rest.parentIdx || rest.parentIdx < -1 ||
@@ -1456,18 +876,10 @@ ${animationPointer ? `    animation_runtime->light_nodes =
             animated_node.has_matrix = true;
             animated_node.matrix = gltf_matrix_from_json(rest.matrix);
         }
-        animated_node.translation = Vec3{static_cast<float>(rest.tx), static_cast<float>(rest.ty), static_cast<float>(rest.tz)};
-        animated_node.rotation = Vec4{static_cast<float>(rest.rx), static_cast<float>(rest.ry), static_cast<float>(rest.rz), static_cast<float>(rest.rw)};
-        animated_node.scale = Vec3{static_cast<float>(rest.sx), static_cast<float>(rest.sy), static_cast<float>(rest.sz)};
-${animationBlending || animationMask || boneControl ? `
-        // The node's authored TRS is the rest pose the weighted mixer
-        // resets to each tick before any clip accumulates into it, and the
-        // pose a masked node holds: the pin's controller resets every node
-        // to it before walking a clip's channels, so skipping a masked
-        // channel leaves exactly this.
-        animated_node.rest_translation = animated_node.translation;
-        animated_node.rest_rotation = animated_node.rotation;
-        animated_node.rest_scale = animated_node.scale;` : ""}
+        animated_node.translation = Vec3d{rest.tx,rest.ty,rest.tz};
+        animated_node.rotation = Vec4d{rest.rx,rest.ry,rest.rz,rest.rw};
+        animated_node.scale = Vec3d{rest.sx,rest.sy,rest.sz};
+
     }
     }
     for (const ts::JsonValue& skin_value : skin_json) {
@@ -1490,6 +902,7 @@ ${animationBlending || animationMask || boneControl ? `
         animation_runtime->skins.push_back(
             std::move(runtime_skin));
     }
+    std::vector<std::size_t> animation_mesh_indices(planned_meshes.size(), std::numeric_limits<std::size_t>::max());
     for (std::size_t gltf_mesh_counter = 0; gltf_mesh_counter < planned_meshes.size(); ++gltf_mesh_counter) {
             const auto& planned = planned_meshes[gltf_mesh_counter].as_object();
             const auto node_index = unsigned_value(required(planned, "node"));
@@ -1512,6 +925,7 @@ ${nonTrianglePrimitives
             const JsonObject& attributes = required(planned_geometry, "attributes").as_object();
             const auto* planned_skin = optional(planned, "skin");
             const auto* planned_morph = optional(planned, "morph");
+            const bool deformed_geometry = animated || planned_skin || planned_morph;
             if (planned_skin && unsigned_value(required(planned_skin->as_object(), "boneCount")) !=
                 animation_runtime->skins.at(unsigned_value(required(planned_skin->as_object(), "index"))).joints.size())
                 throw std::runtime_error("glTF skeleton storage disagrees with its joint bindings.");
@@ -1627,7 +1041,7 @@ ${nonTrianglePrimitives
                     read_component(buffer, container, views, positions, index, 2),
                 };
                 vertex.local_position = local_position;
-                vertex.position = animated || instanced
+                vertex.position = deformed_geometry || instanced
                     ? Vec3{
                           -local_position.x,
                           local_position.y,
@@ -1649,7 +1063,7 @@ ${nonTrianglePrimitives
                         local_normal.y,
                         local_normal.z,
                     });
-                    vertex.normal = animated || instanced
+                    vertex.normal = deformed_geometry || instanced
                         ? upstream::normalize_baked_direction(Vec3{
                               -local_normal.x,
                               local_normal.y,
@@ -1672,7 +1086,7 @@ ${nonTrianglePrimitives
                         local_tangent.z,
                         -local_tangent_w,
                     };
-                    const Vec3 tangent = animated || instanced
+                    const Vec3 tangent = deformed_geometry || instanced
                         ? upstream::normalize_baked_direction(Vec3{
                               -local_tangent.x,
                               local_tangent.y,
@@ -1917,10 +1331,10 @@ ${nonTrianglePrimitives
             // primitive carries its mirrored node world, an animated or
             // instanced one carries the mirror alone and receives the
             // node matrix per draw.
-            geometry.vertex_space = animated || instanced
+            geometry.vertex_space = deformed_geometry || instanced
                 ? VertexSpace::mirrored_local
                 : VertexSpace::world;
-            if (animated) {
+            if (deformed_geometry) {
                 geometry.bind_vertices = geometry.vertices;
             }
             const auto& local_bounds = setup_accessor("bounds", "VEC3", 2);
@@ -1934,7 +1348,7 @@ ${nonTrianglePrimitives
             };
             const Vec3 world_min = read_bound(world_bounds, 0);
             const Vec3 world_max = read_bound(world_bounds, 1);
-            if (animated) {
+            if (deformed_geometry) {
                 const Vec3 local_min = read_bound(local_bounds, 0);
                 const Vec3 local_max = read_bound(local_bounds, 1);
                 geometry.bounds_min = Vec3{-local_max.x, local_min.y, local_min.z};
@@ -2007,7 +1421,7 @@ ${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
             engine.meshes.push_back(std::move(record));
             const std::uint32_t mesh_record_index =
                 static_cast<std::uint32_t>(engine.meshes.size() - 1);
-            if (animated) {
+            if (deformed_geometry) {
                 const std::size_t skin_index =
                     planned_skin
                         ? unsigned_value(required(planned_skin->as_object(), "index"))
@@ -2039,6 +1453,22 @@ ${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
                 }`}
                 engine.meshes[mesh_record_index]
                     .gpu_deformation = true;
+                std::vector<Matrix> initial_joint_matrices;
+                if (planned_skin) {
+                    const auto& skin = planned_skin->as_object();
+                    const auto bone_count = unsigned_value(required(skin, "boneCount"));
+                    const auto& palette = accessors.at(unsigned_value(required(skin, "matrices")));
+                    if (palette.type != "VEC4" || palette.component_type != 5126 || palette.count != bone_count * 4)
+                        throw std::runtime_error("Invalid glTF initial bone palette storage.");
+                    initial_joint_matrices.reserve(bone_count);
+                    // Source computeBoneTextureData already performed both
+                    // Float32 matrix products. Fold the source mesh world into
+                    // that local palette for native's identity-world skin draw.
+                    for (std::size_t bone = 0; bone < bone_count; ++bone)
+                        initial_joint_matrices.push_back(upstream::matrix_product(mesh_world, read_matrix(palette, bone)));
+                }
+                publish_gltf_deformation(engine.meshes[mesh_record_index], engine.geometries.at(engine.meshes[mesh_record_index].geometry),
+                    mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights);
                 // mesh.skeleton upstream: the node named a skin, so the
                 // pose pass writes this record a joint palette rather than
                 // its own world matrix.
@@ -2049,1834 +1479,69 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                 // flag is about the transport rather than about this mesh.
                 engine.meshes[mesh_record_index]
                     .pinned_bone_palette = true;` : ""}
-                animation_runtime
-                    ->node_meshes[node_index]
-                    .push_back(mesh_record_index);
+                animation_mesh_indices[gltf_mesh_counter] = animation_runtime->meshes.size();
                 animation_runtime->meshes.push_back(
                     AnimatedMeshBinding{
                         mesh_record_index,
-                        record.geometry,
+                        engine.meshes[mesh_record_index].geometry,
                         node_index,
                         skin_index,
                         std::move(morph_default_weights),
+                        std::numeric_limits<std::size_t>::max(),
+                        std::numeric_limits<std::size_t>::max(),
+                        animated ? std::move(initial_joint_matrices) : std::vector<Matrix>{},
+                        mesh_world,
                     });
             }
             asset.meshes.push_back(MeshHandle{mesh_record_index});${interactivity ? `
-            // mesh._gltfNodeIndex, in the same node-then-primitive walk.
-            asset.mesh_nodes.push_back(node_index);
+            // Source applyAsset annotates only meshes reached by its node map.
+            const auto& flow_node = required(mesh_plan, "flowGraphNodes").as_array().at(gltf_mesh_counter);
+            asset.mesh_nodes.push_back(flow_node.is_null()
+                ? std::numeric_limits<std::size_t>::max() : unsigned_value(flow_node));` : ""}${interactivity || animationPointer ? `
             asset.node_meshes[node_index].push_back(MeshHandle{mesh_record_index});` : ""}
     }
+${interactivity || animationPointer ? `
+        asset.node_children.resize(node_json.size());
+        for (std::size_t index = 0; index < node_json.size(); ++index) {
+            for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children")) {
+                asset.node_children[index].push_back(unsigned_value(child));
+            }
+        }
+        const auto& visibility = required(mesh_plan, "nodeVisibility").as_array();
+        if (visibility.size() != node_json.size()) throw std::runtime_error("Invalid glTF node visibility storage.");
+        asset.node_visible.reserve(visibility.size());
+        for (const auto& value : visibility) asset.node_visible.push_back(value.as_boolean());
+` : ""}
+${animationPointer ? `    if(!source_animation.is_null()) {
+        auto pointers=std::make_shared<GltfAnimationPointerRuntime>();
+        pointers->engine=&engine;
+        pointers->handles=materials;
+        pointers->properties=std::move(source_physical_properties);
+        pointers->document=GltfPbrValue{&container.json};
+        pointers->node=[source_container,count=node_json.size()](std::size_t index) {
+            if(index>=count)throw std::runtime_error("Invalid source animation node capture.");
+            return GltfPbrValue{static_cast<double>(index)};
+        };
+        const auto self=AssetHandle{static_cast<std::uint32_t>(engine.assets.size())};
+        pointers->effects.set_visibility=[self,&engine](GltfPbrValue node,GltfPbrValue visible) {
+            set_gltf_node_visible(engine,self,gltf_checked_index(node.number()),visible.truthy());
+            return GltfPbrValue{};
+        };
+        pointers->lookup_light=[punctual_lights](std::size_t index)->std::optional<LightHandle> {
+            if(index>=punctual_lights.size()||punctual_lights[index].value==invalid_handle)return std::nullopt;
+            return punctual_lights[index];
+        };
+        pointers->set_light_angle=[](Engine& target,LightHandle handle,double angle) {refresh_spot_light_cone(target.lights.at(handle.value),angle);};
+        for(std::size_t index=0;index<loaded_lights.size();++index)
+            pointers->add_light(loaded_lights[index],required(mesh_plan,"lights").as_array().at(index));
+        pointers->configure_light_effects();
+        pointers->initialize(required(source_animation.as_object(),"materialState"));
+        animation_runtime->pointers=std::move(pointers);
+    }` : ""}
     if (animated) {
-        {
-        const bool sampler_converter_enabled = gltf_needs_animation_sampler_converter(GltfPbrValue{&container.json}).truthy() || ${animationPointer};
-        const auto parsed = gltf_animation_clips(GltfPbrValue{&container.json},
-            [&](double index) { return GltfAccessorView{buffer, container, views, accessors.at(gltf_checked_index(index))}; },
-            [&](const GltfAccessorView& view, double length, bool normalized) {
-                auto values = gltf_animation_sampler_float32(view, length, normalized, sampler_converter_enabled);
-                return GltfAnimationSamples{std::move(values), view.accessor.type};
-            }, ${animationPointer}, [](const GltfPbrValue& pointer, const GltfPbrValue& channel) {
-                auto parsed_channel = js::make_ref<GltfParsedChannel>();
-                parsed_channel->samplerIdx = channel.get("sampler").number();
-                parsed_channel->nodeIdx = -1.0;
-                parsed_channel->path = -1.0;
-                parsed_channel->pointer = pointer;
-                return parsed_channel;
-            });
-        for (const auto& parsed_clip : parsed.clips) {
-            // One clip per glTF animation, named the way
-            // createAnimationGroups names it, and started only for the first.
-            const std::size_t clip_index =
-                animation_runtime->clips.size();
-            AnimationClip clip;
-            clip.name = parsed_clip->name.empty() ? "animation_" + std::to_string(clip_index) : parsed_clip->name;
-            clip.duration = static_cast<float>(parsed_clip->duration);
-            clip.playing = clip_index == 0;
-            clip.stopped = !clip.playing;
-            animation_runtime->clips.push_back(std::move(clip));${animationBlending ? `
-            // Where this clip's contiguous run of each track vector
-            // starts; the ends land after the channel loop, and the
-            // pair is pushed in clip order so the ranges index like
-            // clips.
-            ClipTrackRanges clip_track_range;
-            clip_track_range.rotation.first =
-                animation_runtime->rotation_tracks.size();
-            clip_track_range.translation.first =
-                animation_runtime->translation_tracks.size();
-            clip_track_range.scale.first =
-                animation_runtime->scale_tracks.size();` : ""}
-            for (const auto& parsed_channel : parsed_clip->channels) {
-                std::string path_name = gltf_animation_path_name(parsed_channel->path);
-                const auto& parsed_sampler = parsed_clip->samplers.at(gltf_checked_index(parsed_channel->samplerIdx));
-                // A node-TRS pointer resolves to the same thing a standard
-                // channel does, so it carries a node index the standard path
-                // reads in place of the target's own.
-                bool pointer_node_override = false;
-                std::size_t pointer_node_index = 0;${animationPointer ? `
-                if (path_name == "pointer") {
-                    const std::string& pointer_target = parsed_channel->pointer.string();
-                    if (pointer_unhandled_upstream(pointer_target)) {
-                        continue;
-                    }
-                    // A /nodes/{n}/{translation|rotation|scale|weights}
-                    // pointer is semantically identical to a standard channel
-                    // on node n. The pin emits a standard channel for it so it
-                    // flows through the proven topological node-TRS and morph
-                    // writeback, which moves the node and its descendants,
-                    // rather than through an opaque per-node writer. Rewriting
-                    // the target here reaches the same code for the same
-                    // reason.
-                    {
-                        const std::string node_prefix = "/nodes/";
-                        if (pointer_target.rfind(node_prefix, 0) == 0) {
-                            const std::size_t index_start =
-                                node_prefix.size();
-                            std::size_t index_end = index_start;
-                            while (
-                                index_end < pointer_target.size() &&
-                                std::isdigit(static_cast<unsigned char>(
-                                    pointer_target[index_end]))) {
-                                ++index_end;
-                            }
-                            const std::string node_path =
-                                pointer_target.substr(index_end);
-                            if (
-                                index_end > index_start &&
-                                (node_path == "/translation" ||
-                                 node_path == "/rotation" ||
-                                 node_path == "/scale" ||
-                                 node_path == "/weights")) {
-                                pointer_node_override = true;
-                                pointer_node_index =
-                                    static_cast<std::size_t>(
-                                        std::stoull(
-                                            pointer_target.substr(
-                                                index_start,
-                                                index_end - index_start)));
-                                path_name = node_path.substr(1);
-                            }
-                        }
-                    }
-                    // /extensions/KHR_lights_punctual/lights/{l}/{color|
-                    // intensity|range|spot/outerConeAngle}. The pinned writers
-                    // set diffuse AND specular from a colour, and an outer
-                    // cone angle sets the light's full angle to twice the
-                    // value, which its setter turns back into cos(angle / 2).
-                    {
-                        const std::string light_prefix =
-                            "/extensions/KHR_lights_punctual/lights/";
-                        if (
-                            !pointer_node_override &&
-                            pointer_target.rfind(light_prefix, 0) == 0) {
-                            std::size_t index_end = light_prefix.size();
-                            while (
-                                index_end < pointer_target.size() &&
-                                std::isdigit(static_cast<unsigned char>(
-                                    pointer_target[index_end]))) {
-                                ++index_end;
-                            }
-                            const std::string light_field =
-                                pointer_target.substr(index_end);
-                            LightTrack track;
-                            std::size_t components = 0;
-                            if (light_field == "/color") {
-                                track.kind = LightTrackKind::color;
-                                components = 3;
-                            } else if (light_field == "/intensity") {
-                                track.kind = LightTrackKind::intensity;
-                                components = 1;
-                            } else if (light_field == "/range") {
-                                track.kind = LightTrackKind::range;
-                                components = 1;
-                            } else if (
-                                light_field == "/spot/outerConeAngle") {
-                                track.kind =
-                                    LightTrackKind::outer_cone_angle;
-                                components = 1;
-                            } else {
-                                throw std::runtime_error(
-                                    "Reached KHR_animation_pointer lowering supports light color, intensity, range and outer cone angle targets only: " +
-                                    pointer_target + ".");
-                            }
-                            const std::size_t light_definition =
-                                static_cast<std::size_t>(
-                                    std::stoull(
-                                        pointer_target.substr(
-                                            light_prefix.size(),
-                                            index_end -
-                                                light_prefix.size())));
-                            // The pinned writer reads the light back through
-                            // the asset and does nothing when it is absent, so
-                            // a channel targeting a light type this loader
-                            // skips is dropped rather than fatal.
-                            if (
-                                light_definition >= punctual_lights.size() ||
-                                punctual_lights[light_definition].value ==
-                                    invalid_handle) {
-                                continue;
-                            }
-                            track.light =
-                                punctual_lights[light_definition];
-                            const auto& light_sampler = parsed_sampler;
-                            const std::string light_interpolation =
-                                gltf_animation_interpolation_name(light_sampler->interpolation);
-                            if (light_interpolation != "LINEAR") {
-                                throw std::runtime_error(
-                                    "Reached KHR_animation_pointer light targets support LINEAR interpolation only.");
-                            }
-                            const GltfAnimationSamples& light_input = light_sampler->input;
-                            const GltfAnimationSamples& light_output = light_sampler->output;
-                            if (
-                                light_input.type != "SCALAR" ||
-                                light_input.count != light_output.count ||
-                                light_output.components !=
-                                    components) {
-                                throw std::runtime_error(
-                                    "glTF light pointer accessors have an unsupported layout.");
-                            }
-                            for (
-                                std::size_t index = 0;
-                                index < light_input.count;
-                                ++index) {
-                                const float time = light_input.component(index, 0);
-                                track.times.push_back(time);
-                                Vec4 value{};
-                                float* const channels[4] = {
-                                    &value.x,
-                                    &value.y,
-                                    &value.z,
-                                    &value.w,
-                                };
-                                for (
-                                    std::size_t component = 0;
-                                    component < components;
-                                    ++component) {
-                                    *channels[component] = light_output.component(index, component);
-                                }
-                                track.values.push_back(value);
-                            }
-                            animation_runtime->light_tracks.push_back(
-                                std::move(track));
-                            continue;
-                        }
-                    }
-                    if (!pointer_node_override) {
-                    const std::string& pointer = pointer_target;
-${animationPointerMaterials ? `                    // Material targets. The pinned base module hands these to
-                    // animation-pointer-basecolor and -ext; the three the
-                    // asset reaches all write a PBR factor the fragment
-                    // reads back out of the material record every frame.
-                    const std::string material_prefix = "/materials/";
-                    if (
-                        pointer.compare(
-                            0,
-                            material_prefix.size(),
-                            material_prefix) == 0) {
-                        const std::size_t suffix_start =
-                            pointer.find('/', material_prefix.size());
-                        if (suffix_start == std::string::npos) {
-                            throw std::runtime_error(
-                                "glTF animation pointer names no material property: " +
-                                pointer + ".");
-                        }
-                        const std::string material_index_text =
-                            pointer.substr(
-                                material_prefix.size(),
-                                suffix_start - material_prefix.size());
-                        const std::string property =
-                            pointer.substr(suffix_start);
-                        if (
-                            material_index_text.find_first_not_of(
-                                "0123456789") != std::string::npos) {
-                            throw std::runtime_error(
-                                "glTF animation pointer has a non-numeric material index: " +
-                                pointer + ".");
-                        }
-                        const std::size_t material_index =
-                            static_cast<std::size_t>(
-                                std::stoull(material_index_text));
-                        MaterialTrack track;
-                        std::size_t components = 0;
-                        if (property == "/pbrMetallicRoughness/baseColorFactor") {
-                            track.kind =
-                                MaterialTrackKind::base_color_factor;
-                            components = 4;
-                        } else if (property == "/emissiveFactor") {
-                            track.kind =
-                                MaterialTrackKind::emissive_factor;
-                            components = 3;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_emissive_strength/emissiveStrength") {
-                            track.kind =
-                                MaterialTrackKind::emissive_strength;
-                            components = 1;
-                        } else if (
-                            property ==
-                            "/pbrMetallicRoughness/metallicFactor") {
-                            track.kind =
-                                MaterialTrackKind::roughness_from_metallic;
-                            components = 1;
-                        } else if (property == "/normalTexture/scale") {
-                            track.kind =
-                                MaterialTrackKind::normal_texture_scale;
-                            components = 1;
-                        } else if (property == "/occlusionTexture/strength") {
-                            track.kind =
-                                MaterialTrackKind::occlusion_strength;
-                            components = 1;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_transmission/transmissionFactor") {
-                            track.kind =
-                                MaterialTrackKind::transmission_factor;
-                            components = 1;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_ior/ior") {
-                            track.kind =
-                                MaterialTrackKind::index_of_refraction;
-                            components = 1;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_volume/thicknessFactor") {
-                            track.kind =
-                                MaterialTrackKind::volume_thickness;
-                            components = 1;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_volume/attenuationDistance") {
-                            track.kind =
-                                MaterialTrackKind::volume_attenuation_distance;
-                            components = 1;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_volume/attenuationColor") {
-                            track.kind =
-                                MaterialTrackKind::volume_attenuation_color;
-                            components = 3;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_iridescence/iridescenceFactor") {
-                            track.kind =
-                                MaterialTrackKind::iridescence_factor;
-                            components = 1;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_iridescence/iridescenceIor") {
-                            track.kind =
-                                MaterialTrackKind::iridescence_index_of_refraction;
-                            components = 1;
-                        } else if (
-                            property ==
-                            "/extensions/KHR_materials_iridescence/iridescenceThicknessMaximum") {
-                            track.kind =
-                                MaterialTrackKind::iridescence_maximum_thickness;
-                            components = 1;
-                        } else {
-                            // A KHR_texture_transform pointer names the slot,
-                            // then the extension, then one of its three
-                            // components. The pin resolves the slot to the
-                            // runtime texture wrapper and drives uAng,
-                            // uOffset/vOffset or uScale/vScale on it.
-                            const std::string transform_infix =
-                                "/extensions/KHR_texture_transform/";
-                            const std::size_t transform_start =
-                                property.rfind(transform_infix);
-                            bool resolved = false;
-                            if (transform_start != std::string::npos) {
-                                const std::string component_name =
-                                    property.substr(
-                                        transform_start +
-                                        transform_infix.size());
-                                const std::string slot_path =
-                                    property.substr(0, transform_start);
-                                const auto resolution = material_transform_slot(slot_path, track.slot);
-                                if (resolution == TextureTransformResolution::ignored) continue;
-                                if (resolution == TextureTransformResolution::resolved) {
-                                    if (component_name == "rotation") {
-                                        track.component =
-                                            TextureTransformComponent::rotation;
-                                        components = 1;
-                                        resolved = true;
-                                    } else if (component_name == "offset") {
-                                        track.component =
-                                            TextureTransformComponent::offset;
-                                        components = 2;
-                                        resolved = true;
-                                    } else if (component_name == "scale") {
-                                        track.component =
-                                            TextureTransformComponent::scale;
-                                        components = 2;
-                                        resolved = true;
-                                    }
-                                }
-                            }
-                            if (!resolved) {
-                                throw std::runtime_error(
-                                    "Reached KHR_animation_pointer lowering supports base color, emissive factor, emissive strength and texture transform material targets only: " +
-                                    pointer + ".");
-                            }
-                            track.kind =
-                                MaterialTrackKind::texture_transform;
-                        }
-                        if (material_index >= source_materials.size()) {
-                            throw std::runtime_error(
-                                "glTF animation pointer targets a material that does not exist.");
-                        }
-                        if (source_materials[material_index].value == invalid_handle) continue;
-                        track.material = source_materials[material_index].value;
-                        const auto& material_sampler = parsed_sampler;
-                        if (
-                            gltf_animation_interpolation_name(material_sampler->interpolation) != "LINEAR") {
-                            throw std::runtime_error(
-                                "glTF material animation supports LINEAR interpolation.");
-                        }
-                        const GltfAnimationSamples& material_input = material_sampler->input;
-                        const GltfAnimationSamples& material_output = material_sampler->output;
-                        if (
-                            material_input.type != "SCALAR" ||
-                            material_output.components !=
-                                components ||
-                            material_output.count != material_input.count) {
-                            throw std::runtime_error(
-                                "glTF material animation accessor layout is invalid.");
-                        }
-                        for (
-                            std::size_t index = 0;
-                            index < material_input.count;
-                            ++index) {
-                            const float time = material_input.component(index, 0);
-                            track.times.push_back(time);
-                            Vec4 value{};
-                            float* channels[4] = {
-                                &value.x,
-                                &value.y,
-                                &value.z,
-                                &value.w,
-                            };
-                            for (
-                                std::size_t component = 0;
-                                component < components;
-                                ++component) {
-                                *channels[component] = material_output.component(index, component);
-                            }
-                            track.values.push_back(value);
-                        }
-                        animation_runtime->material_tracks.push_back(
-                            std::move(track));
-                        continue;
-                    }
-` : ""}                    const std::string pointer_prefix = "/nodes/";
-                    const std::string pointer_suffix =
-                        "/extensions/KHR_node_visibility/visible";
-                    const bool visibility_pointer =
-                        pointer.size() >
-                            pointer_prefix.size() + pointer_suffix.size() &&
-                        pointer.compare(
-                            0,
-                            pointer_prefix.size(),
-                            pointer_prefix) == 0 &&
-                        pointer.compare(
-                            pointer.size() - pointer_suffix.size(),
-                            pointer_suffix.size(),
-                            pointer_suffix) == 0;
-                    const std::string pointer_node_text =
-                        visibility_pointer
-                            ? pointer.substr(
-                                  pointer_prefix.size(),
-                                  pointer.size() -
-                                      pointer_prefix.size() -
-                                      pointer_suffix.size())
-                            : std::string();
-                    if (
-                        !visibility_pointer ||
-                        pointer_node_text.find_first_not_of("0123456789") !=
-                            std::string::npos) {
-                        throw std::runtime_error(
-                            "Reached KHR_animation_pointer lowering supports node visibility targets only: " +
-                            pointer + ".");
-                    }
-                    const std::size_t visibility_node =
-                        static_cast<std::size_t>(
-                            std::stoull(pointer_node_text));
-                    if (visibility_node >= node_json.size()) {
-                        throw std::runtime_error(
-                            "glTF animation pointer targets a node that does not exist.");
-                    }
-                    const auto& pointer_sampler = parsed_sampler;
-                    if (
-                        gltf_animation_interpolation_name(pointer_sampler->interpolation) != "STEP") {
-                        // Visibility is a boolean; the pin authors it STEP
-                        // and interpolating one would have no meaning.
-                        throw std::runtime_error(
-                            "glTF node-visibility animation requires STEP interpolation.");
-                    }
-                    const GltfAnimationSamples& pointer_input = pointer_sampler->input;
-                    const GltfAnimationSamples& pointer_output = pointer_sampler->output;
-                    if (
-                        pointer_input.type != "SCALAR" ||
-                        pointer_output.type != "SCALAR" ||
-                        pointer_output.count != pointer_input.count) {
-                        throw std::runtime_error(
-                            "glTF node-visibility animation accessor layout is invalid.");
-                    }
-                    VisibilityTrack track;
-                    track.node = visibility_node;
-                    track.subtree.push_back(visibility_node);
-                    for (
-                        std::size_t index = 0;
-                        index < parents.size();
-                        ++index) {
-                        for (
-                            int ancestor = parents[index];
-                            ancestor >= 0;
-                            ancestor =
-                                parents[static_cast<std::size_t>(ancestor)]) {
-                            if (
-                                static_cast<std::size_t>(ancestor) ==
-                                visibility_node) {
-                                track.subtree.push_back(index);
-                                break;
-                            }
-                        }
-                    }
-                    for (
-                        std::size_t index = 0;
-                        index < pointer_input.count;
-                        ++index) {
-                        const float time = pointer_input.component(index, 0);
-                        track.times.push_back(time);
-                        track.values.push_back(
-                            pointer_output.component(index, 0) != 0.0f);
-                    }
-                    track.clip = clip_index;
-                    animation_runtime
-                        ->visibility_tracks
-                        .push_back(std::move(track));
-                    continue;
-                    }
-                }` : ""}
-                if (
-                    path_name != "rotation" &&
-                    path_name != "translation" &&
-                    path_name != "scale" &&
-                    path_name != "weights") {
-                    throw std::runtime_error(
-                        "Reached glTF animation lowering currently supports rotation, translation, scale, and weights channels.");
-                }
-                const auto& sampler = parsed_sampler;
-                const std::string interpolation =
-                    gltf_animation_interpolation_name(sampler->interpolation);
-                const TrackInterpolation track_interpolation =
-                    interpolation == "STEP"
-                        ? TrackInterpolation::step
-                        : interpolation == "CUBICSPLINE"
-                            ? TrackInterpolation::cubic
-                            : TrackInterpolation::linear;
-                const GltfAnimationSamples& input = sampler->input;
-                const GltfAnimationSamples& output = sampler->output;
-                const std::size_t target_node =
-                    pointer_node_override
-                        ? pointer_node_index
-                        : gltf_checked_index(parsed_channel->nodeIdx);
-                if (input.type != "SCALAR") {
-                    throw std::runtime_error(
-                        "glTF animation input accessor must be SCALAR.");
-                }
-                if (path_name == "rotation") {
-                    const bool cubic =
-                        track_interpolation == TrackInterpolation::cubic;
-                    if (
-                        output.type != "VEC4" ||
-                        output.count !=
-                            input.count * (cubic ? 3u : 1u)) {
-                        throw std::runtime_error(
-                            "glTF rotation animation accessor layout is invalid.");
-                    }
-                    RotationTrack track;
-                    track.node = target_node;
-                    track.interpolation = track_interpolation;
-                    for (std::size_t index = 0; index < input.count; ++index) {
-                        track.times.push_back(
-                            input.component(index, 0));
-                        const std::size_t value_index =
-                            cubic ? index * 3 + 1 : index;
-                        const auto read_quaternion =
-                            [&](std::size_t output_index) {
-                            return Vec4{
-                                output.component(output_index, 0),
-                                output.component(output_index, 1),
-                                output.component(output_index, 2),
-                                output.component(output_index, 3),
-                            };
-                        };
-                        track.values.push_back(
-                            read_quaternion(value_index));
-                        if (cubic) {
-                            track.in_tangents.push_back(
-                                read_quaternion(index * 3));
-                            track.out_tangents.push_back(
-                                read_quaternion(index * 3 + 2));
-                        }
-                    }
-                    track.clip = clip_index;
-                    animation_runtime
-                        ->rotation_tracks
-                        .push_back(std::move(track));
-                } else if (
-                    path_name == "translation" ||
-                    path_name == "scale") {
-                    const bool cubic =
-                        track_interpolation == TrackInterpolation::cubic;
-                    if (
-                        output.type != "VEC3" ||
-                        output.count !=
-                            input.count * (cubic ? 3u : 1u)) {
-                        throw std::runtime_error(
-                            "glTF translation or scale animation accessor layout is invalid.");
-                    }
-                    TranslationTrack track;
-                    track.node = target_node;
-                    track.interpolation = track_interpolation;
-                    for (std::size_t index = 0; index < input.count; ++index) {
-                        track.times.push_back(
-                            input.component(index, 0));
-                        const std::size_t value_index =
-                            cubic ? index * 3 + 1 : index;
-                        const auto read_translation =
-                            [&](std::size_t output_index) {
-                            return Vec3{
-                                output.component(output_index, 0),
-                                output.component(output_index, 1),
-                                output.component(output_index, 2),
-                            };
-                        };
-                        track.values.push_back(
-                            read_translation(value_index));
-                        if (cubic) {
-                            track.in_tangents.push_back(
-                                read_translation(index * 3));
-                            track.out_tangents.push_back(
-                                read_translation(index * 3 + 2));
-                        }
-                    }
-                    if (path_name == "translation") {
-                        track.clip = clip_index;
-                        animation_runtime
-                            ->translation_tracks
-                            .push_back(std::move(track));
-                    } else {
-                        track.clip = clip_index;
-                        animation_runtime
-                            ->scale_tracks
-                            .push_back(std::move(track));
-                    }
-                } else {
-                    if (
-                        track_interpolation ==
-                            TrackInterpolation::cubic) {
-                        throw std::runtime_error(
-                            "glTF weights animation currently requires LINEAR or STEP interpolation.");
-                    }
-                    if (
-                        output.type != "SCALAR" ||
-                        input.count == 0 ||
-                        output.count % input.count != 0) {
-                        throw std::runtime_error(
-                            "glTF weights animation accessor layout is invalid.");
-                    }
-                    WeightTrack track;
-                    track.node = target_node;
-                    track.interpolation = track_interpolation;
-                    track.target_count =
-                        output.count / input.count;
-                    for (std::size_t index = 0; index < input.count; ++index) {
-                        track.times.push_back(
-                            input.component(index, 0));
-                        for (std::size_t target_index = 0; target_index < track.target_count; ++target_index) {
-                            track.values.push_back(
-                                output.component(index * track.target_count + target_index, 0));
-                        }
-                    }
-                    track.clip = clip_index;
-                    animation_runtime
-                        ->weight_tracks
-                        .push_back(std::move(track));
-                }
-            }${animationBlending ? `
-            clip_track_range.rotation.last =
-                animation_runtime->rotation_tracks.size();
-            clip_track_range.translation.last =
-                animation_runtime->translation_tracks.size();
-            clip_track_range.scale.last =
-                animation_runtime->scale_tracks.size();
-            animation_runtime->clip_track_ranges.push_back(
-                clip_track_range);` : ""}
-        }
-        }
-${animationMask ? `        // parseAnimationData's own nodeNames, in document order: what an
-        // AnimationGroupMask matches against. A node with no name matches
-        // the empty string, which is what the pin's resolver reads too.
-        animation_runtime->node_names.reserve(node_json.size());
-        for (const ts::JsonValue& node_value : node_json) {
-            animation_runtime->node_names.push_back(
-                string_or(node_value.as_object(), "name", ""));
-        }
-` : ""}        // The pose half of a tick: node worlds, skin palettes, morph
-        // weights and the CPU deformation fallbacks, from whatever the
-        // node TRS currently holds. Split out because the weighted mixer
-        // (src/animation/weighted-gltf-mixer.ts) accumulates a blended
-        // TRS and then needs exactly this pass.
-        const auto apply_animation_pose =
-            [animation_runtime, &engine]() {
-            for (AnimatedNode& node : animation_runtime->nodes) {
-                node.computed = false;
-                node.computing = false;
-            }
-            std::function<const Matrix&(std::size_t)> compute_animated_world =
-                [&](std::size_t node_index) -> const Matrix& {
-                AnimatedNode& node =
-                    animation_runtime->nodes.at(node_index);
-                if (node.computed) return node.world;
-                if (node.computing) {
-                    throw std::runtime_error(
-                        "glTF animated node hierarchy contains a cycle.");
-                }
-                node.computing = true;
-                const Matrix local = node.has_matrix
-                    ? node.matrix
-                    : trs_matrix(
-                          node.translation,
-                          node.rotation,
-                          node.scale);
-                node.world = node.parent >= 0
-                    ? upstream::matrix_product(
-                          compute_animated_world(
-                              static_cast<std::size_t>(
-                                  node.parent)),
-                          local)
-                    : local;
-                node.computing = false;
-                node.computed = true;
-                return node.world;
-            };${animationPointer ? `
-            // The pinned loader parents each punctual light to the node that
-            // instantiates it, so an animated node carries its light with it.
-            // Recomposed from the same world matrix and the same mirror
-            // convention the load-time path uses.
-            for (const AnimatedLightBinding& binding :
-                 animation_runtime->light_nodes) {
-                if (
-                    binding.light.value >= engine.lights.size() ||
-                    binding.node >= animation_runtime->nodes.size()) {
-                    continue;
-                }
-                const Matrix& light_world =
-                    compute_animated_world(binding.node);
-                LightRecord& light =
-                    engine.lights[binding.light.value];
-                light.position = Vec3{
-                    -light_world[12],
-                    light_world[13],
-                    light_world[14],
-                };
-                light.direction = normalize(Vec3{
-                    light_world[8],
-                    -light_world[9],
-                    -light_world[10],
-                });
-            }` : ""}${gltfCameras ? `
-${lowered.gltfCameraPoseRefresh}` : ""}
-            for (const AnimatedMeshBinding& binding :
-                 animation_runtime->meshes) {
-                ModelGeometry& geometry =
-                    engine.geometries.at(binding.geometry);
-                if (
-                    geometry.bind_vertices.size() !=
-                    geometry.vertices.size()) {
-                    continue;
-                }
-                const Matrix& mesh_world =
-                    compute_animated_world(binding.node);
-                MeshRecord& mesh_record =
-                    engine.meshes.at(binding.mesh);
-                // attachVat sets mesh.skeleton = null: a baked mesh has no
-                // live skinning left, so the pose pass stops solving it a
-                // palette at all. Placed after the mesh world above and
-                // before the joint loop below, because a baked mesh still
-                // needs its own animated transform -- the VAT shader
-                // multiplies by it -- but not the palette, which is what
-                // the bake replaced. Solving one and discarding it cost a
-                // skin's worth of matrix products and a heap allocation
-                // per baked mesh per frame, and as many again for every
-                // pose the bake itself steps through.
-${vat ? `                if (mesh_record.has_vat) continue;` : ""}
-                const bool skinned =
-                    binding.skin <
-                    animation_runtime->skins.size();
-                const SkinRuntime* skin = skinned
-                    ? &animation_runtime->skins[binding.skin]
-                    : nullptr;
-                std::vector<Matrix> joint_matrices;
-                if (skin) {
-                    joint_matrices.reserve(skin->joints.size());
-                    for (std::size_t joint = 0; joint < skin->joints.size(); ++joint) {
-                        joint_matrices.push_back(
-                            upstream::matrix_product(
-                                compute_animated_world(
-                                    skin->joints[joint]),
-                                skin->inverse_bind_matrices[joint]));
-                    }
-                }
-${deformPicking ? `                // The pin's detailed pick reads \`mesh.worldMatrix\` for the
-                // rest normal, and a skinned record's own transform stays
-                // at rest because its palette carries this. Kept here, in
-                // the one place that computes it, for that reader alone.
-                mesh_record.deform_node_world = native_matrix(mesh_world);
-` : ""}                mesh_record.bone_matrices.clear();
-                if (skin) {
-                    for (const Matrix& joint_matrix : joint_matrices) {
-                        mesh_record.bone_matrices.push_back(
-                            native_matrix(joint_matrix));
-                    }
-                } else {
-                    mesh_record.bone_matrices.push_back(
-                        native_matrix(mesh_world));
-                }
-                ++mesh_record.bone_matrices_version;
-                mesh_record.morph_weights = {};
-                const auto& sampled_weights = animation_runtime->nodes[binding.node].weights;
-                const auto& node_weights = sampled_weights ? *sampled_weights : binding.morph_default_weights;
-                for (
-                    std::size_t target = 0;
-                    target < node_weights.size() &&
-                    target < mesh_record.morph_weights.size();
-                    ++target) {
-                    mesh_record.morph_weights[target] =
-                        node_weights[target];
-                }
-#if BBLITE_GPU_MORPH_STORAGE
-                if (
-                    mesh_record.morph_storage_weights !=
-                    node_weights) {
-                    mesh_record.morph_storage_weights =
-                        node_weights;
-                    ++mesh_record.morph_weights_version;
-                }
-#endif
-                // Positions deform on the GPU. A primitive with no
-                // source normals was deindexed at load, so only its face
-                // normals still have to be recomputed here, from the
-                // positions this loop skins CPU-side for that purpose.
-                if (!geometry.flat_normals) {
-                    ++mesh_record.transform_version;
-                    continue;
-                }
-                for (
-                    std::size_t vertex_index = 0;
-                    vertex_index < geometry.vertices.size();
-                    ++vertex_index) {
-                    const ModelVertex& bind =
-                        geometry.bind_vertices[vertex_index];
-                    Vec3 morphed_position =
-                        bind.local_position;
-                    const auto& morph_weights = node_weights;
-                    for (
-                        std::size_t target = 0;
-                        target < morph_weights.size() &&
-                        target < geometry.morph_positions.size();
-                        ++target) {
-                        const float weight = morph_weights[target];
-                        const Vec3 position_delta =
-                            geometry.morph_positions[target][vertex_index];
-                        morphed_position.x +=
-                            position_delta.x * weight;
-                        morphed_position.y +=
-                            position_delta.y * weight;
-                        morphed_position.z +=
-                            position_delta.z * weight;
-                    }
-                    Vec3 position{};
-                    if (skin) {
-                        const std::array<float, 4> weights{
-                            bind.weights.x,
-                            bind.weights.y,
-                            bind.weights.z,
-                            bind.weights.w,
-                        };
-                        for (std::size_t influence = 0; influence < 4; ++influence) {
-                            const float weight = weights[influence];
-                            const std::size_t joint = bind.joints[influence];
-                            if (
-                                weight <= 0.0f ||
-                                joint >= joint_matrices.size()) {
-                                continue;
-                            }
-                            const Vec3 joint_position =
-                                upstream::transform_position(
-                                    joint_matrices[joint],
-                                    morphed_position);
-                            position.x += joint_position.x * weight;
-                            position.y += joint_position.y * weight;
-                            position.z += joint_position.z * weight;
-                        }
-                    } else {
-                        position = upstream::transform_position(
-                            mesh_world,
-                            morphed_position);
-                    }
-                    ModelVertex& vertex =
-                        geometry.vertices[vertex_index];
-                    vertex.position = Vec3{
-                        -position.x,
-                        position.y,
-                        position.z,
-                    };
-                }
-                for (
-                    std::size_t index = 0;
-                    index < geometry.vertices.size();
-                    index += 3) {
-                    ModelVertex& a = geometry.vertices[index];
-                    ModelVertex& b = geometry.vertices[index + 1];
-                    ModelVertex& c = geometry.vertices[index + 2];
-                    const Vec3 edge1{
-                        b.position.x - a.position.x,
-                        b.position.y - a.position.y,
-                        b.position.z - a.position.z,
-                    };
-                    const Vec3 edge2{
-                        c.position.x - a.position.x,
-                        c.position.y - a.position.y,
-                        c.position.z - a.position.z,
-                    };
-                    const Vec3 face = upstream::normalize_baked_direction(Vec3{
-                        edge2.y * edge1.z - edge2.z * edge1.y,
-                        edge2.z * edge1.x - edge2.x * edge1.z,
-                        edge2.x * edge1.y - edge2.y * edge1.x,
-                    });
-                    a.normal = face;
-                    b.normal = face;
-                    c.normal = face;
-                }
-                ++mesh_record.transform_version;
-            }
-        };
-${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the manager's weighted
-        // pass over the clips attached to it. Returns whether it drove
-        // this tick — false when nothing qualifies, which is the pin's
-        // own category-handler contract and hands the tick back to the
-        // ordinary per-clip advance.
-        //
-        // Only the accumulation differs from the direct path: each
-        // contributing clip's channels are summed into the node TRS by
-        // weight (rotations by incremental slerp), and the pose pass
-        // then composes exactly as it does for a single clip.
-        const auto apply_blended_animation =
-            [animation_runtime, apply_animation_pose](
-                const std::vector<BlendedClip>& blended,
-                float delta_ms) -> bool {
-            bool qualifies = false;
-            for (const BlendedClip& entry : blended) {
-                if (entry.clip >= animation_runtime->clips.size()) {
-                    continue;
-                }
-                if (animation_runtime->clips[entry.clip].stopped) {
-                    continue;
-                }${animationAdditive ? `
-                // A clip at full weight leaves the pose it would have
-                // written alone — unless it is additive, whose whole
-                // point is contributing beside the base
-                // (the pinned skip: weight === 1 && !_additive).
-                if (
-                    entry.weight != 1.0f ||
-                    animation_runtime->clips[entry.clip].additive) {
-                    qualifies = true;
-                }` : `
-                // A clip at full weight leaves the pose it would have
-                // written alone, so it does not make the mixer the
-                // handler for this tick.
-                if (entry.weight != 1.0f) qualifies = true;`}
-            }
-            if (!qualifies) return false;
-            for (AnimatedNode& node : animation_runtime->nodes) {
-                node.translation = node.rest_translation;
-                node.rotation = node.rest_rotation;
-                node.scale = node.rest_scale;
-                node.translation_weight = 0.0f;
-                node.rotation_weight = 0.0f;
-                node.scale_weight = 0.0f;
-            }
-            for (const BlendedClip& entry : blended) {
-                if (entry.clip >= animation_runtime->clips.size()) {
-                    continue;
-                }
-                AnimationClip& clip =
-                    animation_runtime->clips[entry.clip];
-                if (clip.stopped) continue;
-                if (clip.playing) {
-                    clip.time += delta_ms * 0.001f;
-                }
-                if (clip.duration <= 0.0f) {
-                    clip.time = 0.0f;
-                } else if (clip.loop && clip.playing) {
-                    clip.time = std::fmod(clip.time, clip.duration);
-                    if (clip.time < 0.0f) clip.time += clip.duration;
-                } else {
-                    clip.time = std::min(
-                        std::max(clip.time, 0.0f),
-                        clip.duration);
-                }${animationAdditive ? `
-                // An additive group only advances its time here — the
-                // pin marks the target active and moves on; its channels
-                // contribute in the pass below, on top of whatever the
-                // base groups accumulated.
-                if (clip.additive) continue;` : ""}
-                const float weight = entry.weight;
-                if (weight == 0.0f) continue;
-                // The clip's own contiguous run of each vector; the
-                // track.clip test below stays, so a grouping this
-                // bookkeeping got wrong could only skip work, never
-                // blend another clip's track.
-                const ClipTrackRanges& clip_range =
-                    animation_runtime->clip_track_ranges[entry.clip];
-                for (std::size_t track_index =
-                         clip_range.rotation.first;
-                     track_index < clip_range.rotation.last;
-                     ++track_index) {
-                    const RotationTrack& track =
-                        animation_runtime
-                            ->rotation_tracks[track_index];
-                    if (
-                        track.clip != entry.clip ||
-                        track.times.empty() ||
-                        track.node >=
-                            animation_runtime->nodes.size()) {
-                        continue;
-                    }
-${animationMask ? `
-                    if (clip_masks_node(clip, track.node)) continue;` : ""}
-                    const Vec4 sample =
-                        sample_rotation_track(track, clip.time);
-                    AnimatedNode& node =
-                        animation_runtime->nodes[track.node];
-                    if (node.rotation_weight == 0.0f) {
-                        node.rotation = sample;
-                        node.rotation_weight = weight;
-                        continue;
-                    }
-                    node.rotation = interpolate_quaternion(
-                        node.rotation,
-                        sample,
-                        static_cast<double>(weight) /
-                            (static_cast<double>(
-                                 node.rotation_weight) +
-                             weight));
-                    node.rotation_weight += weight;
-                }
-                // Translation and scale accumulate the same way, so the
-                // channel is a pair of members rather than a second loop.
-                const auto accumulate_vec3 =
-                    [&](const std::vector<TranslationTrack>& tracks,
-                        const TrackRange& range,
-                        Vec3 AnimatedNode::*value,
-                        float AnimatedNode::*accumulated) {
-                    for (std::size_t track_index = range.first;
-                         track_index < range.last;
-                         ++track_index) {
-                        const TranslationTrack& track =
-                            tracks[track_index];
-                        if (
-                            track.clip != entry.clip ||
-                            track.times.empty() ||
-                            track.node >=
-                                animation_runtime->nodes.size()) {
-                            continue;
-                        }
-${animationMask ? `
-                        if (clip_masks_node(clip, track.node)) continue;` : ""}
-                        const Vec3 sample =
-                            sample_vec3_track(track, clip.time);
-                        AnimatedNode& node =
-                            animation_runtime->nodes[track.node];
-                        if (node.*accumulated == 0.0f) {
-                            node.*value = Vec3{0.0f, 0.0f, 0.0f};
-                        }
-                        node.*value = Vec3{
-                            (node.*value).x + sample.x * weight,
-                            (node.*value).y + sample.y * weight,
-                            (node.*value).z + sample.z * weight,
-                        };
-                        node.*accumulated += weight;
-                    }
-                };
-                accumulate_vec3(
-                    animation_runtime->translation_tracks,
-                    clip_range.translation,
-                    &AnimatedNode::translation,
-                    &AnimatedNode::translation_weight);
-                accumulate_vec3(
-                    animation_runtime->scale_tracks,
-                    clip_range.scale,
-                    &AnimatedNode::scale,
-                    &AnimatedNode::scale_weight);
-            }
-${animationAdditive ? `            // src/animation/weighted-gltf-mixer.ts accumulateAdditiveGroup,
-            // run after every base group accumulated (the pin's own
-            // third pass): each additive clip's channels add the
-            // weighted difference between the clip-time sample and the
-            // reference-time sample, and for rotation multiply
-            // reference^-1 * sample onto the base before slerping toward
-            // it by the weight. Additive weights never join the
-            // rotation-weight sums, so the rest-remainder blend below
-            // sees only the base clips.
-            const auto quat_multiply =
-                [](const Vec4& a, const Vec4& b) -> Vec4 {
-                return Vec4{
-                    a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-                    a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-                    a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-                    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-                };
-            };
-            for (const BlendedClip& entry : blended) {
-                if (entry.clip >= animation_runtime->clips.size()) {
-                    continue;
-                }
-                AnimationClip& clip =
-                    animation_runtime->clips[entry.clip];
-                // The pinned pass condition: !_stopped && _additive.
-                if (clip.stopped || !clip.additive) continue;
-                const float weight = entry.weight;
-                if (weight == 0.0f) continue;
-                const ClipTrackRanges& clip_range =
-                    animation_runtime->clip_track_ranges[entry.clip];
-                for (std::size_t track_index =
-                         clip_range.rotation.first;
-                     track_index < clip_range.rotation.last;
-                     ++track_index) {
-                    const RotationTrack& track =
-                        animation_runtime
-                            ->rotation_tracks[track_index];
-                    if (
-                        track.clip != entry.clip ||
-                        track.times.empty() ||
-                        track.node >=
-                            animation_runtime->nodes.size()) {
-                        continue;
-                    }
-                    const Vec4 sample =
-                        sample_rotation_track(track, clip.time);
-                    const Vec4 reference = sample_rotation_track(
-                        track,
-                        clip.additive_reference_time);
-                    // reference^-1 * sample, normalized: the delta this
-                    // clip contributes.
-                    const Vec4 delta = normalize_quaternion(
-                        quat_multiply(
-                            Vec4{
-                                -reference.x,
-                                -reference.y,
-                                -reference.z,
-                                reference.w,
-                            },
-                            sample));
-                    AnimatedNode& node =
-                        animation_runtime->nodes[track.node];
-                    node.rotation = interpolate_quaternion(
-                        node.rotation,
-                        quat_multiply(node.rotation, delta),
-                        weight);
-                }
-                const auto accumulate_additive_vec3 =
-                    [&](const std::vector<TranslationTrack>& tracks,
-                        const TrackRange& range,
-                        Vec3 AnimatedNode::*value) {
-                    for (std::size_t track_index = range.first;
-                         track_index < range.last;
-                         ++track_index) {
-                        const TranslationTrack& track =
-                            tracks[track_index];
-                        if (
-                            track.clip != entry.clip ||
-                            track.times.empty() ||
-                            track.node >=
-                                animation_runtime->nodes.size()) {
-                            continue;
-                        }
-                        const Vec3 sample =
-                            sample_vec3_track(track, clip.time);
-                        const Vec3 reference = sample_vec3_track(
-                            track,
-                            clip.additive_reference_time);
-                        AnimatedNode& node =
-                            animation_runtime->nodes[track.node];
-                        node.*value = Vec3{
-                            (node.*value).x +
-                                (sample.x - reference.x) * weight,
-                            (node.*value).y +
-                                (sample.y - reference.y) * weight,
-                            (node.*value).z +
-                                (sample.z - reference.z) * weight,
-                        };
-                    }
-                };
-                accumulate_additive_vec3(
-                    animation_runtime->translation_tracks,
-                    clip_range.translation,
-                    &AnimatedNode::translation);
-                accumulate_additive_vec3(
-                    animation_runtime->scale_tracks,
-                    clip_range.scale,
-                    &AnimatedNode::scale);
-            }
-` : ""}            // A node the clips animate below full weight keeps the
-            // remainder of its rest rotation; at or above it, the
-            // accumulated slerps are renormalized.
-            for (AnimatedNode& node : animation_runtime->nodes) {
-                if (
-                    node.rotation_weight > 0.0f &&
-                    node.rotation_weight < 1.0f) {
-                    node.rotation = interpolate_quaternion(
-                        node.rest_rotation,
-                        node.rotation,
-                        node.rotation_weight);
-                } else if (node.rotation_weight > 0.0f) {
-                    node.rotation =
-                        normalize_quaternion(node.rotation);
-                }
-            }
-            apply_animation_pose();
-            return true;
-        };
-` : ""}        // Everything a tick evaluates from the clip times it was just
-        // given: the pointer tracks, the transform channels, the morph
-        // weights, and the pose pass. Split out so a manager can advance
-        // only the clips it owns and then run the same evaluation.
-        // only_clip selects which clip's channels run; force_stopped is
-        // goToFrame's engine argument, which ticks a stopped group's
-        // controller where an ordinary pass skips it.
-        const auto apply_animation_state =
-            [animation_runtime${
-                animationPointer ? ", &engine" : ""
-            }, apply_animation_pose](
-                std::size_t only_clip,
-                bool force_stopped) {${animationMask ? `
-            // The pin's controller resets every node to its rest TRS before
-            // walking the clip's channels, so a masked channel leaves the
-            // rest pose behind. Only the masked nodes need it here: every
-            // other animated node is overwritten by its own track.
-            for (
-                std::size_t index = 0;
-                index < animation_runtime->clips.size();
-                ++index) {
-                const AnimationClip& masked_clip =
-                    animation_runtime->clips[index];
-                if (!masked_clip.mask_active) continue;
-                if (
-                    only_clip != invalid_handle &&
-                    index != only_clip) continue;
-                if (masked_clip.stopped && !force_stopped) continue;
-                for (
-                    const std::uint32_t node :
-                    masked_clip.masked_node_indices) {
-                    if (node >= animation_runtime->nodes.size()) continue;
-                    AnimatedNode& target =
-                        animation_runtime->nodes[node];
-                    target.translation = target.rest_translation;
-                    target.rotation = target.rest_rotation;
-                    target.scale = target.rest_scale;
-                }
-            }` : ""}${animationPointer ? `
-            for (const VisibilityTrack& track :
-                 animation_runtime->visibility_tracks) {
-                if (
-                    only_clip != invalid_handle &&
-                    track.clip != only_clip) continue;
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped && !force_stopped) continue;
-                if (track.times.empty()) continue;
-                // STEP holds each output until the next keyframe, so the
-                // key in effect is the last one at or before the current
-                // time and the first key holds before that -- the same
-                // selection every STEP sampler makes.
-                const std::size_t right =
-                    track_key_at(track.times, clip.time);
-                const bool visible = track.values[track_step_key_at(
-                    track.times,
-                    right > 0 ? right - 1 : 0,
-                    right,
-                    clip.time)];
-                for (const std::size_t node : track.subtree) {
-                    if (
-                        node >=
-                        animation_runtime->node_meshes.size()) {
-                        continue;
-                    }
-                    for (
-                        const std::uint32_t mesh :
-                        animation_runtime->node_meshes[node]) {
-                        if (mesh < engine.meshes.size()) {
-                            engine.meshes[mesh].visible = visible;
-                        }
-                    }
-                }
-            }` : ""}
-${animationPointerMaterials ? `            for (const MaterialTrack& track :
-                 animation_runtime->material_tracks) {
-                if (
-                    only_clip != invalid_handle &&
-                    track.clip != only_clip) continue;
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped && !force_stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.material >= engine.materials.size()) {
-                    continue;
-                }
-                const std::size_t right =
-                    track_key_at(track.times, clip.time);
-                const std::size_t left = right > 0 ? right - 1 : 0;
-                const double amount = track_amount_at(
-                    track.times,
-                    left,
-                    right,
-                    clip.time);
-                const Vec4& a = track.values[left];
-                const Vec4& b = track.values[right];
-                const auto mix = [&](float from, float to) {
-                    return static_cast<float>(
-                        from + (to - from) * amount);
-                };
-                MaterialRecord& material =
-                    engine.materials[track.material];
-                switch (track.kind) {
-                    case MaterialTrackKind::base_color_factor:
-                        material.base_color_factor = Color4{
-                            mix(a.x, b.x),
-                            mix(a.y, b.y),
-                            mix(a.z, b.z),
-                            mix(a.w, b.w),
-                        };
-                        if (material.source_base_color_factor) {
-                            // The pin's pointer writer copies its sampled F32
-                            // output into the existing public number array.
-                            const auto& value = material.base_color_factor;
-                            *material.source_base_color_factor = {value.r, value.g, value.b, value.a};
-                        }
-                        break;
-                    case MaterialTrackKind::emissive_factor:
-                        material.emissive_base_factor = Color3{
-                            mix(a.x, b.x),
-                            mix(a.y, b.y),
-                            mix(a.z, b.z),
-                        };
-                        break;
-                    case MaterialTrackKind::emissive_strength:
-                        material.emissive_strength = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::roughness_from_metallic:
-                        material.roughness_factor = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::normal_texture_scale:
-                        material.normal_texture_scale = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::occlusion_strength:
-                        material.occlusion_strength = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::transmission_factor:
-                        material.transmission_factor = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::index_of_refraction:
-                        material.index_of_refraction = mix(a.x, b.x);
-                        material.metallic_f0_factor = static_cast<float>(
-                            gltf_pbr_animation_pointer_ext_iorToF0Factor(GltfPbrValue{double(material.index_of_refraction)}).number());
-                        material.specular_weight = 1.0f;
-                        break;
-                    case MaterialTrackKind::volume_thickness:
-                        material.thickness = mix(a.x, b.x);
-                        material.use_thickness_as_depth = true;
-                        break;
-                    case MaterialTrackKind::volume_attenuation_distance:
-                        material.attenuation_distance = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::volume_attenuation_color:
-                        material.attenuation_color = Color3{
-                            mix(a.x, b.x),
-                            mix(a.y, b.y),
-                            mix(a.z, b.z),
-                        };
-                        break;
-                    case MaterialTrackKind::iridescence_factor:
-                        material.iridescence_intensity = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::iridescence_index_of_refraction:
-                        material.iridescence_index_of_refraction =
-                            mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::iridescence_maximum_thickness:
-                        material.iridescence_maximum_thickness =
-                            mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::texture_transform: {
-                        TextureTransform& slot =
-                            material_transform(material, track.slot);
-                        if (
-                            track.component ==
-                            TextureTransformComponent::rotation) {
-                            slot.rotation = mix(a.x, b.x);
-                        } else if (
-                            track.component ==
-                            TextureTransformComponent::offset) {
-                            slot.u_offset = mix(a.x, b.x);
-                            slot.v_offset = mix(a.y, b.y);
-                        } else {
-                            slot.u_scale = mix(a.x, b.x);
-                            slot.v_scale = mix(a.y, b.y);
-                        }
-                        break;
-                    }
-                }
-                // The load-time fold, redone from whichever half moved.
-                material.emissive_factor = Color3{
-                    material.emissive_base_factor.r *
-                        material.emissive_strength,
-                    material.emissive_base_factor.g *
-                        material.emissive_strength,
-                    material.emissive_base_factor.b *
-                        material.emissive_strength,
-                };
-            }
-` : ""}${animationPointer ? `            for (const LightTrack& track :
-                 animation_runtime->light_tracks) {
-                if (
-                    only_clip != invalid_handle &&
-                    track.clip != only_clip) continue;
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped && !force_stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.light.value >= engine.lights.size()) {
-                    continue;
-                }
-                std::size_t right = 1;
-                while (
-                    right < track.times.size() &&
-                    track.times[right] < clip.time) {
-                    ++right;
-                }
-                const std::size_t left =
-                    right < track.times.size() ? right - 1 : right - 1;
-                const std::size_t clamped_right =
-                    std::min(right, track.times.size() - 1);
-                const float span =
-                    track.times[clamped_right] - track.times[left];
-                const float amount = span > 0.0f
-                    ? std::clamp(
-                          (clip.time - track.times[left]) /
-                              span,
-                          0.0f,
-                          1.0f)
-                    : 0.0f;
-                const Vec4& a = track.values[left];
-                const Vec4& b = track.values[clamped_right];
-                const auto mix =
-                    [amount](const float from, const float to) {
-                    return from + (to - from) * amount;
-                };
-                LightRecord& light = engine.lights[track.light.value];
-                switch (track.kind) {
-                    case LightTrackKind::color:
-                        // The pinned writer sets diffuse and specular alike.
-                        light.diffuse_color = Color3{
-                            mix(a.x, b.x),
-                            mix(a.y, b.y),
-                            mix(a.z, b.z),
-                        };
-                        light.specular_color = light.diffuse_color;
-                        break;
-                    case LightTrackKind::intensity:
-                        light.intensity = mix(a.x, b.x);
-                        break;
-                    case LightTrackKind::range:
-                        light.range = mix(a.x, b.x);
-                        break;
-                    case LightTrackKind::outer_cone_angle:
-                        // angle = value * 2, and the light stores
-                        // cos(angle / 2), so the cosine is of the value.
-                        light.cos_half_angle =
-                            std::cos(mix(a.x, b.x));
-                        light.angle =
-                            static_cast<double>(mix(a.x, b.x)) * 2.0;
-                        break;
-                }
-            }
-` : ""}            for (const RotationTrack& track :
-                 animation_runtime->rotation_tracks) {
-                if (
-                    only_clip != invalid_handle &&
-                    track.clip != only_clip) continue;
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped && !force_stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.node >=
-                        animation_runtime->node_meshes.size()) {
-                    continue;
-                }${animationMask ? `
-                if (clip_masks_node(clip, track.node)) continue;` : ""}
-                animation_runtime->nodes[track.node].rotation =
-                    sample_rotation_track(track, clip.time);
-            }
-            for (const TranslationTrack& track :
-                 animation_runtime->translation_tracks) {
-                if (
-                    only_clip != invalid_handle &&
-                    track.clip != only_clip) continue;
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped && !force_stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.node >=
-                        animation_runtime->nodes.size()) {
-                    continue;
-                }${animationMask ? `
-                if (clip_masks_node(clip, track.node)) continue;` : ""}
-                animation_runtime->nodes[track.node].translation =
-                    sample_vec3_track(track, clip.time);
-            }
-            for (const TranslationTrack& track :
-                 animation_runtime->scale_tracks) {
-                if (
-                    only_clip != invalid_handle &&
-                    track.clip != only_clip) continue;
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped && !force_stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.node >=
-                        animation_runtime->nodes.size()) {
-                    continue;
-                }${animationMask ? `
-                if (clip_masks_node(clip, track.node)) continue;` : ""}
-                animation_runtime->nodes[track.node].scale =
-                    sample_vec3_track(track, clip.time);
-            }
-            for (
-                auto track_iterator =
-                    animation_runtime
-                        ->weight_tracks.rbegin();
-                track_iterator !=
-                    animation_runtime
-                        ->weight_tracks.rend();
-                ++track_iterator) {
-                const WeightTrack& track =
-                    *track_iterator;
-                if (
-                    only_clip != invalid_handle &&
-                    track.clip != only_clip) continue;
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped && !force_stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.node >= animation_runtime->nodes.size()) {
-                    continue;
-                }${animationMask ? `
-                if (clip_masks_node(clip, track.node)) continue;` : ""}
-                std::size_t right =
-                    track_key_at(track.times, clip.time);
-                std::size_t left =
-                    right > 0 ? right - 1 : 0;
-                if (track.interpolation == TrackInterpolation::step) {
-                    // One key held: collapsing the pair onto it leaves
-                    // track_amount_at's zero-span arm to return 0, so the
-                    // blend below reads that key alone.
-                    left = right = track_step_key_at(
-                        track.times, left, right, clip.time);
-                }
-                const double amount = track_amount_at(
-                    track.times,
-                    left,
-                    right,
-                    clip.time);
-                AnimatedNode& node =
-                    animation_runtime->nodes[track.node];
-                if (!node.weights) node.weights.emplace();
-                node.weights->resize(track.target_count);
-                for (std::size_t target = 0; target < track.target_count; ++target) {
-                    const float left_value =
-                        track.values[left * track.target_count + target];
-                    const float right_value =
-                        track.values[right * track.target_count + target];
-                    (*node.weights)[target] = static_cast<float>(
-                        left_value +
-                        (static_cast<double>(right_value) -
-                         left_value) *
-                            amount);
-                }
-            }
-            apply_animation_pose();
-        };
-        const auto apply_animation_time =
-            [animation_runtime, apply_animation_state](
-                float time,
-                bool seek) {
-            // The master clock is the scene's elapsed animation time and no
-            // longer wraps: each clip loops over its own duration, the way
-            // upstream's per-group controllers do, and a clip upstream never
-            // started holds at zero.
-            animation_runtime->time = std::max(time, 0.0f);
-            for (AnimationClip& clip : animation_runtime->clips) {
-                // A seek freezes what was animating. A stopped clip is
-                // outside it because the pin's own tick returns early
-                // for one — and a PAUSED clip already holds a pose the
-                // scene chose: upstream only moves a paused group's time
-                // through an explicit per-group write, never through a
-                // tick (advanceGroupTime advances only while playing),
-                // so the fanned-out seek must not move it either.
-                if (
-                    seek ? (clip.stopped || !clip.playing)
-                         : !clip.playing) {
-                    continue;
-                }
-${animationSpeedRatio ? `                // The pin advances time += dt * speedRatio from wherever
-                // the ratio was last written, so the derived time is the
-                // base plus the scaled span since that write.
-                //
-                // A SEEK is the exception, and deliberately: the browser
-                // capture harness pins a pose by writing the group's own
-                // currentTime and pausing it, which no ratio scales. The
-                // native seek mirrors that harness, so it takes the clock
-                // as the clip time and leaves the ratio to the tick.
-                const float raw = seek
-                    ? animation_runtime->time
-                    : clip.speed_base +
-                          (animation_runtime->time - clip.speed_origin) *
-                              clip.speed_ratio;
-                const float wrapped = clip.duration <= 0.0f
-                    ? 0.0f
-                    : std::fmod(raw, clip.duration);
-                clip.time = clip.duration <= 0.0f
-                    ? 0.0f
-                    : clip.loop
-                      ? (wrapped < 0.0f
-                             ? wrapped + clip.duration
-                             : wrapped)
-                      : std::min(
-                            std::max(raw, 0.0f),
-                            clip.duration);` : `                clip.time = clip.duration <= 0.0f
-                    ? 0.0f
-                    : clip.loop
-                      ? std::fmod(
-                            animation_runtime->time,
-                            clip.duration)
-                      : std::min(
-                            animation_runtime->time,
-                            clip.duration);`}
-                if (seek) {
-                    clip.playing = false;
-                }
-            }
-            apply_animation_state(invalid_handle, false);
-        };
-        // The pre-tick pose is the file's REST hierarchy, not the first
-        // clip at time zero: gltf-feature-skeleton.ts seeds each skin's
-        // bone texture with computeBoneTextureData, which composes
-        // invMeshWorld * jointWorld * IBM over the authored node TRS,
-        // and nothing evaluates a channel until a tick. The node TRS here
-        // is still that authored one, so the pose pass alone IS that
-        // seed -- evaluating clip 0 at zero would pose an asset a scene
-        // that never ticks leaves at rest. Measured on an Xbot added
-        // entity by entity: 0.816 full MAD against the browser with the
-        // channel evaluation, 0.000 without it.
-        apply_animation_pose();
-        // cloneTransformNode gives every mesh wrapper its own transform and
-        // material, but retains the exact skeleton resource. Native mesh
-        // records hold the evaluated palette themselves, so a skinned clone
-        // subscribes another record to this same evaluator. Ordinary
-        // node-animation bindings deliberately do not subscribe: the pin
-        // deep-clones those TransformNodes and its controller continues to
-        // target only the originals. A morph clone would need the same split
-        // (shared weights, independent node world), which this bounded path
-        // refuses rather than accidentally animating both halves.
-        asset.clone_mesh_animation =
-            [animation_runtime, &engine](
-                MeshHandle source,
-                MeshHandle clone) {
-            const auto found = std::find_if(
-                animation_runtime->meshes.begin(),
-                animation_runtime->meshes.end(),
-                [source](const AnimatedMeshBinding& binding) {
-                    return binding.mesh == source.value;
-                });
-            if (found == animation_runtime->meshes.end()) return;
-            if (
-                found->skin ==
-                std::numeric_limits<std::size_t>::max()) {
-                if (
-                    found->geometry < engine.geometries.size() &&
-                    !engine.geometries[found->geometry]
-                         .morph_positions.empty()) {
-                    throw std::runtime_error(
-                        "Cloning an animated morph hierarchy requires "
-                        "shared morph weights with an independent node world.");
-                }
-                return;
-            }
-            AnimatedMeshBinding binding = *found;
-            binding.mesh = clone.value;
-            animation_runtime->meshes.push_back(binding);
-        };
-        // The clips scene code addresses, in the document's animation order,
-        // plus the writers the group operations need — one per field the
-        // pin's operations assign. The clip state stays inside this runtime;
-        // only these writers reach it, the way animation_tick already does.
-        for (const AnimationClip& clip : animation_runtime->clips) {
-            engine.animation_groups.push_back(
-                AnimationGroupRecord{
-                    clip.name,
-                    static_cast<std::uint32_t>(engine.assets.size()),
-                    asset.animation_groups.size(),
-                });
-            asset.animation_groups.push_back(
-                AnimationGroupHandle{static_cast<std::uint32_t>(
-                    engine.animation_groups.size() - 1)});
-        }
-        asset.set_clip_playing =
-            [animation_runtime](std::size_t clip, bool playing) {
-            if (clip >= animation_runtime->clips.size()) return;
-            animation_runtime->clips[clip].playing = playing;
-        };
-        asset.set_clip_stopped =
-            [animation_runtime](std::size_t clip, bool stopped) {
-            if (clip >= animation_runtime->clips.size()) return;
-            animation_runtime->clips[clip].stopped = stopped;
-        };
-        asset.set_clip_time =
-            [animation_runtime](std::size_t clip, float time) {
-            if (clip >= animation_runtime->clips.size()) return;
-            animation_runtime->clips[clip].time = std::max(time, 0.0f);
-        };
-${vat ? `        asset.clip_duration =
-            [animation_runtime](std::size_t clip) -> float {
-            if (clip >= animation_runtime->clips.size()) return 0.0f;
-            return animation_runtime->clips[clip].duration;
-        };` : ""}
-        asset.apply_clip_pose =
-            [animation_runtime, apply_animation_state](
-                std::size_t clip,
-                bool with_engine) {
-            if (clip >= animation_runtime->clips.size()) return;
-            AnimationClip& selected = animation_runtime->clips[clip];
-            // goToFrame's own guard: engine || !group._stopped ||
-            // !group._gltfMixer. A glTF group always carries the mixer, so
-            // what is left is the engine argument and the stopped flag --
-            // a stopped group posed only when the caller passed an engine.
-            if (selected.stopped && !with_engine) return;
-            apply_animation_state(clip, with_engine);
-        };
-        asset.animation_seek =
-            [animation_runtime, apply_animation_time](float time) {
-            animation_runtime->paused = true;
-            apply_animation_time(time, true);
-        };
-        asset.animation_tick =
-            [animation_runtime, apply_animation_time](float delta_ms) {
-            if (animation_runtime->paused) return;
-            apply_animation_time(
-                animation_runtime->time +
-                    delta_ms * 0.001f,
-                false);
-        };
-${managedGroups ? `        // The clips a manager owns, advanced each by its own time the way
-        // upstream's per-group controller does — the asset's other clips
-        // keep whatever pose they last wrote, exactly as a group nothing
-        // ticks does upstream.
-        asset.animation_tick_clips =
-            [animation_runtime, apply_animation_state](
-                const std::vector<BlendedClip>& clips,
-                float delta_ms) {
-            for (const BlendedClip& entry : clips) {
-                if (entry.clip >= animation_runtime->clips.size()) {
-                    continue;
-                }
-                AnimationClip& clip =
-                    animation_runtime->clips[entry.clip];
-                if (clip.stopped || !clip.playing) continue;
-                clip.time += delta_ms * 0.001f${animationSpeedRatio ? ` * clip.speed_ratio` : ""};
-                if (clip.duration <= 0.0f) {
-                    clip.time = 0.0f;
-                } else if (clip.loop) {
-                    clip.time = std::fmod(clip.time, clip.duration);
-                    if (clip.time < 0.0f) clip.time += clip.duration;
-                } else {
-                    clip.time = std::min(clip.time, clip.duration);
-                }
-            }
-            apply_animation_state(invalid_handle, false);
-        };
-` : ""}        asset.set_clip_loop =
-            [animation_runtime](std::size_t clip, bool loop) {
-            if (clip >= animation_runtime->clips.size()) return;
-            animation_runtime->clips[clip].loop = loop;
-        };${animationSpeedRatio ? `
-        asset.set_clip_speed_ratio =
-            [animation_runtime](std::size_t clip, float speed_ratio) {
-            if (clip >= animation_runtime->clips.size()) return;
-            AnimationClip& selected = animation_runtime->clips[clip];
-            // Re-anchor: the pin accumulates time += dt * speedRatio, so a
-            // write moves the future alone. Holding the clip time and the
-            // master clock at the write is what makes the derived time
-            // below agree with that accumulation.
-            selected.speed_base = selected.time;
-            selected.speed_origin = animation_runtime->time;
-            selected.speed_ratio = speed_ratio;
-        };` : ""}${animationMask ? `
-        asset.set_clip_mask =
-            [animation_runtime](
-                std::size_t clip,
-                const std::vector<std::string>& names,
-                bool include) {
-            if (clip >= animation_runtime->clips.size()) return;
-            AnimationClip& selected = animation_runtime->clips[clip];
-            const std::size_t node_count =
-                animation_runtime->node_names.size();
-            selected.masked_nodes.assign(node_count, 0);
-            selected.masked_node_indices.clear();
-            for (std::size_t node = 0; node < node_count; ++node) {
-                const bool listed =
-                    std::find(
-                        names.begin(),
-                        names.end(),
-                        animation_runtime->node_names[node]) !=
-                    names.end();
-                // animationGroupMaskRetainsTarget: retained when listing
-                // and including agree. The skip flag is its complement,
-                // which is what resolveAnimationMask writes.
-                if (listed == include) continue;
-                selected.masked_nodes[node] = 1;
-                selected.masked_node_indices.push_back(
-                    static_cast<std::uint32_t>(node));
-            }
-            selected.mask_active = true;
-        };` : ""}${animationAdditive ? `
-        // group._additive = { referenceTime }: the additive mark takes
-        // the same writer route as every other group field.
-        asset.set_clip_additive =
-            [animation_runtime](std::size_t clip, float reference_time) {
-            if (clip >= animation_runtime->clips.size()) return;
-            animation_runtime->clips[clip].additive = true;
-            animation_runtime->clips[clip].additive_reference_time =
-                reference_time;
-        };` : ""}${animationBlending ? `
-        asset.animation_blend = apply_blended_animation;` : ""}${lowered.boneControlLoading}
+${gltfAnimationLoadingCpp(options, lowered.animationRootFlip)}
+${gltfAnimationPoseTransportCpp(options, lowered.gltfCameraPoseRefresh)}
+${lowered.boneControlLoading}
     }${boneControl ? `
     // The pin builds a Skeleton per skin whatever the file animates. Here
     // the joint list, the inverse bind matrices and the rest hierarchy all
@@ -3889,51 +1554,28 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             "for an animated glTF; this file declares skins and carries "
             "no animations.");
     }` : ""}
-    if (asset.meshes.empty()${gaussianSplats ? " && asset.gaussian_splats.empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
+    if (asset.meshes.empty()${gaussianSplats ? " && prepared_splats->empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
     install_asset_scene_meshes(asset, double_array(&required(mesh_plan, "sceneMeshes")));
 ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${interactivity ? `
-    // KHR_interactivity, selected as the pinned registry selects it: by the
-    // extension's presence (gltf-feature-registry.ts). The graphs generation
-    // parsed for this packaged file attach to the scene the container is
-    // added to (_sceneSetup), and the tables their accessors resolve
-    // against are the loaded document's (buildMaterialMap): the glTF
-    // material index each pointer names, the node children the visibility
-    // cascade walks, and the per-node visibility flag as the extension
-    // left it.
-    const ts::JsonValue* const extensions_value = optional(document, "extensions");
-    if (const ts::JsonValue* const interactivity_value =
-            extensions_value ? optional(extensions_value->as_object(), "KHR_interactivity") : nullptr) {
-        // container.flowGraphs: one handle per graph the document declares,
-        // in graph order, before any scene runs them.
+    // The source feature's actual applyAsset result owns graph activation,
+    // construction order and accessor resolution.
+    const auto& flow_graphs = required(mesh_plan, "flowGraphs").as_array();
+    if (!flow_graphs.empty()) {
         const AssetHandle self{static_cast<std::uint32_t>(engine.assets.size())};
-        std::uint32_t graph_index = 0;
-        for ([[maybe_unused]] const ts::JsonValue& graph : array_or_empty(interactivity_value->as_object(), "graphs")) {
-            asset.flow_graphs.push_back(FlowGraphHandle{self, graph_index++});
+        for (const auto& graph : flow_graphs) {
+            asset.flow_graphs.push_back(FlowGraphHandle{self, static_cast<std::uint32_t>(unsigned_value(required(graph.as_object(), "graphIndex")))});
         }
         asset.materials = source_materials;
-        asset.node_children.resize(node_json.size());
-        for (std::size_t index = 0; index < node_json.size(); ++index) {
-            for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children")) {
-                asset.node_children[index].push_back(unsigned_value(child));
-            }
-        }
-        const auto& visibility = required(mesh_plan, "nodeVisibility").as_array();
-        if (visibility.size() != node_json.size()) throw std::runtime_error("Invalid glTF node visibility storage.");
-        asset.node_visible.reserve(visibility.size());
-        for (const auto& value : visibility) asset.node_visible.push_back(value.as_boolean());
         const std::string asset_name = path.substr(path.find_last_of("/\\\\") + 1);
         interactivity_scene_setup = [self, asset_name](Scene& scene) {
             attach_flow_graphs(scene, self, asset_name);
         };
     }` : ""}
-    compose_gltf_scene_setup(asset, {${lowered.assetSceneSetupOrder.join(", ")}});${assetTransmission ? `
-    // Material build activation remains a native adapter (LW-1). It is not
-    // an asset feature in the source registry.
-    compose_gltf_scene_setup(asset, {transmission_scene_setup});` : ""}
+    compose_gltf_scene_setup(asset, {${lowered.assetSceneSetupOrder.join(", ")}});
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }
-${lowered.boneControlEntryPoints}${interactivity ? `
+${lowered.boneControlEntryPoints}${interactivity || animationPointer ? `
 // KHR_interactivity's accessors over this asset's tables, the pin's
 // path-converter.ts resolved against the loaded document: resolveVisibility
 // reads \`node.visible !== false\` off the per-node flag, and writes through
