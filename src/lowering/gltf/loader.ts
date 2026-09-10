@@ -33,7 +33,6 @@ import {
 import { lowerLocalMatrixCpp } from "./local-matrix.js";
 import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
-import { lowerPunctualLightsCpp } from "./punctual-lights.js";
 import { lowerShPrescaleCpp } from "./sh-prescale.js";
 import {
     findNodes,
@@ -674,6 +673,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const matrixLocal = lowerLocalMatrixCpp(
             parserFile,
             composeFile,
+            options.gltfCameras ?? false,
         );
         const matrixCompose = lowerMatrixComposeCpp(composeFile);
         const matrixNative = lowerMatrixNativeCpp(parserFile);
@@ -684,13 +684,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 imageBasedFile,
                 assemblyFile,
             );
-        const punctualLightLoading = lowerPunctualLightsCpp(
-            this.context.sourceFile(
-                "src/loader-gltf/gltf-feature-lights-punctual.ts",
-            ),
-            this.context.sourceFile("src/light/spot-light.ts"),
-            parserFile,
-        );
         const gltfCameras = options.gltfCameras
             ? lowerGltfCamerasCpp(
                   this.context.sourceFile(
@@ -744,7 +737,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     animationInterpolation,
                     accessorNormalization,
                     accessorShape,
-                    hierarchy: lowerGltfHierarchy(this.context),
+                    hierarchy: lowerGltfHierarchy(this.context, options.gltfCameras ?? false),
                     parserJson: lowerGltfParserJson(this.context),
                     inverseBindMatrices: lowerGltfInverseBindMatrices(this.context),
                     animationNodeRest: lowerGltfAnimationNodeRest(this.context),
@@ -760,7 +753,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     matrixNative,
                     iblPolynomial,
                     iblEnvironmentScalars,
-                    punctualLightLoading,
                     gltfCameraParentWriter: gltfCameras.parentWriter,
                     gltfCameraLoading: gltfCameras.loading,
                     gltfCameraPoseRefresh: gltfCameras.poseRefresh,

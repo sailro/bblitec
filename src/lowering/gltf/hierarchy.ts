@@ -6,7 +6,7 @@ import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
 import { pinnedRootFlip } from "./shared.js";
 
 /** Pinned parent-map publication and cached world traversal over native records. */
-export function lowerGltfHierarchy(context: LoweringContext): string {
+export function lowerGltfHierarchy(context: LoweringContext, includeWorld = true): string {
     const module = "src/loader-gltf/gltf-parser.ts";
     const { file, declaration: parentMap } = context.functionDeclaration(module, "buildParentMap");
     const mapBindings = new Map<string, PinnedBinding>([
@@ -145,7 +145,7 @@ void validate_gltf_parents(const std::vector<int>& parents) {
         }
     }
 }
-struct GltfWorldCache {
+${includeWorld ? `struct GltfWorldCache {
     std::vector<Matrix> values;
     std::vector<std::uint8_t> states;
     explicit GltfWorldCache(std::size_t count) : values(count), states(count) {}
@@ -171,5 +171,5 @@ ${worldBody}
 Matrix gltf_document_world(Matrix value) {
     for (std::size_t column = 0; column < 4; ++column) value[column * 4 + ${flip.lane}] *= ${floatLiteral(flip.sign)};
     return value;
-}`;
+}` : ""}`;
 }

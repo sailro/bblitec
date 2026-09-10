@@ -11,7 +11,6 @@ import {
     lowerImageProcessingDefaultsCpp,
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
-    lowerPunctualLightsCpp,
     lowerShPrescaleCpp,
 } from "../src/lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
@@ -23,11 +22,11 @@ function pinnedFile(modulePath: string): ts.SourceFile {
     return store.getSourceFile(modulePath);
 }
 
-function doctoredFile(
+/** A doctored pin: the module's source with one exact edit applied. */
+function mutatedFile(
     modulePath: string,
     needle: string,
     replacement: string,
-    all: boolean,
 ): ts.SourceFile {
     const source = store.getSource(modulePath);
     assert.ok(
@@ -36,31 +35,11 @@ function doctoredFile(
     );
     return ts.createSourceFile(
         modulePath,
-        all
-            ? source.replaceAll(needle, replacement)
-            : source.replace(needle, replacement),
+        source.replace(needle, replacement),
         ts.ScriptTarget.Latest,
         true,
         ts.ScriptKind.TS,
     );
-}
-
-/** A doctored pin: the module's source with one exact edit applied. */
-function mutatedFile(
-    modulePath: string,
-    needle: string,
-    replacement: string,
-): ts.SourceFile {
-    return doctoredFile(modulePath, needle, replacement, false);
-}
-
-/** A doctored pin with the edit applied at every occurrence. */
-function mutatedFileAll(
-    modulePath: string,
-    needle: string,
-    replacement: string,
-): ts.SourceFile {
-    return doctoredFile(modulePath, needle, replacement, true);
 }
 
 /**
@@ -81,9 +60,6 @@ function mutatedStore(
 }
 
 const evaluateModule = "src/animation/evaluate.ts";
-const punctualModule =
-    "src/loader-gltf/gltf-feature-lights-punctual.ts";
-const spotLightModule = "src/light/spot-light.ts";
 const parserModule = "src/loader-gltf/gltf-parser.ts";
 const multiplyModule = "src/math/mat4-multiply-into.ts";
 const composeModule = "src/math/mat4-compose-into.ts";
@@ -607,78 +583,6 @@ const expectedIblEnvironmentScalars = `    environment.lod_generation_scale =
     environment.brdf_lut_width = 256;
     environment.brdf_lut_rgba16f = true;`;
 
-const expectedPunctualLightLoading = `                const std::string type =
-                    string_or(definition, "type");
-                if (
-                    type != "point" &&
-                    type != "directional" &&
-                    type != "spot") {
-                    continue;
-                }
-                const Matrix& light_world =
-                    compute_world(node_index);
-                LightRecord light;
-                light.kind = type == "point"
-                    ? LightKind::point
-                    : type == "spot"
-                        ? LightKind::spot
-                        : LightKind::directional;
-                if (type == "spot") {
-                    // createSpotLight(position, direction, outer * 2, 1,
-                    // intensity): the pinned loader passes twice the outer
-                    // cone angle as the full cone, and the light stores
-                    // cos(angle / 2). innerConeAngle is read by neither the
-                    // pinned light nor its pointer handlers.
-                    const ts::JsonValue* spot_value =
-                        optional(definition, "spot");
-                    const float outer_cone_angle = spot_value
-                        ? float_or(
-                              spot_value->as_object(),
-                              "outerConeAngle",
-                              0.7853981633974483f)
-                        : 0.7853981633974483f;
-                    light.cos_half_angle =
-                        std::cos(outer_cone_angle);
-                    light.angle =
-                        static_cast<double>(outer_cone_angle) * 2.0;
-                }
-                light.position = Vec3{
-                    -light_world[12],
-                    light_world[13],
-                    light_world[14],
-                };
-                const Vec3 forward{
-                    light_world[8],
-                    -light_world[9],
-                    -light_world[10],
-                };
-                light.direction =
-                    normalize(forward);
-                const std::vector<float> color =
-                    float_array(
-                        optional(
-                            definition,
-                            "color"));
-                light.diffuse_color = color.size() == 3
-                    ? Color3{
-                          color[0],
-                          color[1],
-                          color[2],
-                      }
-                    : Color3{1.0f, 1.0f, 1.0f};
-                light.specular_color =
-                    light.diffuse_color;
-                light.intensity =
-                    float_or(
-                        definition,
-                        "intensity",
-                        1.0f);
-                light.range =
-                    float_or(
-                        definition,
-                        "range",
-                        std::numeric_limits<float>::max());`;
-
 test("lowers the pinned matrix multiply through the shared translation", () => {
     const header = pinnedMatrixHeader(new LoweringContext(store));
     for (const line of expectedMultiplyWriterLines) {
@@ -721,17 +625,6 @@ test("lowers the pinned IBL environment scalars byte-identically to the shipped 
     );
 });
 
-test("lowers the pinned punctual light build byte-identically to the shipped loader text", () => {
-    assert.equal(
-        lowerPunctualLightsCpp(
-            pinnedFile(punctualModule),
-            pinnedFile(spotLightModule),
-            pinnedFile(parserModule),
-        ),
-        expectedPunctualLightLoading,
-    );
-});
-
 test("the emitted loader carries every round-3 lowered segment", () => {
     const adapter = new GltfLowerer(new LoweringContext(store))
         .lowerLoaderAdapter();
@@ -740,7 +633,6 @@ test("the emitted loader carries every round-3 lowered segment", () => {
         expectedMatrixNative,
         expectedIblPolynomial,
         expectedIblEnvironmentScalars,
-        expectedPunctualLightLoading,
     ]) {
         assert.ok(
             adapter.source.includes(segment),
@@ -798,7 +690,7 @@ test("a compose lane that stops being identity refuses", () => {
     );
 });
 
-test("a moved RH-to-LH flip axis flows into the ladder and the light signs", () => {
+test("a moved RH-to-LH flip axis flows into the matrix adapter", () => {
     const doctored = mutatedFile(
         parserModule,
         "new F32([-1, 0, 0, 0,  0, 1, 0, 0,",
@@ -806,17 +698,7 @@ test("a moved RH-to-LH flip axis flows into the ladder and the light signs", () 
     );
     const native = lowerMatrixNativeCpp(doctored);
     assert.match(native, /row == 1 \? -1\.0f : 1\.0f;/);
-    const lights = lowerPunctualLightsCpp(
-        pinnedFile(punctualModule),
-        pinnedFile(spotLightModule),
-        doctored,
-    );
-    // The pin's +column-3 / -column-2 reads, folded through the moved
-    // diagonal: the x lanes stop flipping and the y lanes start.
-    assert.ok(lights.includes("                    light_world[12],"));
-    assert.ok(lights.includes("                    -light_world[13],"));
-    assert.ok(lights.includes("                    -light_world[8],"));
-    assert.ok(lights.includes("                    light_world[9],"));
+
 });
 
 test("a root that stops flipping exactly one axis refuses", () => {
@@ -933,81 +815,5 @@ test("a yaw gate whose absent case stops being zero refuses", () => {
                 pinnedFile(assemblyModule),
             ),
         /zero fallback/,
-    );
-});
-
-test("a changed spot cone default flows into both emitted arms", () => {
-    const lowered = lowerPunctualLightsCpp(
-        mutatedFile(
-            punctualModule,
-            "def.spot?.outerConeAngle ?? Math.PI / 4",
-            "def.spot?.outerConeAngle ?? Math.PI / 6",
-        ),
-        pinnedFile(spotLightModule),
-        pinnedFile(parserModule),
-    );
-    const occurrences = lowered.split("0.5235987755982988f").length - 1;
-    assert.equal(occurrences, 2);
-});
-
-test("a changed punctual intensity default flows into the emitted bytes", () => {
-    const lowered = lowerPunctualLightsCpp(
-        mutatedFile(punctualModule, "def.intensity ?? 1", "def.intensity ?? 3"),
-        pinnedFile(spotLightModule),
-        pinnedFile(parserModule),
-    );
-    assert.match(lowered, /"intensity",\n {24}3\.0f\);/);
-});
-
-test("a changed punctual color fallback flows into the emitted bytes", () => {
-    const lowered = lowerPunctualLightsCpp(
-        mutatedFile(punctualModule, ": [1, 1, 1];", ": [1, 0.5, 1];"),
-        pinnedFile(spotLightModule),
-        pinnedFile(parserModule),
-    );
-    assert.match(lowered, /Color3\{1\.0f, 0\.5f, 1\.0f\};/);
-});
-
-test("a punctual range default that stops being MAX_VALUE refuses", () => {
-    assert.throws(
-        () =>
-            lowerPunctualLightsCpp(
-                mutatedFile(
-                    punctualModule,
-                    "def.range !== undefined ? def.range : Number.MAX_VALUE",
-                    "def.range !== undefined ? def.range : 1000",
-                ),
-                pinnedFile(spotLightModule),
-                pinnedFile(parserModule),
-            ),
-        /MAX_VALUE default/,
-    );
-});
-
-test("a spot doubling the light cosine no longer cancels refuses", () => {
-    assert.throws(
-        () =>
-            lowerPunctualLightsCpp(
-                mutatedFile(
-                    punctualModule,
-                    "createSpotLight([px, py, pz], dir, outer * 2, 1, intensity)",
-                    "createSpotLight([px, py, pz], dir, outer * 3, 1, intensity)",
-                ),
-                pinnedFile(spotLightModule),
-                pinnedFile(parserModule),
-            ),
-        /no longer cancels the full-cone doubling/,
-    );
-});
-
-test("a light type with no record kind refuses", () => {
-    assert.throws(
-        () =>
-            lowerPunctualLightsCpp(
-                mutatedFileAll(punctualModule, '"directional"', '"ambient"'),
-                pinnedFile(spotLightModule),
-                pinnedFile(parserModule),
-            ),
-        /'ambient', which has no record kind/,
     );
 });

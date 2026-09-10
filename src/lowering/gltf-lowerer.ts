@@ -23,5 +23,4 @@ export {
     lowerIblEnvironmentScalarsCpp,
     lowerIblPolynomialCpp,
 } from "./gltf/ibl.js";
-export { lowerPunctualLightsCpp } from "./gltf/punctual-lights.js";
 export { lowerGltfFactorBake } from "./gltf/factor-bake.js";

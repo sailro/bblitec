@@ -887,14 +887,14 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /upstream::transform_position\(/);
     assert.doesNotMatch(adapter.source, /transform_point_raw/);
     // Vertex, tangent and face normals take the vertex stage's own
-    // normalize (the declared guarded CPU bake); the one loader-local
-    // normalize left is the punctual light forward's `hypot || 1`.
+    // normalize (the declared guarded CPU bake). Animated light refresh
+    // alone still uses the loader-local `hypot || 1` helper.
     assert.match(
         adapter.source,
         /upstream::transform_direction\(\n\s*matrix, upstream::normalize_baked_direction\(value\)\)/,
     );
     assert.match(
-        adapter.source,
+        lowerer.lowerLoaderAdapter({animationPointer: true}).source,
         /js::or_number\(\n\s*js::hypot_js\(\{value\.x, value\.y, value\.z\}\), 1\.0\)/,
     );
     assert.doesNotMatch(adapter.source, /0\.000001f|Vec3\{0\.0f, 1\.0f, 0\.0f\}/);
@@ -924,7 +924,7 @@ test("generates GLB framing validation from upstream constants", () => {
     );
     assert.match(
         adapter.source,
-        /KHR_lights_punctual/,
+        /required\(mesh_plan, "lights"\)/,
     );
     assert.match(
         adapter.source,

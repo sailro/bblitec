@@ -4,7 +4,7 @@ import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
 import { identifierParameters, refuseNode, topLevelFunction, unwrapExpression } from "./shared.js";
 
 /** Lower the complete local-matrix branch and its numeric writer. */
-export function lowerLocalMatrixCpp(parserFile: ts.SourceFile, composeFile: ts.SourceFile): string {
+export function lowerLocalMatrixCpp(parserFile: ts.SourceFile, composeFile: ts.SourceFile, includeLocal = true): string {
     const symbol = "computeNodeWorldMatrix", declaration = topLevelFunction(parserFile, symbol);
     const statements = declaration.body.statements;
     const start = statements.findIndex(statement => ts.isVariableStatement(statement) &&
@@ -71,7 +71,7 @@ export function lowerLocalMatrixCpp(parserFile: ts.SourceFile, composeFile: ts.S
         },
         returnValue: (value, lowerer) => lowerer.expression(value!),
     });
-    return `struct GltfNumberArray {
+    return `${includeLocal ? `struct GltfNumberArray {
     std::vector<double> values;
     double operator[](std::size_t index) const { return index < values.size() ? values[index] : std::numeric_limits<double>::quiet_NaN(); }
 };
@@ -81,18 +81,18 @@ GltfNumberArray gltf_number_array(const ts::JsonValue* source, std::vector<doubl
     for (const auto& value : source->as_array()) result.values.push_back(value.as_number());
     return result;
 }
-Matrix gltf_matrix_from_json(const ts::JsonValue* source) {
+` : ""}Matrix gltf_matrix_from_json(const ts::JsonValue* source) {
     if (!source || source->as_array().size() != 16) throw std::runtime_error("glTF node matrix must have 16 values.");
     Matrix result{};
     for (std::size_t index = 0; index < result.size(); ++index) result[index] = static_cast<float>(source->as_array()[index].as_number());
     return result;
 }
-// ${composeFile.fileName}#mat4ComposeInto
+${includeLocal ? `// ${composeFile.fileName}#mat4ComposeInto
 void gltf_compose_into(${composeParameters.map((name, index) => `${index === 0 ? "Matrix&" : "double"} ${name}`).join(", ")}) {
 ${writer}
 }
 // ${parserFile.fileName}#computeNodeWorldMatrix
 Matrix local_matrix(const JsonObject& node) {
 ${body}
-}`;
+}` : ""}`;
 }

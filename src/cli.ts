@@ -896,9 +896,8 @@ async function main(): Promise<void> {
     for (const asset of result.manifest.assets) {
         if (asset.kind !== "gltf") continue;
         const assetPath = resolve(outputPath, "assets", asset.output);
-        // The pin grows MAX_LIGHTS from this count at run time; the frozen
-        // constant makes exceeding it a generation refusal instead
-        // (`emitUpstreamGenerated` checks it beside the pinned constant).
+        // Source registration determines the asset's active light kinds and
+        // count. Native admission also checks this count against its fixed UBO.
         const nodeLights = gltfNodeLights(assetPath);
         if (nodeLights.count > (assetLightNodes?.count ?? 0)) {
             assetLightNodes = { count: nodeLights.count, asset: asset.output };

@@ -71,6 +71,10 @@ store. Matrix layout, multiplication order, coordinate transforms and rounding
 are part of the contract. Numeric equality and byte equality differ for signed
 zero; record which comparison a control establishes.
 
+Packaged glTF light worlds retain the source Float32 matrices. Light scalars and colors enter
+native float records; ranges above float maximum clamp to that maximum. Spot cone angles retain
+double precision, and their uniform cosine comes from the source writer's Float32 store.
+
 ### The reference pose
 
 Match source/module hashes, query, seek/frame, canvas size and UI. Native

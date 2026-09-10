@@ -12,6 +12,13 @@ export const nativeFixtureVcpkgRoot = resolve(
     "artifacts/vcpkg-installed/development-full/x64-windows",
 );
 
+/** Isolate contiguous emitted helpers, refusing a missing or reversed boundary. */
+export function cppSection(source: string, first: string, next: string): string {
+    const start = source.indexOf(first), end = source.indexOf(next, start);
+    assert.ok(start >= 0 && end > start, `${first} through ${next}`);
+    return source.slice(start, end);
+}
+
 /** Isolate a namespace-level record, including its member implementations. */
 export function cppRecord(source: string, signature: string): string {
     const start = source.indexOf(signature);

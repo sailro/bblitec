@@ -101,15 +101,6 @@ export interface GltfLoaderLoweredSegments {
      */
     iblEnvironmentScalars: string;
     /**
-     * The KHR_lights_punctual record build — type strings, the spot
-     * outer-cone default, the color/intensity/range defaults, and the
-     * position/direction sign convention — lowered from
-     * `src/loader-gltf/gltf-feature-lights-punctual.ts#applyAsset`,
-     * `src/light/spot-light.ts#createSpotLight`, and the parser's
-     * `RH_TO_LH_ROOT`.
-     */
-    punctualLightLoading: string;
-    /**
      * The glTF `camera` node property (`_camera` feature), lowered from
      * `src/loader-gltf/gltf-feature-camera.ts#applyAsset`: the fold that
      * writes an imported camera's fixup-node world, the load-time walk
@@ -884,13 +875,9 @@ std::vector<float> gltf_skin_float32_view(const GltfAccessorView& view, double l
 
 ${lowered.inverseBindMatrices}
 
-// src/loader-gltf/gltf-feature-lights-punctual.ts applyAsset: a punctual
-// light's world forward is \`Math.hypot(fx, fy, fz) || 1\` under its three
-// lanes, a zero forward kept as it is. The load-time call is the one
-// gltf/punctual-lights.ts emits against this name after asserting that
-// shape; the animated refresh below reuses it. Vertex, tangent and face
-// normals take the vertex stage's own normalize instead
-// (upstream::normalize_baked_direction).
+${animationPointer ? `// Animated light refresh keeps zero forward vectors unchanged. Initial light
+// matrices come from the source constructors; vertex normals use
+// upstream::normalize_baked_direction.
 Vec3 normalize(Vec3 value) {
     const double length = js::or_number(
         js::hypot_js({value.x, value.y, value.z}), 1.0);
@@ -900,7 +887,7 @@ Vec3 normalize(Vec3 value) {
         static_cast<float>(value.z / length),
     };
 }
-
+` : ""}
 ${lowered.animationInterpolation}
 
 /**
@@ -1479,7 +1466,7 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
     }
 
     const auto parents = build_gltf_parents(document);
-    validate_gltf_parents(parents);
+    validate_gltf_parents(parents);${gltfCameras ? `
     std::optional<GltfWorldCache> world_cache;
     std::vector<Matrix> world;
     const auto compute_world = [&](std::size_t index) -> const Matrix& {
@@ -1489,7 +1476,7 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
         }
         world.at(index) = gltf_document_world(compute_gltf_node_world(document, index, parents, *world_cache));
         return world.at(index);
-    };
+    };` : ""}
 
     AssetRecord asset;${interactivity ? `
     // KHR_interactivity's node-to-meshes table, filled by the mesh walk
@@ -1575,70 +1562,57 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
             }
         });
     }` : ""}
-${animationPointer ? `    // Runtime lights indexed by their KHR_lights_punctual definition index,
-    // which is the index a light pointer names.
-    std::vector<LightHandle> punctual_lights;
-    std::vector<AnimatedLightBinding> light_node_bindings;
+    const auto read_matrix = [&](const AccessorInfo& value, std::size_t index) {
+        Matrix matrix{};
+        for (std::size_t lane = 0; lane < matrix.size(); ++lane)
+            matrix[lane] = read_component(buffer, container, views, value, index * 4 + lane / 4, lane % 4);
+        return matrix;
+    };
+${animationPointer ? `    std::vector<AnimatedLightBinding> light_node_bindings;
 ` : ""}${gltfCameras ? `    std::vector<AnimatedCameraBinding> camera_node_bindings;
-` : ""}    if (const ts::JsonValue* extensions_value =
-            optional(document, "extensions")) {
-        const JsonObject& extensions =
-            extensions_value->as_object();
-        if (const ts::JsonValue* lights_value =
-                optional(
-                    extensions,
-                    "KHR_lights_punctual")) {
-            const JsonArray& light_definitions =
-                array_or_empty(
-                    lights_value->as_object(),
-                    "lights");
-            for (
-                std::size_t node_index = 0;
-                node_index < node_json.size();
-                ++node_index) {
-                const JsonObject& node =
-                    node_json[node_index].as_object();
-                const ts::JsonValue*
-                    node_extensions_value =
-                        optional(node, "extensions");
-                if (!node_extensions_value) continue;
-                const ts::JsonValue* light_value =
-                    optional(
-                        node_extensions_value
-                            ->as_object(),
-                        "KHR_lights_punctual");
-                if (!light_value) continue;
-                const std::size_t light_index =
-                    unsigned_value(
-                        required(
-                            light_value->as_object(),
-                            "light"));
-                if (
-                    light_index >=
-                    light_definitions.size()) {
-                    continue;
-                }
-                const JsonObject& definition =
-                    light_definitions[light_index]
-                        .as_object();
-${lowered.punctualLightLoading}
-                engine.lights.push_back(light);
-                const LightHandle light_handle{
-                    static_cast<std::uint32_t>(
-                        engine.lights.size() - 1)};
-                asset.lights.push_back(light_handle);${animationPointer ? `
-                // setGltfPunctualLight: a light pointer names the definition
-                // index, not the node, so the runtime light it created has to
-                // be reachable by that index.
-                if (light_index >= punctual_lights.size()) {
-                    punctual_lights.resize(light_index + 1, LightHandle{});
-                }
-                punctual_lights[light_index] = light_handle;
-                light_node_bindings.push_back(
-                    AnimatedLightBinding{light_handle, node_index});` : ""}
-            }
+` : ""}    std::vector<LightHandle> loaded_lights;
+    for (const auto& entry : required(mesh_plan, "lights").as_array()) {
+        const auto& prepared = entry.as_object();
+        LightRecord light;
+        const auto& type = required(prepared, "kind").as_string();
+        if (type == "point") light.kind = LightKind::point;
+        else if (type == "directional") light.kind = LightKind::directional;
+        else if (type == "spot") light.kind = LightKind::spot;
+        else throw std::runtime_error("Unsupported prepared glTF light kind.");
+        const auto& world = accessors.at(unsigned_value(required(prepared, "world")));
+        if (world.type != "VEC4" || world.component_type != 5126 || world.count != 4)
+            throw std::runtime_error("Invalid glTF light world storage.");
+        const auto matrix = read_matrix(world, 0);
+        light.position = Vec3{matrix[12], matrix[13], matrix[14]};
+        light.direction = Vec3{matrix[8], matrix[9], matrix[10]};
+        const auto color = [&](const char* name) {
+            const auto& values = required(prepared, name).as_array();
+            if (values.size() != 3) throw std::runtime_error("Invalid glTF light color.");
+            return Color3{static_cast<float>(values[0].as_number()), static_cast<float>(values[1].as_number()), static_cast<float>(values[2].as_number())};
+        };
+        light.diffuse_color = color("diffuse");
+        light.specular_color = color("specular");
+        light.intensity = static_cast<float>(required(prepared, "intensity").as_number());
+        if (const auto* range = optional(prepared, "range"))
+            light.range = static_cast<float>(std::min(range->as_number(), static_cast<double>(std::numeric_limits<float>::max())));
+        if (light.kind == LightKind::spot) {
+            const auto& spot = required(prepared, "spot").as_object();
+            light.angle = required(spot, "angle").as_number();
+            light.cos_half_angle = static_cast<float>(required(spot, "cosine").as_number());
+            light.exponent = static_cast<float>(required(spot, "exponent").as_number());
         }
+        const LightHandle handle{static_cast<std::uint32_t>(engine.lights.size())};
+        engine.lights.push_back(light);
+        loaded_lights.push_back(handle);${animationPointer ? `
+        const auto& node = required(prepared, "node");
+        if (!node.is_null()) light_node_bindings.push_back(AnimatedLightBinding{handle, unsigned_value(node)});` : ""}
     }
+    for (const auto& index : required(mesh_plan, "sceneLights").as_array())
+        asset.lights.push_back(loaded_lights.at(unsigned_value(index)));
+${animationPointer ? `    std::vector<LightHandle> punctual_lights;
+    for (const auto& index : required(mesh_plan, "lightTargets").as_array())
+        punctual_lights.push_back(index.is_null() ? LightHandle{} : loaded_lights.at(unsigned_value(index)));
+` : ""}
 ${gltfCameras ? `${lowered.gltfCameraLoading}
 ` : ""}    const auto animation_runtime =
         std::make_shared<AnimationRuntime>();
@@ -1760,12 +1734,6 @@ ${nonTrianglePrimitives
                 if (value.type != type || value.component_type != 5126 || value.count != count)
                     throw std::runtime_error("Invalid glTF mesh placement storage.");
                 return value;
-            };
-            const auto read_matrix = [&](const AccessorInfo& value, std::size_t index) {
-                Matrix matrix{};
-                for (std::size_t lane = 0; lane < matrix.size(); ++lane)
-                    matrix[lane] = read_component(buffer, container, views, value, index * 4 + lane / 4, lane % 4);
-                return matrix;
             };
             const auto& source_world = setup_accessor("world", "VEC4", 4);
             Matrix mesh_world = read_matrix(source_world, 0);

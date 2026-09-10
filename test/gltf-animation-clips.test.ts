@@ -18,7 +18,7 @@ import { lowerGltfDefaultSampler } from "../src/lowering/gltf/sampler-mapping.js
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { transpileCommonJs } from "../src/typescript-transpile.js";
 import { doctoredContext } from "./doctored-store.js";
-import { cppFunction, cppRecord, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { cppFunction, cppRecord, cppSection, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const module = "src/loader-gltf/gltf-animation.ts";
 const converterModule = "src/loader-gltf/gltf-sampler-denorm.ts";
@@ -77,7 +77,7 @@ test("native animation clips execute pinned sampling, filtering, order and unuse
     });
     const context = contexts[0]!;
     const loader = new GltfLowerer(context).lowerLoaderAdapter().source;
-    const helpers = loader.slice(loader.indexOf("std::size_t component_count("), loader.indexOf("// src/loader-gltf/gltf-feature-lights-punctual.ts applyAsset:"));
+    const helpers = cppSection(loader, "std::size_t component_count(", "Vec4 normalize_quaternion(");
     const output = resolve("artifacts/gltf-animation-clips"); mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "cases.json"), JSON.stringify({ document, bytes: [...bytes], expected }));
     const source = join(output, "check.cpp"), executable = join(output, "check.exe");

@@ -2,6 +2,7 @@ import ts from "typescript";
 import { asIndex, asObject, asRecords, areGltfIndices, GLTF_MESH_PLAN, type JsonObject } from "./gltf-document.js";
 import { LoweringContext } from "./lowering/context.js";
 import { gltfBaseMaterialConstruction } from "./lowering/gltf/material-construction.js";
+import { featureMethod } from "./lowering/gltf/shared.js";
 import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
 import { importPinnedModule, pinnedModuleTextUrl } from "./pinned-shader-composer.js";
 import { createRecordingDevice } from "./recording-device.js";
@@ -9,8 +10,9 @@ import { transpileForBrowser } from "./typescript-transpile.js";
 import { GltfGeometryPacker, type GltfMeshGeometry, type GltfRecordedGeometry } from "./gltf-mesh-geometry.js";
 import { packageMeshDeformation, readMeshDeformation, type GltfMeshDeformation, type RecordedMeshDeformation } from "./gltf-mesh-deformation.js";
 import { packageMeshSetup, readMeshSetup, type GltfMeshSetup, type RecordedMeshSetup, type SourceWorldBounds } from "./gltf-mesh-setup.js";
+import { packageGltfLight, packagedGltfLights, type GltfLightPlan } from "./gltf-light-plan.js";
 
-export interface GltfMeshPlan {
+export interface GltfMeshPlan extends GltfLightPlan {
     /** Source material indices in assembly order; -1 denotes the implicit default. */
     cores: number[];
     /** Core record indices in native material construction order. */
@@ -29,6 +31,7 @@ interface SceneNode { visible?: boolean }
 interface UploadContext {
     _engine: {_device: object}; _json: JsonObject; _binChunk: DataView; _baseUrl: string;
     _matExts: unknown[]; _wrapTex: unknown; recordMaterial(material: CoreMaterial): Promise<Material>;
+    recordLightLimit(count: number): never;
     _parentMap: Map<number, number>; _worldMatrixCache: Map<number, Float32Array>;
     _nodeMap?: readonly (SceneNode | undefined)[];
 }
@@ -39,6 +42,8 @@ interface MeshFeature {
 interface SourceLoader {
     __instanceFeature: MeshFeature;
     __visibilityFeature: MeshFeature;
+    __lightFeature: MeshFeature;
+    __getPunctualLight(json: JsonObject, index: number): object | undefined;
     __worldBounds: SourceWorldBounds;
     __addToScene(scene: object, entity: object): void;
     __applyPreparedAssets(features: MeshFeature[], meshes: Mesh[], root: object, context: UploadContext): Promise<{entities: object[]}>;
@@ -80,10 +85,35 @@ async function recordingLoader(context: LoweringContext): Promise<SourceLoader> 
     const visibility = sourceModule("src/loader-gltf/gltf-ext-node-visibility.ts", new Map([
         ["../scene/visibility.js", sourceModule("src/scene/visibility.ts")],
     ]));
+    const lightState = sourceModule("src/loader-gltf/gltf-light-pointer-state.ts");
+    const lightModule = "src/loader-gltf/gltf-feature-lights-punctual.ts";
+    const lightFile = context.sourceFile(lightModule);
+    const lightMethod = featureMethod(lightFile, "KHR_lights_punctual", "applyAsset");
+    const lightContext = lightMethod.parameters[2]?.name;
+    const limitCalls = context.findNodes(lightMethod, (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) && context.expressionMatchesShape(node.expression, "setMaxLights"));
+    if (!lightContext || !ts.isIdentifier(lightContext) || limitCalls.length !== 1 || limitCalls[0]!.arguments.length !== 1)
+        context.contractError(lightMethod, "Expected the glTF light-budget configuration boundary.");
+    const lightTransform = ts.transform(lightFile, [visitorContext => root => {
+        const visit: ts.Visitor = node => node === limitCalls[0]
+            ? ts.factory.updateCallExpression(limitCalls[0], ts.factory.createPropertyAccessExpression(lightContext, "recordLightLimit"),
+                undefined, limitCalls[0].arguments)
+            : ts.visitEachChild(node, visit, visitorContext);
+        return ts.visitNode(root, visit, ts.isSourceFile)!;
+    }]);
+    const lightSource = transpileForBrowser(ts.createPrinter().printFile(lightTransform.transformed[0]!), lightModule);
+    lightTransform.dispose();
+    const lights = pinnedModuleTextUrl("loader-gltf/gltf-feature-lights-punctual.js", lightSource, [], new Map([
+        ["./gltf-light-pointer-state.js", lightState],
+        ["../light/types.js", sourceModule("src/light/types.ts")],
+        ...["point", "directional", "spot"].map(type =>
+            [`../light/${type}-light.js`, sourceModule(`src/light/${type}-light.ts`)] as const),
+    ]));
     const registry = sourceModule("src/loader-gltf/gltf-feature-registry.ts", new Map([
         ["./gltf-feature-skeleton.js", skeleton], ["./gltf-feature-morph.js", morph],
         ["./gltf-feature-gpu-instancing.js", instances], ["./gltf-feature-primitive.js", primitive],
         ["./gltf-ext-node-visibility.js", visibility],
+        ["./gltf-feature-lights-punctual.js", lights],
     ]));
     const module = "src/loader-gltf/load-gltf.ts";
     const {file, call, material, uploadContext} = gltfBaseMaterialConstruction(context);
@@ -126,9 +156,9 @@ async function recordingLoader(context: LoweringContext): Promise<SourceLoader> 
     ]));
     // Core material records are opaque to extraction. Their actual assembler
     // and the replaced PBR constructor both execute in the generated loader.
-    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
+    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
     return await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation + "\n" + assetPhase + "\n" + setupImports,
-        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__applyPreparedAssets", "__addToScene", "__instanceFeature", "__visibilityFeature", "__worldBounds"],
+        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__applyPreparedAssets", "__addToScene", "__instanceFeature", "__visibilityFeature", "__lightFeature", "__getPunctualLight", "__worldBounds"],
         new Map([["./gltf-feature-registry.js", registry]]))) as SourceLoader;
 }
 
@@ -138,6 +168,9 @@ export async function gltfMeshPlan(document: JsonObject, bin: DataView, context?
 }
 
 async function recordMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext): Promise<{plan: GltfMeshPlan; packer: GltfGeometryPacker}> {
+    // fetchGltfAsset gives each load a fresh document. Feature WeakMaps must
+    // not leak bindings between recordings of the same caller-owned object.
+    document = structuredClone(document);
     const loader = await (context ? recordingLoader(context) : pinnedLoader ??= recordingLoader(new LoweringContext()));
     const {identityTexWrap} = await importPinnedModule<{identityTexWrap: unknown}>("loader-gltf/gltf-pbr-builder.js");
     const {features, parentMap, worldMatrixCache} = await loader.__prepareMeshes(document);
@@ -162,6 +195,9 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context?: Low
     const uploadContext: UploadContext = {
         _engine: {_device: device}, _json: document, _binChunk: bin, _baseUrl: "", _matExts: [], _wrapTex: identityTexWrap,
         _parentMap: parentMap, _worldMatrixCache: worldMatrixCache,
+        recordLightLimit(count) {
+            throw new Error(`glTF requested MAX_LIGHTS = ${count}; native light capacity is fixed at the pinned limit.`);
+        },
         async recordMaterial(material) {
             const core = coreRecords.get(material);
             if (core === undefined) throw new Error("glTF mesh planning lost its assembled material identity.");
@@ -183,10 +219,10 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context?: Low
     uploadContext._nodeMap = nodeMap;
     // Other per-asset hooks retain their native adapters until their bindings
     // are represented. The source phase owns hook scheduling and fragment merge.
-    const prepared = features.filter(feature => feature === loader.__instanceFeature || feature === loader.__visibilityFeature);
+    const prepared = features.filter(feature => feature === loader.__instanceFeature || feature === loader.__visibilityFeature || feature === loader.__lightFeature);
     const container = await loader.__applyPreparedAssets(prepared, meshes, root, uploadContext);
     if (Object.keys(container).some(key => key !== "entities") || !Array.isArray(container.entities) ||
-        container.entities.length !== 1 || container.entities[0] !== root)
+        container.entities[0] !== root || container.entities.slice(1).some(entity => !asObject(entity) || !("lightType" in entity)))
         throw new Error("Unrepresented glTF mesh asset fragment.");
     const scene = {meshes: [] as Mesh[], lights: [] as object[], _groups: new Map<object, object>(),
         _deferredBuilders: [] as Array<() => Promise<unknown>>, _built: false};
@@ -194,7 +230,6 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context?: Low
         if (!Reflect.has(target, key)) throw new Error(`Unrepresented glTF scene registration field '${String(key)}'.`);
         return Reflect.get(target, key, receiver);
     }}), container);
-    if (scene.lights.length) throw new Error("Unrepresented glTF mesh scene entity.");
     const meshIndices = new Map(meshes.map((mesh, index) => [mesh, index]));
     const sceneMeshes = scene.meshes.map(mesh => {
         const index = meshIndices.get(mesh);
@@ -233,7 +268,17 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context?: Low
         if (node?.visible !== undefined && typeof node.visible !== "boolean") throw new Error("Invalid constructed glTF node visibility.");
         return node?.visible !== false;
     });
-    return {plan: {cores, materials, nodeVisibility, sceneMeshes, meshes: plannedMeshes, geometries: geometryRecords}, packer};
+    const lightDefinitions = asObject(asObject(document.extensions)?.KHR_lights_punctual)?.lights;
+    const targets = Array.isArray(lightDefinitions)
+        ? lightDefinitions.map((_, index) => loader.__getPunctualLight(document, index)) : [];
+    const sourceLights = [...new Set([...scene.lights, ...targets.filter((light): light is object => light !== undefined)])];
+    const lightIndices = new Map(sourceLights.map((light, index) => [light, index]));
+    const nodeIndices = new Map<object, number>(sourceLights.length ? nodeMap.flatMap((node, index) => node ? [[node, index] as const] : []) : []);
+    const lights = sourceLights.map(light => packageGltfLight(light, nodeIndices, packer));
+    const sceneLights = scene.lights.map(light => lightIndices.get(light)!);
+    const lightTargets = targets.map(light => light === undefined ? null : lightIndices.get(light)!);
+    return {plan: {cores, materials, nodeVisibility, sceneMeshes, lights, sceneLights, lightTargets,
+        meshes: plannedMeshes, geometries: geometryRecords}, packer};
 }
 
 /** Read the validated source-owned schedule carried by a packaged asset. */
@@ -275,7 +320,8 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
             setup: readMeshSetup(mesh.setup, accessorCount),
             ...readMeshDeformation(mesh, accessorCount, skinCount)};
     });
-    return {cores: plan.cores, materials: plan.materials, nodeVisibility: plan.nodeVisibility, sceneMeshes: plan.sceneMeshes, meshes, geometries};
+    return {cores: plan.cores, materials: plan.materials, nodeVisibility: plan.nodeVisibility, sceneMeshes: plan.sceneMeshes,
+        ...packagedGltfLights(document), meshes, geometries};
 }
 
 export async function packageGltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext): Promise<Buffer> {

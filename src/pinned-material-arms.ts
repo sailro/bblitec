@@ -58,6 +58,7 @@ import { sharedUpstreamStore } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import { gltfVariantPlan } from "./gltf-variant-plan.js";
 import { packagedGltfMeshPlan } from "./gltf-mesh-plan.js";
+import { packagedGltfLights } from "./gltf-light-plan.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -272,69 +273,18 @@ export interface MaterialSubject {
     metallicReflectanceRegistered: boolean;
 }
 
-/** The punctual lights a glTF asset's nodes reference. */
+/** Source-registered lights that join the scene's composed lighting arms. */
 export interface GltfNodeLights {
-    /**
-     * How many nodes reference a light — the count the pin grows
-     * `MAX_LIGHTS` from: `gltf-feature-lights-punctual.ts` walks the node
-     * array and calls `setMaxLights(lightNodeCount)` when it exceeds the
-     * constant. This port freezes the pin's constant and the native writers
-     * stop at it, so the same count is read at generation to refuse what
-     * upstream would grow.
-     */
     count: number;
-    /**
-     * The single-light kinds those nodes' lights reach, in first-reference
-     * order. glTF has no hemispheric light, so the mapping is the identity
-     * on the three punctual kinds.
-     */
     kinds: readonly string[];
 }
 
-/**
- * The lights a glTF asset creates, read the way the pin creates them.
- *
- * `gltf-feature-lights-punctual.ts` walks the NODE array and creates one
- * light per node carrying `KHR_lights_punctual.light`; the document's
- * declared `lights[]` table is only what those references resolve through,
- * so a declared light no node names creates nothing and reaches no arm.
- * The two consumers -- the `light:*` feature join, whose arms the composed
- * variants must cover because the loader creates these lights exactly like
- * scene code does, and the static scene-arm selection, which asks whether
- * an asset contributes lights at all -- read this one answer.
- */
 export function gltfNodeLights(path: string): GltfNodeLights {
-    const record = glbDocument(path);
-    if (!record) return { count: 0, kinds: [] };
-    const extensions = record["extensions"] as
-        | Record<string, unknown>
-        | undefined;
-    const declared =
-        (extensions?.["KHR_lights_punctual"] as
-            | { lights?: { type?: string }[] }
-            | undefined)?.lights ?? [];
-    const nodes = Array.isArray(record["nodes"])
-        ? (record["nodes"] as Record<string, unknown>[])
-        : [];
-    let count = 0;
-    const kinds = new Set<string>();
-    for (const node of nodes) {
-        const nodeExtensions = node?.["extensions"] as
-            | Record<string, unknown>
-            | undefined;
-        const reference = (nodeExtensions?.["KHR_lights_punctual"] as
-            | { light?: unknown }
-            | undefined)?.light;
-        if (reference === undefined) continue;
-        count += 1;
-        const type = typeof reference === "number"
-            ? declared[reference]?.type
-            : undefined;
-        if (type === "point" || type === "directional" || type === "spot") {
-            kinds.add(type);
-        }
-    }
-    return { count, kinds: [...kinds] };
+    const document = glbDocument(path);
+    if (!document) return {count: 0, kinds: []};
+    const plan = packagedGltfLights(document);
+    const kinds = new Set(plan.sceneLights.map(index => plan.lights[index]!.kind));
+    return {count: plan.sceneLights.length, kinds: [...kinds]};
 }
 
 /**

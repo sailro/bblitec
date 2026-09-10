@@ -98,7 +98,6 @@ test("split lowerer barrels contain exports and families own their declarations"
         ["lowerMatrixNativeCpp", "gltf/matrix-leaves"],
         ["lowerIblPolynomialCpp", "gltf/ibl"],
         ["lowerIblEnvironmentScalarsCpp", "gltf/ibl"],
-        ["lowerPunctualLightsCpp", "gltf/punctual-lights"],
         ["lowerGltfMaterialProperties", "gltf/material-properties"],
         ["lowerGltfFactorBake", "gltf/factor-bake"],
         ["MeshBuilderLowerer", "factory/mesh-builders"],

@@ -47,7 +47,7 @@ keep their published value while the newest report lies inside the recorded band
 | 30 | <img src="images/scenes/scene30.png" alt="Scene 30 rendering" width="160"> | 0.007 / 0.010 | 0.003 / 0.005 | Volume Testing |
 | 31 | <img src="images/scenes/scene31.png" alt="Scene 31 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | Emissive Strength |
 | 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Unlit glTF |
-| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="160"> | 0.000 / 0.009 | 0.000 / 0.006 | Punctual Lights |
+| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.006 | Punctual Lights |
 | 34 | <img src="images/scenes/scene34.png" alt="Scene 34 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node Visibility |
 | 35 | <img src="images/scenes/scene35.png" alt="Scene 35 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Simple Instancing |
 | 36 | <img src="images/scenes/scene36.png" alt="Scene 36 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Basis Universal Texture |
@@ -226,7 +226,7 @@ keep their published value while the newest report lies inside the recorded band
 | 250 | <img src="images/scenes/scene250.png" alt="Scene 250 rendering" width="160"> | 0.004 / 0.004 | 0.003 / 0.003 | VirtualCity Cameras |
 | 251 | <img src="images/scenes/scene251.png" alt="Scene 251 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animation Group Mask |
 | 252 | <img src="images/scenes/scene252.png" alt="Scene 252 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard Morph Target |
-| 253 | <img src="images/scenes/scene253.png" alt="Scene 253 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Animate All The Things |
+| 253 | <img src="images/scenes/scene253.png" alt="Scene 253 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animate All The Things |
 | 254 | <img src="images/scenes/scene254.png" alt="Scene 254 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Animation Sampler Type |
 | 255 | <img src="images/scenes/scene255.png" alt="Scene 255 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animation Skin Type |
 | 256 | <img src="images/scenes/scene256.png" alt="Scene 256 rendering" width="160"> | 0.000 / 0.005 | 0.000 / 0.005 | Normal Tangent Test |
