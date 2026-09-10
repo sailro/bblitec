@@ -38,7 +38,9 @@ import {
     compileBrowserFileElementAccess,
 } from "./browser-file.js";
 import { isNumberParserCallee, isParseFloatCallee } from "./browser-erasure.js";
-import { hasNonNullAssertion, argumentAt } from "./syntax.js";
+import { hasNonNullAssertion, argumentAt, isLogicalAssignmentOperator } from "./syntax.js";
+import { compileErrorConstruction, errorConstructor } from "./error-values.js";
+import { compileObjectStatic, OBJECT_STATICS } from "./object-statics.js";
 import { firstReturn } from "./loop-control.js";
 import {
     FORMATTED_MATH_FOLDS,
@@ -131,6 +133,9 @@ export interface ExpressionContext
         | "variableScopes"
         | "unwrap"
         | "expectArgumentCount"
+        | "isInRuntimeControlFlow"
+        | "invalidateRecordProperties"
+        | "emitLogicalAssignment"
         | "expectKind"
         | "expectSameEngine"
         | "activeThis"
@@ -565,6 +570,12 @@ export class ExpressionLowerer {
                         `${flags.includes("i") ? "true" : "false"})`,
                 };
             }
+            const errorName = errorConstructor(unwrapped, (identifier) =>
+                this.context.isDefaultLibraryIdentifier(identifier),
+            );
+            if (errorName) {
+                return compileErrorConstruction(this.context, unwrapped, errorName);
+            }
             const constructed =
                 this.context.dataLowerer.compileNewExpression(
                     unwrapped,
@@ -991,6 +1002,28 @@ export class ExpressionLowerer {
             this.context.emitExpressionAsStatement(unwrapped);
             return this.context.compileValue(unwrapped.left);
         }
+        // `(cache[key] ??= [])` in value position: the store happens as a
+        // statement and the value is the target read back afterwards,
+        // which after `??=` the checker already types as present.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            isLogicalAssignmentOperator(unwrapped.operatorToken.kind)
+        ) {
+            if (!this.context.emitLogicalAssignment(unwrapped)) {
+                this.context.fail(
+                    unwrapped.operatorToken,
+                    `'${unwrapped.operatorToken.getText()}' requires a data-model target.`,
+                );
+            }
+            const target = this.context.compileValue(unwrapped.left);
+            return target.kind === "data"
+                ? this.context.dataLowerer.narrowOptional(
+                      target,
+                      unwrapped,
+                      unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken,
+                  )
+                : target;
+        }
 
         this.context.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
     }
@@ -1189,6 +1222,18 @@ export class ExpressionLowerer {
                     `bbl::js::Array<${this.context.dataTypes.cppType(resultType.element)}>` +
                     `(${object.cpp}.begin(), ${object.cpp}.end())`,
                 dataType: resultType,
+            };
+        }
+        if (object.kind === "data" && object.dataType?.kind === "map") {
+            // A string-keyed dictionary projects its native entries in
+            // insertion order, the order JavaScript enumerates them.
+            this.context.reachJsData();
+            const element = projection === "keys" ? object.dataType.key : object.dataType.value;
+            return {
+                kind: "data",
+                cpp: `bbl::js::map_${projection}(${object.cpp})`,
+                dataType: { kind: "vector", element },
+                freshData: true,
             };
         }
         const completeDataRecord = object.kind === "data" && object.dataType?.kind === "struct" &&
@@ -3482,6 +3527,13 @@ export class ExpressionLowerer {
                 callee.name.text === "values") &&
             !this.context.lookupOptional(callee.expression)) {
             return this.compileObjectProjection(call, callee.name.text);
+        }
+        if (ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "Object" &&
+            OBJECT_STATICS.has(callee.name.text) &&
+            this.context.isDefaultLibraryIdentifier(callee.expression)) {
+            const value = compileObjectStatic(this.context, call, callee.name.text);
+            if (value) return value;
         }
         if (ts.isIdentifier(callee.expression) &&
             callee.expression.text === "String" &&

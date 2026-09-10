@@ -1,4 +1,35 @@
 import { someAnalysisNode } from "./analysis-walk.js";
+
+/**
+ * The `Object` statics that return their argument unchanged: freezing,
+ * sealing and closing an object change what later writes may do, which
+ * the checker's readonly view already decides, and never what the value
+ * is.
+ */
+const OBJECT_IDENTITY_CALLS: ReadonlySet<string> = new Set([
+    "freeze",
+    "seal",
+    "preventExtensions",
+]);
+
+/** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
+export function objectIdentityCallArgument(
+    expression: ts.Expression,
+    isLibrary: (identifier: ts.Identifier) => boolean,
+): ts.Expression | undefined {
+    if (
+        !ts.isCallExpression(expression) ||
+        expression.arguments.length !== 1 ||
+        !ts.isPropertyAccessExpression(expression.expression) ||
+        !ts.isIdentifier(expression.expression.expression) ||
+        expression.expression.expression.text !== "Object" ||
+        !OBJECT_IDENTITY_CALLS.has(expression.expression.name.text) ||
+        !isLibrary(expression.expression.expression)
+    ) {
+        return undefined;
+    }
+    return expression.arguments[0];
+}
 import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import type { Value } from "./types.js";
@@ -1635,6 +1666,18 @@ export class StaticEvaluator {
             const template = this.pinnedWgslTemplate(current);
             if (template) {
                 current = template;
+                continue;
+            }
+            // `Object.freeze(x)` evaluates to `x` itself: the immutability
+            // it adds is the checker's `Readonly<T>`, which every reader
+            // already honours, so the call is the identity over its
+            // argument exactly as the tag above is over its template.
+            const frozen = objectIdentityCallArgument(
+                current,
+                this.isDefaultLibraryIdentifier,
+            );
+            if (frozen) {
+                current = frozen;
                 continue;
             }
             return current;

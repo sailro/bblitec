@@ -153,6 +153,20 @@ export function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
 }
 
 /**
+ * `??=`, `||=` and `&&=`: the assignments that store only when the
+ * target's own value selects the right side. They sit inside the
+ * assignment token range, so `isAssignmentOperator` already answers true
+ * for them; this names the three that a plain store cannot lower.
+ */
+export function isLogicalAssignmentOperator(kind: ts.SyntaxKind): boolean {
+    return (
+        kind === ts.SyntaxKind.QuestionQuestionEqualsToken ||
+        kind === ts.SyntaxKind.BarBarEqualsToken ||
+        kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken
+    );
+}
+
+/**
  * A binary expression whose operator assigns. The predicate names the
  * operator precisely so that a binary expression already in hand is not
  * narrowed away when the test fails.

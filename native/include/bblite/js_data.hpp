@@ -1363,6 +1363,24 @@ template <typename K, typename V>
     return values;
 }
 
+/** JavaScript SameValue over numbers: NaN equals NaN and the signed zeros differ. */
+[[nodiscard]] inline bool same_value(double left, double right) {
+    if (std::isnan(left) || std::isnan(right)) return std::isnan(left) && std::isnan(right);
+    if (left == 0.0 && right == 0.0) return std::signbit(left) == std::signbit(right);
+    return left == right;
+}
+
+/** Immediate snapshot of JavaScript Array.prototype.keys: 0 through length - 1. */
+template <typename Values>
+[[nodiscard]] inline Array<double> array_keys(const Values& values) {
+    Array<double> keys;
+    keys.reserve(values.size());
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        keys.push_back(static_cast<double>(index));
+    }
+    return keys;
+}
+
 /** Immediate snapshot of JavaScript Map.prototype.keys iteration order. */
 template <typename K, typename V>
 [[nodiscard]] inline Array<K> map_keys(const Map<K, V>& map) {

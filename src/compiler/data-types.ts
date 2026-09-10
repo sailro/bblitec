@@ -156,8 +156,18 @@ export function opaqueEngineValue(
  * Maps expose a typed key/value entry rather than the all-number tuple used
  * for ordinary numeric tuple values.
  */
+/**
+ * What one for...of step binds: an element, a Map's `[key, value]`, or --
+ * for `array.entries()`/`array.keys()` -- the element beside its index,
+ * or the index alone. The index variants carry the native loop counter
+ * they read, because the loop walks the array by index so an entry's
+ * value is the element in place.
+ */
 export type DataIterationElement =
-  DataType | { kind: "map-entry"; key: DataType; value: DataType };
+  | DataType
+  | { kind: "map-entry"; key: DataType; value: DataType }
+  | { kind: "array-entry"; element: DataType; indexCpp: string }
+  | { kind: "array-index"; indexCpp: string };
 
 export interface DataStructField {
   /** Property spelling in TypeScript/JSON. */
@@ -668,6 +678,10 @@ export class DataTypeRegistry {
     if (recordMap) {
       return recordMap;
     }
+    const dictionary = this.fromIndexSignatureType(type, node);
+    if (dictionary) {
+      return dictionary;
+    }
     const typedArray = type.symbol
       ? TYPED_ARRAY_KINDS.get(type.symbol.name)
       : undefined;
@@ -736,7 +750,11 @@ export class DataTypeRegistry {
           ? { kind: "vector", element: storedElement }
           : { kind: "span", element: storedElement };
       }
-      if (symbolName === "Map" || symbolName === "ReadonlyMap") {
+      // A WeakMap or WeakSet holds its object keys by identity exactly as
+      // Map and Set do; the weakness only lets an unreachable key be
+      // collected, which nothing in a program can observe. The cycle
+      // collector reclaims what the program can no longer reach either way.
+      if (symbolName === "Map" || symbolName === "ReadonlyMap" || symbolName === "WeakMap") {
         const [keyType, valueType] = this.checker.getTypeArguments(reference);
         if (!keyType || !valueType) return undefined;
         const key = this.fromStoredTsType(keyType, node);
@@ -748,7 +766,7 @@ export class DataTypeRegistry {
           value: this.markStoredObjectReferences(value),
         };
       }
-      if (symbolName === "Set") {
+      if (symbolName === "Set" || symbolName === "WeakSet") {
         const [elementType] = this.checker.getTypeArguments(reference);
         if (!elementType) return undefined;
         const element = this.fromStoredTsType(elementType, node);
@@ -1778,6 +1796,43 @@ export class DataTypeRegistry {
    * happens to declare the same property names stays the struct it
    * already was.
    */
+  /**
+   * An object type whose string index signature types every member --
+   * `{ [id: string]: number }`, or an interface declaring named entries
+   * of that same type beside the signature -- is a dictionary: a
+   * string-keyed map whose declared members are ordinary entries.
+   * (`Record<string, T>` arrives through the alias above.) A member the
+   * signature does not cover keeps the type a struct.
+   */
+  private fromIndexSignatureType(type: ts.Type, node: ts.Node): DataType | undefined {
+    if ((type.flags & ts.TypeFlags.Object) === 0) {
+      return undefined;
+    }
+    const index = this.checker.getIndexInfoOfType(type, ts.IndexKind.String);
+    if (!index) {
+      return undefined;
+    }
+    const uniform = this.checker
+      .getPropertiesOfType(type)
+      .every((property) =>
+        this.checker.isTypeAssignableTo(
+          this.checker.getTypeOfSymbol(property),
+          index.type,
+        ),
+      );
+    if (!uniform) {
+      return undefined;
+    }
+    const value = this.fromStoredTsType(index.type, node);
+    return value
+      ? {
+          kind: "map",
+          key: { kind: "string" },
+          value: this.markStoredObjectReferences(value),
+        }
+      : undefined;
+  }
+
   private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
     const directRecordAlias = type.aliasSymbol?.name === "Record";
     const namedRecordAlias = (type.aliasSymbol?.declarations ?? []).some(

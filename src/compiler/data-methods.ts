@@ -1015,6 +1015,8 @@ export function compileDataMethodCall(
             "every",
             "map",
             "forEach",
+            "keys",
+            "values",
         ].includes(method)
     ) {
         // A readonly array parameter is a span. Its observing methods
@@ -1737,6 +1739,14 @@ function compileMapDataMethod(lowerer: DataLowerer, call: ts.CallExpression, cal
                 : {}),
         };
     }
+    if (method === "entries") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, "Map.entries expects no arguments.");
+        }
+        // The entry iterator yields the map's own [key, value] pairs in
+        // insertion order, which is what iterating the map yields.
+        return narrowed;
+    }
     if (method === "values" || method === "keys") {
         if (call.arguments.length !== 0) {
             lowerer.context.fail(call, `Map.${method} expects no arguments.`);
@@ -1759,6 +1769,14 @@ function compileMapDataMethod(lowerer: DataLowerer, call: ts.CallExpression, cal
 function compileSetDataMethod(lowerer: DataLowerer, call: ts.CallExpression, callee: ts.PropertyAccessExpression, method: string, narrowed: Value, dataType: DataType & {kind: "set"}): Value | undefined {
     if (method === "forEach")
         return compileCollectionForEach(lowerer, call, narrowed, dataType);
+    if (method === "values" || method === "keys") {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(call, `Set.${method} expects no arguments.`);
+        }
+        // Both iterators yield the set's own members in insertion order,
+        // which is what iterating the set yields.
+        return narrowed;
+    }
     lowerer.context.reachJsData();
     if (method === "clear") {
         if (call.arguments.length !== 0) {
@@ -2061,6 +2079,20 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
     }
 }
 
+/** `array.keys()` as a value: the indices 0 through length - 1, in order. */
+function compileArrayKeys({ lowerer, call, narrowed }: ArrayMethodState): Value {
+    if (call.arguments.length !== 0) {
+        lowerer.context.fail(call, "Array.keys expects no arguments.");
+    }
+    lowerer.context.reachJsData();
+    return {
+        kind: "data",
+        cpp: `bbl::js::array_keys(${narrowed.cpp})`,
+        dataType: { kind: "vector", element: { kind: "number" } },
+        freshData: true,
+    };
+}
+
 const arrayMethodHandlers = new EmissionMap<string, (state: ArrayMethodState) => Value>([
     ["flat", compileArrayFlat],
     ["join", compileArrayJoin],
@@ -2075,6 +2107,10 @@ const arrayMethodHandlers = new EmissionMap<string, (state: ArrayMethodState) =>
     ["map", state => compileArrayMap(state, "map")],
     ["flatMap", state => compileArrayMap(state, "flatMap")],
     ["forEach", compileArrayForEach],
+    // The iterator methods outside a for...of range (which walks the
+    // array itself): keys is a fresh index list, values the array.
+    ["keys", compileArrayKeys],
+    ["values", ({ narrowed }) => narrowed],
     ["push", compileArrayPush],
     ["pop", compileArrayPop],
     ["shift", compileArrayShift],

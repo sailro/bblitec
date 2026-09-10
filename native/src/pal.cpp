@@ -298,6 +298,13 @@ double monotonic_milliseconds() {
     return std::chrono::duration<double, std::milli>(now).count();
 }
 
+double epoch_milliseconds() {
+    require_runtime_execution("a clock read");
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
 namespace {
 
 struct PerformanceClockState {

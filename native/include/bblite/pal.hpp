@@ -83,6 +83,10 @@ double monotonic_milliseconds();
 // monotonic clock; fixed-delta captures advance it deterministically.
 double performance_milliseconds();
 void advance_performance_milliseconds(double delta_ms);
+// Browser-facing `Date.now()`: milliseconds since the Unix epoch on the
+// system clock. Fixed-delta captures pace the performance clock, not this
+// one, exactly as a browser's Date keeps wall time under a paced RAF.
+double epoch_milliseconds();
 /**
  * The process's resident working set in bytes, or 0 where the platform
  * has no query. Read by the BBLITE_MEM_PROFILE frame line, which is how a

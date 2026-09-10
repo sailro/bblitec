@@ -3939,12 +3939,6 @@ class Compiler
             const temporary = this.allocateTemporaryCppName("destructure");
             this.emit({ kind: "declaration", type: "auto&&", name: temporary, initializer: value.cpp });
             for (const element of declaration.name.elements) {
-                if (element.initializer) {
-                    this.fail(
-                        element,
-                        "Default values in data-struct destructuring are not supported.",
-                    );
-                }
                 const { name, property } = this.bindingProperty(element);
                 const field = this.dataTypes.structField(
                     value.dataType.name,
@@ -3952,7 +3946,24 @@ class Compiler
                     element,
                 );
                 const cppName = this.cppIdentifier(name.text);
-                const fieldCpp = `${temporary}${this.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
+                const storedFieldCpp = `${temporary}${this.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
+                if (element.initializer && field.type.kind === "optional") {
+                    // The default stands in for an absent optional field;
+                    // the binding is then a value of the field's inner type,
+                    // copied as any destructured scalar is.
+                    const fallback = this.dataLowerer.compileForSink(element.initializer, field.type.inner);
+                    this.reachJsData();
+                    this.emit(
+                        `${this.dataTypes.cppType(field.type.inner)} ${cppName} = ` +
+                            `${storedFieldCpp}.has_value() ? *${storedFieldCpp} : ${fallback};`,
+                    );
+                    this.defineVariable(name, this.dataLowerer.leafValue(cppName, field.type.inner));
+                    this.dataLowerer.registerLocal(cppName, "copy");
+                    continue;
+                }
+                // A default on a required field never applies: the field is
+                // never undefined, so the binding is the field itself.
+                const fieldCpp = storedFieldCpp;
                 const aliases =
                     field.type.kind !== "number" &&
                     field.type.kind !== "boolean" &&
@@ -4091,7 +4102,13 @@ class Compiler
     ): void {
         for (const element of pattern.elements) {
             const { name, property } = this.bindingProperty(element);
-            const propertyValue = value.recordProperties?.[property];
+            const present = value.recordProperties?.[property];
+            // A default applies exactly when the property is undefined:
+            // absent from the record, or present as `undefined`.
+            const propertyValue =
+                (!present || present.kind === "json-null") && element.initializer
+                    ? this.compileValue(element.initializer)
+                    : present;
             if (!propertyValue) {
                 this.fail(element, `Record has no property '${property}'.`);
             }
@@ -4117,6 +4134,14 @@ class Compiler
                       }),
             });
         }
+    }
+
+    public emitLogicalAssignment(expression: ts.BinaryExpression): boolean {
+        return this.dataLowerer.emitLogicalAssignment(expression);
+    }
+
+    public emitDelete(expression: ts.DeleteExpression): void {
+        this.dataLowerer.emitDelete(expression);
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
@@ -6435,6 +6460,9 @@ class Compiler
             return `!(${operand})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            if (unwrapped.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+                return this.dataLowerer.compileInOperator(unwrapped);
+            }
             if (
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.InstanceOfKeyword &&
@@ -8417,7 +8445,19 @@ class Compiler
         if (accessor) {
             return this.compileRecordGetter(owner, accessor);
         }
-        return owner.recordProperties?.[expression.name.text];
+        const property = owner.recordProperties?.[expression.name.text];
+        if (property) {
+            return property;
+        }
+        // A property the record was built without reads as `undefined`
+        // when its type declares it optional: `{ b: 2 } as { a?: number }`
+        // has no `a`, and `r.a ?? 0` is the source's own way of saying so.
+        const declared = this.checker
+            .getTypeAtLocation(expression.expression)
+            .getProperty(expression.name.text);
+        return declared !== undefined && (declared.flags & ts.SymbolFlags.Optional) !== 0
+            ? { kind: "json-null", cpp: "std::nullopt" }
+            : undefined;
     }
 
     public resolveRecordValue(expression: ts.Expression): Value | undefined {
