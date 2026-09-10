@@ -19,6 +19,7 @@ import {
 } from "./animation-interpolation.js";
 import { lowerGltfFactorBake } from "./factor-bake.js";
 import {gltfIblLoadingCpp} from "./ibl.js";
+import {lowerGltfAssetSceneSetup, gltfAssetSceneSetupOrder} from "./asset-scene-setup.js";
 import {
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
@@ -705,6 +706,8 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     materialTextures: lowerGltfMaterialTextures(this.context),
                     materialProperties: lowerGltfMaterialProperties(this.context).source,
                     iblLoading: gltfIblLoadingCpp(),
+                    assetSceneSetup: lowerGltfAssetSceneSetup(this.context),
+                    assetSceneSetupOrder: gltfAssetSceneSetupOrder(this.context, options.gaussianSplats === true, options.interactivity === true),
                     factorBake,
                     matrixLocal,
                     matrixCompose,

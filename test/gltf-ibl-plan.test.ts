@@ -11,6 +11,7 @@ import {meshPlanFixture, readPackedGltfAttribute} from "./gltf-mesh-fixture.js";
 import {LoweringContext} from "../src/lowering/context.js";
 import {GltfLowerer} from "../src/lowering/gltf/loader.js";
 import {gltfIblLoadingCpp} from "../src/lowering/gltf/ibl.js";
+import {lowerGltfAssetSceneSetup} from "../src/lowering/gltf/asset-scene-setup.js";
 import {cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
 
 const featureModule = "src/loader-gltf/gltf-ext-lights-image-based.ts";
@@ -171,6 +172,7 @@ float read_component(int, int, int, const Harmonics& data, std::size_t element, 
 TextureData image_data(int, int, int, const ts::JsonValue::Array& faces, std::size_t index) {
     TextureData data; data.bytes = {static_cast<std::uint8_t>(unsigned_value(required(faces.at(index).as_object(), "bufferView")))}; return data;
 }
+${lowerGltfAssetSceneSetup(new LoweringContext())}
 void check(const nlohmann::json& input, std::size_t variant) {
     const auto document = ts::JsonValue::from_native(input);
     const auto& mesh_plan = document.as_object();
@@ -181,7 +183,9 @@ void check(const nlohmann::json& input, std::size_t variant) {
     }
     const int buffer = 0, container = 0, views = 0;
     AssetRecord asset;
+    js::Callback<void(Scene&)> ibl_scene_setup;
 ${gltfIblLoadingCpp()}
+    compose_gltf_scene_setup(asset, {ibl_scene_setup});
     assert(asset.scene_setup);
     Scene first; first.environment.rotation_y = 1.25f; first.environment.exposure = 4.0f;
     first.environment.has_ground = true; first.environment.has_skybox = true;

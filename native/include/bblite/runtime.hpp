@@ -3066,7 +3066,7 @@ struct AssetRecord {
      */
     std::function<void(const std::vector<BlendedClip>&, float)>
         animation_tick_clips;
-    std::function<void(Scene&)> scene_setup;
+    js::Callback<void(Scene&)> scene_setup;
     /**
      * `KHR_interactivity`'s view of the file, filled only when the asset
      * carries graphs: `mesh._gltfNodeIndex` per entry of `meshes`, each

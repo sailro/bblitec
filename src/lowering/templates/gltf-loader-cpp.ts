@@ -42,6 +42,8 @@ export interface GltfLoaderLoweredSegments {
     materialTextures: string;
     materialProperties: string;
     iblLoading: string;
+    assetSceneSetup: string;
+    assetSceneSetupOrder: string[];
     /** Pinned sRGB byte conversion. */
     factorBake: string;
     /**
@@ -128,9 +130,6 @@ export function gltfLoaderCpp(
     // this template is a pin-derived JSON key that needs no escaping.
     const materialVariants = selectedMaterialVariant !== "";
     const selectedVariantLiteral = JSON.stringify(selectedMaterialVariant);
-    // The features that contribute scene wiring the container chains at
-    // add; the helper is emitted with its callers.
-    const chainsSceneSetup = assetTransmission || gaussianSplats || interactivity;
 
     const factorBake = lowered.factorBake;
     return `// ${provenance}
@@ -238,29 +237,7 @@ std::vector<double> double_array(const ts::JsonValue* value) {
 
 ${lowered.animationNodeRest}
 
-${chainsSceneSetup ? `
-/**
- * Appends one feature's scene wiring to the container's.
- *
- * Upstream every loader feature contributes its own _sceneSetup and
- * addToScene runs them; this port keeps one slot and chains, so the rule
- * -- earlier contributors run first, and an empty slot is not called -- is
- * spelled once rather than per feature.
- *
- * Emitted with its callers: a document with neither contributor chains
- * nothing, and an unused static function is an error under -Werror.
- */
-void chain_scene_setup(
-    AssetRecord& asset,
-    std::function<void(Scene&)> next) {
-    asset.scene_setup =
-        [previous = std::move(asset.scene_setup),
-         next = std::move(next)](Scene& scene) {
-        if (previous) previous(scene);
-        next(scene);
-    };
-}
-` : ""}
+${lowered.assetSceneSetup}
 
 struct BufferViewInfo {
     std::size_t offset = 0;
@@ -1339,19 +1316,16 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
     const auto parents = build_gltf_parents(document);
     validate_gltf_parents(parents);
 
-    AssetRecord asset;${interactivity ? `
+    AssetRecord asset;
+    js::Callback<void(Scene&)> ibl_scene_setup;${gaussianSplats ? "\n    js::Callback<void(Scene&)> gaussian_splat_setup;" : ""}${interactivity ? "\n    js::Callback<void(Scene&)> interactivity_scene_setup;" : ""}${assetTransmission ? "\n    js::Callback<void(Scene&)> transmission_scene_setup;" : ""}${interactivity ? `
     // KHR_interactivity's node-to-meshes table, filled by the mesh walk
     // below; the rest of the asset's tables join it once the document is
     // loaded (see the scene-setup chain).
     asset.node_meshes.resize(node_json.size());` : ""}
 ${lowered.iblLoading}${assetTransmission ? `
-    // registerPbrTransmission: the pinned transmission setter installs a scene
-    // hook that the renderable build drains, and the hook enables scene
-    // transmission when any of the meshes it is handed carries a transmissive
-    // surface. The predicate is that hook's own — a transmissive material whose
-    // refraction intensity is above zero, which the dielectric loader takes from
-    // transmissionFactor — so a declared extension at the zero default reaches
-    // nothing, exactly as it does upstream. The scene source never names it.
+    // Native transmission activation still scans loaded material records.
+    // The source registerPbrTransmission hook instead checks the meshes in a
+    // material group when that group builds; this boundary remains under LW-1.
     {
         bool transmissive_surface = false;
         for (const MaterialHandle handle : materials) {
@@ -1364,9 +1338,9 @@ ${lowered.iblLoading}${assetTransmission ? `
             }
         }
         if (transmissive_surface) {
-            chain_scene_setup(asset, [](Scene& scene) {
+            transmission_scene_setup = [](Scene& scene) {
                 enable_scene_transmission(scene);
-            });
+            };
         }
     }` : ""}${gaussianSplats ? `
     // KHR_gaussian_splatting: packaging ran the pin's own preParse and
@@ -1401,13 +1375,11 @@ ${lowered.iblLoading}${assetTransmission ? `
             }
             asset.gaussian_splats.push_back(splat);
         }
-        chain_scene_setup(
-            asset,
-            [attached = asset.gaussian_splats](Scene& scene) {
+        gaussian_splat_setup = [attached = asset.gaussian_splats](Scene& scene) {
             for (const SplatMeshHandle splat : attached) {
                 attach_gaussian_splatting_mesh(scene, splat);
             }
-        });
+        };
     }` : ""}
     const auto read_matrix = [&](const AccessorInfo& value, std::size_t index) {
         Matrix matrix{};
@@ -3950,10 +3922,14 @@ ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${intera
         asset.node_visible.reserve(visibility.size());
         for (const auto& value : visibility) asset.node_visible.push_back(value.as_boolean());
         const std::string asset_name = path.substr(path.find_last_of("/\\\\") + 1);
-        chain_scene_setup(asset, [self, asset_name](Scene& scene) {
+        interactivity_scene_setup = [self, asset_name](Scene& scene) {
             attach_flow_graphs(scene, self, asset_name);
-        });
+        };
     }` : ""}
+    compose_gltf_scene_setup(asset, {${lowered.assetSceneSetupOrder.join(", ")}});${assetTransmission ? `
+    // Material build activation remains a native adapter (LW-1). It is not
+    // an asset feature in the source registry.
+    compose_gltf_scene_setup(asset, {transmission_scene_setup});` : ""}
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }

@@ -119,6 +119,11 @@ does not resolve metallic-roughness texture-transform pointers.
 
 Public color/texture presence and identity differ from render fallbacks.
 
+glTF scene setup composes Gaussian splat, environment and interactivity callbacks in source
+registry order. Their activation and lifecycle still include native feature adapters.
+Transmission remains a separate native material adapter: it scans loaded materials and
+activates after asset feature setup, while the source checks a material group's meshes at build.
+
 ### Deformation and instancing
 
 Vertex layout, mesh world, palette and instance-parent matrices must agree.

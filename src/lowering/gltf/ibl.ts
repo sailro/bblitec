@@ -33,7 +33,7 @@ export function gltfIblLoadingCpp(): string {
     }
     const auto& ibl_setup = required(ibl_plan, "setup").as_array();
     if (!ibl_setup.empty()) {
-        asset.scene_setup = [textures = std::move(ibl_textures), writes = ibl_setup](Scene& scene) {
+        ibl_scene_setup = [textures = std::move(ibl_textures), writes = ibl_setup](Scene& scene) {
             for (const auto& value : writes) {
                 const auto& write = value.as_object();
                 const auto& kind = required(write, "kind").as_string();

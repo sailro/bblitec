@@ -218,6 +218,9 @@ Mesh construction, hierarchy and material/scene control flow lower from the pin.
 `loadTextures` are honored; `maxMeshes` is unsupported.
 Container attachment lowers the source field order and guards, including preserving an existing
 scene camera and running feature setup after animation-group and callback registration.
+glTF feature setup uses the source registry order and lowers its callback fold, with shared
+callback identity and captures. Remaining activation and lifecycle boundaries are recorded in
+[Fidelity](fidelity.md#gltf-material-inputs).
 
 Recognized closed glTF and `.babylon` collectors retain source traversal independently of native flat
 mesh storage. glTF owner maps retain insertion order. Metadata is demanded per asset/collector pair. Rest/default/
