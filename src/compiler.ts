@@ -3807,22 +3807,33 @@ class Compiler
                   )
                 : rawValue;
         const bindings = declaration.name.elements;
+        const restIndex = bindings.findIndex(
+            (element) => !ts.isOmittedExpression(element) && element.dotDotDotToken !== undefined,
+        );
+        if (restIndex >= 0 && restIndex !== bindings.length - 1) {
+            this.fail(bindings[restIndex]!, "A rest element must be the last binding.");
+        }
         const bindElement = (
             element: ts.ArrayBindingElement,
-            bound: Value,
+            present: Value | undefined,
         ): void => {
             if (ts.isOmittedExpression(element)) {
                 return;
             }
-            if (
-                !ts.isIdentifier(element.name) ||
-                element.initializer ||
-                element.dotDotDotToken
-            ) {
+            if (!ts.isIdentifier(element.name) || element.dotDotDotToken) {
                 this.fail(
                     element,
                     "Tuple destructuring supports plain identifiers.",
                 );
+            }
+            // A default applies exactly when the lane is undefined: past
+            // the end of the tuple, or present as `undefined`.
+            const bound =
+                (!present || present.kind === "json-null") && element.initializer
+                    ? this.compileValue(element.initializer)
+                    : present;
+            if (!bound) {
+                this.fail(element, "The tuple has no element for this binding and it declares no default.");
             }
             let stored = bound;
             if (bound.kind === "record") {
@@ -3852,14 +3863,22 @@ class Compiler
             this.bindLocalValue(element.name, stored);
         };
         if (value.kind === "tuple" && value.tupleElements) {
-            if (bindings.length > value.tupleElements.length) {
-                this.fail(
-                    declaration.name,
-                    `Tuple has ${value.tupleElements.length} elements, destructuring expects ${bindings.length}.`,
-                );
-            }
+            const elements = value.tupleElements;
             bindings.forEach((element, index) => {
-                bindElement(element, value.tupleElements![index]!);
+                if (index === restIndex) {
+                    // `[first, ...rest]`: the rest is the tuple of what follows.
+                    const rest = element as ts.BindingElement;
+                    if (!ts.isIdentifier(rest.name)) {
+                        this.fail(rest, "A rest binding takes an identifier.");
+                    }
+                    this.bindLocalValue(rest.name, {
+                        kind: "tuple",
+                        cpp: "",
+                        tupleElements: elements.slice(index),
+                    });
+                    return;
+                }
+                bindElement(element, elements[index]);
             });
             return;
         }
@@ -3893,7 +3912,41 @@ class Compiler
                 ...value,
                 cpp: temporary,
             };
+            const elementType = value.dataType.element;
             bindings.forEach((element, index) => {
+                if (ts.isOmittedExpression(element)) {
+                    return;
+                }
+                if (index === restIndex) {
+                    // `[first, ...rest]`: a fresh array of what follows.
+                    if (!ts.isIdentifier(element.name)) {
+                        this.fail(element, "A rest binding takes an identifier.");
+                    }
+                    const restType = { kind: "vector", element: elementType } as const;
+                    const restCpp = this.cppIdentifier(element.name.text);
+                    this.reachJsData();
+                    this.emit(
+                        `${this.dataTypes.cppType(restType)} ${restCpp}(` +
+                            `${temporary}.begin() + std::min<std::size_t>(${index}, ${temporary}.size()), ${temporary}.end());`,
+                    );
+                    this.defineVariable(element.name, this.dataLowerer.leafValue(restCpp, restType));
+                    this.dataLowerer.registerLocal(restCpp, "owned");
+                    return;
+                }
+                if (element.initializer && ts.isIdentifier(element.name)) {
+                    // A default stands in for a lane past the end: the
+                    // binding is a copied value of the element type.
+                    const fallback = this.dataLowerer.compileForSink(element.initializer, elementType);
+                    const cppName = this.cppIdentifier(element.name.text);
+                    this.reachJsData();
+                    this.emit(
+                        `${this.dataTypes.cppType(elementType)} ${cppName} = ` +
+                            `${temporary}.size() > ${index} ? ${temporary}[${index}] : ${fallback};`,
+                    );
+                    this.defineVariable(element.name, this.dataLowerer.leafValue(cppName, elementType));
+                    this.dataLowerer.registerLocal(cppName, "copy");
+                    return;
+                }
                 bindElement(
                     element,
                     this.dataLowerer.readVectorBindingElement(
@@ -4100,8 +4153,22 @@ class Compiler
         pattern: ts.ObjectBindingPattern,
         value: Value,
     ): void {
+        const consumed = new EmissionSet<string>();
         for (const element of pattern.elements) {
+            if (element.dotDotDotToken) {
+                // `{ a, ...rest }`: the rest is the record of the properties
+                // no earlier binding named.
+                if (!ts.isIdentifier(element.name)) {
+                    this.fail(element, "A rest binding takes an identifier.");
+                }
+                const remaining = Object.fromEntries(
+                    Object.entries(value.recordProperties ?? {}).filter(([key]) => !consumed.has(key)),
+                );
+                this.defineVariable(element.name, { kind: "record", cpp: "", recordProperties: remaining });
+                continue;
+            }
             const { name, property } = this.bindingProperty(element);
+            consumed.add(property);
             const present = value.recordProperties?.[property];
             // A default applies exactly when the property is undefined:
             // absent from the record, or present as `undefined`.
