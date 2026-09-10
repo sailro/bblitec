@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {asObject, asRecords, GLTF_MESH_PLAN, type JsonObject} from "../src/gltf-document.js";
-import {packageGltfMeshPlan, packagedGltfMeshPlan} from "../src/gltf-mesh-plan.js";
+import {gltfMeshPlan, packageGltfMeshPlan, packagedGltfMeshPlan} from "../src/gltf-mesh-plan.js";
 import type {LoweringContext} from "../src/lowering/context.js";
 import {doctoredContext} from "./doctored-store.js";
 import {meshPlanFixture, readPackedGltfAttribute} from "./gltf-mesh-fixture.js";
@@ -82,4 +82,46 @@ test("primitive state follows its source builder and rejects unrepresented GPU s
     const plan = asObject(result.document[GLTF_MESH_PLAN])!;
     asRecords(plan.meshes)[0]!.setup = {...result.mesh.setup, world: 999};
     assert.throws(() => packagedGltfMeshPlan(result.document), /mesh placement/);
+});
+
+function visibilityFixture() {
+    const hidden = {KHR_node_visibility: {visible: false}};
+    return meshPlanFixture({
+        extensionsUsed: ["KHR_node_visibility"],
+        nodes: [
+            {children: [1], extensions: hidden},
+            {mesh: 0, children: [2], extensions: {KHR_node_visibility: {visible: true}}},
+            {mesh: 1}, {mesh: 2}, {mesh: 2, extensions: hidden},
+        ],
+        meshes: [{primitives: [{}, {}]}, {primitives: [{}]}, {primitives: [{}]}],
+        scenes: [{nodes: [0, 3]}],
+    });
+}
+
+test("initial visibility follows source node objects, primitive children and selected roots", async () => {
+    const {document, bin} = visibilityFixture();
+    const plan = await gltfMeshPlan(document, bin);
+    assert.deepEqual(plan.nodeVisibility, [false, false, false, true, true]);
+    assert.deepEqual(plan.meshes.map(mesh => mesh.setup.visible), [false, false, false, true, true]);
+    const changed = await gltfMeshPlan(document, bin, doctoredContext("src/scene/visibility.ts",
+        "if (cascade(node, v))", "if (cascade(node, !v))"));
+    assert.deepEqual(changed.nodeVisibility, [true, true, true, true, true]);
+    assert.ok(changed.meshes.every(mesh => mesh.setup.visible));
+    const disabled = await gltfMeshPlan(document, bin, doctoredContext("src/loader-gltf/load-gltf.ts",
+        "_appendEnabledGltfFeatures(json, features);", "features.length = 0;"));
+    assert.ok(disabled.meshes.every(mesh => mesh.setup.visible));
+});
+
+test("asset feature scheduling executes source control flow and refuses unknown fragments", async () => {
+    const {document, bin} = visibilityFixture();
+    const skipped = await gltfMeshPlan(document, bin, doctoredContext("src/loader-gltf/load-gltf.ts",
+        "const assetFragments = await Promise.all(features.flatMap", "const assetFragments = await Promise.all([].flatMap"));
+    assert.ok(skipped.meshes.every(mesh => mesh.setup.visible));
+    await assert.rejects(gltfMeshPlan(document, bin, doctoredContext("src/loader-gltf/gltf-ext-node-visibility.ts",
+        "return {};", "return { unrepresented: true };")), /mesh asset fragment/);
+    await packageGltfMeshPlan(document, bin);
+    const plan = packagedGltfMeshPlan(document);
+    for (const nodeVisibility of [undefined, [], [true], [true, true, true, true, "false"]]) {
+        assert.throws(() => packagedGltfMeshPlan({...document, [GLTF_MESH_PLAN]: {...plan, nodeVisibility}}), /Invalid/);
+    }
 });

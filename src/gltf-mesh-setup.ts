@@ -6,6 +6,7 @@ export interface RecordedMeshSetup {
     boundMin: ArrayLike<number>;
     boundMax: ArrayLike<number>;
     worldMatrix: Float32Array;
+    visible?: boolean;
     _primitive?: {topology?: string; frontFace?: string; cullMode?: string; stripIndexFormat?: string};
     thinInstances?: {matrices: Float32Array; count: number; colors?: Float32Array | null} | null;
 }
@@ -22,6 +23,7 @@ export interface GltfMeshSetup {
     worldBounds: number;
     topology: string;
     clockwise: boolean;
+    visible: boolean;
     instances?: {matrices: number; count: number};
 }
 
@@ -41,7 +43,8 @@ export function packageMeshSetup(mesh: RecordedMeshSetup, source: SourceWorldBou
         ((primitiveTopology === "line-strip" || primitiveTopology === "triangle-strip" || primitive.stripIndexFormat !== undefined) &&
             primitive.stripIndexFormat !== mesh._gpu.indexFormat)))
         throw new Error("Unsupported constructed glTF primitive state.");
-    if (!(mesh.worldMatrix instanceof Float32Array) || mesh.worldMatrix.length !== 16 ||
+    if ((mesh.visible !== undefined && typeof mesh.visible !== "boolean") ||
+        !(mesh.worldMatrix instanceof Float32Array) || mesh.worldMatrix.length !== 16 ||
         mesh.boundMin.length !== 3 || mesh.boundMax.length !== 3) throw new Error("Invalid constructed glTF mesh placement.");
     const worldBounds = source.emptyWorldAabb();
     source.expandWorldAabbForMesh(worldBounds, mesh);
@@ -54,6 +57,7 @@ export function packageMeshSetup(mesh: RecordedMeshSetup, source: SourceWorldBou
     const result: GltfMeshSetup = {
         world: packer.float32(mesh.worldMatrix, 4), bounds: packer.float32(bounds, 3), worldBounds: packer.float32(world, 3),
         topology: primitiveTopology, clockwise: primitive?.frontFace === "cw",
+        visible: mesh.visible !== false,
     };
     if (mesh.thinInstances) {
         const instances = mesh.thinInstances;
@@ -69,9 +73,9 @@ export function readMeshSetup(value: unknown, accessorCount: number): GltfMeshSe
     const setup = asObject(value);
     const world = asIndex(setup?.world), bounds = asIndex(setup?.bounds), worldBounds = asIndex(setup?.worldBounds);
     if (!setup || world === undefined || world >= accessorCount || bounds === undefined || bounds >= accessorCount ||
-        worldBounds === undefined || worldBounds >= accessorCount || typeof setup.clockwise !== "boolean")
+        worldBounds === undefined || worldBounds >= accessorCount || typeof setup.clockwise !== "boolean" || typeof setup.visible !== "boolean")
         throw new Error("Invalid packaged glTF mesh placement.");
-    const result: GltfMeshSetup = {world, bounds, worldBounds, topology: topology(setup.topology), clockwise: setup.clockwise};
+    const result: GltfMeshSetup = {world, bounds, worldBounds, topology: topology(setup.topology), clockwise: setup.clockwise, visible: setup.visible};
     if (setup.instances !== undefined) {
         const instances = asObject(setup.instances);
         const matrices = asIndex(instances?.matrices), count = asIndex(instances?.count);

@@ -1490,34 +1490,6 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
         world.at(index) = gltf_document_world(compute_gltf_node_world(document, index, parents, *world_cache));
         return world.at(index);
     };
-${nodeVisibility ? `
-    // KHR_node_visibility. The pinned extension cascades \`visible: false\`
-    // through the subtree at load, so a node draws only when it and every
-    // ancestor are visible, and the render path tests one boolean.
-    std::vector<bool> node_visible(node_json.size(), true);
-    for (std::size_t index = 0; index < node_json.size(); ++index) {
-        const ts::JsonValue* extensions =
-            optional(node_json[index].as_object(), "extensions");
-        if (!extensions) continue;
-        const ts::JsonValue* visibility =
-            optional(extensions->as_object(), "KHR_node_visibility");
-        if (
-            visibility &&
-            !bool_or(visibility->as_object(), "visible", true)) {
-            node_visible[index] = false;
-        }
-    }
-    for (std::size_t index = 0; index < node_json.size(); ++index) {
-        for (
-            int ancestor = parents[index];
-            ancestor >= 0;
-            ancestor = parents[static_cast<std::size_t>(ancestor)]) {
-            if (!node_visible[static_cast<std::size_t>(ancestor)]) {
-                node_visible[index] = false;
-                break;
-            }
-        }
-    }` : ""}
 
     AssetRecord asset;${interactivity ? `
     // KHR_interactivity's node-to-meshes table, filled by the mesh walk
@@ -2230,8 +2202,9 @@ ${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
             // the mirror in the mesh block's own world matrix. A PAL feeding
             // the pin's composed stages has to undo one to supply the other,
             // and the sign is only known here.
-            record.mirrored_x = determinant < 0.0;${nodeVisibility ? `
-            record.visible = node_visible[node_index];` : ""}
+            record.mirrored_x = determinant < 0.0;
+            record.visible = required(setup, "visible").as_boolean();${!nodeVisibility ? `
+            if (!record.visible) throw std::runtime_error("Prepared glTF visibility requires visibility support.");` : ""}
             record.instance_parent_matrix =
                 instance_parent_matrix;
             record.instance_matrices =
@@ -4156,7 +4129,10 @@ ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${intera
                 asset.node_children[index].push_back(unsigned_value(child));
             }
         }
-        ${nodeVisibility ? "asset.node_visible = node_visible;" : "asset.node_visible.assign(node_json.size(), true);"}
+        const auto& visibility = required(mesh_plan, "nodeVisibility").as_array();
+        if (visibility.size() != node_json.size()) throw std::runtime_error("Invalid glTF node visibility storage.");
+        asset.node_visible.reserve(visibility.size());
+        for (const auto& value : visibility) asset.node_visible.push_back(value.as_boolean());
         const std::string asset_name = path.substr(path.find_last_of("/\\\\") + 1);
         chain_scene_setup(asset, [self, asset_name](Scene& scene) {
             attach_flow_graphs(scene, self, asset_name);
