@@ -8,6 +8,7 @@
  * values belongs beside its consumer, not here.
  */
 import ts from "typescript";
+import { someAnalysisNode } from "./analysis-walk.js";
 
 export interface UnwrapOptions {
     /**
@@ -164,6 +165,64 @@ export function isLogicalAssignmentOperator(kind: ts.SyntaxKind): boolean {
         kind === ts.SyntaxKind.BarBarEqualsToken ||
         kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken
     );
+}
+
+/**
+ * The expression a call writes through: the receiver of a method
+ * `mutatesVia` admits, or the first argument of `Object.assign`, which
+ * writes into it. Every mutation walk recognizes a writing call here, so
+ * a family added once reaches them all.
+ */
+export function mutatingCallTarget(
+    node: ts.Node,
+    mutatesVia: (method: string) => boolean,
+): ts.Expression | undefined {
+    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
+        return undefined;
+    }
+    const callee = node.expression;
+    if (
+        ts.isIdentifier(callee.expression) &&
+        callee.expression.text === "Object" &&
+        callee.name.text === "assign"
+    ) {
+        return node.arguments[0];
+    }
+    return mutatesVia(callee.name.text) ? callee.expression : undefined;
+}
+
+/**
+ * `receiver.entries()`, `.keys()` or `.values()` on a stored container:
+ * the zero-argument call, its method and its receiver. A library static
+ * (`Object.entries(x)`) and a receiver containing a call are not one:
+ * both are values the plain loop resolves, and probing them would inline
+ * work the probe then discards.
+ */
+export function iteratorMethodCall(
+    expression: ts.Expression,
+    isLibrary: (identifier: ts.Identifier) => boolean,
+    unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
+): { call: ts.CallExpression; method: "entries" | "keys" | "values"; receiver: ts.Expression } | undefined {
+    const call = unwrap(expression);
+    if (
+        !ts.isCallExpression(call) ||
+        call.arguments.length !== 0 ||
+        !ts.isPropertyAccessExpression(call.expression)
+    ) {
+        return undefined;
+    }
+    const method = call.expression.name.text;
+    if (method !== "entries" && method !== "keys" && method !== "values") {
+        return undefined;
+    }
+    const receiver = call.expression.expression;
+    if (
+        (ts.isIdentifier(receiver) && isLibrary(receiver)) ||
+        someAnalysisNode(receiver, (node) => ts.isCallExpression(node) || ts.isNewExpression(node))
+    ) {
+        return undefined;
+    }
+    return { call, method, receiver };
 }
 
 /**

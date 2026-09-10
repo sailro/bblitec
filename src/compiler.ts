@@ -3810,8 +3810,18 @@ class Compiler
         const restIndex = bindings.findIndex(
             (element) => !ts.isOmittedExpression(element) && element.dotDotDotToken !== undefined,
         );
-        if (restIndex >= 0 && restIndex !== bindings.length - 1) {
-            this.fail(bindings[restIndex]!, "A rest element must be the last binding.");
+        const rest = restIndex >= 0 ? bindings[restIndex] : undefined;
+        if (rest !== undefined && restIndex !== bindings.length - 1) {
+            this.fail(rest, "A rest element must be the last binding.");
+        }
+        // `[first, ...rest]`: the rest takes an identifier, bound per arm
+        // below to what follows the named bindings.
+        const restName =
+            rest !== undefined && !ts.isOmittedExpression(rest) && ts.isIdentifier(rest.name)
+                ? rest.name
+                : undefined;
+        if (rest !== undefined && restName === undefined) {
+            this.fail(rest, "A rest binding takes an identifier.");
         }
         const bindElement = (
             element: ts.ArrayBindingElement,
@@ -3865,13 +3875,9 @@ class Compiler
         if (value.kind === "tuple" && value.tupleElements) {
             const elements = value.tupleElements;
             bindings.forEach((element, index) => {
-                if (index === restIndex) {
-                    // `[first, ...rest]`: the rest is the tuple of what follows.
-                    const rest = element as ts.BindingElement;
-                    if (!ts.isIdentifier(rest.name)) {
-                        this.fail(rest, "A rest binding takes an identifier.");
-                    }
-                    this.bindLocalValue(rest.name, {
+                if (index === restIndex && restName) {
+                    // The rest is the tuple of what follows.
+                    this.bindLocalValue(restName, {
                         kind: "tuple",
                         cpp: "",
                         tupleElements: elements.slice(index),
@@ -3917,34 +3923,27 @@ class Compiler
                 if (ts.isOmittedExpression(element)) {
                     return;
                 }
-                if (index === restIndex) {
-                    // `[first, ...rest]`: a fresh array of what follows.
-                    if (!ts.isIdentifier(element.name)) {
-                        this.fail(element, "A rest binding takes an identifier.");
-                    }
+                if (index === restIndex && restName) {
+                    // The rest is a fresh array of what follows.
                     const restType = { kind: "vector", element: elementType } as const;
-                    const restCpp = this.cppIdentifier(element.name.text);
+                    const restCpp = this.cppIdentifier(restName.text);
                     this.reachJsData();
                     this.emit(
                         `${this.dataTypes.cppType(restType)} ${restCpp}(` +
                             `${temporary}.begin() + std::min<std::size_t>(${index}, ${temporary}.size()), ${temporary}.end());`,
                     );
-                    this.defineVariable(element.name, this.dataLowerer.leafValue(restCpp, restType));
+                    this.defineVariable(restName, this.dataLowerer.leafValue(restCpp, restType));
                     this.dataLowerer.registerLocal(restCpp, "owned");
                     return;
                 }
                 if (element.initializer && ts.isIdentifier(element.name)) {
-                    // A default stands in for a lane past the end: the
-                    // binding is a copied value of the element type.
+                    // A default stands in for a lane past the end.
                     const fallback = this.dataLowerer.compileForSink(element.initializer, elementType);
-                    const cppName = this.cppIdentifier(element.name.text);
-                    this.reachJsData();
-                    this.emit(
-                        `${this.dataTypes.cppType(elementType)} ${cppName} = ` +
-                            `${temporary}.size() > ${index} ? ${temporary}[${index}] : ${fallback};`,
+                    this.bindCopiedDefault(
+                        element.name,
+                        elementType,
+                        `${temporary}.size() > ${index} ? ${temporary}[${index}] : ${fallback}`,
                     );
-                    this.defineVariable(element.name, this.dataLowerer.leafValue(cppName, elementType));
-                    this.dataLowerer.registerLocal(cppName, "copy");
                     return;
                 }
                 bindElement(
@@ -3962,6 +3961,18 @@ class Compiler
             declaration.initializer,
             "Array destructuring requires a tuple-producing initializer.",
         );
+    }
+
+    /**
+     * A destructuring default as a binding: a copied local of `type`
+     * holding `initializer`, the value the lane or field would have had.
+     */
+    private bindCopiedDefault(name: ts.Identifier, type: DataType, initializer: string): void {
+        const cppName = this.cppIdentifier(name.text);
+        this.reachJsData();
+        this.emit(`${this.dataTypes.cppType(type)} ${cppName} = ${initializer};`);
+        this.defineVariable(name, this.dataLowerer.leafValue(cppName, type));
+        this.dataLowerer.registerLocal(cppName, "copy");
     }
 
     private emitObjectBindingDeclaration(
@@ -4011,22 +4022,19 @@ class Compiler
                     property,
                     element,
                 );
-                const cppName = this.cppIdentifier(name.text);
                 const storedFieldCpp = `${temporary}${this.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
                 if (element.initializer && field.type.kind === "optional") {
-                    // The default stands in for an absent optional field;
-                    // the binding is then a value of the field's inner type,
-                    // copied as any destructured scalar is.
+                    // The default stands in for an absent optional field; the
+                    // binding is then a value of the field's inner type.
                     const fallback = this.dataLowerer.compileForSink(element.initializer, field.type.inner);
-                    this.reachJsData();
-                    this.emit(
-                        `${this.dataTypes.cppType(field.type.inner)} ${cppName} = ` +
-                            `${storedFieldCpp}.has_value() ? *${storedFieldCpp} : ${fallback};`,
+                    this.bindCopiedDefault(
+                        name,
+                        field.type.inner,
+                        `${storedFieldCpp}.has_value() ? *${storedFieldCpp} : ${fallback}`,
                     );
-                    this.defineVariable(name, this.dataLowerer.leafValue(cppName, field.type.inner));
-                    this.dataLowerer.registerLocal(cppName, "copy");
                     continue;
                 }
+                const cppName = this.cppIdentifier(name.text);
                 // A default on a required field never applies: the field is
                 // never undefined, so the binding is the field itself.
                 const fieldCpp = storedFieldCpp;
@@ -4264,8 +4272,8 @@ class Compiler
         );
     }
 
-    public emitLogicalAssignment(expression: ts.BinaryExpression): boolean {
-        return this.dataLowerer.emitLogicalAssignment(expression);
+    public emitLogicalAssignment(expression: ts.BinaryExpression): void {
+        this.dataLowerer.emitLogicalAssignment(expression);
     }
 
     public emitDelete(expression: ts.DeleteExpression): void {
@@ -8640,11 +8648,15 @@ class Compiler
     public withRecordScopes<T>(
         owner: Value,
         work: () => T,
-        // A class method and an object literal's `method() {}` read their
-        // record through `this`; an arrow property keeps the `this` it
-        // closed over, so its caller passes false.
-        bindThis: boolean = owner.classDeclaration !== undefined,
+        // The callable about to run, when the caller holds it: a class
+        // method and an object literal's `method() {}` read their record
+        // through `this`, while an arrow property keeps the `this` it
+        // closed over.
+        method?: ts.Node,
     ): T {
+        const bindThis =
+            owner.classDeclaration !== undefined ||
+            (method !== undefined && !ts.isArrowFunction(method));
         if (!owner.recordScopes && !bindThis) {
             return work();
         }

@@ -530,6 +530,8 @@ class U8Array {
 };
 inline TypedArraySlot<U8Array> U8Array::slot(std::size_t index) { return {*this, index}; }
 
+[[nodiscard]] inline std::uint32_t to_uint32(double value);
+
 /** A DataView over shared ArrayBuffer storage. */
 class DataView {
   public:
@@ -614,17 +616,17 @@ class DataView {
     // or the float's bits, in the requested byte order.
     void set_uint8(std::size_t offset, double value) {
         require(offset, 1);
-        buffer_.data()[offset_ + offset] = static_cast<std::uint8_t>(modulo_uint32(value));
+        buffer_.data()[offset_ + offset] = static_cast<std::uint8_t>(to_uint32(value));
     }
     void set_int8(std::size_t offset, double value) { set_uint8(offset, value); }
     void set_uint16(std::size_t offset, double value, bool little_endian) {
-        store_bits(offset, 2, modulo_uint32(value), little_endian);
+        store_bits(offset, 2, to_uint32(value), little_endian);
     }
     void set_int16(std::size_t offset, double value, bool little_endian) {
         set_uint16(offset, value, little_endian);
     }
     void set_uint32(std::size_t offset, double value, bool little_endian) {
-        store_bits(offset, 4, modulo_uint32(value), little_endian);
+        store_bits(offset, 4, to_uint32(value), little_endian);
     }
     void set_int32(std::size_t offset, double value, bool little_endian) {
         set_uint32(offset, value, little_endian);
@@ -637,13 +639,6 @@ class DataView {
     }
 
   private:
-    // JavaScript ToUint32: nonfinite is 0, otherwise truncate and wrap.
-    [[nodiscard]] static std::uint32_t modulo_uint32(double value) {
-        if (!std::isfinite(value)) return 0;
-        const double wrapped = std::fmod(std::trunc(value), 4294967296.0);
-        return static_cast<std::uint32_t>(static_cast<std::int64_t>(
-            wrapped < 0.0 ? wrapped + 4294967296.0 : wrapped));
-    }
     void store_bits(std::size_t offset, std::size_t width, std::uint64_t bits, bool little_endian) {
         require(offset, width);
         auto* bytes = buffer_.data() + offset_ + offset;
@@ -1822,32 +1817,31 @@ relative_slice_bounds(
         value == '\r' || value == '\f' || value == '\v';
 }
 
-[[nodiscard]] inline std::string string_trim(const std::string& value) {
+// The first byte past the leading ASCII whitespace.
+[[nodiscard]] inline std::size_t trimmed_begin(const std::string& value) {
     std::size_t begin = 0;
-    while (begin < value.size() && is_ascii_whitespace(value[begin])) {
-        ++begin;
-    }
+    while (begin < value.size() && is_ascii_whitespace(value[begin])) ++begin;
+    return begin;
+}
+
+// The end of the text before the trailing ASCII whitespace, never before `begin`.
+[[nodiscard]] inline std::size_t trimmed_end(const std::string& value, std::size_t begin) {
     std::size_t end = value.size();
-    while (end > begin && is_ascii_whitespace(value[end - 1])) {
-        --end;
-    }
-    return value.substr(begin, end - begin);
+    while (end > begin && is_ascii_whitespace(value[end - 1])) --end;
+    return end;
+}
+
+[[nodiscard]] inline std::string string_trim(const std::string& value) {
+    const std::size_t begin = trimmed_begin(value);
+    return value.substr(begin, trimmed_end(value, begin) - begin);
 }
 
 [[nodiscard]] inline std::string string_trim_start(const std::string& value) {
-    std::size_t begin = 0;
-    while (begin < value.size() && is_ascii_whitespace(value[begin])) {
-        ++begin;
-    }
-    return value.substr(begin);
+    return value.substr(trimmed_begin(value));
 }
 
 [[nodiscard]] inline std::string string_trim_end(const std::string& value) {
-    std::size_t end = value.size();
-    while (end > 0 && is_ascii_whitespace(value[end - 1])) {
-        --end;
-    }
-    return value.substr(0, end);
+    return value.substr(0, trimmed_end(value, 0));
 }
 
 /**
@@ -1856,8 +1850,7 @@ relative_slice_bounds(
  * else in front is NaN and anything after the number is ignored.
  */
 [[nodiscard]] inline double parse_float(const std::string& value) {
-    std::size_t index = 0;
-    while (index < value.size() && is_ascii_whitespace(value[index])) ++index;
+    std::size_t index = trimmed_begin(value);
     const std::size_t start = index;
     if (index < value.size() && (value[index] == '+' || value[index] == '-')) ++index;
     if (value.compare(index, 8, "Infinity") == 0) {
@@ -1895,14 +1888,18 @@ relative_slice_bounds(
     double magnitude = std::fabs(value);
     double integer_part = std::floor(magnitude);
     double fraction = magnitude - integer_part;
-    std::string integer_digits;
-    if (integer_part == 0.0) integer_digits = "0";
+    std::string result;
+    result.reserve(64);
+    if (negative) result += '-';
+    // The integer digits come out least significant first.
+    const auto integer_begin = static_cast<std::ptrdiff_t>(result.size());
+    if (integer_part == 0.0) result += '0';
     while (integer_part >= 1.0) {
         const double remainder = std::fmod(integer_part, static_cast<double>(radix));
-        integer_digits.insert(integer_digits.begin(), digits[static_cast<int>(remainder)]);
+        result += digits[static_cast<int>(remainder)];
         integer_part = std::floor(integer_part / radix);
     }
-    std::string result = negative ? "-" + integer_digits : integer_digits;
+    std::reverse(result.begin() + integer_begin, result.end());
     if (fraction > 0.0) {
         result += '.';
         for (int count = 0; fraction > 0.0 && count < 52; ++count) {
@@ -2221,41 +2218,55 @@ class StringCodeUnitCursor {
     return result;
 }
 
-[[nodiscard]] inline std::string string_pad_start(
+// The padding `padStart`/`padEnd` adds: none once the value reaches the
+// length or when the fill is empty.
+[[nodiscard]] inline std::size_t pad_needed(
     const std::string& value,
     double target_length_value,
     const std::string& fill) {
     const auto target_length = static_cast<std::size_t>(
         std::max(0.0, std::trunc(target_length_value)));
-    if (value.size() >= target_length || fill.empty()) return value;
-    const std::size_t needed = target_length - value.size();
-    std::string prefix;
-    prefix.reserve(needed);
-    while (prefix.size() < needed) prefix += fill;
-    prefix.resize(needed);
-    prefix.append(value);
-    return prefix;
+    return value.size() >= target_length || fill.empty() ? 0 : target_length - value.size();
+}
+
+// `fill` repeated to exactly `needed` bytes, appended in place.
+inline void append_fill(std::string& target, std::size_t needed, const std::string& fill) {
+    const std::size_t end = target.size() + needed;
+    target.reserve(end);
+    while (target.size() < end) target += fill;
+    target.resize(end);
+}
+
+[[nodiscard]] inline std::string string_pad_start(
+    const std::string& value,
+    double target_length_value,
+    const std::string& fill) {
+    const std::size_t needed = pad_needed(value, target_length_value, fill);
+    if (needed == 0) return value;
+    std::string result;
+    result.reserve(needed + value.size());
+    append_fill(result, needed, fill);
+    result.append(value);
+    return result;
 }
 
 [[nodiscard]] inline std::string string_pad_end(
     const std::string& value,
     double target_length_value,
     const std::string& fill) {
-    const auto target_length = static_cast<std::size_t>(
-        std::max(0.0, std::trunc(target_length_value)));
-    if (value.size() >= target_length || fill.empty()) return value;
-    const std::size_t needed = target_length - value.size();
-    std::string suffix;
-    suffix.reserve(needed);
-    while (suffix.size() < needed) suffix += fill;
-    suffix.resize(needed);
-    return value + suffix;
+    const std::size_t needed = pad_needed(value, target_length_value, fill);
+    if (needed == 0) return value;
+    std::string result = value;
+    append_fill(result, needed, fill);
+    return result;
 }
 
 /** `String.prototype.charAt`: the code unit at the index, or the empty string. */
 [[nodiscard]] inline std::string string_char_at(const std::string& value, double index) {
-    const auto unit = string_relative_at(value, index < 0.0 ? std::numeric_limits<double>::quiet_NaN() : index);
-    return unit.has_value() && index >= 0.0 ? *unit : std::string{};
+    // Unlike `at`, a negative index never counts from the end.
+    if (index < 0.0) return {};
+    const auto unit = string_relative_at(value, index);
+    return unit.has_value() ? *unit : std::string{};
 }
 
 // `Record<Union, T>` — one fixed slot per member of a string-literal

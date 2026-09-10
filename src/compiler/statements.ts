@@ -23,8 +23,9 @@ import {
 } from "./resource-loops.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { argumentAt, isLogicalAssignmentOperator, isUpdateExpression, unwrappedIdentifier } from "./syntax.js";
-import { errorConstructor, errorValue, thrownMessage } from "./error-values.js";
+import { argumentAt, isLogicalAssignmentOperator, isUpdateExpression, iteratorMethodCall, unwrappedIdentifier } from "./syntax.js";
+import { compileErrorConstruction, errorConstructor, errorValue, thrownMessage } from "./error-values.js";
+import { stringConcatPart } from "./expressions.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -86,6 +87,7 @@ export interface StatementLoweringContext
         | "probeEmission"
         | "allocateTemporaryCppName"
         | "bindDataTuple"
+        | "dataLowerer"
         | "emitVariableDeclaration"
         | "emitAssignment"
         | "emitLogicalAssignment"
@@ -1437,21 +1439,17 @@ export class StatementLowerer {
         statement: ts.ThrowStatement,
     ): void {
         const thrown = context.unwrap(statement.expression);
-        const constructed =
-            ts.isNewExpression(thrown) &&
-            errorConstructor(thrown, (identifier) =>
-                context.isDefaultLibraryIdentifier(identifier),
-            ) !== undefined
-                ? thrown
-                : undefined;
-        // `throw new Error(message)` names its message directly; a held
-        // Error value or a string carries its message as a value.
-        const messageArgument = constructed?.arguments?.[0];
-        const value: Value | undefined = constructed
-            ? messageArgument
-                ? context.compileValue(messageArgument)
-                : { kind: "string", cpp: context.cppString(""), staticString: "" }
-            : thrownMessage(context.compileValue(thrown));
+        // `throw new Error(message)` builds the Error value for this one
+        // consumer, so its message stays an expression; a held Error value
+        // or a string carries its message as a value.
+        const errorName = ts.isNewExpression(thrown)
+            ? errorConstructor(thrown, (identifier) => context.isDefaultLibraryIdentifier(identifier))
+            : undefined;
+        const value = thrownMessage(
+            ts.isNewExpression(thrown) && errorName !== undefined
+                ? compileErrorConstruction(context, thrown, errorName, "thrown")
+                : context.compileValue(thrown),
+        );
         if (!value) {
             context.fail(
                 statement,
@@ -1465,10 +1463,7 @@ export class StatementLowerer {
                 value.dataType?.kind === "string"
             )
         ) {
-            context.fail(
-                messageArgument ?? thrown,
-                "A thrown Error message must be a string.",
-            );
+            context.fail(thrown, "A thrown Error message must be a string.");
         }
         context.reachThrow();
         context.emit(
@@ -2346,45 +2341,26 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const call = context.unwrap(statement.expression);
-        if (
-            !ts.isCallExpression(call) ||
-            call.arguments.length !== 0 ||
-            !ts.isPropertyAccessExpression(call.expression)
-        ) {
+        const iterator = iteratorMethodCall(
+            statement.expression,
+            (identifier) => context.isDefaultLibraryIdentifier(identifier),
+            (node) => context.unwrap(node),
+        );
+        if (!iterator) {
             return false;
         }
-        const method = call.expression.name.text;
-        if (method !== "entries" && method !== "keys" && method !== "values") {
-            return false;
-        }
-        const receiver = call.expression.expression;
-        // A library static (`Object.entries(x)`) and a call's result are
-        // values the plain loop resolves; probing them here would inline
-        // work the probe then discards.
-        if (
-            (ts.isIdentifier(receiver) && context.isDefaultLibraryIdentifier(receiver)) ||
-            someAnalysisNode(receiver, (node) => ts.isCallExpression(node) || ts.isNewExpression(node))
-        ) {
-            return false;
-        }
+        const { method, receiver } = iterator;
         // A compile-time tuple unrolls, as the plain tuple loop does, unless
         // its elements are plain data a native range represents exactly;
-        // a receiver with a native range takes the runtime loop, which
-        // resolves the iterator method itself. The probes only ask and
-        // keep nothing they emitted while asking.
+        // any other receiver takes the runtime loop, which resolves the
+        // iterator method itself. The probe only asks and keeps nothing it
+        // emitted while asking.
         const elements = context.probeEmission(
             () => context.handleCollections.tupleElements(receiver),
             (result) => result !== undefined,
         );
         if (!elements) {
-            const nativeRange = context.probeEmission(
-                () => context.dataIterationTarget(receiver) !== undefined,
-                () => false,
-            );
-            return nativeRange
-                ? this.emitRuntimeForOf(context, statement, declaration)
-                : false;
+            return this.emitRuntimeForOf(context, statement, declaration);
         }
         if (this.preferNativeDataIteration(context, statement, elements.length) &&
             elements.every((value) => this.plainIterationData(context, value)) &&
@@ -2695,9 +2671,12 @@ export class StatementLowerer {
             return false;
         }
         const count = context.runtimeCollectionCardinality(statement.expression);
+        // `entries()`/`keys()` walk the array by index: the counter is the
+        // loop variable, and an entry's value is the element in place.
         const indexed =
-            target.element.kind === "array-entry" ||
-            target.element.kind === "array-index";
+            target.element.kind === "array-entry" || target.element.kind === "array-index"
+                ? target.element
+                : undefined;
         if (!indexed &&
             !context.isInParameterizedResourceLoop(statement) &&
             count !== undefined &&
@@ -2735,8 +2714,8 @@ export class StatementLowerer {
             return true;
         }
         const item =
-            target.element.kind === "array-index"
-                ? target.element.indexCpp
+            indexed?.kind === "array-index"
+                ? indexed.indexCpp
                 : context.allocateTemporaryCppName("item");
         const lines = context.captureEmittedLines(() => {
             context.pushScope(
@@ -2766,20 +2745,14 @@ export class StatementLowerer {
             }
         });
         if (indexed) {
-            // `entries()`/`keys()` walk the array by index: the range is
-            // pinned once, the counter is the loop variable, and an entry's
-            // value is the element in place.
-            const element = target.element;
-            const indexCpp = element.kind === "array-entry" || element.kind === "array-index"
-                ? element.indexCpp
-                : item;
+            const indexCpp = indexed.indexCpp;
             const range = context.allocateTemporaryCppName("range");
             context.emit(`auto&& ${range} = ${target.container.cpp};`);
             context.emit(
                 `for (std::size_t ${indexCpp} = 0; ${indexCpp} < ${range}.size(); ++${indexCpp}) {`,
             );
             context.increaseIndent();
-            if (element.kind === "array-entry") {
+            if (indexed.kind === "array-entry") {
                 context.emit(`auto&& ${item} = ${range}[${indexCpp}];`);
             }
             for (const line of lines) context.emit(line);
@@ -2867,13 +2840,7 @@ export class StatementLowerer {
             ts.isBinaryExpression(unwrapped) &&
             isLogicalAssignmentOperator(unwrapped.operatorToken.kind)
         ) {
-            if (!context.emitLogicalAssignment(unwrapped)) {
-                context.fail(
-                    unwrapped.operatorToken,
-                    `'${unwrapped.operatorToken.getText()}' requires a data-model target; ` +
-                        "a compile-time record or an engine handle takes an explicit conditional assignment.",
-                );
-            }
+            context.emitLogicalAssignment(unwrapped);
             return;
         }
         const assignmentOperator = ts.isBinaryExpression(unwrapped)
@@ -2955,30 +2922,27 @@ export class StatementLowerer {
                     const value = context.compileValue(
                         unwrapped.right,
                     );
-                    // `text += 1` appends the number's JavaScript spelling,
-                    // as the concatenation operator does.
-                    const appended =
-                        operator === "+=" && (value.kind === "number" || value.dataType?.kind === "number")
-                            ? (context.reachJsData(), `bbl::js::concat(bbl::js::NumberPart(${value.cpp}))`)
-                            : operator === "+=" && (value.kind === "boolean" || value.dataType?.kind === "boolean")
-                              ? `(${value.cpp} ? "true" : "false")`
-                              : undefined;
-                    if (
-                        appended === undefined &&
-                        value.kind !== "string" &&
-                        !(
-                            value.kind === "data" &&
-                            value.dataType?.kind === "string"
-                        )
-                    ) {
-                        context.fail(
-                            unwrapped.right,
-                            `String assignment requires a string, received ${value.kind}.`,
+                    const isString =
+                        value.kind === "string" ||
+                        (value.kind === "data" && value.dataType?.kind === "string");
+                    if (operator === "+=" && !isString) {
+                        // `text += 1` appends the number's JavaScript
+                        // spelling, as the concatenation operator does.
+                        context.reachJsData();
+                        context.emit(
+                            `bbl::js::concat_append(${target.cpp}, ${stringConcatPart(context, value, unwrapped.right)});`,
+                        );
+                    } else {
+                        if (!isString) {
+                            context.fail(
+                                unwrapped.right,
+                                `String assignment requires a string, received ${value.kind}.`,
+                            );
+                        }
+                        context.emit(
+                            `${target.cpp} ${operator} ${value.cpp};`,
                         );
                     }
-                    context.emit(
-                        `${target.cpp} ${operator} ${appended ?? value.cpp};`,
-                    );
                 } else if (
                     target.kind === "audio-node" &&
                     operator === "="

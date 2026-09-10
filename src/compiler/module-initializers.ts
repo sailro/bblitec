@@ -1,8 +1,15 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import { writeReceiverMethods } from "./data-methods.js";
 import type { CompilerSymbols } from "./symbols.js";
-import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+    mutatingCallTarget,
+    rootIdentifier,
+    unwrapExpression,
+} from "./syntax.js";
 
 /** Statements JavaScript executes while evaluating an imported module. */
 export function isModuleInitializerStatement(
@@ -53,15 +60,7 @@ export function collectReboundSymbols(
 
 /** The initializers that create a container a later write can reach into. */
 function isContainerInitializer(initializer: ts.Expression): boolean {
-    let current = initializer;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isSatisfiesExpression(current) ||
-        ts.isTypeAssertionExpression(current)
-    ) {
-        current = current.expression;
-    }
+    const current = unwrapExpression(initializer);
     return (
         ts.isObjectLiteralExpression(current) ||
         ts.isArrayLiteralExpression(current) ||
@@ -75,14 +74,7 @@ function isContainerInitializer(initializer: ts.Expression): boolean {
 
 /** An object literal declaring a method or a function-valued property. */
 function isRecordWithMethods(initializer: ts.Expression): boolean {
-    let current = initializer;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isSatisfiesExpression(current)
-    ) {
-        current = current.expression;
-    }
+    const current = unwrapExpression(initializer);
     return (
         ts.isObjectLiteralExpression(current) &&
         current.properties.some(
@@ -98,14 +90,21 @@ function isRecordWithMethods(initializer: ts.Expression): boolean {
 }
 
 /**
- * The methods that change the container they are called on. A name outside
- * this set writes nothing through its receiver, so a module container
- * only ever read through `get`, `has`, `map` or `find` stays folded.
+ * A `const` container the program writes into: storage as much as a
+ * rebound `let`, because its initializer stops describing it at the
+ * first push or field write.
  */
-const MUTATING_CONTAINER_METHODS: ReadonlySet<string> = new Set([
-    "push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill",
-    "copyWithin", "set", "add", "delete", "clear",
-]);
+function isMutatedContainer(
+    declaration: ts.VariableDeclaration,
+    symbol: ts.Symbol,
+    mutated: ReadonlySet<ts.Symbol>,
+): boolean {
+    return (
+        mutated.has(symbol) &&
+        declaration.initializer !== undefined &&
+        isContainerInitializer(declaration.initializer)
+    );
+}
 
 /**
  * Every name whose container `sourceFile` writes INTO -- a field store, an
@@ -114,34 +113,19 @@ const MUTATING_CONTAINER_METHODS: ReadonlySet<string> = new Set([
  * the name itself is `collectReboundSymbols`'s question; this one is about
  * what the name holds.
  */
-export function collectMutatedContainerSymbols(
+function collectMutatedContainerSymbols(
     sourceFile: ts.SourceFile,
     symbols: CompilerSymbols,
 ): Set<ts.Symbol> {
     const mutated = new EmissionSet<ts.Symbol>();
-    const root = (expression: ts.Expression): ts.Identifier | undefined => {
-        let current = expression;
-        for (;;) {
-            if (ts.isIdentifier(current)) return current;
-            if (
-                ts.isPropertyAccessExpression(current) ||
-                ts.isElementAccessExpression(current) ||
-                ts.isNonNullExpression(current) ||
-                ts.isParenthesizedExpression(current) ||
-                ts.isAsExpression(current)
-            ) {
-                current = current.expression;
-                continue;
-            }
-            return undefined;
-        }
+    const record = (target: ts.Expression): void => {
+        const identifier = rootIdentifier(target);
+        const symbol = identifier && symbols.valueSymbol(identifier);
+        if (symbol) mutated.add(symbol);
     };
     const recordThrough = (target: ts.Expression): void => {
         // A write to the name itself is a rebinding, not a write through it.
-        if (ts.isIdentifier(target)) return;
-        const identifier = root(target);
-        const symbol = identifier && symbols.valueSymbol(identifier);
-        if (symbol) mutated.add(symbol);
+        if (!ts.isIdentifier(target)) record(target);
     };
     forEachAnalysisNode(sourceFile, (node) => {
         if (isAssignmentExpression(node)) {
@@ -150,26 +134,9 @@ export function collectMutatedContainerSymbols(
             recordThrough(node.operand);
         } else if (ts.isDeleteExpression(node)) {
             recordThrough(node.expression);
-        } else if (
-            ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            MUTATING_CONTAINER_METHODS.has(node.expression.name.text)
-        ) {
-            const identifier = root(node.expression.expression);
-            const symbol = identifier && symbols.valueSymbol(identifier);
-            if (symbol) mutated.add(symbol);
-        } else if (
-            ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            ts.isIdentifier(node.expression.expression) &&
-            node.expression.expression.text === "Object" &&
-            node.expression.name.text === "assign" &&
-            node.arguments[0] !== undefined
-        ) {
-            // `Object.assign(target, ...)` writes into its first argument.
-            const identifier = root(node.arguments[0]);
-            const symbol = identifier && symbols.valueSymbol(identifier);
-            if (symbol) mutated.add(symbol);
+        } else {
+            const target = mutatingCallTarget(node, (method) => writeReceiverMethods.has(method));
+            if (target) record(target);
         }
     });
     return mutated;
@@ -347,15 +314,11 @@ class ModuleInitializerPlanner {
                     const symbol = this.symbols.valueSymbol(declaration.name);
                     if (symbol === undefined) return false;
                     if (!isConst) return rebound.has(symbol);
-                    // A `const` container the file writes through is
-                    // storage as much as a rebound `let`: its initializer
-                    // stops describing it at the first push or field
-                    // write. A record carrying methods binds here too, so
-                    // its methods have a receiver to run against.
+                    // A record carrying methods binds here too, so its
+                    // methods have a receiver to run against.
                     return (
-                        declaration.initializer !== undefined &&
-                        ((mutated.has(symbol) &&
-                            isContainerInitializer(declaration.initializer)) ||
+                        isMutatedContainer(declaration, symbol, mutated) ||
+                        (declaration.initializer !== undefined &&
                             isRecordWithMethods(declaration.initializer))
                     );
                 },
@@ -418,11 +381,7 @@ class ModuleInitializerPlanner {
                 if (
                     mutatedContainers &&
                     isConst &&
-                    !(
-                        mutatedContainers.has(symbol) &&
-                        declaration.initializer !== undefined &&
-                        isContainerInitializer(declaration.initializer)
-                    )
+                    !isMutatedContainer(declaration, symbol, mutatedContainers)
                 ) {
                     continue;
                 }

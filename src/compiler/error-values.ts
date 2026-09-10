@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 
@@ -57,9 +58,34 @@ export function errorValue(
 }
 
 /**
- * `new Error(message)` and its subclasses as values a scene holds before
- * throwing or reads the message of. A runtime message is evaluated once,
- * into a temporary the record's `message` names.
+ * `{ cause }` beside the message. JavaScript keeps the cause on the error
+ * while the native exception carries the message alone, so the option is
+ * accepted when dropping it skips nothing a scene could observe: a cause
+ * that is not a call.
+ */
+function isDroppedCause(options: ts.Expression): boolean {
+    return (
+        ts.isObjectLiteralExpression(options) &&
+        options.properties.every(
+            (property) =>
+                (ts.isShorthandPropertyAssignment(property) && property.name.text === "cause") ||
+                (ts.isPropertyAssignment(property) &&
+                    ts.isIdentifier(property.name) &&
+                    property.name.text === "cause" &&
+                    !someAnalysisNode(
+                        property.initializer,
+                        (node) => ts.isCallExpression(node) || ts.isNewExpression(node),
+                    )),
+        )
+    );
+}
+
+/**
+ * `new Error(message)` and its subclasses as values. A held value reads
+ * its message later, possibly after the locals it interpolates have
+ * changed, so a runtime message is evaluated once into a temporary the
+ * record's `message` names; a thrown one is consumed at once and keeps
+ * the expression.
  */
 export function compileErrorConstruction(
     context: Pick<
@@ -69,19 +95,21 @@ export function compileErrorConstruction(
         | "allocateTemporaryCppName"
         | "emit"
         | "cppString"
+        | "unwrap"
         | "fail"
     >,
     expression: ts.NewExpression,
     name: string,
+    consumer: "held" | "thrown" = "held",
 ): Value {
     const arguments_ = expression.arguments ?? [];
-    if (arguments_.length > 1) {
+    const [argument, options] = arguments_;
+    if (arguments_.length > 2 || (options !== undefined && !isDroppedCause(context.unwrap(options)))) {
         context.fail(
             expression,
-            `new ${name} takes a message; error options are not represented.`,
+            `new ${name} takes a message and a { cause } option; the native exception carries the message alone.`,
         );
     }
-    const argument = arguments_[0];
     let message: Value;
     if (!argument) {
         message = { kind: "string", cpp: context.cppString(""), staticString: "" };
@@ -94,14 +122,17 @@ export function compileErrorConstruction(
                 staticString: value.staticString,
             };
         } else {
-            const cpp = context.dataLowerer.compileKnownValueForSink(
+            let cpp = context.dataLowerer.compileKnownValueForSink(
                 value,
                 { kind: "string" },
                 argument,
             );
-            const temporary = context.allocateTemporaryCppName("error_message");
-            context.emit(`const std::string ${temporary} = ${cpp};`);
-            message = { kind: "data", cpp: temporary, dataType: { kind: "string" } };
+            if (consumer === "held") {
+                const temporary = context.allocateTemporaryCppName("error_message");
+                context.emit(`const std::string ${temporary} = ${cpp};`);
+                cpp = temporary;
+            }
+            message = { kind: "data", cpp, dataType: { kind: "string" } };
         }
     }
     return errorValue(message, name, context.cppString);

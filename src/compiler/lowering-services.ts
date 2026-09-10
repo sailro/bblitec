@@ -144,8 +144,8 @@ export interface LoweringServices {
     emitDiscardedValue(value: Value): void;
     emitVariableDeclaration(declaration: ts.VariableDeclaration): void;
     emitAssignment(expression: ts.BinaryExpression): void;
-    /** `??=`, `||=`, `&&=` over a data-model target; false when the target is not one. */
-    emitLogicalAssignment(expression: ts.BinaryExpression): boolean;
+    /** `??=`, `||=`, `&&=` over a data-model target; any other target refuses. */
+    emitLogicalAssignment(expression: ts.BinaryExpression): void;
     /** `delete object[key]` / `delete object.field` over the data model. */
     emitDelete(expression: ts.DeleteExpression): void;
     /** Binds an object pattern from a record or struct value. */
@@ -349,7 +349,7 @@ export interface LoweringServices {
     resolveRecordMember(expression: ts.PropertyAccessExpression): Value | undefined;
     resolveRecordValue(expression: ts.Expression): Value | undefined;
     compileRecordSetter(owner: Value, setter: ts.SetAccessorDeclaration, value: ts.Expression): void;
-    withRecordScopes<T>(owner: Value, work: () => T, bindThis?: boolean): T;
+    withRecordScopes<T>(owner: Value, work: () => T, method?: ts.Node): T;
     bindClassField(name: ts.Identifier, initializer: ts.Expression, declared?: DataType): void;
     bindNullableClassField(name: ts.Identifier): Value | undefined;
     bindUninitializedClassDataField(name: ts.Identifier, declared?: DataType): Value | undefined;

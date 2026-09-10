@@ -40,7 +40,7 @@ import {
 import { isNumberParserCallee, isParseFloatCallee } from "./browser-erasure.js";
 import { hasNonNullAssertion, argumentAt, isLogicalAssignmentOperator } from "./syntax.js";
 import { compileErrorConstruction, errorConstructor } from "./error-values.js";
-import { compileObjectStatic, OBJECT_STATICS } from "./object-statics.js";
+import { OBJECT_STATIC_HANDLERS } from "./object-statics.js";
 import { firstReturn } from "./loop-control.js";
 import {
     FORMATTED_MATH_FOLDS,
@@ -73,7 +73,7 @@ import type {
     UserFunctionContext,
 } from "./user-functions.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { commonResourceValue } from "./types.js";
+import { booleanValue, commonResourceValue, staticStringValue } from "./types.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -200,6 +200,47 @@ export interface ExpressionContext
         | "isLocalCallbackEvaluationRepeated"
         | "callbackEvaluationIdentity"
     > {}
+
+/**
+ * One operand of a string concatenation, spelled as what `bbl::js::concat`
+ * appends: a literal for a generation-known text or number, `NumberPart`
+ * for a runtime number, the two spellings of a boolean, an enum's name,
+ * and `null`.
+ */
+export function stringConcatPart(
+    context: Pick<LoweringServices, "cppString" | "dataTypes" | "fail">,
+    value: Value,
+    node: ts.Node,
+): string {
+    if (value.staticString !== undefined) {
+        return context.cppString(value.staticString);
+    }
+    if (value.staticNumber !== undefined) {
+        return context.cppString(String(value.staticNumber));
+    }
+    if (value.kind === "string") {
+        return value.cpp;
+    }
+    if (value.kind === "number") {
+        return `bbl::js::NumberPart(${value.cpp})`;
+    }
+    if (value.kind === "boolean") {
+        return `(${value.cpp} ? "true" : "false")`;
+    }
+    if (value.kind === "data" && value.dataType?.kind === "enum") {
+        return context.dataTypes.enumToStringCpp(value.dataType, value.cpp, node);
+    }
+    if (value.kind === "data" && value.dataType?.kind === "string") {
+        return value.cpp;
+    }
+    if (value.kind === "json-null") {
+        return context.cppString("null");
+    }
+    return context.fail(
+        node,
+        "String concatenation supports string, number, boolean, and null values.",
+    );
+}
 
 export class ExpressionLowerer {
     public constructor(
@@ -796,7 +837,7 @@ export class ExpressionLowerer {
             const operands: ts.Expression[] = [];
             this.collectStringPlusOperands(unwrapped, operands);
             const parts = operands.map((operand) =>
-                this.stringConcatPart(
+                stringConcatPart(this.context,
                     this.compileValue(operand),
                     operand,
                 ),
@@ -1019,12 +1060,7 @@ export class ExpressionLowerer {
             ts.isBinaryExpression(unwrapped) &&
             isLogicalAssignmentOperator(unwrapped.operatorToken.kind)
         ) {
-            if (!this.context.emitLogicalAssignment(unwrapped)) {
-                this.context.fail(
-                    unwrapped.operatorToken,
-                    `'${unwrapped.operatorToken.getText()}' requires a data-model target.`,
-                );
-            }
+            this.context.emitLogicalAssignment(unwrapped);
             const target = this.context.compileValue(unwrapped.left);
             return target.kind === "data"
                 ? this.context.dataLowerer.narrowOptional(
@@ -1157,7 +1193,7 @@ export class ExpressionLowerer {
             } else {
                 compiledStaticText += staticText;
             }
-            parts.push(this.stringConcatPart(value, span.expression));
+            parts.push(stringConcatPart(this.context,value, span.expression));
             parts.push(
                 this.context.cppString(
                     span.literal.text,
@@ -1287,52 +1323,6 @@ export class ExpressionLowerer {
             cpp: "",
             tupleElements: entries,
         };
-    }
-
-    private stringConcatPart(
-        value: Value,
-        node: ts.Node,
-    ): string {
-        if (value.staticString !== undefined) {
-            return this.context.cppString(value.staticString);
-        }
-        if (value.staticNumber !== undefined) {
-            return this.context.cppString(
-                String(value.staticNumber),
-            );
-        }
-        if (value.kind === "string") {
-            return value.cpp;
-        }
-        if (value.kind === "number") {
-            return `bbl::js::NumberPart(${value.cpp})`;
-        }
-        if (value.kind === "boolean") {
-            return `(${value.cpp} ? "true" : "false")`;
-        }
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "enum"
-        ) {
-            return this.context.dataTypes.enumToStringCpp(
-                value.dataType,
-                value.cpp,
-                node,
-            );
-        }
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "string"
-        ) {
-            return value.cpp;
-        }
-        if (value.kind === "json-null") {
-            return this.context.cppString("null");
-        }
-        this.context.fail(
-            node,
-            "String concatenation supports string, number, boolean, and null values.",
-        );
     }
 
     private compileBrowserValue(
@@ -2302,17 +2292,17 @@ export class ExpressionLowerer {
             this.context.expectArgumentCount(call, 1, 1);
             const argument = this.context.unwrap(argumentAt(call, 0));
             if (argument.kind === ts.SyntaxKind.NullKeyword) {
-                return { kind: "string", cpp: this.context.cppString("null"), staticString: "null" };
+                return staticStringValue("null", (text) => this.context.cppString(text));
             }
             if (ts.isIdentifier(argument) && argument.text === "undefined" && !this.context.lookupOptional(argument)) {
-                return { kind: "string", cpp: this.context.cppString("undefined"), staticString: "undefined" };
+                return staticStringValue("undefined", (text) => this.context.cppString(text));
             }
             const value = this.compileValue(argumentAt(call, 0));
             this.context.reachJsData();
             if (value.kind === "number" || value.kind === "boolean") {
                 return {
                     kind: "data",
-                    cpp: `bbl::js::concat(${this.stringConcatPart(value, argumentAt(call, 0))})`,
+                    cpp: `bbl::js::concat(${stringConcatPart(this.context,value, argumentAt(call, 0))})`,
                     dataType: { kind: "string" },
                 };
             }
@@ -2349,13 +2339,7 @@ export class ExpressionLowerer {
             // `Boolean(x)` is x's truthiness, which the condition lowering
             // already spells for every kind.
             this.context.expectArgumentCount(call, 1, 1);
-            const condition = this.context.compileCondition(argumentAt(call, 0));
-            return {
-                kind: "boolean",
-                cpp: condition,
-                ...(condition === "true" ? { staticBoolean: true } : condition === "false" ? { staticBoolean: false } : {}),
-                dataType: { kind: "boolean" },
-            };
+            return booleanValue(this.context.compileCondition(argumentAt(call, 0)));
         }
 
         const dynamicModuleAsset =
@@ -3570,11 +3554,11 @@ export class ExpressionLowerer {
             return this.compileObjectProjection(call, callee.name.text);
         }
         if (ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Object" &&
-            OBJECT_STATICS.has(callee.name.text) &&
-            this.context.isDefaultLibraryIdentifier(callee.expression)) {
-            const value = compileObjectStatic(this.context, call, callee.name.text);
-            if (value) return value;
+            callee.expression.text === "Object") {
+            const objectStatic = OBJECT_STATIC_HANDLERS.get(callee.name.text);
+            if (objectStatic && this.context.isDefaultLibraryIdentifier(callee.expression)) {
+                return objectStatic(this.context, call);
+            }
         }
         if (ts.isIdentifier(callee.expression) &&
             callee.expression.text === "String" &&
@@ -3856,10 +3840,7 @@ export class ExpressionLowerer {
                 // function-literal argument already takes. Both
                 // arrive at the same inliner.
                 if (!ts.isIdentifier(recordMethod)) {
-                    // `method() {}` and `function` literals read the record
-                    // as `this`; an arrow keeps the `this` it closed over.
-                    const bindThis = instance.classDeclaration !== undefined || !ts.isArrowFunction(recordMethod);
-                    return this.context.userFunctions.compileCallbackCall(this.context, call, recordMethod, (work) => this.context.withRecordScopes(instance, work, bindThis));
+                    return this.context.userFunctions.compileCallbackCall(this.context, call, recordMethod, (work) => this.context.withRecordScopes(instance, work, recordMethod));
                 }
             const method = this.context.userFunctions.compile(this.context, call, recordMethod,
                 // Only the body runs in the record's

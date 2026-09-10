@@ -11,6 +11,7 @@ import {
     dataTypesEqual,
     declaredInDomLibrary,
     isHandleKind,
+    tupleComponents,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
@@ -23,6 +24,7 @@ import { CompilerSymbols, isDefaultLibraryIdentifier } from "./symbols.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
+    mutatingCallTarget,
     rootIdentifier,
     unwrapExpression,
     argumentAt,
@@ -32,7 +34,7 @@ import { FunctionSpecializations, functionDependencies } from "./function-specia
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 
 /** The index of a declaration's rest parameter, when it declares one. */
-export function restParameterIndex(declaration: SupportedFunction): number | undefined {
+function restParameterIndex(declaration: SupportedFunction): number | undefined {
     const index = declaration.parameters.findIndex((parameter) => parameter.dotDotDotToken !== undefined);
     return index >= 0 ? index : undefined;
 }
@@ -86,19 +88,8 @@ function writesThroughRoot(
     if (isUpdateExpression(node)) {
         return isTarget(node.operand);
     }
-    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
-        return false;
-    }
-    // `Object.assign(target, ...)` writes into its first argument.
-    if (
-        ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Object" &&
-        node.expression.name.text === "assign"
-    ) {
-        const target = node.arguments[0];
-        return target !== undefined && isTarget(target);
-    }
-    return mutatesVia(node.expression.name.text) && isTarget(node.expression.expression);
+    const target = mutatingCallTarget(node, mutatesVia);
+    return target !== undefined && isTarget(target);
 }
 
 /** `writesThroughRoot`, for a caller outside this module. */
@@ -817,6 +808,7 @@ export interface UserFunctionContext
         | "bindParameterValue"
         | "materializeEscapingValue"
         | "pinValueToTemporary"
+        | "bindDataTuple"
         | "pushScope"
         | "popScope"
         | "allocateUserFunctionPrefix"
@@ -3064,22 +3056,23 @@ export class UserFunctionLowerer {
         const values: Value[] = [];
         const expanded: Value[] = [];
         call.arguments.forEach((argument, index) => {
+            const sink = rest !== undefined && index >= rest ? expanded : values;
             if (ts.isSpreadElement(argument)) {
                 const spread = this.argumentValue(context, argument.expression);
                 if (spread.kind === "tuple") {
-                    (rest !== undefined && index >= rest ? expanded : values).push(...(spread.tupleElements ?? []));
+                    sink.push(...(spread.tupleElements ?? []));
                     return;
                 }
                 if (spread.kind === "data" && spread.dataType?.kind === "tuple") {
                     // A numeric tuple's lanes are its arguments, read off
-                    // one pinned evaluation of the tuple.
-                    const pinned = context.pinValueToTemporary(spread, "spread_tuple", argument.expression);
-                    const lanes: Value[] = Array.from({ length: spread.dataType.arity }, (_, lane) => ({
-                        kind: "number",
-                        cpp: `(${pinned.cpp})[${lane}]`,
-                        dataType: { kind: "number" },
-                    }));
-                    (rest !== undefined && index >= rest ? expanded : values).push(...lanes);
+                    // one bound evaluation of the tuple.
+                    const arity = spread.dataType.arity;
+                    const bound = context.bindDataTuple(spread, arity, "spread_tuple");
+                    sink.push(
+                        ...tupleComponents(bound, arity, "double").map(
+                            (cpp): Value => ({ kind: "number", cpp, dataType: { kind: "number" } }),
+                        ),
+                    );
                     return;
                 }
                 if (
@@ -3098,12 +3091,7 @@ export class UserFunctionLowerer {
                     "A spread argument expands a compile-time tuple, or passes one native array as the whole rest parameter.",
                 );
             }
-            const value = this.argumentValue(context, argument);
-            if (rest !== undefined && index >= rest) {
-                expanded.push(value);
-            } else {
-                values.push(value);
-            }
+            sink.push(this.argumentValue(context, argument));
         });
         if (rest !== undefined && values.length === rest) {
             values.push({ kind: "tuple", cpp: "", tupleElements: expanded });

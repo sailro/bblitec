@@ -191,7 +191,13 @@ export function isStoringDataCall(node: ts.Node): node is ts.CallExpression | ts
             (node.expression.text === "Map" || node.expression.text === "Set"));
 }
 
-const writeReceiverMethods: ReadonlySet<string> = new EmissionSet([
+/**
+ * The methods that change the container they are called on: every
+ * mutating array method plus the Map/Set writers. A name outside this set
+ * writes nothing through its receiver, so a container only ever read
+ * through `get`, `has`, `map` or `find` stays folded.
+ */
+export const writeReceiverMethods: ReadonlySet<string> = new EmissionSet([
     "pop",
     "shift",
     "push",
@@ -937,7 +943,7 @@ export function compileDataMethodCall(
         return {
             kind: "data",
             cpp:
-                `bbl::js::typed_array_${method === "slice" ? "slice" : "subarray"}(${narrowed.cpp}, ` +
+                `bbl::js::typed_array_${method}(${narrowed.cpp}, ` +
                 `${begin}, ${end})`,
             dataType,
         };

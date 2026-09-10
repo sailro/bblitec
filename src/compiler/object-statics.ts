@@ -2,23 +2,10 @@ import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
-import type { Value } from "./types.js";
+import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 
-/**
- * The `Object` statics lowered here, beside `Object.keys`/`values` (the
- * expression lowerer's projection) and `Object.freeze`/`seal` (identities
- * the static evaluator sees through).
- */
-export const OBJECT_STATICS: ReadonlySet<string> = new Set([
-    "assign",
-    "entries",
-    "fromEntries",
-    "hasOwn",
-    "is",
-]);
-
-type ObjectStaticContext = Pick<
+export type ObjectStaticContext = Pick<
     LoweringServices,
     | "compileValue"
     | "dataLowerer"
@@ -38,18 +25,7 @@ type ObjectStaticContext = Pick<
 
 /** A string-typed value's native text, static or data. */
 function stringCpp(context: ObjectStaticContext, value: Value, node: ts.Node): string {
-    return value.staticString !== undefined
-        ? context.cppString(value.staticString)
-        : context.dataLowerer.compileKnownValueForSink(value, { kind: "string" }, node);
-}
-
-function booleanValue(cpp: string, staticBoolean?: boolean): Value {
-    return {
-        kind: "boolean",
-        cpp,
-        ...(staticBoolean === undefined ? {} : { staticBoolean }),
-        dataType: { kind: "boolean" },
-    };
+    return context.dataLowerer.compileKnownValueForSink(value, { kind: "string" }, node);
 }
 
 /** The fields of a data struct as `[sourceName, value]` pairs, in declaration order. */
@@ -77,8 +53,7 @@ function compileObjectIs(context: ObjectStaticContext, call: ts.CallExpression):
     const left = context.compileValue(argumentAt(call, 0));
     const right = context.compileValue(argumentAt(call, 1));
     if (left.staticNumber !== undefined && right.staticNumber !== undefined) {
-        const answer = Object.is(left.staticNumber, right.staticNumber);
-        return booleanValue(answer ? "true" : "false", answer);
+        return booleanValue(Object.is(left.staticNumber, right.staticNumber) ? "true" : "false");
     }
     const numeric = (value: Value): boolean =>
         value.kind === "number" || value.dataType?.kind === "number";
@@ -104,31 +79,14 @@ function compileObjectIs(context: ObjectStaticContext, call: ts.CallExpression):
     );
 }
 
-/**
- * `Object.hasOwn(object, key)`: a compile-time record answers from its
- * properties, a string-keyed dictionary from its native membership.
- */
+/** `Object.hasOwn(object, key)`: the `in` membership without its struct arm. */
 function compileObjectHasOwn(context: ObjectStaticContext, call: ts.CallExpression): Value {
     context.expectArgumentCount(call, 2, 2);
-    const owner = context.compileValue(argumentAt(call, 0));
-    const key = context.compileValue(argumentAt(call, 1));
-    if (owner.kind === "record") {
-        if (key.staticString === undefined) {
-            context.fail(argumentAt(call, 1), "Object.hasOwn over a compile-time record requires a static key.");
-        }
-        const answer = Object.hasOwn(owner.recordProperties ?? {}, key.staticString) ||
-            Object.hasOwn(owner.recordMethods ?? {}, key.staticString) ||
-            Object.hasOwn(owner.recordGetters ?? {}, key.staticString);
-        return booleanValue(answer ? "true" : "false", answer);
-    }
-    if (owner.kind === "data" && owner.dataType?.kind === "map" && owner.dataType.key.kind === "string") {
-        context.reachJsData();
-        return booleanValue(`${owner.cpp}.has(${stringCpp(context, key, argumentAt(call, 1))})`);
-    }
-    return context.fail(
-        argumentAt(call, 0),
-        "Object.hasOwn is decided for compile-time records and string-keyed dictionaries; a struct's fields are its type's.",
-    );
+    const ownerNode = argumentAt(call, 0);
+    const keyNode = argumentAt(call, 1);
+    const owner = context.compileValue(ownerNode);
+    const key = context.compileValue(keyNode);
+    return booleanValue(context.dataLowerer.membershipCpp(owner, ownerNode, key, keyNode, "Object.hasOwn"));
 }
 
 /**
@@ -159,7 +117,7 @@ function compileObjectEntries(context: ObjectStaticContext, call: ts.CallExpress
             kind: "tuple",
             cpp: "",
             tupleElements: [
-                { kind: "string", cpp: context.cppString(key), staticString: key },
+                staticStringValue(key, (text) => context.cppString(text)),
                 value,
             ],
         })),
@@ -288,24 +246,18 @@ function compileObjectAssign(context: ObjectStaticContext, call: ts.CallExpressi
     return { kind: "void", cpp: "" };
 }
 
-/** Lowers one reached `Object.<name>(...)` from {@link OBJECT_STATICS}. */
-export function compileObjectStatic(
-    context: ObjectStaticContext,
-    call: ts.CallExpression,
-    name: string,
-): Value | undefined {
-    switch (name) {
-        case "assign":
-            return compileObjectAssign(context, call);
-        case "entries":
-            return compileObjectEntries(context, call);
-        case "fromEntries":
-            return compileObjectFromEntries(context, call);
-        case "hasOwn":
-            return compileObjectHasOwn(context, call);
-        case "is":
-            return compileObjectIs(context, call);
-        default:
-            return undefined;
-    }
-}
+/**
+ * The `Object` statics lowered here, beside `Object.keys`/`values` (the
+ * expression lowerer's projection) and `Object.freeze`/`seal` (identities
+ * the static evaluator sees through).
+ */
+export const OBJECT_STATIC_HANDLERS: ReadonlyMap<
+    string,
+    (context: ObjectStaticContext, call: ts.CallExpression) => Value
+> = new Map([
+    ["assign", compileObjectAssign],
+    ["entries", compileObjectEntries],
+    ["fromEntries", compileObjectFromEntries],
+    ["hasOwn", compileObjectHasOwn],
+    ["is", compileObjectIs],
+]);

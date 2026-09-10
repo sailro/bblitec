@@ -701,10 +701,6 @@ export class DataTypeRegistry {
     if (recordMap) {
       return recordMap;
     }
-    const dictionary = this.fromIndexSignatureType(type, node);
-    if (dictionary) {
-      return dictionary;
-    }
     const typedArray = type.symbol
       ? TYPED_ARRAY_KINDS.get(type.symbol.name)
       : undefined;
@@ -802,6 +798,12 @@ export class DataTypeRegistry {
             }
           : undefined;
       }
+    }
+    // After the symbol-named lookups above, which cost less than an index
+    // signature query and never describe a dictionary.
+    const dictionary = this.fromIndexSignatureType(type, node);
+    if (dictionary) {
+      return dictionary;
     }
     const functionType = this.fromFunctionType(type, node);
     if (functionType) return functionType;
@@ -1251,6 +1253,7 @@ export class DataTypeRegistry {
     substitution: ReadonlyMap<ts.Symbol, ts.Type> | undefined,
   ): void {
     this.activeTypeArguments = substitution;
+    this.activeTypeArgumentFrameKey = substitution ? this.frameKey(substitution) : undefined;
     this.refreshTypeArgumentKey();
   }
 
@@ -1263,32 +1266,46 @@ export class DataTypeRegistry {
       return work();
     }
     this.callTypeArguments.push(substitution);
+    this.callTypeArgumentKeys.push(this.frameKey(substitution));
     this.refreshTypeArgumentKey();
     try {
       return work();
     } finally {
       this.callTypeArguments.pop();
+      this.callTypeArgumentKeys.pop();
       this.refreshTypeArgumentKey();
     }
   }
 
-  /**
-   * The struct-identity key folds every instantiation in force in, and it
-   * is the same string for the whole window a substitution is in force --
-   * so it is spelled when the frames change rather than per cache lookup.
-   */
-  private refreshTypeArgumentKey(): void {
-    const frames = [
+  /** Every substitution in force, the receiver's beneath the calls'. */
+  private typeArgumentFrames(): readonly ReadonlyMap<ts.Symbol, ts.Type>[] {
+    return [
       ...(this.activeTypeArguments ? [this.activeTypeArguments] : []),
       ...this.callTypeArguments,
     ];
-    this.activeTypeArgumentKey = frames
-      .map((frame) =>
-        [...frame.values()]
-          .map((argument) => this.checker.typeToString(argument))
-          .join(","),
-      )
-      .join(";");
+  }
+
+  /** One frame's share of the struct-identity key, spelled once when the frame is pushed. */
+  private frameKey(frame: ReadonlyMap<ts.Symbol, ts.Type>): string {
+    return [...frame.values()]
+      .map((argument) => this.checker.typeToString(argument))
+      .join(",");
+  }
+
+  /** The receiver frame's key, and the call frames' keys beside their stack. */
+  private activeTypeArgumentFrameKey: string | undefined;
+  private readonly callTypeArgumentKeys: string[] = [];
+
+  /**
+   * The struct-identity key folds every instantiation in force in, and it
+   * is the same string for the whole window a substitution is in force --
+   * so it is joined when the frames change rather than per cache lookup.
+   */
+  private refreshTypeArgumentKey(): void {
+    this.activeTypeArgumentKey = [
+      ...(this.activeTypeArgumentFrameKey === undefined ? [] : [this.activeTypeArgumentFrameKey]),
+      ...this.callTypeArgumentKeys,
+    ].join(";");
   }
 
   /** The active substitution, so a receiver can carry it. */
@@ -1321,14 +1338,14 @@ export class DataTypeRegistry {
     if ((type.flags & ts.TypeFlags.TypeParameter) === 0 || !type.symbol) {
       return undefined;
     }
-    for (let index = this.callTypeArguments.length - 1; index >= 0; index -= 1) {
-      const argument = this.callTypeArguments[index]!.get(type.symbol);
+    const frames = this.typeArgumentFrames();
+    for (let index = frames.length - 1; index >= 0; index -= 1) {
+      const argument = frames[index]!.get(type.symbol);
       if (argument !== undefined) {
         return argument === type ? undefined : argument;
       }
     }
-    const argument = this.activeTypeArguments?.get(type.symbol);
-    return argument === undefined || argument === type ? undefined : argument;
+    return undefined;
   }
 
   /**
@@ -1348,10 +1365,7 @@ export class DataTypeRegistry {
     type: ts.Type,
     seen: Set<ts.Type> = new EmissionSet(),
   ): boolean {
-    if (
-      (!this.activeTypeArguments && this.callTypeArguments.length === 0) ||
-      seen.has(type)
-    ) {
+    if (this.typeArgumentFrames().length === 0 || seen.has(type)) {
       return false;
     }
     seen.add(type);

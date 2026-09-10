@@ -100,7 +100,8 @@ export function mentionsTypeParameter(
 
 /** Structural matching of a declared (parameterized) type against an instantiated one. */
 class TypeUnifier {
-    private readonly visited = new Set<string>();
+    /** The (pattern, actual) pairs already matched, by type identity. */
+    private readonly visited = new Map<ts.Type, Set<ts.Type>>();
 
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -112,11 +113,12 @@ class TypeUnifier {
         if (pattern === actual) {
             return;
         }
-        const key = `${(pattern as unknown as { id?: number }).id ?? this.checker.typeToString(pattern)}|${this.checker.typeToString(actual)}`;
-        if (this.visited.has(key)) {
+        const seen = this.visited.get(pattern) ?? new Set<ts.Type>();
+        if (seen.has(actual)) {
             return;
         }
-        this.visited.add(key);
+        seen.add(actual);
+        this.visited.set(pattern, seen);
         if ((pattern.flags & ts.TypeFlags.TypeParameter) !== 0) {
             const symbol = pattern.symbol;
             if (

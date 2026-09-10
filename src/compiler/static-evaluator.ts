@@ -13,7 +13,7 @@ const OBJECT_IDENTITY_CALLS: ReadonlySet<string> = new Set([
 ]);
 
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
-export function objectIdentityCallArgument(
+function objectIdentityCallArgument(
     expression: ts.Expression,
     isLibrary: (identifier: ts.Identifier) => boolean,
 ): ts.Expression | undefined {

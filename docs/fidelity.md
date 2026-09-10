@@ -27,7 +27,7 @@ label an unexplained residual a precision floor or intentional divergence.
 | Executed producers | Chromium creates selected pixels/buffers/bakes; results depend on its execution environment |
 | Workers/Window | AOT factories, typed cloning and native realm loops; snapshotted layout and 16 ms ResizeObserver polling |
 | Plain data | Typed native storage, checked access and bounded sparse/JSON behavior |
-| Language runtime | A thrown Error travels as its message: a caught value's `name` and string form are `Error` and the message. WeakMap/WeakSet hold their keys strongly. `Date.now` reads the system clock. Generic bodies are spelled per instantiation and rest arguments are packed per call. |
+| Language runtime | A thrown Error travels as its message: a caught value's `name` and string form are `Error` and the message, and a `{ cause }` option is dropped. WeakMap/WeakSet hold their keys strongly. `Date.now` reads the system clock. Generic bodies are spelled per instantiation and rest arguments are packed per call. |
 | Storage/files | Host preference storage, native URL tokens and synchronized picker completion |
 | Device recovery | Native device/resource reconstruction retains scene owners; GPU identities name actual backend resources and device generations. SDL_GPU handles forced loss; Dawn also handles its device-lost notification. Driver failures remain fatal when recovery cannot run. |
 | UI | RmlUi/FreeType and retained Canvas2D replace browser layout/rasterization; see [UI](ui.md) |

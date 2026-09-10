@@ -1,0 +1,166 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Delete the dictionary-member read arm propertyRead already had above it.",
+      "applied": true
+    },
+    {
+      "summary": "collectMutatedContainerSymbols reuses rootIdentifier, unwrapExpression, the shared mutatingCallTarget write-shape recognizer (also writesThroughRoot's) and data-methods' writeReceiverMethods instead of a fifth mutating-method list.",
+      "applied": true
+    },
+    {
+      "summary": "One isMutatedContainer predicate for planEntryState and moduleVariableSymbols; the two initializer predicates unwrap through unwrapExpression.",
+      "applied": true
+    },
+    {
+      "summary": "One iteratorMethodCall recognizer in syntax.ts for the tuple loop and the runtime range; the classification runs inside the probe so a declined iterator commits nothing, and the tuple loop hands every other receiver straight to the runtime loop instead of probing twice.",
+      "applied": true
+    },
+    {
+      "summary": "dictionary.name = value reuses dictionaryEntryTarget, which now asks declaredAsDictionary before probing, so a plain field store never pays for a discarded owner resolution.",
+      "applied": true
+    },
+    {
+      "summary": "emitLogicalAssignment returns void and refuses in place; the guard and the guarded store are logicalAssignmentGuard and emitGuardedStore, shared by the scalar, data-path and dictionary-entry arms.",
+      "applied": true
+    },
+    {
+      "summary": "in and Object.hasOwn share membershipCpp on the data lowerer.",
+      "applied": true
+    },
+    {
+      "summary": "Object statics dispatch through one OBJECT_STATIC_HANDLERS map; the set plus switch and the unreachable fallthrough are gone.",
+      "applied": true
+    },
+    {
+      "summary": "booleanValue and staticStringValue builders in types.ts replace the literal spellings in object-statics, expressions and error-values; Boolean() returns the builder's value.",
+      "applied": true
+    },
+    {
+      "summary": "throw new Error(x) compiles through the Error value lowering (compileErrorConstruction, consumer thrown) and thrownMessage instead of re-reading the constructor argument; a { cause } option is accepted and dropped.",
+      "applied": true
+    },
+    {
+      "summary": "text += number|boolean reuses stringConcatPart, now a module function, through bbl::js::concat_append.",
+      "applied": true
+    },
+    {
+      "summary": "emitRuntimeForOf decides the indexed element once; the unreachable item arm is gone.",
+      "applied": true
+    },
+    {
+      "summary": "argumentValues picks its sink once per argument; a numeric tuple spread binds through bindDataTuple and tupleComponents.",
+      "applied": true
+    },
+    {
+      "summary": "Array destructuring validates the rest binding's identifier once, without the BindingElement cast.",
+      "applied": true
+    },
+    {
+      "summary": "bindCopiedDefault shared by the vector-lane and struct-field destructuring defaults.",
+      "applied": true
+    },
+    {
+      "summary": "withRecordScopes takes the callable and derives the this binding itself instead of a caller-computed flag.",
+      "applied": true
+    },
+    {
+      "summary": "Type-argument frames read through one typeArgumentFrames() in the key, the lookup and the emptiness test; each frame's key is spelled once when pushed.",
+      "applied": true
+    },
+    {
+      "summary": "The unifier's visited set is keyed by type identity, without the id cast or typeToString.",
+      "applied": true
+    },
+    {
+      "summary": "fromIndexSignatureType is asked after the symbol-named lookups, which cost less and never describe a dictionary.",
+      "applied": true
+    },
+    {
+      "summary": "compileArrayFromMapped skips the object-literal allocation form before probing.",
+      "applied": true
+    },
+    {
+      "summary": "DataView setters reuse to_uint32 (forward-declared) instead of a private modulo copy.",
+      "applied": true
+    },
+    {
+      "summary": "number_to_string_radix appends digits and reverses once instead of inserting at the front.",
+      "applied": true
+    },
+    {
+      "summary": "string_pad_start/end share pad_needed and append_fill with one allocation; the trims and parse_float share the whitespace scans; string_char_at keeps one guard.",
+      "applied": true
+    },
+    {
+      "summary": "Unused exports dropped (restParameterIndex, collectMutatedContainerSymbols, objectIdentityCallArgument); the identity ternary in the typed-array view spelling and stringCpp's restatement of the string sink removed.",
+      "applied": true
+    },
+    {
+      "summary": "compileArrayFromMapped could reuse emitArrayCallbackLoop's scaffold.",
+      "applied": false,
+      "blockedBy": "The array-callback loop is keyed to vector/span receivers and argument 0, while Array.from's walk also covers sets, maps and typed arrays; a range-generic scaffold does not exist yet.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "mentionsTypeParameter duplicates mentionsSubstitution's walk.",
+      "applied": false,
+      "blockedBy": "mentionsSubstitution is defined by the frames in force and feeds the struct-identity key; a shared walk changes which instantiations share a cached struct.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "emitLogicalAssignment could emit the plain store under the guard instead of restating the scalar and data-path stores.",
+      "applied": false,
+      "blockedBy": "The plain assignment lowering takes the BinaryExpression and reads its operator; splitting it into emitStore(left, operator, right) restructures the pre-existing path beyond this diff.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "Library-global recognition is spelled per site with three alias tests (isDefaultLibraryIdentifier, !lookupOptional, none).",
+      "applied": false,
+      "blockedBy": "The pre-existing String/Number/Object.keys sites test aliases with lookupOptional; one symbol-derived resolver means migrating them, outside the diff. The two analysis predicates without a library test over-approximate conservatively.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "Module-state container-ness could come from the declared type, and record-with-methods is a this-binding question for the storage planner.",
+      "applied": false,
+      "blockedBy": "The planner runs before the registry can classify a type without allocating a struct name; needs the classification/materialization split below.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "dictionary.name could canonicalize into the element access so every map arm applies.",
+      "applied": false,
+      "blockedBy": "The element-access lowering takes the syntax node; canonicalizing needs a Value-level lookup entry point. The write arm now shares dictionaryEntryTarget with the logical assignment.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "DataTypeRegistry classification is coupled to struct-name allocation, so callers add checker pre-gates.",
+      "applied": false,
+      "blockedBy": "A registry refactor: naming a struct at its first emitted use rather than at classification.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "A caught or constructed Error is a record/string hybrid flagged nativeError rather than an Error value kind.",
+      "applied": false,
+      "blockedBy": "Needs a native exception carrying name, message and cause.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "Object.assign(engineHandle, {...}) should refuse or lower to property writes rather than erase.",
+      "applied": false,
+      "blockedBy": "camera-mutations and node-geometry tests pin the erased shape.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "The receiver's type arguments could be one more frame on the call stack instead of a slot defineThis overwrites.",
+      "applied": false,
+      "blockedBy": "defineThis owns the receiver slot and withRecordScopes restores it around every record scope; pushing it as a frame changes that restore order. The three readers now go through typeArgumentFrames().",
+      "filedIn": "TODO.md"
+    }
+  ]
+}

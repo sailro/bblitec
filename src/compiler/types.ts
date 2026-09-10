@@ -1738,6 +1738,21 @@ export function assetRootMutationStates(value: Value): readonly AssetRootState[]
   return [...states];
 }
 
+/** A generation-known string as a value: its C++ literal beside its text. */
+export function staticStringValue(text: string, cppString: (text: string) => string): Value {
+  return { kind: "string", cpp: cppString(text), staticString: text };
+}
+
+/** A boolean-kinded value; a literal `true`/`false` spelling is static. */
+export function booleanValue(cpp: string): Value {
+  return {
+    kind: "boolean",
+    cpp,
+    ...(cpp === "true" || cpp === "false" ? { staticBoolean: cpp === "true" } : {}),
+    dataType: { kind: "boolean" },
+  };
+}
+
 /** A runtime choice retains only facts shared by every possible resource. */
 export function commonResourceValue(value: Value, candidates: readonly Value[]): Value {
   const common = { ...value };
