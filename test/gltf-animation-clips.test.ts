@@ -91,7 +91,7 @@ test("native animation clips execute pinned sampling, filtering, order and unuse
             using JsonObject = ts::JsonValue::Object; using JsonArray = ts::JsonValue::Array;
             namespace upstream { ${cppRecord(new GltfLowerer(context).lowerGlbParser().header, "struct ParsedGlbContainer {")} }
             ${loader.slice(loader.indexOf("struct BufferViewInfo {"), loader.indexOf("using Matrix ="))}
-            ${["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(", "std::size_t unsigned_or(", "float float_or(", "std::string string_or(", "std::vector<double> double_array("].map(signature => cppFunction(loader, signature)).join("\n")}
+            ${["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(", "std::size_t unsigned_or(", "std::string string_or(", "std::vector<double> double_array("].map(signature => cppFunction(loader, signature)).join("\n")}
             ${lowerGltfParserJson(context)}
             ${helpers}
             ${lowerGltfMaterialAssembly(context)}

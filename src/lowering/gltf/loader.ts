@@ -1,6 +1,5 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "../context.js";
-import { assertEnvironmentTextureIdentity } from "../scene-uniform-identity.js";
 import { gltfLoaderCpp } from "../templates/gltf-loader-cpp.js";
 import { lowerGltfAccessorShape } from "./accessor-shape.js";
 import { lowerGltfHierarchy } from "./hierarchy.js";
@@ -19,13 +18,7 @@ import {
     lowerAnimationInterpolationCpp,
 } from "./animation-interpolation.js";
 import { lowerGltfFactorBake } from "./factor-bake.js";
-import {
-    lowerIblEnvironmentScalarsCpp,
-    lowerIblPolynomialCpp,
-} from "./ibl.js";
-import {
-    lowerImageProcessingDefaultsCpp,
-} from "./image-processing-defaults.js";
+import {gltfIblLoadingCpp} from "./ibl.js";
 import {
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
@@ -33,7 +26,6 @@ import {
 import { gltfMatrixReaderCpp } from "./local-matrix.js";
 import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
-import { lowerShPrescaleCpp } from "./sh-prescale.js";
 import {
     findNodes,
     identifierText,
@@ -649,20 +641,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const accessorNormalization =
             lowerAccessorNormalizationCpp(quantization);
         const accessorShape = lowerGltfAccessorShape(this.context);
-        const assemblyFile = this.context.sourceFile(
-            "src/loader-gltf/ibl-env-assembly.ts",
-        );
-        const imageBasedFile = this.context.sourceFile(
-            "src/loader-gltf/gltf-ext-lights-image-based.ts",
-        );
-        const shPrescale = lowerShPrescaleCpp(
-            assemblyFile,
-            this.context.sourceFile(
-                "src/loader-env/load-env.ts",
-            ),
-        );
-        const imageProcessingDefaults =
-            lowerImageProcessingDefaultsCpp(imageBasedFile);
         const factorBake = lowerGltfFactorBake(this.context.sourceFile("src/math/color.ts"));
         const parserFile = this.context.sourceFile(
             "src/loader-gltf/gltf-parser.ts",
@@ -673,13 +651,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const matrixLocal = gltfMatrixReaderCpp();
         const matrixCompose = lowerMatrixComposeCpp(composeFile);
         const matrixNative = lowerMatrixNativeCpp(parserFile);
-        assertEnvironmentTextureIdentity(this.context, imageBasedFile, "src/loader-gltf/ibl-env-assembly.ts", true);
-        const iblPolynomial = lowerIblPolynomialCpp(imageBasedFile);
-        const iblEnvironmentScalars =
-            lowerIblEnvironmentScalarsCpp(
-                imageBasedFile,
-                assemblyFile,
-            );
         const gltfCameras = options.gltfCameras
             ? lowerGltfCamerasCpp(parserFile)
             : { parentWriter: "", loading: "", poseRefresh: "" };
@@ -733,14 +704,11 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     materialAssembly: lowerGltfMaterialAssembly(this.context),
                     materialTextures: lowerGltfMaterialTextures(this.context),
                     materialProperties: lowerGltfMaterialProperties(this.context).source,
-                    shPrescale,
-                    imageProcessingDefaults,
+                    iblLoading: gltfIblLoadingCpp(),
                     factorBake,
                     matrixLocal,
                     matrixCompose,
                     matrixNative,
-                    iblPolynomial,
-                    iblEnvironmentScalars,
                     gltfCameraParentWriter: gltfCameras.parentWriter,
                     gltfCameraLoading: gltfCameras.loading,
                     gltfCameraPoseRefresh: gltfCameras.poseRefresh,

@@ -920,10 +920,6 @@ test("generates GLB framing validation from upstream constants", () => {
     );
     assert.match(
         adapter.source,
-        /EXT_lights_image_based/,
-    );
-    assert.match(
-        adapter.source,
         /required\(mesh_plan, "lights"\)/,
     );
     assert.match(

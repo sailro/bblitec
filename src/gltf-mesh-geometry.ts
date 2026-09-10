@@ -101,4 +101,6 @@ export class GltfGeometryPacker {
     }
 
     public build(): Buffer { return this.binary.build(); }
+
+    public bytes(identity: object, bytes: Uint8Array): number { return this.bufferView(identity, bytes); }
 }

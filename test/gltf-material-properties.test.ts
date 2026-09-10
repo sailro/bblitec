@@ -221,7 +221,7 @@ for (const [variant, context] of [
             namespace upstream { struct ParsedGlbContainer {}; }
             ${cppRecord(loader, "struct BufferViewInfo {")}
             ${["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(", "std::size_t unsigned_or(",
-                "float float_or(", "std::string string_or(", "std::vector<float> float_array(", "std::vector<double> double_array(",
+                "std::string string_or(", "std::vector<double> double_array(",
                 "const ts::JsonValue* texture_transform_value("].map(signature => cppFunction(loader, signature)).join("\n")}
             ${lowerGltfParserJson(context)}
             ${lowerGltfMaterialAssembly(context)}

@@ -12,14 +12,7 @@ export {
     lowerShPrescaleCpp,
 } from "./gltf/sh-prescale.js";
 export {
-    lowerImageProcessingDefaultsCpp,
-} from "./gltf/image-processing-defaults.js";
-export {
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
 } from "./gltf/matrix-leaves.js";
-export {
-    lowerIblEnvironmentScalarsCpp,
-    lowerIblPolynomialCpp,
-} from "./gltf/ibl.js";
 export { lowerGltfFactorBake } from "./gltf/factor-bake.js";

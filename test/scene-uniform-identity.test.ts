@@ -7,7 +7,6 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
-import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
@@ -97,8 +96,6 @@ test("scene object keys observe pin defaults, fresh fog, retained glTF setup and
     const envFunction = cppFunction(environment.lowerLoaderAdapter({loadEnvironment:true,ddsBackground:false}).source, "std::shared_ptr<const EnvironmentState> load_environment(");
     const sceneSource = new SceneLowerer(context).lowerCore({fog:true}).source;
     const fogFunction = cppFunction(sceneSource, "void set_scene_fog(");
-    const gltfSource = new GltfLowerer(context).lowerLoaderAdapter().source;
-    const lambda = cppFunction(gltfSource, "[image_based_environment, identity =");
     const sourcePath = join(directory,"check.cpp"), executable = join(directory,"check.exe");
     writeFileSync(sourcePath, `#include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
@@ -141,14 +138,6 @@ int main() {
     assert(alias.state->fog_identity == fog_a && scene.fog_density == .3f);
     bbl::set_scene_fog(alias, 0,.3f,0,10,{.2f,.3f,.4f});
     assert(scene.state->fog_identity != fog_a);
-    bbl::EnvironmentState image_based_environment;
-    auto setup_a = ${lambda};
-    setup_a(scene); const auto env_a = scene.state->environment_identity;
-    setup_a(alias); assert(scene.state->environment_identity == env_a);
-    scene.environment.exposure = 2; scene.environment.contrast = 3; scene.environment.rotation_y = 1;
-    assert(scene.state->environment_identity == env_a);
-    bbl::Scene other; setup_a(other); assert(other.state->environment_identity == env_a);
-    auto setup_b = ${lambda}; setup_b(scene); assert(scene.state->environment_identity != env_a);
     bytes.resize(124 + 6*8); const std::uint8_t magic[]{0x42,0x42,0x4c,0x48,0x44,0x52,0x31,0};
     std::copy(std::begin(magic),std::end(magic),bytes.begin()); bytes[8]=1; bytes[12]=1;
     auto dds = [&] { bbl::load_dds_environment(scene, {"environment","brdf"}); };
@@ -179,7 +168,6 @@ int main() {
     bytes.pop_back(); bool failed=false;
     try { dds(); } catch(const std::runtime_error&) { failed=true; }
     assert(failed && scene.state->environment_identity == committed);
-    assert(other.state->environment_identity == env_a);
     std::cout << "scene-uniform-identity: ok\\n";
 }
 `);

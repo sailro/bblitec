@@ -1,9 +1,5 @@
 import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 import { compressedTextureFormat } from "../../compressed-texture-format.js";
-// Imported from the module rather than the barrel: the barrel reaches this
-// template through gltf/loader.ts, so a value import of the barrel here
-// would be a runtime cycle.
-import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
 import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES, GLTF_VARIANT_PLAN, GLTF_MESH_PLAN } from "../../gltf-document.js";
@@ -45,19 +41,7 @@ export interface GltfLoaderLoweredSegments {
     materialAssembly: string;
     materialTextures: string;
     materialProperties: string;
-    /**
-     * `pre_scale_harmonics`, lowered from
-     * `src/loader-gltf/ibl-env-assembly.ts#polynomialToPreScaledHarmonics`
-     * (the private copy the pinned EXT_lights_image_based feature executes,
-     * proven identical to `src/loader-env/load-env.ts`'s canonical).
-     */
-    shPrescale: string;
-    /**
-     * The image-processing defaults the pinned EXT_lights_image_based
-     * `_sceneSetup` writes, lowered from
-     * `src/loader-gltf/gltf-ext-lights-image-based.ts`.
-     */
-    imageProcessingDefaults: string;
+    iblLoading: string;
     /** Pinned sRGB byte conversion. */
     factorBake: string;
     /**
@@ -85,21 +69,6 @@ export interface GltfLoaderLoweredSegments {
      * the flip axis and sign flow from the pin.
      */
     matrixNative: string;
-    /**
-     * The EXT_lights_image_based SH9 → spherical-polynomial conversion of
-     * `load_image_based_environment`, lowered from
-     * `src/loader-gltf/gltf-ext-lights-image-based.ts#irradianceCoefficientsToPolynomial`
-     * (band constants, slot layout, the intensity/π prescale) plus the
-     * feature's `applyAsset` intensity default.
-     */
-    iblPolynomial: string;
-    /**
-     * The IBL environment scalars that follow it — the LOD generation
-     * scale, the rotation yaw, and the BRDF LUT width — lowered from the
-     * same feature's `applyAsset`/`envYawFromQuaternion` and from
-     * `src/loader-gltf/ibl-env-assembly.ts#generateBrdfLut`.
-     */
-    iblEnvironmentScalars: string;
     /**
      * The glTF `camera` node property (`_camera` feature), lowered from
      * `src/loader-gltf/gltf-feature-camera.ts#applyAsset`: the fold that
@@ -238,11 +207,6 @@ void load_source_mesh_walks(AssetRecord& asset, const JsonObject& document) {
 }
 ` : ""}
 
-float float_or(const JsonObject& object, const std::string& key, float fallback) {
-    const ts::JsonValue* value = optional(object, key);
-    return value ? static_cast<float>(value->as_number()) : fallback;
-}
-
 bool bool_or(const JsonObject& object, const std::string& key, bool fallback) {
     const ts::JsonValue* value = optional(object, key);
     return value ? value->as_boolean() : fallback;
@@ -253,7 +217,7 @@ std::string string_or(const JsonObject& object, const std::string& key, std::str
     return value ? value->as_string() : std::move(fallback);
 }
 
-std::vector<float> float_array(const ts::JsonValue* value) {
+${gaussianSplats ? `std::vector<float> float_array(const ts::JsonValue* value) {
     if (!value) return {};
     std::vector<float> result;
     for (const ts::JsonValue& element : value->as_array()) {
@@ -261,9 +225,8 @@ std::vector<float> float_array(const ts::JsonValue* value) {
     }
     return result;
 }
+` : ""}
 
-// The raw JSON doubles, for the one consumer whose pin composes them in
-// double precision before its Float32Array store (local_matrix).
 std::vector<double> double_array(const ts::JsonValue* value) {
     if (!value) return {};
     std::vector<double> result;
@@ -1124,102 +1087,6 @@ TextureData image_data(
     return result;
 }
 
-${COLOR_CHANNEL_HELPERS_CPP}
-
-${lowered.shPrescale}
-
-bool load_image_based_environment(
-    EnvironmentState& environment,
-    const JsonObject& document,
-    const ts::ArrayBuffer& buffer,
-    const upstream::ParsedGlbContainer& container,
-    const std::vector<BufferViewInfo>& views,
-    const JsonArray& images) {
-    const ts::JsonValue* extensions_value =
-        optional(document, "extensions");
-    const JsonArray& scenes =
-        array_or_empty(document, "scenes");
-    if (!extensions_value || scenes.empty()) {
-        return false;
-    }
-    const JsonObject& extensions =
-        extensions_value->as_object();
-    const ts::JsonValue* ibl_value =
-        optional(extensions, "EXT_lights_image_based");
-    if (!ibl_value) return false;
-    const JsonArray& lights = array_or_empty(
-        ibl_value->as_object(),
-        "lights");
-    const std::size_t scene_index =
-        unsigned_or(document, "scene", 0);
-    if (scene_index >= scenes.size()) return false;
-    const JsonObject& scene =
-        scenes[scene_index].as_object();
-    const ts::JsonValue* scene_extensions_value =
-        optional(scene, "extensions");
-    if (!scene_extensions_value) return false;
-    const ts::JsonValue* scene_ibl_value =
-        optional(
-            scene_extensions_value->as_object(),
-            "EXT_lights_image_based");
-    if (!scene_ibl_value) return false;
-    const std::size_t light_index = unsigned_value(
-        required(
-            scene_ibl_value->as_object(),
-            "light"));
-    if (light_index >= lights.size()) return false;
-    const JsonObject& light =
-        lights[light_index].as_object();
-    const JsonArray& coefficients =
-        array_or_empty(
-            light,
-            "irradianceCoefficients");
-    const JsonArray& specular_images =
-        array_or_empty(light, "specularImages");
-    if (
-        coefficients.size() != 9 ||
-        specular_images.empty()) {
-        return false;
-    }
-${lowered.iblPolynomial}
-    environment.has_irradiance = true;
-    environment.spherical_harmonics =
-        pre_scale_harmonics(polynomial);
-    environment.specular_width =
-        static_cast<std::uint32_t>(
-            unsigned_value(
-                required(
-                    light,
-                    "specularImageSize")));
-    environment.specular_mip_count =
-        static_cast<std::uint32_t>(
-            specular_images.size());
-    environment.specular_faces.clear();
-    environment.specular_faces.reserve(
-        specular_images.size() * 6);
-    for (const ts::JsonValue& mip_value :
-         specular_images) {
-        const JsonArray& faces =
-            mip_value.as_array();
-        if (faces.size() != 6) {
-            throw std::runtime_error(
-                "Image-based light mip must contain six faces.");
-        }
-        for (const ts::JsonValue& face : faces) {
-            environment.specular_faces.push_back(
-                image_data(
-                    buffer,
-                    container,
-                    views,
-                    images,
-                    unsigned_value(face)));
-        }
-    }
-${lowered.iblEnvironmentScalars}
-${lowered.imageProcessingDefaults}
-    return true;
-}
-
 const ts::JsonValue* texture_transform_value(
     const ts::JsonValue* texture_info) {
     if (!texture_info) return nullptr;
@@ -1477,21 +1344,7 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
     // below; the rest of the asset's tables join it once the document is
     // loaded (see the scene-setup chain).
     asset.node_meshes.resize(node_json.size());` : ""}
-    EnvironmentState image_based_environment;
-    if (load_image_based_environment(
-            image_based_environment,
-            document,
-            buffer,
-            container,
-            views,
-            image_json)) {
-        asset.scene_setup =
-            [image_based_environment, identity = next_scene_uniform_object_identity()](Scene& scene) {
-            scene.environment =
-                image_based_environment;
-            scene.state->environment_identity = identity;
-        };
-    }${assetTransmission ? `
+${lowered.iblLoading}${assetTransmission ? `
     // registerPbrTransmission: the pinned transmission setter installs a scene
     // hook that the renderable build drains, and the hook enables scene
     // transmission when any of the meshes it is handed carries a transmissive

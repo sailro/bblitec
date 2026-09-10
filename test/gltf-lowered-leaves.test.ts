@@ -6,9 +6,6 @@ import { LoweringContext } from "../src/lowering/context.js";
 import {
     GltfLowerer,
     lowerAnimationInterpolationCpp,
-    lowerIblEnvironmentScalarsCpp,
-    lowerIblPolynomialCpp,
-    lowerImageProcessingDefaultsCpp,
     lowerMatrixComposeCpp,
     lowerMatrixNativeCpp,
     lowerShPrescaleCpp,
@@ -65,8 +62,6 @@ const multiplyModule = "src/math/mat4-multiply-into.ts";
 const composeModule = "src/math/mat4-compose-into.ts";
 const assemblyModule = "src/loader-gltf/ibl-env-assembly.ts";
 const loadEnvModule = "src/loader-env/load-env.ts";
-const imageBasedModule =
-    "src/loader-gltf/gltf-ext-lights-image-based.ts";
 
 /** What the loader template carried by hand before the lowering. */
 const expectedAnimationInterpolation = `Vec4 normalize_quaternion(Vec4 value) {
@@ -323,10 +318,6 @@ const expectedShPrescale = `std::array<Color3, 9> pre_scale_harmonics(
     return result;
 }`;
 
-const expectedImageProcessingDefaults = `    environment.exposure = 0.8f;
-    environment.contrast = 1.2f;
-    environment.tone_mapping_enabled = true;`;
-
 test("lowers the pinned SH prescale byte-identically to the shipped loader text", () => {
     assert.equal(
         lowerShPrescaleCpp(
@@ -335,20 +326,6 @@ test("lowers the pinned SH prescale byte-identically to the shipped loader text"
         ),
         expectedShPrescale,
     );
-});
-
-test("lowers the pinned image-processing defaults byte-identically to the shipped loader text", () => {
-    assert.equal(
-        lowerImageProcessingDefaultsCpp(pinnedFile(imageBasedModule)),
-        expectedImageProcessingDefaults,
-    );
-});
-
-test("the emitted loader carries the lowered environment defaults", () => {
-    const adapter = new GltfLowerer(new LoweringContext(store))
-        .lowerLoaderAdapter();
-    assert.ok(adapter.source.includes(expectedShPrescale));
-    assert.ok(adapter.source.includes(expectedImageProcessingDefaults));
 });
 
 test("a changed SH band constant flows through both pinned copies", () => {
@@ -377,32 +354,6 @@ test("SH prescale copies that diverge refuse generation", () => {
                 pinnedFile(loadEnvModule),
             ),
         /diverged between/,
-    );
-});
-
-test("a changed IBL exposure flows into the emitted bytes", () => {
-    const lowered = lowerImageProcessingDefaultsCpp(
-        mutatedFile(
-            imageBasedModule,
-            "scene.imageProcessing.exposure = 0.8;",
-            "scene.imageProcessing.exposure = 0.75;",
-        ),
-    );
-    assert.notEqual(lowered, expectedImageProcessingDefaults);
-    assert.match(lowered, /environment\.exposure = 0\.75f;/);
-});
-
-test("IBL tone mapping that is no longer enabled refuses", () => {
-    assert.throws(
-        () =>
-            lowerImageProcessingDefaultsCpp(
-                mutatedFile(
-                    imageBasedModule,
-                    "scene.imageProcessing.toneMappingEnabled = true;",
-                    "scene.imageProcessing.toneMappingEnabled = false;",
-                ),
-            ),
-        /no longer enables tone mapping/,
     );
 });
 
@@ -471,118 +422,6 @@ const expectedMatrixNative = `Matrix native_matrix(const Matrix& matrix) {
     return result;
 }`;
 
-const expectedIblPolynomial = `    const float intensity =
-        float_or(light, "intensity", 1.0f);
-    const float scale = intensity / pi;
-    const float inverse_pi = 1.0f / pi;
-    std::array<Color3, 9> source{};
-    for (
-        std::size_t coefficient = 0;
-        coefficient < source.size();
-        ++coefficient) {
-        const std::vector<float> values =
-            float_array(&coefficients[coefficient]);
-        if (values.size() != 3) {
-            throw std::runtime_error(
-                "Image-based light irradiance coefficient must be vec3.");
-        }
-        source[coefficient] = Color3{
-            values[0] * scale,
-            values[1] * scale,
-            values[2] * scale,
-        };
-    }
-    std::array<Color3, 9> polynomial{};
-    for (int channel = 0; channel < 3; ++channel) {
-        const float l00 =
-            color_channel(source[0], channel);
-        const float l1_1 =
-            color_channel(source[1], channel);
-        const float l10 =
-            color_channel(source[2], channel);
-        const float l11 =
-            color_channel(source[3], channel);
-        const float l2_2 =
-            color_channel(source[4], channel);
-        const float l2_1 =
-            color_channel(source[5], channel);
-        const float l20 =
-            color_channel(source[6], channel);
-        const float l21 =
-            color_channel(source[7], channel);
-        const float l22 =
-            color_channel(source[8], channel);
-        set_color_channel(
-            polynomial[0],
-            channel,
-            -1.02333f * l11 * inverse_pi);
-        set_color_channel(
-            polynomial[1],
-            channel,
-            -1.02333f * l1_1 * inverse_pi);
-        set_color_channel(
-            polynomial[2],
-            channel,
-            1.02333f * l10 * inverse_pi);
-        set_color_channel(
-            polynomial[3],
-            channel,
-            (
-                0.886277f * l00 -
-                0.247708f * l20 +
-                0.429043f * l22) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[4],
-            channel,
-            (
-                0.886277f * l00 -
-                0.247708f * l20 -
-                0.429043f * l22) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[5],
-            channel,
-            (
-                0.886277f * l00 +
-                0.495417f * l20) *
-                inverse_pi);
-        set_color_channel(
-            polynomial[6],
-            channel,
-            -0.858086f * l2_1 * inverse_pi);
-        set_color_channel(
-            polynomial[7],
-            channel,
-            -0.858086f * l21 * inverse_pi);
-        set_color_channel(
-            polynomial[8],
-            channel,
-            0.858086f * l2_2 * inverse_pi);
-    }`;
-
-const expectedIblEnvironmentScalars = `    environment.lod_generation_scale =
-        specular_images.size() > 1
-            ? static_cast<float>(
-                  specular_images.size() - 1) /
-                  std::log2(
-                      static_cast<float>(
-                          environment.specular_width))
-            : 0.0f;
-    const std::vector<float> rotation =
-        float_array(optional(light, "rotation"));
-    if (rotation.size() == 4) {
-        environment.rotation_y =
-            -2.0f *
-            std::atan2(rotation[1], rotation[3]);
-    }
-    environment.brdf_lut.bytes =
-        pal::read_binary_file(
-            asset_path(
-                "gltf-ibl-brdf-lut.rgba16f"));
-    environment.brdf_lut_width = 256;
-    environment.brdf_lut_rgba16f = true;`;
-
 test("lowers the pinned matrix multiply through the shared translation", () => {
     const header = pinnedMatrixHeader(new LoweringContext(store));
     for (const line of expectedMultiplyWriterLines) {
@@ -608,35 +447,16 @@ test("lowers the native change of basis byte-identically to the shipped loader t
     );
 });
 
-test("lowers the pinned IBL polynomial byte-identically to the shipped loader text", () => {
-    assert.equal(
-        lowerIblPolynomialCpp(pinnedFile(imageBasedModule)),
-        expectedIblPolynomial,
-    );
-});
-
-test("lowers the pinned IBL environment scalars byte-identically to the shipped loader text", () => {
-    assert.equal(
-        lowerIblEnvironmentScalarsCpp(
-            pinnedFile(imageBasedModule),
-            pinnedFile(assemblyModule),
-        ),
-        expectedIblEnvironmentScalars,
-    );
-});
-
-test("the emitted loader carries every round-3 lowered segment", () => {
+test("the emitted loader carries the source matrix helpers", () => {
     const adapter = new GltfLowerer(new LoweringContext(store))
         .lowerLoaderAdapter();
     for (const segment of [
         expectedMatrixCompose,
         expectedMatrixNative,
-        expectedIblPolynomial,
-        expectedIblEnvironmentScalars,
     ]) {
         assert.ok(
             adapter.source.includes(segment),
-            "the emitted loader no longer carries a round-3 segment",
+            "the emitted loader no longer carries a source matrix helper",
         );
     }
 });
@@ -712,108 +532,5 @@ test("a root that stops flipping exactly one axis refuses", () => {
                 ),
             ),
         /no longer flips exactly one axis/,
-    );
-});
-
-test("a changed IBL band constant flows into the emitted bytes", () => {
-    const lowered = lowerIblPolynomialCpp(
-        mutatedFile(
-            imageBasedModule,
-            "-1.02333 * l11 * k",
-            "-1.04333 * l11 * k",
-        ),
-    );
-    assert.notEqual(lowered, expectedIblPolynomial);
-    assert.match(lowered, /-1\.04333f \* l11 \* inverse_pi\);/);
-});
-
-test("a changed IBL intensity default flows into the emitted bytes", () => {
-    const lowered = lowerIblPolynomialCpp(
-        mutatedFile(
-            imageBasedModule,
-            "light.intensity ?? 1",
-            "light.intensity ?? 2",
-        ),
-    );
-    assert.match(lowered, /float_or\(light, "intensity", 2\.0f\);/);
-});
-
-test("an IBL coefficient read without the prescale refuses", () => {
-    assert.throws(
-        () =>
-            lowerIblPolynomialCpp(
-                mutatedFile(
-                    imageBasedModule,
-                    "const l2_2 = coeffs[4]![c]! * s;",
-                    "const l2_2 = coeffs[4]![c]!;",
-                ),
-            ),
-        /no longer scales coefficient 4 by the prescale/,
-    );
-});
-
-test("a permuted IBL polynomial slot refuses", () => {
-    assert.throws(
-        () =>
-            lowerIblPolynomialCpp(
-                mutatedFile(
-                    imageBasedModule,
-                    "poly[18 + c]",
-                    "poly[19 + c]",
-                ),
-            ),
-        /no longer stores polynomial slot 6/,
-    );
-});
-
-test("a changed yaw factor and lane flow into the emitted bytes", () => {
-    const lowered = lowerIblEnvironmentScalarsCpp(
-        mutatedFile(
-            imageBasedModule,
-            "return -2 * Math.atan2(q[1], q[3]);",
-            "return -3 * Math.atan2(q[0], q[3]);",
-        ),
-        pinnedFile(assemblyModule),
-    );
-    assert.notEqual(lowered, expectedIblEnvironmentScalars);
-    assert.match(
-        lowered,
-        /-3\.0f \*\n {12}std::atan2\(rotation\[0\], rotation\[3\]\);/,
-    );
-});
-
-test("a changed BRDF LUT size flows into the emitted bytes", () => {
-    const lowered = lowerIblEnvironmentScalarsCpp(
-        pinnedFile(imageBasedModule),
-        mutatedFile(assemblyModule, "const size = 256;", "const size = 512;"),
-    );
-    assert.match(lowered, /environment\.brdf_lut_width = 512;/);
-});
-
-test("a changed LOD mip drop flows into the guard and the numerator", () => {
-    const lowered = lowerIblEnvironmentScalarsCpp(
-        mutatedFile(
-            imageBasedModule,
-            "(mipCount - 1) / Math.log2(specularImageSize)",
-            "(mipCount - 2) / Math.log2(specularImageSize)",
-        ),
-        pinnedFile(assemblyModule),
-    );
-    assert.match(lowered, /specular_images\.size\(\) > 2/);
-    assert.match(lowered, /specular_images\.size\(\) - 2\)/);
-});
-
-test("a yaw gate whose absent case stops being zero refuses", () => {
-    assert.throws(
-        () =>
-            lowerIblEnvironmentScalarsCpp(
-                mutatedFile(
-                    imageBasedModule,
-                    "light.rotation ? envYawFromQuaternion(light.rotation) : 0",
-                    "light.rotation ? envYawFromQuaternion(light.rotation) : 1",
-                ),
-                pinnedFile(assemblyModule),
-            ),
-        /zero fallback/,
     );
 });

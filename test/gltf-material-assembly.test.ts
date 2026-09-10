@@ -192,7 +192,7 @@ test("glTF texture builders and native material projection preserve source selec
     writeFileSync(join(output, "cases.json"), JSON.stringify({ input, rows }));
     const loader = new GltfLowerer(base).lowerLoaderAdapter().source;
     const helpers = ["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(",
-        "std::size_t unsigned_or(", "float float_or(", "std::string string_or(", "std::vector<float> float_array(",
+        "std::size_t unsigned_or(", "std::string string_or(",
         "std::vector<double> double_array(", "const ts::JsonValue* texture_transform_value("]
         .map(signature => cppFunction(loader, signature)).join("\n");
     const file = join(output, "check.cpp"), executable = join(output, "check.exe");

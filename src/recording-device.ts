@@ -36,6 +36,7 @@ export type DeviceMethod =
     | "createBindGroupLayout"
     | "createPipelineLayout"
     | "createRenderPipeline"
+    | "createComputePipeline"
     | "createBindGroup"
     | "createCommandEncoder";
 
@@ -45,7 +46,8 @@ export type QueueMethod =
     | "copyExternalImageToTexture"
     | "submit";
 
-export type EncoderMethod = "beginRenderPass" | "copyTextureToTexture" | "finish";
+export type EncoderMethod = "beginRenderPass" | "beginComputePass" | "copyTextureToTexture" | "finish";
+export type ComputePassMethod = "setPipeline" | "setBindGroup" | "dispatchWorkgroups" | "end";
 
 export type RenderPassMethod =
     | "setPipeline"
@@ -63,6 +65,9 @@ export interface RecordingContract {
     readonly queue?: readonly QueueMethod[];
     readonly encoder?: readonly EncoderMethod[];
     readonly renderPass?: readonly RenderPassMethod[];
+    readonly computePass?: readonly ComputePassMethod[];
+    /** Opt into texture-call history; submitted order preserves GPU dependencies. */
+    readonly textureOperations?: "recording" | "submitted";
     /** Data members the pinned code reads off the device (`limits`). */
     readonly deviceFields?: Readonly<Record<string, unknown>>;
 }
@@ -137,6 +142,7 @@ export interface DescriptorShapes {
 }
 
 export type RecordedKind =
+    | "computePipeline"
     | "texture"
     | "textureView"
     | "buffer"
@@ -158,6 +164,7 @@ export type RecordedTextureUpload =
           readonly origin: RecordedOrigin;
           /** The pin's `GPUImageCopyExternalImage`, as it passed it. */
           readonly source: unknown;
+          readonly destination: unknown;
           readonly size: RecordedExtent;
       };
 
@@ -305,6 +312,41 @@ export interface RecordedRenderPass<S extends DescriptorShapes> {
     ended: boolean;
 }
 
+export interface RecordedComputePipelineDescriptor {
+    readonly layout: unknown;
+    readonly compute: {
+        readonly module: object;
+        readonly entryPoint?: string;
+        readonly constants?: Readonly<Record<string, number>>;
+    };
+}
+
+export class RecordedComputePipeline {
+    private readonly layouts = new Map<number, object>();
+    public constructor(public readonly descriptor: RecordedComputePipelineDescriptor) {}
+
+    public getBindGroupLayout(index: number): object {
+        let layout = this.layouts.get(index);
+        if (!layout) {
+            layout = {};
+            this.layouts.set(index, layout);
+        }
+        return layout;
+    }
+}
+
+export interface RecordedComputeDispatch<S extends DescriptorShapes> {
+    readonly pipeline: RecordedComputePipeline;
+    readonly bindGroups: ReadonlyMap<number, S["bindGroup"]>;
+    readonly workgroups: readonly number[];
+}
+
+/** GPU calls in recording order, including transfers between reused textures. */
+export type RecordedTextureOperation<S extends DescriptorShapes> =
+    | { readonly kind: "upload"; readonly texture: RecordedTexture; readonly upload: RecordedTextureUpload }
+    | { readonly kind: "compute"; readonly dispatch: RecordedComputeDispatch<S> }
+    | { readonly kind: "copy"; readonly copy: RecordedTextureCopy };
+
 /** The device surface a producer's pinned factory calls, typed by its shapes. */
 export interface RecordedDeviceMethods<S extends DescriptorShapes> {
     createBuffer(descriptor: RecordedBufferDescriptor): RecordedBuffer;
@@ -314,6 +356,7 @@ export interface RecordedDeviceMethods<S extends DescriptorShapes> {
     createBindGroupLayout(descriptor: S["bindGroupLayout"]): S["bindGroupLayout"];
     createPipelineLayout(descriptor: S["pipelineLayout"]): S["pipelineLayout"];
     createRenderPipeline(descriptor: S["renderPipeline"]): S["renderPipeline"];
+    createComputePipeline(descriptor: RecordedComputePipelineDescriptor): RecordedComputePipeline;
     createBindGroup(descriptor: S["bindGroup"]): S["bindGroup"];
     createCommandEncoder(descriptor?: { readonly label?: string }): object;
 }
@@ -331,10 +374,13 @@ export interface Recorder<S extends DescriptorShapes> {
     readonly bufferWrites: readonly RecordedBufferWrite[];
     readonly textureCopies: readonly RecordedTextureCopy[];
     readonly renderPasses: readonly RecordedRenderPass<S>[];
+    readonly textureOperations: readonly RecordedTextureOperation<S>[];
     /** How many command buffers `queue.submit` received. */
     readonly submitted: number;
     /** Which kind of handle this device created `value` as, if any. */
     kindOf(value: unknown): RecordedKind | undefined;
+    /** Release accumulated receipts without invalidating returned resource handles. */
+    clear(): void;
 }
 
 export interface RecordingDevice<S extends DescriptorShapes> {
@@ -468,6 +514,8 @@ export function createRecordingDevice<S extends DescriptorShapes = DescriptorSha
     const bufferWrites: RecordedBufferWrite[] = [];
     const textureCopies: RecordedTextureCopy[] = [];
     const renderPasses: RecordedRenderPass<S>[] = [];
+    const textureOperations: RecordedTextureOperation<S>[] = [];
+    const commandBuffers = new WeakMap<object, RecordedTextureOperation<S>[]>();
     let submitted = 0;
 
     const kindOf = (value: unknown): RecordedKind | undefined => {
@@ -552,38 +600,93 @@ export function createRecordingDevice<S extends DescriptorShapes = DescriptorSha
             },
         });
 
-    const encoder = strictSurface(producer, "command encoder", contract.encoder ?? [], {
-        beginRenderPass: (descriptor: RecordedRenderPassDescriptor) => {
-            for (const attachment of descriptor.colorAttachments) {
-                if (kindOf(attachment.view) !== "textureView") {
-                    throw new Error(
-                        `Recording device for '${producer}': a render pass ` +
-                            "attached a view this device did not create.",
-                    );
+    const createEncoder = (): object => {
+        let finished = false;
+        const commands: RecordedTextureOperation<S>[] = [];
+        const recordCommand = (operation: RecordedTextureOperation<S>): void => {
+            if (contract.textureOperations === "submitted") {
+                if (finished) throw new Error(`Recording device for '${producer}': command encoder already finished.`);
+                commands.push(operation);
+            } else if (contract.textureOperations) textureOperations.push(operation);
+        };
+        return strictSurface(producer, "command encoder", contract.encoder ?? [], {
+            beginComputePass: () => {
+                let pipeline: RecordedComputePipeline | undefined;
+                const groups = new Map<number, S["bindGroup"]>();
+                return strictSurface(producer, "compute pass", contract.computePass ?? [], {
+                    setPipeline: (value: RecordedComputePipeline) => {
+                        if (kindOf(value) !== "computePipeline") {
+                            throw new Error(
+                                `Recording device for '${producer}': a compute pass ` +
+                                    "set a pipeline this device did not create.",
+                            );
+                        }
+                        pipeline = value;
+                    },
+                    setBindGroup: (index: number, group: S["bindGroup"]) => {
+                        if (kindOf(group) !== "bindGroup") {
+                            throw new Error(
+                                `Recording device for '${producer}': a compute pass ` +
+                                    "bound a group this device did not create.",
+                            );
+                        }
+                        groups.set(index, group);
+                    },
+                    dispatchWorkgroups: (...workgroups: number[]) => {
+                        if (!pipeline) {
+                            throw new Error(`Recording device for '${producer}': compute dispatch has no pipeline.`);
+                        }
+                        if (contract.textureOperations) recordCommand({
+                            kind: "compute",
+                            dispatch: { pipeline, bindGroups: new Map(groups), workgroups },
+                        });
+                    },
+                    end: () => undefined,
+                });
+            },
+            beginRenderPass: (descriptor: RecordedRenderPassDescriptor) => {
+                for (const attachment of descriptor.colorAttachments) {
+                    if (kindOf(attachment.view) !== "textureView") {
+                        throw new Error(
+                            `Recording device for '${producer}': a render pass ` +
+                                "attached a view this device did not create.",
+                        );
+                    }
                 }
-            }
-            const pass: RecordedRenderPass<S> = {
-                descriptor,
-                bindGroups: [],
-                draws: [],
-                ended: false,
-            };
-            renderPasses.push(pass);
-            return renderPassSurface(pass);
-        },
-        copyTextureToTexture: (
-            source: { texture: unknown; mipLevel?: number; origin?: GpuOrigin },
-            destination: { texture: unknown; mipLevel?: number; origin?: GpuOrigin },
-            size: GpuExtent,
-        ) => {
-            textureCopies.push({
-                source: copyLocation(source, "a texture copy's source"),
-                destination: copyLocation(destination, "a texture copy's destination"),
-                size: recordedExtent(size),
-            });
-        },
-        finish: () => ({}),
-    });
+                const pass: RecordedRenderPass<S> = {
+                    descriptor,
+                    bindGroups: [],
+                    draws: [],
+                    ended: false,
+                };
+                renderPasses.push(pass);
+                return renderPassSurface(pass);
+            },
+            copyTextureToTexture: (
+                source: { texture: unknown; mipLevel?: number; origin?: GpuOrigin },
+                destination: { texture: unknown; mipLevel?: number; origin?: GpuOrigin },
+                size: GpuExtent,
+            ) => {
+                const copy = {
+                    source: copyLocation(source, "a texture copy's source"),
+                    destination: copyLocation(destination, "a texture copy's destination"),
+                    size: recordedExtent(size),
+                };
+                textureCopies.push(copy);
+                if (contract.textureOperations) recordCommand({ kind: "copy", copy });
+            },
+            finish: () => {
+                const buffer = {};
+                if (contract.textureOperations === "submitted") {
+                    if (finished) throw new Error(`Recording device for '${producer}': command encoder already finished.`);
+                    finished = true;
+                    commandBuffers.set(buffer, commands);
+                }
+                return buffer;
+            },
+        });
+    };
+    const encoder = createEncoder();
 
     const queue = strictSurface(producer, "queue", contract.queue ?? [], {
         writeBuffer: (
@@ -612,14 +715,16 @@ export function createRecordingDevice<S extends DescriptorShapes = DescriptorSha
             size: GpuExtent,
         ) => {
             const location = copyLocation(destination, "a texture write's destination");
-            location.texture.uploads.push({
+            const upload: RecordedTextureUpload = {
                 kind: "write",
                 mipLevel: location.mipLevel,
                 origin: location.origin,
                 bytes: bufferSourceBytes(data).slice(),
                 layout,
                 size: recordedExtent(size),
-            });
+            };
+            location.texture.uploads.push(upload);
+            if (contract.textureOperations) textureOperations.push({ kind: "upload", texture: location.texture, upload });
         },
         copyExternalImageToTexture: (
             source: unknown,
@@ -627,16 +732,27 @@ export function createRecordingDevice<S extends DescriptorShapes = DescriptorSha
             size: GpuExtent,
         ) => {
             const location = copyLocation(destination, "an external image copy's destination");
-            location.texture.uploads.push({
+            const upload: RecordedTextureUpload = {
                 kind: "external",
                 mipLevel: location.mipLevel,
                 origin: location.origin,
                 source,
+                destination,
                 size: recordedExtent(size),
-            });
+            };
+            location.texture.uploads.push(upload);
+            if (contract.textureOperations) textureOperations.push({ kind: "upload", texture: location.texture, upload });
         },
-        submit: (commandBuffers: readonly unknown[]) => {
-            submitted += commandBuffers.length;
+        submit: (buffers: readonly unknown[]) => {
+            if (contract.textureOperations === "submitted") for (const buffer of buffers) {
+                if (typeof buffer !== "object" || buffer === null)
+                    throw new Error(`Recording device for '${producer}': unknown command buffer.`);
+                const commands = commandBuffers.get(buffer);
+                if (!commands) throw new Error(`Recording device for '${producer}': unknown or already submitted command buffer.`);
+                textureOperations.push(...commands);
+                commandBuffers.delete(buffer);
+            }
+            submitted += buffers.length;
         },
     });
 
@@ -664,9 +780,20 @@ export function createRecordingDevice<S extends DescriptorShapes = DescriptorSha
             copied("pipelineLayout", pipelineLayouts, descriptor, "createPipelineLayout"),
         createRenderPipeline: (descriptor: S["renderPipeline"]) =>
             copied("renderPipeline", renderPipelines, descriptor, "createRenderPipeline"),
+        createComputePipeline: (descriptor: RecordedComputePipelineDescriptor) => {
+            const pipeline = new RecordedComputePipeline({
+                ...descriptor,
+                compute: {
+                    ...descriptor.compute,
+                    ...(descriptor.compute.constants && { constants: { ...descriptor.compute.constants } }),
+                },
+            });
+            kinds.set(pipeline, "computePipeline");
+            return pipeline;
+        },
         createBindGroup: (descriptor: S["bindGroup"]) =>
             copied("bindGroup", bindGroups, descriptor, "createBindGroup"),
-        createCommandEncoder: () => encoder,
+        createCommandEncoder: () => contract.textureOperations === "submitted" ? createEncoder() : encoder,
     };
     // A Proxy carries no type of its own; the one assertion in this module
     // names the surface the method table above implements member for member.
@@ -693,10 +820,16 @@ export function createRecordingDevice<S extends DescriptorShapes = DescriptorSha
             bufferWrites,
             textureCopies,
             renderPasses,
+            textureOperations,
             get submitted() {
                 return submitted;
             },
             kindOf,
+            clear() {
+                for (const entries of [textures, buffers, samplers, shaderModules, bindGroupLayouts, pipelineLayouts,
+                    renderPipelines, bindGroups, bufferWrites, textureCopies, renderPasses, textureOperations]) entries.length = 0;
+                submitted = 0;
+            },
         },
     };
 }

@@ -101,6 +101,11 @@ Background geometry, cube orientation, mip policy, encoding and samplers follow
 the reached pinned path. Image processing and scene-color capture are separate
 passes; keep their source order.
 
+glTF image-based lighting packages the source uniform writer's Float32 harmonics and ordered
+scene writes. Encoded RGBD faces use the shared source-derived native decoder; the BRDF LUT uses
+the existing 256-square RGBA16F bake. Other kernels/layouts and setup reads of unknown prior
+environment state refuse. Unwritten rotation and image-processing fields remain live scene state.
+
 Local cubemap probe sets execute the pin's setters, probe-grid producer, uniform writer and copy
 planner at generation; the composed fragment stays unchanged. SDL's large-uniform storage substitution
 is recorded in `static-local-cubemap-packets`.

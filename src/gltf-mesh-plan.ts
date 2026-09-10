@@ -12,8 +12,10 @@ import { packageMeshDeformation, readMeshDeformation, type GltfMeshDeformation, 
 import { packageMeshSetup, readMeshSetup, type GltfMeshSetup, type RecordedMeshSetup, type SourceWorldBounds } from "./gltf-mesh-setup.js";
 import { packageGltfLight, packagedGltfLights, type GltfLightPlan } from "./gltf-light-plan.js";
 import { packageGltfCamera, packagedGltfCameras, type GltfCameraPlan, type SourceCameraMatrices } from "./gltf-camera-plan.js";
+import {gltfIblSourceUrls, GltfIblRecording, packagedGltfIbl, resolveRecordedIblImage, type GltfIblPlan, type SourceIblImageResolver} from "./gltf-ibl-plan.js";
 
 export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
+    ibl: GltfIblPlan;
     /** Source material indices in assembly order; -1 denotes the implicit default. */
     cores: number[];
     /** Core record indices in native material construction order. */
@@ -34,6 +36,7 @@ interface UploadContext {
     _engine: {_device: object}; _json: JsonObject; _binChunk: DataView; _baseUrl: string;
     _matExts: unknown[]; _wrapTex: unknown; recordMaterial(material: CoreMaterial): Promise<Material>;
     recordLightLimit(count: number): never;
+    recordIblImage(json: JsonObject, bin: DataView, index: number, base: string): Promise<object>;
     _parentMap: Map<number, number>; _worldMatrixCache: Map<number, Float32Array>;
     _nodeMap?: readonly (SceneNode | undefined)[];
 }
@@ -45,13 +48,16 @@ interface SourceLoader {
     __instanceFeature: MeshFeature;
     __visibilityFeature: MeshFeature;
     __lightFeature: MeshFeature;
+    __iblFeature: MeshFeature;
+    __resolveIblImage: SourceIblImageResolver;
+    __iblShaders: {rgbdShader: string; brdfShader: string};
     __cameraFeature?: MeshFeature;
     __enableGltfCameras?(): void;
     __cameraMatrices?: SourceCameraMatrices;
     __getPunctualLight(json: JsonObject, index: number): object | undefined;
     __worldBounds: SourceWorldBounds;
     __addToScene(scene: object, entity: object): void;
-    __applyPreparedAssets(features: MeshFeature[], meshes: Mesh[], root: object, context: UploadContext): Promise<{entities: object[]; cameras?: object[]}>;
+    __applyPreparedAssets(features: MeshFeature[], meshes: Mesh[], root: object, context: UploadContext): Promise<{entities: object[]; cameras?: object[]; _sceneSetup?: (scene: object) => void}>;
     __prepareMeshes(json: JsonObject): Promise<{features: MeshFeature[]; parentMap: Map<number, number>; worldMatrixCache: Map<number, Float32Array>}>;
     buildNodeHierarchy(json: JsonObject, meshes: Mesh[], data: MeshData[]): {root: object; nodeMap: readonly (SceneNode | undefined)[]};
     extractAllMeshes(json: JsonObject, bin: DataView, base: string, parents: Map<number, number>, world: Map<number, Float32Array>, decoded: Map<unknown, unknown>,
@@ -134,11 +140,13 @@ async function recordingLoader(context: LoweringContext, options: GltfLoadFeatur
         ...["point", "directional", "spot"].map(type =>
             [`../light/${type}-light.js`, sourceModule(`src/light/${type}-light.ts`)] as const),
     ]));
+    const ibl = gltfIblSourceUrls(context);
     const registry = sourceModule("src/loader-gltf/gltf-feature-registry.ts", new Map([
         ["./gltf-feature-skeleton.js", skeleton], ["./gltf-feature-morph.js", morph],
         ["./gltf-feature-gpu-instancing.js", instances], ["./gltf-feature-primitive.js", primitive],
         ["./gltf-ext-node-visibility.js", visibility],
         ["./gltf-feature-lights-punctual.js", lights],
+        ["./gltf-ext-lights-image-based.js", ibl.feature],
     ]));
     const module = "src/loader-gltf/load-gltf.ts";
     const {file, call, material, uploadContext} = gltfBaseMaterialConstruction(context);
@@ -182,8 +190,9 @@ async function recordingLoader(context: LoweringContext, options: GltfLoadFeatur
     // Core material records are opaque to extraction. Their actual assembler
     // and the replaced PBR constructor both execute in the generated loader.
     const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\n${cameraImports}\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
-    const loader = await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation + "\n" + assetPhase + "\n" + setupImports,
-        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__applyPreparedAssets", "__addToScene", "__instanceFeature", "__visibilityFeature", "__lightFeature", ...cameraExports, "__getPunctualLight", "__worldBounds"],
+    const iblImports = `import __iblFeature from ${JSON.stringify(ibl.feature)};\nimport {resolveImage as __resolveIblImage} from ${JSON.stringify(ibl.assembly)};\nconst __iblShaders = ${JSON.stringify({rgbdShader: ibl.rgbdShader, brdfShader: ibl.brdfShader})};`;
+    const loader = await import(pinnedModuleTextUrl("loader-gltf/load-gltf.js", source + "\n" + preparation + "\n" + assetPhase + "\n" + setupImports + "\n" + iblImports,
+        ["extractAllMeshes", "uploadMeshes", "buildNodeHierarchy", "__prepareMeshes", "__applyPreparedAssets", "__addToScene", "__instanceFeature", "__visibilityFeature", "__lightFeature", "__iblFeature", "__resolveIblImage", "__iblShaders", ...cameraExports, "__getPunctualLight", "__worldBounds"],
         new Map([["./gltf-feature-registry.js", registry], ["./gltf-feature-hooks.js", hooks]]))) as SourceLoader;
     if (options.cameras) {
         if (!loader.__enableGltfCameras) throw new Error("Missing glTF camera activation module.");
@@ -220,103 +229,118 @@ async function recordMeshPlan(document: JsonObject, bin: DataView, context: Lowe
         cores.push(index);
         return record;
     });
-    const {device} = createRecordingDevice({producer: "gltf-mesh-plan", device: ["createBuffer", "createSampler", "createTexture"], queue: ["writeTexture", "writeBuffer"]});
-    const materials: number[] = [];
-    const builtRecords = new Map<Material, number>();
-    const associations = new Map<Mesh, MeshData>();
-    const uploadContext: UploadContext = {
-        _engine: {_device: device}, _json: document, _binChunk: bin, _baseUrl: "", _matExts: [], _wrapTex: identityTexWrap,
-        _parentMap: parentMap, _worldMatrixCache: worldMatrixCache,
-        recordLightLimit(count) {
-            throw new Error(`glTF requested MAX_LIGHTS = ${count}; native light capacity is fixed at the pinned limit.`);
-        },
-        async recordMaterial(material) {
-            const core = coreRecords.get(material);
-            if (core === undefined) throw new Error("glTF mesh planning lost its assembled material identity.");
-            // Source registration defers these GPU builders; the generated
-            // native material constructor owns their eventual execution.
-            const result = materialIdentity(() => { throw new Error("glTF scene planning cannot execute a material GPU builder."); });
-            builtRecords.set(result, materials.length);
-            materials.push(core);
-            return result;
-        },
-    };
-    const inputs = new Set(data);
-    const meshes = await loader.uploadMeshes(data, [...features, {applyMesh(input, mesh, suppliedContext) {
-        if (!inputs.has(input) || suppliedContext !== uploadContext || associations.has(mesh))
-            throw new Error("glTF mesh planning changed its mesh data ownership.");
-        associations.set(mesh, input);
-    }}], uploadContext);
-    const {root, nodeMap} = loader.buildNodeHierarchy(document, meshes, data);
-    uploadContext._nodeMap = nodeMap;
-    // Other per-asset hooks retain their native adapters until their bindings
-    // are represented. The source phase owns hook scheduling and fragment merge.
-    const prepared = features.filter(feature => feature === loader.__instanceFeature || feature === loader.__visibilityFeature || feature === loader.__lightFeature || feature === loader.__cameraFeature);
-    const container = await loader.__applyPreparedAssets(prepared, meshes, root, uploadContext);
-    if (Object.keys(container).some(key => key !== "entities" && key !== "cameras") || !Array.isArray(container.entities) ||
-        (container.cameras !== undefined && (!Array.isArray(container.cameras) || container.cameras.some(camera => !asObject(camera)))) ||
-        container.entities[0] !== root || container.entities.slice(1).some(entity => !asObject(entity) || !("lightType" in entity)))
-        throw new Error("Unrepresented glTF mesh asset fragment.");
-    const scene = {meshes: [] as Mesh[], lights: [] as object[], _groups: new Map<object, object>(),
-        _deferredBuilders: [] as Array<() => Promise<unknown>>, _built: false};
-    loader.__addToScene(new Proxy(Object.seal(scene), {get(target, key, receiver) {
-        if (!Reflect.has(target, key)) throw new Error(`Unrepresented glTF scene registration field '${String(key)}'.`);
-        return Reflect.get(target, key, receiver);
-    }}), container);
-    const meshIndices = new Map(meshes.map((mesh, index) => [mesh, index]));
-    const sceneMeshes = scene.meshes.map(mesh => {
-        const index = meshIndices.get(mesh);
-        if (index === undefined) throw new Error("glTF scene registration returned an unknown loader mesh.");
-        return index;
-    });
-    const nodes = asRecords(document.nodes), definitions = asRecords(document.meshes);
-    const primitiveIndices = definitions.map(definition => new Map(asRecords(definition.primitives).map((primitive, index) => [primitive, index])));
-    if (meshes.length !== data.length) throw new Error("glTF mesh planning changed its extraction cardinality.");
-    const geometries = new Map<object, number>();
-    const packer = new GltfGeometryPacker(document, bin);
-    const geometryRecords: GltfMeshGeometry[] = [];
-    const plannedMeshes = meshes.map(mesh => {
-        const input = associations.get(mesh);
-        if (!input || asIndex(input._nodeIndex) === undefined) throw new Error("glTF mesh planning lost its source node.");
-        const node = nodes[input._nodeIndex];
-        const meshIndex = asIndex(node?.mesh);
-        const primitive = meshIndex === undefined ? undefined : primitiveIndices[meshIndex]?.get(input._primitive);
-        if (primitive === undefined) throw new Error("glTF mesh planning lost its source primitive.");
-        const material = builtRecords.get(mesh.material);
-        if (material === undefined || !mesh._gpu || typeof mesh.name !== "string" ||
-            (mesh._flatNormal !== undefined && typeof mesh._flatNormal !== "boolean"))
-            throw new Error("glTF mesh planning lost its constructed resource identity.");
-        let geometry = geometries.get(mesh._gpu);
-        if (geometry === undefined) {
-            geometry = geometries.size;
-            geometries.set(mesh._gpu, geometry);
-            geometryRecords.push(packer.geometry(mesh._gpu, input._vertexCount));
-        }
-        return {node: input._nodeIndex, primitive, material, geometry, name: mesh.name, flatNormal: mesh._flatNormal === true,
-            setup: packageMeshSetup(mesh, loader.__worldBounds, packer),
-            ...packageMeshDeformation(mesh, input._vertexCount, asIndex(node?.skin), packer)};
-    });
-    if (nodeMap.length !== nodes.length) throw new Error("glTF mesh planning changed its node-map cardinality.");
-    const nodeVisibility = Array.from(nodeMap, node => {
-        if (node?.visible !== undefined && typeof node.visible !== "boolean") throw new Error("Invalid constructed glTF node visibility.");
-        return node?.visible !== false;
-    });
-    const lightDefinitions = asObject(asObject(document.extensions)?.KHR_lights_punctual)?.lights;
-    const targets = Array.isArray(lightDefinitions)
-        ? lightDefinitions.map((_, index) => loader.__getPunctualLight(document, index)) : [];
-    const sourceLights = [...new Set([...scene.lights, ...targets.filter((light): light is object => light !== undefined)])];
-    const lightIndices = new Map(sourceLights.map((light, index) => [light, index]));
-    const sourceCameras = [...new Set(container.cameras ?? [])];
-    const nodeIndices = new Map<object, number>(sourceLights.length || sourceCameras.length ? nodeMap.flatMap((node, index) => node ? [[node, index] as const] : []) : []);
-    const lights = sourceLights.map(light => packageGltfLight(light, nodeIndices, packer));
-    const sceneLights = scene.lights.map(light => lightIndices.get(light)!);
-    const lightTargets = targets.map(light => light === undefined ? null : lightIndices.get(light)!);
-    const cameraIndices = new Map(sourceCameras.map((camera, index) => [camera, index]));
-    if (sourceCameras.length && !loader.__cameraMatrices) throw new Error("Unrepresented glTF camera construction.");
-    const cameras = sourceCameras.map(camera => packageGltfCamera(camera, nodeIndices, packer, loader.__cameraMatrices!));
-    const containerCameras = (container.cameras ?? []).map(camera => cameraIndices.get(camera)!);
-    return {plan: {cores, materials, nodeVisibility, sceneMeshes, lights, sceneLights, lightTargets, cameras, containerCameras,
-        meshes: plannedMeshes, geometries: geometryRecords}, packer};
+    const {device, recorder} = createRecordingDevice({producer: "gltf-mesh-plan",
+        device: ["createBuffer", "createSampler", "createTexture", "createShaderModule", "createComputePipeline", "createBindGroup", "createCommandEncoder"],
+        queue: ["writeTexture", "writeBuffer", "copyExternalImageToTexture", "submit"],
+        encoder: ["beginComputePass", "copyTextureToTexture", "finish"],
+        computePass: ["setPipeline", "setBindGroup", "dispatchWorkgroups", "end"], textureOperations: "submitted"});
+    try {
+        const materials: number[] = [];
+        const builtRecords = new Map<Material, number>();
+        const associations = new Map<Mesh, MeshData>();
+        const uploadContext: UploadContext = {
+            _engine: {_device: device}, _json: document, _binChunk: bin, _baseUrl: "", _matExts: [], _wrapTex: identityTexWrap,
+            _parentMap: parentMap, _worldMatrixCache: worldMatrixCache,
+            recordLightLimit(count) {
+                throw new Error(`glTF requested MAX_LIGHTS = ${count}; native light capacity is fixed at the pinned limit.`);
+            },
+            recordIblImage: (json, bytes, index, base) => resolveRecordedIblImage(loader.__resolveIblImage, json, bytes, index, base),
+            async recordMaterial(material) {
+                const core = coreRecords.get(material);
+                if (core === undefined) throw new Error("glTF mesh planning lost its assembled material identity.");
+                // Source registration defers these GPU builders; the generated
+                // native material constructor owns their eventual execution.
+                const result = materialIdentity(() => { throw new Error("glTF scene planning cannot execute a material GPU builder."); });
+                builtRecords.set(result, materials.length);
+                materials.push(core);
+                return result;
+            },
+        };
+        const inputs = new Set(data);
+        const meshes = await loader.uploadMeshes(data, [...features, {applyMesh(input, mesh, suppliedContext) {
+            if (!inputs.has(input) || suppliedContext !== uploadContext || associations.has(mesh))
+                throw new Error("glTF mesh planning changed its mesh data ownership.");
+            associations.set(mesh, input);
+        }}], uploadContext);
+        const {root, nodeMap} = loader.buildNodeHierarchy(document, meshes, data);
+        uploadContext._nodeMap = nodeMap;
+        // Other per-asset hooks retain their native adapters until their bindings
+        // are represented. The source phase owns hook scheduling and fragment merge.
+        const prepared = features.filter(feature => feature === loader.__instanceFeature || feature === loader.__visibilityFeature || feature === loader.__lightFeature || feature === loader.__cameraFeature || feature === loader.__iblFeature);
+        const container = await loader.__applyPreparedAssets(prepared, meshes, root, uploadContext);
+        if (Object.keys(container).some(key => key !== "entities" && key !== "cameras" && key !== "_sceneSetup") || !Array.isArray(container.entities) ||
+            (container._sceneSetup !== undefined && typeof container._sceneSetup !== "function") ||
+            (container.cameras !== undefined && (!Array.isArray(container.cameras) || container.cameras.some(camera => !asObject(camera)))) ||
+            container.entities[0] !== root || container.entities.slice(1).some(entity => !asObject(entity) || !("lightType" in entity)))
+            throw new Error("Unrepresented glTF mesh asset fragment.");
+        const scene = {meshes: [] as Mesh[], lights: [] as object[], _groups: new Map<object, object>(),
+            _deferredBuilders: [] as Array<() => Promise<unknown>>, _built: false};
+        const iblRecording = new GltfIblRecording(recorder, loader.__iblShaders);
+        Object.defineProperties(scene, iblRecording.properties);
+        loader.__addToScene(new Proxy(Object.seal(scene), {get(target, key, receiver) {
+            if (!Reflect.has(target, key)) throw new Error(`Unrepresented glTF scene registration field '${String(key)}'.`);
+            return Reflect.get(target, key, receiver);
+        }}), container);
+        const meshIndices = new Map(meshes.map((mesh, index) => [mesh, index]));
+        const sceneMeshes = scene.meshes.map(mesh => {
+            const index = meshIndices.get(mesh);
+            if (index === undefined) throw new Error("glTF scene registration returned an unknown loader mesh.");
+            return index;
+        });
+        const nodes = asRecords(document.nodes), definitions = asRecords(document.meshes);
+        const primitiveIndices = definitions.map(definition => new Map(asRecords(definition.primitives).map((primitive, index) => [primitive, index])));
+        if (meshes.length !== data.length) throw new Error("glTF mesh planning changed its extraction cardinality.");
+        const geometries = new Map<object, number>();
+        const packer = new GltfGeometryPacker(document, bin);
+        const geometryRecords: GltfMeshGeometry[] = [];
+        const plannedMeshes = meshes.map(mesh => {
+            const input = associations.get(mesh);
+            if (!input || asIndex(input._nodeIndex) === undefined) throw new Error("glTF mesh planning lost its source node.");
+            const node = nodes[input._nodeIndex];
+            const meshIndex = asIndex(node?.mesh);
+            const primitive = meshIndex === undefined ? undefined : primitiveIndices[meshIndex]?.get(input._primitive);
+            if (primitive === undefined) throw new Error("glTF mesh planning lost its source primitive.");
+            const material = builtRecords.get(mesh.material);
+            if (material === undefined || !mesh._gpu || typeof mesh.name !== "string" ||
+                (mesh._flatNormal !== undefined && typeof mesh._flatNormal !== "boolean"))
+                throw new Error("glTF mesh planning lost its constructed resource identity.");
+            let geometry = geometries.get(mesh._gpu);
+            if (geometry === undefined) {
+                geometry = geometries.size;
+                geometries.set(mesh._gpu, geometry);
+                geometryRecords.push(packer.geometry(mesh._gpu, input._vertexCount));
+            }
+            return {node: input._nodeIndex, primitive, material, geometry, name: mesh.name, flatNormal: mesh._flatNormal === true,
+                setup: packageMeshSetup(mesh, loader.__worldBounds, packer),
+                ...packageMeshDeformation(mesh, input._vertexCount, asIndex(node?.skin), packer)};
+        });
+        if (nodeMap.length !== nodes.length) throw new Error("glTF mesh planning changed its node-map cardinality.");
+        const nodeVisibility = Array.from(nodeMap, node => {
+            if (node?.visible !== undefined && typeof node.visible !== "boolean") throw new Error("Invalid constructed glTF node visibility.");
+            return node?.visible !== false;
+        });
+        const lightDefinitions = asObject(asObject(document.extensions)?.KHR_lights_punctual)?.lights;
+        const targets = Array.isArray(lightDefinitions)
+            ? lightDefinitions.map((_, index) => loader.__getPunctualLight(document, index)) : [];
+        const sourceLights = [...new Set([...scene.lights, ...targets.filter((light): light is object => light !== undefined)])];
+        const lightIndices = new Map(sourceLights.map((light, index) => [light, index]));
+        const sourceCameras = [...new Set(container.cameras ?? [])];
+        const nodeIndices = new Map<object, number>(sourceLights.length || sourceCameras.length ? nodeMap.flatMap((node, index) => node ? [[node, index] as const] : []) : []);
+        const lights = sourceLights.map(light => packageGltfLight(light, nodeIndices, packer));
+        const sceneLights = scene.lights.map(light => lightIndices.get(light)!);
+        const lightTargets = targets.map(light => light === undefined ? null : lightIndices.get(light)!);
+        const cameraIndices = new Map(sourceCameras.map((camera, index) => [camera, index]));
+        if (sourceCameras.length && !loader.__cameraMatrices) throw new Error("Unrepresented glTF camera construction.");
+        const cameras = sourceCameras.map(camera => packageGltfCamera(camera, nodeIndices, packer, loader.__cameraMatrices!));
+        const containerCameras = (container.cameras ?? []).map(camera => cameraIndices.get(camera)!);
+        const iblPlan = await iblRecording.package(packer);
+        return {plan: {cores, materials, nodeVisibility, sceneMeshes, lights, sceneLights, lightTargets, cameras, containerCameras, ibl: iblPlan,
+            meshes: plannedMeshes, geometries: geometryRecords}, packer};
+    } finally {
+        // The source IBL pipeline caches retain their last GPU device. Drop
+        // completed payloads even on failure instead of retaining the asset.
+        recorder.clear();
+    }
 }
 
 /** Read the validated source-owned schedule carried by a packaged asset. */
@@ -359,7 +383,7 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
             ...readMeshDeformation(mesh, accessorCount, skinCount)};
     });
     return {cores: plan.cores, materials: plan.materials, nodeVisibility: plan.nodeVisibility, sceneMeshes: plan.sceneMeshes,
-        ...packagedGltfLights(document), ...packagedGltfCameras(document), meshes, geometries};
+        ...packagedGltfLights(document), ...packagedGltfCameras(document), ibl: packagedGltfIbl(document), meshes, geometries};
 }
 
 export async function packageGltfMeshPlan(document: JsonObject, bin: DataView, context?: LoweringContext, options: GltfLoadFeatures = {}): Promise<Buffer> {

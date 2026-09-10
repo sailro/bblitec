@@ -205,6 +205,8 @@ and definition aliases. Source requests to grow the pinned native light capacity
 `enableGltfCameras()` requires definite setup ordering and affects subsequent loads.
 Imported perspective cameras retain source constructor state, fixup parents and container order;
 orthographic imports require unsupported explicit clip-plane storage.
+Image-based environments execute the pinned feature's image selection, assembly, uniform writer
+and ordered scene assignments. Native storage consumes its recorded RGBD cube and BRDF resources.
 Skin/morph attachment, joint influences, target deltas and initial morph weights come from
 the pinned feature hooks and GPU constructors; weights are packaged per mesh.
 Unused base declarations allocate no render material; variant materials retain separate identities.
