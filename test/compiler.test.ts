@@ -8903,8 +8903,8 @@ test("refuses stylesheet selectors outside the reviewed surface by name", () => 
     `;
 
     assert.throws(
-        () => compileSource(sheet(".pill:hover { color: red; }")),
-        /Retained stylesheet selector '\.pill:hover' is not lowered/,
+        () => compileSource(sheet(".pill:has(.icon) { color: red; }")),
+        /Retained stylesheet selector '\.pill:has\(\.icon\)' is not lowered/,
     );
     assert.throws(
         () => compileSource(sheet("div p { color: red; }")),
