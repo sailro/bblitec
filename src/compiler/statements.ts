@@ -75,6 +75,7 @@ export interface StatementLoweringContext
         | "trackResourceLoopEarlyReturn"
         | "isRuntimeResourceConstruction"
         | "emitNativeReturn"
+        | "emitNativeThrow"
         | "meshTransformDirtyEntry"
         | "captureEmittedLines"
         | "canShareFunctionBody"
@@ -1466,12 +1467,12 @@ export class StatementLowerer {
             context.fail(thrown, "A thrown Error message must be a string.");
         }
         context.reachThrow();
-        context.emit(
-            `throw std::runtime_error(${
+        context.emitNativeThrow(
+            `std::runtime_error(${
                 value.staticString !== undefined
                     ? context.cppString(value.staticString)
                     : value.cpp
-            });`,
+            })`,
         );
     }
 
@@ -2434,6 +2435,7 @@ export class StatementLowerer {
         if (!elements) {
             return false;
         }
+        if (elements.length === 0) return true;
         if (this.preferNativeDataIteration(context, statement, elements.length) &&
             elements.every((value) => this.plainIterationData(context, value)) &&
             context.emitNativeDataIteration(statement, () =>
@@ -3190,10 +3192,9 @@ export class StatementLowerer {
                 return;
             }
         }
-        context.fail(
-            unwrapped,
-            `Unsupported expression statement: ${ts.SyntaxKind[unwrapped.kind]}.`,
-        );
+        // Any supported value expression can be evaluated for effects alone,
+        // including the value of a return in a contextually void function.
+        context.emitDiscardedValue(context.compileValue(unwrapped));
     }
 
     /** Assigns a tuple result to definite-assignment resource bindings. */

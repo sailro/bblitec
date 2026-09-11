@@ -6,6 +6,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
+import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 
 
 
@@ -248,8 +249,7 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "preventDefault" &&
-            call.arguments.length === 0
+            callee.name.text === "preventDefault"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
                 ? this.context.lookupOptional(receiver)
@@ -259,8 +259,9 @@ export class PlatformCalls {
                   : undefined;
             if (
                 platformEvent?.kind === "platform-keyboard-event" ||
-                platformEvent?.kind === "platform-mouse-event"
+                platformEvent?.kind === "platform-mouse-event" || platformEvent?.nativeErrorEvent
             ) {
+                if (call.arguments.length) this.context.fail(call, "Event.preventDefault accepts no arguments.");
                 return {
                     kind: "void",
                     cpp: `${platformEvent.cpp}.prevent_default()`,
@@ -559,6 +560,20 @@ export class PlatformCalls {
                 once = compiled === "true";
             }
         }
+        if (target === "window" && this.context.options.workers && (event === "error" || event === "unhandledrejection")) {
+            requireWindowHost(this.context, call);
+            const rejection = event === "unhandledrejection";
+            if (removing) {
+                const identity = this.platformEventCallbackIdentity(this.context.compileValue(callback), callback);
+                this.context.emit(`bbl::pal::window_off_application_error(${rejection}, ${identity});`);
+            } else {
+                const name = this.context.allocateTemporaryCppName("application_error");
+                const listener = this.context.compilePlatformCallback(callback,
+                    {cppType:"bbl::pal::ApplicationErrorEvent&", name}, [windowErrorEventValue(this.context, name, rejection)]);
+                this.context.emit(`bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${listener.cpp}, ${once});`);
+            }
+            return true;
+        }
         const engine = this.context.requireDefaultEngine(call);
         const descriptor = this.platformEventDescriptor(target, event);
         if (!descriptor) return false;
@@ -569,7 +584,7 @@ export class PlatformCalls {
                 callback,
             );
             this.context.emit(
-                `bbl::off_${descriptor.channel}(${engine}, ${identity}u);`,
+                `bbl::off_${descriptor.channel}(${engine}, ${identity});`,
             );
             return true;
         }
@@ -615,7 +630,7 @@ export class PlatformCalls {
         );
         this.context.emit(
             `bbl::on_${descriptor.channel}(` +
-                `${engine}, ${listener.identity}u, ${listener.cpp}` +
+                `${engine}, ${listener.identity}, ${listener.cpp}` +
                 `${once ? ", true" : ""});`,
         );
         return true;
@@ -635,12 +650,13 @@ export class PlatformCalls {
     public platformEventCallbackIdentity(
         callback: Value,
         node: ts.Node,
-    ): number {
+    ): string {
+        if (callback.kind === "data" && callback.dataType?.kind === "function") return `(${callback.cpp}).identity()`;
         if (callback.kind !== "callback") {
             this.context.fail(node, "Platform event listener is not a callback.");
         }
         if (callback.platformCallbackIdentity !== undefined) {
-            return callback.platformCallbackIdentity;
+            return `${callback.platformCallbackIdentity}u`;
         }
         if (!callback.callbackDeclaration) {
             this.context.fail(
@@ -648,10 +664,10 @@ export class PlatformCalls {
                 "Platform event listener has no stable callback identity.",
             );
         }
-        return this.context.callbackIdentity(
+        return `${this.context.callbackIdentity(
             callback.callbackDeclaration,
             callback.callbackRecordOwner,
-        );
+        )}u`;
     }
 
     private compileUiCall(call: ts.CallExpression, callee: ts.PropertyAccessExpression): Value | undefined {
@@ -662,16 +678,21 @@ export class PlatformCalls {
             this.context.requirePresentationHost(call);
         }
         if (this.context.isNativeHostUiLookup(call)) {
-            const id = this.context.compileStringLiteral(argumentAt(call, 0));
-            const engine = this.context.options.workers ? "bbl::pal::window_document_engine()" : this.context.requireDefaultEngine(call);
+            const id = this.context.evaluator.staticTextValue(argumentAt(call, 0));
+            const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
+            const tag = id !== undefined ? this.ui.nativeHostUiTags().get(id) : undefined;
+            if (!tag) return {
+                kind:"data", cpp:`bbl::ui_find_element_by_id(${engine}, ${this.ui.uiStringCpp(argumentAt(call, 0), "element id")})`,
+                dataType:{kind:"optional", inner:{kind:"handle", handle:"ui-element"}}, engineCpp:engine,
+            };
             return {
                 kind: "ui-element",
                 cpp: `bbl::ui_get_element_by_id(${engine}, ` +
-                    `${this.context.cppString(id)})`,
+                    `${this.context.cppString(id!)})`,
                 engineCpp: engine,
-                uiHostId: id,
-                uiTag: this.ui.nativeHostUiTags().get(id)!,
+                uiHostId: id!,
+                uiTag: tag,
                 truthinessCpp: "true",
             };
         }
@@ -688,7 +709,7 @@ export class PlatformCalls {
             if (UiProjection.UI_IMPLEMENTATION_TAGS.has(normalizedTag)) {
                 this.context.fail(argumentAt(call, 0), `Native UI element tag '${tag}' is reserved for the retained projection.`);
             }
-            const engine = this.context.requireDefaultEngine(call);
+            const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
             const uiStaticId = this.ui.createUiStaticElement(normalizedTag);
             this.ui.uiStaticIdsByCreation.set(call, uiStaticId);

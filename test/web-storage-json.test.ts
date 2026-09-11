@@ -5,6 +5,7 @@ import {
     readdirSync,
     readFileSync,
     rmSync,
+    writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -116,15 +117,15 @@ test("localStorage lowers to the PAL store behind its own feature", () => {
     assert.match(result.cpp, /#include <bblite\/js_json\.hpp>/);
     assert.match(
         result.cpp,
-        /bbl::js::local_storage_get_item\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::local_storage_get_item;\s*bbl::js::Nullable<std::string> \w+ = \1\("sandblox-world"\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::js::local_storage_set_item\("sandblox-world", bbl::js::json_stringify\(/,
+        /const auto (\w+) = bbl::js::local_storage_set_item;\s*\1\("sandblox-world", bbl::js::json_stringify\(/,
     );
     assert.match(
         result.cpp,
-        /bbl::js::local_storage_remove_item\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::local_storage_remove_item;\s*\1\("sandblox-world"\)/,
     );
     // The reads and writes are inside the source's own try/catch, so a PAL
     // failure takes the arm the browser's quota error takes.
@@ -148,7 +149,7 @@ test("getItem answers a nullable string with JavaScript falsiness", () => {
     `);
     assert.match(
         result.cpp,
-        /bbl::js::Nullable<std::string> \w+ = bbl::js::local_storage_get_item/,
+        /const auto (\w+) = bbl::js::local_storage_get_item;\s*bbl::js::Nullable<std::string> \w+ = \1\(/,
     );
     // Absent AND empty are both falsy, which `has_value()` alone is not.
     assert.match(
@@ -435,6 +436,31 @@ test("the JSON runtime is included only by the scenes that reach it", () => {
  * because the compiler tests above are the portable half.
  */
 const nativeTools = optionalNativeFixtureTools();
+
+test("JSON serialization preserves string enums at roots and in stored containers", {skip:!nativeTools}, () => {
+    const result = compileSource(`
+        type Phase = "ready" | "running";
+        type Tone = "light" | "dark";
+        interface State { phase: Phase; tone?: Tone; }
+        const states: State[] = [{phase:"ready"}, {phase:"running", tone:"dark"}];
+        function serialize(state:State):string { return JSON.stringify(state); }
+        function serializePhase(phase:Phase):string { return JSON.stringify(phase); }
+        if (serializePhase(states[0]!.phase) !== '"ready"') throw new Error("enum root");
+        if (serialize(states[0]!) !== '{"phase":"ready"}') throw new Error("absent enum property");
+        states[0]!.phase = "running";
+        states[0]!.tone = "light";
+        if (JSON.stringify(states) !== '[{"phase":"running","tone":"light"},{"phase":"running","tone":"dark"}]') throw new Error("nested enum serialization");
+        const phases:Phase[] = ["ready", "running"];
+        if (JSON.stringify(phases) !== '["ready","running"]') throw new Error("enum array");
+    `);
+    const directory = resolve("artifacts/json-enum-check");
+    mkdirSync(directory, {recursive:true});
+    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    writeFileSync(source, result.cpp);
+    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
+        `/Fo:${directory}\\`, `/Fe:${executable}`, "/I", "native/include", `/I${nativeFixtureVcpkgRoot}/include`, source]);
+    execFileSync(executable, {stdio:"pipe"});
+});
 
 test(
     "the native JSON bridge and storage PAL hold their contract",

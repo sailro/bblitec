@@ -54,6 +54,8 @@ export const nativeMeshDataIntrinsics: ReadonlySet<string> = new EmissionSet([
     "mat4Invert",
     "setThinInstanceMatrix",
     "setThinInstanceColors",
+    "setThinInstanceColor",
+    "setThinInstanceCullBoundsPad",
     "setThinInstanceCount",
     "flushThinInstances",
     "addThinInstance",
@@ -1188,11 +1190,6 @@ function compileSetThinInstances(context: MeshIntrinsicContext, call: ts.CallExp
 }
 
 function compileSetThinInstanceColors(context: MeshIntrinsicContext, call: ts.CallExpression): Value | undefined {
-    // The pinned setter stores the caller's array and bumps the
-    // colour version. Nothing in the reached slice re-reads it --
-    // `setThinInstanceColor`, the per-instance twin, is unlowered --
-    // so the record takes a copy rather than the alias
-    // `setThinInstances` needs.
     context.expectArgumentCount(call, 2, 2);
     const mesh = context.compileValue(argumentAt(call, 0));
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
@@ -1206,6 +1203,25 @@ function compileSetThinInstanceColors(context: MeshIntrinsicContext, call: ts.Ca
         cpp: `bbl::set_thin_instance_colors(${context.requireEngine(mesh, call)}, ` +
             `${mesh.cpp}, ${colors})`,
     };
+}
+
+function compileSetThinInstanceColor(context: MeshIntrinsicContext, call: ts.CallExpression): Value {
+    context.expectArgumentCount(call, 6, 6);
+    const mesh = context.compileValue(argumentAt(call, 0));
+    context.expectKind(mesh, "mesh", argumentAt(call, 0));
+    const args = call.arguments.slice(1).map(argument => context.compileNumber(argument, "double"));
+    context.reachFeature("mesh:thin-instance-colors", call);
+    context.recordThinInstanceColorMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
+    return { kind: "void", cpp: `bbl::set_thin_instance_color(${context.requireEngine(mesh, call)}, ${mesh.cpp}, ${args.join(", ")})` };
+}
+
+function compileSetThinInstanceCullBoundsPad(context: MeshIntrinsicContext, call: ts.CallExpression): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const mesh = context.compileValue(argumentAt(call, 0));
+    context.expectKind(mesh, "mesh", argumentAt(call, 0));
+    const pad = context.compileNumber(argumentAt(call, 1), "double");
+    context.reachFeature("mesh:thin-instances", call);
+    return { kind: "void", cpp: `bbl::set_thin_instance_cull_bounds_pad(${context.requireEngine(mesh, call)}, ${mesh.cpp}, ${pad})` };
 }
 
 function compileSetThinInstanceCount(context: MeshIntrinsicContext, call: ts.CallExpression): Value | undefined {
@@ -2186,6 +2202,8 @@ const meshIntrinsicHandlers = new EmissionMap<string, (context: MeshIntrinsicCon
     ["removeHierarchyInstance", (context, call) => compileSetHierarchyInstanceCount(context, call, "removeHierarchyInstance")],
     ["setThinInstances", compileSetThinInstances],
     ["setThinInstanceColors", compileSetThinInstanceColors],
+    ["setThinInstanceColor", compileSetThinInstanceColor],
+    ["setThinInstanceCullBoundsPad", compileSetThinInstanceCullBoundsPad],
     ["setThinInstanceCount", compileSetThinInstanceCount],
     ["setThinInstanceMatrix", compileSetThinInstanceMatrix],
     ["flushThinInstances", compileFlushThinInstances],

@@ -9,6 +9,26 @@ surface and its compatibility limits.
 Build switches for RmlUi, FreeType and LunaSVG are in
 [development](development.md#native-builds). Scene TypeScript owns live controls. Reviewed `ui/*.json` companions describe
 static host chrome explicitly; they do not discover arbitrary browser pages.
+Window metrics, media queries, resize observers and application error listeners in an application with workers select the native
+Window host directly; they do not require static host markup. Worker realms cannot use those Window APIs.
+The application `document` can be passed through specialized dependency records with a stable identity
+distinct from `window`; reached DOM operations remain limited to the projection below.
+`window` error and unhandled-rejection listeners receive native exception messages before engine creation.
+Removal, `once` and `preventDefault` are supported; events borrow their dispatch frame. Native error
+names remain `Error`, `stack` is undefined and source locations are unavailable; `rejectionhandled` and arbitrary rejection values are unsupported.
+
+Environment reads support aliased `navigator` values, native platform identification, processor
+count and system language. Optional browser client hints, device-memory estimates and the browser WebGPU
+entry point are absent.
+`navigator.userAgent` is the fixed identifier `bblitec/native`; operating-system identity is available separately as `navigator.platform`.
+Aliased `performance.now()` reads the native monotonic clock; the nonstandard JavaScript heap snapshot is absent.
+Location origin, pathname and href follow the configured deployment base and query.
+Application realms support `navigator.clipboard.writeText` through the native window thread, with a promise
+that rejects if the operating-system write fails. Clipboard reads and rich clipboard data are unsupported.
+`location.reload()` finishes the current task and microtasks, then recreates the application and its workers;
+durable local storage survives. Navigation to other URLs remains unsupported.
+Window applications read current screen bounds, usable bounds and color depth through the same snapshot
+as viewport metrics. Screen dimensions use CSS pixels at the Window display scale.
 
 The multi-canvas companions retain the original canvases, divider and labels. Equivalent flex panes
 provide native rectangles; pinned host HTML supplies the browser reference. Canvas-only captures
@@ -21,7 +41,7 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | Construction | Static-tag createElement, appendChild/append, root attachment, remove |
 | Content | textContent/innerText, bounded innerHTML, className/id/type, static attributes |
 | Styles/classes | cssText, reached style fields, classList add/remove/forced toggle |
-| Queries | Static class query on a known complete retained subtree |
+| Queries | Static class query on a known complete retained subtree; Window document ID lookup returns the first attached match in tree order, or null |
 | Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer |
 | Focus | Control/canvas focus, focus listeners, activeElement identity, button navigation |
 | Text forms | Retained input/textarea value and input callbacks; textarea editing and vertical resize |

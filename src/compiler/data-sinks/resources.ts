@@ -1,6 +1,6 @@
 import ts from "typescript";
 
-import { dataTypesEqual, type DataType } from "../data-types.js";
+import { dataTypesEqual, isTypedArrayType, type DataType, type TypedArrayKind } from "../data-types.js";
 import type { Value } from "../types.js";
 
 import { pickedMeshHandleCpp } from "../properties.js";
@@ -66,7 +66,38 @@ function expressionArraybufferOrDataview(dataType: DataType<"arraybuffer" | "dat
     return value.cpp;
 }
 
-function expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32array(dataType: DataType<"u8array" | "f64array" | "f32array" | "u16array" | "i16array" | "u32array" | "i32array">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
+function bufferViewValue(_type: DataType<"bufferview">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (value.dataType?.kind === "bufferview") return value.cpp;
+    if (value.dataType?.kind === "dataview" || (value.dataType && isTypedArrayType(value.dataType))) {
+        if (value.borrowedData || value.nativeVectorData) {
+            lowerer.context.fail(node, "ArrayBufferView storage requires a retained typed array or DataView.");
+        }
+        lowerer.markEscaped(value);
+        return `bbl::js::ArrayBufferView(${value.cpp})`;
+    }
+    return undefined;
+}
+
+function expressionView(type: DataType<"bufferview" | "numberindex">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
+    return lowerer.compileKnownValueForSink(lowerer.narrowOptional(lowerer.context.compileValue(unwrapped), unwrapped), type, unwrapped);
+}
+
+function numericViewValue(_type: DataType<"numberindex">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    const source = value.dataType;
+    if (source?.kind === "numberindex") return value.cpp;
+    if (source && (isTypedArrayType(source) || source.kind === "tuple" ||
+        (source.kind === "vector" && source.element.kind === "number"))) {
+        if (value.borrowedData || value.nativeVectorData) {
+            lowerer.context.fail(node, "Numeric index storage requires a retained array.");
+        }
+        lowerer.invalidateEscapingCollection(value);
+        lowerer.markEscaped(value);
+        return `bbl::js::NumericArrayView(${value.cpp})`;
+    }
+    return undefined;
+}
+
+function expressionTypedArray(dataType: DataType<TypedArrayKind>, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
     if (ts.isNewExpression(unwrapped)) {
         const value = lowerer.compileTypedArrayNew(unwrapped);
         if (value?.dataType &&
@@ -79,7 +110,7 @@ function expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI3
     return value.cpp;
 }
 
-function valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle(dataType: DataType<"arraybuffer" | "dataview" | "u8array" | "f64array" | "f32array" | "u16array" | "i16array" | "u32array" | "i32array" | "handle">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+function valueResource(dataType: DataType<"arraybuffer" | "dataview" | TypedArrayKind | "handle">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
     if (dataType.kind === "handle" && dataType.handle === "text-run-ref" &&
         (value.kind === "number" || value.kind === "text-run"))
         return `bbl::TextRunRef{${value.cpp}}`;
@@ -119,15 +150,18 @@ function valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16a
     return undefined;
 }
 
-export const resourcesSinks: DataSinkOperations<"handle" | "arraybuffer" | "dataview" | "u8array" | "f64array" | "f32array" | "u16array" | "i16array" | "u32array" | "i32array"> = {
-    "handle": { expression: expressionHandle, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "arraybuffer": { expression: expressionArraybufferOrDataview, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "dataview": { expression: expressionArraybufferOrDataview, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "u8array": { expression: expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32array, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "f64array": { expression: expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32array, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "f32array": { expression: expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32array, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "u16array": { expression: expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32array, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "i16array": { expression: expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32array, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "u32array": { expression: expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32array, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle },
-    "i32array": { expression: expressionU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32array, value: valueArraybufferOrDataviewOrU8arrayOrF64arrayOrF32arrayOrU16arrayOrI16arrayOrU32arrayOrI32arrayOrHandle }
+export const resourcesSinks: DataSinkOperations<"handle" | "arraybuffer" | "dataview" | "bufferview" | "numberindex" | TypedArrayKind> = {
+    "bufferview": { expression: expressionView, value: bufferViewValue },
+    "numberindex": { expression: expressionView, value: numericViewValue },
+    "handle": { expression: expressionHandle, value: valueResource },
+    "arraybuffer": { expression: expressionArraybufferOrDataview, value: valueResource },
+    "dataview": { expression: expressionArraybufferOrDataview, value: valueResource },
+    "i8array": { expression: expressionTypedArray, value: valueResource },
+    "u8array": { expression: expressionTypedArray, value: valueResource },
+    "f64array": { expression: expressionTypedArray, value: valueResource },
+    "f32array": { expression: expressionTypedArray, value: valueResource },
+    "u16array": { expression: expressionTypedArray, value: valueResource },
+    "i16array": { expression: expressionTypedArray, value: valueResource },
+    "u32array": { expression: expressionTypedArray, value: valueResource },
+    "i32array": { expression: expressionTypedArray, value: valueResource }
 };

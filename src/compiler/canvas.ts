@@ -4,12 +4,14 @@ import { argumentAt } from "./syntax.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { Value } from "./types.js";
 import type { WorkerLoweringContext } from "./workers.js";
+import { requireWindowHost } from "./window-events.js";
 
 interface CanvasContext
     extends WorkerLoweringContext,
     Pick<LoweringServices,
         | "checker"
         | "isCanvasElement"
+        | "reachFeature"
     > {}
 
 function hasDomInterface(context: CanvasContext, expression: ts.Expression, name: string): boolean {
@@ -26,19 +28,19 @@ function canvasOwner(context: CanvasContext, expression: ts.Expression): Value |
     return context.compileValue(expression);
 }
 
-function requireWindowHost(context: CanvasContext, node: ts.Node): void {
-    if (context.options.workers?.namespace || !context.options.nativeHostUi) {
-        context.fail(node, "This Window API requires an application realm with a native host UI companion.");
-    }
-}
-
 export function compileCanvasValue(context: CanvasContext, expression: ts.Expression): Value | undefined {
     if (!context.options.workers) return undefined;
     const node = context.unwrap(expression);
-    if (ts.isPropertyAccessExpression(node) && node.name.text === "devicePixelRatio" &&
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "isSecureContext" &&
         ["globalThis", "window"].includes(browserGlobalNamed(context, node.expression)?.text ?? "")) {
         requireWindowHost(context, node);
-        return { kind: "number", cpp: "bbl::pal::window_device_pixel_ratio()", dataType: { kind: "number" } };
+        return {kind:"boolean", cpp:"true", staticBoolean:true};
+    }
+    if (ts.isPropertyAccessExpression(node) && ["devicePixelRatio", "innerWidth", "innerHeight"].includes(node.name.text) &&
+        ["globalThis", "window"].includes(browserGlobalNamed(context, node.expression)?.text ?? "")) {
+        requireWindowHost(context, node);
+        return { kind: "number", cpp: node.name.text === "devicePixelRatio" ? "bbl::pal::window_device_pixel_ratio()"
+            : `bbl::pal::window_viewport_size().${node.name.text === "innerWidth" ? "width" : "height"}`, dataType: { kind: "number" } };
     }
     if (ts.isTypeOfExpression(node)) {
         const member = context.unwrap(node.expression);

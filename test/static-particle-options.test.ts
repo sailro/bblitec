@@ -97,7 +97,7 @@ test("particle options refuse nonconstant, rebound and incorrectly sized tuples"
         let originPx: [number, number] = [96, 48];
         originPx = [24, 12];
         registerNodeParticleSet2D(renderer, set, { originPx });
-    `)), /rebinding it would copy in native code where JavaScript would alias/);
+    `)), /originPx must be a static two-element number tuple/);
     assert.throws(() => compileSource(source(`
         const originPx: [number, number, number] = [96, 48, 12];
         registerNodeParticleSet2D(renderer, set, { originPx });

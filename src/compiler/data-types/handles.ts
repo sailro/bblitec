@@ -1,6 +1,7 @@
 import type { HandleKind } from "./model.js";
 
 const handleCppTypes: Record<HandleKind, string> = {
+  engine: "bbl::Engine*",
   asset: "bbl::AssetHandle",
   "gpu-device": "bbl::GpuDeviceIdentity",
   "gpu-texture": "bbl::GpuTextureIdentity",
@@ -21,6 +22,10 @@ const handleCppTypes: Record<HandleKind, string> = {
   "flow-graph-runtime": "std::shared_ptr<bbl::FlowGraphRuntime>",
   "audio-buffer": "bbl::pal::AudioBufferHandle",
   "audio-context": "bbl::pal::AudioContextHandle",
+  "audio-node": "bbl::pal::AudioNodeHandle",
+  "audio-param": "bbl::pal::AudioParamHandle",
+  "media-stream": "std::shared_ptr<bbl::pal::MediaStream>",
+  "media-stream-track": "std::shared_ptr<bbl::pal::MediaStreamTrack>",
   camera: "bbl::CameraHandle",
   "property-animation-group": "bbl::PropertyAnimationGroup",
   "ui-element": "bbl::UiElementHandle",

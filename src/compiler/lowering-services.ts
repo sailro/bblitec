@@ -64,6 +64,7 @@ import type { CompiledTextData } from "../pinned-text-data.js";
 
 /** Execution facts for one native function body. */
 export interface NativeFunctionBodyOptions {
+    coroutine?: boolean;
     runtimeDataLoops?: boolean;
     callSiteEffects?: boolean;
     compileReturn?: (expression: ts.Expression, type: DataType) => string;
@@ -71,6 +72,8 @@ export interface NativeFunctionBodyOptions {
 
 /** Shared compiler operations; each lowering module selects its required services. */
 export interface LoweringServices {
+    withAsyncActivation<T>(work: () => T): T;
+    emitNativeThrow(errorCpp: string): void;
     isInFrameCallback(): boolean;
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;
@@ -84,7 +87,7 @@ export interface LoweringServices {
         documentHiddenCpp?: string,
         captureByValue?: boolean,
         assignIdentity?: boolean,
-    ): { cpp: string; identity: number };
+    ): { cpp: string; identity: string };
     readonly sourceFile: ts.SourceFile;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;

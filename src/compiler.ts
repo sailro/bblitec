@@ -1,11 +1,12 @@
 import { assetRootMutationStates, nativeDataMetadata, valueForKind } from "./compiler/types.js";
-import { forEachAnalysisNode, findAnalysisNodeWithState } from "./compiler/analysis-walk.js";
+import { forEachAnalysisNode, findAnalysisNodeWithState, someAnalysisNode } from "./compiler/analysis-walk.js";
 import { emissionArray, EmissionMap, EmissionSet, EmissionTransaction, EmissionWeakMap, EmissionWeakSet } from "./compiler/emission-transaction.js";
 import type { LoweringServices, NativeFunctionBodyOptions } from "./compiler/lowering-services.js";
 import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
 import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
+import { resolve } from "node:path";
 import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
@@ -17,6 +18,7 @@ import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
 import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
 import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
+import { compileWindowIdentity } from "./compiler/window-events.js";
 import { writesUnobservedCanvasMetadata } from "./compiler/canvas-instrumentation.js";
 import { AsyncLowerer } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
@@ -27,7 +29,10 @@ import { emitPropertyAssignment, emitStructuralPropertyAssignment } from "./comp
 import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "./scene-node-transform-descriptor.js";
 import { probePixelsAsset, registerAsset, registerSpriteAtlasAsset, resolveBundledAsset } from "./compiler/assets.js";
 import { compileStaticFetch, compileStaticFetchMethod, staticFetchProperty } from "./compiler/static-fetch.js";
-import { BrowserErasure, browserGlobalNamed } from "./compiler/browser-erasure.js";
+import { BrowserErasure, browserGlobalNamed, browserDeploymentValue, browserEnvironmentPropertyValue, browserEnvironmentValue } from "./compiler/browser-erasure.js";
+import { deploymentUrl, deploymentEnvironment } from "./compiler/deployment.js";
+import { httpResponseProperty } from "./compiler/http.js";
+import { numberConstantValue } from "./compiler/number-intrinsics.js";
 import { compileBrowserFileProperty, isNativeBrowserFileExpression } from "./compiler/browser-file.js";
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
@@ -108,6 +113,7 @@ import {
     declaredInDomLibrary,
     handleCppType,
     isHandleKind,
+    isOpaqueReference,
     isPinnedType,
     isTypedArrayType,
     opaqueEngineValue,
@@ -119,6 +125,7 @@ import {
 } from "./compiler/data-types.js";
 import { ExpressionLowerer, PURE_NUMBER_FORMATTERS } from "./compiler/expressions.js";
 import { NativeFunctionLowerer, captureDataFunctionBody } from "./compiler/native-functions.js";
+import { emitReachableStatements } from "./compiler/loop-control.js";
 import {
     collectReboundSymbols,
     isModuleInitializerStatement,
@@ -437,6 +444,7 @@ export function compileSource(
     options: CompileOptions = {},
 ): CompileResult {
     const fileName = options.fileName ?? "input.ts";
+    const environment = deploymentEnvironment(options);
     const frontend = createCompilerProgram(source, fileName);
     const compile = (input: typeof frontend, workers?: ResolvedCompileOptions["workers"]): CompileResult => {
     const compiler = new Compiler(
@@ -449,6 +457,9 @@ export function compileSource(
             width: options.width ?? 1280,
             height: options.height ?? 720,
             search: options.search ?? "",
+            siteUrl: deploymentUrl(options).href,
+            environment,
+            ...(options.publicDir ? { publicDir: resolve(options.publicDir) } : {}),
             ...(workers ? { workers } : {}),
             ...(options.nativeHostUi && !workers?.namespace
                 ? { nativeHostUi: options.nativeHostUi }
@@ -732,6 +743,7 @@ class Compiler
         this.dataTypes = new DataTypeRegistry(
             checker,
             (node, message) => this.fail(node, message),
+            options.workers !== undefined,
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -756,8 +768,8 @@ class Compiler
             (expression) => this.evaluateBrowserValue(expression),
             (expression) => this.isBrowserOnlyExpression(expression),
             (identifier) => this.isDefaultLibraryIdentifier(identifier),
-            (value, expression) =>
-                this.dataLowerer.narrowOptional(value, expression),
+            (value, expression, assertedNonNull) =>
+                this.dataLowerer.narrowOptional(value, expression, assertedNonNull),
             (identifier) => this.lookup(identifier),
             (identifier) => this.lookupOptional(identifier),
             (node, message) => this.fail(node, message),
@@ -770,25 +782,14 @@ class Compiler
 
     public compile(): CompileResult {
         if (this.options.workers) this.reachFeature("platform:workers", this.sourceFile);
+        this.dataTypes.registerPartialRecords(this.program.getSourceFiles());
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
         this.emitImportedModuleInitializers();
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
-        for (const statement of entry) {
-            this.emitStatement(statement);
-            // The entry body is a function body like any other, and this is
-            // where the corpus family writes its settled guard: a helper the
-            // reference query answers folds `if (captureFrame === null)
-            // { return; }` to its taken branch, and everything after it is
-            // proved unreachable. Lowering it anyway would compile dead
-            // statements and record features -- a deterministic-random
-            // reach among them -- that generation has just shown nothing
-            // runs. The other five statement-list emitters already stop
-            // here; this one was the last that did not.
-            if (this.statementTerminatesAfterLowering(statement)) break;
-        }
+        emitReachableStatements(this, entry);
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
         if (this.features.has("engine:device-recovery")) {
@@ -1353,16 +1354,10 @@ class Compiler
         ) {
             return undefined;
         }
+        const booleanLike = (side: ts.Expression): boolean =>
+            (this.checker.getNonNullableType(this.checker.getTypeAtLocation(side)).flags & ts.TypeFlags.BooleanLike) !== 0;
+        if (!booleanLike(expression.left) || !booleanLike(expression.right)) return undefined;
         const settled = (side: ts.Expression): string | undefined => {
-            if (
-                (this.checker.getNonNullableType(
-                    this.checker.getTypeAtLocation(side),
-                ).flags &
-                    ts.TypeFlags.BooleanLike) ===
-                0
-            ) {
-                return undefined;
-            }
             const resolved = this.evaluator.resolveStaticExpression(side);
             if (resolved.kind === ts.SyntaxKind.TrueKeyword) return "true";
             if (resolved.kind === ts.SyntaxKind.FalseKeyword) return "false";
@@ -1371,17 +1366,21 @@ class Compiler
                 : ts.isPropertyAccessExpression(resolved)
                   ? this.compilePropertyAccess(resolved)
                   : undefined;
+            if (value?.kind === "json-null") return "nullish";
             return value?.kind === "boolean" &&
                 (value.cpp === "true" || value.cpp === "false")
                 ? value.cpp
                 : undefined;
         };
-        const left = settled(expression.left);
-        const right = settled(expression.right);
-        if (left === undefined || right === undefined) {
-            return undefined;
-        }
-        return String((left === right) === equals);
+        return this.probeEmission(() => {
+            const left = settled(expression.left);
+            const right = settled(expression.right);
+            if (left === undefined || right === undefined) return undefined;
+            // Nullable booleans can still distinguish null from undefined;
+            // only their inequality with a concrete boolean is established.
+            if (left === "nullish" && right === "nullish") return undefined;
+            return String((left === right) === equals);
+        });
     }
 
     public isBrowserOnlyHandler(handler: ts.Expression): boolean {
@@ -1403,6 +1402,7 @@ class Compiler
     }
 
     private unwrapEntryReporter(statement: ts.Statement): ts.Statement {
+        if (this.options.workers) return statement;
         if (!ts.isExpressionStatement(statement)) return statement;
         const call = this.unwrap(statement.expression);
         if (
@@ -1768,7 +1768,9 @@ class Compiler
             return 1;
         }
         const global = browserGlobalNamed(this, call.expression)?.text;
-        return (global === "setTimeout" || global === "setInterval" ||
+        if (ts.isPropertyAccessExpression(callee) && ["then", "catch", "finally"].includes(callee.name.text) &&
+            this.checker.getTypeAtLocation(callee.expression).symbol?.name === "Promise") return 0;
+        return (global === "setTimeout" || global === "setInterval" || global === "queueMicrotask" ||
             (includeFrameRegistrations && global === "requestAnimationFrame")) &&
             call.arguments.length >= 1
             ? 0
@@ -1881,6 +1883,12 @@ class Compiler
         const isDataSinkClosure = (node: ts.Node): boolean => {
             if (!isClosure(node)) return false;
             const parent = node.parent;
+            // Constructors and instance fields can retain the function for
+            // the object's lifetime, including a callback supplied as a
+            // parameter property. Mutable outer bindings remain shared.
+            if ((ts.isNewExpression(parent) && parent.arguments?.includes(node) &&
+                    !(ts.isIdentifier(parent.expression) && this.isDefaultLibraryIdentifier(parent.expression))) ||
+                (ts.isPropertyDeclaration(parent) && parent.initializer === node)) return true;
             if (ts.isCallExpression(parent) && parent.arguments.includes(node)) {
                 const callee = this.unwrap(parent.expression);
                 return (
@@ -1899,7 +1907,7 @@ class Compiler
                 const target = this.unwrap(parent.left);
                 const root = rootIdentifier(target, (chain) => this.unwrap(chain));
                 return (
-                    (ts.isPropertyAccessExpression(target) ||
+                    (ts.isIdentifier(target) || ts.isPropertyAccessExpression(target) ||
                         ts.isElementAccessExpression(target)) &&
                     (!(root && this.isDefaultLibraryIdentifier(root)) ||
                         (isDeterministicRandomRead(this, parent.left) && this.sourceUsesNativeParticleProvider()))
@@ -2397,6 +2405,7 @@ class Compiler
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
             this.defineVariable(declaration.name, value);
+            if (value.kind === "record") this.materializeAssignedRecordMethods(declaration.name, value);
             return;
         }
         if (value.kind === "data") {
@@ -2458,11 +2467,16 @@ class Compiler
                 // it be written through either.
                 !narrowed.readOnly;
             const wrapperCopiesIdentity =
+                isOpaqueReference(narrowed.dataType) ||
+                narrowed.dataType.kind === "tuple" ||
+                narrowed.dataType.kind === "product" ||
                 narrowed.dataType.kind === "vector" ||
                 narrowed.dataType.kind === "map" ||
                 narrowed.dataType.kind === "set" ||
                 narrowed.dataType.kind === "arraybuffer" ||
                 narrowed.dataType.kind === "dataview" ||
+                narrowed.dataType.kind === "bufferview" ||
+                narrowed.dataType.kind === "numberindex" ||
                 isTypedArrayType(narrowed.dataType);
             // These copies own their references; another wrapper's resize or
             // rebind cannot invalidate them like an interior C++ reference.
@@ -2656,6 +2670,49 @@ class Compiler
             delete stored.staticBoolean;
         }
         this.defineVariable(declaration.name, stored);
+    }
+
+    /** Mutable methods need a shared slot before callbacks can retain their owner. */
+    private materializeAssignedRecordMethods(name: ts.Identifier, owner: Value): void {
+        const initializers: Array<() => void> = [];
+        const callbacks = new Map(Object.entries(owner.recordProperties ?? {}).filter(([, value]) => value.kind === "callback"));
+        for (const [key, method] of Object.entries(owner.recordMethods ?? {})) callbacks.set(key,
+            {kind:"callback", cpp:"", callbackDeclaration:method, callbackRecordOwner:owner});
+        if (callbacks.size === 0) return;
+        const assigned = new Set<string>();
+        aliasedMutationScan(name, identifier => this.symbols.valueSymbol(identifier), {
+                aliasingInitializer: (expression, scan) => {
+                    const unwrapped = this.unwrap(expression);
+                    return ts.isIdentifier(unwrapped) && scan.namesAlias(unwrapped);
+                },
+                mutates: (node, scan) => {
+                    if (isAssignmentExpression(node) && ts.isPropertyAccessExpression(node.left) &&
+                        callbacks.has(node.left.name.text) && scan.namesAlias(node.left.expression)) assigned.add(node.left.name.text);
+                    return assigned.size === callbacks.size;
+                },
+        });
+        const ownerType = this.checker.getTypeAtLocation(name);
+        for (const key of assigned) {
+            const callback = callbacks.get(key)!;
+            const site = callback.callbackDeclaration ?? name;
+            const parameters = callback.nativeCallbackParameterTypes;
+            const property = ownerType.getProperty(key);
+            const declaredType = property && this.dataTypes.fromTsType(this.checker.getTypeOfSymbolAtLocation(property, name), name);
+            const type: DataType | undefined = declaredType?.kind === "function" ? declaredType : parameters?.every((parameter): parameter is DataType => parameter !== undefined)
+                ? { kind: "function", parameters: [...parameters],
+                    ...(callback.nativeCallbackReturnType ? { result: callback.nativeCallbackReturnType } : {}) }
+                : this.dataLowerer.dataTypeAt(site);
+            if (type?.kind !== "function") this.fail(site, "A mutable record method requires a concrete native function signature.");
+            const slot = this.allocateTemporaryCppName(`record_method_${key}`);
+            this.emit({kind:"declaration", type:"auto", name:slot, initializer:`bbl::js::make_gc_shared<${this.dataTypes.cppType(type)}>()`});
+            const capture = this.registerNativeBinding(slot);
+            owner.recordProperties ??= {};
+            owner.recordProperties[key] = {...this.dataLowerer.leafValue(`(*${slot})`, type), nativeLvalue:true,
+                sharedStorageCpp:slot, nativeCaptures:[capture]};
+            if (owner.recordMethods) delete owner.recordMethods[key];
+            initializers.push(() => this.emit(`(*${slot}) = ${this.dataLowerer.compileKnownValueForSink(callback, type, site)};`));
+        }
+        for (const initialize of initializers) initialize();
     }
 
     /**
@@ -2990,12 +3047,7 @@ class Compiler
                 parameters,
                 returnType,
                 () => {
-                    for (const statement of callbackBody.statements) {
-                        this.emitStatement(statement);
-                        if (this.statementTerminatesAfterLowering(statement)) {
-                            break;
-                        }
-                    }
+                    emitReachableStatements(this, callbackBody.statements);
                 },
             );
             parameterDeclarations = captured.parameterDeclarations;
@@ -3326,10 +3378,6 @@ class Compiler
         const declarationSymbol = ts.isIdentifier(name)
             ? this.symbols.valueSymbol(name)
             : undefined;
-        const sharedDataBinding =
-            sharedClosureStorage &&
-            ts.isIdentifier(name) &&
-            this.identifierIsRebound(name);
         let initializerReferencesBinding = false;
         const scannedFunctions = new EmissionSet<ts.FunctionLikeDeclaration>();
         if (declarationSymbol) {
@@ -3359,12 +3407,13 @@ class Compiler
             });
             visit(initializer);
         }
-        const selfReferentialStruct =
+        const selfReferentialBinding =
             initializerReferencesBinding &&
-            annotated.kind === "struct" &&
-            this.dataTypes.isReferenceStruct(annotated.name) &&
-            !sharedDataBinding;
-        if (selfReferentialStruct) {
+            (annotated.kind === "function" ||
+                (annotated.kind === "struct" && this.dataTypes.isReferenceStruct(annotated.name)));
+        const sharedDataBinding = !selfReferentialBinding &&
+            sharedClosureStorage && this.identifierIsRebound(name);
+        if (selfReferentialBinding) {
             // A method in the initializer closes over the JavaScript binding,
             // not over the empty value it has while that initializer is being
             // lowered. Keep the reference in a shared cell so the generated
@@ -3385,7 +3434,7 @@ class Compiler
                 ? this.compileValue(initializer)
                 : undefined;
         const boundCpp =
-            sharedDataBinding || selfReferentialStruct
+            sharedDataBinding || selfReferentialBinding
                 ? `(*${cppName})`
                 : cppName;
         if (
@@ -3396,7 +3445,7 @@ class Compiler
             )
         ) {
             const targetCpp =
-                sharedDataBinding || selfReferentialStruct
+                sharedDataBinding || selfReferentialBinding
                     ? this.allocateTemporaryCppName("shared_initial")
                     : cppName;
             this.dataLowerer.emitSpreadStructDeclaration(
@@ -3408,7 +3457,7 @@ class Compiler
                 this.emit(
                     { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(std::move(${targetCpp}))` },
                 );
-            } else if (selfReferentialStruct) {
+            } else if (selfReferentialBinding) {
                 this.emit(`(*${cppName}) = std::move(${targetCpp});`);
             }
         } else {
@@ -3426,7 +3475,7 @@ class Compiler
             this.emit(
                 sharedDataBinding
                     ? { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(${initializerCpp})` }
-                    : selfReferentialStruct
+                    : selfReferentialBinding
                       ? `(*${cppName}) = ${initializerCpp};`
                       : { kind: "declaration", type: this.dataTypes.cppType(annotated), name: cppName, initializer: initializerCpp },
             );
@@ -3478,8 +3527,17 @@ class Compiler
         const boundValue: Value = {
             kind: "data",
             cpp: boundCpp,
-            ...((sharedDataBinding || selfReferentialStruct) ? { sharedStorageCpp: cppName } : {}),
+            ...((sharedDataBinding || selfReferentialBinding) ? { sharedStorageCpp: cppName } : {}),
             dataType: annotated,
+            ...(annotated.kind === "struct" && initializerSnapshot?.kind === "record" &&
+                ts.isIdentifier(name) && !mutablePlainObject
+                ? { recordOwnKeys: Object.keys(initializerSnapshot.recordProperties ?? {}) }
+                : annotated.kind === "enummap" && ts.isObjectLiteralExpression(initializer) &&
+                    !this.identifierIsRebound(name)
+                  ? { recordOwnKeys: Object.keys(Object.fromEntries(
+                        this.dataLowerer.literalKeyOrder(initializer).map(key => [key, undefined]),
+                    )) }
+                : {}),
             // Shared storage does not change a selected object's presence.
             ...(ts.isConditionalExpression(initializer) && initializerSnapshot &&
                 !this.identifierIsRebound(name) &&
@@ -3495,11 +3553,11 @@ class Compiler
                 : Object.keys(staticRecordProperties).length > 0
                   ? { recordProperties: staticRecordProperties }
                   : {}),
-            ...(staticElements && !sharedDataBinding && !selfReferentialStruct
+            ...(staticElements && !sharedDataBinding && !selfReferentialBinding
                 ? { staticElements }
                 : {}),
         };
-        if (selfReferentialStruct) {
+        if (selfReferentialBinding) {
             this.rebindVariable(name, boundValue);
         } else {
             this.defineVariable(name, boundValue);
@@ -3563,6 +3621,13 @@ class Compiler
                             !ts.isNumericLiteral(index) ||
                             !Number.isInteger(Number(index.text))
                         ) {
+                            // Constant numeric tables already have a lazy native
+                            // representation for runtime reads. Keep their literal
+                            // values available to generation-time projections too.
+                            const literal = this.constArrayLiteral(identifier);
+                            if (literal && this.dataLowerer.isNumericTable(literal)) {
+                                return false;
+                            }
                             // A runtime index needs actual array storage
                             // even when the inferred literal is never
                             // resized.
@@ -3696,6 +3761,7 @@ class Compiler
                 aliasingInitializer: (initializer, scan) =>
                     isAlias(scan, initializer),
                 mutates: (node, scan) => {
+                    if (ts.isDeleteExpression(node) && isAlias(scan, node.expression)) return true;
                     if (
                         ts.isBinaryExpression(node) &&
                         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -3885,6 +3951,15 @@ class Compiler
                     return;
                 }
                 bindElement(element, elements[index]);
+            });
+            return;
+        }
+        if (value.dataType?.kind === "product") {
+            const temporary = this.allocateTemporaryCppName("destructure_tuple");
+            this.emit(`const auto ${temporary} = ${value.cpp};`);
+            bindings.forEach((element, index) => {
+                if (index === restIndex) this.fail(element, "Mixed tuple rest bindings require explicit lanes.");
+                bindElement(element, this.dataLowerer.fixedTupleElement({ ...value, cpp: temporary }, index, element));
             });
             return;
         }
@@ -4603,6 +4678,10 @@ class Compiler
         return true;
     }
 
+    public withAsyncActivation<T>(work: () => T): T {
+        return this.asyncLowerer.withActivation(work);
+    }
+
     public withOwnedCallbackBody<T>(body: () => T): T {
         this.frameCallbackDepth++;
         try { return body(); }
@@ -4633,7 +4712,7 @@ class Compiler
         const type = event === "message" ? "const bbl::pal::WorkerMessage&" : "bbl::pal::WorkerErrorEvent&";
         const callback = this.compilePlatformCallback(expression, { name, cppType: type },
             [{ kind: event === "message" ? "worker-message-event" : "worker-error-event", cpp: name }]);
-        return `bbl::js::Callback<void(${type})>(${callback.identity}u, ${callback.cpp})`;
+        return `bbl::js::Callback<void(${type})>(${callback.identity}, ${callback.cpp})`;
     }
 
     /**
@@ -4854,6 +4933,12 @@ class Compiler
     public compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value {
+        const environment = browserEnvironmentPropertyValue(this, expression);
+        if (environment) return environment;
+        const deployed = browserDeploymentValue(this, expression);
+        if (deployed === null) return {kind:"json-null", cpp:"std::nullopt"};
+        if (typeof deployed === "boolean") return {kind:"boolean", cpp:deployed ? "true" : "false", staticBoolean:deployed};
+        if (deployed !== undefined) return { kind: "string", cpp: this.cppString(deployed), staticString: deployed };
         const dataset = this.ui.primaryCanvasDataset(expression);
         if (dataset) return { kind: "string", cpp: `bbl::canvas_dataset(${this.requireDefaultEngine(expression)}, ${this.cppString(dataset)})`, dataType: { kind: "string" } };
         const canvas = compileCanvasValue(this, expression);
@@ -5040,6 +5125,12 @@ class Compiler
         // so `part.locked` and `part.size` read the same way whether the
         // receiver was just constructed or came out of an array.
         const owner = this.classLowerer.hydrate(rawOwner) ?? rawOwner;
+        const httpProperty = httpResponseProperty(this.dataLowerer, owner, expression.name.text);
+        if (httpProperty) return httpProperty;
+        if (owner.kind === "json-null" && (expression.questionDotToken ||
+            (ts.isOptionalChain(expression) && owner.optionalChainShortCircuited))) {
+            return {kind:"json-null", cpp:"std::nullopt", optionalChainShortCircuited:true};
+        }
         const property = expression.name.text;
         if (owner.kind === "physics-viewer" && property === "scene") {
             return { kind: "scene", cpp: `(${owner.cpp})->scene`,
@@ -5341,8 +5432,10 @@ class Compiler
                 const declaredMembers = declaredTsType.isUnion()
                     ? declaredTsType.types
                     : [declaredTsType];
+                const optionalProperty = this.checker.getTypeAtLocation(expression.expression).getProperty(property);
                 if (
                     declared?.kind === "optional" ||
+                    (optionalProperty !== undefined && (optionalProperty.flags & ts.SymbolFlags.Optional) !== 0) ||
                     (declared?.kind === "function" &&
                         declaredMembers.some(
                             (member) =>
@@ -7041,21 +7134,7 @@ class Compiler
                     // pinned callback contract discards, so it lowers as the
                     // statement it would have been written as.
                     if (ts.isBlock(unwrapped.body)) {
-                        for (const statement of unwrapped.body.statements) {
-                            this.emitStatement(statement);
-                            // A guard the compiler settled leaves only the branch
-                            // it takes, so an early return the query already
-                            // decided ends this body -- lowering what follows would
-                            // compile statements generation has proved unreachable,
-                            // and a narrowed optional past such a guard has no
-                            // native value to read. Every other body emitting a
-                            // statement list stops the same way.
-                            if (
-                                this.statementTerminatesAfterLowering(statement)
-                            ) {
-                                break;
-                            }
-                        }
+                        emitReachableStatements(this, unwrapped.body.statements);
                     } else {
                         this.emitExpressionAsStatement(unwrapped.body);
                     }
@@ -8615,11 +8694,11 @@ class Compiler
     public resolveRecordValue(expression: ts.Expression): Value | undefined {
         const unwrapped = this.unwrap(expression);
         const value = ts.isIdentifier(unwrapped)
-            ? this.lookupOptional(unwrapped)
+            ? this.lookupOptional(unwrapped) ?? compileWindowIdentity(this, unwrapped) ?? browserEnvironmentValue(this, unwrapped)
             : unwrapped.kind === ts.SyntaxKind.ThisKeyword
               ? this.activeThis()
               : ts.isPropertyAccessExpression(unwrapped)
-                ? this.resolveRecordMember(unwrapped)
+                ? this.resolveRecordMember(unwrapped) ?? browserEnvironmentValue(this, unwrapped)
                 : undefined;
         return value?.kind === "record" ? value : undefined;
     }
@@ -9503,6 +9582,8 @@ class Compiler
 
     public emitNativeReturn(statement: ts.ReturnStatement): void {
         const frame = this.returnFrames.at(-1);
+        const coroutine = frame?.kind === "native" && frame.coroutine;
+        const returnKeyword = coroutine ? "co_return" : "return";
         const returnType = this.activeNativeReturnType();
         if (returnType === undefined) {
             this.fail(statement, "Return outside a native function.");
@@ -9521,7 +9602,7 @@ class Compiler
                 // value-returning expressions accepted by a void callback.
                 this.emitExpressionAsStatement(statement.expression);
             }
-            this.emit("return;");
+            this.emit(coroutine ? "co_return bbl::js::PromiseVoid{};" : "return;");
             return;
         }
         if (!statement.expression) {
@@ -9531,17 +9612,17 @@ class Compiler
             );
         }
         if (frame?.kind === "native" && frame.compileReturn) {
-            this.emit(`return ${frame.compileReturn(statement.expression, returnType)};`);
+            this.emit(`${returnKeyword} ${frame.compileReturn(statement.expression, returnType)};`);
             return;
         }
         if (returnType.kind === "number") {
             this.emit(
-                `return ${this.compileNumber(statement.expression, "double")};`,
+                `${returnKeyword} ${this.compileNumber(statement.expression, "double")};`,
             );
             return;
         }
         if (returnType.kind === "boolean") {
-            this.emit(`return ${this.compileCondition(statement.expression)};`);
+            this.emit(`${returnKeyword} ${this.compileCondition(statement.expression)};`);
             return;
         }
         if (this.dataTypes.carriesBorrowedPlatformEvent(returnType)) {
@@ -9553,8 +9634,16 @@ class Compiler
             );
         }
         this.emit(
-            `return ${this.dataLowerer.compileForSink(statement.expression, returnType)};`,
+            `${returnKeyword} ${this.dataLowerer.compileForSink(statement.expression, returnType)};`,
         );
+    }
+
+    public emitNativeThrow(errorCpp: string): void {
+        const frame = this.returnFrames.at(-1);
+        if (frame?.kind === "native" && frame.coroutine) {
+            const type = frame.type === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(frame.type);
+            this.emit(`co_return [&]() -> ${type} { throw ${errorCpp}; }();`);
+        } else this.emit(`throw ${errorCpp};`);
     }
 
     public emitDataAssignment(expression: ts.BinaryExpression): boolean {
@@ -10209,7 +10298,7 @@ class Compiler
     }
 
     public resolveBundledAsset(source: string): string {
-        return resolveBundledAsset(source);
+        return resolveBundledAsset(source, this.options.fileName, this.options);
     }
 
     /**
@@ -10538,7 +10627,7 @@ class Compiler
     private platformEventCallbackIdentity(
         callback: Value,
         node: ts.Node,
-    ): number {
+    ): string {
         return this.platform.platformEventCallbackIdentity(callback, node);
     }
 
@@ -10611,7 +10700,24 @@ class Compiler
         documentHiddenCpp?: string,
         captureByValue = true,
         assignIdentity = true,
-    ): { cpp: string; identity: number } {
+    ): { cpp: string; identity: string } {
+        const stored = this.probeEmission(() => {
+            const value = this.compileValue(callback);
+            return value.kind === "data" && value.dataType?.kind === "function" ? value : undefined;
+        });
+        if (stored) {
+            this.refuseEscapingPlatformEventCapturesIn(callback);
+            const snapshot = this.allocateTemporaryCppName("platform_callback");
+            this.emit({ kind: "declaration", type: "const auto", name: snapshot, initializer: stored.cpp });
+            const binding = this.registerNativeBinding(snapshot);
+            const closure = this.captureManagedClosureLines(() => {
+                if (parameter) this.registerNativeBinding(parameter.name);
+                this.useNativeBinding(binding);
+                this.emitDiscardedValue(this.dataLowerer.compileFunctionValueCall({...stored, cpp:snapshot}, values, callback));
+            }, captureByValue ? false : "entry");
+            return { identity: assignIdentity ? this.platformEventCallbackIdentity({...stored, cpp:snapshot}, callback) : "0u",
+                cpp: renderClosure(closure, parameter ? `[[maybe_unused]] ${parameter.cppType} ${parameter.name}` : "") };
+        }
         const previousHidden = this.platformDocumentHiddenCpp;
         const previousFrameFloor = this.frameCallbackScopeFloor;
         const previousPlatformEventCaptureFloor =
@@ -10632,7 +10738,7 @@ class Compiler
         this.platformDocumentHiddenCpp = documentHiddenCpp;
         this.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
-        let identity: number | undefined;
+        let identity: string | undefined;
         try {
             compiled = this.captureManagedClosureLines(() => {
                 if (parameter) this.registerNativeBinding(parameter.name);
@@ -10735,7 +10841,7 @@ class Compiler
             );
         }
         return {
-            identity: identity ?? 0,
+            identity: identity ?? "0u",
             cpp: renderClosure(compiled, cppParameter),
         };
     }
@@ -11149,7 +11255,8 @@ class Compiler
 
     private refuseEscapingPlatformEventCapturesIn(
         node: ts.Node,
-        floor = this.escapingPlatformEventCaptureFloor,
+        floor = this.escapingPlatformEventCaptureFloor ??
+            (this.returnFrames.at(-1)?.kind === "native" ? this.variableScopes.length : undefined),
     ): void {
         if (floor === undefined) return;
         const roots: ts.Node[] = [node];
@@ -11252,7 +11359,7 @@ class Compiler
         seen.add(value);
         if (
             value.kind === "platform-keyboard-event" ||
-            value.kind === "platform-mouse-event"
+            value.kind === "platform-mouse-event" || value.nativeErrorEvent
         ) {
             return true;
         }
@@ -12194,6 +12301,24 @@ class Compiler
         if (!dataType || dataType.kind === "handle") {
             return this.compileValue(argument);
         }
+        let receivingDeclaration: ts.Node | undefined = argument.parent;
+        while (receivingDeclaration && !ts.isVariableDeclaration(receivingDeclaration) && !ts.isStatement(receivingDeclaration)) {
+            receivingDeclaration = receivingDeclaration.parent;
+        }
+        const receivingName = receivingDeclaration && ts.isVariableDeclaration(receivingDeclaration) &&
+            ts.isIdentifier(receivingDeclaration.name) ? receivingDeclaration.name : undefined;
+        const receivingSymbol = receivingName && !this.lookupOptional(receivingName)
+            ? this.symbols.valueSymbol(receivingName) : undefined;
+        if (dataType.kind === "struct" && this.dataTypes.carriesFunction(dataType) && receivingSymbol &&
+            someAnalysisNode(argument, node => ts.isIdentifier(node) && this.symbols.valueSymbol(node) === receivingSymbol)) {
+            // Inline class fields can retain callback wiring until a native
+            // storage boundary demands it. Materializing here would compile
+            // closures before the variable receiving this instance exists.
+            const value = this.compileValue(argument);
+            return value.kind === "record" ? value : this.dataLowerer.leafValue(
+                this.dataLowerer.compileKnownValueForSink(value, dataType, argument), dataType,
+            );
+        }
         if (dataType.kind === "function") {
             const unwrappedCallback = this.unwrap(argument);
             const bound = ts.isIdentifier(unwrappedCallback)
@@ -12352,10 +12477,17 @@ class Compiler
         if (value.kind === "callback") {
             return this.materializeEscapingValue(value, label);
         }
+        if (value.kind === "data" && isOpaqueReference(value.dataType)) {
+            const cpp = this.allocateTemporaryCppName(label);
+            this.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: value.cpp });
+            const pinned = { ...value, cpp, nativeBinding: true as const };
+            this.describeNativeValue(pinned);
+            return pinned;
+        }
         if (isHandleKind(value.kind) && !value.nativeBinding) {
             const cpp = this.allocateTemporaryCppName(label);
-            this.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: value.cpp, attributes: "[[maybe_unused]] " });
-            const pinned = { ...value, cpp, nativeBinding: true as const };
+            this.emit({ kind: "declaration", type: value.kind === "engine" ? "auto&" : "const auto", name: cpp, initializer: value.cpp, attributes: "[[maybe_unused]] " });
+            const pinned = { ...value, cpp, ...(value.kind === "engine" ? { engineCpp: cpp } : {}), nativeBinding: true as const };
             this.describeNativeValue(pinned);
             return pinned;
         }
@@ -12384,7 +12516,8 @@ class Compiler
                 ? "double"
                 : value.kind === "boolean" && value.staticBoolean === undefined
                   ? "bool"
-                  : undefined;
+                  : (value.kind === "string" || value.dataType?.kind === "string") && value.staticString === undefined
+                    ? "std::string" : undefined;
         if (!cppType) return value;
         const cppName = this.allocateTemporaryCppName(label);
         this.emit({ kind: "declaration", type: `const ${cppType}`, name: cppName, initializer: value.cpp });
@@ -12587,7 +12720,7 @@ class Compiler
                 const type = property.kind === "number" ? CPP_SCALAR.number
                     : property.kind === "boolean" ? CPP_SCALAR.boolean : CPP_SCALAR.string;
                 const initial = property.kind === "number"
-                    ? staticNumber === undefined ? property.cpp : doubleLiteral(staticNumber)
+                    ? staticNumber === undefined ? property.cpp : numberConstantValue(staticNumber).cpp
                     : property.kind === "boolean" ? property.cpp : this.cppString(property.staticString!);
                 // Snapshot in property order; the shared allocation follows all initializers.
                 this.emit({ kind: "declaration", type: `const ${type}`, name: cppName, initializer: initial });
@@ -12603,7 +12736,7 @@ class Compiler
                 this.emit(
                     { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<double>(${property.staticNumber === undefined
                             ? property.cpp
-                            : doubleLiteral(property.staticNumber)})`, attributes: "[[maybe_unused]] " },
+                            : numberConstantValue(property.staticNumber).cpp})`, attributes: "[[maybe_unused]] " },
                 );
                 properties[name] = {
                     ...dynamicProperty,
@@ -12731,7 +12864,9 @@ class Compiler
                       }),
                       recordScopes: [...this.variableScopes],
                       ...(this.isInRuntimeIteration() ||
-                      this.isInNativeFunctionBody()
+                      this.isInNativeFunctionBody() ||
+                      (lexicalThis?.dataType?.kind === "struct" &&
+                          this.dataTypes.isClassStruct(lexicalThis.dataType.name))
                           ? {
                                 repeatedCallbackEvaluation: true as const,
                             }
@@ -12962,7 +13097,7 @@ class Compiler
                       : "auto";
         const initializerCpp =
             value.kind === "number" && value.staticNumber !== undefined
-                ? doubleLiteral(value.staticNumber)
+                ? numberConstantValue(value.staticNumber).cpp
                 : value.cpp;
         const maybeUnused =
             value.kind === "number" || value.kind === "boolean" || parameter ? "[[maybe_unused]] " : "";

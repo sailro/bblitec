@@ -16,17 +16,8 @@ function expressionBoolean(_dataType: DataType<"boolean">, lowerer: DataSinkHost
 
 function expressionBorrowedPlatformEvent(dataType: DataType<"borrowed-platform-event">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
     const value = lowerer.context.compileValue(unwrapped);
-    const compatible = dataType.event === "event"
-        ? value.kind === "platform-keyboard-event" ||
-            value.kind === "platform-mouse-event"
-        : value.kind ===
-            `platform-${dataType.event}-event`;
-    if (!compatible) {
-        lowerer.context.fail(unwrapped, `A borrowed DOM ${dataType.event === "event" ? "Event" : dataType.event === "mouse" ? "MouseEvent" : "KeyboardEvent"} must come from the active synchronous platform callback.`);
-    }
-    return dataType.event === "event"
-        ? `bbl::js::BorrowedEvent(${value.cpp})`
-        : `${lowerer.context.dataTypes.cppType(dataType)}(${value.cpp})`;
+    return valueBorrowedPlatformEvent(dataType, lowerer, value, unwrapped) ??
+        lowerer.context.fail(unwrapped, `A borrowed DOM ${dataType.event} event must come from the active synchronous platform callback.`);
 }
 
 function expressionString(dataType: DataType<"string">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
@@ -34,11 +25,17 @@ function expressionString(dataType: DataType<"string">, lowerer: DataSinkHost, _
 }
 
 function expressionJson(dataType: DataType<"json">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
-    // A parsed document is only ever produced by `JSON.parse`,
-    // so a JSON sink is filled by a value that already is one.
-    const value = lowerer.requireDataValue(unwrapped, dataType);
-    lowerer.markEscaped(value);
-    return value.cpp;
+    return lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), dataType, unwrapped);
+}
+
+function valueJson(_dataType: DataType<"json">, lowerer: DataSinkHost, value: Value): string | undefined {
+    if (isJsonValue(value)) {
+        lowerer.markEscaped(value);
+        return value.cpp;
+    }
+    if (value.kind === "json-null") return value.cpp === "std::nullopt"
+        ? "bbl::js::JsonValue{}" : "bbl::js::JsonValue::null_value()";
+    return undefined;
 }
 
 function valueNumber(_dataType: DataType<"number">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
@@ -64,7 +61,9 @@ function valueBoolean(_dataType: DataType<"boolean">, _lowerer: DataSinkHost, va
 }
 
 function valueBorrowedPlatformEvent(dataType: DataType<"borrowed-platform-event">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
-    const compatible = dataType.event === "event"
+    const compatible = dataType.event === "error" || dataType.event === "rejection"
+        ? value.nativeErrorEvent && value.recordProperties?.type?.staticString === (dataType.event === "error" ? "error" : "unhandledrejection")
+        : dataType.event === "event"
         ? value.kind === "platform-keyboard-event" ||
             value.kind === "platform-mouse-event"
         : value.kind ===
@@ -101,10 +100,31 @@ function valueString(_dataType: DataType<"string">, lowerer: DataSinkHost, value
     return undefined;
 }
 
-export const scalarsSinks: DataSinkOperations<"number" | "boolean" | "string" | "json" | "borrowed-platform-event"> = {
+export const scalarsSinks: DataSinkOperations<"http-response" | "promise" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "json" | "borrowed-platform-event"> = {
+    "http-response": {
+        expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
+        value: (_type, _lowerer, value) => value.dataType?.kind === "http-response" ? value.cpp : undefined,
+    },
+    promise: {
+        expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
+        value: (type, lowerer, value) => value.kind === "promise" && value.promiseType ===
+            (type.result ? lowerer.context.dataTypes.cppType(type.result) : "bbl::js::PromiseVoid") ? value.cpp : undefined,
+    },
+    storage: {
+        expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
+        value: (_type, _lowerer, value) => value.dataType?.kind === "storage" ? value.cpp : undefined,
+    },
+    "date-time-format": {
+        expression: (type, lowerer, _expression, unwrapped) => lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (_type, _lowerer, value) => value.dataType?.kind === "date-time-format" ? value.cpp : undefined,
+    },
+    "date": {
+        expression: (type, lowerer, _expression, unwrapped) => lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (_type, _lowerer, value) => value.dataType?.kind === "date" ? value.cpp : undefined,
+    },
     "number": { expression: expressionNumber, value: valueNumber },
     "boolean": { expression: expressionBoolean, value: valueBoolean },
     "string": { expression: expressionString, value: valueString },
-    "json": { expression: expressionJson, value: () => undefined },
+    "json": { expression: expressionJson, value: valueJson },
     "borrowed-platform-event": { expression: expressionBorrowedPlatformEvent, value: valueBorrowedPlatformEvent }
 };

@@ -208,17 +208,21 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
     return handle;
 }
 
-UiElementHandle ui_get_element_by_id(
-    Engine& engine,
-    std::string_view id) {
-    for (std::uint32_t index = 0; index < engine.ui_elements.size(); ++index) {
-        const auto attribute = engine.ui_elements[index].attributes.find("id");
-        if (
-            attribute != engine.ui_elements[index].attributes.end() &&
-            attribute->second == id) {
-            return UiElementHandle{index};
-        }
-    }
+js::Nullable<UiElementHandle> ui_find_element_by_id(Engine& engine, std::string_view id) {
+    if (id.empty()) return std::nullopt;
+    const auto visit = [&](auto&& self, UiElementHandle handle) -> js::Nullable<UiElementHandle> {
+        const auto& record = ui_element(engine, handle);
+        const auto attribute = record.attributes.find("id");
+        if (attribute != record.attributes.end() && attribute->second == id) return handle;
+        for (const auto child : record.children) if (const auto found = self(self, child)) return found;
+        return std::nullopt;
+    };
+    for (const auto root : engine.ui_root_children) if (const auto found = visit(visit, root)) return found;
+    return std::nullopt;
+}
+
+UiElementHandle ui_get_element_by_id(Engine& engine, std::string_view id) {
+    if (const auto found = ui_find_element_by_id(engine, id)) return *found;
     throw std::runtime_error(
         "Audited native host UI element id was not materialized: " +
         std::string(id));

@@ -10859,7 +10859,7 @@ DawnMesh upload_dawn_scene_mesh(
             // fallback must reserve the established capacity, not one
             // row, before the versioned upload fills it.
             std::vector<float> instance_colors =
-                mesh_record.instance_colors;
+                instance_colors_for_upload(mesh_record);
             instance_colors.resize(
                 std::max(
                     instance_colors.size(),
@@ -13228,7 +13228,7 @@ public:
                         // may still be the shorter one; pad to the pool
                         // the way registration does.
                         std::vector<float> instance_colors =
-                            mesh.instance_colors;
+                            instance_colors_for_upload(mesh);
                         instance_colors.resize(rows * 4, 1.0f);
                         wgpuBufferRelease(dawn_mesh.instance_colors);
                         dawn_mesh.instance_colors = create_buffer(
@@ -13271,16 +13271,16 @@ public:
                     }
 #endif
 #if BBLITE_GPU_INSTANCE_COLORS
-                    if (
-                        dawn_mesh.instance_colors &&
-                        mesh.instance_colors.size() >=
-                            active_count * 4) {
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            dawn_mesh.instance_colors,
-                            0,
-                            mesh.instance_colors.data(),
-                            active_count * 4 * sizeof(float));
+                    if (dawn_mesh.instance_colors) {
+                        const auto colors = instance_colors_for_upload(mesh);
+                        if (colors.size() >= active_count * 4) {
+                            wgpuQueueWriteBuffer(
+                                state.queue,
+                                dawn_mesh.instance_colors,
+                                0,
+                                colors.data(),
+                                active_count * 4 * sizeof(float));
+                        }
                     }
 #endif
                 }

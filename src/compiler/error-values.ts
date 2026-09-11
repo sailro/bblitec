@@ -53,6 +53,8 @@ export function errorValue(
             ...base.recordProperties,
             message,
             name: { kind: "string", cpp: cppString(name), staticString: name },
+            // Native exceptions do not carry a JavaScript engine's optional stack string.
+            stack: { kind: "json-null", cpp: "std::nullopt" },
         },
     };
 }

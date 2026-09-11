@@ -28,6 +28,7 @@ export const featureSources: Record<Feature, string[]> = {
     "animation:gltf-group-mask": [],
     "core": ["src/pal.cpp"],
     "platform:workers": [],
+    "platform:http": ["src/pal_http.cpp"],
     "platform:window": ["src/pal_window_realm.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
     "engine:device-recovery": [],
@@ -273,6 +274,7 @@ export const featureSources: Record<Feature, string[]> = {
     // and the codecs generated beside the records they serialize. What the
     // feature brings is the parser library CMake links behind it.
     "data:json": [],
+    "data:locale": ["src/pal_locale.cpp"],
     // Web Storage's platform half. `localStorage` has no Babylon
     // declaration behind it, so like the frame conductor's timers it is a
     // PAL service -- and its own translation unit, so every other
@@ -515,6 +517,10 @@ export function renderMainCpp(projection: MainCppProjection): string {
         (features.includes("data:json")
             ? "#include <bblite/js_json.hpp>\n"
             : "") +
+        (features.includes("data:locale")
+            ? "#include <bblite/pal_locale.hpp>\n"
+            : "") +
+        (features.includes("platform:http") ? "#include <bblite/pal_http.hpp>\n" : "") +
         (features.includes("storage:local")
             ? "#include <bblite/js_storage.hpp>\n"
             : "") +

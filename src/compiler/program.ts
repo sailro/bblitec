@@ -1,7 +1,6 @@
 import { EmissionMap } from "./emission-transaction.js";
 import {
     dirname,
-    relative,
     resolve,
     sep,
 } from "node:path";
@@ -160,8 +159,8 @@ export interface CompilerProgram {
     checker: ts.TypeChecker;
     sourceFile: ts.SourceFile;
     /**
-     * Every file the program read from inside the repository -- the entry,
-     * the modules it imports, and any repository-local declaration file --
+     * Every local file the program read -- the entry, the modules it imports,
+     * and local declaration files, including sources outside this repository --
      * as sorted, forward-slash paths relative to the repository root. The
      * pinned package under `node_modules` is excluded: its identity is the
      * lock file's, not a path's. This is the input list generation records
@@ -195,6 +194,7 @@ export function createCompilerProgram(
         // @types/node) change browser globals such as setInterval from their
         // DOM number handle into NodeJS.Timeout.
         types: [],
+        allowJs: true,
         noEmit: true,
         skipLibCheck: true,
         strict: true,
@@ -218,7 +218,6 @@ export function createCompilerProgram(
                     source,
                     languageVersion,
                     true,
-                    ts.ScriptKind.TS,
                 );
             }
             const rawText = rawTextModuleSource(path, defaultHost);
@@ -283,7 +282,7 @@ export function createCompilerProgram(
                         },
                     };
                 }
-                return ts.resolveModuleName(
+                const resolved = ts.resolveModuleName(
                     moduleName,
                     containingFile,
                     compilerOptions,
@@ -291,9 +290,24 @@ export function createCompilerProgram(
                     undefined,
                     redirectedReference,
                 );
+                const implementation = resolve(dirname(containingFile), moduleName);
+                const extension = moduleName.endsWith(".mjs") ? ts.Extension.Mjs :
+                    moduleName.endsWith(".cjs") ? ts.Extension.Cjs : moduleName.endsWith(".js") ? ts.Extension.Js : undefined;
+                if (extension && moduleName.startsWith(".") &&
+                    resolved.resolvedModule?.resolvedFileName.match(/\.d\.[cm]?ts$/) &&
+                    defaultHost.fileExists(implementation)) {
+                    // A declaration describes a local JavaScript module but
+                    // cannot supply its executable initializer or functions.
+                    // Read the implementation through the same typed pipeline.
+                    return { resolvedModule: {resolvedFileName: implementation, extension, isExternalLibraryImport: false} };
+                }
+                return resolved;
             }),
     };
-    const program = ts.createProgram([rootName], options, host);
+    // Include the pin's WebGPU peer typings explicitly, including for entries
+    // outside this checkout. Keep unrelated ambient packages excluded above.
+    const webGpuTypes = resolve(repositoryRoot, "node_modules", "@webgpu", "types", "dist", "index.d.ts");
+    const program = ts.createProgram([rootName, webGpuTypes], options, host);
     const sourceFile = program.getSourceFile(rootName);
     if (!sourceFile) {
         throw new Error(`Unable to create TypeScript program for '${fileName}'.`);
@@ -302,11 +316,7 @@ export function createCompilerProgram(
     const localFiles = program
         .getSourceFiles()
         .map((file) => resolve(rawTextSourcePath(file.fileName) ?? file.fileName))
-        .filter(
-            (path) =>
-                !path.includes(nodeModules) &&
-                !relative(repositoryRoot, path).startsWith(".."),
-        )
+        .filter((path) => !path.includes(nodeModules))
         .map((path) => repositoryRelativePath(repositoryRoot, path))
         .sort();
     return {

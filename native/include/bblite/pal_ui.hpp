@@ -17,6 +17,7 @@ namespace bbl {
 
 /** DOM-lowering entry points. They mutate only the retained UI IR. */
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
+js::Nullable<UiElementHandle> ui_find_element_by_id(Engine& engine, std::string_view id);
 UiElementHandle ui_get_element_by_id(
     Engine& engine,
     std::string_view id);

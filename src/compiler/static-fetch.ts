@@ -39,6 +39,7 @@ export interface StaticFetchContext
         | "lookupOptional"
         | "registerAsset"
         | "reachJsData"
+        | "probeEmission"
         | "fail"
     > {}
 
@@ -76,6 +77,7 @@ export function compileStaticFetch(
     const source = resolveBundledAsset(
         logicalSource,
         context.options.fileName,
+        context.options,
     );
     return {
         kind: "static-fetch-response",
@@ -97,8 +99,8 @@ export function compileDynamicPackagedAsset(
     accepts: (source: string) => boolean = () => true,
 ): Value | undefined {
     return (
-        compileDynamicDirectoryFetch(context, expression, kind, accepts) ??
-        compileDynamicCandidateFetch(context, expression, kind, accepts)
+        context.probeEmission(() => compileDynamicDirectoryFetch(context, expression, kind, accepts)) ??
+        context.probeEmission(() => compileDynamicCandidateFetch(context, expression, kind, accepts))
     );
 }
 
@@ -131,6 +133,7 @@ function compileDynamicCandidateFetch(
             const source = resolveBundledAsset(
                 logicalSource,
                 context.options.fileName,
+                context.options,
             );
             try {
                 readAssetBytesSync(source, context.options.fileName);
@@ -321,7 +324,7 @@ function compileDynamicDirectoryFetch(
     } else {
         return undefined;
     }
-    if (logicalPrefix === undefined || !suffix) return undefined;
+    if (logicalPrefix === undefined || !suffix || suffix.staticString !== undefined) return undefined;
     if (
         suffix.kind !== "string" &&
         !(
@@ -334,16 +337,14 @@ function compileDynamicDirectoryFetch(
     const logicalBase = logicalPrefix.endsWith("/")
         ? logicalPrefix
         : `${logicalPrefix}/`;
-    // Network prefixes cannot name a repository directory. A fully static
-    // URL falls through to the ordinary fetch path, while a genuinely
-    // dynamic network fetch retains that path's static-URL diagnostic.
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(logicalBase)) {
-        return undefined;
-    }
     const resolvedBase = resolveBundledAsset(
         logicalBase,
         context.options.fileName,
+        context.options,
     );
+    // Deployment URLs may resolve to public files; other network prefixes
+    // still cannot supply a closed directory of packaged assets.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(resolvedBase)) return undefined;
     const directory = resolve(
         dirname(resolve(context.options.fileName)),
         resolvedBase,

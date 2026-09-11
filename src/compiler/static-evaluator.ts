@@ -51,6 +51,7 @@ import {
     isAssignmentExpression,
     isUpdateExpression,
     objectProperty,
+    hasNonNullAssertion,
     unwrapExpression,
     argumentAt,
 } from "./syntax.js";
@@ -97,6 +98,7 @@ type IsBrowserOnlyExpression = (
 type NarrowOptional = (
     value: Value,
     expression: ts.Expression,
+    assertedNonNull?: boolean,
 ) => Value;
 /**
  * A plain-data tuple given a native home, as the name of the local it
@@ -801,7 +803,8 @@ export class StaticEvaluator {
             const resolved = this.resolveCall(unwrapped);
             const value = this.narrowOptional(
                 resolved,
-                unwrapped,
+                expression,
+                hasNonNullAssertion(expression),
             );
             const optionalNumber = castOptionalNumber(value);
             if (optionalNumber !== undefined) {
@@ -897,6 +900,10 @@ export class StaticEvaluator {
             !value.parameterBinding &&
             !value.nativeBinding
         ) {
+            if (!Number.isFinite(value.staticNumber)) {
+                const cpp = numberConstantValue(value.staticNumber).cpp;
+                return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
+            }
             return precision === "float"
                 ? cppFloatLiteral(value.staticNumber)
                 : cppDoubleLiteral(value.staticNumber);
@@ -1534,6 +1541,8 @@ export class StaticEvaluator {
     ): string | undefined {
         const unwrapped =
             this.resolveStaticExpression(expression);
+        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
+        if (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined" && !this.lookupOptional(unwrapped)) return "undefined";
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNoSubstitutionTemplateLiteral(unwrapped)

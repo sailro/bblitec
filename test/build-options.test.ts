@@ -63,7 +63,7 @@ test("the repository manifest automatically feeds the full dev set", () => {
         developmentVcpkgFeatures(
             readFileSync("native/vcpkg.json", "utf8"),
         ),
-        ["jpeg", "navigation", "navigation-crowd", "navigation-tile-cache", "physics", "png", "text-layout", "ui", "ui-svg", "webp"],
+        ["http", "jpeg", "locale", "navigation", "navigation-crowd", "navigation-tile-cache", "physics", "png", "text-layout", "ui", "ui-svg", "webp"],
     );
 });
 

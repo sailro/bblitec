@@ -5,8 +5,8 @@ import type { Value } from "../types.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
-function expressionOptional(dataType: DataType<"optional">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
-    return lowerer.compileOptionalSink(unwrapped, dataType);
+function expressionOptional(dataType: DataType<"optional">, lowerer: DataSinkHost, expression: ts.Expression, _unwrapped: ts.Expression): string {
+    return lowerer.compileOptionalSink(expression, dataType);
 }
 
 function expressionVector(dataType: DataType<"vector">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
@@ -166,7 +166,21 @@ function valueTuple(dataType: DataType<"tuple">, lowerer: DataSinkHost, value: V
     return undefined;
 }
 
-export const containersSinks: DataSinkOperations<"optional" | "vector" | "map" | "set" | "span" | "tuple" | "table"> = {
+function valueProduct(dataType: DataType<"product">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (value.kind === "tuple" && value.tupleElements?.length === dataType.elements.length) {
+        lowerer.context.reachJsData();
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${value.tupleElements.map((entry, index) =>
+            lowerer.compileKnownValueForSink(entry, dataType.elements[index]!, node)).join(", ")}}`;
+    }
+    return value.dataType && dataTypesEqual(value.dataType, dataType) ? value.cpp : undefined;
+}
+
+export const containersSinks: DataSinkOperations<"optional" | "vector" | "map" | "set" | "span" | "tuple" | "product" | "table"> = {
+    "product": {
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
+        value: valueProduct,
+    },
     "optional": { expression: expressionOptional, value: valueOptional },
     "vector": { expression: expressionVector, value: valueVector },
     "map": { expression: expressionMapOrSet, value: valueMap },

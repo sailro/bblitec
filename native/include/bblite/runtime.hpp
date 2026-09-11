@@ -1,5 +1,6 @@
 #pragma once
 #include <bblite/checked_handles.hpp>
+#include <bblite/pal_audio_types.hpp>
 
 #include <bblite/js_callback.hpp>
 #include <bblite/snapshot_list.hpp>
@@ -30,6 +31,12 @@
 namespace bbl {
 
 struct Engine;
+/** The first OS language preference, with a hyphenated region when available. */
+[[nodiscard]] std::string preferred_language();
+[[nodiscard]] std::string native_platform();
+[[nodiscard]] double logical_processor_count();
+[[nodiscard]] const void* native_navigator_identity();
+[[nodiscard]] const void* native_performance_identity();
 struct ShadowGeneratorRecord;
 struct PropertyAnimationManagerRecord;
 
@@ -2202,6 +2209,8 @@ struct MeshRecord {
     // The per-instance RGBA stream `setThinInstanceColors` bound, as the
     // pin's own tightly-packed float4 rows. Empty where the mesh has none.
     std::vector<float> instance_colors;
+    std::shared_ptr<js::F32Array> instance_color_source;
+    double thin_instance_cull_bounds_pad = 0;
     // `Mesh._linePointCounts`: the polyline sizes a line system was built
     // from, kept because `updateLineSystem` refuses a changed connectivity
     // rather than rewriting a mesh whose segments moved. The flag beside it
@@ -2215,6 +2224,10 @@ struct MeshRecord {
     std::vector<float> morph_storage_weights;
     std::uint64_t morph_weights_version = 0;
 };
+
+inline bool has_instance_colors(const MeshRecord& mesh) {
+    return mesh.instance_color_source || !mesh.instance_colors.empty();
+}
 
 inline ModelVertex detached_imported_vertex(const MeshRecord& mesh, const ModelGeometry& geometry, std::size_t index) {
     ModelVertex vertex = geometry.bind_vertices.at(index);
@@ -5085,7 +5098,10 @@ void upload_thin_instance_matrices(
 void set_thin_instance_colors(
     Engine& engine,
     MeshHandle mesh,
-    const std::vector<float>& colors);
+    const js::F32Array& colors);
+void set_thin_instance_color(Engine& engine, MeshHandle mesh, double index,
+    double r, double g, double b, double a);
+void set_thin_instance_cull_bounds_pad(Engine& engine, MeshHandle mesh, double pad);
 /** Restore a baked imported mesh's local pivot before replacing its rotation. */
 void prepare_imported_mesh_quaternion_write(
     Engine& engine,

@@ -944,7 +944,7 @@ class GeneratedSourceWriter {
 
         this.writeSource(
             "upstream/src/engine.cpp",
-            new EngineLowerer(context).lowerCore(features.includes("platform:workers")),
+            new EngineLowerer(context).lowerCore(features.includes("platform:workers"), features.includes("backend:sdl")),
             generated,
         );
         if (features.includes("engine:device-recovery")) this.writeSource("upstream/src/device_recovery.cpp", lowerDeviceRecovery(context), generated);

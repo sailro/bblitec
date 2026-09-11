@@ -26,6 +26,7 @@ template <typename T> struct State {
     std::variant<std::monostate, T, std::exception_ptr> outcome;
     std::vector<Reaction> reactions;
     bool resolving = false;
+    bool handled = false;
     void require_owner() const {
         if (owner != std::this_thread::get_id()) throw std::logic_error("A Promise crossed realm ownership.");
     }
@@ -75,6 +76,7 @@ template <typename T> class Promise {
     }
     void observe(typename State::Fulfilled fulfilled, typename State::Rejected rejected) const {
         state_->require_owner();
+        state_->handled = true;
         Reaction reaction{std::move(fulfilled), std::move(rejected)};
         if (std::holds_alternative<std::monostate>(state_->outcome)) state_->reactions.push_back(std::move(reaction));
         else enqueue(std::move(reaction));
@@ -149,6 +151,14 @@ template <typename T> class Promise {
     template <typename Outcome> void settle(Outcome value) const {
         if (!std::holds_alternative<std::monostate>(state_->outcome)) return;
         state_->outcome = std::move(value);
+        if (std::holds_alternative<std::exception_ptr>(state_->outcome) && !state_->handled) {
+            state_->loop->after_microtasks([state = state_] {
+                if (state->handled) return;
+                state->loop->post([state] {
+                    if (!state->handled) state->loop->report_unhandled_rejection(std::get<std::exception_ptr>(state->outcome));
+                });
+            });
+        }
         auto reactions = std::move(state_->reactions);
         for (auto& reaction : reactions) enqueue(std::move(reaction));
     }

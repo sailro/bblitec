@@ -1,5 +1,7 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import { typeCanCarryReference } from "./type-facts.js";
+import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { writeReceiverMethods } from "./data-methods.js";
 import type { CompilerSymbols } from "./symbols.js";
@@ -199,16 +201,7 @@ class ModuleInitializerPlanner {
     ) {}
 
     public plan(): ts.SourceFile[] {
-        const projectModules = this.program
-            .getSourceFiles()
-            .filter(
-                (file) =>
-                    file !== this.sourceFile &&
-                    !file.isDeclarationFile &&
-                    !this.program.isSourceFileFromExternalLibrary(
-                        file,
-                    ),
-            );
+        const projectModules = this.runtimeModules().filter(file => file !== this.sourceFile);
         const stateByModule = new EmissionMap(
             projectModules.map((file) => [
                 file,
@@ -271,6 +264,29 @@ class ModuleInitializerPlanner {
                     (symbol) => mutatedState.has(symbol),
                 ),
         );
+    }
+
+    private runtimeModuleCache: ts.SourceFile[] | undefined;
+
+    /** JavaScript evaluation order follows runtime edges, including re-exports. */
+    private runtimeModules(): ts.SourceFile[] {
+        if (this.runtimeModuleCache) return this.runtimeModuleCache;
+        const ordered: ts.SourceFile[] = [];
+        const visited = new Set<ts.SourceFile>();
+        const visit = (file: ts.SourceFile): void => {
+            if (visited.has(file) || file.isDeclarationFile || this.program.isSourceFileFromExternalLibrary(file)) return;
+            visited.add(file);
+            for (const statement of file.statements) {
+                if ((!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) ||
+                    !statement.moduleSpecifier || moduleImportKind(statement) === "type") continue;
+                const symbol = this.checker.getSymbolAtLocation(statement.moduleSpecifier);
+                const dependency = symbol?.declarations?.find(ts.isSourceFile);
+                if (dependency) visit(dependency);
+            }
+            ordered.push(file);
+        };
+        visit(this.sourceFile);
+        return this.runtimeModuleCache = ordered;
     }
 
     /**
@@ -397,13 +413,7 @@ class ModuleInitializerPlanner {
     private mutatedContainerSymbols(): Set<ts.Symbol> {
         if (!this.mutatedContainerCache) {
             const mutated = new EmissionSet<ts.Symbol>();
-            for (const file of this.program.getSourceFiles()) {
-                if (
-                    file.isDeclarationFile ||
-                    this.program.isSourceFileFromExternalLibrary(file)
-                ) {
-                    continue;
-                }
+            for (const file of this.runtimeModules()) {
                 for (const symbol of collectMutatedContainerSymbols(
                     file,
                     this.symbols,
@@ -421,11 +431,23 @@ class ModuleInitializerPlanner {
         moduleState: ReadonlySet<ts.Symbol>,
     ): Set<ts.Symbol> {
         const observed = new EmissionSet<ts.Symbol>();
+        const projectFiles = new Set([this.sourceFile, ...projectModules]);
+        const visitedFunctions = new Set<ts.Node>();
         const visit = (root: ts.Node): void => forEachAnalysisNode(root, node => {
+            if (ts.isFunctionLike(node)) {
+                if (visitedFunctions.has(node)) return "skip";
+                visitedFunctions.add(node);
+            }
             if (ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
                 if (symbol && moduleState.has(symbol)) {
                     observed.add(symbol);
+                }
+            }
+            if (ts.isCallExpression(node)) {
+                const called = this.calledFunction(node.expression);
+                if (called?.body && projectFiles.has(called.getSourceFile())) {
+                    visit(called);
                 }
             }
         });
@@ -464,7 +486,7 @@ class ModuleInitializerPlanner {
                     statement.body &&
                     isExported(statement.name)
                 ) {
-                    visit(statement.body);
+                    visit(statement);
                     continue;
                 }
                 if (
@@ -598,11 +620,13 @@ class ModuleInitializerPlanner {
         ) {
             return current;
         }
-        if (!ts.isIdentifier(current)) {
+        if (!ts.isIdentifier(current) && !ts.isPropertyAccessExpression(current)) {
             return undefined;
         }
+        const name = ts.isPropertyAccessExpression(current) ? current.name : current;
+        if (!ts.isIdentifier(name)) return undefined;
         const declaration = this.symbols
-            .valueSymbol(current)
+            .valueSymbol(name)
             ?.valueDeclaration;
         if (declaration && ts.isFunctionLike(declaration)) {
             return declaration as ts.FunctionLikeDeclaration;
@@ -621,6 +645,9 @@ class ModuleInitializerPlanner {
         activeFunctions: Set<ts.FunctionLikeDeclaration>,
         aliases = new EmissionSet(targets),
     ): boolean {
+        const canMutateThrough = (expression: ts.Expression): boolean => {
+            return typeCanCarryReference(this.checker.getTypeAtLocation(expression));
+        };
         const targetsSymbol = (
             expression: ts.Expression,
         ): boolean => {
@@ -693,11 +720,11 @@ class ModuleInitializerPlanner {
                 if (
                     (ts.isPropertyAccessExpression(callee) ||
                         ts.isElementAccessExpression(callee)) &&
-                    targetsSymbol(callee.expression)
+                    targetsSymbol(callee.expression) && canMutateThrough(callee.expression)
                 ) {
                     return true;
                 }
-                if (current.arguments.some(targetsSymbol)) {
+                if (current.arguments.some(argument => targetsSymbol(argument) && canMutateThrough(argument))) {
                     return true;
                 }
                 const called = this.calledFunction(callee);

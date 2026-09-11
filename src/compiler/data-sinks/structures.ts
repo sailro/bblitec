@@ -2,10 +2,11 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
+import { isJsonValue } from "../json-bridge.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
-function expressionEnum(dataType: DataType<"enum">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
+function expressionEnum(dataType: DataType<"enum">, lowerer: DataSinkHost, expression: ts.Expression, unwrapped: ts.Expression): string {
     const resolved = lowerer.context.resolveStaticExpression(unwrapped);
     if (resolved !== unwrapped) {
         return lowerer.compileForSink(resolved, dataType);
@@ -22,21 +23,11 @@ function expressionEnum(dataType: DataType<"enum">, lowerer: DataSinkHost, _expr
             ? lowerer.context.compileValue(unwrapped)
             : undefined);
     const value = rawValue?.kind === "data"
-        ? lowerer.narrowOptional(rawValue, unwrapped)
+        ? lowerer.narrowOptional(rawValue, expression)
         : rawValue;
-    if (value?.kind === "data" &&
-        value.dataType &&
-        dataTypesEqual(value.dataType, dataType)) {
-        return value.cpp;
-    }
-    if (value?.kind === "string" ||
-        (value?.kind === "data" &&
-            value.dataType?.kind === "string")) {
-        return lowerer.context.dataTypes.enumFromStringCpp(dataType, value.cpp, unwrapped);
-    }
-    if (value?.kind === "data" &&
-        value.dataType?.kind === "enum") {
-        return lowerer.context.dataTypes.enumFromStringCpp(dataType, lowerer.context.dataTypes.enumToStringCpp(value.dataType, value.cpp, unwrapped), unwrapped);
+    if (value) {
+        const compiled = valueEnum(dataType, lowerer, value, unwrapped);
+        if (compiled !== undefined) return compiled;
     }
     // An inlined function's tag parameter carries the
     // literal it was called with, so a name bound to a
@@ -90,11 +81,12 @@ function expressionStruct(dataType: DataType<"struct">, lowerer: DataSinkHost, _
         ts.isPropertyAccessExpression(unwrapped) ||
         ts.isElementAccessExpression(unwrapped)) {
         const known = lowerer.context.compileValue(unwrapped);
-        if (known.kind === "record") {
+        if (known.kind === "record" ||
+            ((known.kind === "json-null" || known.dataType?.kind === "optional") && lowerer.context.dataTypes.isReferenceStruct(dataType.name))) {
             return lowerer.compileKnownValueForSink(known, dataType, unwrapped);
         }
         if (known.kind === "data" &&
-            known.dataType?.kind === "struct") {
+            (known.dataType?.kind === "struct" || known.dataType?.kind === "map")) {
             lowerer.markEscaped(known);
             return lowerer.compileKnownValueForSink(known, dataType, unwrapped);
         }
@@ -114,6 +106,9 @@ function expressionEnummap(dataType: DataType<"enummap">, lowerer: DataSinkHost,
 }
 
 function valueEnum(dataType: DataType<"enum">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (isJsonValue(value)) {
+        return lowerer.context.dataTypes.enumFromStringCpp(dataType, `${value.cpp}.to_string()`, node);
+    }
     if (value.staticString !== undefined) {
         return lowerer.context.dataTypes.enumMemberCpp(dataType, value.staticString, node);
     }
@@ -127,10 +122,28 @@ function valueEnum(dataType: DataType<"enum">, lowerer: DataSinkHost, value: Val
         dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
     }
+    if (value.dataType?.kind === "enum") {
+        return lowerer.context.dataTypes.enumFromStringCpp(dataType,
+            lowerer.context.dataTypes.enumToStringCpp(value.dataType, value.cpp, node), node);
+    }
     return undefined;
 }
 
 function valueStruct(dataType: DataType<"struct">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (value.dataType?.kind === "optional" && lowerer.context.dataTypes.isReferenceStruct(dataType.name)) {
+        const source = lowerer.context.allocateTemporaryCppName("optional_record_source");
+        const target = lowerer.context.dataTypes.cppType(dataType);
+        const present = lowerer.leafValue(`(*${source})`, value.dataType.inner);
+        let converted = "";
+        const lines = lowerer.context.captureEmittedLines(() => {
+            converted = lowerer.compileKnownValueForSink(present, dataType, node);
+        });
+        return `([&]() -> ${target} {\n` +
+            `    const auto& ${source} = ${value.cpp};\n` +
+            `    if (!${source}.has_value()) return {};\n` +
+            lines.map(line => `    ${line}\n`).join("") +
+            `    return ${converted};\n}())`;
+    }
     if (value.dataType?.kind === "struct" &&
         value.dataType.name === dataType.name &&
         lowerer.context.dataTypes.isClassStruct(dataType.name)) {
@@ -151,6 +164,9 @@ function valueStruct(dataType: DataType<"struct">, lowerer: DataSinkHost, value:
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
+    // A structural view of a stored class binds its prototype methods to
+    // the retained receiver, just as a view of a local class record does.
+    value = lowerer.context.classLowerer.hydrate(value) ?? value;
     if (value.kind === "record") {
         lowerer.context.dataTypes.cppType(dataType);
         const fields = lowerer.context.dataTypes.structFields(dataType.name, node);

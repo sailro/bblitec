@@ -573,6 +573,24 @@ if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_link_libraries(bblite_features INTERFACE harfbuzz::harfbuzz)
 endif()
 
+if("data:locale" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if(WIN32)
+        target_link_libraries(bblite_features INTERFACE icu)
+    else()
+        find_package(ICU REQUIRED COMPONENTS uc i18n)
+        target_link_libraries(bblite_features INTERFACE ICU::uc ICU::i18n)
+    endif()
+endif()
+
+if("platform:http" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if(WIN32)
+        target_link_libraries(bblite_features INTERFACE winhttp)
+    else()
+        find_package(CURL REQUIRED)
+        target_link_libraries(bblite_features INTERFACE CURL::libcurl)
+    endif()
+endif()
+
 # BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
 # because a loaded asset reaches scene transmission on its own and the
 # reached-feature list only records what the scene's code asked for.

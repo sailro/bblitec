@@ -26,6 +26,23 @@ int main() {
     {
         Engine engine;
         const auto markup = ui_create_element(engine, "div");
+        const auto detached = ui_create_element(engine, "div");
+        const auto root = ui_create_element(engine, "div");
+        const auto child = ui_create_element(engine, "span");
+        ui_set_attribute(engine, detached, "id", "target");
+        ui_set_attribute(engine, child, "id", "target");
+        assert(!ui_find_element_by_id(engine, "target"));
+        ui_append_child(engine, root, child);
+        ui_append_to_root(engine, root);
+        assert(ui_find_element_by_id(engine, "target")->value == child.value);
+        ui_append_to_root(engine, detached);
+        assert(ui_find_element_by_id(engine, "target")->value == child.value);
+        ui_append_to_root(engine, root);
+        assert(ui_find_element_by_id(engine, "target")->value == detached.value);
+        ui_remove(engine, detached);
+        assert(ui_find_element_by_id(engine, "target")->value == child.value);
+        ui_remove(engine, root);
+        assert(!ui_find_element_by_id(engine, "target") && !ui_find_element_by_id(engine, ""));
         ui_set_inner_rml(engine, markup, "<span>a&rsquo;b&mdash;c</span>");
         ui_append_to_root(engine, markup);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);

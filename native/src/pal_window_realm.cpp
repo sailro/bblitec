@@ -9,6 +9,7 @@
 #endif
 
 #include <atomic>
+#include <bit>
 #include <condition_variable>
 #include <iostream>
 #include <sstream>
@@ -31,6 +32,11 @@ struct WindowPointerEvent final : ExternalEvent {
     SDL_MouseButtonFlags buttons = 0;
 };
 struct ListenerNames { bool click = false; std::vector<std::string> events; };
+struct ClipboardWrite final : CompletionEvent {
+    std::string text;
+    std::string error;
+    ClipboardWrite(std::uint64_t id, std::string value) : CompletionEvent(id), text(std::move(value)) {}
+};
 struct DocumentSnapshot {
     std::vector<UiElementRecord> elements;
     std::vector<ListenerNames> listeners;
@@ -42,8 +48,9 @@ struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
     std::uint32_t width = 0, height = 0;
     double pixel_ratio = 1;
+    ScreenMetrics screen;
     bool equals(const LayoutSnapshot& other) const {
-        return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio &&
+        return width == other.width && height == other.height && pixel_ratio == other.pixel_ratio && screen == other.screen &&
             rectangles.size() == other.rectangles.size() && std::equal(rectangles.begin(), rectangles.end(), other.rectangles.begin(),
                 [](const auto& left, const auto& right) { return left.left == right.left && left.top == right.top && left.width == right.width && left.height == right.height; });
     }
@@ -81,8 +88,11 @@ struct WindowServices final : CanvasProvider {
     std::mutex mutex;
     std::condition_variable wake;
     std::unique_ptr<DocumentSnapshot> pending;
+    std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
     std::uint64_t requested = 0, completed = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
+    std::atomic<bool> screen_requested = false;
+    std::atomic<bool> reload_requested = false;
     std::unordered_map<std::uint32_t, std::shared_ptr<CanvasEndpoint>> canvases;
     std::vector<std::weak_ptr<OffscreenSurface>> endpoints;
     bool stopping = false;
@@ -106,6 +116,8 @@ struct WindowDocument {
     std::unordered_map<std::uint32_t, InputTarget> input_targets;
     std::vector<std::shared_ptr<ResizeObserver>> observers;
     std::vector<std::shared_ptr<MediaQueryList>> media;
+    ApplicationErrors* errors = nullptr;
+    const bool screen_identity = true;
 };
 thread_local WindowDocument* document = nullptr;
 WindowDocument& current_document() {
@@ -230,6 +242,38 @@ void bind_canvas_engine(const std::shared_ptr<CanvasElement>& canvas, const std:
 }
 
 Engine& window_document_engine() { return current_document().engine; }
+const void* window_document_identity() { return std::addressof(current_document()); }
+void window_location_reload() {
+    current_document().host->reload_requested = true;
+    EventLoop::current().close();
+}
+js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
+    auto& doc = current_document();
+    auto& loop = EventLoop::current();
+    js::Promise<js::PromiseVoid> result;
+    const auto id = loop.register_completion([result](std::unique_ptr<ExternalEvent> event) {
+        const auto* completion = dynamic_cast<const ClipboardWrite*>(event.get());
+        if (!completion) throw std::logic_error("Incorrect clipboard completion payload.");
+        if (completion->error.empty()) result.resolve(js::PromiseVoid{});
+        else result.reject(std::make_exception_ptr(std::runtime_error(completion->error)));
+    });
+    try {
+        auto request = std::make_unique<ClipboardWrite>(id, std::move(text));
+        std::lock_guard lock(doc.host->mutex);
+        if (doc.host->stopping) throw WorkerTerminated{};
+        doc.host->clipboard_writes.push_back(std::move(request));
+    } catch (...) {
+        loop.cancel_completion(id);
+        result.reject(std::current_exception());
+    }
+    return result;
+}
+void window_on_application_error(bool rejection, std::uint64_t identity, ApplicationErrors::Callback callback, bool once) {
+    current_document().errors->add(rejection, identity, std::move(callback), once);
+}
+void window_off_application_error(bool rejection, std::uint64_t identity) {
+    current_document().errors->remove(rejection, identity);
+}
 void update_window_document() {
     auto& doc = current_document();
     auto& host = *doc.host;
@@ -265,9 +309,24 @@ void update_window_document() {
     }
 }
 double window_device_pixel_ratio() {
+    update_window_document();
     const auto& doc = current_document();
     return doc.layout ? doc.layout->pixel_ratio : 1;
 }
+UiClientRect window_viewport_size() {
+    update_window_document();
+    const auto& layout = current_document().layout;
+    if (!layout) throw std::logic_error("Window viewport has no layout snapshot.");
+    return {0, 0, std::round(layout->width / layout->pixel_ratio), std::round(layout->height / layout->pixel_ratio)};
+}
+ScreenMetrics window_screen_metrics() {
+    auto& doc = current_document();
+    if (!doc.host->screen_requested.exchange(true)) ++doc.engine.ui_revision;
+    update_window_document();
+    if (!doc.layout) throw std::logic_error("Window screen has no layout snapshot.");
+    return doc.layout->screen;
+}
+const void* window_screen_identity() { return std::addressof(current_document().screen_identity); }
 UiClientRect window_element_size(UiElementHandle element) {
     update_window_document();
     const auto& layout = current_document().layout;
@@ -376,172 +435,203 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
         if (!dawn) presenter = create_window_sdl_presenter(window.get());
 #endif
         if (!presenter) throw std::runtime_error("Requested Window GPU backend is unavailable.");
-        auto services = std::make_shared<WindowServices>(std::shared_ptr<OffscreenDevice>(presenter, &presenter->device()), capture_frame_count);
-        Engine display;
-        display.options = options;
-        std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)> ui(
-            create_ui_rml_runtime(display, window.get(), options.width, options.height), &destroy_ui_rml_runtime);
-        std::atomic<bool> finished = false;
-        std::exception_ptr application_error;
-        std::jthread application([&] {
-            try {
-                const js::RealmScope state;
-                EventLoop loop(services->inbox);
-                WindowDocument owner(services, options);
-                document = &owner;
-                struct Reset { ~Reset() { document = nullptr; } } reset;
-                WorkerRealm realm(loop, {}, services);
-                realm.on_platform_event([](std::unique_ptr<ExternalEvent> packet) {
-                    if (const auto* pointer = dynamic_cast<WindowPointerEvent*>(packet.get())) {
-                        EventLoop::current().dispatch_callback([&] { dispatch_canvas_input(*pointer); });
-                        return;
-                    }
-                    const auto* event = dynamic_cast<WindowEvent*>(packet.get());
-                    if (!event) throw std::logic_error("Unknown Window event.");
-                    auto& engine = window_document_engine();
-                    if (event->element.value >= engine.ui_elements.size()) return;
-                    const auto& record = handle_at(engine.ui_elements, event->element);
-                    if (event->type == "click") {
-                        const auto callbacks = record.click_callbacks;
-                        for (const auto& callback : callbacks) EventLoop::current().dispatch_callback(callback);
-                    } else if (const auto found = record.event_callbacks.find(event->type); found != record.event_callbacks.end()) {
-                        const auto callbacks = found->second;
-                        for (const auto& callback : callbacks) EventLoop::current().dispatch_callback([&] { callback(event->mouse); });
-                    }
-                });
-                loop.run([&] { initialize(realm); tick_document(); });
-            } catch (const WorkerTerminated&) {
-            } catch (...) { application_error = std::current_exception(); }
-            finished = true;
-        });
-        struct Stop { std::shared_ptr<WindowServices> services; ~Stop() { services->stop(); } } stop{services};
-        std::unordered_map<std::uint32_t, OffscreenFrame> latest;
-        PlatformInputReplay input_replay;
-        LayoutSnapshot next_layout;
-        std::shared_ptr<const LayoutSnapshot> layout;
-        UiElementHandle pointer_capture{};
-        SDL_MouseButtonFlags pointer_buttons = 0;
-        long presented = 0;
-        const bool trace_window = runtime_trace_enabled() || environment_variable("BBLITE_WINDOW_TRACE") == "1";
-        bool running = true;
-        while (running && !finished) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
-                if (frame_options.test_pass && is_platform_input_event(event) && !is_replayed_ui_event(event)) continue;
-                const bool reaches_canvas = handle_ui_rml_event(*ui, event);
-                if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
-                    pointer_capture = {}; pointer_buttons = 0;
-                    auto packet = std::make_unique<WindowPointerEvent>();
-                    packet->pointer = event;
-                    services->inbox->post(std::move(packet));
+        // Reload replaces realm-owned state while keeping the native window and device.
+        for (;;) {
+            auto services = std::make_shared<WindowServices>(std::shared_ptr<OffscreenDevice>(presenter, &presenter->device()), capture_frame_count);
+            Engine display;
+            display.options = options;
+            std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)> ui(
+                create_ui_rml_runtime(display, window.get(), options.width, options.height), &destroy_ui_rml_runtime);
+            std::atomic<bool> finished = false;
+            std::exception_ptr application_error;
+            std::jthread application([&] {
+                try {
+                    const js::RealmScope state;
+                    EventLoop loop(services->inbox);
+                    WindowDocument owner(services, options);
+                    document = &owner;
+                    struct Reset { ~Reset() { document = nullptr; } } reset;
+                    WorkerRealm realm(loop, {}, services);
+                    ApplicationErrors errors(loop);
+                    owner.errors = &errors;
+                    realm.on_platform_event([](std::unique_ptr<ExternalEvent> packet) {
+                        if (const auto* pointer = dynamic_cast<WindowPointerEvent*>(packet.get())) {
+                            EventLoop::current().dispatch_callback([&] { dispatch_canvas_input(*pointer); });
+                            return;
+                        }
+                        const auto* event = dynamic_cast<WindowEvent*>(packet.get());
+                        if (!event) throw std::logic_error("Unknown Window event.");
+                        auto& engine = window_document_engine();
+                        if (event->element.value >= engine.ui_elements.size()) return;
+                        const auto& record = handle_at(engine.ui_elements, event->element);
+                        if (event->type == "click") {
+                            const auto callbacks = record.click_callbacks;
+                            for (const auto& callback : callbacks) EventLoop::current().dispatch_callback(callback);
+                        } else if (const auto found = record.event_callbacks.find(event->type); found != record.event_callbacks.end()) {
+                            const auto callbacks = found->second;
+                            for (const auto& callback : callbacks) EventLoop::current().dispatch_callback([&] { callback(event->mouse); });
+                        }
+                    });
+                    loop.run([&] { initialize(realm); tick_document(); });
+                } catch (const WorkerTerminated&) {
+                } catch (...) { application_error = std::current_exception(); }
+                finished = true;
+            });
+            struct Stop { std::shared_ptr<WindowServices> services; ~Stop() { services->stop(); } } stop{services};
+            std::unordered_map<std::uint32_t, OffscreenFrame> latest;
+            PlatformInputReplay input_replay;
+            LayoutSnapshot next_layout;
+            std::shared_ptr<const LayoutSnapshot> layout;
+            UiElementHandle pointer_capture{};
+            SDL_MouseButtonFlags pointer_buttons = 0;
+            long presented = 0;
+            const bool trace_window = runtime_trace_enabled() || environment_variable("BBLITE_WINDOW_TRACE") == "1";
+            bool running = true;
+            while (running && !finished) {
+                std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
+                {
+                    std::lock_guard lock(services->mutex);
+                    clipboard_writes.swap(services->clipboard_writes);
                 }
-                const bool move = event.type == SDL_EVENT_MOUSE_MOTION;
-                const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-                const bool up = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
-                const bool wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
-                if (!(move || down || up || wheel) || (!reaches_canvas && pointer_capture.value == invalid_handle)) continue;
-                if (!layout) continue;
-                const double x = move ? event.motion.x : wheel ? event.wheel.mouse_x : event.button.x;
-                const double y = move ? event.motion.y : wheel ? event.wheel.mouse_y : event.button.y;
-                auto target = pointer_capture;
-                if (target.value == invalid_handle) {
-                    for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
-                        if (!display.ui_elements[index].external_gpu_canvas || index >= layout->rectangles.size()) continue;
-                        const auto& box = layout->rectangles[index];
-                        if (x * layout->pixel_ratio >= box.left && y * layout->pixel_ratio >= box.top &&
-                            x * layout->pixel_ratio < box.left + box.width && y * layout->pixel_ratio < box.top + box.height) {
-                            target = {static_cast<std::uint32_t>(index)}; break;
+                for (auto& request : clipboard_writes) {
+                    {
+                        const auto text = std::move(request->text);
+                        if (!SDL_SetClipboardText(text.c_str())) request->error = SDL_GetError();
+                    }
+                    services->inbox->post(std::move(request));
+                }
+                SDL_Event event;
+                while (SDL_PollEvent(&event)) {
+                    if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
+                    if (frame_options.test_pass && is_platform_input_event(event) && !is_replayed_ui_event(event)) continue;
+                    const bool reaches_canvas = handle_ui_rml_event(*ui, event);
+                    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+                        pointer_capture = {}; pointer_buttons = 0;
+                        auto packet = std::make_unique<WindowPointerEvent>();
+                        packet->pointer = event;
+                        services->inbox->post(std::move(packet));
+                    }
+                    const bool move = event.type == SDL_EVENT_MOUSE_MOTION;
+                    const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+                    const bool up = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
+                    const bool wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
+                    if (!(move || down || up || wheel) || (!reaches_canvas && pointer_capture.value == invalid_handle)) continue;
+                    if (!layout) continue;
+                    const double x = move ? event.motion.x : wheel ? event.wheel.mouse_x : event.button.x;
+                    const double y = move ? event.motion.y : wheel ? event.wheel.mouse_y : event.button.y;
+                    auto target = pointer_capture;
+                    if (target.value == invalid_handle) {
+                        for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
+                            if (!display.ui_elements[index].external_gpu_canvas || index >= layout->rectangles.size()) continue;
+                            const auto& box = layout->rectangles[index];
+                            if (x * layout->pixel_ratio >= box.left && y * layout->pixel_ratio >= box.top &&
+                                x * layout->pixel_ratio < box.left + box.width && y * layout->pixel_ratio < box.top + box.height) {
+                                target = {static_cast<std::uint32_t>(index)}; break;
+                            }
                         }
                     }
+                    if (target.value == invalid_handle || target.value >= layout->rectangles.size()) continue;
+                    if (down) { pointer_capture = target; pointer_buttons |= SDL_BUTTON_MASK(event.button.button); }
+                    if (up) { pointer_buttons &= ~SDL_BUTTON_MASK(event.button.button); if (!pointer_buttons) pointer_capture = {}; }
+                    const auto& box = handle_at(layout->rectangles, target);
+                    auto packet = std::make_unique<WindowPointerEvent>();
+                    packet->element = target;
+                    packet->pointer = event;
+                    packet->buttons = pointer_buttons;
+                    const auto left = static_cast<float>(box.left / layout->pixel_ratio), top = static_cast<float>(box.top / layout->pixel_ratio);
+                    if (move) { packet->pointer.motion.x -= left; packet->pointer.motion.y -= top; }
+                    else if (wheel) { packet->pointer.wheel.mouse_x -= left; packet->pointer.wheel.mouse_y -= top; }
+                    else { packet->pointer.button.x -= left; packet->pointer.button.y -= top; }
+                    services->inbox->post(std::move(packet));
                 }
-                if (target.value == invalid_handle || target.value >= layout->rectangles.size()) continue;
-                if (down) { pointer_capture = target; pointer_buttons |= SDL_BUTTON_MASK(event.button.button); }
-                if (up) { pointer_buttons &= ~SDL_BUTTON_MASK(event.button.button); if (!pointer_buttons) pointer_capture = {}; }
-                const auto& box = handle_at(layout->rectangles, target);
-                auto packet = std::make_unique<WindowPointerEvent>();
-                packet->element = target;
-                packet->pointer = event;
-                packet->buttons = pointer_buttons;
-                const auto left = static_cast<float>(box.left / layout->pixel_ratio), top = static_cast<float>(box.top / layout->pixel_ratio);
-                if (move) { packet->pointer.motion.x -= left; packet->pointer.motion.y -= top; }
-                else if (wheel) { packet->pointer.wheel.mouse_x -= left; packet->pointer.wheel.mouse_y -= top; }
-                else { packet->pointer.button.x -= left; packet->pointer.button.y -= top; }
-                services->inbox->post(std::move(packet));
-            }
-            int width = 0, height = 0;
-            if (!SDL_GetWindowSizeInPixels(window.get(), &width, &height)) throw std::runtime_error(SDL_GetError());
-            if (width <= 0 || height <= 0) { SDL_Delay(1); continue; }
-            std::unique_ptr<DocumentSnapshot> snapshot;
-            std::uint64_t revision = 0;
-            {
-                std::lock_guard lock(services->mutex);
-                snapshot = std::move(services->pending);
-                revision = services->requested;
-            }
-            if (snapshot) apply_document(display, std::move(*snapshot), services->inbox);
-            update_ui_rml_runtime(*ui, width, height);
-            next_layout.width = width; next_layout.height = height;
-            const auto density = SDL_GetWindowDisplayScale(window.get());
-            next_layout.pixel_ratio = density > 0 ? density : 1;
-            next_layout.rectangles.resize(display.ui_elements.size());
-            for (std::size_t index = 0; index < display.ui_elements.size(); ++index) next_layout.rectangles[index] = display.ui_elements[index].client_rect;
-            if (!layout || !layout->equals(next_layout)) layout = std::make_shared<LayoutSnapshot>(next_layout);
-            std::vector<WindowCanvasFrame> frames;
-            bool canvases_ready = false;
-            {
-                std::lock_guard lock(services->mutex);
-                services->layout = layout;
-                services->completed = revision;
-                for (const auto& [index, canvas] : services->canvases) {
-                    if (auto frame = canvas->surface->take_frame()) latest.insert_or_assign(index, std::move(*frame));
-                    if (const auto found = latest.find(index); found != latest.end() && index < layout->rectangles.size()) {
-                        frames.push_back({UiElementHandle{index}, found->second});
+                int width = 0, height = 0;
+                if (!SDL_GetWindowSizeInPixels(window.get(), &width, &height)) throw std::runtime_error(SDL_GetError());
+                if (width <= 0 || height <= 0) { SDL_Delay(1); continue; }
+                std::unique_ptr<DocumentSnapshot> snapshot;
+                std::uint64_t revision = 0;
+                {
+                    std::lock_guard lock(services->mutex);
+                    snapshot = std::move(services->pending);
+                    revision = services->requested;
+                }
+                if (snapshot) apply_document(display, std::move(*snapshot), services->inbox);
+                update_ui_rml_runtime(*ui, width, height);
+                next_layout.width = width; next_layout.height = height;
+                const auto density = SDL_GetWindowDisplayScale(window.get());
+                next_layout.pixel_ratio = density > 0 ? density : 1;
+                if (services->screen_requested.load()) {
+                    const auto display_id = SDL_GetDisplayForWindow(window.get());
+                    SDL_Rect bounds{}, available{};
+                    const auto* mode = SDL_GetCurrentDisplayMode(display_id);
+                    int bits = 0;
+                    Uint32 red = 0, green = 0, blue = 0, alpha = 0;
+                    if (!SDL_GetDisplayBounds(display_id, &bounds) || !SDL_GetDisplayUsableBounds(display_id, &available) ||
+                        !mode || !SDL_GetMasksForPixelFormat(mode->format, &bits, &red, &green, &blue, &alpha))
+                        throw std::runtime_error(std::string("Unable to query display metrics: ") + SDL_GetError());
+                    const auto scale = next_layout.pixel_ratio;
+                    next_layout.screen = {std::round(bounds.w / scale), std::round(bounds.h / scale),
+                        std::round(available.w / scale), std::round(available.h / scale),
+                        static_cast<double>(std::popcount(red) + std::popcount(green) + std::popcount(blue))};
+                }
+                next_layout.rectangles.resize(display.ui_elements.size());
+                for (std::size_t index = 0; index < display.ui_elements.size(); ++index) next_layout.rectangles[index] = display.ui_elements[index].client_rect;
+                if (!layout || !layout->equals(next_layout)) layout = std::make_shared<LayoutSnapshot>(next_layout);
+                std::vector<WindowCanvasFrame> frames;
+                bool canvases_ready = false;
+                {
+                    std::lock_guard lock(services->mutex);
+                    services->layout = layout;
+                    services->completed = revision;
+                    for (const auto& [index, canvas] : services->canvases) {
+                        if (auto frame = canvas->surface->take_frame()) latest.insert_or_assign(index, std::move(*frame));
+                        if (const auto found = latest.find(index); found != latest.end() && index < layout->rectangles.size()) {
+                            frames.push_back({UiElementHandle{index}, found->second});
+                        }
                     }
+                    canvases_ready = !frames.empty() && frames.size() == services->canvases.size();
                 }
-                canvases_ready = !frames.empty() && frames.size() == services->canvases.size();
-            }
-            services->wake.notify_all();
-            const bool capture_ready = capture_frame_count ? std::all_of(frames.begin(), frames.end(),
-                [&](const auto& canvas) { return canvas.frame.sequence == capture_frame_count; }) :
-                presented == std::max(0L, frame_options.screenshot_frame);
-            const bool capture = canvases_ready && !frame_options.screenshot_path.empty() && capture_ready;
-            bool did_present = false;
-            if (presenter->can_present()) {
-                const auto& recorded = record_ui_rml_frame(*ui, width, height);
-                std::optional<UiRenderFrame> canvas_capture;
-                if (capture && !frame_options.capture_ui) {
-                    canvas_capture = recorded;
-                    std::erase_if(canvas_capture->draws, [&](const auto& draw) {
-                        return std::none_of(recorded.textures.begin(), recorded.textures.end(), [&](const auto& texture) {
-                            return texture.id == draw.texture_id && texture.external_canvas != invalid_handle;
+                services->wake.notify_all();
+                const bool capture_ready = capture_frame_count ? std::all_of(frames.begin(), frames.end(),
+                    [&](const auto& canvas) { return canvas.frame.sequence == capture_frame_count; }) :
+                    presented == std::max(0L, frame_options.screenshot_frame);
+                const bool capture = canvases_ready && !frame_options.screenshot_path.empty() && capture_ready;
+                bool did_present = false;
+                if (presenter->can_present()) {
+                    const auto& recorded = record_ui_rml_frame(*ui, width, height);
+                    std::optional<UiRenderFrame> canvas_capture;
+                    if (capture && !frame_options.capture_ui) {
+                        canvas_capture = recorded;
+                        std::erase_if(canvas_capture->draws, [&](const auto& draw) {
+                            return std::none_of(recorded.textures.begin(), recorded.textures.end(), [&](const auto& texture) {
+                                return texture.id == draw.texture_id && texture.external_canvas != invalid_handle;
+                            });
                         });
-                    });
-                    canvas_capture->backdrops.clear();
+                        canvas_capture->backdrops.clear();
+                    }
+                    did_present = presenter->present(frames, canvas_capture ? *canvas_capture : recorded, capture ? frame_options.screenshot_path : std::string{});
                 }
-                did_present = presenter->present(frames, canvas_capture ? *canvas_capture : recorded, capture ? frame_options.screenshot_path : std::string{});
-            }
-            if (did_present) services->animation_frames->tick(EventLoop::Clock::now());
-            if (did_present && canvases_ready) {
-                input_replay.dispatch(presented, window.get(), display);
-                if (trace_window && presented % runtime_trace_interval() == 0) {
-                    std::ostringstream trace;
-                    trace << std::setprecision(15) << "[bblite trace] window frame=" << presented << " now-ms="
-                        << std::chrono::duration<double, std::milli>(EventLoop::Clock::now().time_since_epoch()).count();
-                    for (const auto& canvas : frames) trace << " canvas=" << canvas.element.value << ':' << canvas.frame.sequence
-                        << '@' << canvas.frame.width << 'x' << canvas.frame.height;
-                    trace << '\n';
-                    std::cerr << trace.str();
+                if (did_present) services->animation_frames->tick(EventLoop::Clock::now());
+                if (did_present && canvases_ready) {
+                    input_replay.dispatch(presented, window.get(), display);
+                    if (trace_window && presented % runtime_trace_interval() == 0) {
+                        std::ostringstream trace;
+                        trace << std::setprecision(15) << "[bblite trace] window frame=" << presented << " now-ms="
+                            << std::chrono::duration<double, std::milli>(EventLoop::Clock::now().time_since_epoch()).count();
+                        for (const auto& canvas : frames) trace << " canvas=" << canvas.element.value << ':' << canvas.frame.sequence
+                            << '@' << canvas.frame.width << 'x' << canvas.frame.height;
+                        trace << '\n';
+                        std::cerr << trace.str();
+                    }
+                    ++presented;
+                    if (capture_frame_count ? capture : frame_options.max_frames > 0 && presented >= frame_options.max_frames) running = false;
                 }
-                ++presented;
-                if (capture_frame_count ? capture : frame_options.max_frames > 0 && presented >= frame_options.max_frames) running = false;
+                SDL_Delay(1);
             }
-            SDL_Delay(1);
+            services->stop();
+            application.join();
+            if (application_error) std::rethrow_exception(application_error);
+            if (!services->reload_requested) return 0;
         }
-        services->stop();
-        application.join();
-        if (application_error) std::rethrow_exception(application_error);
-        return 0;
     } catch (const std::exception& error) {
         std::cerr << "Babylon Lite Window error: " << error.what() << '\n';
         return 1;

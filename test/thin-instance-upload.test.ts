@@ -158,7 +158,7 @@ test("both backends resize instance streams and upload current matrices and colo
     mkdirSync(output, { recursive: true });
     const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8").replaceAll("\r\n", "\n");
     const helpers = ["inline bool thin_instance_pool_grew(", "inline std::size_t thin_instance_active_count(\n",
-        "inline void pinned_instance_matrices("].map(signature => cppFunction(shared, signature)).join("\n");
+        "inline void pinned_instance_matrices(", "inline std::vector<float> instance_colors_for_upload("].map(signature => cppFunction(shared, signature)).join("\n");
     const updates = ["sdl_gpu", "dawn"].map(backend => {
         const source = readFileSync(`native/src/pal_${backend}.cpp`, "utf8");
         const condition = source.indexOf("mesh.thin_instanced &&");

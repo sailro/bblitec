@@ -59,6 +59,7 @@ export interface AssetIntrinsicContext
         | "lookupOptional"
         | "staticAssetUrlCandidates"
         | "reachJsData"
+        | "probeEmission"
         | "requireEngine"
         | "fail"
         | "resolveStaticExpression"

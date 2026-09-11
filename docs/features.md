@@ -9,7 +9,7 @@ intentional substitutions, [status](status.md) for measurements and [TODO](../TO
 
 Generation packages assets, runs browser-dependent producers and composes the closed shader set.
 Scene state, animation, input, uploads and drawing remain native. Executables have no arbitrary
-JavaScript execution, dynamic module loader or runtime network fetch.
+JavaScript execution or dynamic module loader. Runtime HTTP is an optional platform service.
 
 ## Feature and capability selection
 
@@ -38,26 +38,74 @@ Audio, physics, navigation, retained UI and codecs also select their native depe
 | Functions/classes | Data-typed functions, generic functions and classes instantiated per call, rest parameters, destructured parameters, tuple spreads, supported recursion, defaults, shared resource helpers, local fields/methods/accessors and demanded shared instances. Definite PBR/glTF calls preserve per-call metadata; unsupported shared return shapes inline. Stored subclass dispatch, class inheritance, `#private` members and static blocks are unsupported. |
 | Closures | Supported retained API callbacks, timers/RAF, shared outer cells and represented function identity. Object-literal methods read their record through `this`. |
 | Data | Typed/nullable records, arrays, insertion-ordered Map/Set (WeakMap/WeakSet hold their keys the same way), string dictionaries, tuples, destructuring with defaults and rest bindings, spreads, `delete`, `in`, `instanceof` over local classes and bounded static records. |
-| Numeric/string | Reached Math, JavaScript rounding/coercions, `Number`/`Boolean`/`String` conversions, `parseFloat`, radix `toString`, `Date.now`, deterministic random and supported string operations. |
-| JSON | Generated stringify codecs and dynamic parsed values with source shape checks; unsupported replacers and cyclic serialization refuse. |
+| Numeric/string | Reached Math, JavaScript rounding/coercions, `Number`/`Boolean`/`String` conversions, `parseFloat`, radix `toString`, deterministic random and supported string operations. |
+| Unicode/collation | `normalize` supports NFC, NFD, NFKC and NFKD. `localeCompare` supports the host default or one language tag, with `numeric` and `sensitivity` options. Locale lists and other options refuse. Reaching either operation selects ICU. |
+| Dates | `Date.now()`, current-time/numeric/copy construction, `getTime`, `valueOf`, `setTime` and UTC `toISOString`. Date aliases retain identity and mutable timestamps. String/calendar construction and other Date methods refuse. |
+| Time zone | Default `Intl.DateTimeFormat()` construction and `resolvedOptions().timeZone` read the operating-system time zone. Explicit locales/options, formatting and other resolved fields refuse. |
+| JSON | Generated stringify codecs include stored string-literal unions at roots and inside records/arrays. Parsed values retain source shape checks; unsupported replacers and cyclic serialization refuse. |
 | Binary data | ArrayBuffer construction, every DataView getter and setter, reached typed arrays, `subarray` views and supported owned-storage methods. |
 | Browser/UI | Query folding, bounded erasure, live canvas extents, retained DOM/CSS/Canvas2D; see [UI](ui.md). |
 | Workers | Local module workers, isolated module state, typed cloned messages, listeners, errors, close/terminate, timers and bounded promises. |
 | Worker graphics | Transferred OffscreenCanvas, independent engines, source resize, display-paced rendering and a Window host companion. |
 | Storage/files | Per-user localStorage, bounded Blob/object URLs, one-file open and download; see [file controls](ui.md#file-transfer-controls). |
 
-Numeric typed-array views retain shared ArrayBuffer bytes, identity, offset and length across aliases,
+Local modules may live outside the compiler checkout; the manifest records every imported source and raw
+text file. Local JavaScript modules use their executable definitions and inferred or JSDoc types, including
+when companion declarations are present. Initializers follow runtime import/re-export dependencies; explicit type-only edges do not execute
+modules or reorder them. Pinned API calls accept namespace imports and constant function aliases. Constant helper branches
+can return composition records, and immutable numeric tables support both runtime indexing and static
+string projections.
+
+Native generation uses production client constants for `import.meta.env`: `MODE` is `"production"`,
+`PROD` is true, and `DEV`/`SSR` are false. `BASE_URL` follows the configured deployment URL.
+Custom environment fields are explicit string inputs (`--env NAME=value`, repeatable, or
+`CompileOptions.environment`). Missing custom keys read as undefined; empty strings stay empty.
+Built-in constants cannot be overridden. Host environment variables and dotenv files are not read implicitly.
+
+Stored class callback fields retain their instance captures and function identity. Locally bound records
+with reassigned callback fields use shared native function storage, so retained
+callbacks see later replacements, including conditional writes. Structural method views
+such as `Pick<Controller, "dispose">` retain the original receiver. Optional stored calls snapshot the callee
+before evaluating arguments and skip those arguments when the receiver or callback is absent. Stored callbacks
+may omit trailing optional/default parameters from their exposed signature; source defaults run at invocation.
+In asynchronous realms, stored async callbacks return retained promises and own their suspended captures.
+Promise reactions and microtasks share mutable outer bindings, including through called helpers.
+Engine contexts
+can be stored in records and collections as references to the entry engine. Empty asserted output records
+retain absent fields until initialized; aliases observe subsequent writes. Loose `== null` and `!= null`
+comparisons accept both null and undefined.
+
+Mixed scalar/record/array unions retain each alternative in native storage and use TypeScript flow
+narrowing after `typeof` guards. The compiler includes the pinned engine's WebGPU peer declarations when
+resolving option records. Availability guards and injected get/set/remove method records for localStorage reach the native durable store;
+stored `Storage` references preserve the native object's identity through nullable bindings and collections.
+`navigator.language` reads the first operating-system locale preference, or an empty string when unavailable.
+String-valued `||` and `&&` evaluate their left operand once and keep the right operand lazy.
+Parsed JSON values support guarded scalar reads and nullable conditionals. Fresh `map`/`filter` results
+honor wider string-array annotations, and named array callbacks participate in recursion lowering.
+
+Numeric typed arrays include Int8/Uint8, Int16/Uint16, Int32/Uint32 and Float32/Float64. Their buffer-backed
+views retain shared ArrayBuffer bytes, identity, offset and length across aliases,
 callbacks and returns. Constructors apply ToIndex, alignment and bounds checks. Explicit nonnumeric
-arguments refuse. Buffer views support indexed access but refuse contiguous-storage consumers,
-iteration, copying constructors, fill/set/slice/copyWithin and numeric subarray. Owned arrays retain
-those supported methods. Effectful indices into borrowed native vectors refuse without retained storage.
+arguments refuse. Views support indexed access, copying constructors, `subarray`, fill/set/slice/copyWithin,
+including overlapping copies. Raw contiguous-storage consumers and iteration still refuse a view.
+Effectful indices into borrowed native vectors refuse without retained storage.
+`ArrayBufferView` accepts retained typed arrays and DataView values in records, collections and callbacks;
+its `buffer`, `byteOffset` and `byteLength` preserve the original view. Distinct views keep distinct identities.
+Numeric index signatures (`{ [index: number]: number }`) accept retained numeric arrays and tuples as output
+parameters or stored values. Writes update the original container, preserve its element conversion and grow
+ordinary arrays. Optional interface callbacks retain their absent state until assigned.
+Readonly numeric dictionaries with stored data values share the same entries and value identities
+as their mutable record source.
 
 `mat4Invert` returns fresh nullable Float32 storage; singular matrices return null. Float64 inputs
 and high-precision matrix allocation combinations refuse. Generic functions, resource loops, aliases
 and handle-dependent escapes are bounded; see [ownership](architecture.md#runtime-and-memory).
 
 AOT asset awaits differ from frame-yield continuations. Workers use owner-loop promises for reached
-async functions. Worker codecs support typed plain data, cycles, repeated references and copied
+async functions, preserving entry-level catch reactions. Unhandled native rejections are checked after
+microtasks and reported in a subsequent task; application listeners are described in [UI](ui.md#integration).
+Worker codecs support typed plain data, cycles, repeated references and copied
 buffers. Transfer lists admit OffscreenCanvas only; MessagePort and shared memory are unsupported.
 Classic workers and runtime-selected scripts refuse. Worker options admit `name`, `type: "module"`
 and `credentials: "same-origin"` only. Graphics realms need identical rendering products.
@@ -78,21 +126,44 @@ of removed values. `Array.of`, `Array.from(arrayOrSet)`, and length-only
 `Array.from({ length }, (value, index) => ...)` are admitted. Callback overloads
 require a local function or function literal and omit `thisArg`.
 
-Map construction accepts literal key/value pairs or another Map with matching
-types. Map/Set `forEach` observes insertion order, deletion and appended entries,
+Map construction accepts literal key/value pairs, direct array `map` projections,
+stored pair arrays, or another Map with compatible entries. Fresh collections honor wider destination
+key and value types. Entry projections
+preserve duplicate-key order and object references. Mixed tuples retain array identity,
+typed fixed-lane reads/writes and nested object references. `[...map]` and
+`[...map.entries()]` create fresh pair arrays that support sorting and destructuring.
+Fresh tuple alternatives with matching lane representations can share array storage; differing string
+literal sets widen to strings in that lane. Conditional spreads inherit the destination element type.
+Array and Set spreads can widen string-literal element types into the destination's string storage.
+Fresh mapped records and their spreads also inherit destination field types, including nullable fields.
+Dynamic mixed-tuple indexing, rest bindings and length-changing methods refuse.
+Map/Set `forEach` observes insertion order, deletion and appended entries,
 and receives the original collection as its third argument.
 
 Strings support string-pattern `replace`/`replaceAll` with string replacements
 and substitution tokens, `substring`, `repeat`, string-argument `concat`, `at`,
-`charAt`, `codePointAt`, `padEnd`, `trimStart` and `trimEnd`. These indexed methods and string length use UTF-16 code units;
-native storage is UTF-8, with WTF-8 for lone surrogates. Regex `replaceAll`,
+`charAt`, `codePointAt`, `padEnd`, `trimStart` and `trimEnd`. Numeric bracket access,
+these indexed methods and string length use UTF-16 code units; missing bracket indices return undefined.
+Native storage is UTF-8, with WTF-8 for lone surrogates. Regex `replaceAll`,
 replacement callbacks, locale collation and normalization remain unsupported.
+Stored string-literal unions expose the same string methods, indexed reads and length.
 
 `Object.freeze`, `seal` and `preventExtensions` are the identity over their argument.
 `Object.entries`, `assign`, `fromEntries`, `hasOwn` and `is` lower over compile-time
-records, structs and string dictionaries; a dictionary's `entries` are iterated in a
-for...of. Logical assignment (`??=`, `||=`, `&&=`) stores into data-model targets,
+records, structs and string dictionaries. `fromEntries` also accepts projected and
+flattened pair arrays. Dictionary spreads copy entries in source order;
+later properties override earlier entries. A dictionary's `entries` are iterated in a
+for...of. Immutable partial record literals enumerate only their initialized keys, in source order;
+optional struct fields without proven own keys refuse enumeration.
+Fixed-key record literals preserve their initialized key order for keys, values and entries, including
+computed enum keys. Enum constants also bind function defaults.
+Local module namespace records expose value exports and re-exports in lexical key order, with live
+native bindings. Statically decided tuple filters retain selected values before ordinary array operations.
+Logical assignment (`??=`, `||=`, `&&=`) stores into data-model targets,
 including dictionary entries, and evaluates its right side only when it stores.
+Calls with omitted or possibly undefined arguments bind defaults in parameter scope after evaluating
+the actual arguments. Runtime defaults keep fallback effects lazy; a nullable argument that can carry
+both null and undefined requires a distinct absence representation and currently refuses.
 
 Iteration: a for...of walks `array.entries()`/`keys()`/`values()`, `map.entries()`,
 `set.values()`/`keys()`, typed arrays and compile-time tuples; `array.keys()` and
@@ -102,13 +173,28 @@ and `Symbol.iterator` have no representation.
 Generic functions and methods lower once per instantiation: the type each parameter
 stands for is inferred from the call (or spelled explicitly) and a type parameter
 no argument determines refuses. Discriminated unions accept string, number and
-boolean literal tags.
+boolean literal tags, including combinations such as a success flag and failure reason.
 
 ## Asset materialization
 
 Reached local/remote URLs become packaged assets; glTF buffers/images are embedded as needed.
 Base64 data URLs decode during generation. Dynamic URLs outside supported producers and
 percent-encoded asset data bodies refuse.
+
+External projects can pass `--public-dir <directory>` and `--site-url <HTTP(S) base URL>` to the CLI
+(or `publicDir`/`siteUrl` to `compileSource`). The default site URL is `http://localhost/`.
+`location.origin` and `import.meta.env.BASE_URL` use that deployment. Asset URLs beneath its base path
+resolve into the public directory, including matching absolute URLs; other origins retain normal remote
+asset handling. Without a public directory, existing entry-relative and pinned corpus paths still apply.
+
+### Runtime HTTP
+
+In asynchronous realms, `fetch(url, options)` and constant aliases of `fetch` select `platform:http`.
+One-argument direct asset fetches retain their packaging behavior. Runtime requests take absolute HTTP(S)
+URLs and specialized options with `method`, string-record `headers`, and an optional string `body`.
+Responses expose `ok`, `status`, `url`, `bodyUsed`, `text()`, `json()` and `arrayBuffer()`.
+Body reads consume once; text uses UTF-8 replacement decoding. HTTP error statuses fulfill the promise;
+transport failures reject it. Other request options, request objects, streaming and response methods refuse.
 
 ### Compressed geometry
 
@@ -358,8 +444,9 @@ Scene-authored skeletons retain arrays/live palettes; Standard needs `enableStan
 Supported imported skinned/morphed clones share their source deformation resources.
 VAT baking uses source skeleton bindings and CPU-only seeks.
 
-Thin-instance pools support count/matrix/color/flush and add/remove operations. GPU-culling enablement
-is an [adaptation](fidelity.md#semantic-contract).
+Thin-instance pools support count/matrix/color/flush and add/remove operations. Color setters retain the
+caller’s typed-array storage, including offset views; individual updates preserve that alias.
+GPU-culling enablement is an [adaptation](fidelity.md#semantic-contract); authored bounds padding is retained.
 
 ## Sprites
 
@@ -446,6 +533,7 @@ Feature-selected LabSound/SDL3 supports reached Web Audio lifecycle, gain, oscil
 panning and AudioParam scheduling. `decodeAudioData` consumes encoded ArrayBuffer bytes at the context's
 sample rate; fetched clips are packaged. Direct response-buffer reads select codecs by container signature.
 Stored or constructed buffers retain all supported codecs. Broader Babylon sound/bus/spatial APIs and master ramps are unsupported.
+Audio nodes and parameters retain their identity through records, arrays and collection keys.
 
 ## Shadows
 

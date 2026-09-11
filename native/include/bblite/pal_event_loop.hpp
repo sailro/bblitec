@@ -28,6 +28,12 @@ struct ExternalEvent {
     virtual ~ExternalEvent() = default;
 };
 
+/** A native operation posts data; its retained handler stays on the realm. */
+struct CompletionEvent : ExternalEvent {
+    std::uint64_t completion;
+    explicit CompletionEvent(std::uint64_t id) : completion(id) {}
+};
+
 /** A control-flow abort, distinct from a source-language exception. */
 struct WorkerTerminated {};
 
@@ -151,7 +157,29 @@ class EventLoop {
 
     void on_event(EventHandler handler) { require_owner(); event_handler_ = std::move(handler); }
     void on_error(ErrorHandler handler) { require_owner(); error_handler_ = std::move(handler); }
+    void on_unhandled_rejection(ErrorHandler handler) { require_owner(); rejection_handler_ = std::move(handler); }
+    void report_unhandled_rejection(std::exception_ptr error) {
+        require_owner();
+        if (rejection_handler_) rejection_handler_(std::move(error));
+    }
+    void after_microtasks(Task task) { require_owner(); rejection_checks_.push_back(std::move(task)); }
     void defer_cleanup(Task cleanup) { require_owner(); cleanups_.push_back(std::move(cleanup)); }
+
+    std::uint64_t register_completion(EventHandler handler, Task cancel = {}) {
+        require_owner();
+        checkpoint();
+        const auto id = next_completion_++;
+        if (!id) throw std::overflow_error("Native completion identifiers exhausted.");
+        completions_.emplace(id, NativeCompletion{std::move(handler), std::move(cancel)});
+        return id;
+    }
+    void cancel_completion(std::uint64_t id) {
+        require_owner();
+        const auto found = completions_.find(id);
+        if (found == completions_.end()) return;
+        if (found->second.cancel) found->second.cancel();
+        completions_.erase(found);
+    }
 
     /** A native event invokes each source listener with its own cleanup checkpoint. */
     void dispatch_callback(Task callback) {
@@ -309,6 +337,11 @@ class EventLoop {
         discarding_ = true;
         close();
         microtasks_.clear();
+        for (auto& [id, completion] : completions_) {
+            static_cast<void>(id);
+            if (completion.cancel) completion.cancel();
+        }
+        completions_.clear();
         // A promise's frame unregisters itself in its destructor. Every
         // suspended activation is released by this realm's owning thread.
         while (!continuations_.empty()) {
@@ -320,6 +353,8 @@ class EventLoop {
         for (auto& cleanup : cleanups) cleanup();
         event_handler_ = {};
         error_handler_ = {};
+        rejection_handler_ = {};
+        rejection_checks_.clear();
     }
     void invoke(Task task) {
         checkpoint();
@@ -347,6 +382,9 @@ class EventLoop {
             microtasks_.pop_front();
             invoke(std::move(microtask));
         }
+        auto checks = std::move(rejection_checks_);
+        rejection_checks_.clear();
+        for (auto& check : checks) invoke(std::move(check));
     }
     void fire_timer(TimerId id) {
         const auto found = timers_.find(id);
@@ -426,6 +464,15 @@ class EventLoop {
             // Keep the move-only packet on this stack; callbacks are invoked
             // synchronously by turn and cannot retain this native reference.
             turn([&] {
+                auto& event = std::get<std::unique_ptr<ExternalEvent>>(task);
+                if (const auto* completion = dynamic_cast<const CompletionEvent*>(event.get())) {
+                    const auto found = completions_.find(completion->completion);
+                    if (found == completions_.end()) return;
+                    auto handler = std::move(found->second.handler);
+                    completions_.erase(found);
+                    handler(std::move(event));
+                    return;
+                }
                 if (!event_handler_) throw std::logic_error("No receiver for external event.");
                 const auto handler = event_handler_;
                 handler(std::move(std::get<std::unique_ptr<ExternalEvent>>(task)));
@@ -452,6 +499,20 @@ class EventLoop {
     std::vector<Task> cleanups_;
     EventHandler event_handler_;
     ErrorHandler error_handler_;
+    ErrorHandler rejection_handler_;
+    std::vector<Task> rejection_checks_;
+    std::uint64_t next_completion_ = 1;
+    struct NativeCompletion { EventHandler handler; Task cancel; };
+    std::map<std::uint64_t, NativeCompletion> completions_;
 };
+
+/** Dispatch a listener snapshot through the realm's callback/error checkpoint. */
+template <typename Listeners, typename Event>
+void dispatch_platform_event(EventLoop& loop, Listeners& listeners, Event& event) {
+    listeners.dispatch_with([&](auto& listener, auto& value) {
+        const auto callback = listener;
+        loop.dispatch_callback([&] { callback(value); });
+    }, event);
+}
 
 } // namespace bbl::pal

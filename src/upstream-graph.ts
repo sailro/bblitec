@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { moduleImportKind } from "./module-imports.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
 
 export interface GraphEdge {
@@ -126,15 +127,9 @@ function moduleEdges(store: UpstreamSourceStore, modulePath: string, file: ts.So
 
     for (const statement of file.statements) {
         if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
-            const clause = statement.importClause;
-            const runtimeBindings =
-                !clause?.isTypeOnly &&
-                (!clause?.namedBindings ||
-                    !ts.isNamedImports(clause.namedBindings) ||
-                    clause.namedBindings.elements.some((element) => !element.isTypeOnly));
-            addEdge(runtimeBindings || !clause ? "runtime" : "type", statement.moduleSpecifier.text);
+            addEdge(moduleImportKind(statement), statement.moduleSpecifier.text);
         } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
-            addEdge(statement.isTypeOnly ? "type" : "runtime", statement.moduleSpecifier.text);
+            addEdge(moduleImportKind(statement), statement.moduleSpecifier.text);
         }
     }
 
