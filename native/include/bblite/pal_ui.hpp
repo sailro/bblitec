@@ -88,7 +88,8 @@ void ui_add_style_rule(
     std::string style,
     UiScrollbarPart scrollbar = UiScrollbarPart::None,
     bool focus_visible = false,
-    bool active = false);
+    bool active = false,
+    UiMotionPreference motion = UiMotionPreference::Any);
 void ui_add_host_style_rule(
     Engine& engine,
     UiStyleSelectorKind selector,
@@ -100,7 +101,8 @@ void ui_add_host_style_rule(
     std::string style,
     bool focus_visible = false,
     bool active = false,
-    UiScrollbarPart scrollbar = UiScrollbarPart::None);
+    UiScrollbarPart scrollbar = UiScrollbarPart::None,
+    UiMotionPreference motion = UiMotionPreference::Any);
 js::Array<UiElementHandle> ui_query_class(
     Engine& engine,
     UiElementHandle root,

@@ -3260,6 +3260,7 @@ enum class UiStyleSelectorKind : std::uint8_t {
 };
 
 enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
+enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
 
 /**
  * One compiler-validated stylesheet rule.
@@ -3280,6 +3281,7 @@ struct UiStyleRule {
     bool focus_visible = false;
     bool active = false;
     UiScrollbarPart scrollbar = UiScrollbarPart::None;
+    UiMotionPreference motion = UiMotionPreference::Any;
 };
 
 /**
