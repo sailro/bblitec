@@ -101,7 +101,10 @@ clipping/shaping and non-convex tessellation remain unsupported.
 
 Supports reached browser defaults, platform fonts, fixed/inset/calc positioning,
 bounded shorthands, backgrounds, gradients, rounded borders, text effects and
-deterministic CSS animation. Standard `scrollbar-width` supports `auto` (16 density-independent pixels),
+deterministic CSS animation. Inherited `overflow-wrap` (`word-wrap`) supports `normal`, `break-word`
+and `anywhere`; `word-break` supports `normal`, `break-all` and `break-word`. They use the native
+line breaker and honor `white-space`; browser min-content sizing is not modeled.
+Standard `scrollbar-width` supports `auto` (16 density-independent pixels),
 `thin` (8), and `none` (hidden while content remains scrollable). `scrollbar-color` accepts `auto`
 or two literal RGB/hex/named colors and inherits through retained markup. Supported vendor pseudo-elements
 are `::-webkit-scrollbar`, `-thumb`, `-track`, `-button`, and `-corner`, with optional hover;
@@ -138,6 +141,7 @@ native range painting follows browser geometry and control states.
 | `rmlui-premultiplied-rounding.patch` | Browser-oriented color/opacity rounding |
 | `rmlui-fractional-letter-spacing.patch` | Fractional default-font accumulation; excludes HarfBuzz sample |
 | `rmlui-line-leading.patch` | Floor upper half-leading; preserve authored fractional textarea line height |
+| `rmlui-overflow-wrap.patch` | Inherited emergency wrapping independent of word-break |
 | `rmlui-transform-key-ownership.patch` | Own mutable transition keys; preserve shared relative transforms |
 
 Relative transition units resolve at transition start. Fully responsive

@@ -865,6 +865,7 @@ export class UiProjection {
         "overflow",
         "overflow-x",
         "overflow-y",
+        "overflow-wrap",
         "padding",
         "pointer-events",
         "position",
@@ -878,6 +879,8 @@ export class UiProjection {
         "transform",
         "transition",
         "white-space",
+        "word-break",
+        "word-wrap",
         "width",
         "z-index",
     ]);
@@ -1419,6 +1422,12 @@ export class UiProjection {
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if ((property === "overflow-wrap" || property === "word-wrap") && !/^(?:normal|break-word|anywhere)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only normal, break-word and anywhere wrapping are represented");
+            }
+            if (property === "word-break" && !/^(?:normal|break-word|break-all)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only normal, break-word and break-all are represented");
+            }
             if (property === "scrollbar-width" && !/^(?:auto|thin|none)$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only auto, thin and none are represented");
             }
@@ -1765,7 +1774,7 @@ export class UiProjection {
         const cssName = property
             .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
             .toLowerCase();
-        return cssName === "background" ? "background-color" : cssName;
+        return cssName === "background" ? "background-color" : cssName === "word-wrap" ? "overflow-wrap" : cssName;
     }
 
     private static readonly UI_SHORTHAND_RESETS: ReadonlyMap<string, readonly (readonly [string, string])[]> = new Map([
@@ -1996,6 +2005,7 @@ export class UiProjection {
             )
             .replace(/-webkit-text-stroke\s*:[^;]*;?/gi, "")
             .replace(/(^|;)\s*filter\s*:[^;]*/gi, (declaration, separator) => clipsGradientToText ? String(separator) : declaration.toLowerCase())
+            .replace(/(^|;)\s*word-wrap\s*:/gi, "$1overflow-wrap:")
             .replace(/\btext-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
                 const effect = this.lowerUiTextShadow(String(shadow));
                 if (effect === undefined) {
@@ -4694,9 +4704,9 @@ export class UiProjection {
         }
         const nativeProperty = this.nativeUiStyleProperty(property);
         this.auditUiStylePropertyName(nativeProperty, expression.left.name);
-        if (nativeProperty === "filter") {
+        if (["filter", "overflow-wrap", "word-break"].includes(nativeProperty)) {
             const value = this.tryUiStaticString(expression.right);
-            if (value !== undefined) this.auditUiStyleDeclarations(`filter:${value}`, expression.right);
+            if (value !== undefined && value !== "") this.auditUiStyleDeclarations(`${nativeProperty}:${value}`, expression.right);
         }
         this.recordUiStaticStyleProperty(
             styleElement,

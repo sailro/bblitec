@@ -3341,8 +3341,8 @@ struct UiRmlRuntime {
 
     void set_projected_property(Rml::Element& element, const std::string& name, const std::string& value) const {
         const bool accepted = element.SetProperty(name, project_css(name == "filter" ? js::string_lower(value) : value));
-        if (name == "filter" && !accepted)
-            throw std::runtime_error("Unsupported retained UI filter value: " + value);
+        if ((name == "filter" || name == "overflow-wrap" || name == "word-break") && !accepted)
+            throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
 
     std::string projected_attribute_value(

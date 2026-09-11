@@ -7,6 +7,7 @@
     "rmlui-css-box-model.patch",
     "rmlui-fractional-letter-spacing.patch",
     "rmlui-line-leading.patch",
+    "rmlui-overflow-wrap.patch",
     "rmlui-premultiplied-rounding.patch",
     "rmlui-solid-background-clip.patch",
     "rmlui-textured-borders.patch",
