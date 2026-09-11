@@ -108,6 +108,11 @@ are `::-webkit-scrollbar`, `-thumb`, `-track`, `-button`, and `-corner`, with op
 non-auto standard width or colors take precedence. Orientation-specific states, track-piece and resizer pseudo-elements are unsupported.
 Native scrollbar geometry and control appearance remain platform adaptations.
 Solid backgrounds support `background-clip:border-box/padding-box/content-box`; image and gradient clipping remain unsupported.
+Static `border-image` raster URLs use packaged assets with stretch slicing and an unpainted center.
+Slices accept numbers or percentages; widths accept border-width multipliers, px, percentages or `auto`.
+Widths track layout changes and share one reduction factor when opposing borders overlap.
+The `border` shorthand resets the image. Nonzero outset, center fill, repeated tiles, SVG sources,
+individual border-image longhands and runtime-generated image declarations are unsupported.
 
 Selectors are bounded class/id/compound and proven ancestor forms, with optional
 hover. [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
@@ -129,6 +134,7 @@ native range painting follows browser geometry and control states.
 | --- | --- |
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
 | `rmlui-solid-background-clip.patch` | Solid border/padding/content-box clipping and invalidation after style changes |
+| `rmlui-textured-borders.patch` | Stretch raster border slices, live widths and CSS overlap reduction |
 | `rmlui-premultiplied-rounding.patch` | Browser-oriented color/opacity rounding |
 | `rmlui-fractional-letter-spacing.patch` | Fractional default-font accumulation; excludes HarfBuzz sample |
 | `rmlui-line-leading.patch` | Floor upper half-leading; preserve authored fractional textarea line height |
