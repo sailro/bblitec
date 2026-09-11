@@ -3,6 +3,7 @@ import { emissionArray, EmissionSet, EmissionMap, EmissionWeakMap } from "./emis
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
+import { supportedUiFilter } from "../ui-filters.js";
 import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, isUiScrollbarPart, uiScrollbarPartCpp, type UiScrollbarPart, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
@@ -841,6 +842,7 @@ export class UiProjection {
         "cursor",
         "display",
         "flex-direction",
+        "filter",
         "font",
         "font-family",
         "font-size",
@@ -899,10 +901,9 @@ export class UiProjection {
 
     /**
      * Reached properties the projection accepts WITHOUT a native rendering:
-     * box shadows need render layers the backend-neutral recorder does not
-     * expose (`pal_ui_rml.cpp` filters the dynamic writes for the same
-     * reason), backdrop filters would sample the composited scene, and RmlUi
-     * has no numeral variants. Each acceptance is recorded per scene in the
+     * box shadows need saved layer textures and inverse masks, unsupported
+     * backdrop functions have no projection, and RmlUi has no numeral
+     * variants. Each acceptance is recorded per scene in the
      * `substituted-ui-runtime` fidelity adaptation.
      */
     private static readonly DEGRADED_UI_STYLE_PROPERTIES = new EmissionSet<string>([
@@ -1476,6 +1477,12 @@ export class UiProjection {
             }
             if (property === "outline-offset" && /^\d+(?:\.\d+)?px$/.test(literalValue)) return;
             if (UiProjection.INERT_UI_STYLE_PROPERTIES.has(property)) return;
+            if (property === "filter" && !clipsGradientToText) {
+                if (!supportedUiFilter(declaration.slice(colon + 1))) {
+                    this.uiStyleRefusal(site, property, "only color adjustments, pixel blur and drop shadows with literal colors are represented");
+                }
+                return;
+            }
             if (UiProjection.GRADIENT_TEXT_UI_STYLE_PROPERTIES.has(property)) {
                 if (!clipsGradientToText) {
                     this.uiStyleRefusal(
@@ -1988,7 +1995,7 @@ export class UiProjection {
                 "$1",
             )
             .replace(/-webkit-text-stroke\s*:[^;]*;?/gi, "")
-            .replace(/(^|;)\s*filter\s*:[^;]*/gi, "$1")
+            .replace(/(^|;)\s*filter\s*:[^;]*/gi, (declaration, separator) => clipsGradientToText ? String(separator) : declaration.toLowerCase())
             .replace(/\btext-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
                 const effect = this.lowerUiTextShadow(String(shadow));
                 if (effect === undefined) {
@@ -4687,6 +4694,10 @@ export class UiProjection {
         }
         const nativeProperty = this.nativeUiStyleProperty(property);
         this.auditUiStylePropertyName(nativeProperty, expression.left.name);
+        if (nativeProperty === "filter") {
+            const value = this.tryUiStaticString(expression.right);
+            if (value !== undefined) this.auditUiStyleDeclarations(`filter:${value}`, expression.right);
+        }
         this.recordUiStaticStyleProperty(
             styleElement,
             nativeProperty,

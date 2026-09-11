@@ -304,7 +304,8 @@ import type {
     GeometryOutputTaskManifest,
     PostProcessTaskManifest,
 } from "./compiler.js";
-import { pinnedImageProcessingSource } from "./shader-builtins-utility.js";
+import { blitVertexWgsl, pinnedImageProcessingSource } from "./shader-builtins-utility.js";
+import { uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
 
 /**
  * What a scene reached, as the emitters need to see it. Named once
@@ -1085,6 +1086,12 @@ class GeneratedSourceWriter {
         }
         // Every WGSL module this run emits, whichever renderer produced it.
         const composedShaders: ComposedShader[] = [];
+        if (features.includes("ui:rml")) {
+            composedShaders.push(
+                { output: "upstream/shaders/ui-filter.vert.native.wgsl", data: blitVertexWgsl() },
+                { output: "upstream/shaders/ui-filter.frag.native.wgsl", data: uiFilterFragmentWgsl() },
+            );
+        }
         if (features.includes("text:renderable") || features.includes("renderer:text")) {
             const pipelines = options.textPipelines ?? [];
             this.tree.write("upstream/include/bblite/upstream_text_gpu.hpp", new TextGpuLowerer(context).header());

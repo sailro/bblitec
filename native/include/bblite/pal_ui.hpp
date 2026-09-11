@@ -228,13 +228,38 @@ struct UiRenderDraw {
     std::uint32_t scissor_width = 0;
     std::uint32_t scissor_height = 0;
     bool nearest_sampling = false;
+    std::uint32_t layer = 0;
+};
+
+enum class UiFilterKind { Color, Blur, DropShadow };
+struct UiFilter {
+    UiFilterKind kind = UiFilterKind::Color;
+    std::array<float, 16> matrix{};
+    std::array<float, 4> offset{};
+    std::array<float, 4> color{};
+    float sigma = 0;
+    float offset_x = 0, offset_y = 0;
+};
+
+/** Layer composites stay in source order, between recorded geometry draws. */
+struct UiLayerComposite {
+    std::uint32_t source = 0, destination = 0;
+    std::uint32_t first_index = 0, index_count = 0;
+    std::int32_t left = 0, top = 0;
+    std::uint32_t width = 0, height = 0;
+    std::vector<UiFilter> filters;
+};
+
+struct UiRenderOperation {
+    enum class Kind { ResetLayer, Backdrop, Composite };
+    Kind kind = Kind::Backdrop;
+    std::uint32_t before_draw = 0, index = 0;
 };
 
 /** A backdrop snapshot and separable blur, ordered between ordinary UI draws. */
 struct UiBackdrop {
     static constexpr std::uint32_t sample_index_count = 6;
 
-    std::uint32_t before_draw = 0;
     std::int32_t left = 0;
     std::int32_t top = 0;
     std::uint32_t width = 0;
@@ -268,6 +293,9 @@ struct UiRenderFrame {
     std::vector<UiRenderTexture> textures;
     std::vector<UiRenderDraw> draws;
     std::vector<UiBackdrop> backdrops;
+    std::vector<UiLayerComposite> composites;
+    std::vector<UiRenderOperation> operations;
+    std::uint32_t layer_count = 0;
     /**
      * First index of the trailing full-frame quad the recorder appends after
      * the RmlUi draws. No entry in `draws` references it: the scene renderers
