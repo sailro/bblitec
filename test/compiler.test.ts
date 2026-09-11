@@ -9613,7 +9613,11 @@ test("switches synthetic intrinsic width with active hover width rules", () => {
     );
     assert.match(
         update,
-        /hover_changed[\s\S]*runtime\.sync_tree\(\)[\s\S]*hover_changed\)[\s\S]*runtime\.update_intrinsic_widths/,
+        /if \(hover_changed\) \{[\s\S]*?runtime\.sync_tree\(\)/,
+    );
+    assert.match(
+        update,
+        /const bool layout_changed =[^;]*\bhover_changed;[\s\S]*if \(layout_changed\) runtime\.update_intrinsic_widths/,
     );
 });
 
