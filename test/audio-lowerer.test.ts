@@ -115,7 +115,7 @@ test("an audio parameter handle is a value, not a minted id", () => {
     // object on every read, and the pinned ramp component keeps state on
     // it. A handle minted per call would make two reads two parameters --
     // and would grow a table on every per-frame write.
-    const header = source("native/include/bblite/pal_audio.hpp");
+    const header = source("native/include/bblite/pal_audio_types.hpp");
     assert.match(
         header,
         /struct AudioParamHandle \{\n    AudioNodeHandle node;\n    AudioParamName name/,

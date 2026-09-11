@@ -24,6 +24,10 @@ export function passesByReferenceKind(type: DataType): boolean {
     return kinds[type.kind].byReference;
 }
 
+export function isOpaqueReference(type: DataType | undefined): boolean {
+    return type !== undefined && kinds[type.kind].opaqueReference === true;
+}
+
 /** Walk stored members, optionally including the types in a function signature. */
 export function containsDataKind(
     type: DataType, target: DataKind, fields: StructFieldTypes,

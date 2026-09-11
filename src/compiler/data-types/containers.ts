@@ -1,8 +1,28 @@
 import type { DataKindOperations } from "./contracts.js";
 
 export const containerKinds: DataKindOperations<
-    "optional" | "vector" | "map" | "set" | "span" | "tuple" | "enummap" | "table"
+    "promise" | "optional" | "union" | "vector" | "map" | "set" | "span" | "tuple" | "product" | "enummap" | "table"
 > = {
+    promise: {
+        cpp: (type, context) => `bbl::js::Promise<${type.result ? context.cppType(type.result) : "bbl::js::PromiseVoid"}>`,
+        key: (type, key) => `promise(${type.result ? key(type.result) : "void"})`,
+        equal: (left, right, equal) => left.result && right.result ? equal(left.result, right.result) : left.result === right.result,
+        children: type => type.result ? [type.result] : [], byReference: false,
+    },
+    product: {
+        cpp: (type, context) => `bbl::js::Product<${type.elements.map(element => context.cppType(element)).join(", ")}>`,
+        key: (type, key) => `product(${type.elements.map(key).join(",")})`,
+        equal: (left, right, equal) => left.elements.length === right.elements.length &&
+            left.elements.every((element, index) => equal(element, right.elements[index]!)),
+        children: type => type.elements, byReference: true,
+    },
+    union: {
+        cpp: (type, context) => `std::variant<${type.members.map(member => context.cppType(member)).join(", ")}>`,
+        key: (type, key) => `union(${type.members.map(key).join(",")})`,
+        equal: (left, right, equal) => left.members.length === right.members.length &&
+            left.members.every((member, index) => equal(member, right.members[index]!)),
+        children: type => type.members, byReference: false,
+    },
     optional: {
         cpp: (type, context) => type.inner.kind === "struct" && context.isReferenceStruct(type.inner.name)
             ? context.cppType(type.inner) : `bbl::js::Nullable<${context.cppType(type.inner)}>`,

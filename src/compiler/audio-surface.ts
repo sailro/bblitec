@@ -8,6 +8,7 @@ import { argumentAt } from "./syntax.js";
 
 import { readProperty, type PropertyContext } from "./properties.js";
 import type { Feature, Value } from "./types.js";
+import { domAudioHandleKind } from "./data-types.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -21,6 +22,7 @@ interface AudioReceiverContext
         | "resolveThisField"
         | "compileValue"
         | "unwrap"
+        | "checker"
     > {}
 
 /** What a property write needs. `AssignmentContext` satisfies it. */
@@ -214,10 +216,12 @@ function resolveAudioReceiver(
                 : narrowedAudioData(field);
         }
         const owner = resolveAudioReceiver(context, node.expression);
-        if (!owner) {
-            return undefined;
-        }
-        return readProperty(context, owner, node.name.text, node);
+        if (owner) return readProperty(context, owner, node.name.text, node);
+    }
+    const handle = domAudioHandleKind(context.checker.getNonNullableType(context.checker.getTypeAtLocation(node)));
+    if (handle && AUDIO_KINDS.has(handle)) {
+        const value = context.compileValue(node);
+        return AUDIO_KINDS.has(value.kind) ? value : undefined;
     }
     return undefined;
 }

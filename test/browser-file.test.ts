@@ -270,10 +270,11 @@ test("lowers the complete map export/import browser source shape", () => {
         "input_files",
         "file_text",
         "json_parse",
-        "array_from_iterable",
+        "serializeWorld",
     ]) {
         assert.match(result.cpp, new RegExp(symbol));
     }
+    assert.match(result.cpp, /World\{1\.0, v_\w*parts\}/);
 });
 
 test("refuses multiple, directories, and unsupported accept syntax", () => {

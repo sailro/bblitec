@@ -13,6 +13,9 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
+#if BBLITE_GPU_INSTANCE_COLORS
+#include <bblite/js_data.hpp>
+#endif
 // The backend-neutral RmlUi frame types, for the scissor clamp every UI
 // consumer applies to a recorded draw before encoding it.
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
@@ -2581,9 +2584,20 @@ inline bool pinned_record_instanced(const MeshRecord& record) {
  * predicate rather than five transcriptions of the same expression.
  */
 inline bool pinned_record_instance_colored(const MeshRecord& record) {
-    return !record.instance_colors.empty();
+    return has_instance_colors(record);
 }
 
+#endif
+
+#if BBLITE_GPU_INSTANCE_COLORS
+// Snapshot a retained caller view at the versioned GPU upload boundary.
+inline std::vector<float> instance_colors_for_upload(const MeshRecord& mesh) {
+    if (!mesh.instance_color_source) return mesh.instance_colors;
+    const auto& source = *mesh.instance_color_source;
+    std::vector<float> colors(source.size());
+    for (std::size_t lane = 0; lane < colors.size(); ++lane) colors[lane] = source.load(lane);
+    return colors;
+}
 #endif
 
 /**
@@ -4321,7 +4335,7 @@ inline StandardVariantKey standard_variant_key(
             upstream::standard_vertex_colors_enabled &&
                 draw.item.geometry < engine.geometries.size() &&
                 engine.geometries[draw.item.geometry].has_vertex_colors,
-            !record.instance_colors.empty());
+            has_instance_colors(record));
     }
 #endif
     key.resolved = true;

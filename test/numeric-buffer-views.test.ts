@@ -15,6 +15,21 @@ function byteView(value:Float32Array):Uint8Array {
 }
 async function main() {
  if(!new RegExp("^views$").test("views")) throw new Error("constructor RegExp dispatch");
+ const signed8=new Int8Array([-129,127.9,128,255,NaN,Infinity]);
+ if(signed8[0]!==127 || signed8[1]!==127 || signed8[2]!==-128 || signed8[3]!==-1 || signed8[4]!==0 || signed8[5]!==0 || signed8.byteLength!==6) throw new Error("signed byte coercion");
+ const byteAlias=new Uint8Array(signed8.buffer,2,2);
+ byteAlias[0]=254;
+ if(signed8[2]!==-2) throw new Error("signed byte alias");
+ const signedSlice=signed8.subarray(1,3);
+ signedSlice.fill(129.9);
+ if(signed8[1]!==-127 || signed8[2]!==-127 || signedSlice.byteOffset!==1 || signedSlice.byteLength!==2) throw new Error("signed byte subarray");
+ const signedCopy=new Int8Array(signedSlice);
+ signedCopy[0]=256;
+ if(signedCopy[0]!==0 || signedSlice[0]!==-127) throw new Error("signed byte copy");
+ const byRecord=new WeakMap<{bytes:Int8Array},number>();
+ const signedRecord={bytes:signed8};
+ byRecord.set(signedRecord,4);
+ if(byRecord.get(signedRecord)!==4 || byRecord.has({bytes:signed8})) throw new Error("typed record identity");
  const bytes=new Uint8Array(32);
  const buffer=bytes.buffer;
  const floats=new Float32Array(buffer,4.9,2.9);

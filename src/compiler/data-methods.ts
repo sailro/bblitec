@@ -4,10 +4,12 @@ import { nativeDataMetadata, withNativeMetadata } from "./types.js";
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, regularExpressionParts } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { compileArrayValueMethod } from "./array-methods.js";
 import { compileStringValueMethod } from "./string-methods.js";
+import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
+import { compileHttpResponseMethod } from "./http.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 
 import {
@@ -34,51 +36,34 @@ export function compileIsArrayOverData(
         callee.name.text !== "isArray" ||
         !ts.isIdentifier(callee.expression) ||
         callee.expression.text !== "Array" ||
+        !lowerer.context.isDefaultLibraryIdentifier(callee.expression) ||
         lowerer.context.lookupIdentifierValue(callee.expression) !== undefined ||
         call.arguments.length !== 1
     ) {
         return undefined;
     }
     const value = lowerer.context.compileValue(argumentAt(call, 0));
-    const decided = (answer: boolean): Value => ({
-        kind: "boolean",
-        cpp: answer ? "true" : "false",
-        staticBoolean: answer,
-        dataType: { kind: "boolean" },
-    });
+    const decided = (answer: boolean): Value => {
+        lowerer.context.emitDiscardedValue(value);
+        return {kind:"boolean", cpp:answer ? "true" : "false", staticBoolean:answer, dataType:{kind:"boolean"}};
+    };
     if (value.kind === "tuple") return decided(true);
+    if (["record", "json-null", "number", "boolean", "string", "callback"].includes(value.kind)) return decided(false);
+    const optional = value.dataType?.kind === "optional";
     const dataType =
         value.dataType?.kind === "optional"
             ? value.dataType.inner
             : value.dataType;
-    if (!dataType) return undefined;
-    if (dataType.kind === "json") {
-        return {
-            kind: "boolean",
-            cpp: `${value.cpp}.is_array()`,
-            dataType: { kind: "boolean" },
-        };
-    }
-    if (
-        dataType.kind === "vector" ||
-        dataType.kind === "span" ||
-        dataType.kind === "tuple" ||
-        dataType.kind === "table"
-    ) {
-        return decided(true);
-    }
-    if (
-        dataType.kind === "number" ||
-        dataType.kind === "boolean" ||
-        dataType.kind === "string" ||
-        dataType.kind === "enum" ||
-        dataType.kind === "struct" ||
-        dataType.kind === "map" ||
-        dataType.kind === "set"
-    ) {
-        return decided(false);
-    }
-    return undefined;
+    if (!dataType || dataType.kind === "numberindex" ||
+        (dataType.kind === "union" && dataType.members.some(member => member.kind === "numberindex"))) return undefined;
+    if (dataType.kind === "json" && !optional) return {kind:"boolean", cpp:`${value.cpp}.is_array()`, dataType:{kind:"boolean"}};
+    const arrayType = (type: DataType): boolean => ["vector", "span", "tuple", "product", "table"].includes(type.kind);
+    const member = optional ? "(*candidate)" : "candidate";
+    const predicate = dataType.kind === "json" ? `${member}.is_array()` : dataType.kind === "union"
+        ? `std::array<bool, ${dataType.members.length}>{${dataType.members.map(arrayType).join(", ")}}[${member}.index()]`
+        : arrayType(dataType) ? "true" : "false";
+    if (predicate === "false" || (predicate === "true" && !optional)) return decided(predicate === "true");
+    return {kind:"boolean", cpp:`([](const auto& candidate) { return ${optional ? "candidate.has_value() && " : ""}${predicate}; }(${value.cpp}))`, dataType:{kind:"boolean"}};
 }
 
 /**
@@ -213,7 +198,7 @@ export const writeReceiverMethods: ReadonlySet<string> = new EmissionSet([
 ]);
 
 const constantArrayMethods: ReadonlySet<string> = new EmissionSet([
-    "at", "concat", "lastIndexOf", "flatMap",
+    "at", "concat", "lastIndexOf", "flatMap", "slice",
     "indexOf",
     "includes",
     "find",
@@ -247,6 +232,7 @@ const snapshotInvalidatingMethods: ReadonlySet<string> = new EmissionSet([
 export function compileDataMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,
+    expectedResult?: DataType<"vector">,
 ): Value | undefined {
     const callee = lowerer.context.unwrap(
         call.expression,
@@ -350,7 +336,9 @@ export function compileDataMethodCall(
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.lookupIdentifierValue(ownerExpression) ??
-                lowerer.compileStaticContainer(ownerExpression))
+                (lowerer.dataTypeAt(ownerExpression)?.kind === "string"
+                    ? lowerer.context.compileValue(ownerExpression)
+                    : lowerer.compileStaticContainer(ownerExpression)))
               : (ts.isPropertyAccessExpression(ownerExpression) ||
                     ts.isElementAccessExpression(ownerExpression)) &&
                   lowerer.plainDataOwnerChain(ownerExpression)
@@ -359,6 +347,9 @@ export function compileDataMethodCall(
                   ts.isTemplateExpression(ownerExpression)
                 ? lowerer.context.compileValue(ownerExpression)
                 : undefined;
+    if (dynamicOwner?.dataType?.kind === "date") return compileDateMethod(lowerer, call, dynamicOwner, method);
+    if (dynamicOwner?.dataType?.kind === "http-response") return compileHttpResponseMethod(lowerer, call, dynamicOwner, method);
+    if (dynamicOwner?.dataType?.kind === "date-time-format") return compileDateTimeFormatMethod(lowerer, call, dynamicOwner, method);
     const tupleOwnerElements: Value[] | undefined =
         dynamicOwner?.kind === "tuple"
         ? (dynamicOwner.tupleElements ?? [])
@@ -373,6 +364,20 @@ export function compileDataMethodCall(
                 }),
             )
           : undefined;
+    if (dynamicOwner?.kind === "tuple" && tupleOwnerElements && method === "slice") {
+        if (call.arguments.length > 2) lowerer.context.fail(call, "Array.slice expects zero, one, or two arguments.");
+        const selected = lowerer.context.probeEmission(() => {
+            // Receiver elements are evaluated before either endpoint, even
+            // when the selected interval later excludes them.
+            const elements = tupleOwnerElements.map(value => lowerer.context.pinValueToTemporary(value, "slice_member"));
+            const begin = call.arguments[0] ? lowerer.context.compileValue(call.arguments[0]) : undefined;
+            const end = call.arguments[1] ? lowerer.context.compileValue(call.arguments[1]) : undefined;
+            if ((begin && begin.staticNumber === undefined) || (end && end.staticNumber === undefined)) return undefined;
+            for (const element of elements) lowerer.context.emitDiscardedValue(element);
+            return {kind: "tuple", cpp: "", tupleElements: elements.slice(begin?.staticNumber, end?.staticNumber)} satisfies Value;
+        });
+        if (selected) return selected;
+    }
     if (tupleOwnerElements && method === "join") {
         if (call.arguments.length > 1) {
             lowerer.context.fail(
@@ -407,7 +412,7 @@ export function compileDataMethodCall(
     if (
         tupleOwnerElements &&
         dynamicOwner &&
-        (method === "some" || method === "every")
+        (method === "some" || method === "every" || method === "filter" || method === "find" || method === "findIndex")
     ) {
         if (call.arguments.length !== 1) {
             lowerer.context.fail(
@@ -428,6 +433,7 @@ export function compileDataMethodCall(
         }
         const folded = lowerer.context.probeEmission(
             (): Value | undefined => {
+                const selected: Value[] = [];
                 for (let index = 0; index < tupleOwnerElements.length; ++index) {
                     const matched =
                         lowerer.context.compilePredicateWithValues(
@@ -447,6 +453,15 @@ export function compileDataMethodCall(
                     if (matched.staticBoolean === undefined) {
                         return undefined;
                     }
+                    if (method === "filter") {
+                        if (matched.staticBoolean) selected.push(tupleOwnerElements[index]!);
+                        continue;
+                    }
+                    if ((method === "find" || method === "findIndex") && matched.staticBoolean) {
+                        return method === "find" ? tupleOwnerElements[index]! : {
+                            kind: "number", cpp: `${index}.0`, staticNumber: index, dataType: { kind: "number" },
+                        };
+                    }
                     if (
                         (method === "some" && matched.staticBoolean) ||
                         (method === "every" && !matched.staticBoolean)
@@ -459,6 +474,9 @@ export function compileDataMethodCall(
                         };
                     }
                 }
+                if (method === "filter") return { kind: "tuple", cpp: "", tupleElements: selected };
+                if (method === "find") return { kind: "json-null", cpp: "std::nullopt" };
+                if (method === "findIndex") return { kind: "number", cpp: "-1.0", staticNumber: -1, dataType: { kind: "number" } };
                 const result = method === "every";
                 return {
                     kind: "boolean",
@@ -467,7 +485,6 @@ export function compileDataMethodCall(
                     dataType: { kind: "boolean" },
                 };
             },
-            (value) => value?.staticBoolean !== undefined,
         );
         if (folded) {
             return folded;
@@ -523,12 +540,12 @@ export function compileDataMethodCall(
     }
     const owner =
         constructedOwner ??
-        lowerer.compileDataPath(
+        (dynamicOwner?.kind === "tuple" ? undefined : lowerer.compileDataPath(
             callee.expression,
             writeReceiverMethods.has(method)
                 ? "write"
                 : "read",
-        ) ??
+        )) ??
         (dynamicOwner?.kind === "data" ||
         dynamicOwner?.kind === "string"
             ? dynamicOwner
@@ -543,6 +560,7 @@ export function compileDataMethodCall(
               (!lowerer.namesHandleCollection(callee.expression)
                   ? lowerer.materializeKnownTuple(
                         callee.expression,
+                        dynamicOwner?.kind === "tuple" ? dynamicOwner : undefined,
                     )
                   : undefined))
             : undefined);
@@ -650,10 +668,10 @@ export function compileDataMethodCall(
             requiresExplicitDiscard: true,
         };
     }
-    const narrowedOwner = lowerer.narrowOptional(
+    const narrowedOwner = lowerer.stringReceiver(lowerer.narrowOptional(
         owner,
         callee.expression,
-    );
+    ), callee.expression);
     // An array method on a parsed document runs over the document's own
     // elements, each of which is another document. Handing the element
     // view to the ordinary array lowering is the whole adaptation:
@@ -693,48 +711,20 @@ export function compileDataMethodCall(
             .find((candidate) => candidate.name === method);
         const functionType = field?.type;
         if (functionType?.kind === "function") {
+            const referenceReceiver = lowerer.context.dataTypes.isReferenceStruct(dataType.name);
+            const member = referenceReceiver ? "->" : ".";
+            if (call.questionDotToken || callee.questionDotToken) {
+                const receiver = lowerer.context.allocateTemporaryCppName("callback_receiver");
+                lowerer.context.emit({ kind: "declaration", type: referenceReceiver ? "const auto" : "const auto&", name: receiver, initializer: narrowed.cpp });
+                return lowerer.compileOptionalStoredCall(call, `${receiver}${member}${field!.name}`, functionType,
+                    callee.questionDotToken ? receiver : undefined);
+            }
             const argumentsCpp = lowerer.compileFunctionArguments(
                 call,
                 functionType,
                 `Stored function '${method}'`,
             );
-            const referenceReceiver =
-                lowerer.context.dataTypes.isReferenceStruct(
-                dataType.name,
-            );
-            const member = referenceReceiver ? "->" : ".";
             const cpp = `${narrowed.cpp}${member}${field!.name}(${argumentsCpp.join(", ")})`;
-            if (
-                referenceReceiver &&
-                (call.questionDotToken !== undefined ||
-                    callee.questionDotToken !== undefined)
-            ) {
-                const receiver =
-                    lowerer.context.allocateTemporaryCppName(
-                        "optional_receiver",
-                    );
-                if (!functionType.result) {
-                    return {
-                        kind: "void",
-                        cpp:
-                            `([&]() -> void { const auto& ${receiver} = ${narrowed.cpp}; ` +
-                            `if (${receiver}) ${receiver}->${field!.name}(${argumentsCpp.join(", ")}); }())`,
-                    };
-                }
-                const resultType: DataType = {
-                    kind: "optional",
-                    inner: functionType.result,
-                };
-                lowerer.context.reachJsData();
-                const resultCpp =
-                    lowerer.context.dataTypes.cppType(resultType);
-                return lowerer.leafValue(
-                    `([&]() -> ${resultCpp} { const auto& ${receiver} = ${narrowed.cpp}; ` +
-                        `if (!${receiver}) return std::nullopt; ` +
-                        `return ${resultCpp}{${receiver}->${field!.name}(${argumentsCpp.join(", ")})}; }())`,
-                    resultType,
-                );
-            }
             return functionType.result
                 ? lowerer.leafValue(cpp, functionType.result)
                 : { kind: "void", cpp };
@@ -964,19 +954,7 @@ export function compileDataMethodCall(
     if (arrayValue) return arrayValue;
     if (
         dataType.kind === "span" &&
-        ![
-            "find",
-            "findIndex",
-            "filter",
-            "flat",
-            "reduce",
-            "some",
-            "every",
-            "map",
-            "forEach",
-            "keys",
-            "values",
-        ].includes(method)
+        !readOnlyDataMethods.has(method)
     ) {
         // A readonly array parameter is a span. Its observing methods
         // share the vector loop below; mutating/copy-producing methods
@@ -985,7 +963,7 @@ export function compileDataMethodCall(
     }
     lowerer.context.reachJsData();
     const handler = arrayMethodHandlers.get(method);
-    if (handler) return handler({ lowerer, call, narrowed, dataType, dynamicOwner });
+    if (handler) return handler({ lowerer, call, narrowed, dataType, dynamicOwner, expectedResult });
     lowerer.context.fail(callee.name, `Array method '${method}' is not supported.`);
 }
 
@@ -995,6 +973,7 @@ interface ArrayMethodState {
     narrowed: Value;
     dataType: DataType & { kind: "vector" | "span" };
     dynamicOwner: Value | undefined;
+    expectedResult: DataType<"vector"> | undefined;
 }
 
 function compileArrayFlat({ lowerer, call, narrowed, dataType }: ArrayMethodState): Value {
@@ -1163,22 +1142,44 @@ function compileArrayFindIndex(state: ArrayMethodState): Value {
     };
 }
 
+/** A fresh array can choose its contextual string storage before any aliases exist. */
+function arrayResultType(lowerer: DataLowerer, call: ts.CallExpression, fallback?: DataType<"vector">): DataType<"vector"> | undefined {
+    const inferred = lowerer.dataTypeAt(call);
+    const result = fallback
+        ? fallback.element.kind === "optional" && inferred?.kind === "vector" && dataTypesEqual(fallback.element.inner, inferred.element)
+            ? inferred : fallback
+        : inferred?.kind === "vector" ? inferred : undefined;
+    if (!result) return undefined;
+    const contextual = lowerer.context.checker.getContextualType(call);
+    const destination = contextual ? lowerer.context.dataTypes.fromTsType(contextual, call) : undefined;
+    return (destination?.kind === "vector" || destination?.kind === "span") &&
+        destination.element.kind === "string" && result.element.kind === "enum"
+        ? {kind: "vector", element: destination.element} : result;
+}
+
 function compileArrayFilter(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    const filteredType = {
+    const filteredType = arrayResultType(lowerer, call, {
         kind: "vector" as const,
         element: dataType.element,
-    };
+    })!;
     const output = lowerer.context.allocateTemporaryCppName("filter_result");
     lowerer.emitArrayCallbackLoop(call, "filter", narrowed, dataType, false, (source) => {
-        lowerer.context.emit(`bbl::js::Array<${lowerer.context.dataTypes.cppType(dataType.element)}> ${output};`);
+        lowerer.context.emit(`${lowerer.context.dataTypes.cppType(filteredType)} ${output};`);
         lowerer.context.emit(`${output}.reserve(${source}.size());`);
     }, (matched, callback, source, index) => {
         if (matched.kind !== "boolean") {
             lowerer.context.fail(callback, "Array.filter callback must return a boolean value.");
         }
-        lowerer.context.emit(`if (${matched.cpp}) ${output}.push_back(${source}[${index}]);`);
+        lowerer.context.emit(`if (${matched.cpp}) {`);
+        lowerer.context.increaseIndent();
+        const cpp = `${source}[${index}]`;
+        const selected = dataType.element.kind === "optional" && filteredType.element.kind !== "optional"
+            ? lowerer.leafValue(`(*${cpp})`, dataType.element.inner) : lowerer.leafValue(cpp, dataType.element);
+        lowerer.context.emit(`${output}.push_back(${lowerer.compileKnownValueForSink(selected, filteredType.element, call)});`);
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
     });
     lowerer.registerLocal(output, "owned");
     return {
@@ -1297,7 +1298,7 @@ function compileArrayEvery(state: ArrayMethodState): Value {
 function compileArrayMap(state: ArrayMethodState, method: "map" | "flatMap"): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    const mappedType = lowerer.dataTypeAt(call);
+    const mappedType = state.expectedResult ?? arrayResultType(lowerer, call);
     if (mappedType?.kind !== "vector") {
         lowerer.context.fail(call, `Array.${method} callback results must belong to the native data model.`);
     }
@@ -1932,13 +1933,24 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
         if (call.arguments.length !== 2) {
             lowerer.context.fail(call, "String.replace expects a pattern and replacement.");
         }
-        const source = lowerer.context.allocateTemporaryCppName("replace_source");
-        lowerer.context.emit({ kind: "declaration", type: "const std::string", name: source, initializer: narrowed.cpp, attributes: "[[maybe_unused]] " });
+        const snapshot = (value: Value, label: string): string => {
+            if (value.staticString !== undefined && value.cpp === lowerer.context.cppString(value.staticString)) return value.cpp;
+            const name = lowerer.context.allocateTemporaryCppName(label);
+            lowerer.context.emit({ kind: "declaration", type: "const std::string", name, initializer: value.cpp, attributes: "[[maybe_unused]] " });
+            return name;
+        };
+        const source = snapshot(narrowed, "replace_source");
         const pattern = lowerer.context.compileValue(argumentAt(call, 0));
         if (pattern.kind === "string" || pattern.dataType?.kind === "string") {
-            const search = lowerer.context.allocateTemporaryCppName("replace_search");
-            lowerer.context.emit({ kind: "declaration", type: "const std::string", name: search, initializer: pattern.cpp });
-            const replacement = lowerer.compileForSink(argumentAt(call, 1), { kind: "string" });
+            const search = snapshot(pattern, "replace_search");
+            const replacementValue = lowerer.context.compileValue(argumentAt(call, 1));
+            if (narrowed.staticString !== undefined && pattern.staticString !== undefined && replacementValue.staticString !== undefined) {
+                const value = method === "replaceAll"
+                    ? narrowed.staticString.replaceAll(pattern.staticString, replacementValue.staticString)
+                    : narrowed.staticString.replace(pattern.staticString, replacementValue.staticString);
+                return { ...lowerer.leafValue(lowerer.context.cppString(value), { kind: "string" }), staticString: value };
+            }
+            const replacement = lowerer.compileKnownValueForSink(replacementValue, { kind: "string" }, argumentAt(call, 1));
             return lowerer.leafValue(`bbl::js::string_replace(${source}, ${search}, ${replacement}, ${method === "replaceAll"})`, { kind: "string" });
         }
         if (method === "replaceAll")
@@ -1951,12 +1963,7 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
         if (narrowed.staticString !== undefined &&
             replacementValue.staticString !== undefined &&
             ts.isRegularExpressionLiteral(patternExpression)) {
-            const literal = patternExpression.text;
-            const delimiter = literal.lastIndexOf("/");
-            const flags = literal.slice(delimiter + 1);
-            const source = literal
-                .slice(1, delimiter)
-                .replaceAll("\\/", "/");
+            const {pattern:source, flags} = regularExpressionParts(patternExpression)!;
             const value = narrowed.staticString.replace(new RegExp(source, flags), replacementValue.staticString);
             return {
                 kind: "string",

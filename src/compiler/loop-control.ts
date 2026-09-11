@@ -20,6 +20,18 @@
 import ts from "typescript";
 import { findAnalysisNode, findAnalysisNodeWithState } from "./analysis-walk.js";
 
+/** Emit one body until its lowered control flow proves the remainder unreachable. */
+export function emitReachableStatements(context: {
+    emitStatement(statement: ts.Statement): void;
+    statementTerminatesAfterLowering(statement: ts.Statement): boolean;
+}, statements: readonly ts.Statement[]): boolean {
+    for (const statement of statements) {
+        context.emitStatement(statement);
+        if (context.statementTerminatesAfterLowering(statement)) return true;
+    }
+    return false;
+}
+
 export interface LoopControlQuery {
     /** Count `break` (default true). */
     readonly breaks?: boolean;

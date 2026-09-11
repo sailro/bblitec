@@ -204,6 +204,14 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("platform:http")) adaptations.push({
+        id:"native-http-transport",
+        category:"browser-erasure",
+        sourceSemantics:"Browser fetch returns a promise when headers arrive, enforces browser origin policies and exposes a consumable response stream.",
+        nativeSemantics:"Native HTTP(S) requests run outside the realm thread and settle on it after buffering the response. Request and response bodies are limited to 32 MiB; transport timeouts reject. The native client validates TLS but has no browser cookies or CORS policy. Realm shutdown cancels and joins pending transport work.",
+        risk:"medium",
+        validation:["native loopback HTTP request, response, redirect, body-consumption and rejection checks"],
+    });
     if (context.jsDataReached) {
         adaptations.push({
             id: "plain-data-value-model",

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { stringLiteralText, unwrapExpression } from "./syntax.js";
 
 /** The two names a scene spells the pinned package with. */
 export const babylonPackages = [
@@ -253,14 +254,33 @@ export class CompilerSymbols {
     }
 
     public importedName(
-        identifier: ts.Identifier,
+        expression: ts.Expression,
+        active?: Set<ts.Symbol>,
     ): string | undefined {
+        const identifier = unwrapExpression(expression);
+        if (ts.isPropertyAccessExpression(identifier) || ts.isElementAccessExpression(identifier)) {
+            const owner = unwrapExpression(identifier.expression);
+            if (!ts.isIdentifier(owner)) return undefined;
+            const imported = this.importModuleSpecifier(owner);
+            if (!imported?.nonNamed || imported.typeOnly || !isBabylonModule(imported.specifier)) return undefined;
+            const name = ts.isPropertyAccessExpression(identifier) ? identifier.name.text
+                : stringLiteralText(unwrapExpression(identifier.argumentExpression));
+            return name && this.checker.getPropertyOfType(this.checker.getTypeAtLocation(owner), name) ? name : undefined;
+        }
+        if (!ts.isIdentifier(identifier)) return undefined;
         const imported = this.importModuleSpecifier(identifier);
         if (
             !imported?.named ||
             !isBabylonModule(imported.specifier)
         ) {
-            return undefined;
+            const symbol = this.valueSymbol(identifier);
+            if (!symbol || active?.has(symbol)) return undefined;
+            active ??= new Set();
+            active.add(symbol);
+            const declaration = symbol.valueDeclaration;
+            return declaration && ts.isVariableDeclaration(declaration) && declaration.initializer &&
+                ts.isVariableDeclarationList(declaration.parent) && (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+                ? this.importedName(declaration.initializer, active) : undefined;
         }
         return imported.named.propertyName?.text ??
             imported.named.name.text;

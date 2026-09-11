@@ -99,7 +99,7 @@ export function bakeCanvasReadback(context: CanvasReadbackContext, call: ts.Call
         const value = invocation.arguments[index]!;
         if (value.kind === "engine") { arguments_.push({ kind: "engine" }); continue; }
         const data = dataArgument(context, invocation.call.arguments[index]!, value);
-        const directory = typeof data === "string" ? resolve(dirname(context.options.fileName), resolveBundledAsset(data, context.options.fileName)) : undefined;
+        const directory = typeof data === "string" ? resolve(dirname(context.options.fileName), resolveBundledAsset(data, context.options.fileName, context.options)) : undefined;
         if (directory && existsSync(directory) && statSync(directory).isDirectory()) {
             const logical = relative(dirname(resolve(context.options.fileName)), directory).replaceAll("\\", "/");
             if (logical.startsWith("..")) return context.fail(call, "Canvas readback asset directories must be within the entry directory.");

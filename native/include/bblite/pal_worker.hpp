@@ -16,15 +16,6 @@ namespace bbl::pal {
 class WorkerRealm;
 using WorkerEntry = void (*)(WorkerRealm&);
 
-template <typename Listeners, typename Event>
-void dispatch_worker_event(EventLoop& loop, Listeners& listeners, Event& event) {
-    listeners.dispatch_with([&](auto& listener, auto& value) {
-        // Snapshot before calling source code: it can replace or remove itself.
-        const auto callback = listener;
-        loop.dispatch_callback([&] { callback(value); });
-    }, event);
-}
-
 /** One event and one deserialization memo, shared by all recipient listeners. */
 class WorkerMessageEvent {
   public:
@@ -98,10 +89,10 @@ class Worker {
     }
     void message(EventLoop& loop, SerializedMessage value) {
         auto event = std::make_shared<WorkerMessageEvent>(std::move(value));
-        dispatch_worker_event(loop, message_listeners_, event);
+        dispatch_platform_event(loop, message_listeners_, event);
     }
     bool error(EventLoop& loop, WorkerErrorEvent& event) {
-        dispatch_worker_event(loop, error_listeners_, event);
+        dispatch_platform_event(loop, error_listeners_, event);
         return event.default_prevented;
     }
     std::shared_ptr<EventLoop::Inbox> inbox_;
@@ -216,7 +207,7 @@ class WorkerRealm {
             auto* message = std::get_if<SerializedMessage>(&packet->contents);
             if (!message) throw std::logic_error("Invalid parent-to-worker packet.");
             auto event = std::make_shared<WorkerMessageEvent>(std::move(*message));
-            dispatch_worker_event(loop_, messages_, event);
+            dispatch_platform_event(loop_, messages_, event);
             return;
         }
         const auto found = workers_.find(packet->target);

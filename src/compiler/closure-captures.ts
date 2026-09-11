@@ -35,6 +35,19 @@ export function renderClosure(closure: CapturedClosure, parameters: string, retu
         closure.lines.map((line) => `            ${line}`).join("\n") + "\n        })";
 }
 
+/** A coroutine owns a copy of the environment even if its callback is cleared. */
+export function renderCoroutineInvocation(closure: CapturedClosure, returnType: string, parameters = "", args = "", environment = closure.initializer): string {
+    return `([]([[maybe_unused]] decltype(${closure.initializer}) ${closure.environment}${parameters ? `, ${parameters}` : ""}) -> ${returnType} {\n` +
+        closure.lines.join("\n") + `\n}(${environment}${args ? `, ${args}` : ""}))`;
+}
+
+export function renderAsyncClosure(closure: CapturedClosure, parameters: readonly {type: string; name: string}[], returnType: string, discard: boolean): string {
+    const declarations = parameters.map(parameter => `[[maybe_unused]] ${parameter.type} ${parameter.name}`).join(", ");
+    const invocation = renderCoroutineInvocation(closure, returnType, declarations,
+        parameters.map(parameter => `std::move(${parameter.name})`).join(", "), closure.environment);
+    return renderClosure({...closure, lines:[discard ? `static_cast<void>(${invocation});` : `return ${invocation};`]}, declarations, discard ? "void" : returnType);
+}
+
 /** Named aliases preserve all companion expressions while the typed environment
  * exposes the actual owning captures, including mutable cells, to the GC. */
 export class ClosureCaptures {

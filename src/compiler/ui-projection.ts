@@ -5,6 +5,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
+import { requireWindowHost } from "./window-events.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
@@ -138,6 +139,12 @@ interface UiProjectionContext extends Pick<LoweringServices,
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
 
+
+    public documentEngine(node: ts.Node): string {
+        if (!this.context.options.workers) return this.context.requireDefaultEngine(node);
+        requireWindowHost(this.context, node);
+        return "bbl::pal::window_document_engine()";
+    }
 
     public uiElementValue(expression: ts.Expression): Value | undefined {
         const owner = this.context.unwrap(expression);
@@ -4702,8 +4709,8 @@ export class UiProjection {
 
 
     /**
-     * A host lookup becomes native only when its literal id is present in the
-     * audited companion, including explicitly represented canvas elements.
+     * A Window realm owns the whole retained document. Other entries require
+     * an id declared by their host companion, including represented canvases.
      */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
         const callee = this.context.unwrap(call.expression);
@@ -4751,6 +4758,7 @@ export class UiProjection {
         ) {
             return false;
         }
+        if (this.context.options.workers) return true;
         let reached = false;
         const visit = (node: ts.Node): void => {
             if (reached) return;

@@ -4,19 +4,20 @@ import { someAnalysisNode, forEachAnalysisNode, findAnalysisNodeWithState } from
 import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { CompileError } from "./compile-error.js";
+import { typeCanCarryReference } from "./type-facts.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { sanitizeCppIdentifier } from "../cpp-literals.js";
 import {
     passesByReference,
     dataTypesEqual,
-    declaredInDomLibrary,
     isHandleKind,
     tupleComponents,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import { renderClosure, type CapturedClosure } from "./closure-captures.js";
+import { renderClosure, renderAsyncClosure, type CapturedClosure } from "./closure-captures.js";
 import { readOnlyDataMethods, storingDataMethods, isStoringDataCall } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { staticNumberValue, type PositiveIntegerContext } from "./option-helpers.js";
@@ -29,14 +30,52 @@ import {
     unwrapExpression,
     argumentAt,
 } from "./syntax.js";
-import { firstReturn, forEachReturn } from "./loop-control.js";
+import { firstReturn, forEachReturn, emitReachableStatements } from "./loop-control.js";
 import { FunctionSpecializations, functionDependencies } from "./function-specializations.js";
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
+
+function generationKnownPrimitive(value: Value): boolean {
+    return value.kind === "json-null" || value.staticNumber !== undefined ||
+        value.staticString !== undefined || value.staticBoolean !== undefined;
+}
 
 /** The index of a declaration's rest parameter, when it declares one. */
 function restParameterIndex(declaration: SupportedFunction): number | undefined {
     const index = declaration.parameters.findIndex((parameter) => parameter.dotDotDotToken !== undefined);
     return index >= 0 ? index : undefined;
+}
+
+const defaultBindingByChecker = new WeakMap<ts.TypeChecker, WeakMap<SupportedFunction, WeakMap<ts.CallExpression, boolean>>>();
+
+/** Defaults execute in parameter scope after all actual arguments have run. */
+export function requiresDefaultParameterBinding(checker: ts.TypeChecker, declaration: SupportedFunction, call: ts.CallExpression): boolean {
+    let declarations = defaultBindingByChecker.get(checker);
+    if (!declarations) defaultBindingByChecker.set(checker, declarations = new WeakMap());
+    let calls = declarations.get(declaration);
+    if (!calls) declarations.set(declaration, calls = new WeakMap());
+    const cached = calls.get(call);
+    if (cached !== undefined) return cached;
+    const required = declaration.parameters.some((parameter, index) => {
+        if (!parameter.initializer) return false;
+        const argument = call.arguments[index];
+        const initializer = unwrapExpression(parameter.initializer);
+        if (!argument && ts.isIdentifier(initializer)) {
+            const alias = checker.getSymbolAtLocation(initializer);
+            const symbol = alias && (alias.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(alias) : alias;
+            const binding = symbol?.valueDeclaration;
+            const type = checker.getTypeAtLocation(initializer);
+            if (binding && ts.isVariableDeclaration(binding) && ts.isVariableDeclarationList(binding.parent) &&
+                (binding.parent.flags & ts.NodeFlags.Const) !== 0 &&
+                (type.flags & (ts.TypeFlags.StringLiteral | ts.TypeFlags.NumberLiteral | ts.TypeFlags.BooleanLiteral)) !== 0) return false;
+        }
+        if (!argument) return someAnalysisNode(unwrapExpression(parameter.initializer), node =>
+            ts.isIdentifier(node) || ts.isCallExpression(node) || ts.isNewExpression(node) || node.kind === ts.SyntaxKind.ThisKeyword,
+            { skip: ts.isTypeNode });
+        const type = checker.getTypeAtLocation(argument);
+        return (type.isUnion() ? type.types : [type]).some(member => (member.flags & ts.TypeFlags.Undefined) !== 0);
+    });
+    calls.set(call, required);
+    return required;
 }
 
 type Fail = (node: ts.Node, message: string) => never;
@@ -95,32 +134,6 @@ function writesThroughRoot(
 /** `writesThroughRoot`, for a caller outside this module. */
 export const writesThroughTrackedRoot = writesThroughRoot;
 
-/**
- * Whether a value of this type can carry a reference into a callee.
- *
- * A composite argument hands the callee the caller's own object, so a
- * write inside it is a write to that object; a scalar one hands it a COPY,
- * and no callee -- resolvable or not -- can write back through it. A union
- * aliases if any constituent does, and anything this cannot classify stays
- * conservative.
- */
-function argumentCanAlias(type: ts.Type): boolean {
-    if (type.isUnion() || type.isIntersection()) {
-        return type.types.some(argumentCanAlias);
-    }
-    const scalar =
-        ts.TypeFlags.NumberLike |
-        ts.TypeFlags.StringLike |
-        ts.TypeFlags.BooleanLike |
-        ts.TypeFlags.BigIntLike |
-        ts.TypeFlags.ESSymbolLike |
-        ts.TypeFlags.Null |
-        ts.TypeFlags.Undefined |
-        ts.TypeFlags.Void |
-        ts.TypeFlags.Never;
-    return (type.flags & scalar) === 0;
-}
-
 const parameterReadOnlyCache = new EmissionWeakMap<
     ts.TypeChecker,
     WeakMap<SupportedFunction, WeakMap<ts.Symbol, boolean>>
@@ -153,7 +166,7 @@ export function callArgumentIsReadOnly(
     // module-level constant array read inside one stopped folding.
     if (
         argument !== undefined &&
-        !argumentCanAlias(checker.getTypeAtLocation(argument))
+        !typeCanCarryReference(checker.getTypeAtLocation(argument))
     ) {
         return true;
     }
@@ -365,9 +378,9 @@ export function parameterIsReadOnly(
         return root !== undefined && namesParameter(root);
     };
     const containsAliasingParameter = (node: ts.Node): boolean => someAnalysisNode(node, namesParameter, {
-        skip: candidate => ts.isExpression(candidate) && !argumentCanAlias(checker.getTypeAtLocation(candidate)),
+        skip: candidate => ts.isExpression(candidate) && !typeCanCarryReference(checker.getTypeAtLocation(candidate)),
     });
-    const parameterCanAlias = argumentCanAlias(checker.getTypeAtLocation(parameter));
+    const parameterCanAlias = typeCanCarryReference(checker.getTypeAtLocation(parameter));
     const readOnly = !someAnalysisNode(declaration.body, (node) => {
         if (writesThroughRoot(node, rootNamesParameter)) {
             return true;
@@ -392,7 +405,7 @@ export function parameterIsReadOnly(
             node.initializer &&
             ts.isIdentifier(node.name) &&
             rootNamesParameter(node.initializer) &&
-            argumentCanAlias(checker.getTypeAtLocation(node.initializer))
+            typeCanCarryReference(checker.getTypeAtLocation(node.initializer))
         ) {
             const alias = checker.getSymbolAtLocation(node.name);
             if (alias) aliases.add(alias);
@@ -780,6 +793,9 @@ class SharedReturnRequiresInline extends Error {}
 export interface UserFunctionContext
     extends PositiveIntegerContext,
     Pick<LoweringServices,
+        | "options"
+        | "withAsyncActivation"
+        | "withOwnedCallbackBody"
         | "checker"
         | "dataTypes"
         | "dataLowerer"
@@ -796,6 +812,7 @@ export interface UserFunctionContext
         | "probeEmission"
         | "compileCondition"
         | "isBrowserOnlyExpression"
+        | "isInFrameCallback"
         | "compileForDataSink"
         | "compileStoredDataFunction"
         | "dataValue"
@@ -815,6 +832,8 @@ export interface UserFunctionContext
         | "allocateTemporaryCppName"
         | "reachJsData"
         | "captureEmittedLines"
+        | "enterRuntimeControlFlow"
+        | "leaveRuntimeControlFlow"
         | "emitNativeCallbackStorage"
         | "beginInlineFrame"
         | "endInlineFrame"
@@ -929,6 +948,35 @@ export class UserFunctionLowerer {
 
     public constructor(private readonly checker: ts.TypeChecker) {}
 
+    /** Preserve closed boolean predicates before hoisting would discard their value. */
+    public tryCompileStaticPredicate(context: UserFunctionContext, call: ts.CallExpression, identifier: ts.Identifier): Value | undefined {
+        const declaration = resolveFunctionDeclaration(this.checker, identifier, (node, message) => context.fail(node, message));
+        if (!declaration || this.active.has(declaration) || declaration.typeParameters?.length || restParameterIndex(declaration) !== undefined) return undefined;
+        const signature = this.checker.getSignatureFromDeclaration(declaration);
+        const flags = signature && this.checker.getReturnTypeOfSignature(signature).flags;
+        if (flags === undefined || (flags & ts.TypeFlags.BooleanLike) === 0) return undefined;
+        if (call.arguments.some(argument => {
+            const node = unwrapExpression(argument);
+            const bound = ts.isIdentifier(node) ? context.lookupIdentifierValue(node) : undefined;
+            return bound !== undefined && !generationKnownPrimitive(bound);
+        })) return undefined;
+        try {
+            return context.probeEmission(() => {
+                const ir = this.irFor(declaration, identifier.text, (node, message) => context.fail(node, message));
+                this.validateCall(context, call, ir, (node, message) => context.fail(node, message));
+                const values = this.argumentValues(context, call, ir);
+                if (!values.every(value => generationKnownPrimitive(value))) return undefined;
+                const value = this.lower(context, ir, values, call);
+                return value.staticBoolean !== undefined ? value : undefined;
+            });
+        } catch (error) {
+            // Declining this optional specialization leaves the ordinary native
+            // or inline path responsible for reached-source diagnostics.
+            if (!(error instanceof CompileError)) throw error;
+            return undefined;
+        }
+    }
+
     public compileSharedMethod(
         context: UserFunctionContext,
         declaration: ts.MethodDeclaration,
@@ -977,22 +1025,17 @@ export class UserFunctionLowerer {
         }
         if (
             value.kind !== "data" ||
-            value.dataType?.kind !== "tuple" ||
-            parameter.name.elements.length > value.dataType.arity
+            (value.dataType?.kind !== "tuple" && value.dataType?.kind !== "product")
         ) {
             context.fail(
                 parameter.name,
-                "Array-bound callback parameters require a numeric tuple value.",
+                "Array-bound callback parameters require a native tuple value.",
             );
         }
         parameter.name.elements.forEach((element, index) => {
             if (ts.isOmittedExpression(element)) return;
             if (!ts.isIdentifier(element.name)) context.fail(element.name, "Callback tuple bindings require identifiers.");
-            context.bindParameterValue(element.name, {
-                kind: "number",
-                cpp: `(${value.cpp})[${index}]`,
-                dataType: { kind: "number" },
-            });
+            context.bindParameterValue(element.name, context.dataLowerer.fixedTupleElement(value, index, element)!);
         });
     }
 
@@ -1008,12 +1051,8 @@ export class UserFunctionLowerer {
         parameter: UserFunctionParameterIr,
         value: Value,
     ): void {
-        const generationKnown =
-            value.staticNumber !== undefined ||
-            value.staticBoolean !== undefined ||
-            value.staticString !== undefined;
         if (
-            generationKnown &&
+            generationKnownPrimitive(value) &&
             ts.isIdentifier(parameter.name) &&
             parameterIsReadOnly(this.checker, declaration, parameter.name)
         ) {
@@ -1070,7 +1109,7 @@ export class UserFunctionLowerer {
                 ]);
             }
             return inBodyScope(() => this.trySharedCall(context, ir, call, argumentValues) ??
-                this.lower(context, ir, argumentValues, call));
+                this.lower(context, ir, argumentValues, call, ts.isExpressionStatement(call.parent)));
         });
     }
 
@@ -1081,6 +1120,12 @@ export class UserFunctionLowerer {
         argumentValues: readonly Value[],
         pinArguments = true,
     ): Value | undefined {
+        if (ts.isCallExpression(call) && requiresDefaultParameterBinding(this.checker, ir.declaration, call)) return undefined;
+        if (ir.parameters.some((parameter, index) => {
+            const value = argumentValues[index];
+            return value && (value.staticString !== undefined || value.staticNumber !== undefined || value.staticBoolean !== undefined) &&
+                context.dataTypes.fromTsType(this.checker.getTypeAtLocation(parameter.name), parameter.name)?.kind === "union";
+        })) return undefined;
         // A generic body is spelled once per instantiation and a rest
         // parameter's arguments are packed per call, so both stay inline.
         if (!ir.declaration.body || !ir.parameters.every(parameter => ts.isIdentifier(parameter.name)) ||
@@ -1290,7 +1335,7 @@ export class UserFunctionLowerer {
         const argumentValues = this.argumentValues(context, call, ir);
         return this.withCallTypeArguments(context, call, ir.declaration, () =>
             inBodyScope(() => this.trySharedCall(context, ir, call, argumentValues) ??
-                this.lower(context, ir, argumentValues, call)));
+                this.lower(context, ir, argumentValues, call, ts.isExpressionStatement(call.parent))));
     }
 
     /**
@@ -1539,26 +1584,21 @@ export class UserFunctionLowerer {
         const callees = new EmissionSet<SupportedFunction>();
         const body = declaration.body;
         if (body) forEachAnalysisNode(body, (node) => {
+            if (ts.isCallExpression(node)) {
+                // Passing a named callback can call back into this function
+                // just as a direct call can (array methods and schedulers).
+                for (const argument of node.arguments) {
+                    const value = unwrapExpression(argument);
+                    const callback = ts.isIdentifier(value) ? tryResolveFunctionDeclaration(this.checker, value) : undefined;
+                    if (callback) callees.add(callback);
+                }
+            }
             if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
                 const called = tryResolveFunctionDeclaration(
                     this.checker,
                     node.expression,
                 );
                 if (called) callees.add(called);
-                const calleeSymbol = this.checker.getSymbolAtLocation(node.expression);
-                if (
-                    (node.expression.text === "setTimeout" ||
-                        (node.expression.text === "requestAnimationFrame" &&
-                            calleeSymbol !== undefined && declaredInDomLibrary(calleeSymbol))) &&
-                    node.arguments[0] &&
-                    ts.isIdentifier(node.arguments[0])
-                ) {
-                    const scheduled = tryResolveFunctionDeclaration(
-                        this.checker,
-                        node.arguments[0],
-                    );
-                    if (scheduled) callees.add(scheduled);
-                }
             }
         }, { skip: node => node !== body && ts.isFunctionLike(node) });
         this.directCallCache.set(declaration, callees);
@@ -2057,17 +2097,16 @@ export class UserFunctionLowerer {
                             );
                         }
                         context.emitStatement(statement);
+                        if (context.statementTerminatesAfterLowering(statement)) break;
                     }
                 } else {
                     if (!entry.returnType) {
-                        context.fail(
-                            body,
-                            "A concise recursive function must return data.",
+                        context.emitExpressionAsStatement(body);
+                    } else {
+                        context.emit(
+                            `return ${compileReturn ? compileReturn(body, entry.returnType) : context.compileForDataSink(body, entry.returnType)};`,
                         );
                     }
-                    context.emit(
-                        `return ${compileReturn ? compileReturn(body, entry.returnType) : context.compileForDataSink(body, entry.returnType)};`,
-                    );
                 }
                 }, !escapes);
                 if (returnedValues.length > 0 && isHandleKind(returnedValues[0]!.kind)) {
@@ -2163,6 +2202,13 @@ export class UserFunctionLowerer {
         callNode: ts.Node,
         discardReturn = false,
     ): Value {
+        const bound = ts.isIdentifier(declaration) ? context.lookupOptional(declaration) : undefined;
+        if (bound?.dataType?.kind === "function") {
+            const result = context.dataLowerer.compileFunctionValueCall(bound, arguments_, callNode);
+            if (!discardReturn) return result;
+            context.emitDiscardedValue(result);
+            return {kind: "void", cpp: ""};
+        }
         const ir = ts.isIdentifier(declaration)
             ? this.resolve(declaration, (node, message) =>
                   context.fail(node, message),
@@ -2188,7 +2234,14 @@ export class UserFunctionLowerer {
             );
         }
         const values = arguments_.slice(0, ir.parameters.length);
-        const shared = this.trySharedCall(context, ir, callNode, values, false);
+        // The frame driver already retains and invokes this callback. Its
+        // self-scheduling source edge is not an immediate recursive call.
+        const frameCallback = callNode === declaration && context.isInFrameCallback();
+        const group = frameCallback ? undefined : this.recursiveGroup(ir.declaration);
+        const shared = bound?.nativeCallbackParameterTypes && bound.cpp
+            ? this.compileSpecializedCallbackCall(context, callNode, bound, values)
+            : group ? this.lowerRecursiveGroup(context, ir, callNode, values, group, true, false)
+                : this.trySharedCall(context, ir, callNode, values, false);
         if (shared) {
             if (!discardReturn) return shared;
             context.emitDiscardedValue(shared);
@@ -2233,6 +2286,7 @@ export class UserFunctionLowerer {
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (
             dataType.result &&
+            dataType.result.kind !== "promise" &&
             signature &&
             !nativeReturnTsType(
                 this.checker,
@@ -2253,7 +2307,8 @@ export class UserFunctionLowerer {
                     (ts.TypeFlags.Never | ts.TypeFlags.Void)) ===
                 0,
         );
-        if (runtimeParameters.length > dataType.parameters.length) {
+        if (runtimeParameters.slice(dataType.parameters.length).some(parameter =>
+            !parameter.declaration.initializer && !parameter.declaration.questionToken)) {
             context.fail(
                 declaration,
                 "Stored function declares more parameters than its native data signature.",
@@ -2266,10 +2321,12 @@ export class UserFunctionLowerer {
             type,
             cppName: `${prefix}arg_${index}`,
         }));
-        const returnCpp = dataType.result
-            ? context.dataTypes.cppType(dataType.result)
-            : "void";
-        const selfIdentifier = this.referencesOwnBinding(declaration)
+        const asynchronous = !!context.options.workers && ts.getModifiers(declaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true;
+        const promiseType = dataType.result?.kind === "promise" ? dataType.result : undefined;
+        const bodyResult = asynchronous ? promiseType?.result : dataType.result;
+        const returnCpp = asynchronous ? context.dataTypes.cppType(promiseType ?? {kind:"promise"})
+            : dataType.result ? context.dataTypes.cppType(dataType.result) : "void";
+        const ownIdentifier = this.referencesOwnBinding(declaration)
             ? ts.isFunctionDeclaration(declaration)
                 ? declaration.name
                 : (ts.isArrowFunction(declaration) ||
@@ -2280,6 +2337,8 @@ export class UserFunctionLowerer {
                   ? declaration.parent.name
                   : undefined
             : undefined;
+        const selfIdentifier = ownIdentifier && !context.lookupIdentifierValue(ownIdentifier)?.sharedStorageCpp
+            ? ownIdentifier : undefined;
         const cppType = context.dataTypes.cppType(dataType);
         const selfOwnerCpp = selfIdentifier ? `${cppName}_owner` : undefined;
         const selfWeakCpp = selfIdentifier ? `${cppName}_weak` : undefined;
@@ -2307,10 +2366,10 @@ export class UserFunctionLowerer {
             });
         }
         context.pushScope(prefix);
-        context.beginNativeFunctionBody(dataType.result);
+        context.beginNativeFunctionBody(bodyResult, asynchronous && !promiseType, {coroutine:asynchronous});
         let closure: CapturedClosure;
         try {
-            closure = context.captureManagedClosureLines(() => {
+            const compileBody = () => context.captureManagedClosureLines(() => {
                 let runtimeIndex = 0;
                 for (const parameter of ir.parameters) {
                     if (
@@ -2325,7 +2384,13 @@ export class UserFunctionLowerer {
                         }
                         continue;
                     }
-                    const { type, cppName: name } = parameters[runtimeIndex++]!;
+                    const supplied = parameters[runtimeIndex++];
+                    if (!supplied) {
+                        this.bindSpecializedParameter(context, ir.declaration, parameter,
+                            this.parameterValue(context, parameter, undefined, undefined));
+                        continue;
+                    }
+                    const { type, cppName: name } = supplied;
                     let value = context.dataValue(name, type);
                     if (
                         parameter.declaration.initializer &&
@@ -2347,22 +2412,22 @@ export class UserFunctionLowerer {
                         value,
                     );
                 }
-                for (const statement of ir.statements) {
-                    context.emitStatement(statement);
-                }
-                if (ir.returnExpression) {
-                    if (!dataType.result) {
+                const terminated = emitReachableStatements(context, ir.statements);
+                if (!terminated && ir.returnExpression) {
+                    if (!bodyResult) {
                         const discarded = context.compileValue(
                             ir.returnExpression,
                         );
                         context.emitDiscardedValue(discarded);
                     } else {
                         context.emit(
-                            `return ${context.compileForDataSink(ir.returnExpression, dataType.result)};`,
+                            `${asynchronous ? "co_return" : "return"} ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
                         );
                     }
                 }
+                if (asynchronous && !terminated && !bodyResult) context.emit("co_return bbl::js::PromiseVoid{};");
             });
+            closure = asynchronous ? context.withOwnedCallbackBody(() => context.withAsyncActivation(compileBody)) : compileBody();
         } finally {
             context.endNativeFunctionBody();
             context.popScope();
@@ -2380,8 +2445,10 @@ export class UserFunctionLowerer {
                 ? "{bbl::js::next_callback_identity(), "
                 : `{${context.callbackIdentity(declaration, owner)}u, `
             : " = ";
-        const lambda = renderClosure(closure, parameters.map(({ type, cppName: name }) =>
-            `[[maybe_unused]] ${context.dataTypes.cppType(type)} ${name}`).join(", "), returnCpp);
+        const lambda = asynchronous ? renderAsyncClosure(closure, parameters.map(({type, cppName:name}) =>
+            ({type:context.dataTypes.cppType(type), name})), returnCpp, !promiseType)
+            : renderClosure(closure, parameters.map(({ type, cppName: name }) =>
+                `[[maybe_unused]] ${context.dataTypes.cppType(type)} ${name}`).join(", "), returnCpp);
         context.emit(
             selfIdentifier
                 ? dataType.identity
@@ -2452,7 +2519,14 @@ export class UserFunctionLowerer {
             : this.irFor(declaration, "callback", (node, message) =>
                   context.fail(node, message),
               );
-        if (!ir?.returnExpression || ir.needsValueLambda) {
+        if (ir?.needsValueLambda) {
+            const value = this.lower(context, ir, arguments_, callNode);
+            const condition = context.dataLowerer.conditionFromValue(value);
+            if (condition === undefined) context.fail(declaration, "Array predicate return has no native truthiness.");
+            return { kind: "boolean", cpp: condition, dataType: { kind: "boolean" },
+                ...(condition === "true" || condition === "false" ? { staticBoolean: condition === "true" } : {}) };
+        }
+        if (!ir?.returnExpression) {
             context.fail(
                 declaration,
                 "Array predicates require a final return expression without early value returns.",
@@ -2525,18 +2599,8 @@ export class UserFunctionLowerer {
         try {
             ir.parameters.forEach((parameter, index) => {
                 const argument = arguments_[index];
-                const value =
-                    argument ??
-                    (parameter.declaration.initializer
-                        ? context.compileValue(
-                              parameter.declaration.initializer,
-                          )
-                        : parameter.declaration.questionToken
-                          ? { kind: "json-null" as const, cpp: "" }
-                          : context.fail(
-                                parameter.declaration,
-                                `Optional parameter '${parameter.name.getText()}' requires a default value in reached user functions.`,
-                            ));
+                const value = this.parameterValue(context, parameter, argument,
+                    ts.isCallExpression(callNode) ? callNode.arguments[index] : undefined);
                 this.bindSpecializedParameter(
                     context,
                     ir.declaration,
@@ -2545,27 +2609,25 @@ export class UserFunctionLowerer {
                 );
             });
             if (ir.needsValueLambda) {
-                const returnType = this.valueLambdaReturnType(
+                const specialized = context.probeEmission(
+                    () => this.lowerStaticReturnPath(context, ir, discardReturn),
+                    value => value !== undefined,
+                );
+                if (specialized) return specialized;
+                const returnType = discardReturn ? undefined : this.valueLambdaReturnType(
                     context,
                     ir,
                     callNode,
                 );
                 const result = `bbl_fn_${context.allocateUserFunctionPrefix()}result`;
                 context.emit(
-                    `[[maybe_unused]] const auto ${result} = [&]() -> ${context.dataTypes.cppType(returnType)} {`,
+                    `${returnType ? `[[maybe_unused]] const auto ${result} = ` : ""}[&]() -> ${returnType ? context.dataTypes.cppType(returnType) : "void"} {`,
                 );
                 context.increaseIndent();
-                context.beginNativeFunctionBody(returnType);
+                context.beginNativeFunctionBody(returnType, discardReturn);
                 try {
-                    let terminated = false;
-                    for (const statement of ir.statements) {
-                        context.emitStatement(statement);
-                        if (context.statementTerminatesAfterLowering(statement)) {
-                            terminated = true;
-                            break;
-                        }
-                    }
-                    if (!terminated) {
+                    const terminated = emitReachableStatements(context, ir.statements);
+                    if (!terminated && returnType) {
                         context.emit(
                             'throw std::runtime_error("Native value function fell through without returning.");',
                         );
@@ -2575,17 +2637,16 @@ export class UserFunctionLowerer {
                     context.decreaseIndent();
                 }
                 context.emit("}();");
-                return context.dataValue(result, returnType);
+                return returnType ? context.dataValue(result, returnType) : {kind:"void", cpp:""};
             }
             if (ir.needsWrapper) {
                 context.emit("do {");
                 context.increaseIndent();
             }
             context.beginInlineFrame(ir.needsWrapper);
+            let terminated = false;
             try {
-                for (const statement of ir.statements) {
-                    context.emitStatement(statement);
-                }
+                terminated = emitReachableStatements(context, ir.statements);
             } finally {
                 context.endInlineFrame();
             }
@@ -2593,33 +2654,78 @@ export class UserFunctionLowerer {
                 context.decreaseIndent();
                 context.emit("} while (false);");
             }
-            if (!ir.returnExpression) return { kind: "void", cpp: "" };
+            if (terminated || !ir.returnExpression) return { kind: "void", cpp: "" };
             if (discardReturn) {
                 context.emitExpressionAsStatement(ir.returnExpression);
                 return { kind: "void", cpp: "" };
             }
-            let returned = context.compileValue(ir.returnExpression);
-            if (returned.kind === "number" && returned.staticNumber === undefined) {
-                const staticNumber = staticNumberValue(context, ir.returnExpression);
-                if (staticNumber !== undefined && Number.isFinite(staticNumber)) {
-                    returned = { ...returned, staticNumber };
-                }
-            }
-            const label = `return_${ir.name}`;
-            return {
-                // A body that wrote state outliving the frame returns an
-                // expression OVER that state, so it is read here rather than
-                // at the use site, where the next call would have moved it.
-                ...(ir.returnNeedsSnapshot
-                    ? context.pinValueToTemporary(returned, label, ir.returnExpression)
-                    : context.materializeEscapingValue(returned, label, ir.returnExpression)),
-                requiresExplicitDiscard: true,
-            };
+            return this.lowerReturnedValue(context, ir, ir.returnExpression);
         } finally {
             context.popScope();
             this.active.delete(ir.declaration);
             this.invocations.delete(ir.declaration);
         }
+    }
+
+    /** Keep generation-known branch returns as values, including shader composition records. */
+    private lowerStaticReturnPath(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        discardReturn: boolean,
+    ): Value | undefined {
+        type Outcome = { kind: "returned"; value: Value } | { kind: "continue" } | { kind: "dynamic" };
+        const walk = (statements: readonly ts.Statement[]): Outcome => {
+            for (const statement of statements) {
+                if (ts.isReturnStatement(statement)) {
+                    if (!statement.expression) return { kind: "dynamic" };
+                    if (discardReturn) {
+                        context.emitExpressionAsStatement(statement.expression);
+                        return { kind: "returned", value: { kind: "void", cpp: "" } };
+                    }
+                    return { kind: "returned", value: this.lowerReturnedValue(context, ir, statement.expression) };
+                }
+                if (ts.isBlock(statement)) {
+                    context.pushScope(context.allocateUserFunctionPrefix());
+                    let outcome: Outcome;
+                    try { outcome = walk(statement.statements); }
+                    finally { context.popScope(); }
+                    if (outcome.kind !== "continue") return outcome;
+                } else if (firstReturn([statement])) {
+                    if (!ts.isIfStatement(statement)) return { kind: "dynamic" };
+                    const condition = context.compileCondition(statement.expression);
+                    if (condition !== "true" && condition !== "false") return { kind: "dynamic" };
+                    const branch = condition === "true" ? statement.thenStatement : statement.elseStatement;
+                    const outcome = branch ? walk([branch]) : { kind: "continue" } as const;
+                    if (outcome.kind !== "continue") return outcome;
+                } else {
+                    context.emitStatement(statement);
+                    if (context.statementTerminatesAfterLowering(statement)) return { kind: "dynamic" };
+                }
+            }
+            return { kind: "continue" };
+        };
+        const outcome = walk(ir.statements);
+        return outcome.kind === "returned" ? outcome.value : undefined;
+    }
+
+    private lowerReturnedValue(context: UserFunctionContext, ir: UserFunctionIr, expression: ts.Expression): Value {
+        let returned = context.compileValue(expression);
+        if (returned.kind === "number" && returned.staticNumber === undefined) {
+            const staticNumber = staticNumberValue(context, expression);
+            if (staticNumber !== undefined && Number.isFinite(staticNumber)) {
+                returned = { ...returned, staticNumber };
+            }
+        }
+        const label = `return_${ir.name}`;
+        return {
+            // A body that wrote state outliving the frame returns an
+            // expression OVER that state, so it is read here rather than
+            // at the use site, where the next call would have moved it.
+            ...(ir.returnNeedsSnapshot
+                ? context.pinValueToTemporary(returned, label, expression)
+                : context.materializeEscapingValue(returned, label, expression)),
+            requiresExplicitDiscard: true,
+        };
     }
 
     private resolve(
@@ -3012,6 +3118,8 @@ export class UserFunctionLowerer {
             const argumentType = this.checker.getTypeAtLocation(argument);
             if (
                 !this.checker.isTypeAssignableTo(argumentType, parameterType) &&
+                !(parameter.declaration.initializer && (argumentType.isUnion() ? argumentType.types : [argumentType]).every(member =>
+                    (member.flags & ts.TypeFlags.Undefined) !== 0 || this.checker.isTypeAssignableTo(member, parameterType))) &&
                 // Inside a generic body an argument is typed by a type
                 // parameter the checker cannot relate to the callee's
                 // concrete type; the data model, which substitutes what
@@ -3053,6 +3161,7 @@ export class UserFunctionLowerer {
         ir: UserFunctionIr,
     ): Value[] {
         const rest = restParameterIndex(ir.declaration);
+        const pinArguments = requiresDefaultParameterBinding(this.checker, ir.declaration, call);
         const values: Value[] = [];
         const expanded: Value[] = [];
         call.arguments.forEach((argument, index) => {
@@ -3091,12 +3200,63 @@ export class UserFunctionLowerer {
                     "A spread argument expands a compile-time tuple, or passes one native array as the whole rest parameter.",
                 );
             }
-            sink.push(this.argumentValue(context, argument));
+            const value = this.argumentValue(context, argument);
+            if (pinArguments && value.kind === "data" && value.dataType && value.cpp) {
+                const name = context.allocateTemporaryCppName("call_argument");
+                context.emit(`const auto ${name} = ${value.cpp};`);
+                sink.push(withNativeMetadata(context.dataValue(name, value.dataType), value));
+            } else {
+                sink.push(pinArguments && value.kind !== "callback"
+                    ? context.pinValueToTemporary(value, "call_argument", argument) : value);
+            }
         });
         if (rest !== undefined && values.length === rest) {
             values.push({ kind: "tuple", cpp: "", tupleElements: expanded });
         }
         return values;
+    }
+
+    private parameterValue(context: UserFunctionContext, parameter: UserFunctionParameterIr, argument: Value | undefined, source: ts.Expression | undefined): Value {
+        const initializer = parameter.declaration.initializer;
+        if (!initializer) return argument ?? (parameter.declaration.questionToken
+            ? { kind: "json-null", cpp: "std::nullopt" }
+            : context.fail(parameter.declaration, `Parameter '${parameter.name.getText()}' requires an argument.`));
+        if (!argument || argument.kind === "void" || (argument.kind === "json-null" && argument.cpp === "std::nullopt")) {
+            if (argument?.kind === "void") context.emitDiscardedValue(argument);
+            return context.compileValue(initializer);
+        }
+        const storage = argument.dataType;
+        if (!storage) return argument;
+        const sourceType = source ? this.checker.getTypeAtLocation(source) : parameter.type;
+        const alternatives = sourceType.isUnion() ? sourceType.types : [sourceType];
+        const mayBeUndefined = alternatives.some(type => (type.flags & ts.TypeFlags.Undefined) !== 0);
+        const referenceAbsence = (mayBeUndefined || argument.preserveUncheckedLookup) &&
+            (storage.kind === "function" || (storage.kind === "struct" && context.dataTypes.isReferenceStruct(storage.name)));
+        if (storage.kind !== "optional" && !referenceAbsence) return argument;
+        if (alternatives.some(type => (type.flags & ts.TypeFlags.Null) !== 0)) {
+            if (!mayBeUndefined) return argument;
+            return context.fail(source ?? parameter.declaration, "A default parameter requires a distinct undefined state when its argument can also be null.");
+        }
+        const type = storage.kind === "optional" ? storage.inner : storage;
+        const input = context.allocateTemporaryCppName("default_argument");
+        context.emit(`const auto& ${input} = ${argument.cpp};`);
+        let fallback = "";
+        const lines = context.captureEmittedLines(() => {
+            context.enterRuntimeControlFlow();
+            try {
+                fallback = context.compileForDataSink(initializer, type);
+            } finally {
+                context.leaveRuntimeControlFlow();
+            }
+        });
+        const result = context.allocateTemporaryCppName("default_value");
+        const cppType = context.dataTypes.cppType(type);
+        const present = storage.kind === "optional" ? `${input}.has_value()` : `static_cast<bool>(${input})`;
+        const selected = storage.kind === "optional" ? `*${input}` : input;
+        context.emit(`const ${cppType} ${result} = [&]() -> ${cppType} {\n` +
+            `    if (${present}) return ${selected};\n` +
+            lines.map(line => `    ${line}\n`).join("") + `    return ${fallback};\n}();`);
+        return context.dataValue(result, type);
     }
 
     /** Runs `work` with the type parameters a generic call binds in force. */

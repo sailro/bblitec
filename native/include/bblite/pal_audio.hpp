@@ -66,13 +66,9 @@
 #include <cstdint>
 #include <string>
 #include <bblite/js_data.hpp>
+#include <bblite/pal_audio_types.hpp>
 
 namespace bbl::pal {
-
-/** One audio context: a real-time SDL3 device, or a capture render. */
-struct AudioContextHandle {
-    std::uint32_t value = 0;
-};
 
 /** Context ownership follows the generated engine, including failed startup. */
 class AudioSession {
@@ -85,49 +81,6 @@ public:
 private:
     std::vector<AudioContextHandle> contexts_;
     friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session);
-};
-
-/** One node in a context's graph. */
-struct AudioNodeRecord;
-struct AudioNodeHandle {
-    std::uint32_t value = 0;
-    std::shared_ptr<AudioNodeRecord> ownership;
-};
-
-/** Planar PCM retained by JS handles and any source bus using it. */
-struct AudioBufferRecord;
-struct AudioBufferHandle {
-    std::uint32_t value = 0;
-    std::shared_ptr<AudioBufferRecord> ownership;
-};
-
-/**
- * The automatable parameters the reached slice names, as the enumerator
- * a generated caller passes rather than the string Web Audio spells --
- * the contract `pinned_depth_compare` and `pinned_blend_table` already
- * hold for their own enumerations.
- */
-enum class AudioParamName : std::uint8_t {
-    Gain,
-    Frequency,
-    Detune,
-    Q,
-    Pan,
-    PlaybackRate,
-};
-
-/**
- * One automatable scalar on a node (`gain`, `frequency`, ...).
- *
- * It is a *value*, not an id into a table, because Web Audio's contract
- * is identity: `osc.frequency` returns the same `AudioParam` object on
- * every read, and the pinned ramp component depends on that -- it
- * retains the object and keeps `_rampEndTime` state on it. A handle
- * minted per call would make two reads of one parameter two parameters.
- */
-struct AudioParamHandle {
-    AudioNodeHandle node;
-    AudioParamName name = AudioParamName::Gain;
 };
 
 /** `OscillatorNode.type`. */

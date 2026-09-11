@@ -99,6 +99,14 @@ test("method dispatch receives binding identity through aliases and element acce
     assert.match(cpp, /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(1\.0\)\], 2\.0\)/);
 });
 
+test("indexed store adapters survive buffer aliases and refuse unsupported updates", () => {
+    const values: PinnedBinding = { cpp: "native_view", type: "f32", mutable: true,
+        indexedStore: (owner, index, value) => `store(${owner}, ${index}, ${value})` };
+    assert.equal(lower("const alias = values; alias[-0.25] = 0.1;", [["values", values]]), "store(native_view, (-0.25), 0.1);");
+    assert.throws(() => lower("values[0] += 1;", [["values", values]]), /compound assignment through an indexed store adapter/);
+    assert.throws(() => lower("values[0]++;", [["values", values]]), /reference to an adapted indexed store/);
+});
+
 test("native typed-array chains capture indices before writes and preserve unrounded assignment values", t => {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) { t.skip("Native fixture compiler unavailable."); return; }

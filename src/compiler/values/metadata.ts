@@ -29,6 +29,8 @@ const resourceMetadataFields = {
         "msaaSamples",
     ],
     "callback": [
+        "intrinsicName",
+        "hostFunction",
         "callbackDeclaration",
         "nativeCallbackParameterTypes",
         "nativeCallbackStaticArguments",
@@ -51,6 +53,8 @@ const resourceMetadataFields = {
         "sharedRecordContainer",
         "retainedNativeRecord",
         "recordProperties",
+        "recordOwnKeys",
+        "moduleNamespace",
         "staticJson",
     ],
     "axis-drag-gizmo": ["recordProperties"],

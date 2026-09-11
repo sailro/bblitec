@@ -30,15 +30,23 @@ const loop = "bbl::pal::EventLoop::current()";
 export function isNativeWorkerExpression(context: WorkerLoweringContext, expression: ts.Expression): boolean {
     if (!context.options.workers) return false;
     let node = context.unwrap(expression);
+    if (browserGlobalNamed(context, node)?.text === "fetch") return true;
+    if (!context.options.workers.namespace && (browserGlobalNamed(context, node)?.text === "screen" ||
+        (ts.isPropertyAccessExpression(node) && browserGlobalNamed(context, node.expression)?.text === "screen"))) return true;
+    if (!context.options.workers.namespace &&
+        ["window", "globalThis", "document"].includes(browserGlobalNamed(context, node)?.text ?? "")) return true;
     if (ts.isCallExpression(node)) node = context.unwrap(node.expression);
     if (ts.isNewExpression(node)) node = context.unwrap(node.expression);
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "reload" &&
+        browserGlobalNamed(context, node.expression)?.text === "location") return true;
     const globalMember = browserGlobalNamed(context, node);
     if (globalMember && globalMember !== node) {
-        return ["Worker", "OffscreenCanvas", "ResizeObserver", "matchMedia", "devicePixelRatio", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "postMessage", "close"].includes(globalMember.text);
+        return ["Worker", "OffscreenCanvas", "ResizeObserver", "matchMedia", "devicePixelRatio", "isSecureContext", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "postMessage", "close"].includes(globalMember.text);
     }
     const root = rootIdentifier(node, inner => context.unwrap(inner));
     if (!root) return false;
     const bound = context.lookupOptional(root);
+    if (bound?.hostFunction) return true;
     if (bound?.kind.startsWith("worker") || bound?.kind === "offscreen-canvas") return true;
     return browserGlobalNamed(context, root) !== undefined &&
         ["Worker", "OffscreenCanvas", "ResizeObserver", "matchMedia", "self", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "postMessage", "close"].includes(root.text);

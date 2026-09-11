@@ -8,6 +8,13 @@
  * values belongs beside its consumer, not here.
  */
 import ts from "typescript";
+
+/** Literal delimiters are syntax; the native regex consumes only its pattern and flags. */
+export function regularExpressionParts(expression: ts.RegularExpressionLiteral): {pattern:string; flags:string} | undefined {
+    const delimiter = expression.text.lastIndexOf("/");
+    if (delimiter <= 0) return undefined;
+    return {pattern:expression.text.slice(1, delimiter).replaceAll("\\/", "/"), flags:expression.text.slice(delimiter + 1)};
+}
 import { someAnalysisNode } from "./analysis-walk.js";
 
 export interface UnwrapOptions {

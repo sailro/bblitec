@@ -10,7 +10,7 @@ export type DataSinkHost = Pick<DataLowerer,
     | "registerLocal" | "structLiteral" | "markEscaped" | "requireDataValue"
     | "enumMapLiteral" | "compileVectorSink" | "openRecordLiteral"
     | "compileMapOrSetNew" | "compileTypedArrayNew" | "spanLikeForSink"
-    | "dataTypeAt" | "leafValue" | "spanCompatible"
+    | "dataTypeAt" | "leafValue" | "spanCompatible" | "invalidateEscapingCollection" | "knownValueFitsSink"
 >;
 
 /** Every data kind declares expression and already-evaluated value conversion. */
