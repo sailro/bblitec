@@ -1,4 +1,4 @@
-import { nativeDataMetadata, valueForKind, withNativeMetadata } from "./types.js";
+import { booleanValue, nativeDataMetadata, staticStringValue, valueForKind, withNativeMetadata } from "./types.js";
 import { compileDataExpressionSink, compileDataValueSink } from "./data-sinks/operations.js";
 import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
@@ -1128,14 +1128,6 @@ export class DataLowerer {
         )) {
             return undefined;
         }
-        const values = (known.tupleElements ?? []).map(
-            (entry) =>
-                this.compileKnownValueForSink(
-                    entry,
-                    element,
-                    expression,
-                ),
-        );
         const unwrapped = this.context.unwrap(expression);
         const symbol = ts.isIdentifier(unwrapped)
             ? this.context.checker.getSymbolAtLocation(
@@ -1156,6 +1148,8 @@ export class DataLowerer {
             }
         }
         if (local || !(known.tupleElements ?? []).every(entry => this.knownValueFitsSink(entry, element, expression, true))) {
+            const values = (known.tupleElements ?? []).map(entry =>
+                this.compileKnownValueForSink(entry, element, expression));
             this.context.reachJsData();
             return {
                 kind: "data",
@@ -1173,7 +1167,8 @@ export class DataLowerer {
                     ? unwrapped.text
                     : "static_values",
                 this.context.dataTypes.cppType(element),
-                values,
+                (known.tupleElements ?? []).map(entry => this.compileKnownValueForSink(
+                    this.constantInitializerValue(entry), element, expression)),
             );
         this.context.reachJsData();
         return {
@@ -1189,6 +1184,7 @@ export class DataLowerer {
         node: ts.Node,
         staticOnly = false,
     ): boolean {
+        if (staticOnly && value.impure) return false;
         if (!staticOnly && value.dataType && this.spanCompatible(value.dataType, sink)) return true;
         if (!staticOnly && sink.kind === "bufferview" && value.dataType &&
             (value.dataType.kind === "dataview" || isTypedArrayType(value.dataType))) return true;
@@ -1232,6 +1228,23 @@ export class DataLowerer {
             default:
                 return false;
         }
+    }
+
+    /** After the static sink proof, discard local spellings from namespace initializers. */
+    private constantInitializerValue(value: Value): Value {
+        if (value.staticNumber !== undefined) return numberConstantValue(value.staticNumber);
+        if (value.staticBoolean !== undefined) return booleanValue(value.staticBoolean ? "true" : "false");
+        if (value.staticString !== undefined) return staticStringValue(value.staticString, text => this.context.cppString(text));
+        if (value.kind === "tuple") return {
+            kind: "tuple", cpp: "",
+            tupleElements: (value.tupleElements ?? []).map(entry => this.constantInitializerValue(entry)),
+        };
+        if (value.kind === "record") return {
+            kind: "record", cpp: "",
+            recordProperties: Object.fromEntries(Object.entries(value.recordProperties ?? {}).map(
+                ([key, entry]) => [key, this.constantInitializerValue(entry)])),
+        };
+        return value;
     }
 
     private staticTypedArrayLength(
@@ -3234,20 +3247,18 @@ export class DataLowerer {
         if (!element) {
             return undefined;
         }
-        const elements = literal
-            ? literal.elements.map((entry) =>
-                  this.compileForSink(entry, element),
-              )
-            : bound!.tupleElements!.map((entry) =>
-                  this.knownValueFitsSink(entry, element, unwrapped, true)
-                      ? this.compileKnownValueForSink(
-                            entry,
-                            element,
-                            unwrapped,
-                        )
-                      : undefined,
-              );
-        if (elements.some((entry) => entry === undefined)) {
+        const elements = this.context.probeEmission(() => {
+            let entries: readonly Value[] = [];
+            const lines = this.context.captureEmittedLines(() => {
+                entries = literal
+                    ? literal.elements.map(entry => this.context.compileValue(entry))
+                    : bound!.tupleElements!;
+            });
+            if (lines.length > 0 || !entries.every(entry => this.knownValueFitsSink(entry, element, unwrapped, true))) return undefined;
+            return entries.map(entry => this.compileKnownValueForSink(
+                this.constantInitializerValue(entry), element, unwrapped));
+        }, result => result !== undefined);
+        if (!elements) {
             return undefined;
         }
         // Keyed by the declaration so every use site shares one
@@ -3263,7 +3274,7 @@ export class DataLowerer {
                 declaration,
                 unwrapped.text,
                 this.context.dataTypes.cppType(element),
-                elements as string[],
+                elements,
             );
         this.context.reachJsData();
         return {

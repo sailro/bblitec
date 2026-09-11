@@ -171,6 +171,19 @@ function check(name: string, source: string): void {
     });
 }
 
+check("constant-tables-use-literals-outside-local-scopes", `
+    type Row = [number, number, "run" | null, boolean?];
+    const first = 3, second = 7, enabled = true;
+    const totals: number[] = [];
+    function append(rows: Row[]): void {
+        for (const [value, multiplier, , active] of rows) {
+            totals.push(value * multiplier + (active ? 1 : 0));
+        }
+    }
+    append([[first, 4, null, enabled], [second, 2, null, enabled]]);
+    if (totals.join(",") !== "13,15") throw new Error("constant tuple table");
+`);
+
 check("mixed-tuple-storage", `
     interface Item { score: number; }
     const item: Item = {score: 3};
