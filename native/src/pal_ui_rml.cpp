@@ -424,7 +424,10 @@ void ui_set_attribute(
         !replaces_style) {
         return;
     }
-    if (name == "style") record.style_properties.clear();
+    if (name == "style") {
+        record.style_properties.clear();
+        record.style_property_order.clear();
+    }
     record.attributes.insert_or_assign(std::move(name), std::move(value));
     mark_ui_changed(engine);
 }
@@ -441,9 +444,13 @@ void ui_set_style_property(
     const auto existing = record.style_properties.find(name);
     if (
         existing != record.style_properties.end() &&
-        existing->second == value) {
+        existing->second == value &&
+        !record.style_property_order.empty() &&
+        record.style_property_order.back() == name) {
         return;
     }
+    std::erase(record.style_property_order, name);
+    record.style_property_order.push_back(name);
     record.style_properties.insert_or_assign(
         std::move(name),
         std::move(value));
@@ -2388,6 +2395,7 @@ struct ProjectedUiElement {
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
     std::unordered_map<std::string, std::string> style_properties;
+    std::vector<std::string> style_property_order;
     std::string resolved_style;
     std::string grid_children_style;
     std::string fractional_grid_tracks;
@@ -3340,6 +3348,10 @@ struct UiRmlRuntime {
     }
 
     void set_projected_property(Rml::Element& element, const std::string& name, const std::string& value) const {
+        if (value.empty()) {
+            element.RemoveProperty(name);
+            return;
+        }
         const bool checked = name == "filter" || name == "overflow-wrap" || name == "word-break" ||
             name == "flex" || name.starts_with("flex-") || name == "align-self" || name == "align-content" ||
             name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
@@ -3911,9 +3923,9 @@ struct UiRmlRuntime {
         if (!projected.resolved_style.empty()) {
             raw->SetAttribute("style", projected.resolved_style);
         }
-        for (const auto& [name, value] : record.style_properties) {
+        for (const auto& name : record.style_property_order) {
             if (!project_rml_style_property(name)) continue;
-            set_projected_property(*raw, name, value);
+            set_projected_property(*raw, name, record.style_properties.at(name));
         }
         if (!record.inner_rml.empty()) {
             raw->SetInnerRML(
@@ -3947,6 +3959,7 @@ struct UiRmlRuntime {
         projected.inner_rml = record.inner_rml;
         projected.attributes = record.attributes;
         projected.style_properties = record.style_properties;
+        projected.style_property_order = record.style_property_order;
         attach_listeners(projected, handle);
         Rml::Element* children_parent = raw;
         if (!projected.grid_children_style.empty()) {
@@ -4114,7 +4127,8 @@ struct UiRmlRuntime {
         const std::string inset_outline =
             take_inset_outline(resolved_style);
         const bool resolved_style_changed =
-            projected.resolved_style != resolved_style;
+            projected.resolved_style != resolved_style ||
+            (!projected.style_properties.empty() && record.style_properties.empty());
         const auto gradient_property_changed = [&]() {
             const auto changed = [&](const char* name) {
                 const auto old_value = projected.style_properties.find(name);
@@ -4166,17 +4180,15 @@ struct UiRmlRuntime {
         projected.intrinsic_min_width = intrinsic_min_width;
         projected.attributes = record.attributes;
 
-        for (const auto& [name, value] : record.style_properties) {
-            if (!project_rml_style_property(name)) continue;
-            const auto existing = projected.style_properties.find(name);
-            if (
-                resolved_style_changed ||
-                existing == projected.style_properties.end() ||
-                existing->second != value) {
-                set_projected_property(raw, name, value);
+        if (resolved_style_changed || projected.style_properties != record.style_properties ||
+            projected.style_property_order != record.style_property_order) {
+            for (const auto& name : record.style_property_order) {
+                if (project_rml_style_property(name))
+                    set_projected_property(raw, name, record.style_properties.at(name));
             }
         }
         projected.style_properties = record.style_properties;
+        projected.style_property_order = record.style_property_order;
 
         const bool text_wrapped =
             !record.text.empty() &&

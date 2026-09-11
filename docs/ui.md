@@ -109,6 +109,8 @@ numeric `flex` shorthands, `flex-flow`, line/item alignment, and separate row/co
 `start`/`end` alignment follows the physical axis when flex direction or wrapping reverses.
 Physical padding and margin longhands retain native box sizing and auto margins.
 These additional layout values require literal keywords or lengths; CSS math and intrinsic basis keywords refuse.
+Live style writes retain their order across shorthands and longhands. An empty value removes the local
+declaration, and replacing `cssText` restores the authored declaration list.
 Standard `scrollbar-width` supports `auto` (16 density-independent pixels),
 `thin` (8), and `none` (hidden while content remains scrollable). `scrollbar-color` accepts `auto`
 or two literal RGB/hex/named colors and inherits through retained markup. Supported vendor pseudo-elements

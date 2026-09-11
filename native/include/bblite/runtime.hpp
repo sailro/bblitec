@@ -3343,6 +3343,8 @@ struct UiElementRecord {
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
     std::unordered_map<std::string, std::string> style_properties;
+    /** Latest write order, one entry per property; empty values remove declarations. */
+    std::vector<std::string> style_property_order;
     /** Rules owned by this retained <style> element, in source order. */
     std::vector<UiStyleRule> style_rules;
     UiElementHandle parent{};
