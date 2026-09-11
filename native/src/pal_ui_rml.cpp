@@ -4182,7 +4182,20 @@ struct UiRmlRuntime {
 
         if (resolved_style_changed || projected.style_properties != record.style_properties ||
             projected.style_property_order != record.style_property_order) {
-            for (const auto& name : record.style_property_order) {
+            auto first = record.style_property_order.begin();
+            const auto last = record.style_property_order.end();
+            // A final longhand can change without replaying earlier layout declarations.
+            // Shorthand writes and reordering retain the complete ordered replay.
+            if (!resolved_style_changed && first != last &&
+                projected.style_property_order == record.style_property_order &&
+                Rml::StyleSheetSpecification::GetPropertyId(record.style_property_order.back()) != Rml::PropertyId::Invalid &&
+                std::all_of(first, std::prev(last), [&](const std::string& name) {
+                    return projected.style_properties.at(name) == record.style_properties.at(name);
+                })) {
+                first = std::prev(last);
+            }
+            for (; first != last; ++first) {
+                const auto& name = *first;
                 if (project_rml_style_property(name))
                     set_projected_property(raw, name, record.style_properties.at(name));
             }
