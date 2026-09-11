@@ -151,6 +151,14 @@ Backdrop blur snapshots preceding UI, uses FP16 scratch targets and clips before
 later UI. Resize/density updates intrinsic measurements. Canvas overlays sit
 below DOM chrome.
 
+Ordinary CSS filters render nested element subtrees into retained layers. Color
+adjustments (brightness, contrast, grayscale, invert, opacity, saturate, sepia,
+hue-rotate), pixel blur and drop-shadow chains preserve declaration order on both
+backends. Drop shadows require an explicit hex, basic RmlUi named color, or comma
+RGB/RGBA color with integer channels and fractional alpha. Filter functions are space-separated.
+Static declarations and live style writes share the native compositor. Filtered
+subtrees may contain backdrop blur; canvas-only capture excludes UI filters.
+
 ## Limits
 
 Single-row inline grids support positive px/fr tracks with one element child per track.
@@ -161,7 +169,7 @@ Runtime track replacement and implicit extra rows refuse. Form dimensions suppor
 - Supported inset outlines become borders; other shadows/font-variant-numeric
   can degrade. General grid and unsupported text-shadow forms refuse.
 - The reviewed difference-blend crosshair degrades; other unsupported blend
-  modes refuse. Backdrop blur does not supply general mask/filter layers.
+  modes refuse. Saved layer textures and general mask-image filters are unsupported.
 - blur(px)/none are supported; other reached backdrop functions can degrade.
 - will-change, touch-action, user-select and image-rendering are accepted hints.
 - element.animate and listener removal are no-ops; CSS keyframes use mapped easing.

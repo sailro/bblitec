@@ -28,6 +28,7 @@
 #include "RmlUi_Platform_SDL.h"
 #include "pal_runtime_trace.hpp"
 #include "pal_ui_backdrop.hpp"
+#include "pal_ui_filter.hpp"
 #include "pal_ui_canvas.hpp"
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_form.hpp"
@@ -1604,6 +1605,46 @@ std::string rml_css_animation_easing(std::string value) {
     return value;
 }
 
+std::string rml_css_filter_arguments(std::string value) {
+    // RmlUi's drop-shadow shorthand is ordered: its color precedes lengths.
+    // Browser CSS also permits a trailing color, including in live style writes.
+    for (std::size_t cursor = 0; cursor < value.size();) {
+        if (value[cursor] == '\'' || value[cursor] == '"') {
+            const auto quote = value[cursor++];
+            while (cursor < value.size() && value[cursor] != quote) {
+                if (value[cursor] == '\\') ++cursor;
+                ++cursor;
+            }
+            if (cursor < value.size()) ++cursor;
+            continue;
+        }
+        if (value[cursor] != '(') { ++cursor; continue; }
+        auto start = cursor;
+        while (start > 0 && css_identifier_character(value[start - 1])) --start;
+        const auto body = ++cursor;
+        int depth = 1;
+        while (cursor < value.size() && depth) {
+            if (value[cursor] == '(') ++depth;
+            if (value[cursor] == ')') --depth;
+            ++cursor;
+        }
+        if (depth || value.substr(start, body - start - 1) != "drop-shadow") continue;
+        Rml::StringList tokens;
+        Rml::StringUtilities::ExpandString(tokens, value.substr(body, cursor - body - 1), ' ', '(', ')', true);
+        if (tokens.size() < 3) continue;
+        const auto is_length = [](const std::string& token) {
+            return !token.empty() && (std::isdigit(static_cast<unsigned char>(token.front())) ||
+                token.front() == '+' || token.front() == '-' || token.front() == '.');
+        };
+        if (!is_length(tokens.front()) || is_length(tokens.back())) continue;
+        std::string normalized = tokens.back();
+        for (std::size_t i = 0; i + 1 < tokens.size(); ++i) normalized += " " + tokens[i];
+        value.replace(body, cursor - body - 1, normalized);
+        cursor = body + normalized.size() + 1;
+    }
+    return value;
+}
+
 std::string rml_css_color_alpha(std::string value) {
     // RmlUi's legacy rgba() parser expects all four channels in 0..255,
     // while browser CSS uses a fractional alpha. Translate only that alpha
@@ -2022,11 +2063,9 @@ std::vector<GradientTextColor> gradient_text_colors(
 }
 
 bool project_rml_style_property(std::string_view name) {
-    // RmlUi implements box-shadow through render layers, clip masks, and a
-    // blur filter. The backend-neutral recorder intentionally exposes only
-    // ordinary geometry and textures today, so forwarding this property
-    // produces the unfiltered white mask instead of a shadow. Static CSS is
-    // lowered with the same omission; keep dynamic style writes consistent.
+    // RmlUi box-shadow additionally needs saved layer textures and inverse
+    // masks. Keep dynamic writes consistent with the static CSS omission
+    // until the recorder supports those operations.
     return name != "box-shadow";
 }
 
@@ -2401,7 +2440,10 @@ public:
         frame.textures.clear();
         frame.draws.clear();
         frame.backdrops.clear();
-        backdrop_layers.clear();
+        layers.clear();
+        frame.composites.clear();
+        frame.operations.clear();
+        frame.layer_count = 0;
         clip_mask.clear();
         clip_mask_enabled = false;
         frame.composite_first_index = 0;
@@ -2464,67 +2506,97 @@ public:
     }
 
     Rml::CompiledFilterHandle CompileFilter(const Rml::String& name, const Rml::Dictionary& parameters) override {
-        if (name != "blur") return {};
-        const float sigma = Rml::Get(parameters, "sigma", 0.0f);
-        if (!std::isfinite(sigma) || sigma < 0) return {};
-        return reinterpret_cast<Rml::CompiledFilterHandle>(new float(sigma));
+        UiFilter filter;
+        if (name == "blur" || name == "drop-shadow") {
+            filter.kind = name == "blur" ? UiFilterKind::Blur : UiFilterKind::DropShadow;
+            filter.sigma = Rml::Get(parameters, "sigma", 0.0f);
+            const auto offset = Rml::Get(parameters, "offset", Rml::Vector2f{});
+            filter.offset_x = offset.x; filter.offset_y = offset.y;
+            const auto color = Rml::Get(parameters, "color", Rml::Colourb{}).ToPremultiplied();
+            filter.color = {color.red / 255.0f, color.green / 255.0f, color.blue / 255.0f, color.alpha / 255.0f};
+            if (!std::isfinite(filter.sigma) || filter.sigma < 0 ||
+                !std::isfinite(offset.x) || !std::isfinite(offset.y))
+                throw std::runtime_error("Invalid retained UI spatial filter.");
+        } else filter = color_ui_filter(name, Rml::Get(parameters, "value", 1.0f));
+        return reinterpret_cast<Rml::CompiledFilterHandle>(new UiFilter(filter));
     }
 
     void ReleaseFilter(Rml::CompiledFilterHandle handle) override {
-        delete reinterpret_cast<float*>(handle);
+        delete reinterpret_cast<UiFilter*>(handle);
     }
 
     Rml::LayerHandle PushLayer() override {
-        backdrop_layers.push_back({});
-        return static_cast<Rml::LayerHandle>(backdrop_layers.size());
+        const auto id = static_cast<std::uint32_t>(layers.size() + 1);
+        frame.layer_count = std::max(frame.layer_count, id);
+        frame.operations.push_back({UiRenderOperation::Kind::ResetLayer, static_cast<std::uint32_t>(frame.draws.size()), id});
+        layers.push_back({id, frame.draws.size(), {}});
+        return static_cast<Rml::LayerHandle>(id);
     }
 
     void PopLayer() override {
-        if (!backdrop_layers.empty()) backdrop_layers.pop_back();
+        if (layers.empty()) throw std::runtime_error("Unbalanced retained UI layer stack.");
+        if (layers.back().backdrop) throw std::runtime_error("Unfinished retained UI backdrop.");
+        layers.pop_back();
     }
 
     void CompositeLayers(Rml::LayerHandle source, Rml::LayerHandle destination,
-        Rml::BlendMode blend, Rml::Span<const Rml::CompiledFilterHandle> filters) override {
-        // RmlUi's backdrop protocol snapshots layer zero into a temporary,
-        // filters it, then composites it through the element's border mask.
-        // Ordinary filter/mask-image/box-shadow layers remain outside the
-        // supported CSS surface; do not silently interpret them as backdrops.
-        if (backdrop_layers.size() != 1 || blend != Rml::BlendMode::Blend)
+        Rml::BlendMode blend, Rml::Span<const Rml::CompiledFilterHandle> handles) override {
+        if (blend != Rml::BlendMode::Blend || source == destination ||
+            source > frame.layer_count || destination > frame.layer_count)
             throw std::runtime_error("Unsupported retained UI layer composition.");
-        auto& layer = backdrop_layers.back();
-        if (source == 0 && destination == 1 && !filters.empty()) {
-            layer.region = scissor;
-            for (const auto filter : filters) {
-                const float sigma = *reinterpret_cast<const float*>(filter);
-                layer.sigma = std::hypot(layer.sigma, sigma);
-            }
+        std::vector<UiFilter> filters;
+        for (const auto handle : handles) filters.push_back(*reinterpret_cast<const UiFilter*>(handle));
+        // Retain the established one-layer backdrop blur path byte-for-byte.
+        // A filtered element or a nested backdrop uses the general compositor.
+        if (layers.size() == 1 && source == 0 && destination == layers.back().id &&
+            layers.back().first_draw == frame.draws.size() && !filters.empty() &&
+            std::all_of(filters.begin(), filters.end(), [](const auto& filter) { return filter.kind == UiFilterKind::Blur; })) {
+            float sigma = 0;
+            for (const auto& filter : filters) sigma = std::hypot(sigma, filter.sigma);
+            layers.back().backdrop = BackdropLayer{scissor, sigma};
             return;
         }
-        if (source != 1 || destination != 0 || !filters.empty())
-            throw std::runtime_error("Unsupported retained UI backdrop composition.");
-        if (layer.sigma < 0.1f) return;
         const auto viewport = Rml::Rectanglei::FromSize({static_cast<int>(frame.width), static_cast<int>(frame.height)});
-        const auto region = layer.region.Intersect(viewport);
         const auto output = scissor.Intersect(viewport);
-        if (region.Width() <= 0 || region.Height() <= 0 || output.Width() <= 0 || output.Height() <= 0) return;
         auto mask = ui_rect_mask(float(output.Left()), float(output.Top()), float(output.Right()), float(output.Bottom()));
         if (clip_mask_enabled) mask = intersect_ui_masks(mask, clip_mask);
-        UiBackdrop backdrop{};
-        backdrop.before_draw = static_cast<std::uint32_t>(frame.draws.size());
-        backdrop.left = region.Left();
-        backdrop.top = region.Top();
-        backdrop.width = static_cast<std::uint32_t>(region.Width());
-        backdrop.height = static_cast<std::uint32_t>(region.Height());
-        const std::size_t kernel_index = frame.backdrops.size();
-        if (blur_kernels.size() <= kernel_index) {
-            blur_kernels.resize(kernel_index + 1);
+        const auto before_draw = static_cast<std::uint32_t>(frame.draws.size());
+        if (layers.size() == 1 && layers.back().backdrop && source == layers.back().id && destination == 0 && filters.empty()) {
+            const auto layer = *layers.back().backdrop;
+            layers.back().backdrop.reset();
+            if (layer.sigma < .1f) return;
+            const auto region = layer.region.Intersect(viewport);
+            if (region.Width() <= 0 || region.Height() <= 0 || output.Width() <= 0 || output.Height() <= 0) return;
+            UiBackdrop backdrop{};
+            backdrop.left = region.Left(); backdrop.top = region.Top();
+            backdrop.width = static_cast<std::uint32_t>(region.Width());
+            backdrop.height = static_cast<std::uint32_t>(region.Height());
+            const auto index = frame.backdrops.size();
+            if (blur_kernels.size() <= index) blur_kernels.resize(index + 1);
+            auto& kernel = blur_kernels[index];
+            if (kernel.sigma != layer.sigma) kernel = make_ui_blur_kernel(layer.sigma);
+            append_ui_backdrop_geometry(frame, backdrop, kernel, mask);
+            frame.operations.push_back({UiRenderOperation::Kind::Backdrop, before_draw, static_cast<std::uint32_t>(index)});
+            frame.backdrops.push_back(backdrop);
+            return;
         }
-        UiBlurKernel& kernel = blur_kernels[kernel_index];
-        if (kernel.sigma != layer.sigma) {
-            kernel = make_ui_blur_kernel(layer.sigma);
+        if (output.Width() <= 0 || output.Height() <= 0) return;
+        UiLayerComposite composite{};
+        composite.source = static_cast<std::uint32_t>(source);
+        composite.destination = static_cast<std::uint32_t>(destination);
+        composite.left = output.Left(); composite.top = output.Top();
+        composite.width = static_cast<std::uint32_t>(output.Width());
+        composite.height = static_cast<std::uint32_t>(output.Height());
+        composite.filters = std::move(filters);
+        composite.first_index = static_cast<std::uint32_t>(frame.indices.size());
+        for (const auto& triangle : mask) for (const auto& point : triangle) {
+            frame.indices.push_back(static_cast<std::uint32_t>(frame.vertices.size()));
+            frame.vertices.push_back({point[0], point[1], 255, 255, 255, 255,
+                (point[0] - composite.left) / composite.width, (point[1] - composite.top) / composite.height});
         }
-        append_ui_backdrop_geometry(frame, backdrop, kernel, mask);
-        frame.backdrops.push_back(backdrop);
+        composite.index_count = static_cast<std::uint32_t>(frame.indices.size()) - composite.first_index;
+        frame.operations.push_back({UiRenderOperation::Kind::Composite, before_draw, static_cast<std::uint32_t>(frame.composites.size())});
+        frame.composites.push_back(std::move(composite));
     }
 
     void RenderGeometry(
@@ -2604,7 +2676,7 @@ public:
             active_scissor.Top(),
             static_cast<std::uint32_t>(std::max(0, active_scissor.Width())),
             static_cast<std::uint32_t>(std::max(0, active_scissor.Height())),
-            nearest_sampling});
+            nearest_sampling, layers.empty() ? 0 : layers.back().id});
     }
 
     void RenderGeometryWithSampling(
@@ -3044,7 +3116,8 @@ private:
     bool scissor_enabled = false;
     bool nearest_sampling = false;
     struct BackdropLayer { Rml::Rectanglei region{}; float sigma = 0; };
-    std::vector<BackdropLayer> backdrop_layers;
+    struct Layer { std::uint32_t id; std::size_t first_draw; std::optional<BackdropLayer> backdrop; };
+    std::vector<Layer> layers;
     std::vector<UiClipTriangle> clip_mask;
     std::vector<UiBlurKernel> blur_kernels;
     bool clip_mask_enabled = false;
@@ -3261,8 +3334,15 @@ struct UiRmlRuntime {
         replace_all(value, "ui-monospace", css_monospace_family);
         replace_all(value, "monospace", css_monospace_family);
         value = rml_css_animation_easing(std::move(value));
+        value = rml_css_filter_arguments(std::move(value));
         value = rml_css_density_units(std::move(value));
         return rml_css_color_alpha(std::move(value));
+    }
+
+    void set_projected_property(Rml::Element& element, const std::string& name, const std::string& value) const {
+        const bool accepted = element.SetProperty(name, project_css(name == "filter" ? js::string_lower(value) : value));
+        if (name == "filter" && !accepted)
+            throw std::runtime_error("Unsupported retained UI filter value: " + value);
     }
 
     std::string projected_attribute_value(
@@ -3829,7 +3909,7 @@ struct UiRmlRuntime {
         }
         for (const auto& [name, value] : record.style_properties) {
             if (!project_rml_style_property(name)) continue;
-            raw->SetProperty(name, project_css(value));
+            set_projected_property(*raw, name, value);
         }
         if (!record.inner_rml.empty()) {
             raw->SetInnerRML(
@@ -4089,7 +4169,7 @@ struct UiRmlRuntime {
                 resolved_style_changed ||
                 existing == projected.style_properties.end() ||
                 existing->second != value) {
-                raw.SetProperty(name, project_css(value));
+                set_projected_property(raw, name, value);
             }
         }
         projected.style_properties = record.style_properties;

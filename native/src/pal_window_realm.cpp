@@ -588,10 +588,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                             frames.push_back({UiElementHandle{index}, found->second});
                         }
                     }
-                    canvases_ready = !frames.empty() && frames.size() == services->canvases.size();
+                    canvases_ready = revision > 0 && frames.size() == services->canvases.size();
                 }
                 services->wake.notify_all();
-                const bool capture_ready = capture_frame_count ? std::all_of(frames.begin(), frames.end(),
+                const bool capture_ready = capture_frame_count && !frames.empty() ? std::all_of(frames.begin(), frames.end(),
                     [&](const auto& canvas) { return canvas.frame.sequence == capture_frame_count; }) :
                     presented == std::max(0L, frame_options.screenshot_frame);
                 const bool capture = canvases_ready && !frame_options.screenshot_path.empty() && capture_ready;
@@ -607,6 +607,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                             });
                         });
                         canvas_capture->backdrops.clear();
+                        canvas_capture->composites.clear();
+                        canvas_capture->operations.clear();
+                        canvas_capture->layer_count = 0;
+                        for (auto& draw : canvas_capture->draws) draw.layer = 0;
                     }
                     did_present = presenter->present(frames, canvas_capture ? *canvas_capture : recorded, capture ? frame_options.screenshot_path : std::string{});
                 }

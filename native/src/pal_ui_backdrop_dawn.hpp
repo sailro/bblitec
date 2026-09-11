@@ -49,7 +49,7 @@ inline UiDawnTexture create_ui_backdrop_dawn_texture(
     descriptor.format = format;
     descriptor.mipLevelCount = 1;
     descriptor.sampleCount = 1;
-    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopyDst;
+    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopyDst | WGPUTextureUsage_CopySrc;
     UiDawnTexture result;
     result.texture = wgpuDeviceCreateTexture(device, &descriptor);
     result.view = create_dawn_texture_view(result.texture, nullptr);
