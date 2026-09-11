@@ -2,6 +2,8 @@ import { someAnalysisNode, findAnalysisNodeWithState } from "./analysis-walk.js"
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { CompileError } from "./compile-error.js";
+import { unwrapExpression } from "./syntax.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import {
@@ -32,6 +34,7 @@ export interface NativeFunctionContext
         | "sourceFiles"
         | "lookupIdentifierValue"
         | "compileValue"
+        | "probeEmission"
         | "useNativeValue"
         | "compileNumber"
         | "compileCondition"
@@ -294,27 +297,26 @@ export class NativeFunctionLowerer {
             // entry engine binding nor JavaScript closure lifetime.
             return undefined;
         }
-        if (
-            signature.returnType?.kind === "string" &&
-            signature.parameters.every(
-                (parameter) => parameter.type.kind === "string",
-            ) &&
+        if (signature.returnType?.kind === "string" &&
+            signature.parameters.every(parameter => parameter.type.kind === "string") &&
             signature.parameters.every((parameter, index) => {
                 const argument =
                     call.arguments[index] ??
                     (ts.isParameter(parameter.name.parent)
                         ? parameter.name.parent.initializer
                         : undefined);
-                return argument
-                    ? this.context.compileValue(argument).staticString !==
-                          undefined
-                    : false;
+                if (!argument) return false;
+                if (ts.isStringLiteralLike(argument)) return true;
+                if (ts.isIdentifier(argument)) {
+                    const bound = this.context.lookupIdentifierValue(argument);
+                    if (bound) return bound.staticString !== undefined;
+                }
+                return this.context.probeEmission(() =>
+                    this.context.compileValue(argument).staticString !== undefined, () => false);
             })
         ) {
-            // Generation-known string transforms remain specialized at the
-            // call site. Hoisting them would erase the carried string fact
-            // before a computed Record key or another AOT-only sink reads
-            // the result (a regex-based name sanitizer is one example).
+            // Closed string transforms retain their facts at the call site.
+            // Inspect without emitting argument effects twice.
             return undefined;
         }
         if (call.arguments.some(ts.isSpreadElement)) {
@@ -389,9 +391,30 @@ export class NativeFunctionLowerer {
             // the method arm; the inline path aliases by construction.
             return undefined;
         }
-        this.ensureEmitted(signature.declaration, () =>
-            this.emitDefinition(signature),
-        );
+        const canSpecialize = signature.parameters.some((parameter, index) => {
+            const argument = call.arguments[index] ??
+                (ts.isParameter(parameter.name.parent) ? parameter.name.parent.initializer : undefined);
+            if (!argument) return false;
+            const expression = unwrapExpression(argument);
+            const value = ts.isIdentifier(expression) ? this.context.lookupIdentifierValue(expression) : undefined;
+            return !value || value.kind === "record" || value.kind === "tuple" ||
+                value.staticString !== undefined || value.staticNumber !== undefined || value.staticBoolean !== undefined;
+        });
+        if (!this.emitted.has(signature.declaration) && canSpecialize) {
+            try {
+                this.context.probeEmission(() => {
+                    this.ensureEmitted(signature.declaration, () => this.emitDefinition(signature));
+                    return true;
+                });
+            } catch (error) {
+                if (!(error instanceof CompileError) || error.reason !== "static-value-required") throw error;
+                // A body may need facts unavailable to generic parameters.
+                // Let specialization bind actual arguments before diagnosing it.
+                return undefined;
+            }
+        } else {
+            this.ensureEmitted(signature.declaration, () => this.emitDefinition(signature));
+        }
         const argumentsCpp = signature.parameters.map(
             (parameter, index) => {
                 const argument = call.arguments[index];

@@ -112,6 +112,8 @@ Solid backgrounds support `background-clip:border-box/padding-box/content-box`; 
 Selectors are bounded class/id/compound and proven ancestor forms, with optional
 hover. [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
 validated; source/sheet order and live max-width rules are retained.
+Stylesheet strings can be assembled by closed helpers over literal scalars and option records;
+argument effects execute once. Runtime-generated stylesheet text remains unsupported.
 Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown
 track/class/id changes refuse.
 

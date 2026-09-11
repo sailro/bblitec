@@ -772,7 +772,7 @@ class Compiler
                 this.dataLowerer.narrowOptional(value, expression, assertedNonNull),
             (identifier) => this.lookup(identifier),
             (identifier) => this.lookupOptional(identifier),
-            (node, message) => this.fail(node, message),
+            (node, message, reason) => this.fail(node, message, reason),
             (expression) => this.unwrappedAwaitExpressions.add(expression.pos),
             () => this.reachJsData(),
             (value, arity) => this.bindDataTuple(value, arity),
@@ -7366,7 +7366,8 @@ class Compiler
         const carried =
             ts.isIdentifier(unwrapped) ||
             ts.isPropertyAccessExpression(unwrapped) ||
-            ts.isElementAccessExpression(unwrapped)
+            ts.isElementAccessExpression(unwrapped) ||
+            ts.isTemplateExpression(unwrapped)
                 ? this.probeEmission(
                       () => this.compileValue(unwrapped),
                       (value) => value.staticString !== undefined,
@@ -7402,18 +7403,14 @@ class Compiler
                     // string helper into a native function, which would turn
                     // the shader source into a runtime string after the
                     // variant table has already been generated.
-                    const arguments_ = resolved.arguments.map((argument) =>
-                        this.compileValue(
-                            this.alwaysUsedParameterDefault(argument) ??
-                                argument,
-                        ),
-                    );
                     const value =
                         declaration && !ts.isFunctionDeclaration(declaration)
                             ? this.userFunctions.compileCallbackWithValues(
                                   this,
                                   declaration,
-                                  arguments_,
+                                  resolved.arguments.map((argument) => this.compileValue(
+                                      this.alwaysUsedParameterDefault(argument) ?? argument,
+                                  )),
                                   resolved,
                               )
                             : this.userFunctions.compile(
@@ -14812,13 +14809,14 @@ class Compiler
         return renderFeaturesCmake(features, runtimeSources, generatedSources);
     }
 
-    public fail(node: ts.Node, message: string): never {
+    public fail(node: ts.Node, message: string, reason: CompileError["reason"] = "unsupported"): never {
         const { file, line, character } = sourceLocation(node);
         throw new CompileError(
             file === this.sourceFile ? this.options.fileName : file.fileName,
             line,
             character,
             message,
+            reason,
         );
     }
 

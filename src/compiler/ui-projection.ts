@@ -4543,11 +4543,13 @@ export class UiProjection {
                 }
             }
             if (property === "textContent" || property === "innerText") {
+                let textCpp: string;
                 if (
                     this.uiCreatedElementTag(expression.left.expression) ===
                     "style"
                 ) {
                     const sheet = this.context.compileStringLiteral(expression.right);
+                    textCpp = this.context.cppString(sheet);
                     this.context.emit(
                         `bbl::ui_clear_style_rules(${engine}, ${directElement.cpp});`,
                     );
@@ -4582,10 +4584,12 @@ export class UiProjection {
                             );
                         }
                     }
+                } else {
+                    textCpp = this.uiStringCpp(expression.right, `UI ${property}`);
                 }
                 this.context.emit(
                     `bbl::ui_set_text(${engine}, ${directElement.cpp}, ` +
-                        `${this.uiStringCpp(expression.right, `UI ${property}`)});`,
+                        `${textCpp});`,
                 );
                 return true;
             }
