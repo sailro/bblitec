@@ -698,7 +698,7 @@ test("stylesheet revisions track rules, text and attachment order independently 
     ].map((signature) => cppFunction(source, signature)).join("\n");
     runCpp("style-revision", `
         #define BBLITE_HAS_UI 1
-        #include <bblite/runtime.hpp>
+        #include <bblite/pal_ui.hpp>
         #include <cassert>
         namespace bbl { ${functions} }
         int main() {
