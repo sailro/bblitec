@@ -104,6 +104,11 @@ bounded shorthands, backgrounds, gradients, rounded borders, text effects and
 deterministic CSS animation. Inherited `overflow-wrap` (`word-wrap`) supports `normal`, `break-word`
 and `anywhere`; `word-break` supports `normal`, `break-all` and `break-word`. They use the native
 line breaker and honor `white-space`; browser min-content sizing is not modeled.
+Flex containers support wrapping and reversed directions, item grow/shrink/basis,
+numeric `flex` shorthands, `flex-flow`, line/item alignment, and separate row/column gaps.
+`start`/`end` alignment follows the physical axis when flex direction or wrapping reverses.
+Physical padding and margin longhands retain native box sizing and auto margins.
+These additional layout values require literal keywords or lengths; CSS math and intrinsic basis keywords refuse.
 Standard `scrollbar-width` supports `auto` (16 density-independent pixels),
 `thin` (8), and `none` (hidden while content remains scrollable). `scrollbar-color` accepts `auto`
 or two literal RGB/hex/named colors and inherits through retained markup. Supported vendor pseudo-elements
@@ -136,6 +141,7 @@ native range painting follows browser geometry and control states.
 | Maintained RmlUi patch | Purpose |
 | --- | --- |
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
+| `rmlui-flex-layout.patch` | Flex shorthand defaults, unordered flow resets and start/end alignment under reversal |
 | `rmlui-solid-background-clip.patch` | Solid border/padding/content-box clipping and invalidation after style changes |
 | `rmlui-textured-borders.patch` | Stretch raster border slices, live widths and CSS overlap reduction |
 | `rmlui-premultiplied-rounding.patch` | Browser-oriented color/opacity rounding |

@@ -3340,8 +3340,12 @@ struct UiRmlRuntime {
     }
 
     void set_projected_property(Rml::Element& element, const std::string& name, const std::string& value) const {
-        const bool accepted = element.SetProperty(name, project_css(name == "filter" ? js::string_lower(value) : value));
-        if ((name == "filter" || name == "overflow-wrap" || name == "word-break") && !accepted)
+        const bool checked = name == "filter" || name == "overflow-wrap" || name == "word-break" ||
+            name == "flex" || name.starts_with("flex-") || name == "align-self" || name == "align-content" ||
+            name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
+            name == "margin-left" || name == "margin-right";
+        const bool accepted = element.SetProperty(name, project_css(checked ? js::string_lower(value) : value));
+        if (checked && !accepted)
             throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
 
@@ -4140,6 +4144,12 @@ struct UiRmlRuntime {
             intrinsic_min_width.empty()) {
             raw.RemoveProperty("width");
         }
+        for (const auto& [name, old_value] : projected.style_properties) {
+            static_cast<void>(old_value);
+            if (!record.style_properties.contains(name)) {
+                raw.RemoveProperty(name);
+            }
+        }
         if (resolved_style_changed) {
             if (resolved_style.empty()) {
                 raw.RemoveAttribute("style");
@@ -4156,12 +4166,6 @@ struct UiRmlRuntime {
         projected.intrinsic_min_width = intrinsic_min_width;
         projected.attributes = record.attributes;
 
-        for (const auto& [name, old_value] : projected.style_properties) {
-            static_cast<void>(old_value);
-            if (!record.style_properties.contains(name)) {
-                raw.RemoveProperty(name);
-            }
-        }
         for (const auto& [name, value] : record.style_properties) {
             if (!project_rml_style_property(name)) continue;
             const auto existing = projected.style_properties.find(name);
