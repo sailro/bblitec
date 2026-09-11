@@ -128,6 +128,10 @@ Selectors are bounded class/id/compound and proven ancestor forms, with optional
 hover, active and focus-visible states, shared by CSS text and host UI rules.
 [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
 validated; source/sheet order and live max-width rules are retained.
+Reduced-motion media rules support `reduce` and `no-preference` through the same cascade.
+On Windows, they follow the system [client-area animation preference](https://learn.microsoft.com/en-us/windows/win32/winauto/client-area-animation),
+checked about once per second while the UI runs.
+Other platforms currently refuse when this preference is reached.
 Stylesheet strings can be assembled by closed helpers over literal scalars and option records;
 argument effects execute once. Runtime-generated stylesheet text remains unsupported.
 Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown

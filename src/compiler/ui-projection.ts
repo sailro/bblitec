@@ -5,7 +5,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { supportedUiFilter } from "../ui-filters.js";
 import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
-import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
+import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { requireWindowHost } from "./window-events.js";
@@ -33,6 +33,7 @@ interface LoweredUiStyleRule extends UiStyleSelectorShape {
     kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
     hover: boolean;
     maxWidth?: number;
+    reducedMotion?: boolean;
     style: string;
     selector: string;
     site?: ts.Node;
@@ -2207,7 +2208,7 @@ export class UiProjection {
                 "'#id' rules, '.classA.classB', 'tag.class', statically-proven " +
                 "'.ancestor tag', '#id .class' (optionally ':hover', ':active', ':focus-visible'), " +
                 "scrollbar/track/thumb/button/corner pseudo-elements, " +
-                "'@media (max-width:Npx)', and '@keyframes' blocks.";
+                "'@media (max-width:Npx)', '@media (prefers-reduced-motion:reduce|no-preference)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
@@ -2218,6 +2219,7 @@ export class UiProjection {
         const parseBlocks = (
             text: string,
             inheritedMaxWidth?: number,
+            inheritedReducedMotion?: boolean,
         ): void => {
             let cursor = 0;
             while (cursor < text.length) {
@@ -2252,8 +2254,13 @@ export class UiProjection {
                 cursor = end;
 
                 if (/^@media\b/i.test(header)) {
-                    if (inheritedMaxWidth !== undefined) {
+                    if (inheritedMaxWidth !== undefined || inheritedReducedMotion !== undefined) {
                         refuseSelector(header);
+                    }
+                    const motion = /^@media\s*\(\s*prefers-reduced-motion\s*:\s*(reduce|no-preference)\s*\)$/i.exec(header);
+                    if (motion) {
+                        parseBlocks(body, undefined, motion[1]!.toLowerCase() === "reduce");
+                        continue;
                     }
                     const media = header.match(
                         /^@media\s*\(\s*max-width\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*\)$/i,
@@ -2305,11 +2312,12 @@ export class UiProjection {
                     );
                 }
                 const grid = UiProjection.uiGridProjection(sourceStyle);
-                if (grid && inheritedMaxWidth !== undefined) {
+                if ((grid || UiProjection.fractionalUiGridTracks(sourceStyle)) &&
+                    (inheritedMaxWidth !== undefined || inheritedReducedMotion !== undefined)) {
                     this.uiStyleRefusal(
                         site,
                         "display",
-                        "the structural fixed-grid substitution is not accepted inside a media query",
+                        "the structural grid substitution is not accepted inside a media query",
                     );
                 }
                 const selectors = header
@@ -2341,6 +2349,7 @@ export class UiProjection {
                     if (inheritedMaxWidth !== undefined) {
                         rule.maxWidth = inheritedMaxWidth;
                     }
+                    if (inheritedReducedMotion !== undefined) rule.reducedMotion = inheritedReducedMotion;
                     if (site) rule.site = site;
                     if (ownerId !== undefined) rule.ownerId = ownerId;
                     if (grid) {
@@ -2848,7 +2857,7 @@ export class UiProjection {
             const rule = activeRules[index]!;
             if (
                 uiStyleInteractionStateCount(rule) > 0 ||
-                rule.maxWidth !== undefined ||
+                uiStyleRuleHasMedia(rule) ||
                 !this.uiRuleMatchesStaticElementWithClasses(
                     rule,
                     id,
@@ -3032,7 +3041,7 @@ export class UiProjection {
             const rule = activeRules[index]!;
             if (
                 uiStyleInteractionStateCount(rule) > 0 ||
-                rule.maxWidth !== undefined ||
+                uiStyleRuleHasMedia(rule) ||
                 !this.uiRuleMatchesStaticElementWithClasses(
                     rule,
                     id,
@@ -3306,7 +3315,7 @@ export class UiProjection {
             for (const rule of activeRules) {
                 if (
                     !this.uiRuleMatchesStaticElement(rule, childId, child) ||
-                    (rule.maxWidth === undefined &&
+                    (!uiStyleRuleHasMedia(rule) &&
                         uiStyleInteractionStateCount(rule) === 0 &&
                         !this.uiRuleDependsOnMutableClass(rule, childId, child))
                 ) {
@@ -3315,8 +3324,8 @@ export class UiProjection {
                 const property = changedGeometryProperty(rule);
                 if (property) {
                     const trigger =
-                        rule.maxWidth !== undefined
-                            ? `max-width rule '${rule.selector}'`
+                        uiStyleRuleHasMedia(rule)
+                            ? `${rule.maxWidth !== undefined ? "max-width" : "motion preference"} rule '${rule.selector}'`
                             : uiStyleInteractionStateCount(rule) > 0
                               ? `${rule.hover ? "hover" : "interaction"} rule '${rule.selector}'`
                               : `runtime class rule '${rule.selector}'`;
@@ -4622,7 +4631,7 @@ export class UiProjection {
                             (rule.kind === "class" || rule.kind === "id") &&
                             uiStyleInteractionStateCount(rule) === 0 &&
                             !rule.scrollbar &&
-                            rule.maxWidth === undefined
+                            !uiStyleRuleHasMedia(rule)
                         ) {
                             this.context.emit(
                                 `bbl::ui_add_${rule.kind}_style(${engine}, ` +
@@ -4640,8 +4649,9 @@ export class UiProjection {
                                     `${rule.hover ? "true" : "false"}, ` +
                                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
                                     `${this.context.cppString(rule.style)}` +
-                                    `${rule.scrollbar || rule.focusVisible || rule.active ? `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}` : ""}` +
-                                    `${rule.focusVisible || rule.active ? `, ${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}` : ""});`,
+                                    `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
+                                    `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
+                                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)});`,
                             );
                         }
                     }
@@ -4971,7 +4981,8 @@ export class UiProjection {
                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
                     `${this.context.cppString(this.lowerUiAttributeLiteral("style", rule.style))}` +
                     `, ${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
-                    `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)});`,
+                    `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
+                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)});`,
             );
         }
 

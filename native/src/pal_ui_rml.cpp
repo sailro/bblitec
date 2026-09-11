@@ -36,6 +36,7 @@
 #include "pal_ui_range.hpp"
 #include "pal_ui_scrollbars.hpp"
 #include "pal_ui_text.hpp"
+#include "pal_system_preferences.hpp"
 
 #include <algorithm>
 #include <array>
@@ -591,7 +592,8 @@ void ui_add_style_rule(
     std::string style,
     UiScrollbarPart scrollbar,
     bool focus_visible,
-    bool active) {
+    bool active,
+    UiMotionPreference motion) {
     UiElementRecord& owner = ui_element(engine, stylesheet);
     if (owner.tag != "style") {
         throw std::runtime_error(
@@ -611,7 +613,8 @@ void ui_add_style_rule(
         hover,
         focus_visible,
         active,
-        scrollbar});
+        scrollbar,
+        motion});
     mark_ui_changed(engine, owner);
 }
 
@@ -626,7 +629,8 @@ void ui_add_host_style_rule(
     std::string style,
     bool focus_visible,
     bool active,
-    UiScrollbarPart scrollbar) {
+    UiScrollbarPart scrollbar,
+    UiMotionPreference motion) {
     if (primary.empty() || style.empty()) {
         throw std::runtime_error(
             "A native host UI style rule must have a target and declarations.");
@@ -641,7 +645,8 @@ void ui_add_host_style_rule(
         hover,
         focus_visible,
         active,
-        scrollbar});
+        scrollbar,
+        motion});
     ++engine.ui_style_revision;
     mark_ui_changed(engine);
 }
@@ -3140,12 +3145,14 @@ struct UiRmlRuntime {
         Engine& engine,
         SDL_Window* window,
         std::uint32_t width,
-        std::uint32_t height)
+        std::uint32_t height,
+        bool (*read_motion_preference)() = system_reduced_motion)
         : engine(engine),
           window(window),
           system_interface(window),
           viewport_width(width),
-          viewport_height(height) {
+          viewport_height(height),
+          motion_preference_reader(read_motion_preference) {
         try {
             Rml::SetSystemInterface(&system_interface);
             Rml::SetRenderInterface(&render_interface);
@@ -3291,6 +3298,7 @@ struct UiRmlRuntime {
                 "width:100%;height:100%;font-family:" + css_font_family +
                     ";font-size:16dp;line-height:1.32;pointer-events:none;");
             sync_style_sheet();
+            sync_motion_preference();
             document->Show(
                 Rml::ModalFlag::None,
                 Rml::FocusFlag::None,
@@ -3424,10 +3432,26 @@ struct UiRmlRuntime {
 
     bool style_rule_media_matches(const UiStyleRule& rule) const {
         return
-            rule.max_width < 0.0 ||
+            (rule.max_width < 0.0 ||
             static_cast<double>(viewport_width) /
                     std::max(1.0f, density_ratio) <=
-                rule.max_width;
+                rule.max_width) &&
+            (rule.motion == UiMotionPreference::Any || reduced_motion == (rule.motion == UiMotionPreference::Reduce));
+    }
+
+    static const char* motion_theme(bool reduced) {
+        return reduced ? "bbl-motion-reduce" : "bbl-motion-no-preference";
+    }
+
+    bool sync_motion_preference() {
+        if (!observes_motion_preference) return false;
+        const bool next = motion_preference_reader();
+        if (motion_preference_initialized && next == reduced_motion) return false;
+        reduced_motion = next;
+        motion_preference_initialized = true;
+        context->ActivateTheme(motion_theme(true), reduced_motion);
+        context->ActivateTheme(motion_theme(false), !reduced_motion);
+        return true;
     }
 
     template <typename Callback>
@@ -3463,20 +3487,28 @@ struct UiRmlRuntime {
         // in this sheet rather than on each element also lets :hover and media
         // rules participate in the ordinary RmlUi cascade.
         std::string source(ui_user_agent_css);
-        const auto append_rule = [&source](const UiStyleRule& rule) {
+        observes_motion_preference = false;
+        const auto append_rule = [&source, this](const UiStyleRule& rule) {
+            const bool motion = rule.motion != UiMotionPreference::Any;
+            observes_motion_preference = observes_motion_preference || motion;
             const std::string public_style =
                 filter_private_ui_declarations(rule.style, false);
             if (public_style.empty()) return;
+            const bool media = rule.max_width >= 0.0 || motion;
+            if (media) source += "@media ";
             if (rule.max_width >= 0.0) {
-                source += "@media (max-width:";
+                source += "(max-width:";
                 source += std::to_string(rule.max_width);
-                source += "px){";
+                source += "px)";
+                if (motion) source += " and ";
             }
+            if (motion) source += std::string("(theme:") + motion_theme(rule.motion == UiMotionPreference::Reduce) + ")";
+            if (media) source += "{";
             source += ui_style_rule_selector(rule);
             source += "{";
             source += public_style;
             source += "}";
-            if (rule.max_width >= 0.0) source += "}";
+            if (media) source += "}";
             source += "\n";
         };
         for_each_active_style_rule(append_rule);
@@ -5066,6 +5098,10 @@ struct UiRmlRuntime {
     float density_ratio = 0.0f;
     std::uint32_t viewport_width = 0;
     std::uint32_t viewport_height = 0;
+    bool (*const motion_preference_reader)();
+    bool observes_motion_preference = false;
+    bool motion_preference_initialized = false;
+    bool reduced_motion = false;
     bool default_prevented = false;
     UiElementHandle resizing{};
     float resize_start_y = 0;
@@ -5176,10 +5212,9 @@ void update_ui_rml_runtime(
     const bool density_changed = runtime.update_density_ratio();
     const bool tree_changed =
         runtime.projected_revision != runtime.engine.ui_revision;
-    if (tree_changed) {
-        runtime.sync_style_sheet();
-        runtime.sync_tree();
-    }
+    if (tree_changed) runtime.sync_style_sheet();
+    const bool motion_changed = runtime.sync_motion_preference();
+    if (tree_changed || motion_changed) runtime.sync_tree();
     runtime.context->Update();
     if (runtime.sync_text_form_metrics()) runtime.context->Update();
     const bool focus_changed = runtime.sync_focus();
@@ -5194,7 +5229,7 @@ void update_ui_rml_runtime(
     }
     if (sync_ui_scrollbar_styles(*runtime.document, runtime.scrollbar_properties)) runtime.context->Update();
     if (
-        focus_changed || hover_changed || dimensions_changed ||
+        focus_changed || hover_changed || motion_changed || dimensions_changed ||
         density_changed) {
         runtime.invalidate_gradient_text();
     }
@@ -5202,19 +5237,15 @@ void update_ui_rml_runtime(
         runtime.context->Update();
     }
     if (runtime.refresh_gradient_text()) runtime.context->Update();
-    if (
+    const bool layout_changed =
         tree_changed ||
         density_changed ||
         dimensions_changed ||
-        hover_changed) {
-        runtime.update_intrinsic_widths();
-    }
-    runtime.sync_client_rects(
-        tree_changed ||
-        density_changed ||
-        dimensions_changed ||
-        hover_changed);
-    if (tree_changed || focus_changed || dimensions_changed || density_changed || hover_changed) {
+        motion_changed ||
+        hover_changed;
+    if (layout_changed) runtime.update_intrinsic_widths();
+    runtime.sync_client_rects(layout_changed);
+    if (layout_changed || focus_changed) {
         runtime.sync_outlines();
         runtime.context->Update();
     }

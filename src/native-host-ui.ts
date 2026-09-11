@@ -146,6 +146,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
                 "active",
                 "scrollbar",
                 "maxWidth",
+                "reducedMotion",
                 "style",
             ],
             location,
@@ -183,6 +184,9 @@ export function readNativeHostUi(path: string): NativeHostUi {
         if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
             throw new Error(`${location}.maxWidth must be a number.`);
         }
+        if (item.reducedMotion !== undefined && typeof item.reducedMotion !== "boolean") {
+            throw new Error(`${location}.reducedMotion must be a boolean.`);
+        }
         return {
             kind: item.kind,
             primary: item.primary,
@@ -194,6 +198,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
             ...(item.hover !== undefined ? { hover: item.hover } : {}),
             ...(item.focusVisible !== undefined ? { focusVisible: item.focusVisible } : {}),
             ...(item.active !== undefined ? { active: item.active } : {}),
+            ...(item.reducedMotion !== undefined ? { reducedMotion: item.reducedMotion } : {}),
             ...(item.scrollbar !== undefined ? { scrollbar: item.scrollbar } : {}),
             ...(item.maxWidth !== undefined
                 ? { maxWidth: item.maxWidth }
