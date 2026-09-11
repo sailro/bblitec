@@ -723,7 +723,7 @@ test("stylesheet revisions track rules, text and attachment order independently 
             assert(engine.ui_style_revision == 5);
             ui_append_to_root(engine, first);
             assert(engine.ui_style_revision == 5);
-            ui_add_style_rule(engine, first, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:red;");
+            ui_add_style_rule(engine, first, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:red;", UiScrollbarPart::None);
             assert(engine.ui_style_revision == 6);
             ui_clear_style_rules(engine, first);
             ui_clear_style_rules(engine, first);
@@ -734,7 +734,7 @@ test("stylesheet revisions track rules, text and attachment order independently 
             ui_remove(engine, first);
             ui_remove(engine, first);
             assert(engine.ui_style_revision == 10);
-            ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:blue;", false, false);
+            ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:blue;", false, false, UiScrollbarPart::None);
             assert(engine.ui_style_revision == 11);
         }
     `);

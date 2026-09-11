@@ -51,6 +51,24 @@ const UI_STYLE_SELECTOR_DESCRIPTORS = {
 
 export type UiStyleSelectorKind = keyof typeof UI_STYLE_SELECTOR_DESCRIPTORS;
 
+const UI_SCROLLBAR_PARTS = {
+    scrollbar: "Scrollbar",
+    thumb: "Thumb",
+    track: "Track",
+    button: "Button",
+    corner: "Corner",
+} as const;
+
+export type UiScrollbarPart = keyof typeof UI_SCROLLBAR_PARTS;
+
+export function isUiScrollbarPart(value: unknown): value is UiScrollbarPart {
+    return typeof value === "string" && Object.hasOwn(UI_SCROLLBAR_PARTS, value);
+}
+
+export function uiScrollbarPartCpp(part: UiScrollbarPart | undefined): string {
+    return part === undefined ? "None" : UI_SCROLLBAR_PARTS[part];
+}
+
 export interface UiStyleSelectorShape {
     kind: UiStyleSelectorKind;
     primary: string;
@@ -59,6 +77,7 @@ export interface UiStyleSelectorShape {
     hover?: boolean;
     focusVisible?: boolean;
     active?: boolean;
+    scrollbar?: UiScrollbarPart;
 }
 
 /** A bounded structural selector imported from the browser host page. */
@@ -96,7 +115,8 @@ export function uiStyleSelectorCppKind(kind: UiStyleSelectorKind): string {
 }
 
 export function uiStyleSelector(rule: UiStyleSelectorShape): string {
-    const base = uiStyleSelectorDescriptor(rule.kind).css(rule);
+    const base = uiStyleSelectorDescriptor(rule.kind).css(rule) +
+        (rule.scrollbar ? `::-webkit-scrollbar${rule.scrollbar === "scrollbar" ? "" : `-${rule.scrollbar}`}` : "");
     return (
         base +
         (rule.hover ? ":hover" : "") +

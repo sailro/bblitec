@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import type { NativeHostUi, NativeHostUiElement } from "./compiler/types.js";
 import {
     isUiStyleSelectorKind,
+    isUiScrollbarPart,
     nativeHostUiStyleRules,
 } from "./ui-style-rule.js";
 
@@ -143,6 +144,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
                 "hover",
                 "focusVisible",
                 "active",
+                "scrollbar",
                 "maxWidth",
                 "style",
             ],
@@ -175,6 +177,9 @@ export function readNativeHostUi(path: string): NativeHostUi {
         if (item.active !== undefined && typeof item.active !== "boolean") {
             throw new Error(`${location}.active must be a boolean.`);
         }
+        if (item.scrollbar !== undefined && !isUiScrollbarPart(item.scrollbar)) {
+            throw new Error(`${location}.scrollbar must name a supported scrollbar part.`);
+        }
         if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
             throw new Error(`${location}.maxWidth must be a number.`);
         }
@@ -189,6 +194,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
             ...(item.hover !== undefined ? { hover: item.hover } : {}),
             ...(item.focusVisible !== undefined ? { focusVisible: item.focusVisible } : {}),
             ...(item.active !== undefined ? { active: item.active } : {}),
+            ...(item.scrollbar !== undefined ? { scrollbar: item.scrollbar } : {}),
             ...(item.maxWidth !== undefined
                 ? { maxWidth: item.maxWidth }
                 : {}),

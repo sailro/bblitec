@@ -44,6 +44,20 @@ inline constexpr std::string_view ui_user_agent_css =
     "scrollbarvertical sliderbar:hover,scrollbarhorizontal sliderbar:hover{background-color:#a0a0a0;}\n"
     "scrollbarvertical sliderbar:active,scrollbarhorizontal sliderbar:active{background-color:#b0b0b0;}\n"
     "scrollbarvertical sliderarrowdec,scrollbarvertical sliderarrowinc,"
-    "scrollbarhorizontal sliderarrowdec,scrollbarhorizontal sliderarrowinc{width:0;height:0;}\n";
+    "scrollbarhorizontal sliderarrowdec,scrollbarhorizontal sliderarrowinc{width:0;height:0;}\n"
+    ":bbl-thin-scrollbar > scrollbarvertical{width:8dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarhorizontal{height:8dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarvertical slidertrack{width:8dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarhorizontal slidertrack{height:8dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarvertical sliderbar{width:4dp;margin:0 2dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarhorizontal sliderbar{height:4dp;margin:2dp 0;}\n"
+    ":bbl-hidden-scrollbar > scrollbarvertical{width:0;opacity:0;pointer-events:none;}\n"
+    ":bbl-hidden-scrollbar > scrollbarhorizontal{height:0;opacity:0;pointer-events:none;}\n"
+    ":bbl-hidden-scrollbar > scrollbarvertical slidertrack,:bbl-hidden-scrollbar > scrollbarvertical sliderbar{width:0;margin:0;}\n"
+    ":bbl-hidden-scrollbar > scrollbarhorizontal slidertrack,:bbl-hidden-scrollbar > scrollbarhorizontal sliderbar{height:0;margin:0;}\n"
+    ":bbl-colored-scrollbar > scrollbarvertical,:bbl-colored-scrollbar > scrollbarhorizontal,"
+    ":bbl-colored-scrollbar > scrollbarcorner{background-color:var(--bbl-scrollbar-track);}\n"
+    ":bbl-colored-scrollbar > scrollbarvertical sliderbar,:bbl-colored-scrollbar > scrollbarhorizontal sliderbar"
+    "{background-color:var(--bbl-scrollbar-thumb);}\n";
 
 } // namespace bbl::pal

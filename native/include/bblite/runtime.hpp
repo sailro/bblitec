@@ -3259,6 +3259,8 @@ enum class UiStyleSelectorKind : std::uint8_t {
     TagAttribute,
 };
 
+enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
+
 /**
  * One compiler-validated stylesheet rule.
  *
@@ -3277,6 +3279,7 @@ struct UiStyleRule {
     bool hover = false;
     bool focus_visible = false;
     bool active = false;
+    UiScrollbarPart scrollbar = UiScrollbarPart::None;
 };
 
 /**
