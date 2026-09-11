@@ -2209,7 +2209,7 @@ export class UiProjection {
                 `Retained stylesheet selector '${selector}' is not ` +
                 "lowered: the reviewed sheet surface is exact '.class' and " +
                 "'#id' rules, '.classA.classB', 'tag.class', statically-proven " +
-                "'.ancestor tag' (optionally ':hover'), '#id .class', " +
+                "'.ancestor tag', '#id .class' (each optionally ':hover'), " +
                 "scrollbar/track/thumb/button/corner pseudo-elements, " +
                 "'@media (max-width:Npx)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
@@ -2452,6 +2452,11 @@ export class UiProjection {
             if (!owner || owner.scrollbar || owner.hover || !isUiScrollbarPart(part)) return undefined;
             return { ...owner, scrollbar: part, hover: scrollbar[3] !== undefined, selector };
         }
+        if (selector.endsWith(":hover")) {
+            const owner = UiProjection.parseUiSelector(selector.slice(0, -6), style);
+            if (!owner || owner.hover || owner.scrollbar) return undefined;
+            return { ...owner, hover: true, selector };
+        }
         const identifier = "[A-Za-z_][A-Za-z0-9_-]*";
         const tag = "[a-z][a-z0-9-]*";
         const forms: readonly (readonly [
@@ -2470,12 +2475,12 @@ export class UiProjection {
                 }),
             ],
             [
-                new RegExp(`^\\.(${identifier})\\s+(${tag})(:hover)?$`, "i"),
+                new RegExp(`^\\.(${identifier})\\s+(${tag})$`, "i"),
                 (match) => ({
                     kind: "class-descendant-tag",
                     primary: match[1]!,
                     tag: match[2]!.toLowerCase(),
-                    hover: match[3] !== undefined,
+                    hover: false,
                     style,
                     selector,
                 }),
