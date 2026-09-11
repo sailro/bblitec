@@ -4,6 +4,7 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { supportedUiFilter } from "../ui-filters.js";
+import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
 import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, isUiScrollbarPart, uiScrollbarPartCpp, type UiScrollbarPart, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
@@ -827,7 +828,9 @@ export class UiProjection {
      * unreviewed declaration can never silently drop into the projection.
      */
     private static readonly PROJECTED_UI_STYLE_PROPERTIES = new EmissionSet<string>([
+        "align-content",
         "align-items",
+        "align-self",
         "animation",
         "background",
         "background-color",
@@ -839,9 +842,16 @@ export class UiProjection {
         "box-sizing",
         "bottom",
         "color",
+        "column-gap",
         "cursor",
         "display",
+        "flex",
+        "flex-basis",
         "flex-direction",
+        "flex-flow",
+        "flex-grow",
+        "flex-shrink",
+        "flex-wrap",
         "filter",
         "font",
         "font-family",
@@ -856,6 +866,8 @@ export class UiProjection {
         "line-height",
         "margin",
         "margin-bottom",
+        "margin-left",
+        "margin-right",
         "margin-top",
         "max-height",
         "max-width",
@@ -867,9 +879,14 @@ export class UiProjection {
         "overflow-y",
         "overflow-wrap",
         "padding",
+        "padding-bottom",
+        "padding-left",
+        "padding-right",
+        "padding-top",
         "pointer-events",
         "position",
         "right",
+        "row-gap",
         "resize",
         "scrollbar-width",
         "scrollbar-color",
@@ -1201,24 +1218,6 @@ export class UiProjection {
 
 
     /**
-     * The projection's rewrites are declaration-scoped regexes whose
-     * `[^;]*` classes must stop exactly where the audited splitter
-     * stops. Masking every parenthesized `;` makes both parsers segment
-     * by the same walk; on a list with none — every reached sheet — the
-     * text is rebuilt unchanged, byte for byte.
-     */
-    private static maskUiParenthesizedSemicolons(value: string): string {
-        const declarations: string[] = [];
-        UiProjection.forEachUiStyleDeclaration(value, (declaration) =>
-            declarations.push(
-                declaration.replaceAll(";", UiProjection.UI_MASKED_SEMICOLON),
-            ),
-        );
-        return declarations.join(";");
-    }
-
-
-    /**
      * Style properties accepted with a recorded rendering degradation, for
      * this scene's `substituted-ui-runtime` fidelity adaptation.
      */
@@ -1422,6 +1421,9 @@ export class UiProjection {
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (supportedUiLayoutValue(property, literalValue) === false) {
+                this.uiStyleRefusal(site, property, "the value requires layout outside the supported literal flex and box forms");
+            }
             if ((property === "overflow-wrap" || property === "word-wrap") && !/^(?:normal|break-word|anywhere)$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only normal, break-word and anywhere wrapping are represented");
             }
@@ -1843,13 +1845,18 @@ export class UiProjection {
     ): string {
         if (name !== "style") return value;
         this.auditUiStyleDeclarations(value, site);
-        if (/(?:^|;)\s*border-image\s*:/i.test(value)) {
+        {
             const declarations: string[] = [];
             UiProjection.forEachUiStyleDeclaration(value, declaration => {
                 const colon = declaration.indexOf(":");
-                if (declaration.slice(0, colon).trim().toLowerCase() === "border-image") {
-                    declarations.push(`border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`);
-                } else declarations.push(declaration);
+                const property = declaration.slice(0, colon).trim().toLowerCase();
+                let lowered = declaration;
+                if (colon >= 0 && property === "border-image") {
+                    lowered = `border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`;
+                } else if (colon >= 0 && isUiLayoutProperty(property)) {
+                    lowered = `${property}:${declaration.slice(colon + 1).trim().toLowerCase()}`;
+                }
+                declarations.push(lowered.replaceAll(";", UiProjection.UI_MASKED_SEMICOLON));
             });
             value = declarations.join(";");
         }
@@ -1857,7 +1864,6 @@ export class UiProjection {
         // regex; masking parenthesized semicolons makes those regexes
         // segment exactly where the audit's splitter did. The mask is
         // restored on the single return below.
-        value = UiProjection.maskUiParenthesizedSemicolons(value);
         const clipsGradientToText =
             UiProjection.GRADIENT_TEXT_CLIP_PATTERN.test(value);
         const gradientTextColors = clipsGradientToText
@@ -4704,7 +4710,7 @@ export class UiProjection {
         }
         const nativeProperty = this.nativeUiStyleProperty(property);
         this.auditUiStylePropertyName(nativeProperty, expression.left.name);
-        if (["filter", "overflow-wrap", "word-break"].includes(nativeProperty)) {
+        if (["filter", "overflow-wrap", "word-break"].includes(nativeProperty) || isUiLayoutProperty(nativeProperty)) {
             const value = this.tryUiStaticString(expression.right);
             if (value !== undefined && value !== "") this.auditUiStyleDeclarations(`${nativeProperty}:${value}`, expression.right);
         }
