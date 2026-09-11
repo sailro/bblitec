@@ -33,6 +33,7 @@ function objectIdentityCallArgument(
 import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import type { Value } from "./types.js";
+import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     isDataTuple,
@@ -63,7 +64,7 @@ import {
     mathMemberCall,
 } from "./math-intrinsics.js";
 
-type Fail = (node: ts.Node, message: string) => never;
+type Fail = (node: ts.Node, message: string, reason?: CompileError["reason"]) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
 type LookupOptional = (
     identifier: ts.Identifier,
@@ -1086,6 +1087,7 @@ export class StaticEvaluator {
             this.fail(
                 unwrapped,
                 `Expected a string literal; '${unwrapped.text}' is bound as ${value.kind} without a static string.`,
+                "static-value-required",
             );
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
@@ -1142,7 +1144,7 @@ export class StaticEvaluator {
                     .join(separator);
             }
         }
-        this.fail(unwrapped, "Expected a string literal.");
+        this.fail(unwrapped, "Expected a string literal.", "static-value-required");
     }
 
     /**
@@ -1644,6 +1646,7 @@ export class StaticEvaluator {
         this.fail(
             expression,
             "Template substitutions must be static strings or numbers.",
+            "static-value-required",
         );
     }
 

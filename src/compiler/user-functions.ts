@@ -39,6 +39,22 @@ function generationKnownPrimitive(value: Value): boolean {
         value.staticString !== undefined || value.staticBoolean !== undefined;
 }
 
+function generationKnownStringArgument(value: Value): boolean {
+    const completed = new Map<Value, boolean>();
+    const known = (candidate: Value): boolean => {
+        if (generationKnownPrimitive(candidate)) return true;
+        const cached = completed.get(candidate);
+        if (cached !== undefined) return cached;
+        if (candidate.kind !== "record" || !candidate.recordProperties) return false;
+        // An in-progress record is unknown; this also rejects cycles.
+        completed.set(candidate, false);
+        const result = Object.values(candidate.recordProperties).every(known);
+        completed.set(candidate, result);
+        return result;
+    };
+    return known(value);
+}
+
 /** The index of a declaration's rest parameter, when it declares one. */
 function restParameterIndex(declaration: SupportedFunction): number | undefined {
     const index = declaration.parameters.findIndex((parameter) => parameter.dotDotDotToken !== undefined);
@@ -948,26 +964,27 @@ export class UserFunctionLowerer {
 
     public constructor(private readonly checker: ts.TypeChecker) {}
 
-    /** Preserve closed boolean predicates before hoisting would discard their value. */
-    public tryCompileStaticPredicate(context: UserFunctionContext, call: ts.CallExpression, identifier: ts.Identifier): Value | undefined {
+    /** Preserve closed scalar results before hoisting would discard their value. */
+    public tryCompileStaticResult(context: UserFunctionContext, call: ts.CallExpression, identifier: ts.Identifier): Value | undefined {
         const declaration = resolveFunctionDeclaration(this.checker, identifier, (node, message) => context.fail(node, message));
         if (!declaration || this.active.has(declaration) || declaration.typeParameters?.length || restParameterIndex(declaration) !== undefined) return undefined;
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         const flags = signature && this.checker.getReturnTypeOfSignature(signature).flags;
-        if (flags === undefined || (flags & ts.TypeFlags.BooleanLike) === 0) return undefined;
+        if (flags === undefined || (flags & (ts.TypeFlags.BooleanLike | ts.TypeFlags.StringLike)) === 0) return undefined;
+        const knownArgument = (flags & ts.TypeFlags.StringLike) !== 0 ? generationKnownStringArgument : generationKnownPrimitive;
         if (call.arguments.some(argument => {
             const node = unwrapExpression(argument);
             const bound = ts.isIdentifier(node) ? context.lookupIdentifierValue(node) : undefined;
-            return bound !== undefined && !generationKnownPrimitive(bound);
+            return bound !== undefined && !knownArgument(bound);
         })) return undefined;
         try {
             return context.probeEmission(() => {
                 const ir = this.irFor(declaration, identifier.text, (node, message) => context.fail(node, message));
                 this.validateCall(context, call, ir, (node, message) => context.fail(node, message));
                 const values = this.argumentValues(context, call, ir);
-                if (!values.every(value => generationKnownPrimitive(value))) return undefined;
+                if (!values.every(value => knownArgument(value))) return undefined;
                 const value = this.lower(context, ir, values, call);
-                return value.staticBoolean !== undefined ? value : undefined;
+                return value.staticBoolean !== undefined || value.staticString !== undefined ? value : undefined;
             });
         } catch (error) {
             // Declining this optional specialization leaves the ordinary native

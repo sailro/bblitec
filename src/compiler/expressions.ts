@@ -2552,8 +2552,8 @@ export class ExpressionLowerer {
         if (voxelFile) {
             return voxelFile;
         }
-        const staticPredicate = this.context.userFunctions.tryCompileStaticPredicate(this.context, call, callee);
-        if (staticPredicate) return staticPredicate;
+        const staticResult = this.context.userFunctions.tryCompileStaticResult(this.context, call, callee);
+        if (staticResult) return staticResult;
         const nativeFunction =
             this.context.nativeFunctions.tryCompileCall(
                 call,
@@ -3030,6 +3030,18 @@ export class ExpressionLowerer {
         }
     }
 
+    private readIndexedProperty(owner: Value, key: Value, access: ts.ElementAccessExpression): Value | undefined {
+        if (key.staticString === undefined) return undefined;
+        const property = ts.factory.createPropertyAccessExpression(access.expression, key.staticString);
+        ts.setTextRange(property, access);
+        ts.setOriginalNode(property, access);
+        ts.setTextRange(property.name, access.argumentExpression);
+        ts.setOriginalNode(property.name, access.argumentExpression);
+        const value = this.context.readResolvedProperty(owner, property);
+        if (value) this.context.emitDiscardedValue(key);
+        return value;
+    }
+
     private compileIndexedValue(unwrapped: ts.ElementAccessExpression, expression: ts.Expression, assertedNonNull: boolean): Value | undefined {
         // `baked.clips[<name>]`: one row of the bake's own map, read
         // natively because the bake decided the layout.
@@ -3051,6 +3063,17 @@ export class ExpressionLowerer {
         const json = compileJsonRead(this.context, unwrapped);
         if (json) {
             return json;
+        }
+        if (this.context.dataLowerer.dataTypeAt(unwrapped.expression)?.kind === "enummap") {
+            const constant = this.context.probeEmission(() => {
+                const owner = this.compileValue(unwrapped.expression);
+                if (owner.kind !== "record") return undefined;
+                const key = this.compileValue(unwrapped.argumentExpression);
+                // Select a known field before materializing a runtime enum
+                // table would discard the field's constant facts.
+                return this.readIndexedProperty(owner, key, unwrapped);
+            });
+            if (constant) return constant;
         }
         if (!assertedNonNull) {
             // Determining whether an unchecked element read can carry an
@@ -3104,16 +3127,8 @@ export class ExpressionLowerer {
                 : dataElement;
         }
         const key = this.compileValue(unwrapped.argumentExpression);
-        if (key.staticString !== undefined) {
-            const property = ts.factory.createPropertyAccessExpression(unwrapped.expression, key.staticString);
-            ts.setTextRange(property, unwrapped);
-            ts.setOriginalNode(property, unwrapped);
-            ts.setTextRange(property.name, unwrapped.argumentExpression);
-            ts.setOriginalNode(property.name, unwrapped.argumentExpression);
-            const resolved = this.context.readResolvedProperty(owner, property);
-            if (resolved)
-                return resolved;
-        }
+        const resolved = this.readIndexedProperty(owner, key, unwrapped);
+        if (resolved) return resolved;
         if (owner.kind === "camera-world-matrix") {
             const index = this.compileValue(unwrapped.argumentExpression);
             if (index.kind !== "number" ||
