@@ -5,7 +5,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { supportedUiFilter } from "../ui-filters.js";
 import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
-import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, isUiScrollbarPart, uiScrollbarPartCpp, type UiScrollbarPart, type UiStyleSelectorKind } from "../ui-style-rule.js";
+import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { requireWindowHost } from "./window-events.js";
@@ -27,15 +27,11 @@ interface UiGridProjection {
 }
 
 
-interface LoweredUiStyleRule {
+interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Source-created sheets participate in static grid proofs. Attribute
     // selectors are currently admitted only in audited host companions.
     kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
-    primary: string;
-    secondary?: string;
-    tag?: string;
     hover: boolean;
-    scrollbar?: UiScrollbarPart;
     maxWidth?: number;
     style: string;
     selector: string;
@@ -2209,7 +2205,7 @@ export class UiProjection {
                 `Retained stylesheet selector '${selector}' is not ` +
                 "lowered: the reviewed sheet surface is exact '.class' and " +
                 "'#id' rules, '.classA.classB', 'tag.class', statically-proven " +
-                "'.ancestor tag', '#id .class' (each optionally ':hover'), " +
+                "'.ancestor tag', '#id .class' (optionally ':hover', ':active', ':focus-visible'), " +
                 "scrollbar/track/thumb/button/corner pseudo-elements, " +
                 "'@media (max-width:Npx)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
@@ -2349,7 +2345,7 @@ export class UiProjection {
                     if (ownerId !== undefined) rule.ownerId = ownerId;
                     if (grid) {
                         if (
-                            rule.hover ||
+                            uiStyleInteractionStateCount(rule) > 0 ||
                             rule.scrollbar ||
                             (rule.kind !== "class" && rule.kind !== "id")
                         ) {
@@ -2449,13 +2445,16 @@ export class UiProjection {
         if (scrollbar) {
             const owner = UiProjection.parseUiSelector(scrollbar[1]!, style);
             const part = scrollbar[2] ?? "scrollbar";
-            if (!owner || owner.scrollbar || owner.hover || !isUiScrollbarPart(part)) return undefined;
+            if (!owner || owner.scrollbar || uiStyleInteractionStateCount(owner) > 0 || !isUiScrollbarPart(part)) return undefined;
             return { ...owner, scrollbar: part, hover: scrollbar[3] !== undefined, selector };
         }
-        if (selector.endsWith(":hover")) {
-            const owner = UiProjection.parseUiSelector(selector.slice(0, -6), style);
-            if (!owner || owner.hover || owner.scrollbar) return undefined;
-            return { ...owner, hover: true, selector };
+        const state = /:(hover|active|focus-visible)$/i.exec(selector);
+        if (state) {
+            const owner = UiProjection.parseUiSelector(selector.slice(0, -state[0].length), style);
+            const property = state[1]!.toLowerCase() === "focus-visible" ? "focusVisible" :
+                state[1]!.toLowerCase() === "active" ? "active" : "hover";
+            if (!owner || owner[property] || owner.scrollbar) return undefined;
+            return { ...owner, [property]: true, selector };
         }
         const identifier = "[A-Za-z_][A-Za-z0-9_-]*";
         const tag = "[a-z][a-z0-9-]*";
@@ -2548,19 +2547,19 @@ export class UiProjection {
 
 
     private uiRuleSpecificity(rule: LoweredUiStyleRule): number {
-        const hover = rule.hover ? 1 : 0;
+        const states = uiStyleInteractionStateCount(rule);
         switch (rule.kind) {
             case "class":
-                return (1 + hover) * 0x100;
+                return (1 + states) * 0x100;
             case "id":
-                return 0x10000 + hover * 0x100;
+                return 0x10000 + states * 0x100;
             case "compound-class":
-                return (2 + hover) * 0x100;
+                return (2 + states) * 0x100;
             case "class-descendant-tag":
             case "tag-class":
-                return (1 + hover) * 0x100 + 1;
+                return (1 + states) * 0x100 + 1;
             case "id-descendant-class":
-                return 0x10000 + (1 + hover) * 0x100;
+                return 0x10000 + (1 + states) * 0x100;
         }
     }
 
@@ -2848,7 +2847,7 @@ export class UiProjection {
         for (let index = 0; index < activeRules.length; index++) {
             const rule = activeRules[index]!;
             if (
-                rule.hover ||
+                uiStyleInteractionStateCount(rule) > 0 ||
                 rule.maxWidth !== undefined ||
                 !this.uiRuleMatchesStaticElementWithClasses(
                     rule,
@@ -3032,7 +3031,7 @@ export class UiProjection {
         for (let index = 0; index < activeRules.length; index++) {
             const rule = activeRules[index]!;
             if (
-                rule.hover ||
+                uiStyleInteractionStateCount(rule) > 0 ||
                 rule.maxWidth !== undefined ||
                 !this.uiRuleMatchesStaticElementWithClasses(
                     rule,
@@ -3308,7 +3307,7 @@ export class UiProjection {
                 if (
                     !this.uiRuleMatchesStaticElement(rule, childId, child) ||
                     (rule.maxWidth === undefined &&
-                        !rule.hover &&
+                        uiStyleInteractionStateCount(rule) === 0 &&
                         !this.uiRuleDependsOnMutableClass(rule, childId, child))
                 ) {
                     continue;
@@ -3318,8 +3317,8 @@ export class UiProjection {
                     const trigger =
                         rule.maxWidth !== undefined
                             ? `max-width rule '${rule.selector}'`
-                            : rule.hover
-                              ? `hover rule '${rule.selector}'`
+                            : uiStyleInteractionStateCount(rule) > 0
+                              ? `${rule.hover ? "hover" : "interaction"} rule '${rule.selector}'`
                               : `runtime class rule '${rule.selector}'`;
                     fail(`${trigger} can change direct-child ${property}`);
                 }
@@ -4621,7 +4620,7 @@ export class UiProjection {
                     )) {
                         if (
                             (rule.kind === "class" || rule.kind === "id") &&
-                            !rule.hover &&
+                            uiStyleInteractionStateCount(rule) === 0 &&
                             !rule.scrollbar &&
                             rule.maxWidth === undefined
                         ) {
@@ -4641,7 +4640,8 @@ export class UiProjection {
                                     `${rule.hover ? "true" : "false"}, ` +
                                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
                                     `${this.context.cppString(rule.style)}` +
-                                    `${rule.scrollbar ? `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}` : ""});`,
+                                    `${rule.scrollbar || rule.focusVisible || rule.active ? `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}` : ""}` +
+                                    `${rule.focusVisible || rule.active ? `, ${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}` : ""});`,
                             );
                         }
                     }

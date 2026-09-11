@@ -589,7 +589,9 @@ void ui_add_style_rule(
     bool hover,
     double max_width,
     std::string style,
-    UiScrollbarPart scrollbar) {
+    UiScrollbarPart scrollbar,
+    bool focus_visible,
+    bool active) {
     UiElementRecord& owner = ui_element(engine, stylesheet);
     if (owner.tag != "style") {
         throw std::runtime_error(
@@ -607,8 +609,8 @@ void ui_add_style_rule(
         std::move(style),
         max_width,
         hover,
-        false,
-        false,
+        focus_visible,
+        active,
         scrollbar});
     mark_ui_changed(engine, owner);
 }
@@ -4411,7 +4413,11 @@ struct UiRmlRuntime {
         const auto focused = ui_active_element(engine);
         if (projected_focus_revision == engine.ui_focus_revision && projected_focused == focused) return false;
         if (focused.value < projected_elements.size()) {
-            if (auto* element = handle_at(projected_elements, focused).element) element->Focus(engine.ui_focus_visible);
+            if (auto* element = handle_at(projected_elements, focused).element;
+                element && element->Focus(engine.ui_focus_visible)) {
+                // RmlUi emits no new focus event when only the input modality changes.
+                element->SetPseudoClass("focus-visible", engine.ui_focus_visible);
+            }
         } else if (auto* element = context->GetFocusElement()) {
             element->Blur();
         }
