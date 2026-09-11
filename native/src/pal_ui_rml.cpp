@@ -1649,8 +1649,22 @@ std::string rml_css_density_units(std::string value) {
     // The Rml context and recorded vertices use drawable pixels. Browser CSS
     // px, however, are density-independent CSS pixels. Rml's dp unit is the
     // exact equivalent once the context is given SDL's display scale.
-    for (std::size_t index = 1; index + 1 < value.size(); ++index) {
+    char quote = 0;
+    bool url = false;
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        const char character = value[index];
+        if (quote) {
+            if (character == '\\') ++index;
+            else if (character == quote) quote = 0;
+            continue;
+        }
+        if (character == '\"' || character == '\'') { quote = character; continue; }
+        if (url) { if (character == ')') url = false; continue; }
+        if (index + 4 <= value.size() && ascii_iequals(std::string_view(value).substr(index, 4), "url(")) {
+            url = true; index += 3; continue;
+        }
         if (
+            index > 0 && index + 1 < value.size() &&
             value[index] == 'p' &&
             value[index + 1] == 'x' &&
             (std::isdigit(static_cast<unsigned char>(value[index - 1])) ||

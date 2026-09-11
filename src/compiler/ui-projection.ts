@@ -2,6 +2,7 @@ import { valueForKind } from "./types.js";
 import { emissionArray, EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
+import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, isUiScrollbarPart, uiScrollbarPartCpp, type UiScrollbarPart, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
@@ -127,6 +128,7 @@ interface UiProjectionContext extends Pick<LoweringServices,
     "lookupOptional" |
     "options" |
     "reachFeature" |
+    "registerAsset" |
     "reachJsData" |
     "requireDefaultEngine" |
     "requireEngine" |
@@ -831,6 +833,7 @@ export class UiProjection {
         "background-clip",
         "border",
         "border-color",
+        "border-image",
         "border-radius",
         "box-sizing",
         "bottom",
@@ -1758,6 +1761,16 @@ export class UiProjection {
         return cssName === "background" ? "background-color" : cssName;
     }
 
+    private static readonly UI_SHORTHAND_RESETS: ReadonlyMap<string, readonly (readonly [string, string])[]> = new Map([
+        ["background", [["background-clip", "border-box"]]],
+        ["border", [["border-image", "none"]]],
+    ]);
+
+    private static uiShorthandResetStyle(property: string): string {
+        return (UiProjection.UI_SHORTHAND_RESETS.get(property) ?? [])
+            .map(([name, value]) => `${name}:${value};`).join("");
+    }
+
 
     private lowerUiTextShadow(value: string): string | undefined {
         const shadows: string[] = [];
@@ -1798,6 +1811,15 @@ export class UiProjection {
     }
 
 
+    private lowerUiBorderImage(value: string, site?: ts.Node): string {
+        const image = /__BBLITE_UI_STYLE_\d+__/.test(value) ? undefined : parseUiBorderImage(value);
+        if (image === undefined) {
+            return this.uiStyleRefusal(site, "border-image", "only a static raster URL with non-negative slices and widths, zero outset, stretch and no center fill is represented");
+        }
+        if (image === "none") return image;
+        return renderUiBorderImage(image, this.context.registerAsset(image.source, "texture").output);
+    }
+
     public lowerUiAttributeLiteral(
         name: string,
         value: string,
@@ -1805,6 +1827,16 @@ export class UiProjection {
     ): string {
         if (name !== "style") return value;
         this.auditUiStyleDeclarations(value, site);
+        if (/(?:^|;)\s*border-image\s*:/i.test(value)) {
+            const declarations: string[] = [];
+            UiProjection.forEachUiStyleDeclaration(value, declaration => {
+                const colon = declaration.indexOf(":");
+                if (declaration.slice(0, colon).trim().toLowerCase() === "border-image") {
+                    declarations.push(`border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`);
+                } else declarations.push(declaration);
+            });
+            value = declarations.join(";");
+        }
         // From here every read and rewrite is declaration-scoped by
         // regex; masking parenthesized semicolons makes those regexes
         // segment exactly where the audit's splitter did. The mask is
@@ -1927,7 +1959,7 @@ export class UiProjection {
             )
             // RmlUi exposes the colour property explicitly rather than the
             // browser background shorthand used by the reached HUDs.
-            .replace(/\bbackground\s*:/gi, "background-clip:border-box;background-color:")
+            .replace(/\bbackground\s*:/gi, `${UiProjection.uiShorthandResetStyle("background")}background-color:`)
             .replace(/(?:-webkit-)?backdrop-filter\s*:\s*([^;]+)\s*;?/gi, (_match, filter) =>
                 UiProjection.supportedBackdropFilter(String(filter))
                     ? `backdrop-filter:${String(filter).trim()};` : "")
@@ -1949,6 +1981,7 @@ export class UiProjection {
                 "border:$1 $2;",
             )
             .replace(/\bborder\s*:\s*none\s*;?/gi, "border:0 transparent;")
+            .replace(/\bborder\s*:/gi, `${UiProjection.uiShorthandResetStyle("border")}border:`)
             .replace(/\bbackground-size\s*:[^;]*;?/gi, "")
             .replace(
                 /(^|;)\s*(?:-webkit-)?background-clip\s*:\s*text\s*(?=;|$)/gi,
@@ -4659,13 +4692,17 @@ export class UiProjection {
             nativeProperty,
             expression.right,
         );
+        const styleValue = nativeProperty === "border-image"
+            ? this.context.cppString(this.lowerUiBorderImage(
+                this.context.compileStringLiteral(expression.right), expression.right))
+            : this.uiStringCpp(expression.right, `UI style.${property}`);
         this.context.emit(
             `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
                 `${this.context.cppString(nativeProperty)}, ` +
-                `${this.uiStringCpp(expression.right, `UI style.${property}`)});`,
+                `${styleValue});`,
         );
-        if (property === "background") {
-            this.context.emit(`bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, "background-clip", "border-box");`);
+        for (const [name, value] of UiProjection.UI_SHORTHAND_RESETS.get(property) ?? []) {
+            this.context.emit(`bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ${this.context.cppString(name)}, ${this.context.cppString(value)});`);
         }
         return true;
     }
