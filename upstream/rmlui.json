@@ -8,6 +8,7 @@
     "rmlui-fractional-letter-spacing.patch",
     "rmlui-line-leading.patch",
     "rmlui-premultiplied-rounding.patch",
+    "rmlui-solid-background-clip.patch",
     "rmlui-transform-key-ownership.patch"
   ]
 }

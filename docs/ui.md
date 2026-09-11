@@ -101,7 +101,13 @@ clipping/shaping and non-convex tessellation remain unsupported.
 
 Supports reached browser defaults, platform fonts, fixed/inset/calc positioning,
 bounded shorthands, backgrounds, gradients, rounded borders, text effects and
-deterministic CSS animation. Scrollbars are 16 density-independent pixels.
+deterministic CSS animation. Standard `scrollbar-width` supports `auto` (16 density-independent pixels),
+`thin` (8), and `none` (hidden while content remains scrollable). `scrollbar-color` accepts `auto`
+or two literal RGB/hex/named colors and inherits through retained markup. Supported vendor pseudo-elements
+are `::-webkit-scrollbar`, `-thumb`, `-track`, `-button`, and `-corner`, with optional hover;
+non-auto standard width or colors take precedence. Orientation-specific states, track-piece and resizer pseudo-elements are unsupported.
+Native scrollbar geometry and control appearance remain platform adaptations.
+Solid backgrounds support `background-clip:border-box/padding-box/content-box`; image and gradient clipping remain unsupported.
 
 Selectors are bounded class/id/compound and proven ancestor forms, with optional
 hover. [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
@@ -120,6 +126,7 @@ native range painting follows browser geometry and control states.
 | Maintained RmlUi patch | Purpose |
 | --- | --- |
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
+| `rmlui-solid-background-clip.patch` | Solid border/padding/content-box clipping and invalidation after style changes |
 | `rmlui-premultiplied-rounding.patch` | Browser-oriented color/opacity rounding |
 | `rmlui-fractional-letter-spacing.patch` | Fractional default-font accumulation; excludes HarfBuzz sample |
 | `rmlui-line-leading.patch` | Floor upper half-leading; preserve authored fractional textarea line height |

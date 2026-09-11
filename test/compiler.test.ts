@@ -8397,7 +8397,7 @@ test("folds a static CSS fragment array joined into retained UI cssText", () => 
 
     assert.match(
         result.cpp,
-        /position:absolute;top:16px;background-color:rgba\(10,12,20,0\.75\)/,
+        /position:absolute;top:16px;background-clip:border-box;background-color:rgba\(10,12,20,0\.75\)/,
     );
 });
 
@@ -11042,7 +11042,7 @@ test("projects an audited native host-page UI companion without changing scene s
     assert.match(result.cpp, /ui_set_text[^\n]*"Keyboard help"/);
     assert.match(
         result.cpp,
-        /position:absolute;background-color:rgba\(0,0,0,0\.5\)/,
+        /position:absolute;background-clip:border-box;background-color:rgba\(0,0,0,0\.5\)/,
     );
     assert.match(result.cpp, /ui_append_to_root/);
 });

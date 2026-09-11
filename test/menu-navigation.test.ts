@@ -55,7 +55,7 @@ test("host focus-visible outline retains its authored color and offset", () => {
     `, { nativeHostUi: { sourcePath: "fixture.json", elements: [], styleRules: [
         { kind: "class", primary: "entry", focusVisible: true, style: "outline:2px solid #7fe0ff;outline-offset:2px;" },
     ] } }).cpp;
-    assert.match(cpp, /ui_add_host_style_rule\([^\n]+--bbl-outline:2px solid #7fe0ff;--bbl-outline-offset:2px;", true\)/);
+    assert.match(cpp, /ui_add_host_style_rule\([^\n]+--bbl-outline:2px solid #7fe0ff;--bbl-outline-offset:2px;", true, false, bbl::UiScrollbarPart::None\)/);
 });
 
 test("Antigravity hover rules are independent of keyboard focus", () => {

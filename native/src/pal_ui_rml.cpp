@@ -33,6 +33,7 @@
 #include "pal_ui_form.hpp"
 #include "pal_ui_font_win32.hpp"
 #include "pal_ui_range.hpp"
+#include "pal_ui_scrollbars.hpp"
 #include "pal_ui_text.hpp"
 
 #include <algorithm>
@@ -579,7 +580,8 @@ void ui_add_style_rule(
     std::string tag,
     bool hover,
     double max_width,
-    std::string style) {
+    std::string style,
+    UiScrollbarPart scrollbar) {
     UiElementRecord& owner = ui_element(engine, stylesheet);
     if (owner.tag != "style") {
         throw std::runtime_error(
@@ -596,7 +598,10 @@ void ui_add_style_rule(
         std::move(tag),
         std::move(style),
         max_width,
-        hover});
+        hover,
+        false,
+        false,
+        scrollbar});
     mark_ui_changed(engine, owner);
 }
 
@@ -610,7 +615,8 @@ void ui_add_host_style_rule(
     double max_width,
     std::string style,
     bool focus_visible,
-    bool active) {
+    bool active,
+    UiScrollbarPart scrollbar) {
     if (primary.empty() || style.empty()) {
         throw std::runtime_error(
             "A native host UI style rule must have a target and declarations.");
@@ -624,7 +630,8 @@ void ui_add_host_style_rule(
         max_width,
         hover,
         focus_visible,
-        active});
+        active,
+        scrollbar});
     ++engine.ui_style_revision;
     mark_ui_changed(engine);
 }
@@ -1734,6 +1741,7 @@ bool ui_style_rule_matches(
     const Engine& engine,
     UiElementHandle handle,
     const UiStyleRule& rule) {
+    if (rule.scrollbar != UiScrollbarPart::None) return false;
     if (handle.value >= engine.ui_elements.size()) return false;
     const UiElementRecord& record = handle_at(engine.ui_elements, handle);
     switch (rule.selector) {
@@ -1806,10 +1814,31 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
         selector = "#" + rule.primary + " ." + rule.secondary;
         break;
     }
-    if (rule.hover) selector += ":hover";
-    if (rule.focus_visible) selector += ":focus-visible";
-    if (rule.active) selector += ":active";
-    return selector;
+    const std::string states = std::string(rule.hover ? ":hover" : "") +
+        (rule.focus_visible ? ":focus-visible" : "") + (rule.active ? ":active" : "");
+    if (rule.scrollbar == UiScrollbarPart::None) return selector + states;
+
+    // Standard non-auto width/color overrides the vendor pseudo-elements.
+    // The child combinator confines every part to the selected scroll owner.
+    selector += ":not(:bbl-standard-scrollbar) > ";
+    if (rule.scrollbar == UiScrollbarPart::Corner) return selector + "scrollbarcorner" + states;
+    std::string result;
+    for (const auto* axis : {"scrollbarvertical", "scrollbarhorizontal"}) {
+        const auto append = [&](std::string_view part) {
+            if (!result.empty()) result += ',';
+            result += selector + axis + std::string(part) + states;
+        };
+        switch (rule.scrollbar) {
+        case UiScrollbarPart::Scrollbar: append(""); break;
+        case UiScrollbarPart::Thumb: append(" > sliderbar"); break;
+        case UiScrollbarPart::Track: append(" > slidertrack"); break;
+        case UiScrollbarPart::Button:
+            append(" > sliderarrowdec"); append(" > sliderarrowinc"); break;
+        case UiScrollbarPart::None:
+        case UiScrollbarPart::Corner: break;
+        }
+    }
+    return result;
 }
 
 std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
@@ -3027,6 +3056,7 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi initialization failed.");
             }
             initialized = true;
+            scrollbar_properties = register_ui_scrollbar_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
 #if defined(_WIN32)
             platform_fonts = std::make_unique<Win32UiFontEngine>(*Rml::GetFontEngineInterface());
@@ -3170,6 +3200,7 @@ struct UiRmlRuntime {
                 Rml::ScrollFlag::None);
             sync_tree();
             context->Update();
+            if (sync_ui_scrollbar_styles(*document, scrollbar_properties)) context->Update();
             if (refresh_gradient_text()) context->Update();
             if (update_gradient_text()) context->Update();
             static_cast<void>(sync_hover_states());
@@ -4911,6 +4942,7 @@ struct UiRmlRuntime {
     float resize_start_y = 0;
     float resize_start_height = 0;
     bool initialized = false;
+    UiScrollbarProperties scrollbar_properties{};
 };
 
 UiRmlRuntime* create_ui_rml_runtime(
@@ -5031,6 +5063,7 @@ void update_ui_rml_runtime(
         runtime.sync_tree();
         runtime.context->Update();
     }
+    if (sync_ui_scrollbar_styles(*runtime.document, runtime.scrollbar_properties)) runtime.context->Update();
     if (
         focus_changed || hover_changed || dimensions_changed ||
         density_changed) {

@@ -2,7 +2,7 @@ import { valueForKind } from "./types.js";
 import { emissionArray, EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
-import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, type UiStyleSelectorKind } from "../ui-style-rule.js";
+import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, isUiScrollbarPart, uiScrollbarPartCpp, type UiScrollbarPart, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { requireWindowHost } from "./window-events.js";
@@ -32,6 +32,7 @@ interface LoweredUiStyleRule {
     secondary?: string;
     tag?: string;
     hover: boolean;
+    scrollbar?: UiScrollbarPart;
     maxWidth?: number;
     style: string;
     selector: string;
@@ -139,12 +140,12 @@ interface UiProjectionContext extends Pick<LoweringServices,
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
 
-
     public documentEngine(node: ts.Node): string {
         if (!this.context.options.workers) return this.context.requireDefaultEngine(node);
         requireWindowHost(this.context, node);
         return "bbl::pal::window_document_engine()";
     }
+
 
     public uiElementValue(expression: ts.Expression): Value | undefined {
         const owner = this.context.unwrap(expression);
@@ -827,6 +828,7 @@ export class UiProjection {
         "animation",
         "background",
         "background-color",
+        "background-clip",
         "border",
         "border-color",
         "border-radius",
@@ -856,11 +858,15 @@ export class UiProjection {
         "min-width",
         "opacity",
         "overflow",
+        "overflow-x",
+        "overflow-y",
         "padding",
         "pointer-events",
         "position",
         "right",
         "resize",
+        "scrollbar-width",
+        "scrollbar-color",
         "text-align",
         "text-shadow",
         "top",
@@ -1409,6 +1415,21 @@ export class UiProjection {
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (property === "scrollbar-width" && !/^(?:auto|thin|none)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only auto, thin and none are represented");
+            }
+            if (property === "scrollbar-color" && literalValue !== "auto") {
+                const color = "(?:#[0-9a-f]{3,8}|rgba?\\([^()]+\\)|[a-z]+)";
+                if (!new RegExp(`^${color}\\s+${color}$`).test(literalValue) || /\b(?:currentcolor|inherit|initial|unset|revert)\b/.test(literalValue)) {
+                    this.uiStyleRefusal(site, property, "only auto or two literal RGB, hex or named colors are represented");
+                }
+            }
+            if (property === "background-clip" && /^(?:border-box|padding-box|content-box)$/.test(literalValue)) {
+                if (/gradient\(/i.test(value) || /(?:^|;)\s*background(?:-image)?\s*:[^;]*url\(/i.test(value)) {
+                    this.uiStyleRefusal(site, property, "box clipping currently applies to solid backgrounds");
+                }
+                return;
+            }
             if (property === "box-sizing" && !/^(?:content-box|border-box)$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only content-box and border-box are represented");
             }
@@ -1906,7 +1927,7 @@ export class UiProjection {
             )
             // RmlUi exposes the colour property explicitly rather than the
             // browser background shorthand used by the reached HUDs.
-            .replace(/\bbackground\s*:/gi, "background-color:")
+            .replace(/\bbackground\s*:/gi, "background-clip:border-box;background-color:")
             .replace(/(?:-webkit-)?backdrop-filter\s*:\s*([^;]+)\s*;?/gi, (_match, filter) =>
                 UiProjection.supportedBackdropFilter(String(filter))
                     ? `backdrop-filter:${String(filter).trim()};` : "")
@@ -1930,7 +1951,7 @@ export class UiProjection {
             .replace(/\bborder\s*:\s*none\s*;?/gi, "border:0 transparent;")
             .replace(/\bbackground-size\s*:[^;]*;?/gi, "")
             .replace(
-                /(^|;)\s*(?:-webkit-)?background-clip\s*:[^;]*(?=;|$)/gi,
+                /(^|;)\s*(?:-webkit-)?background-clip\s*:\s*text\s*(?=;|$)/gi,
                 "$1",
             )
             .replace(/-webkit-text-stroke\s*:[^;]*;?/gi, "")
@@ -2133,6 +2154,7 @@ export class UiProjection {
                 "lowered: the reviewed sheet surface is exact '.class' and " +
                 "'#id' rules, '.classA.classB', 'tag.class', statically-proven " +
                 "'.ancestor tag' (optionally ':hover'), '#id .class', " +
+                "scrollbar/track/thumb/button/corner pseudo-elements, " +
                 "'@media (max-width:Npx)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
@@ -2272,6 +2294,7 @@ export class UiProjection {
                     if (grid) {
                         if (
                             rule.hover ||
+                            rule.scrollbar ||
                             (rule.kind !== "class" && rule.kind !== "id")
                         ) {
                             this.uiStyleRefusal(
@@ -2283,14 +2306,17 @@ export class UiProjection {
                         rule.grid = grid;
                     }
                     if (
+                        !rule.scrollbar && (
                         rule.kind === "class-descendant-tag" ||
-                        rule.kind === "id-descendant-class"
+                        rule.kind === "id-descendant-class")
                     ) {
                         this.uiScopedSheetSelectors.add(selector);
                     }
                     if (!style) continue;
                     rules.push(rule);
-                    this.uiStyleRules.push(rule);
+                    // Anonymous scrollbar controls cannot affect static proofs
+                    // over the authored element tree.
+                    if (!rule.scrollbar) this.uiStyleRules.push(rule);
                 }
             }
         };
@@ -2335,6 +2361,7 @@ export class UiProjection {
         element: UiStaticElement,
         classes: ReadonlySet<string>,
     ): boolean {
+        if (rule.scrollbar) return false;
         switch (rule.kind) {
             case "class":
                 return classes.has(rule.primary);
@@ -2362,6 +2389,13 @@ export class UiProjection {
         selector: string,
         style: string,
     ): LoweredUiStyleRule | undefined {
+        const scrollbar = selector.match(/^(.*?)::-webkit-scrollbar(?:-(thumb|track|button|corner))?(:hover)?$/);
+        if (scrollbar) {
+            const owner = UiProjection.parseUiSelector(scrollbar[1]!, style);
+            const part = scrollbar[2] ?? "scrollbar";
+            if (!owner || owner.scrollbar || owner.hover || !isUiScrollbarPart(part)) return undefined;
+            return { ...owner, scrollbar: part, hover: scrollbar[3] !== undefined, selector };
+        }
         const identifier = "[A-Za-z_][A-Za-z0-9_-]*";
         const tag = "[a-z][a-z0-9-]*";
         const forms: readonly (readonly [
@@ -4525,6 +4559,7 @@ export class UiProjection {
                         if (
                             (rule.kind === "class" || rule.kind === "id") &&
                             !rule.hover &&
+                            !rule.scrollbar &&
                             rule.maxWidth === undefined
                         ) {
                             this.context.emit(
@@ -4542,7 +4577,8 @@ export class UiProjection {
                                     `${this.context.cppString(rule.tag ?? "")}, ` +
                                     `${rule.hover ? "true" : "false"}, ` +
                                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                                    `${this.context.cppString(rule.style)});`,
+                                    `${this.context.cppString(rule.style)}` +
+                                    `${rule.scrollbar ? `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}` : ""});`,
                             );
                         }
                     }
@@ -4624,6 +4660,9 @@ export class UiProjection {
                 `${this.context.cppString(nativeProperty)}, ` +
                 `${this.uiStringCpp(expression.right, `UI style.${property}`)});`,
         );
+        if (property === "background") {
+            this.context.emit(`bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, "background-clip", "border-box");`);
+        }
         return true;
     }
 
@@ -4724,6 +4763,7 @@ export class UiProjection {
         ) {
             return false;
         }
+        if (this.context.options.workers) return true;
         const id = this.context.unwrap(argumentAt(call, 0));
         // A literal, or an inlined helper's parameter bound to one: a
         // demo's `bindToggle(buttonId, ...)` looks its button up by the
@@ -4758,7 +4798,6 @@ export class UiProjection {
         ) {
             return false;
         }
-        if (this.context.options.workers) return true;
         let reached = false;
         const visit = (node: ts.Node): void => {
             if (reached) return;
@@ -4810,6 +4849,9 @@ export class UiProjection {
         const emitted: string[] = [];
         const ids = new EmissionSet<string>();
         for (const rule of nativeHostUiStyleRules(hostUi)) {
+            if (rule.scrollbar !== undefined && !isUiScrollbarPart(rule.scrollbar)) {
+                this.context.failAtFile("Native host UI rule has an unsupported scrollbar part.");
+            }
             if (UiProjection.fractionalUiGridTracks(rule.style)) {
                 this.context.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
             }
@@ -4855,7 +4897,8 @@ export class UiProjection {
                     `${rule.hover ? "true" : "false"}, ` +
                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
                     `${this.context.cppString(this.lowerUiAttributeLiteral("style", rule.style))}` +
-                    `${rule.active ? `, ${rule.focusVisible ? "true" : "false"}, true` : rule.focusVisible ? ", true" : ""});`,
+                    `, ${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
+                    `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)});`,
             );
         }
 
