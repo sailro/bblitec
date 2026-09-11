@@ -125,7 +125,8 @@ The `border` shorthand resets the image. Nonzero outset, center fill, repeated t
 individual border-image longhands and runtime-generated image declarations are unsupported.
 
 Selectors are bounded class/id/compound and proven ancestor forms, with optional
-hover. [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
+hover, active and focus-visible states, shared by CSS text and host UI rules.
+[Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
 validated; source/sheet order and live max-width rules are retained.
 Stylesheet strings can be assembled by closed helpers over literal scalars and option records;
 argument effects execute once. Runtime-generated stylesheet text remains unsupported.

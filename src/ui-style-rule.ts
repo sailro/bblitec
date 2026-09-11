@@ -80,6 +80,11 @@ export interface UiStyleSelectorShape {
     scrollbar?: UiScrollbarPart;
 }
 
+/** Interaction pseudo-classes contribute class specificity and depend on live input state. */
+export function uiStyleInteractionStateCount(rule: UiStyleSelectorShape): number {
+    return Number(rule.hover === true) + Number(rule.focusVisible === true) + Number(rule.active === true);
+}
+
 /** A bounded structural selector imported from the browser host page. */
 export interface NativeHostUiStyleRule extends UiStyleSelectorShape {
     maxWidth?: number;

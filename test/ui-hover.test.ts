@@ -30,3 +30,25 @@ test("source stylesheet hover uses the existing selector kinds and state flag", 
 test("class hover renders through the existing native cascade and resets when the pointer leaves", t => {
     runRmlUiFixture(t, "ui-hover");
 });
+
+test("source CSS shares active and keyboard-focus states with host rules", () => {
+    const compile = (sheet: string) => compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        await createEngine({});
+        const style = document.createElement("style");
+        style.textContent = ${JSON.stringify(sheet)};
+        document.head.appendChild(style);
+        const panel = document.createElement("div");
+        panel.className = "entry";
+        document.body.appendChild(panel);
+    `);
+    const result = compile(".entry:active{color:red}.entry:focus-visible{color:blue}.entry:active:hover:focus-visible{color:green}");
+    const rules = result.cpp.split("\n").filter(line => line.includes("bbl::ui_add_style_rule("));
+    assert.equal(rules.length, 3);
+    assert.match(rules[0]!, /, false, -1[^\n]*UiScrollbarPart::None, false, true/);
+    assert.match(rules[1]!, /, false, -1[^\n]*UiScrollbarPart::None, true, false/);
+    assert.match(rules[2]!, /, true, -1[^\n]*UiScrollbarPart::None, true, true/);
+    for (const state of ["active", "focus-visible"])
+        assert.throws(() => compile(`.entry:${state}{display:grid;grid-template-columns:repeat(2,20px);}`), /one stable/);
+    assert.throws(() => compile(".entry:active:active{color:red}"), /selector.*not lowered/);
+});

@@ -86,7 +86,9 @@ void ui_add_style_rule(
     bool hover,
     double max_width,
     std::string style,
-    UiScrollbarPart scrollbar = UiScrollbarPart::None);
+    UiScrollbarPart scrollbar = UiScrollbarPart::None,
+    bool focus_visible = false,
+    bool active = false);
 void ui_add_host_style_rule(
     Engine& engine,
     UiStyleSelectorKind selector,
