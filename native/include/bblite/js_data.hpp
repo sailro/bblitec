@@ -2275,15 +2275,29 @@ class StringCodeUnitCursor {
     return {};
 }
 
-[[nodiscard]] inline std::string string_replace(const std::string& value, const std::string& search,
-    const std::string& replacement, bool all) {
+template <typename Replacement>
+[[nodiscard]] std::string string_replace_matches(const std::string& value, const std::string& search,
+    Replacement&& replacement, bool all) {
     const auto input = string_code_units(value);
     const auto pattern = string_code_units(search);
-    const auto substitute = string_code_units(replacement);
     std::u16string result;
     std::size_t consumed = 0, position = input.find(pattern);
     while (position != std::u16string::npos) {
         result.append(input, consumed, position - consumed);
+        result += replacement(input, pattern, position);
+        consumed = position + pattern.size();
+        if (!all || (pattern.empty() && position == input.size())) break;
+        position = input.find(pattern, position + std::max<std::size_t>(1, pattern.size()));
+    }
+    result.append(input, consumed);
+    return string_from_code_units(result);
+}
+
+[[nodiscard]] inline std::string string_replace(const std::string& value, const std::string& search,
+    const std::string& replacement, bool all) {
+    const auto substitute = string_code_units(replacement);
+    return string_replace_matches(value, search, [&](const auto& input, const auto& pattern, std::size_t position) {
+        std::u16string result;
         for (std::size_t index = 0; index < substitute.size(); ++index) {
             if (substitute[index] == u'$' && index + 1 < substitute.size()) {
                 const auto token = substitute[index + 1];
@@ -2295,12 +2309,16 @@ class StringCodeUnitCursor {
                 ++index;
             } else result += substitute[index];
         }
-        consumed = position + pattern.size();
-        if (!all || (pattern.empty() && position == input.size())) break;
-        position = input.find(pattern, position + std::max<std::size_t>(1, pattern.size()));
-    }
-    result.append(input, consumed);
-    return string_from_code_units(result);
+        return result;
+    }, all);
+}
+
+template <typename Replacement>
+[[nodiscard]] std::string string_replace_with(const std::string& value, const std::string& search,
+    Replacement&& replacement, bool all) {
+    return string_replace_matches(value, search, [&](const auto&, const auto& pattern, std::size_t position) {
+        return string_code_units(replacement(string_from_code_units(pattern), static_cast<double>(position), value));
+    }, all);
 }
 
 [[nodiscard]] inline double number_from_string(

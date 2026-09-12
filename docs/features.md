@@ -153,11 +153,13 @@ Map/Set `forEach` observes insertion order, deletion and appended entries,
 and receives the original collection as its third argument.
 
 Strings support string-pattern `replace`/`replaceAll` with string replacements
-and substitution tokens, `substring`, `repeat`, string-argument `concat`, `at`,
+and substitution tokens or callbacks receiving the match, UTF-16 offset and original string.
+Callback results are literal replacements and synchronous callbacks retain writes to outer bindings.
+Other methods include `substring`, `repeat`, string-argument `concat`, `at`,
 `charAt`, `codePointAt`, `padEnd`, `trimStart` and `trimEnd`. Numeric bracket access,
 these indexed methods and string length use UTF-16 code units; missing bracket indices return undefined.
-Native storage is UTF-8, with WTF-8 for lone surrogates. Regex `replaceAll` and
-replacement callbacks remain unsupported. Supported normalization and collation forms are listed above.
+Native storage is UTF-8, with WTF-8 for lone surrogates. RegExp `replaceAll` and
+RegExp replacement callbacks remain unsupported. Supported normalization and collation forms are listed above.
 Stored string-literal unions expose the same string methods, indexed reads and length.
 
 `Object.freeze`, `seal` and `preventExtensions` are the identity over their argument.

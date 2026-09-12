@@ -13,6 +13,34 @@ import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCom
 // them identically.
 const native = optionalNativeFixtureTools(false);
 
+check("string-replacement-callbacks", `
+    let calls = 0;
+    let input = "aba";
+    const result = input.replaceAll("a", (match, index: number, original: string) => {
+        calls++;
+        input = "changed";
+        if (original !== "aba" || match !== "a") throw new Error("callback input snapshot");
+        return "$&" + index;
+    });
+    if (result !== "$&0b$&2" || calls !== 2 || input !== "changed") throw new Error("literal callback result");
+    function replace(match: string, offset: number, source: string): string {
+        return match + offset + source.length;
+    }
+    if ("aba".replace("a", replace) !== "a03ba") throw new Error("first replacement");
+    let stored: (match: string) => string = match => match.toUpperCase();
+    if ("aba".replaceAll("a", stored) !== "AbA") throw new Error("stored replacement");
+    calls = 0;
+    const untouched = "abc".replaceAll("z", () => { calls++; return "bad"; });
+    if (untouched !== "abc" || calls !== 0) throw new Error("missing match callback");
+    const padded = "😀".replaceAll("", (_match, offset: number) => "[" + offset + "]");
+    if (padded !== "[0]\\ud83d[1]\\ude00[2]") throw new Error("empty search UTF16 positions");
+    let order = "";
+    function source(): string { order += "s"; return "x"; }
+    function search(): string { order += "p"; return "x"; }
+    function callback(): (value: string) => string { order += "c"; return value => { order += "r"; return value; }; }
+    if (source().replace(search(), callback()) !== "x" || order !== "spcr") throw new Error("replacement evaluation order");
+`);
+
 check("known-nullish-string-conversion", `
     function show(value: unknown): string { return String(value); }
     const missing = undefined;

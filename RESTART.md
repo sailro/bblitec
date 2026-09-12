@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `0c3556fd` (2026-09-12) |
+| Latest completed executable-code/test commit | `4d9bfcca` (2026-09-12), followed by string replacement callbacks in this savepoint |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -216,7 +216,8 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   native fixture checks live modes, source changes, resize, display scale,
   invalid keyword validation and the explicit Canvas2D non-fill refusal.
   `fit271` passed both tests; `focused272` passed all twelve nearby UI checks.
-  `compile272` is the subsequent external attempt; inspect its exit file.
+  `compile272` failed at a root-child CSS selector of the general form `html > .class`.
+  Full external generation, native build and runtime remain pending.
   Native source and image fixtures remain neutral.
 - RmlUi now has ten maintained patches, with `rmlui-object-fit.patch` added to
   the pin's patch list. Development rebuilt successfully (`rml-fit270`). Static
@@ -227,6 +228,14 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   using those installed roots.
   Earlier 271/272 attempts used the wrong/default root and are superseded by
   the successful 273 runs. No dependency installation was needed.
+- `4d9bfcca` saves raster object fitting and is pushed. String-pattern replacement
+  callbacks now share the native UTF-16 match walk with string replacements.
+  Direct synchronous callbacks lower inline to retain outer-binding writes;
+  stored callbacks use the existing typed invocation path. `replace277` passed
+  the JavaScript/native fixture, including callback arguments, evaluation order,
+  empty patterns across surrogate pairs, skipped callbacks and literal dollar
+  results. `strings278` passed all 127 core-library and language-construct checks
+  without skips. RegExp callback support remains open in the first TODO item.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask
@@ -540,7 +549,7 @@ that does not make the source compiler or JS API support automatic.
 
 The foundation narrowed the first compiler TODO: normalization, bounded locale
 comparison and mixed Map entry tuples are supported. Remaining work still
-includes replacement callbacks, locale lists/options beyond numeric/sensitivity,
+includes RegExp replacement callbacks, locale lists/options beyond numeric/sensitivity,
 `Set.entries()`, dynamic mixed-tuple indexing, rest bindings and length-changing
 methods. Later UI units and the sweep fixes did not fully close another listed
 TODO. Open GitHub issues were queried earlier and returned an empty list; that
