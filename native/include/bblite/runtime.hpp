@@ -3257,6 +3257,8 @@ enum class UiStyleSelectorKind : std::uint8_t {
     TagClass,
     /** `tag[attribute="identifier"]`, with a statically validated value. */
     TagAttribute,
+    /** `tag > .class`, an immediate parent tag and child class. */
+    TagChildClass,
 };
 
 enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };

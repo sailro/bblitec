@@ -2217,7 +2217,7 @@ export class UiProjection {
             const message =
                 `Retained stylesheet selector '${selector}' is not ` +
                 "lowered: the reviewed sheet surface is exact '.class' and " +
-                "'#id' rules, '.classA.classB', 'tag.class', statically-proven " +
+                "'#id' rules, '.classA.classB', 'tag.class', 'tag > .class', statically-proven " +
                 "'.ancestor tag', '#id .class' (optionally ':hover', ':active', ':focus-visible'), " +
                 "scrollbar/track/thumb/button/corner pseudo-elements, " +
                 "'@media (max-width:Npx)', '@media (prefers-reduced-motion:reduce|no-preference)', and '@keyframes' blocks.";
@@ -2448,6 +2448,7 @@ export class UiProjection {
                 return element.tag === rule.tag && classes.has(rule.primary);
             case "class-descendant-tag":
             case "id-descendant-class":
+            case "tag-child-class":
                 return false;
         }
     }
@@ -2483,6 +2484,10 @@ export class UiProjection {
             RegExp,
             (match: RegExpMatchArray) => LoweredUiStyleRule,
         ])[] = [
+            [
+                new RegExp(`^(${tag})\\s*>\\s*\\.(${identifier})(?:\\.(${identifier}))?$`, "i"),
+                (match) => ({kind: "tag-child-class", tag: match[1]!.toLowerCase(), primary: match[2]!, ...(match[3] ? {secondary: match[3]} : {}), hover: false, style, selector}),
+            ],
             [
                 new RegExp(`^#(${identifier})\\s+\\.(${identifier})$`),
                 (match) => ({
@@ -2579,6 +2584,8 @@ export class UiProjection {
             case "class-descendant-tag":
             case "tag-class":
                 return (1 + states) * 0x100 + 1;
+            case "tag-child-class":
+                return (1 + Number(rule.secondary !== undefined) + states) * 0x100 + 1;
             case "id-descendant-class":
                 return 0x10000 + (1 + states) * 0x100;
         }
@@ -2655,12 +2662,20 @@ export class UiProjection {
     }
 
 
+    private uiStaticParentHasTag(id: number, tag: string): boolean {
+        if (tag === "body" && this.uiStaticRootOrder.includes(id)) return true;
+        const parents = this.uiValidation?.parentsByChild.get(id);
+        return parents ? parents.some(parent => this.uiStaticElements.get(parent)?.tag === tag)
+            : [...this.uiStaticElements.values()].some(parent => parent.tag === tag && parent.children.has(id));
+    }
+
     private uiRuleMatchesStaticElementWithClasses(
         rule: LoweredUiStyleRule,
         id: number,
         element: UiStaticElement,
         classes: ReadonlySet<string>,
     ): boolean {
+        if (rule.kind === "tag-child-class") return classes.has(rule.primary) && (!rule.secondary || classes.has(rule.secondary)) && this.uiStaticParentHasTag(id, rule.tag!);
         if (
             rule.kind !== "class-descendant-tag" &&
             rule.kind !== "id-descendant-class"
@@ -2691,9 +2706,10 @@ export class UiProjection {
             case "id":
                 return false;
             case "compound-class":
+            case "tag-child-class":
                 return (
                     element.mutableClasses.has(rule.primary) ||
-                    element.mutableClasses.has(rule.secondary!)
+                    (rule.secondary !== undefined && element.mutableClasses.has(rule.secondary))
                 );
             case "tag-class":
                 return (
@@ -2720,6 +2736,7 @@ export class UiProjection {
             case "tag-class":
                 return rule.primary === className;
             case "compound-class":
+            case "tag-child-class":
                 return (
                     rule.primary === className || rule.secondary === className
                 );
@@ -2738,6 +2755,10 @@ export class UiProjection {
         child: UiStaticElement,
     ): boolean {
         switch (rule.kind) {
+            case "tag-child-class":
+                return this.uiStaticParentHasTag(childId, rule.tag!) && child.classAlternatives.some(classes =>
+                    (rule.primary === className && (!rule.secondary || classes.has(rule.secondary))) ||
+                    (rule.secondary === className && classes.has(rule.primary)));
             case "class":
                 return rule.primary === className;
             case "id":
@@ -2785,6 +2806,8 @@ export class UiProjection {
                 this.uiStaticAncestors(elementId).includes(target));
         if (mutation.attribute === "class") {
             switch (rule.kind) {
+                case "tag-child-class":
+                    return sameTarget && this.uiStaticParentHasTag(elementId, rule.tag!);
                 case "class":
                 case "compound-class":
                     return sameTarget;
@@ -2817,6 +2840,7 @@ export class UiProjection {
             case "compound-class":
             case "class-descendant-tag":
             case "tag-class":
+            case "tag-child-class":
                 return false;
         }
     }
