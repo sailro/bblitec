@@ -73,7 +73,7 @@ export interface NativeFunctionBodyOptions {
 /** Shared compiler operations; each lowering module selects its required services. */
 export interface LoweringServices {
     withAsyncActivation<T>(work: () => T): T;
-    emitNativeThrow(errorCpp: string): void;
+    emitNativeThrow(errorCpp: string, node?: ts.ThrowStatement): void;
     isInFrameCallback(): boolean;
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;

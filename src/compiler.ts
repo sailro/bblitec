@@ -9638,10 +9638,12 @@ class Compiler
         );
     }
 
-    public emitNativeThrow(errorCpp: string): void {
+    public emitNativeThrow(errorCpp: string, node?: ts.ThrowStatement): void {
         const frame = this.returnFrames.at(-1);
-        if (frame?.kind === "native" && frame.coroutine) {
-            const type = frame.type === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(frame.type);
+        const type = frame?.kind === "native" && frame.coroutine
+            ? frame.type === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(frame.type)
+            : this.asyncLowerer.isTerminalThrow(node) ? "bbl::js::PromiseVoid" : undefined;
+        if (type) {
             this.emit(`co_return [&]() -> ${type} { throw ${errorCpp}; }();`);
         } else this.emit(`throw ${errorCpp};`);
     }

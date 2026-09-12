@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Last completed executable-code/test commit | `58bccd0b` (2026-09-12) |
+| Last completed executable-code/test commit before the promise unit | `cb92759f` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -101,6 +101,20 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   Neither C++ generation nor the full application's native build has completed.
   The reached code also writes a button's `disabled` property, which still needs
   retained boolean-attribute support; the `hidden` unit supplies a reusable PAL.
+- `cb92759f` saves the mixed append unit and is pushed. `focused239` passed all
+  three selected checks. The promise unit adds shared native settlement reactions
+  for two-callback `then`, explicitly refusing different result types. It also
+  routes terminal throws in directly lowered async functions through native
+  coroutine completion; this avoids both unreachable epilogues and missing-return
+  warnings when a function awaits before throwing. The owned-body analysis skips
+  nested function returns. `focused243` passed 11 tests; `promise244` additionally
+  passed a generated native record-valued recovery check.
+- `compile241` (exit 1) progressed to `src/ui/crash-reporter.ts:616:7`:
+  "This intrinsic requires createEngine to run first." The reached expression is
+  `window.setTimeout`. Worker expression recognition accepts qualified globals,
+  but `compiler/workers.ts` currently recognizes only bare global callees when
+  selecting timer lowering. Use the existing symbol-aware `browserGlobalNamed`
+  mechanism so qualified timers use the realm event loop too.
 - Open GitHub issues were checked on 2026-09-12: none. Neither completed DOM
   unit closes a listed TODO item. The broader UI and worker gaps remain open.
 - A separate neutral probe found that creating a realm rendering engine without
